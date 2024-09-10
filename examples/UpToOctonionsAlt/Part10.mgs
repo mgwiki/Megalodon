@@ -1,0 +1,60 @@
+Section Reals.
+Prefix - 358 := minus_SNo.
+Infix + 360 right  := add_SNo.
+Infix * 355 right  := mul_SNo.
+Infix :/: 353 := div_SNo.
+Infix < 490 := SNoLt.
+(* Unicode <= "2264" *)
+Infix <= 490 := SNoLe.
+Infix ^ 342 right  := exp_SNo_nat.
+Axiom SNoS_omega_drat_intvl : forall x :e SNoS_ omega , forall k :e omega , exists q :e SNoS_ omega , q < x /\ x < q + eps_ k.
+Axiom SNoS_ordsucc_omega_bdd_above : forall x :e SNoS_ (ordsucc omega) , x < omega -> exists N :e omega , x < N.
+Axiom SNoS_ordsucc_omega_bdd_below : forall x :e SNoS_ (ordsucc omega) , - omega < x -> exists N :e omega , - N < x.
+Axiom SNoS_ordsucc_omega_bdd_drat_intvl : forall x :e SNoS_ (ordsucc omega) , - omega < x -> x < omega -> forall k :e omega , exists q :e SNoS_ omega , q < x /\ x < q + eps_ k.
+(* Parameter real "0d955384652ad934e09a854e236e549b47a140bb15c1ad93b6b63a51593ab579" "e26ffa4403d3e38948f53ead677d97077fe74954ba92c8bb181aba8433e99682" *)
+Parameter real : set.
+(* Parameter rational "8c8a7bfb10b00d28c274ecef7b7328616b45a82b00bd39e17526d6669c58250f" "efaf16036d5cf94babe3bcd9414cad1048de2c286e3096836b946f3990d358ff" *)
+Parameter rational : set.
+Axiom real_I : forall x :e SNoS_ (ordsucc omega) , x <> omega -> x <> - omega -> (forall q :e SNoS_ omega , (forall k :e omega , abs_SNo (q + - x) < eps_ k) -> q = x) -> x :e real.
+Axiom real_E : forall x :e real , forall p : prop , (SNo x -> SNoLev x :e ordsucc omega -> x :e SNoS_ (ordsucc omega) -> - omega < x -> x < omega -> (forall q :e SNoS_ omega , (forall k :e omega , abs_SNo (q + - x) < eps_ k) -> q = x) -> (forall k :e omega , exists q :e SNoS_ omega , q < x /\ x < q + eps_ k) -> p) -> p.
+Axiom real_SNo : forall x :e real , SNo x.
+Axiom real_SNoS_omega_prop : forall x :e real , forall q :e SNoS_ omega , (forall k :e omega , abs_SNo (q + - x) < eps_ k) -> q = x.
+Axiom SNoS_omega_real : SNoS_ omega c= real.
+Axiom real_0 : 0 :e real.
+Axiom real_1 : 1 :e real.
+Axiom SNoLev_In_real_SNoS_omega : forall x :e real , forall w , SNo w -> SNoLev w :e SNoLev x -> w :e SNoS_ omega.
+Axiom real_SNoCut_SNoS_omega : forall L R c= SNoS_ omega , SNoCutP L R -> L <> 0 -> R <> 0 -> (forall w :e L , exists w' :e L , w < w') -> (forall z :e R , exists z' :e R , z' < z) -> SNoCut L R :e real.
+Axiom real_SNoCut : forall L R c= real , SNoCutP L R -> L <> 0 -> R <> 0 -> (forall w :e L , exists w' :e L , w < w') -> (forall z :e R , exists z' :e R , z' < z) -> SNoCut L R :e real.
+Axiom minus_SNo_prereal_1 : forall x , SNo x -> (forall q :e SNoS_ omega , (forall k :e omega , abs_SNo (q + - x) < eps_ k) -> q = x) -> (forall q :e SNoS_ omega , (forall k :e omega , abs_SNo (q + - - x) < eps_ k) -> q = - x).
+Axiom minus_SNo_prereal_2 : forall x , SNo x -> (forall k :e omega , exists q :e SNoS_ omega , q < x /\ x < q + eps_ k) -> (forall k :e omega , exists q :e SNoS_ omega , q < - x /\ - x < q + eps_ k).
+Axiom SNo_prereal_incr_lower_pos : forall x , SNo x -> 0 < x -> (forall q :e SNoS_ omega , (forall k :e omega , abs_SNo (q + - x) < eps_ k) -> q = x) -> (forall k :e omega , exists q :e SNoS_ omega , q < x /\ x < q + eps_ k) -> forall k :e omega , forall p : prop , (forall q :e SNoS_ omega , 0 < q -> q < x -> x < q + eps_ k -> p) -> p.
+Axiom real_minus_SNo : forall x :e real , - x :e real.
+Axiom SNo_prereal_incr_lower_approx : forall x , SNo x -> (forall q :e SNoS_ omega , (forall k :e omega , abs_SNo (q + - x) < eps_ k) -> q = x) -> (forall k :e omega , exists q :e SNoS_ omega , q < x /\ x < q + eps_ k) -> exists f :e SNoS_ omega :^: omega , forall n :e omega , f n < x /\ x < f n + eps_ n /\ forall i :e n , f i < f n.
+Axiom SNo_prereal_decr_upper_approx : forall x , SNo x -> (forall q :e SNoS_ omega , (forall k :e omega , abs_SNo (q + - x) < eps_ k) -> q = x) -> (forall k :e omega , exists q :e SNoS_ omega , q < x /\ x < q + eps_ k) -> exists g :e SNoS_ omega :^: omega , forall n :e omega , g n + - eps_ n < x /\ x < g n /\ forall i :e n , g n < g i.
+Axiom SNoCutP_SNoCut_lim : forall lambda , ordinal lambda -> (forall alpha :e lambda , ordsucc alpha :e lambda) -> forall L R c= SNoS_ lambda , SNoCutP L R -> SNoLev (SNoCut L R) :e ordsucc lambda.
+Axiom SNoCutP_SNoCut_omega : forall L R c= SNoS_ omega , SNoCutP L R -> SNoLev (SNoCut L R) :e ordsucc omega.
+Axiom SNo_approx_real_lem : forall f g :e SNoS_ omega :^: omega , (forall n m :e omega , f n < g m) -> forall p : prop , (SNoCutP {f n|n :e omega} {g n|n :e omega} -> SNo (SNoCut {f n|n :e omega} {g n|n :e omega}) -> SNoLev (SNoCut {f n|n :e omega} {g n|n :e omega}) :e ordsucc omega -> SNoCut {f n|n :e omega} {g n|n :e omega} :e SNoS_ (ordsucc omega) -> (forall n :e omega , f n < SNoCut {f n|n :e omega} {g n|n :e omega}) -> (forall n :e omega , SNoCut {f n|n :e omega} {g n|n :e omega} < g n) -> p) -> p.
+Axiom SNo_approx_real : forall x , SNo x -> forall f g :e SNoS_ omega :^: omega , (forall n :e omega , f n < x) -> (forall n :e omega , x < f n + eps_ n) -> (forall n :e omega , forall i :e n , f i < f n) -> (forall n :e omega , x < g n) -> (forall n :e omega , forall i :e n , g n < g i) -> x = SNoCut {f n|n :e omega} {g n|n :e omega} -> x :e real.
+Axiom SNo_approx_real_rep : forall x :e real , forall p : prop , (forall f g :e SNoS_ omega :^: omega , (forall n :e omega , f n < x) -> (forall n :e omega , x < f n + eps_ n) -> (forall n :e omega , forall i :e n , f i < f n) -> (forall n :e omega , g n + - eps_ n < x) -> (forall n :e omega , x < g n) -> (forall n :e omega , forall i :e n , g n < g i) -> SNoCutP {f n|n :e omega} {g n|n :e omega} -> x = SNoCut {f n|n :e omega} {g n|n :e omega} -> p) -> p.
+Axiom real_add_SNo : forall x y :e real , x + y :e real.
+Axiom SNoS_ordsucc_omega_bdd_eps_pos : forall x :e SNoS_ (ordsucc omega) , 0 < x -> x < omega -> exists N :e omega , eps_ N * x < 1.
+Axiom real_mul_SNo_pos : forall x y :e real , 0 < x -> 0 < y -> x * y :e real.
+Axiom real_mul_SNo : forall x y :e real , x * y :e real.
+Axiom abs_SNo_intvl_bd : forall x y z , SNo x -> SNo y -> SNo z -> x <= y -> y < x + z -> abs_SNo (y + - x) < z.
+Axiom nonneg_real_nat_interval : forall x :e real , 0 <= x -> exists n :e omega , n <= x /\ x < ordsucc n.
+Axiom pos_real_left_approx_double : forall x :e real , 0 < x -> x <> 2 -> (forall m :e omega , x <> eps_ m) -> exists w :e SNoL_pos x , x < 2 * w.
+Axiom real_recip_SNo_lem1 : forall x , SNo x -> x :e real -> 0 < x -> recip_SNo_pos x :e real /\ forall k , nat_p k -> (SNo_recipaux x recip_SNo_pos k 0 c= real) /\ (SNo_recipaux x recip_SNo_pos k 1 c= real).
+Axiom real_recip_SNo_pos : forall x :e real , 0 < x -> recip_SNo_pos x :e real.
+Axiom real_recip_SNo : forall x :e real , recip_SNo x :e real.
+Axiom real_div_SNo : forall x y :e real , x :/: y :e real.
+Axiom sqrt_SNo_nonneg_0inL0 : forall x , SNo x -> 0 <= x -> 0 :e SNoLev x -> 0 :e SNo_sqrtaux x sqrt_SNo_nonneg 0 0.
+Axiom sqrt_SNo_nonneg_Lnonempty : forall x , SNo x -> 0 <= x -> 0 :e SNoLev x -> (\/_ k :e omega , SNo_sqrtaux x sqrt_SNo_nonneg k 0) <> 0.
+Axiom sqrt_SNo_nonneg_Rnonempty : forall x , SNo x -> 0 <= x -> 1 :e SNoLev x -> (\/_ k :e omega , SNo_sqrtaux x sqrt_SNo_nonneg k 1) <> 0.
+Axiom SNo_sqrtauxset_real : forall Y Z x , Y c= real -> Z c= real -> x :e real -> SNo_sqrtauxset Y Z x c= real.
+Axiom SNo_sqrtauxset_real_nonneg : forall Y Z x , Y c= {w :e real|0 <= w} -> Z c= {z :e real|0 <= z} -> x :e real -> 0 <= x -> SNo_sqrtauxset Y Z x c= {w :e real|0 <= w}.
+Axiom sqrt_SNo_nonneg_SNoS_omega : forall x :e SNoS_ omega , 0 <= x -> sqrt_SNo_nonneg x :e real.
+Axiom sqrt_SNo_nonneg_real : forall x :e real , 0 <= x -> sqrt_SNo_nonneg x :e real.
+Axiom real_Archimedean : forall x y :e real , 0 < x -> 0 <= y -> exists n :e omega , y <= n * x.
+Axiom real_complete1 : forall a b :e real :^: omega , (forall n :e omega , a n <= b n /\ a n <= a (ordsucc n) /\ b (ordsucc n) <= b n) -> exists x :e real , forall n :e omega , a n <= x /\ x <= b n.
+Axiom real_complete2 : forall a b :e real :^: omega , (forall n :e omega , a n <= b n /\ a n <= a (n + 1) /\ b (n + 1) <= b n) -> exists x :e real , forall n :e omega , a n <= x /\ x <= b n.
+End Reals.

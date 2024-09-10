@@ -2,8 +2,7 @@
 
 open Syntax
 open Parser
-open Sha256
-open Hash
+open Hashold
 
 (*** The hash ids for the following will be added as we bootstrap, allowing us to make sense of more term syntax as we go. ***)
 let debug = false;;

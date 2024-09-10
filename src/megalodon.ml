@@ -5,6 +5,7 @@ open Parser
 open Megaauto
 open Interpret
 
+let mycnt = ref 0;;
 let doublecheckpf = ref true;;
 let bushy = ref false;;
 let bushykdeps : (string,unit) Hashtbl.t = Hashtbl.create 10;;
@@ -371,6 +372,7 @@ let includingsigfile = ref false;;
 let includedsigfiles = ref [];;
 let sigoutfile = ref None;;
 let pfgout = ref false;;
+let pfgsummary = ref false;;
 type pfgitem = PfgParam of string * string * tp | PfgDef of string * string * tp * tm | PfgKnown of string * string * tm | PfgThm of string * string * tm * pf | PfgConj of string * string * tm
 let pfgmain : pfgitem list ref = ref [];;
 let pfgdelta : (string,unit) Hashtbl.t = Hashtbl.create 100;;
@@ -1079,7 +1081,15 @@ let evaluate_docitem_1 ditem =
       end
   | ParamHash(x,h,ok) ->
       if (!verbosity > 9) then (Printf.printf "ParamHash %s %s\n" x h; flush stdout);
+      if !pfgtheory = SetMM && (x = "wi" || x = "wal") then raise (Failure (Printf.sprintf "%s is a reserved built-in name for SetMM" x));
       begin
+        if !pfgtheory = HF then
+          begin
+            try
+              let n = Hashtbl.find pfghfprim h in
+              Hashtbl.add pfghfanchor x (Printf.sprintf "p%d" n)
+            with Not_found -> ()
+          end;
 	try
 	  let (xj,(xi,_)) = primname x in
 	  let xh = ptm_lam_id (xi,Prim xj) sigtmof sigdelta in
@@ -1094,6 +1104,7 @@ let evaluate_docitem_1 ditem =
       end
   | ParamDecl(x,a) ->
       if !reporteachitem then (Printf.printf "++ %s\n" x; flush stdout);
+      if !pfgtheory = SetMM && (x = "wi" || x = "wal") then raise (Failure (Printf.sprintf "%s is a reserved built-in name for SetMM" x));
       let a = ltree_to_atree a in
       if List.mem_assoc x !sigtm || List.mem_assoc x !sigpf || List.mem x !ctxtp || List.mem_assoc x !ctxtm || List.mem_assoc x !ctxpf then
 	raise (Failure(x ^ " has already been used."));
@@ -1112,6 +1123,13 @@ let evaluate_docitem_1 ditem =
 	  if x = "Empty" then set0 := Some(xhv);
 	  add_sigdelta xhv (0,Prim(xj));
 	  if !pfgtheory = Egal then megaauto_set_item xhv false;
+          if !pfgtheory = SetMM then (** I'm not sure why every theory isn't treated this way. **)
+            begin
+              let (pure,pfghv) = pfg_objid (Prim(xj)) agtp in
+              Hashtbl.add pfgtmhh xhv pure;
+              Hashtbl.add pfgtmroot x (Hash.hashval_hexstring pure);
+              Hashtbl.add pfgobjid x (Hash.hashval_hexstring pfghv);
+            end;
           if fofp() && i = 0 && not (Hashtbl.mem fofskip xhv) then Hashtbl.add tptp_id_name xhv (tptpize_name x,agtp);
           if th0p() && i = 0 && not (Hashtbl.mem th0skip xhv) then
             begin
@@ -1216,14 +1234,18 @@ let evaluate_docitem_1 ditem =
                        if i > 0 then raise Not_found;
                        let pfghpure = Hashtbl.find pfgtmhh xhv in
                        let pfghthy = pfg_objid_pure_to_thy pfghpure agtp in
-                       if not (Hashtbl.mem ownedobj pfghthy) then raise Not_found; (** proofgold knows it **)
+                       if !pfgsummary then Printf.printf "Param:%s:%s:%s\n" x (Hash.hashval_hexstring pfghpure) (Hash.hashval_hexstring pfghthy);
+                       Hashtbl.add pfgtmroot x (Hash.hashval_hexstring pfghpure);
+                       Hashtbl.add pfgobjid x (Hash.hashval_hexstring pfghthy);
+                       (*                       if not (Hashtbl.mem ownedobj pfghthy) then raise Not_found; (** proofgold knows it **) *)
 		       Hashtbl.add sigtmof xhv (i,agtp);
 		       let m = TmH xhv in
 		       sigtm := (x,!aptmloc m)::!sigtm;
 		       secstack := List.map (fun (y,f,atl,apl,st,sp) -> (y,f,atl,apl,(x,atl m)::st,sp)) !secstack
 		     with
                      | Not_found ->
-		        raise (Failure("The given id " ^ xhv ^ " for " ^ x ^ " is not a known index for a term."))
+                        ()
+                          (*		        raise (Failure("The given id " ^ xhv ^ " for " ^ x ^ " is not a known index for a term.")) *)
 		end
    	      with Not_found ->
 		raise (Failure("Unknown id for " ^ x))
@@ -1231,6 +1253,7 @@ let evaluate_docitem_1 ditem =
       end
   | DefDecl(x,None,b) ->
       if !reporteachitem then (Printf.printf "++ %s\n" x; flush stdout);
+      if !pfgtheory = SetMM && (x = "wi" || x = "wal") then raise (Failure (Printf.sprintf "%s is a reserved built-in name for SetMM" x));
       let b = ltree_to_atree b in
       if List.mem_assoc x !sigtm || List.mem_assoc x !sigpf || List.mem x !ctxtp || List.mem_assoc x !ctxtm || List.mem_assoc x !ctxpf then
 	raise (Failure(x ^ " has already been used."))
@@ -1278,7 +1301,10 @@ let evaluate_docitem_1 ditem =
           begin
             if i = 0 then
               let (pure,pfghv) = pfg_objid bgtm bgtp in
-              if !includingsigfile && not (Hashtbl.mem ownedobj pfghv) then Printf.printf "WARNING: The pfg id %s for the object %s is not owned.\n" (Hash.hashval_hexstring pfghv) x;
+              (*              if !includingsigfile && not (Hashtbl.mem ownedobj pfghv) then Printf.printf "WARNING: The pfg id %s for the object %s is not owned.\n" (Hash.hashval_hexstring pfghv) x; *)
+              if !pfgsummary then Printf.printf "Def:%s:%s:%s\n" x (Hash.hashval_hexstring pure) (Hash.hashval_hexstring pfghv);
+              Hashtbl.add pfgtmroot x (Hash.hashval_hexstring pure);
+              Hashtbl.add pfgobjid x (Hash.hashval_hexstring pfghv);
 	      if (!verbosity > 3) then (Printf.printf "%s was assigned pfg obj pure id %s and theory id %s\n" x (Hash.hashval_hexstring pure) (Hash.hashval_hexstring pfghv); flush stdout);
               Hashtbl.add ownedobj pfghv ();
               if (!verbosity > 3) then (Printf.printf "(* Parameter %s \"%s\" \"%s\" *)\n" x xhv (Hash.hashval_hexstring pure));
@@ -1334,6 +1360,7 @@ let evaluate_docitem_1 ditem =
 	end
   | DefDecl(x,Some a,b) ->
       if !reporteachitem then (Printf.printf "++ %s\n" x; flush stdout);
+      if !pfgtheory = SetMM && (x = "wi" || x = "wal") then raise (Failure (Printf.sprintf "%s is a reserved built-in name for SetMM" x));
       let a = ltree_to_atree a in
       let b = ltree_to_atree b in
       if List.mem_assoc x !sigtm || List.mem_assoc x !sigpf || List.mem x !ctxtp || List.mem_assoc x !ctxtm || List.mem_assoc x !ctxpf then
@@ -1383,7 +1410,10 @@ let evaluate_docitem_1 ditem =
           begin
             if i = 0 then
               let (pure,pfghv) = pfg_objid bgtm agtp in
-              if !includingsigfile && not (Hashtbl.mem ownedobj pfghv) then Printf.printf "WARNING: The pfg id %s for the object %s is not owned.\n" (Hash.hashval_hexstring pfghv) x;
+              (*              if !includingsigfile && not (Hashtbl.mem ownedobj pfghv) then Printf.printf "WARNING: The pfg id %s for the object %s is not owned.\n" (Hash.hashval_hexstring pfghv) x; *)
+              if !pfgsummary then Printf.printf "Def:%s:%s:%s\n" x (Hash.hashval_hexstring pure) (Hash.hashval_hexstring pfghv);
+              Hashtbl.add pfgtmroot x (Hash.hashval_hexstring pure);
+              Hashtbl.add pfgobjid x (Hash.hashval_hexstring pfghv);
 	      if (!verbosity > 3) then (Printf.printf "%s was assigned pfg obj id %s\n" x (Hash.hashval_hexstring pfghv); flush stdout);
               Hashtbl.add ownedobj pfghv ();
               if (!verbosity > 3) then (Printf.printf "(* Parameter %s \"%s\" \"%s\" *)\n" x xhv (Hash.hashval_hexstring pure));
@@ -1446,6 +1476,13 @@ let evaluate_docitem_1 ditem =
       let atm = check_tm a Prop !polytm sigtmof !sigtm !ctxtp !ctxtm in
       let agtm = !tmallclos atm in
       let ahv = ptm_all_id (i,agtm) sigtmof sigdelta in
+      if !pfgtheory = HF then
+        begin
+          try
+            let n = Hashtbl.find pfghfaxnum ahv in
+            Hashtbl.add pfghfanchor x (Printf.sprintf "a%d" n)
+          with Not_found -> ()
+        end;
       if !pfgtheory = Egal then megaauto_set_known ahv;
       if fofp() && i = 0 && not (Hashtbl.mem fofskip ahv) then (try fofsg := Printf.sprintf "fof(%s,axiom,%s). %% %s" (tptpize_name x) (fof_prop_str agtm []) ahv::!fofsg with NotFO -> ());
       if th0p() && i = 0 && not (Hashtbl.mem th0skip ahv) then
@@ -1487,6 +1524,15 @@ let evaluate_docitem_1 ditem =
       sigpf := (x,!appfloc (Known(ahv)))::!sigpf;
       if i > 0 then (*** x will look polymorphic with i types after the appropriate section is ended ***)
 	pushpolypf ((x,i),agtm);
+      if i = 0 then
+        begin
+          let (pfgpure,pfgahv) = pfg_propid2 agtm in
+          Hashtbl.add pfgtmroot x (Hash.hashval_hexstring pfgpure);
+          Hashtbl.add pfgpropid x (Hash.hashval_hexstring pfgahv);
+          if !pfgsummary then
+            Printf.printf "Known:%s:%s:%s\n" x (Hash.hashval_hexstring pfgpure) (Hash.hashval_hexstring pfgahv);
+        end;
+      (*
       if not (Hashtbl.mem indexknowns ahv) &&
            begin
              if i = 0 then
@@ -1498,12 +1544,13 @@ let evaluate_docitem_1 ditem =
       then
         begin
           Printf.printf "WARNING: The id %s for the proposition for axiom %s [pfg %s] is not indexed as previously known.\n" ahv x (Hash.hashval_hexstring (pfg_propid agtm));
-        end;
+        end; *)
       Hashtbl.add indexknowns ahv ();
       secstack := List.map (fun (y,f,atl,apl,st,sp) -> (y,f,atl,apl,st,(x,apl (Known(ahv)))::sp)) !secstack;
       if (!verbosity > 3) then (Printf.printf "Proposition of Axiom %s : %s was assigned id %s\n" x (tm_to_str agtm) ahv; flush stdout);
       ()
   | ThmDecl(c,x,a) ->
+      if !pfgtheory = SetMM && (x = "wi" || x = "wal") then raise (Failure (Printf.sprintf "%s is a reserved built-in name for SetMM" x));
       let a = ltree_to_atree a in
       if List.mem_assoc x !sigtm || List.mem_assoc x !sigpf || List.mem x !ctxtp || List.mem_assoc x !ctxtm || List.mem_assoc x !ctxpf then
 	raise (Failure(x ^ " has already been used."));
@@ -1514,9 +1561,17 @@ let evaluate_docitem_1 ditem =
       let ahv = ptm_all_id (i,agtm) sigtmof sigdelta in
       if !verbosity > 5 then Printf.printf "(MGPROPID \"%s\" \"%s\")\n" x ahv;
       let pfgahv = pfg_propid agtm in
-      if !verbosity > 5 && (Hashtbl.mem indexknowns ahv || Hashtbl.mem ownedprop pfgahv) then (Printf.printf "Warning: The id %s for the proposition for theorem %s is already known.\n" ahv x; flush stdout);
+      (*      if !verbosity > 5 && (Hashtbl.mem indexknowns ahv || Hashtbl.mem ownedprop pfgahv) then (Printf.printf "Warning: The id %s for the proposition for theorem %s is already known.\n" ahv x; flush stdout); *)
       Hashtbl.add sigknh x ahv;
       Hashtbl.add ownedprop pfgahv ();
+      if i = 0 && (!pfgsummary || not (!html = None)) then
+        begin
+          let (pfgpure,pfgahv) = pfg_propid2 agtm in
+          Hashtbl.add pfgtmroot x (Hash.hashval_hexstring pfgpure);
+          Hashtbl.add pfgpropid x (Hash.hashval_hexstring pfgahv);
+          if !pfgsummary then
+            Printf.printf "Thm:%s:%s:%s\n" x (Hash.hashval_hexstring pfgpure) (Hash.hashval_hexstring pfgahv);
+        end;
       add_sigdelta ahv (i,agtm);
       if !reporteachitem then (Printf.printf "++ %s\nHASH %s\n" x ahv; flush stdout);
       if !sqlout then
@@ -1551,7 +1606,7 @@ let evaluate_docitem ditem =
     match !html with
     | Some hc ->
        begin
-	 output_docitem_html hc ditem sigtmh sigknh;
+	 output_docitem_html ((List.map (fun (x,_) -> x) !ctxpf) @ (List.map (fun (x,_) -> x) !ctxtm) @ !ctxtp) hc ditem sigtmh sigknh;
 	 match ditem with
 	 | ThmDecl(_,x,_) ->
 	    begin
@@ -2309,7 +2364,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
 	    try
 	      if !verbosity > 19 then (Printf.printf "Qed start\n"; flush stdout);
 	      if not (Hashtbl.mem indexknowns gphv) then Hashtbl.add indexknowns gphv ();
-	      if not (Hashtbl.mem ownedprop pfggphv) then Hashtbl.add ownedprop pfggphv ();
+              if not (Hashtbl.mem ownedprop pfggphv) then Hashtbl.add ownedprop pfggphv ();
 	      activate_special_knowns gphv;
 	      if !pfgtheory = Egal then megaauto_set_known gphv;
               if fofp() && i = 0 && not (Hashtbl.mem fofskip gphv) then (try fofsg := Printf.sprintf "fof(%s,axiom,%s). %% %s" (tptpize_name thmname) (fof_prop_str gpgtm []) gphv::!fofsg with NotFO -> ());
@@ -3050,7 +3105,7 @@ let rec evaluate_pftac_2 () =
   | PfStateSep(j,false)::pfstr ->
       begin
 	match !html with
-	| Some hc -> output_pftacitem_html hc (PfStruct(j)) sigtmh sigknh 3
+	| Some hc -> output_pftacitem_html ((List.map (fun (x,_) -> x) !ctxpf) @ (List.map (fun (x,_) -> x) !ctxtm) @ !ctxtp) hc (PfStruct(j)) sigtmh sigknh 3
 	| None -> ()
       end;
       begin
@@ -3093,7 +3148,7 @@ let evaluate_pftac pitem thmname i gpgtm gphv pfggphv =
 	    | Some(c) -> buffer_to_line_char c pftext inchanline inchanchar !lineno !charno
 	    | None -> ()
 	  end; *)
-	output_pftacitem_html hc pitem sigtmh sigknh !laststructaction
+	output_pftacitem_html ((List.map (fun (x,_) -> x) !ctxpf) @ (List.map (fun (x,_) -> x) !ctxtm) @ !ctxtp) hc pitem sigtmh sigknh !laststructaction
     | None -> ()
   end;
   begin
@@ -3645,6 +3700,11 @@ let preset_mizar_index () =
   Hashtbl.add indextms "f55f90f052decfc17a366f12be0ad237becf63db26be5d163bf4594af99f943a" (Ar(Set,Ar(Set,Set)));
   Hashtbl.add indextms "844774016d959cff921a3292054b30b52f175032308aa11e418cb73f5fef3d54" (Ar(Set,Set))
 
+let preset_setmm_index () =
+  Hashtbl.clear indextms;
+  Hashtbl.clear indexknowns;
+  ()
+
 let preset_hoas_index () =
   Hashtbl.clear indextms;
   Hashtbl.clear indexknowns;
@@ -3722,50 +3782,7 @@ let _ =
                 let hc = open_out (Sys.argv.(!j)) in
 		html := Some(hc);
                 Printf.fprintf hc "<html><head>\n";
-                Printf.fprintf hc "<style>\n";
-                Printf.fprintf hc ".paramdecl {\n";
-                Printf.fprintf hc " margin-top: 3px;\n";
-                Printf.fprintf hc " margin-bottom: 3px;\n";
-                Printf.fprintf hc "}\n";
-                Printf.fprintf hc ".defdecl {\n";
-                Printf.fprintf hc " margin-top: 3px;\n";
-                Printf.fprintf hc " margin-bottom: 3px;\n";
-                Printf.fprintf hc "}\n";
-                Printf.fprintf hc ".axdecl {\n";
-                Printf.fprintf hc " margin-top: 3px;\n";
-                Printf.fprintf hc " margin-bottom: 3px;\n";
-                Printf.fprintf hc "}\n";
-                Printf.fprintf hc ".thmdecl {\n";
-                Printf.fprintf hc " margin-top: 3px;\n";
-                Printf.fprintf hc " margin-bottom: 3px;\n";
-                Printf.fprintf hc "}\n";
-                Printf.fprintf hc ".proof {\n";
-                Printf.fprintf hc " border-style: solid;\n";
-                Printf.fprintf hc " border-width: 2px;\n";
-                Printf.fprintf hc " padding: 1px;\n";
-                Printf.fprintf hc " margin: 1px;\n";
-                Printf.fprintf hc "}\n";
-                Printf.fprintf hc ".subproof {\n";
-                Printf.fprintf hc " border-style: solid;\n";
-                Printf.fprintf hc " border-width: 1px;\n";
-                Printf.fprintf hc " padding: 1px;\n";
-                Printf.fprintf hc " margin: 1px;\n";
-                Printf.fprintf hc "}\n";
-                Printf.fprintf hc ".section {\n";
-                Printf.fprintf hc " border-style: solid;\n";
-                Printf.fprintf hc " border-width: 2px;\n";
-                Printf.fprintf hc " padding: 1px;\n";
-                Printf.fprintf hc " margin: 1px;\n";
-                Printf.fprintf hc "}\n";
-                Printf.fprintf hc ".sectionbegin {\n";
-                Printf.fprintf hc " text-align: center;\n";
-                Printf.fprintf hc " text-decoration: underline;\n";
-                Printf.fprintf hc "}\n";
-                Printf.fprintf hc ".sectionend {\n";
-                Printf.fprintf hc " text-align: center;\n";
-                Printf.fprintf hc " text-decoration: underline;\n";
-                Printf.fprintf hc "}\n";
-                Printf.fprintf hc "</style>\n";
+                Printf.fprintf hc "<link rel=\"stylesheet\" href=\"mg.css\">\n";
                 Printf.fprintf hc "</head><body>\n";
 	      end
 	    else
@@ -3901,6 +3918,11 @@ let _ =
             pfgtheory := Mizar;
             preset_mizar_index();
           end
+        else if Sys.argv.(!j) = "-setmm" then
+          begin
+            pfgtheory := SetMM;
+            preset_setmm_index();
+          end
         else if Sys.argv.(!j) = "-hoas" then
           begin
             pfgtheory := HOAS;
@@ -3909,6 +3931,10 @@ let _ =
 	else if Sys.argv.(!j) = "-pfg" then
 	  begin
 	    pfgout := true;
+	  end
+	else if Sys.argv.(!j) = "-pfgsummary" then
+	  begin
+	    pfgsummary := true;
 	  end
 	else if Sys.argv.(!j) = "-indout" then
 	  begin
@@ -4037,6 +4063,16 @@ let _ =
 	    else
 	      raise (Failure("Expected -v <verbositynumber>"))
 	  end
+	else if Sys.argv.(!j) = "-explorerurl" then
+	  begin
+	    if !j < i-2 then
+	      begin
+		incr j;
+		explorerurl := Sys.argv.(!j);
+	      end
+	    else
+	      raise (Failure("Expected -v <verbositynumber>"))
+	  end
 	else if !includingsigfile then
 	  let c = open_in (Sys.argv.(!j)) in
           begin
@@ -4080,6 +4116,7 @@ let _ =
               | Egal -> Printf.printf "Document 29c988c5e6c620410ef4e61bcfcbe4213c77013974af40759d8b732c07d61967\nBase set\n"
               | Mizar -> Printf.printf "Document 5ab3df7b0b4ef20889de0517a318df8746940971ad9b2021e54c820eb9e74dce\nBase set\n"
               | HOAS -> Printf.printf "Document 513140056e2032628f48d11e221efe29892e9a03a661d3b691793524a5176ede\nBase syn\n"
+              | SetMM -> Printf.printf "Document 85ecfdcf26657b94532af5af2393c6945cee05c4aabccb8a819f793a7dbc4acf\nBase set\n"
             end;
             List.iter
               (fun i ->

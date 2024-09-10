@@ -1,0 +1,498 @@
+Section Alg.
+Variable extension_tag : set.
+Let ctag : set -> set := fun alpha => SetAdjoin alpha extension_tag.
+Postfix '' 100 := ctag.
+(* Parameter pair_tag "48390061c2181aba77cfa1d5de61c61404ac9ae0a65b3484b17cdb949b4f84ea" "abc4d9a02036ca6bb03da383ad06177224b45cf7aa024b008a587b0088f0cb63" *)
+Definition pair_tag : set -> set -> set := fun x y => x :\/: {u ''|u :e y}.
+Variable F : set -> prop.
+Hypothesis extension_tag_fresh : forall x , F x -> forall u :e x , extension_tag /:e u.
+Axiom ctagged_notin_F : forall x y , F x -> (y '') /:e x.
+Axiom ctagged_eqE_Subq : forall x y , F x -> forall u :e x , forall v , u '' = v '' -> u c= v.
+Axiom ctagged_eqE_eq : forall x y , F x -> F y -> forall u :e x , forall v :e y , u '' = v '' -> u = v.
+Axiom pair_tag_prop_1_Subq : forall x1 y1 x2 y2 , F x1 -> pair_tag x1 y1 = pair_tag x2 y2 -> x1 c= x2.
+Axiom pair_tag_prop_1 : forall x1 y1 x2 y2 , F x1 -> F x2 -> pair_tag x1 y1 = pair_tag x2 y2 -> x1 = x2.
+Axiom pair_tag_prop_2_Subq : forall x1 y1 x2 y2 , F y1 -> F x2 -> F y2 -> pair_tag x1 y1 = pair_tag x2 y2 -> y1 c= y2.
+Axiom pair_tag_prop_2 : forall x1 y1 x2 y2 , F x1 -> F y1 -> F x2 -> F y2 -> pair_tag x1 y1 = pair_tag x2 y2 -> y1 = y2.
+Axiom pair_tag_0 : forall x , pair_tag x 0 = x.
+(* Parameter CD_carr "2ea55f9b30e95e7481941454eb68ac6de771c9b03bcefa870c619fd0530d5229" "0c2c093b916057b76c377fc735ca4f5cf43faac41dbd2d3dd614aec17be1e1ce" *)
+Parameter CD_carr : set -> prop.
+Axiom CD_carr_I : forall x y , F x -> F y -> CD_carr (pair_tag x y).
+Axiom CD_carr_E : forall z , CD_carr z -> forall p : set -> prop , (forall x y , F x -> F y -> z = pair_tag x y -> p (pair_tag x y)) -> p z.
+Axiom CD_carr_0ext : F 0 -> forall x , F x -> CD_carr x.
+Definition CD_proj0 : set -> set := fun z => Eps_i (fun x => F x /\ exists y , F y /\ z = pair_tag x y).
+Definition CD_proj1 : set -> set := fun z => Eps_i (fun y => F y /\ z = pair_tag (CD_proj0 z) y).
+Let proj0 := CD_proj0.
+Let proj1 := CD_proj1.
+Let pa : set -> set -> set := pair_tag.
+Axiom CD_proj0_1 : forall z , CD_carr z -> F (proj0 z) /\ exists y , F y /\ z = pa (proj0 z) y.
+Axiom CD_proj0_2 : forall x y , F x -> F y -> proj0 (pa x y) = x.
+Axiom CD_proj1_1 : forall z , CD_carr z -> F (proj1 z) /\ z = pa (proj0 z) (proj1 z).
+Axiom CD_proj1_2 : forall x y , F x -> F y -> proj1 (pa x y) = y.
+Axiom CD_proj0R : forall z , CD_carr z -> F (proj0 z).
+Axiom CD_proj1R : forall z , CD_carr z -> F (proj1 z).
+Axiom CD_proj0proj1_eta : forall z , CD_carr z -> z = pa (proj0 z) (proj1 z).
+Axiom CD_proj0proj1_split : forall z w , CD_carr z -> CD_carr w -> proj0 z = proj0 w -> proj1 z = proj1 w -> z = w.
+Axiom CD_proj0_F : F 0 -> forall x , F x -> CD_proj0 x = x.
+Axiom CD_proj1_F : F 0 -> forall x , F x -> CD_proj1 x = 0.
+Section CD_minus_conj.
+Variable minus : set -> set.
+Prefix - 358 := minus.
+Definition CD_minus : set -> set := fun z => pa (- proj0 z) (- proj1 z).
+Prefix :-: 358 := CD_minus.
+Variable conj : set -> set.
+Definition CD_conj : set -> set := fun z => pa (conj (proj0 z)) (- proj1 z).
+End CD_minus_conj.
+Section CD_add.
+Variable add : set -> set -> set.
+Infix + 360 right  := add.
+Definition CD_add : set -> set -> set := fun z w => pa (proj0 z + proj0 w) (proj1 z + proj1 w).
+End CD_add.
+Section CD_mul.
+Variable minus : set -> set.
+Variable conj : set -> set.
+Variable add : set -> set -> set.
+Variable mul : set -> set -> set.
+Prefix - 358 := minus.
+Infix + 360 right  := add.
+Infix * 355 right  := mul.
+Definition CD_mul : set -> set -> set := fun z w => pa (proj0 z * proj0 w + - conj (proj1 w) * proj1 z) (proj1 w * proj0 z + proj1 z * conj (proj0 w)).
+Infix :*: 355 right  := CD_mul.
+Definition CD_exp_nat : set -> set -> set := fun z m => nat_primrec 1 (fun _ r => z :*: r) m.
+End CD_mul.
+Section CD_minus_conj_clos.
+Variable minus : set -> set.
+Prefix - 358 := minus.
+Prefix :-: 358 := CD_minus minus.
+Hypothesis F_minus : forall x , F x -> F (- x).
+Axiom CD_minus_CD : forall z , CD_carr z -> CD_carr (:-: z).
+Axiom CD_minus_proj0 : forall z , CD_carr z -> proj0 (:-: z) = - proj0 z.
+Axiom CD_minus_proj1 : forall z , CD_carr z -> proj1 (:-: z) = - proj1 z.
+Variable conj : set -> set.
+Postfix ' 100 := CD_conj minus conj.
+Hypothesis F_conj : forall x , F x -> F (conj x).
+Axiom CD_conj_CD : forall z , CD_carr z -> CD_carr (z ').
+Axiom CD_conj_proj0 : forall z , CD_carr z -> proj0 (z ') = conj (proj0 z).
+Axiom CD_conj_proj1 : forall z , CD_carr z -> proj1 (z ') = - proj1 z.
+End CD_minus_conj_clos.
+Section CD_add_clos.
+Variable add : set -> set -> set.
+Infix + 360 right  := add.
+Infix :+: 360 right  := CD_add add.
+Hypothesis F_add : forall x y , F x -> F y -> F (x + y).
+Axiom CD_add_CD : forall z w , CD_carr z -> CD_carr w -> CD_carr (z :+: w).
+Axiom CD_add_proj0 : forall z w , CD_carr z -> CD_carr w -> proj0 (z :+: w) = proj0 z + proj0 w.
+Axiom CD_add_proj1 : forall z w , CD_carr z -> CD_carr w -> proj1 (z :+: w) = proj1 z + proj1 w.
+End CD_add_clos.
+Section CD_mul_clos.
+Variable minus : set -> set.
+Variable conj : set -> set.
+Variable add : set -> set -> set.
+Variable mul : set -> set -> set.
+Prefix - 358 := minus.
+Infix + 360 right  := add.
+Infix * 355 right  := mul.
+Prefix :-: 358 := CD_minus minus.
+Postfix ' 100 := CD_conj minus conj.
+Infix :+: 360 right  := CD_add add.
+Infix :*: 355 right  := CD_mul minus conj add mul.
+Hypothesis F_minus : forall x , F x -> F (- x).
+Hypothesis F_conj : forall x , F x -> F (conj x).
+Hypothesis F_add : forall x y , F x -> F y -> F (x + y).
+Hypothesis F_mul : forall x y , F x -> F y -> F (x * y).
+Axiom CD_mul_CD : forall z w , CD_carr z -> CD_carr w -> CD_carr (z :*: w).
+Axiom CD_mul_proj0 : forall z w , CD_carr z -> CD_carr w -> proj0 (z :*: w) = proj0 z * proj0 w + - conj (proj1 w) * proj1 z.
+Axiom CD_mul_proj1 : forall z w , CD_carr z -> CD_carr w -> proj1 (z :*: w) = proj1 w * proj0 z + proj1 z * conj (proj0 w).
+End CD_mul_clos.
+Section CD_minus_conj_F.
+Variable minus : set -> set.
+Prefix - 358 := minus.
+Prefix :-: 358 := CD_minus minus.
+Hypothesis F_0 : F 0.
+Hypothesis F_minus_0 : - 0 = 0.
+Axiom CD_minus_F_eq : forall x , F x -> :-: x = - x.
+Variable conj : set -> set.
+Postfix ' 100 := CD_conj minus conj.
+Axiom CD_conj_F_eq : forall x , F x -> x ' = conj x.
+End CD_minus_conj_F.
+Section CD_add_F.
+Variable add : set -> set -> set.
+Infix + 360 right  := add.
+Infix :+: 360 right  := CD_add add.
+Hypothesis F_0 : F 0.
+Hypothesis F_add_0_0 : 0 + 0 = 0.
+Axiom CD_add_F_eq : forall x y , F x -> F y -> x :+: y = x + y.
+End CD_add_F.
+Section CD_mul_F.
+Variable minus : set -> set.
+Variable conj : set -> set.
+Variable add : set -> set -> set.
+Variable mul : set -> set -> set.
+Prefix - 358 := minus.
+Infix + 360 right  := add.
+Infix * 355 right  := mul.
+Prefix :-: 358 := CD_minus minus.
+Postfix ' 100 := CD_conj minus conj.
+Infix :+: 360 right  := CD_add add.
+Infix :*: 355 right  := CD_mul minus conj add mul.
+Hypothesis F_0 : F 0.
+Hypothesis F_conj : forall x , F x -> F (conj x).
+Hypothesis F_mul : forall x y , F x -> F y -> F (x * y).
+Hypothesis F_minus_0 : - 0 = 0.
+Hypothesis F_add_0R : forall x , F x -> x + 0 = x.
+Hypothesis F_mul_0L : forall x , F x -> 0 * x = 0.
+Hypothesis F_mul_0R : forall x , F x -> x * 0 = 0.
+Axiom CD_mul_F_eq : forall x y , F x -> F y -> x :*: y = x * y.
+End CD_mul_F.
+Section CD_minus_invol.
+Variable minus : set -> set.
+Prefix - 358 := minus.
+Prefix :-: 358 := CD_minus minus.
+Hypothesis F_minus : forall x , F x -> F (- x).
+Hypothesis F_minus_invol : forall x , F x -> - - x = x.
+Axiom CD_minus_invol : forall z , CD_carr z -> :-: :-: z = z.
+End CD_minus_invol.
+Section CD_conj_invol.
+Variable minus : set -> set.
+Variable conj : set -> set.
+Prefix - 358 := minus.
+Prefix :-: 358 := CD_minus minus.
+Postfix ' 100 := CD_conj minus conj.
+Hypothesis F_minus : forall x , F x -> F (- x).
+Hypothesis F_conj : forall x , F x -> F (conj x).
+Hypothesis F_minus_invol : forall x , F x -> - - x = x.
+Hypothesis F_conj_invol : forall x , F x -> conj (conj x) = x.
+Axiom CD_conj_invol : forall z , CD_carr z -> z ' ' = z.
+End CD_conj_invol.
+Section CD_conj_minus.
+Variable minus : set -> set.
+Variable conj : set -> set.
+Prefix - 358 := minus.
+Prefix :-: 358 := CD_minus minus.
+Postfix ' 100 := CD_conj minus conj.
+Hypothesis F_minus : forall x , F x -> F (- x).
+Hypothesis F_conj : forall x , F x -> F (conj x).
+Hypothesis F_conj_minus : forall x , F x -> conj (- x) = - conj x.
+Axiom CD_conj_minus : forall z , CD_carr z -> (:-: z) ' = :-: (z ').
+End CD_conj_minus.
+Section CD_minus_add.
+Variable minus : set -> set.
+Variable add : set -> set -> set.
+Prefix - 358 := minus.
+Infix + 360 right  := add.
+Prefix :-: 358 := CD_minus minus.
+Infix :+: 360 right  := CD_add add.
+Hypothesis F_minus : forall x , F x -> F (- x).
+Hypothesis F_add : forall x y , F x -> F y -> F (x + y).
+Hypothesis F_minus_add : forall x y , F x -> F y -> - (x + y) = - x + - y.
+Axiom CD_minus_add : forall z w , CD_carr z -> CD_carr w -> :-: (z :+: w) = :-: z :+: :-: w.
+End CD_minus_add.
+Section CD_conj_add.
+Variable minus : set -> set.
+Variable conj : set -> set.
+Variable add : set -> set -> set.
+Prefix - 358 := minus.
+Infix + 360 right  := add.
+Prefix :-: 358 := CD_minus minus.
+Postfix ' 100 := CD_conj minus conj.
+Infix :+: 360 right  := CD_add add.
+Hypothesis F_minus : forall x , F x -> F (- x).
+Hypothesis F_conj : forall x , F x -> F (conj x).
+Hypothesis F_add : forall x y , F x -> F y -> F (x + y).
+Hypothesis F_minus_add : forall x y , F x -> F y -> - (x + y) = - x + - y.
+Hypothesis F_conj_add : forall x y , F x -> F y -> conj (x + y) = conj x + conj y.
+Axiom CD_conj_add : forall z w , CD_carr z -> CD_carr w -> (z :+: w) ' = z ' :+: w '.
+End CD_conj_add.
+Section CD_add_com.
+Variable add : set -> set -> set.
+Infix + 360 right  := add.
+Infix :+: 360 right  := CD_add add.
+Hypothesis F_add_com : forall x y , F x -> F y -> x + y = y + x.
+Axiom CD_add_com : forall z w , CD_carr z -> CD_carr w -> z :+: w = w :+: z.
+End CD_add_com.
+Section CD_add_assoc.
+Variable add : set -> set -> set.
+Infix + 360 right  := add.
+Infix :+: 360 right  := CD_add add.
+Hypothesis F_add : forall x y , F x -> F y -> F (x + y).
+Hypothesis F_add_assoc : forall x y z , F x -> F y -> F z -> (x + y) + z = x + (y + z).
+Axiom CD_add_assoc : forall z w u , CD_carr z -> CD_carr w -> CD_carr u -> (z :+: w) :+: u = z :+: (w :+: u).
+End CD_add_assoc.
+Section CD_add_0R.
+Variable add : set -> set -> set.
+Infix + 360 right  := add.
+Infix :+: 360 right  := CD_add add.
+Hypothesis F_0 : F 0.
+Hypothesis F_add_0R : forall x , F x -> x + 0 = x.
+Axiom CD_add_0R : forall z , CD_carr z -> z :+: 0 = z.
+End CD_add_0R.
+Section CD_add_0L.
+Variable add : set -> set -> set.
+Infix + 360 right  := add.
+Infix :+: 360 right  := CD_add add.
+Hypothesis F_0 : F 0.
+Hypothesis F_add_0L : forall x , F x -> 0 + x = x.
+Axiom CD_add_0L : forall z , CD_carr z -> 0 :+: z = z.
+End CD_add_0L.
+Section CD_add_minus_linv.
+Variable minus : set -> set.
+Variable add : set -> set -> set.
+Prefix - 358 := minus.
+Infix + 360 right  := add.
+Prefix :-: 358 := CD_minus minus.
+Infix :+: 360 right  := CD_add add.
+Hypothesis F_minus : forall x , F x -> F (- x).
+Hypothesis F_add_minus_linv : forall x , F x -> - x + x = 0.
+Axiom CD_add_minus_linv : forall z , CD_carr z -> :-: z :+: z = 0.
+End CD_add_minus_linv.
+Section CD_add_minus_rinv.
+Variable minus : set -> set.
+Variable add : set -> set -> set.
+Prefix - 358 := minus.
+Infix + 360 right  := add.
+Prefix :-: 358 := CD_minus minus.
+Infix :+: 360 right  := CD_add add.
+Hypothesis F_minus : forall x , F x -> F (- x).
+Hypothesis F_add_minus_rinv : forall x , F x -> x + - x = 0.
+Axiom CD_add_minus_rinv : forall z , CD_carr z -> z :+: :-: z = 0.
+End CD_add_minus_rinv.
+Section CD_mul_0R.
+Variable minus : set -> set.
+Variable conj : set -> set.
+Variable add : set -> set -> set.
+Variable mul : set -> set -> set.
+Prefix - 358 := minus.
+Infix + 360 right  := add.
+Infix * 355 right  := mul.
+Prefix :-: 358 := CD_minus minus.
+Postfix ' 100 := CD_conj minus conj.
+Infix :+: 360 right  := CD_add add.
+Infix :*: 355 right  := CD_mul minus conj add mul.
+Hypothesis F_0 : F 0.
+Hypothesis F_minus_0 : - 0 = 0.
+Hypothesis F_conj_0 : conj 0 = 0.
+Hypothesis F_add_0_0 : 0 + 0 = 0.
+Hypothesis F_mul_0L : forall x , F x -> 0 * x = 0.
+Hypothesis F_mul_0R : forall x , F x -> x * 0 = 0.
+Axiom CD_mul_0R : forall z , CD_carr z -> z :*: 0 = 0.
+End CD_mul_0R.
+Section CD_mul_0L.
+Variable minus : set -> set.
+Variable conj : set -> set.
+Variable add : set -> set -> set.
+Variable mul : set -> set -> set.
+Prefix - 358 := minus.
+Infix + 360 right  := add.
+Infix * 355 right  := mul.
+Prefix :-: 358 := CD_minus minus.
+Postfix ' 100 := CD_conj minus conj.
+Infix :+: 360 right  := CD_add add.
+Infix :*: 355 right  := CD_mul minus conj add mul.
+Hypothesis F_0 : F 0.
+Hypothesis F_conj : forall x , F x -> F (conj x).
+Hypothesis F_minus_0 : - 0 = 0.
+Hypothesis F_add_0_0 : 0 + 0 = 0.
+Hypothesis F_mul_0L : forall x , F x -> 0 * x = 0.
+Hypothesis F_mul_0R : forall x , F x -> x * 0 = 0.
+Axiom CD_mul_0L : forall z , CD_carr z -> 0 :*: z = 0.
+End CD_mul_0L.
+Section CD_mul_1R.
+Variable minus : set -> set.
+Variable conj : set -> set.
+Variable add : set -> set -> set.
+Variable mul : set -> set -> set.
+Prefix - 358 := minus.
+Infix + 360 right  := add.
+Infix * 355 right  := mul.
+Prefix :-: 358 := CD_minus minus.
+Postfix ' 100 := CD_conj minus conj.
+Infix :+: 360 right  := CD_add add.
+Infix :*: 355 right  := CD_mul minus conj add mul.
+Hypothesis F_0 : F 0.
+Hypothesis F_1 : F 1.
+Hypothesis F_minus_0 : - 0 = 0.
+Hypothesis F_conj_0 : conj 0 = 0.
+Hypothesis F_conj_1 : conj 1 = 1.
+Hypothesis F_add_0L : forall x , F x -> 0 + x = x.
+Hypothesis F_add_0R : forall x , F x -> x + 0 = x.
+Hypothesis F_mul_0L : forall x , F x -> 0 * x = 0.
+Hypothesis F_mul_1R : forall x , F x -> x * 1 = x.
+Axiom CD_mul_1R : forall z , CD_carr z -> z :*: 1 = z.
+End CD_mul_1R.
+Section CD_mul_1L.
+Variable minus : set -> set.
+Variable conj : set -> set.
+Variable add : set -> set -> set.
+Variable mul : set -> set -> set.
+Prefix - 358 := minus.
+Infix + 360 right  := add.
+Infix * 355 right  := mul.
+Prefix :-: 358 := CD_minus minus.
+Postfix ' 100 := CD_conj minus conj.
+Infix :+: 360 right  := CD_add add.
+Infix :*: 355 right  := CD_mul minus conj add mul.
+Hypothesis F_0 : F 0.
+Hypothesis F_1 : F 1.
+Hypothesis F_conj : forall x , F x -> F (conj x).
+Hypothesis F_minus_0 : - 0 = 0.
+Hypothesis F_add_0R : forall x , F x -> x + 0 = x.
+Hypothesis F_mul_0L : forall x , F x -> 0 * x = 0.
+Hypothesis F_mul_0R : forall x , F x -> x * 0 = 0.
+Hypothesis F_mul_1L : forall x , F x -> 1 * x = x.
+Hypothesis F_mul_1R : forall x , F x -> x * 1 = x.
+Axiom CD_mul_1L : forall z , CD_carr z -> 1 :*: z = z.
+End CD_mul_1L.
+Section CD_conj_mul.
+Variable minus : set -> set.
+Variable conj : set -> set.
+Variable add : set -> set -> set.
+Variable mul : set -> set -> set.
+Prefix - 358 := minus.
+Infix + 360 right  := add.
+Infix * 355 right  := mul.
+Prefix :-: 358 := CD_minus minus.
+Postfix ' 100 := CD_conj minus conj.
+Infix :+: 360 right  := CD_add add.
+Infix :*: 355 right  := CD_mul minus conj add mul.
+Hypothesis F_minus : forall x , F x -> F (- x).
+Hypothesis F_conj : forall x , F x -> F (conj x).
+Hypothesis F_add : forall x y , F x -> F y -> F (x + y).
+Hypothesis F_mul : forall x y , F x -> F y -> F (x * y).
+Hypothesis F_minus_invol : forall x , F x -> - - x = x.
+Hypothesis F_conj_invol : forall x , F x -> conj (conj x) = x.
+Hypothesis F_conj_minus : forall x , F x -> conj (- x) = - conj x.
+Hypothesis F_conj_add : forall x y , F x -> F y -> conj (x + y) = conj x + conj y.
+Hypothesis F_minus_add : forall x y , F x -> F y -> - (x + y) = - x + - y.
+Hypothesis F_add_com : forall x y , F x -> F y -> x + y = y + x.
+Hypothesis F_conj_mul : forall x y , F x -> F y -> conj (x * y) = conj y * conj x.
+Hypothesis F_minus_mul_distrR : forall x y , F x -> F y -> x * (- y) = - (x * y).
+Hypothesis F_minus_mul_distrL : forall x y , F x -> F y -> (- x) * y = - (x * y).
+Axiom CD_conj_mul : forall z w , CD_carr z -> CD_carr w -> (z :*: w) ' = w ' :*: z '.
+End CD_conj_mul.
+Section CD_add_mul_distrR.
+Variable minus : set -> set.
+Variable conj : set -> set.
+Variable add : set -> set -> set.
+Variable mul : set -> set -> set.
+Prefix - 358 := minus.
+Infix + 360 right  := add.
+Infix * 355 right  := mul.
+Prefix :-: 358 := CD_minus minus.
+Postfix ' 100 := CD_conj minus conj.
+Infix :+: 360 right  := CD_add add.
+Infix :*: 355 right  := CD_mul minus conj add mul.
+Hypothesis F_minus : forall x , F x -> F (- x).
+Hypothesis F_conj : forall x , F x -> F (conj x).
+Hypothesis F_add : forall x y , F x -> F y -> F (x + y).
+Hypothesis F_mul : forall x y , F x -> F y -> F (x * y).
+Hypothesis F_minus_add : forall x y , F x -> F y -> - (x + y) = - x + - y.
+Hypothesis F_add_assoc : forall x y z , F x -> F y -> F z -> (x + y) + z = x + (y + z).
+Hypothesis F_add_com : forall x y , F x -> F y -> x + y = y + x.
+Hypothesis F_add_mul_distrL : forall x y z , F x -> F y -> F z -> x * (y + z) = x * y + x * z.
+Hypothesis F_add_mul_distrR : forall x y z , F x -> F y -> F z -> (x + y) * z = x * z + y * z.
+Axiom CD_add_mul_distrR : forall z w u , CD_carr z -> CD_carr w -> CD_carr u -> (z :+: w) :*: u = z :*: u :+: w :*: u.
+End CD_add_mul_distrR.
+Section CD_add_mul_distrL.
+Variable minus : set -> set.
+Variable conj : set -> set.
+Variable add : set -> set -> set.
+Variable mul : set -> set -> set.
+Prefix - 358 := minus.
+Infix + 360 right  := add.
+Infix * 355 right  := mul.
+Prefix :-: 358 := CD_minus minus.
+Postfix ' 100 := CD_conj minus conj.
+Infix :+: 360 right  := CD_add add.
+Infix :*: 355 right  := CD_mul minus conj add mul.
+Hypothesis F_minus : forall x , F x -> F (- x).
+Hypothesis F_conj : forall x , F x -> F (conj x).
+Hypothesis F_add : forall x y , F x -> F y -> F (x + y).
+Hypothesis F_mul : forall x y , F x -> F y -> F (x * y).
+Hypothesis F_minus_add : forall x y , F x -> F y -> - (x + y) = - x + - y.
+Hypothesis F_conj_add : forall x y , F x -> F y -> conj (x + y) = conj x + conj y.
+Hypothesis F_add_assoc : forall x y z , F x -> F y -> F z -> (x + y) + z = x + (y + z).
+Hypothesis F_add_com : forall x y , F x -> F y -> x + y = y + x.
+Hypothesis F_add_mul_distrL : forall x y z , F x -> F y -> F z -> x * (y + z) = x * y + x * z.
+Hypothesis F_add_mul_distrR : forall x y z , F x -> F y -> F z -> (x + y) * z = x * z + y * z.
+Axiom CD_add_mul_distrL : forall z w u , CD_carr z -> CD_carr w -> CD_carr u -> z :*: (w :+: u) = z :*: w :+: z :*: u.
+End CD_add_mul_distrL.
+Section CD_minus_mul_distrR.
+Variable minus : set -> set.
+Variable conj : set -> set.
+Variable add : set -> set -> set.
+Variable mul : set -> set -> set.
+Prefix - 358 := minus.
+Infix + 360 right  := add.
+Infix * 355 right  := mul.
+Prefix :-: 358 := CD_minus minus.
+Postfix ' 100 := CD_conj minus conj.
+Infix :+: 360 right  := CD_add add.
+Infix :*: 355 right  := CD_mul minus conj add mul.
+Hypothesis F_minus : forall x , F x -> F (- x).
+Hypothesis F_conj : forall x , F x -> F (conj x).
+Hypothesis F_add : forall x y , F x -> F y -> F (x + y).
+Hypothesis F_mul : forall x y , F x -> F y -> F (x * y).
+Hypothesis F_conj_minus : forall x , F x -> conj (- x) = - conj x.
+Hypothesis F_minus_add : forall x y , F x -> F y -> - (x + y) = - x + - y.
+Hypothesis F_minus_mul_distrR : forall x y , F x -> F y -> x * (- y) = - (x * y).
+Hypothesis F_minus_mul_distrL : forall x y , F x -> F y -> (- x) * y = - (x * y).
+Axiom CD_minus_mul_distrR : forall z w , CD_carr z -> CD_carr w -> z :*: (:-: w) = :-: z :*: w.
+End CD_minus_mul_distrR.
+Section CD_minus_mul_distrL.
+Variable minus : set -> set.
+Variable conj : set -> set.
+Variable add : set -> set -> set.
+Variable mul : set -> set -> set.
+Prefix - 358 := minus.
+Infix + 360 right  := add.
+Infix * 355 right  := mul.
+Prefix :-: 358 := CD_minus minus.
+Postfix ' 100 := CD_conj minus conj.
+Infix :+: 360 right  := CD_add add.
+Infix :*: 355 right  := CD_mul minus conj add mul.
+Hypothesis F_minus : forall x , F x -> F (- x).
+Hypothesis F_conj : forall x , F x -> F (conj x).
+Hypothesis F_add : forall x y , F x -> F y -> F (x + y).
+Hypothesis F_mul : forall x y , F x -> F y -> F (x * y).
+Hypothesis F_minus_add : forall x y , F x -> F y -> - (x + y) = - x + - y.
+Hypothesis F_minus_mul_distrR : forall x y , F x -> F y -> x * (- y) = - (x * y).
+Hypothesis F_minus_mul_distrL : forall x y , F x -> F y -> (- x) * y = - (x * y).
+Axiom CD_minus_mul_distrL : forall z w , CD_carr z -> CD_carr w -> (:-: z) :*: w = :-: z :*: w.
+End CD_minus_mul_distrL.
+Section CD_exp_nat.
+Variable minus : set -> set.
+Variable conj : set -> set.
+Variable add : set -> set -> set.
+Variable mul : set -> set -> set.
+Prefix - 358 := minus.
+Postfix ' 100 := conj.
+Infix + 360 right  := add.
+Infix * 355 right  := mul.
+Prefix :-: 358 := CD_minus minus.
+Postfix ' 100 := CD_conj minus conj.
+Infix :+: 360 right  := CD_add add.
+Infix :*: 355 right  := CD_mul minus conj add mul.
+Infix ^ 342 := CD_exp_nat minus conj add mul.
+Axiom CD_exp_nat_0 : forall z , z ^ 0 = 1.
+Axiom CD_exp_nat_S : forall z n , nat_p n -> z ^ (ordsucc n) = z :*: z ^ n.
+Section CD_exp_nat_1_2.
+Hypothesis F_0 : F 0.
+Hypothesis F_1 : F 1.
+Hypothesis F_minus_0 : - 0 = 0.
+Hypothesis F_conj_0 : conj 0 = 0.
+Hypothesis F_conj_1 : conj 1 = 1.
+Hypothesis F_add_0L : forall x , F x -> 0 + x = x.
+Hypothesis F_add_0R : forall x , F x -> x + 0 = x.
+Hypothesis F_mul_0L : forall x , F x -> 0 * x = 0.
+Hypothesis F_mul_1R : forall x , F x -> x * 1 = x.
+Axiom CD_exp_nat_1 : forall z , CD_carr z -> z ^ 1 = z.
+Axiom CD_exp_nat_2 : forall z , CD_carr z -> z ^ 2 = z :*: z.
+End CD_exp_nat_1_2.
+Hypothesis F_minus : forall x , F x -> F (- x).
+Hypothesis F_conj : forall x , F x -> F (conj x).
+Hypothesis F_add : forall x y , F x -> F y -> F (x + y).
+Hypothesis F_mul : forall x y , F x -> F y -> F (x * y).
+Hypothesis F_0 : F 0.
+Hypothesis F_1 : F 1.
+Axiom CD_exp_nat_CD : forall z , CD_carr z -> forall n , nat_p n -> CD_carr (z ^ n).
+End CD_exp_nat.
+End Alg.

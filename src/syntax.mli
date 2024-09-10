@@ -5,7 +5,13 @@
 val sexprinfo : bool ref;;
 val reportbushydeps : out_channel option ref;;
 
-type pfgthy = HF | Egal | Mizar | HOAS;;
+val explorerurl : string ref;;
+
+val pfgtmroot : (string,string) Hashtbl.t;;
+val pfgobjid : (string,string) Hashtbl.t;;
+val pfgpropid : (string,string) Hashtbl.t;;
+
+type pfgthy = HF | Egal | Mizar | HOAS | SetMM;;
 val pfgtheory : pfgthy ref
 
 val eagerdeltas : bool ref
@@ -243,6 +249,7 @@ val tm_id : tm -> (string,ptp) Hashtbl.t -> (string,ptm) Hashtbl.t -> string
 val ptm_lam_id : ptm -> (string,ptp) Hashtbl.t -> (string,ptm) Hashtbl.t -> string
 val ptm_all_id : ptm -> (string,ptp) Hashtbl.t -> (string,ptm) Hashtbl.t -> string
 val pfg_propid : tm -> Hash.hashval
+val pfg_propid2 : tm -> Hash.hashval * Hash.hashval
 val pfg_objid : tm -> tp -> Hash.hashval * Hash.hashval
 val pfg_objid_pure_to_thy : Hash.hashval -> tp -> Hash.hashval
 val pf_id : pf -> (string,ptp) Hashtbl.t -> (string,ptm) Hashtbl.t -> string
@@ -267,9 +274,9 @@ val pf_complexity : pf -> int
 
 val globalhrefs : bool ref
 val url_friendly_name : string -> string
-val output_ltree_html : out_channel -> ltree -> (string,string) Hashtbl.t -> (string,string) Hashtbl.t -> unit
-val output_docitem_html : out_channel -> docitem -> (string,string) Hashtbl.t -> (string,string) Hashtbl.t -> unit
-val output_pftacitem_html : out_channel -> pftacitem -> (string,string) Hashtbl.t -> (string,string) Hashtbl.t -> int -> unit
+val output_ltree_html : string list -> out_channel -> ltree -> (string,string) Hashtbl.t -> (string,string) Hashtbl.t -> unit
+val output_docitem_html : string list -> out_channel -> docitem -> (string,string) Hashtbl.t -> (string,string) Hashtbl.t -> unit
+val output_pftacitem_html : string list -> out_channel -> pftacitem -> (string,string) Hashtbl.t -> (string,string) Hashtbl.t -> int -> unit
                                  
 val stp_html_string : tp -> string
                               
@@ -284,6 +291,10 @@ val pfgknhh : (string,Hash.hashval) Hashtbl.t
 val pfgbvarh : (tm,string) Hashtbl.t
 val pfgpfbvarh : (pf,string) Hashtbl.t
 val pfghyph : (pf,string) Hashtbl.t
+
+val pfghfanchor : (string,string) Hashtbl.t
+val pfghfprim : (string,int) Hashtbl.t
+val pfghfaxnum : (string,int) Hashtbl.t
 
 val tp_pfg_str : tp -> string
 val tm_pfg_str : tm -> string

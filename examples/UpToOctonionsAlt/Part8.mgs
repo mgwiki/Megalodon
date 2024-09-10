@@ -1,0 +1,79 @@
+Section SurrealDiv.
+Prefix - 358 := minus_SNo.
+Infix + 360 right  := add_SNo.
+Infix * 355 right  := mul_SNo.
+Infix < 490 := SNoLt.
+(* Unicode <= "2264" *)
+Infix <= 490 := SNoLe.
+Infix ^ 342 right  := exp_SNo_nat.
+Definition SNoL_pos : set -> set := fun x => {w :e SNoL x|0 < w}.
+Axiom SNo_recip_pos_pos : forall x xi , SNo x -> SNo xi -> 0 < x -> x * xi = 1 -> 0 < xi.
+Axiom SNo_recip_lem1 : forall x x' x'i y y' , SNo x -> 0 < x -> x' :e SNoL_pos x -> SNo x'i -> x' * x'i = 1 -> SNo y -> x * y < 1 -> SNo y' -> 1 + - x * y' = (1 + - x * y) * (x' + - x) * x'i -> 1 < x * y'.
+Axiom SNo_recip_lem2 : forall x x' x'i y y' , SNo x -> 0 < x -> x' :e SNoL_pos x -> SNo x'i -> x' * x'i = 1 -> SNo y -> 1 < x * y -> SNo y' -> 1 + - x * y' = (1 + - x * y) * (x' + - x) * x'i -> x * y' < 1.
+Axiom SNo_recip_lem3 : forall x x' x'i y y' , SNo x -> 0 < x -> x' :e SNoR x -> SNo x'i -> x' * x'i = 1 -> SNo y -> x * y < 1 -> SNo y' -> 1 + - x * y' = (1 + - x * y) * (x' + - x) * x'i -> x * y' < 1.
+Axiom SNo_recip_lem4 : forall x x' x'i y y' , SNo x -> 0 < x -> x' :e SNoR x -> SNo x'i -> x' * x'i = 1 -> SNo y -> 1 < x * y -> SNo y' -> 1 + - x * y' = (1 + - x * y) * (x' + - x) * x'i -> 1 < x * y'.
+Definition SNo_recipauxset : set -> set -> set -> (set -> set) -> set := fun Y x X g => \/_ y :e Y , {(1 + (x' + - x) * y) * g x'|x' :e X}.
+Axiom SNo_recipauxset_I : forall Y x X , forall g : set -> set , forall y :e Y , forall x' :e X , (1 + (x' + - x) * y) * g x' :e SNo_recipauxset Y x X g.
+Axiom SNo_recipauxset_E : forall Y x X , forall g : set -> set , forall z :e SNo_recipauxset Y x X g , forall p : prop , (forall y :e Y , forall x' :e X , z = (1 + (x' + - x) * y) * g x' -> p) -> p.
+Axiom SNo_recipauxset_ext : forall Y x X , forall g h : set -> set , (forall x' :e X , g x' = h x') -> SNo_recipauxset Y x X g = SNo_recipauxset Y x X h.
+Definition SNo_recipaux : set -> (set -> set) -> set -> set := fun x g => nat_primrec ({0},0) (fun k p => (p 0 :\/: SNo_recipauxset (p 0) x (SNoR x) g :\/: SNo_recipauxset (p 1) x (SNoL_pos x) g,p 1 :\/: SNo_recipauxset (p 0) x (SNoL_pos x) g :\/: SNo_recipauxset (p 1) x (SNoR x) g)).
+Axiom SNo_recipaux_0 : forall x , forall g : set -> set , SNo_recipaux x g 0 = ({0},0).
+Axiom SNo_recipaux_S : forall x , forall g : set -> set , forall n , nat_p n -> SNo_recipaux x g (ordsucc n) = (SNo_recipaux x g n 0 :\/: SNo_recipauxset (SNo_recipaux x g n 0) x (SNoR x) g :\/: SNo_recipauxset (SNo_recipaux x g n 1) x (SNoL_pos x) g,SNo_recipaux x g n 1 :\/: SNo_recipauxset (SNo_recipaux x g n 0) x (SNoL_pos x) g :\/: SNo_recipauxset (SNo_recipaux x g n 1) x (SNoR x) g).
+Axiom SNo_recipaux_lem1 : forall x , SNo x -> 0 < x -> forall g : set -> set , (forall x' :e SNoS_ (SNoLev x) , 0 < x' -> SNo (g x') /\ x' * g x' = 1) -> forall k , nat_p k -> (forall y :e SNo_recipaux x g k 0 , SNo y /\ x * y < 1) /\ (forall y :e SNo_recipaux x g k 1 , SNo y /\ 1 < x * y).
+Axiom SNo_recipaux_lem2 : forall x , SNo x -> 0 < x -> forall g : set -> set , (forall x' :e SNoS_ (SNoLev x) , 0 < x' -> SNo (g x') /\ x' * g x' = 1) -> SNoCutP (\/_ k :e omega , SNo_recipaux x g k 0) (\/_ k :e omega , SNo_recipaux x g k 1).
+Axiom SNo_recipaux_ext : forall x , SNo x -> forall g h : set -> set , (forall x' :e SNoS_ (SNoLev x) , g x' = h x') -> forall k , nat_p k -> SNo_recipaux x g k = SNo_recipaux x h k.
+Section recip_SNo_pos.
+Let G : set -> (set -> set) -> set := fun x g => SNoCut (\/_ k :e omega , SNo_recipaux x g k 0) (\/_ k :e omega , SNo_recipaux x g k 1).
+(* Parameter recip_SNo_pos "88ed11f2dead5b0e5f3c28c04f2c1d5ed89566ba1ab8122ea402434686300b1d" "88641a4cbed44079b02973dc08db05881974114238c1bedb4afc7abc752722a4" *)
+Parameter recip_SNo_pos : set -> set.
+Axiom recip_SNo_pos_eq : forall x , SNo x -> recip_SNo_pos x = G x recip_SNo_pos.
+Axiom recip_SNo_pos_prop1 : forall x , SNo x -> 0 < x -> SNo (recip_SNo_pos x) /\ x * recip_SNo_pos x = 1.
+Axiom SNo_recip_SNo_pos : forall x , SNo x -> 0 < x -> SNo (recip_SNo_pos x).
+Axiom recip_SNo_pos_invR : forall x , SNo x -> 0 < x -> x * recip_SNo_pos x = 1.
+Axiom recip_SNo_pos_1 : recip_SNo_pos 1 = 1.
+Axiom recip_SNo_pos_is_pos : forall x , SNo x -> 0 < x -> 0 < recip_SNo_pos x.
+Axiom recip_SNo_pos_invol : forall x , SNo x -> 0 < x -> recip_SNo_pos (recip_SNo_pos x) = x.
+Axiom recip_SNo_pos_eps_ : forall n , nat_p n -> recip_SNo_pos (eps_ n) = 2 ^ n.
+Axiom recip_SNo_pos_pow_2 : forall n , nat_p n -> recip_SNo_pos (2 ^ n) = eps_ n.
+Axiom recip_SNo_pos_2 : recip_SNo_pos 2 = eps_ 1.
+End recip_SNo_pos.
+(* Parameter recip_SNo "eb3c2afcb0fc017514672f7e4bb05a93fb8aa03fbeac55c207f299b0a6c23b32" "aa96a290f83ded9b33662ccb13b56cc27eb5c09a09b36ee3890691b04cc8386c" *)
+Parameter recip_SNo : set -> set.
+Axiom recip_SNo_poscase : forall x , 0 < x -> recip_SNo x = recip_SNo_pos x.
+Axiom recip_SNo_negcase : forall x , SNo x -> x < 0 -> recip_SNo x = - recip_SNo_pos (- x).
+Axiom recip_SNo_0 : recip_SNo 0 = 0.
+Axiom recip_SNo_1 : recip_SNo 1 = 1.
+Axiom SNo_recip_SNo : forall x , SNo x -> SNo (recip_SNo x).
+Axiom recip_SNo_invR : forall x , SNo x -> x <> 0 -> x * recip_SNo x = 1.
+Axiom recip_SNo_invL : forall x , SNo x -> x <> 0 -> recip_SNo x * x = 1.
+Axiom recip_SNo_eps_ : forall n , nat_p n -> recip_SNo (eps_ n) = 2 ^ n.
+Axiom recip_SNo_pow_2 : forall n , nat_p n -> recip_SNo (2 ^ n) = eps_ n.
+Axiom recip_SNo_2 : recip_SNo 2 = eps_ 1.
+Axiom recip_SNo_invol : forall x , SNo x -> recip_SNo (recip_SNo x) = x.
+Axiom recip_SNo_of_pos_is_pos : forall x , SNo x -> 0 < x -> 0 < recip_SNo x.
+Axiom recip_SNo_neg' : forall x , SNo x -> x < 0 -> recip_SNo x < 0.
+(* Parameter div_SNo "27f4b5fe59b60da9c8b15247476d431fa3e527c47c22bad7c6d8cb3c2668e2e0" "a77cc83b548d1c105523434377d695400e899aad3044b9efb16632cbba12c5d6" *)
+Definition div_SNo : set -> set -> set := fun x y => x * recip_SNo y.
+Infix :/: 353 := div_SNo.
+Axiom SNo_div_SNo : forall x y , SNo x -> SNo y -> SNo (x :/: y).
+Axiom div_SNo_0_num : forall x , SNo x -> 0 :/: x = 0.
+Axiom div_SNo_0_denum : forall x , SNo x -> x :/: 0 = 0.
+Axiom mul_div_SNo_invL : forall x y , SNo x -> SNo y -> y <> 0 -> (x :/: y) * y = x.
+Axiom mul_div_SNo_invR : forall x y , SNo x -> SNo y -> y <> 0 -> y * (x :/: y) = x.
+Axiom mul_div_SNo_R : forall x y z , SNo x -> SNo y -> SNo z -> (x :/: y) * z = (x * z) :/: y.
+Axiom mul_div_SNo_L : forall x y z , SNo x -> SNo y -> SNo z -> z * (x :/: y) = (z * x) :/: y.
+Axiom div_mul_SNo_invL : forall x y , SNo x -> SNo y -> y <> 0 -> (x * y) :/: y = x.
+Axiom div_div_SNo : forall x y z , SNo x -> SNo y -> SNo z -> (x :/: y) :/: z = x :/: (y * z).
+Axiom mul_div_SNo_both : forall x y z w , SNo x -> SNo y -> SNo z -> SNo w -> (x :/: y) * (z :/: w) = (x * z) :/: (y * w).
+Axiom recip_SNo_pos_pos : forall x , SNo x -> 0 < x -> 0 < recip_SNo_pos x.
+Axiom recip_SNo_of_neg_is_neg : forall x , SNo x -> x < 0 -> recip_SNo x < 0.
+Axiom div_SNo_pos_pos : forall x y , SNo x -> SNo y -> 0 < x -> 0 < y -> 0 < x :/: y.
+Axiom div_SNo_neg_neg : forall x y , SNo x -> SNo y -> x < 0 -> y < 0 -> 0 < x :/: y.
+Axiom div_SNo_pos_neg : forall x y , SNo x -> SNo y -> 0 < x -> y < 0 -> x :/: y < 0.
+Axiom div_SNo_neg_pos : forall x y , SNo x -> SNo y -> x < 0 -> 0 < y -> x :/: y < 0.
+Axiom div_SNo_pos_LtL : forall x y z , SNo x -> SNo y -> SNo z -> 0 < y -> x < z * y -> x :/: y < z.
+Axiom div_SNo_pos_LtR : forall x y z , SNo x -> SNo y -> SNo z -> 0 < y -> z * y < x -> z < x :/: y.
+Axiom div_SNo_pos_LtL' : forall x y z , SNo x -> SNo y -> SNo z -> 0 < y -> x :/: y < z -> x < z * y.
+Axiom div_SNo_pos_LtR' : forall x y z , SNo x -> SNo y -> SNo z -> 0 < y -> z < x :/: y -> z * y < x.
+Axiom mul_div_SNo_nonzero_eq : forall x y z , SNo x -> SNo y -> SNo z -> y <> 0 -> x = y * z -> x :/: y = z.
+End SurrealDiv.

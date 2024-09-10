@@ -1,12 +1,23 @@
 #!/bin/bash
 
-mkdir bin
-
 # If ocamlc is not in your PATH, put the full path here.
 export OCAMLC=ocamlc
 export OCAMLLEX=ocamllex
 
 $OCAMLLEX src/lexer.mll
+
+ocamlc -ccopt "-O3 -fPIC  -I secp256k1 -DHAVE_CONFIG_H  -pedantic -Wno-long-long -Wno-overlength-strings -Wno-unused-function -fvisibility=hidden" -c src/hashbtcstub.c
+if [ $? -gt 0 ]
+then
+    exit 1
+fi
+mv hashbtcstub.o bin
+$OCAMLC -I bin -o bin/hashbtc.cmo -c src/hashbtc.ml
+if [ $? -gt 0 ]
+then
+    exit 1
+fi
+ocamlmklib -o bin/btc bin/hashbtcstub.o bin/hashbtc.cmo
 
 $OCAMLC -I bin -o bin/ser.cmi -c src/ser.mli
 if [ $? -gt 0 ]
@@ -28,22 +39,22 @@ if [ $? -gt 0 ]
 then
     exit 1
 fi
-$OCAMLC -I bin -o bin/sha256.cmi -c src/sha256.mli
-if [ $? -gt 0 ]
-then
-    exit 1
-fi
-$OCAMLC -I bin -o bin/sha256.cmo -c src/sha256.ml
-if [ $? -gt 0 ]
-then
-    exit 1
-fi
 $OCAMLC -I bin -o bin/hash.cmi -c src/hash.mli
 if [ $? -gt 0 ]
 then
     exit 1
 fi
 $OCAMLC -I bin -o bin/hash.cmo -c src/hash.ml
+if [ $? -gt 0 ]
+then
+    exit 1
+fi
+$OCAMLC -I bin -o bin/hashold.cmi -c src/hashold.mli
+if [ $? -gt 0 ]
+then
+    exit 1
+fi
+$OCAMLC -I bin -o bin/hashold.cmo -c src/hashold.ml
 if [ $? -gt 0 ]
 then
     exit 1
@@ -118,7 +129,7 @@ if [ $? -gt 0 ]
 then
     exit 1
 fi
-$OCAMLC -o bin/megalodon unix.cma bin/ser.cmo bin/hashaux.cmo bin/sha256.cmo bin/hash.cmo bin/mathdata.cmo bin/mathdatapfg.cmo bin/syntax.cmo bin/parser.cmo bin/lexer.cmo bin/megaauto.cmo bin/interpret.cmo bin/megalodon.cmo
+$OCAMLC -custom -o bin/megalodon unix.cma -I bin btc.cma bin/ser.cmo bin/hashaux.cmo bin/hash.cmo bin/hashold.cmo bin/mathdata.cmo bin/mathdatapfg.cmo bin/syntax.cmo bin/parser.cmo bin/lexer.cmo bin/megaauto.cmo bin/interpret.cmo bin/megalodon.cmo
 if [ $? -gt 0 ]
 then
     exit 1

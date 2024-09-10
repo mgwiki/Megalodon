@@ -1,0 +1,163 @@
+Section SurQuaternions.
+Axiom quaternion_tag_fresh : forall z , CSNo z -> forall u :e z , {3} /:e u.
+Definition CSNo_pair : set -> set -> set := pair_tag {3}.
+Axiom CSNo_pair_0 : forall x , CSNo_pair x 0 = x.
+Axiom CSNo_pair_prop_1 : forall x1 y1 x2 y2 , CSNo x1 -> CSNo x2 -> CSNo_pair x1 y1 = CSNo_pair x2 y2 -> x1 = x2.
+Axiom CSNo_pair_prop_2 : forall x1 y1 x2 y2 , CSNo x1 -> CSNo y1 -> CSNo x2 -> CSNo y2 -> CSNo_pair x1 y1 = CSNo_pair x2 y2 -> y1 = y2.
+Definition HSNo : set -> prop := CD_carr {3} CSNo.
+Axiom HSNo_I : forall x y , CSNo x -> CSNo y -> HSNo (CSNo_pair x y).
+Axiom HSNo_E : forall z , HSNo z -> forall p : set -> prop , (forall x y , CSNo x -> CSNo y -> z = CSNo_pair x y -> p (CSNo_pair x y)) -> p z.
+Axiom CSNo_HSNo : forall x , CSNo x -> HSNo x.
+Axiom HSNo_0 : HSNo 0.
+Axiom HSNo_1 : HSNo 1.
+Let ctag : set -> set := fun alpha => SetAdjoin alpha {3}.
+Postfix '' 100 := ctag.
+Axiom HSNo_ExtendedSNoElt_4 : forall z , HSNo z -> ExtendedSNoElt_ 4 z.
+Prefix - 358 := minus_CSNo.
+Infix + 360 right  := add_CSNo.
+Infix * 355 right  := mul_CSNo.
+Infix :/: 353 := div_CSNo.
+Postfix ' 100 := conj_CSNo.
+Let i := Complex_i.
+Definition Quaternion_j : set := CSNo_pair 0 1.
+Definition Quaternion_k : set := CSNo_pair 0 i.
+Let j := Quaternion_j.
+Let k := Quaternion_k.
+Definition HSNo_proj0 : set -> set := CD_proj0 {3} CSNo.
+Definition HSNo_proj1 : set -> set := CD_proj1 {3} CSNo.
+Let p0 : set -> set := HSNo_proj0.
+Let p1 : set -> set := HSNo_proj1.
+Let pa : set -> set -> set := CSNo_pair.
+Axiom HSNo_proj0_1 : forall z , HSNo z -> CSNo (p0 z) /\ exists y , CSNo y /\ z = pa (p0 z) y.
+Axiom HSNo_proj0_2 : forall x y , CSNo x -> CSNo y -> p0 (pa x y) = x.
+Axiom HSNo_proj1_1 : forall z , HSNo z -> CSNo (p1 z) /\ z = pa (p0 z) (p1 z).
+Axiom HSNo_proj1_2 : forall x y , CSNo x -> CSNo y -> p1 (pa x y) = y.
+Axiom HSNo_proj0R : forall z , HSNo z -> CSNo (p0 z).
+Axiom HSNo_proj1R : forall z , HSNo z -> CSNo (p1 z).
+Axiom HSNo_proj0p1 : forall z , HSNo z -> z = pa (p0 z) (p1 z).
+Axiom HSNo_proj0proj1_split : forall z w , HSNo z -> HSNo w -> p0 z = p0 w -> p1 z = p1 w -> z = w.
+Definition HSNoLev : set -> set := fun z => CSNoLev (p0 z) :\/: CSNoLev (p1 z).
+Axiom HSNoLev_ordinal : forall z , HSNo z -> ordinal (HSNoLev z).
+Definition minus_HSNo : set -> set := CD_minus {3} CSNo minus_CSNo.
+Definition conj_HSNo : set -> set := CD_conj {3} CSNo minus_CSNo conj_CSNo.
+Definition add_HSNo : set -> set -> set := CD_add {3} CSNo add_CSNo.
+Definition mul_HSNo : set -> set -> set := CD_mul {3} CSNo minus_CSNo conj_CSNo add_CSNo mul_CSNo.
+Definition exp_HSNo_nat : set -> set -> set := CD_exp_nat {3} CSNo minus_CSNo conj_CSNo add_CSNo mul_CSNo.
+Let plus' := add_HSNo.
+Let mult' := mul_HSNo.
+Prefix :-: 358 := minus_HSNo.
+Postfix '' 100 := conj_HSNo.
+Infix :+: 360 right  := add_HSNo.
+Infix :*: 355 right  := mul_HSNo.
+Infix :^: 355 right  := exp_HSNo_nat.
+Axiom HSNo_Complex_i : HSNo i.
+Axiom HSNo_Quaternion_j : HSNo j.
+Axiom HSNo_Quaternion_k : HSNo k.
+Axiom HSNo_minus_HSNo : forall z , HSNo z -> HSNo (minus_HSNo z).
+Axiom minus_HSNo_proj0 : forall z , HSNo z -> p0 (:-: z) = - p0 z.
+Axiom minus_HSNo_proj1 : forall z , HSNo z -> p1 (:-: z) = - p1 z.
+Axiom HSNo_conj_HSNo : forall z , HSNo z -> HSNo (conj_HSNo z).
+Axiom conj_HSNo_proj0 : forall z , HSNo z -> p0 (z '') = (p0 z) '.
+Axiom conj_HSNo_proj1 : forall z , HSNo z -> p1 (z '') = - p1 z.
+Axiom HSNo_add_HSNo : forall z w , HSNo z -> HSNo w -> HSNo (add_HSNo z w).
+Axiom add_HSNo_proj0 : forall z w , HSNo z -> HSNo w -> p0 (plus' z w) = p0 z + p0 w.
+Axiom add_HSNo_proj1 : forall z w , HSNo z -> HSNo w -> p1 (plus' z w) = p1 z + p1 w.
+Axiom HSNo_mul_HSNo : forall z w , HSNo z -> HSNo w -> HSNo (z :*: w).
+Axiom mul_HSNo_proj0 : forall z w , HSNo z -> HSNo w -> p0 (mult' z w) = p0 z * p0 w + - (p1 w ' * p1 z).
+Axiom mul_HSNo_proj1 : forall z w , HSNo z -> HSNo w -> p1 (mult' z w) = p1 w * p0 z + p1 z * p0 w '.
+Axiom CSNo_HSNo_proj0 : forall x , CSNo x -> p0 x = x.
+Axiom CSNo_HSNo_proj1 : forall x , CSNo x -> p1 x = 0.
+Axiom HSNo_p0_0 : p0 0 = 0.
+Axiom HSNo_p1_0 : p1 0 = 0.
+Axiom HSNo_p0_1 : p0 1 = 1.
+Axiom HSNo_p1_1 : p1 1 = 0.
+Axiom HSNo_p0_i : p0 i = i.
+Axiom HSNo_p1_i : p1 i = 0.
+Axiom HSNo_p0_j : p0 j = 0.
+Axiom HSNo_p1_j : p1 j = 1.
+Axiom HSNo_p0_k : p0 k = 0.
+Axiom HSNo_p1_k : p1 k = i.
+Axiom minus_HSNo_minus_CSNo : forall x , CSNo x -> :-: x = - x.
+Axiom minus_HSNo_0 : :-: 0 = 0.
+Axiom conj_HSNo_conj_CSNo : forall x , CSNo x -> x '' = x '.
+Axiom conj_HSNo_id_SNo : forall x , SNo x -> x '' = x.
+Axiom conj_HSNo_0 : 0 '' = 0.
+Axiom conj_HSNo_1 : 1 '' = 1.
+Axiom add_HSNo_add_CSNo : forall x y , CSNo x -> CSNo y -> x :+: y = x + y.
+Axiom mul_HSNo_mul_CSNo : forall x y , CSNo x -> CSNo y -> x :*: y = x * y.
+Axiom minus_HSNo_invol : forall z , HSNo z -> :-: :-: z = z.
+Axiom conj_HSNo_invol : forall z , HSNo z -> z '' '' = z.
+Axiom conj_minus_HSNo : forall z , HSNo z -> (:-: z) '' = :-: (z '').
+Axiom minus_add_HSNo : forall z w , HSNo z -> HSNo w -> :-: (z :+: w) = :-: z :+: :-: w.
+Axiom conj_add_HSNo : forall z w , HSNo z -> HSNo w -> (z :+: w) '' = z '' :+: w ''.
+Axiom add_HSNo_com : forall z w , HSNo z -> HSNo w -> z :+: w = w :+: z.
+Axiom add_HSNo_assoc : forall z w v , HSNo z -> HSNo w -> HSNo v -> (z :+: w) :+: v = z :+: (w :+: v).
+Axiom add_HSNo_0L : forall z , HSNo z -> add_HSNo 0 z = z.
+Axiom add_HSNo_0R : forall z , HSNo z -> add_HSNo z 0 = z.
+Axiom add_HSNo_minus_HSNo_linv : forall z , HSNo z -> add_HSNo (minus_HSNo z) z = 0.
+Axiom add_HSNo_minus_HSNo_rinv : forall z , HSNo z -> add_HSNo z (minus_HSNo z) = 0.
+Axiom mul_HSNo_0R : forall z , HSNo z -> z :*: 0 = 0.
+Axiom mul_HSNo_0L : forall z , HSNo z -> 0 :*: z = 0.
+Axiom mul_HSNo_1R : forall z , HSNo z -> z :*: 1 = z.
+Axiom mul_HSNo_1L : forall z , HSNo z -> 1 :*: z = z.
+Axiom conj_mul_HSNo : forall z w , HSNo z -> HSNo w -> (z :*: w) '' = w '' :*: z ''.
+Axiom mul_HSNo_distrL : forall z w u , HSNo z -> HSNo w -> HSNo u -> z :*: (w :+: u) = z :*: w :+: z :*: u.
+Axiom mul_HSNo_distrR : forall z w u , HSNo z -> HSNo w -> HSNo u -> (z :+: w) :*: u = z :*: u :+: w :*: u.
+Axiom minus_mul_HSNo_distrR : forall z w , HSNo z -> HSNo w -> z :*: (:-: w) = :-: z :*: w.
+Axiom minus_mul_HSNo_distrL : forall z w , HSNo z -> HSNo w -> (:-: z) :*: w = :-: z :*: w.
+Axiom exp_HSNo_nat_0 : forall z , z :^: 0 = 1.
+Axiom exp_HSNo_nat_S : forall z n , nat_p n -> z :^: (ordsucc n) = z :*: z :^: n.
+Axiom exp_HSNo_nat_1 : forall z , HSNo z -> z :^: 1 = z.
+Axiom exp_HSNo_nat_2 : forall z , HSNo z -> z :^: 2 = z :*: z.
+Axiom HSNo_exp_HSNo_nat : forall z , HSNo z -> forall n , nat_p n -> HSNo (z :^: n).
+Axiom add_CSNo_com_3b_1_2 : forall x y z , CSNo x -> CSNo y -> CSNo z -> (x + y) + z = (x + z) + y.
+Axiom add_CSNo_com_4_inner_mid : forall x y z w , CSNo x -> CSNo y -> CSNo z -> CSNo w -> (x + y) + (z + w) = (x + z) + (y + w).
+Axiom add_CSNo_rotate_4_0312 : forall x y z w , CSNo x -> CSNo y -> CSNo z -> CSNo w -> (x + y) + (z + w) = (x + w) + (y + z).
+Axiom Quaternion_i_sqr : i :*: i = :-: 1.
+Axiom Quaternion_j_sqr : j :*: j = :-: 1.
+Axiom Quaternion_k_sqr : k :*: k = :-: 1.
+Axiom Quaternion_i_j : i :*: j = k.
+Axiom Quaternion_j_k : j :*: k = i.
+Axiom Quaternion_k_i : k :*: i = j.
+Axiom Quaternion_j_i : j :*: i = :-: k.
+Axiom Quaternion_k_j : k :*: j = :-: i.
+Axiom Quaternion_i_k : i :*: k = :-: j.
+Axiom add_CSNo_rotate_3_1 : forall x y z , CSNo x -> CSNo y -> CSNo z -> x + y + z = z + x + y.
+Axiom mul_CSNo_rotate_3_1 : forall x y z , CSNo x -> CSNo y -> CSNo z -> x * y * z = z * x * y.
+Axiom mul_HSNo_assoc : forall z w v , HSNo z -> HSNo w -> HSNo v -> z :*: (w :*: v) = (z :*: w) :*: v.
+Axiom conj_HSNo_i : i '' = :-: i.
+Axiom conj_HSNo_j : j '' = :-: j.
+Axiom conj_HSNo_k : k '' = :-: k.
+End SurQuaternions.
+Section Quaternions.
+Prefix - 358 := minus_HSNo.
+Infix + 360 right  := add_HSNo.
+Infix * 355 right  := mul_HSNo.
+Let i := Complex_i.
+Let j := Quaternion_j.
+Let k := Quaternion_k.
+Let p0 : set -> set := HSNo_proj0.
+Let p1 : set -> set := HSNo_proj1.
+Let pa : set -> set -> set := CSNo_pair.
+Definition quaternion : set := {pa (u 0) (u 1)|u :e complex :*: complex}.
+Axiom quaternion_I : forall x y :e complex , pa x y :e quaternion.
+Axiom quaternion_E : forall z :e quaternion , forall p : prop , (forall x y :e complex , z = pa x y -> p) -> p.
+Axiom quaternion_HSNo : forall z :e quaternion , HSNo z.
+Axiom complex_quaternion : complex c= quaternion.
+Axiom quaternion_0 : 0 :e quaternion.
+Axiom quaternion_1 : 1 :e quaternion.
+Axiom quaternion_i : i :e quaternion.
+Axiom quaternion_j : j :e quaternion.
+Axiom quaternion_k : k :e quaternion.
+Axiom quaternion_p0_eq : forall x y :e complex , p0 (pa x y) = x.
+Axiom quaternion_p1_eq : forall x y :e complex , p1 (pa x y) = y.
+Axiom quaternion_p0_complex : forall z :e quaternion , p0 z :e complex.
+Axiom quaternion_p1_complex : forall z :e quaternion , p1 z :e complex.
+Axiom quaternion_proj0proj1_split : forall z w :e quaternion , p0 z = p0 w -> p1 z = p1 w -> z = w.
+Axiom quaternion_minus_HSNo : forall z :e quaternion , - z :e quaternion.
+Axiom quaternion_conj_HSNo : forall z :e quaternion , conj_HSNo z :e quaternion.
+Axiom quaternion_add_HSNo : forall z w :e quaternion , z + w :e quaternion.
+Axiom quaternion_mul_HSNo : forall z w :e quaternion , z * w :e quaternion.
+Axiom complex_p0_eq : forall x :e complex , p0 x = x.
+Axiom complex_p1_eq : forall x :e complex , p1 x = 0.
+End Quaternions.

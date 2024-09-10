@@ -6,7 +6,6 @@
    file COPYING or http://www.opensource.org/licenses/mit-license.php. *)
 
 open Ser
-open Sha256
 open Hash
 
 type stp =
@@ -45,7 +44,7 @@ let tp_to_str m =
   seosbf (seo_tp seosb m (c,None));
   Buffer.contents c
 
-let hashtp m = hashtag (sha256str (tp_to_str m)) 64l
+let hashtp m = hashtag (Hash.sha256 (tp_to_str m)) 64l
 
 let rec sei_tp i c =
   let (b,c) = i 1 c in
@@ -74,7 +73,7 @@ let hashtpl al =
   if al = [] then
     None
   else
-    Some(hashtag (sha256str (tpl_to_str al)) 65l)
+    Some(hashtag (Hash.sha256 (tpl_to_str al)) 65l)
 
 (** ** tm serialization ***)
 let rec seo_tm o m c =
@@ -131,7 +130,7 @@ let tm_to_str m =
   seosbf (seo_tm seosb m (c,None));
   Buffer.contents c
 
-let hashtm m = hashtag (sha256str (tm_to_str m)) 66l
+let hashtm m = hashtag (Hash.sha256 (tm_to_str m)) 66l
 
 let rec sei_tm i c =
   let (x,c) = i 3 c in

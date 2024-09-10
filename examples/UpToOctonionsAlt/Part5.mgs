@@ -1,0 +1,97 @@
+Section SurrealAdd.
+Prefix - 358 := minus_SNo.
+(* Parameter add_SNo "29b9b279a7a5b776b777d842e678a4acaf3b85b17a0223605e4cc68025e9b2a7" "127d043261bd13d57aaeb99e7d2c02cae2bd0698c0d689b03e69f1ac89b3c2c6" *)
+Parameter add_SNo : set -> set -> set.
+Infix + 360 right  := add_SNo.
+Axiom add_SNo_eq : forall x , SNo x -> forall y , SNo y -> x + y = SNoCut ({w + y|w :e SNoL x} :\/: {x + w|w :e SNoL y}) ({z + y|z :e SNoR x} :\/: {x + z|z :e SNoR y}).
+Axiom add_SNo_prop1 : forall x y , SNo x -> SNo y -> SNo (x + y) /\ (forall u :e SNoL x , u + y < x + y) /\ (forall u :e SNoR x , x + y < u + y) /\ (forall u :e SNoL y , x + u < x + y) /\ (forall u :e SNoR y , x + y < x + u) /\ SNoCutP ({w + y|w :e SNoL x} :\/: {x + w|w :e SNoL y}) ({z + y|z :e SNoR x} :\/: {x + z|z :e SNoR y}).
+Axiom SNo_add_SNo : forall x y , SNo x -> SNo y -> SNo (x + y).
+Axiom SNo_add_SNo_3 : forall x y z , SNo x -> SNo y -> SNo z -> SNo (x + y + z).
+Axiom SNo_add_SNo_3c : forall x y z , SNo x -> SNo y -> SNo z -> SNo (x + y + - z).
+Axiom SNo_add_SNo_4 : forall x y z w , SNo x -> SNo y -> SNo z -> SNo w -> SNo (x + y + z + w).
+Axiom add_SNo_Lt1 : forall x y z , SNo x -> SNo y -> SNo z -> x < z -> x + y < z + y.
+Axiom add_SNo_Le1 : forall x y z , SNo x -> SNo y -> SNo z -> x <= z -> x + y <= z + y.
+Axiom add_SNo_Lt2 : forall x y z , SNo x -> SNo y -> SNo z -> y < z -> x + y < x + z.
+Axiom add_SNo_Le2 : forall x y z , SNo x -> SNo y -> SNo z -> y <= z -> x + y <= x + z.
+Axiom add_SNo_Lt3a : forall x y z w , SNo x -> SNo y -> SNo z -> SNo w -> x < z -> y <= w -> x + y < z + w.
+Axiom add_SNo_Lt3b : forall x y z w , SNo x -> SNo y -> SNo z -> SNo w -> x <= z -> y < w -> x + y < z + w.
+Axiom add_SNo_Lt3 : forall x y z w , SNo x -> SNo y -> SNo z -> SNo w -> x < z -> y < w -> x + y < z + w.
+Axiom add_SNo_Le3 : forall x y z w , SNo x -> SNo y -> SNo z -> SNo w -> x <= z -> y <= w -> x + y <= z + w.
+Axiom add_SNo_SNoCutP : forall x y , SNo x -> SNo y -> SNoCutP ({w + y|w :e SNoL x} :\/: {x + w|w :e SNoL y}) ({z + y|z :e SNoR x} :\/: {x + z|z :e SNoR y}).
+Axiom add_SNo_com : forall x y , SNo x -> SNo y -> x + y = y + x.
+Axiom add_SNo_0L : forall x , SNo x -> 0 + x = x.
+Axiom add_SNo_0R : forall x , SNo x -> x + 0 = x.
+Axiom add_SNo_minus_SNo_linv : forall x , SNo x -> - x + x = 0.
+Axiom add_SNo_minus_SNo_rinv : forall x , SNo x -> x + - x = 0.
+Axiom add_SNo_ordinal_SNoCutP : forall alpha , ordinal alpha -> forall beta , ordinal beta -> SNoCutP ({x + beta|x :e SNoS_ alpha} :\/: {alpha + x|x :e SNoS_ beta}) Empty.
+Axiom add_SNo_ordinal_eq : forall alpha , ordinal alpha -> forall beta , ordinal beta -> alpha + beta = SNoCut ({x + beta|x :e SNoS_ alpha} :\/: {alpha + x|x :e SNoS_ beta}) Empty.
+Axiom add_SNo_ordinal_ordinal : forall alpha , ordinal alpha -> forall beta , ordinal beta -> ordinal (alpha + beta).
+Axiom add_SNo_ordinal_SL : forall alpha , ordinal alpha -> forall beta , ordinal beta -> ordsucc alpha + beta = ordsucc (alpha + beta).
+Axiom add_SNo_ordinal_SR : forall alpha , ordinal alpha -> forall beta , ordinal beta -> alpha + ordsucc beta = ordsucc (alpha + beta).
+Axiom add_SNo_ordinal_InL : forall alpha , ordinal alpha -> forall beta , ordinal beta -> forall gamma :e alpha , gamma + beta :e alpha + beta.
+Axiom add_SNo_ordinal_InR : forall alpha , ordinal alpha -> forall beta , ordinal beta -> forall gamma :e beta , alpha + gamma :e alpha + beta.
+Axiom add_nat_add_SNo : forall n m :e omega , add_nat n m = n + m.
+Axiom add_SNo_In_omega : forall n m :e omega , n + m :e omega.
+Axiom add_SNo_1_1_2 : 1 + 1 = 2.
+Axiom add_SNo_SNoL_interpolate : forall x y , SNo x -> SNo y -> forall u :e SNoL (x + y) , (exists v :e SNoL x , u <= v + y) \/ (exists v :e SNoL y , u <= x + v).
+Axiom add_SNo_SNoR_interpolate : forall x y , SNo x -> SNo y -> forall u :e SNoR (x + y) , (exists v :e SNoR x , v + y <= u) \/ (exists v :e SNoR y , x + v <= u).
+Axiom add_SNo_assoc : forall x y z , SNo x -> SNo y -> SNo z -> x + (y + z) = (x + y) + z.
+Axiom add_SNo_cancel_L : forall x y z , SNo x -> SNo y -> SNo z -> x + y = x + z -> y = z.
+Axiom minus_SNo_0 : - 0 = 0.
+Axiom minus_add_SNo_distr : forall x y , SNo x -> SNo y -> - (x + y) = (- x) + (- y).
+Axiom minus_add_SNo_distr_3 : forall x y z , SNo x -> SNo y -> SNo z -> - (x + y + z) = - x + - y + - z.
+Axiom add_SNo_Lev_bd : forall x y , SNo x -> SNo y -> SNoLev (x + y) c= SNoLev x + SNoLev y.
+Axiom add_SNo_SNoS_omega : forall x y :e SNoS_ omega , x + y :e SNoS_ omega.
+Axiom add_SNo_minus_R2 : forall x y , SNo x -> SNo y -> (x + y) + - y = x.
+Axiom add_SNo_minus_R2' : forall x y , SNo x -> SNo y -> (x + - y) + y = x.
+Axiom add_SNo_minus_L2 : forall x y , SNo x -> SNo y -> - x + (x + y) = y.
+Axiom add_SNo_minus_L2' : forall x y , SNo x -> SNo y -> x + (- x + y) = y.
+Axiom add_SNo_Lt1_cancel : forall x y z , SNo x -> SNo y -> SNo z -> x + y < z + y -> x < z.
+Axiom add_SNo_Lt2_cancel : forall x y z , SNo x -> SNo y -> SNo z -> x + y < x + z -> y < z.
+Axiom add_SNo_assoc_4 : forall x y z w , SNo x -> SNo y -> SNo z -> SNo w -> x + y + z + w = (x + y + z) + w.
+Axiom add_SNo_com_3_0_1 : forall x y z , SNo x -> SNo y -> SNo z -> x + y + z = y + x + z.
+Axiom add_SNo_com_3b_1_2 : forall x y z , SNo x -> SNo y -> SNo z -> (x + y) + z = (x + z) + y.
+Axiom add_SNo_com_4_inner_mid : forall x y z w , SNo x -> SNo y -> SNo z -> SNo w -> (x + y) + (z + w) = (x + z) + (y + w).
+Axiom add_SNo_rotate_3_1 : forall x y z , SNo x -> SNo y -> SNo z -> x + y + z = z + x + y.
+Axiom add_SNo_rotate_4_1 : forall x y z w , SNo x -> SNo y -> SNo z -> SNo w -> x + y + z + w = w + x + y + z.
+Axiom add_SNo_rotate_5_1 : forall x y z w v , SNo x -> SNo y -> SNo z -> SNo w -> SNo v -> x + y + z + w + v = v + x + y + z + w.
+Axiom add_SNo_rotate_5_2 : forall x y z w v , SNo x -> SNo y -> SNo z -> SNo w -> SNo v -> x + y + z + w + v = w + v + x + y + z.
+Axiom add_SNo_minus_SNo_prop2 : forall x y , SNo x -> SNo y -> x + - x + y = y.
+Axiom add_SNo_minus_SNo_prop3 : forall x y z w , SNo x -> SNo y -> SNo z -> SNo w -> (x + y + z) + (- z + w) = x + y + w.
+Axiom add_SNo_minus_SNo_prop4 : forall x y z w , SNo x -> SNo y -> SNo z -> SNo w -> (x + y + z) + (w + - z) = x + y + w.
+Axiom add_SNo_minus_SNo_prop5 : forall x y z w , SNo x -> SNo y -> SNo z -> SNo w -> (x + y + - z) + (z + w) = x + y + w.
+Axiom add_SNo_minus_Lt1 : forall x y z , SNo x -> SNo y -> SNo z -> x + - y < z -> x < z + y.
+Axiom add_SNo_minus_Lt2 : forall x y z , SNo x -> SNo y -> SNo z -> z < x + - y -> z + y < x.
+Axiom add_SNo_minus_Lt1b : forall x y z , SNo x -> SNo y -> SNo z -> x < z + y -> x + - y < z.
+Axiom add_SNo_minus_Lt2b : forall x y z , SNo x -> SNo y -> SNo z -> z + y < x -> z < x + - y.
+Axiom add_SNo_minus_Lt1b3 : forall x y z w , SNo x -> SNo y -> SNo z -> SNo w -> x + y < w + z -> x + y + - z < w.
+Axiom add_SNo_minus_Lt2b3 : forall x y z w , SNo x -> SNo y -> SNo z -> SNo w -> w + z < x + y -> w < x + y + - z.
+Axiom add_SNo_minus_Lt_lem : forall x y z u v w , SNo x -> SNo y -> SNo z -> SNo u -> SNo v -> SNo w -> x + y + w < u + v + z -> x + y + - z < u + v + - w.
+Axiom add_SNo_minus_Le2 : forall x y z , SNo x -> SNo y -> SNo z -> z <= x + - y -> z + y <= x.
+Axiom add_SNo_minus_Le2b : forall x y z , SNo x -> SNo y -> SNo z -> z + y <= x -> z <= x + - y.
+Axiom add_SNo_Lt_subprop2 : forall x y z w u v , SNo x -> SNo y -> SNo z -> SNo w -> SNo u -> SNo v -> x + u < z + v -> y + v < w + u -> x + y < z + w.
+Axiom add_SNo_Lt_subprop3a : forall x y z w u a , SNo x -> SNo y -> SNo z -> SNo w -> SNo u -> SNo a -> x + z < w + a -> y + a < u -> x + y + z < w + u.
+Axiom add_SNo_Lt_subprop3b : forall x y w u v a , SNo x -> SNo y -> SNo w -> SNo u -> SNo v -> SNo a -> x + a < w + v -> y < a + u -> x + y < w + u + v.
+Axiom add_SNo_Lt_subprop3c : forall x y z w u a b c , SNo x -> SNo y -> SNo z -> SNo w -> SNo u -> SNo a -> SNo b -> SNo c -> x + a < b + c -> y + c < u -> b + z < w + a -> x + y + z < w + u.
+Axiom add_SNo_Lt_subprop3d : forall x y w u v a b c , SNo x -> SNo y -> SNo w -> SNo u -> SNo v -> SNo a -> SNo b -> SNo c -> x + a < b + v -> y < c + u -> b + c < w + a -> x + y < w + u + v.
+Axiom ordinal_ordsucc_SNo_eq : forall alpha , ordinal alpha -> ordsucc alpha = 1 + alpha.
+Axiom add_SNo_3a_2b : forall x y z w u , SNo x -> SNo y -> SNo z -> SNo w -> SNo u -> (x + y + z) + (w + u) = (u + y + z) + (w + x).
+Axiom add_SNo_1_ordsucc : forall n :e omega , n + 1 = ordsucc n.
+Axiom add_SNo_eps_Lt : forall x , SNo x -> forall n :e omega , x < x + eps_ n.
+Axiom add_SNo_eps_Lt' : forall x y , SNo x -> SNo y -> forall n :e omega , x < y -> x < y + eps_ n.
+Axiom SNoLt_minus_pos : forall x y , SNo x -> SNo y -> x < y -> 0 < y + - x.
+Axiom add_SNo_omega_In_cases : forall m , forall n :e omega , forall k , nat_p k -> m :e n + k -> m :e n \/ m + - n :e k.
+Axiom add_SNo_Lt4 : forall x y z w u v , SNo x -> SNo y -> SNo z -> SNo w -> SNo u -> SNo v -> x < w -> y < u -> z < v -> x + y + z < w + u + v.
+Axiom add_SNo_3_3_3_Lt1 : forall x y z w u , SNo x -> SNo y -> SNo z -> SNo w -> SNo u -> x + y < z + w -> x + y + u < z + w + u.
+Axiom add_SNo_3_2_3_Lt1 : forall x y z w u , SNo x -> SNo y -> SNo z -> SNo w -> SNo u -> y + x < z + w -> x + u + y < z + w + u.
+Axiom add_SNoCutP_lem : forall Lx Rx Ly Ry x y , SNoCutP Lx Rx -> SNoCutP Ly Ry -> x = SNoCut Lx Rx -> y = SNoCut Ly Ry -> SNoCutP ({w + y|w :e Lx} :\/: {x + w|w :e Ly}) ({z + y|z :e Rx} :\/: {x + z|z :e Ry}) /\ x + y = SNoCut ({w + y|w :e Lx} :\/: {x + w|w :e Ly}) ({z + y|z :e Rx} :\/: {x + z|z :e Ry}).
+Axiom add_SNoCutP_gen : forall Lx Rx Ly Ry x y , SNoCutP Lx Rx -> SNoCutP Ly Ry -> x = SNoCut Lx Rx -> y = SNoCut Ly Ry -> SNoCutP ({w + y|w :e Lx} :\/: {x + w|w :e Ly}) ({z + y|z :e Rx} :\/: {x + z|z :e Ry}).
+Axiom add_SNoCut_eq : forall Lx Rx Ly Ry x y , SNoCutP Lx Rx -> SNoCutP Ly Ry -> x = SNoCut Lx Rx -> y = SNoCut Ly Ry -> x + y = SNoCut ({w + y|w :e Lx} :\/: {x + w|w :e Ly}) ({z + y|z :e Rx} :\/: {x + z|z :e Ry}).
+Axiom add_SNo_SNoCut_L_interpolate : forall Lx Rx Ly Ry x y , SNoCutP Lx Rx -> SNoCutP Ly Ry -> x = SNoCut Lx Rx -> y = SNoCut Ly Ry -> forall u :e SNoL (x + y) , (exists v :e Lx , u <= v + y) \/ (exists v :e Ly , u <= x + v).
+Axiom add_SNo_SNoCut_R_interpolate : forall Lx Rx Ly Ry x y , SNoCutP Lx Rx -> SNoCutP Ly Ry -> x = SNoCut Lx Rx -> y = SNoCut Ly Ry -> forall u :e SNoR (x + y) , (exists v :e Rx , v + y <= u) \/ (exists v :e Ry , x + v <= u).
+Axiom add_SNo_minus_Lt12b3 : forall x y z w u v , SNo x -> SNo y -> SNo z -> SNo w -> SNo u -> SNo v -> x + y + v < w + u + z -> x + y + - z < w + u + - v.
+Axiom add_SNo_Le1_cancel : forall x y z , SNo x -> SNo y -> SNo z -> x + y <= z + y -> x <= z.
+Axiom add_SNo_minus_Le1b : forall x y z , SNo x -> SNo y -> SNo z -> x <= z + y -> x + - y <= z.
+Axiom add_SNo_minus_Le1b3 : forall x y z w , SNo x -> SNo y -> SNo z -> SNo w -> x + y <= w + z -> x + y + - z <= w.
+Axiom add_SNo_minus_Le12b3 : forall x y z w u v , SNo x -> SNo y -> SNo z -> SNo w -> SNo u -> SNo v -> x + y + v <= w + u + z -> x + y + - z <= w + u + - v.
+End SurrealAdd.

@@ -1,0 +1,27 @@
+Section SurrealMinus.
+(* Parameter minus_SNo "6d39c64862ac40c95c6f5e4ed5f02bb019279bfb0cda8c9bbe0e1b813b1e876c" "268a6c1da15b8fe97d37be85147bc7767b27098cdae193faac127195e8824808" *)
+Parameter minus_SNo : set -> set.
+Prefix - 358 := minus_SNo.
+(* Unicode <= "2264" *)
+Infix <= 490 := SNoLe.
+Axiom minus_SNo_eq : forall x , SNo x -> - x = SNoCut {- z|z :e SNoR x} {- w|w :e SNoL x}.
+Axiom minus_SNo_prop1 : forall x , SNo x -> SNo (- x) /\ (forall u :e SNoL x , - x < - u) /\ (forall u :e SNoR x , - u < - x) /\ SNoCutP {- z|z :e SNoR x} {- w|w :e SNoL x}.
+Axiom SNo_minus_SNo : forall x , SNo x -> SNo (- x).
+Axiom minus_SNo_Lt_contra : forall x y , SNo x -> SNo y -> x < y -> - y < - x.
+Axiom minus_SNo_Le_contra : forall x y , SNo x -> SNo y -> x <= y -> - y <= - x.
+Axiom minus_SNo_SNoCutP : forall x , SNo x -> SNoCutP {- z|z :e SNoR x} {- w|w :e SNoL x}.
+Axiom minus_SNo_SNoCutP_gen : forall L R , SNoCutP L R -> SNoCutP {- z|z :e R} {- w|w :e L}.
+Axiom minus_SNo_Lev_lem1 : forall alpha , ordinal alpha -> forall x :e SNoS_ alpha , SNoLev (- x) c= SNoLev x.
+Axiom minus_SNo_Lev_lem2 : forall x , SNo x -> SNoLev (- x) c= SNoLev x.
+Axiom minus_SNo_invol : forall x , SNo x -> - - x = x.
+Axiom minus_SNo_Lev : forall x , SNo x -> SNoLev (- x) = SNoLev x.
+Axiom minus_SNo_SNo_ : forall alpha , ordinal alpha -> forall x , SNo_ alpha x -> SNo_ alpha (- x).
+Axiom minus_SNo_SNoS_ : forall alpha , ordinal alpha -> forall x , x :e SNoS_ alpha -> - x :e SNoS_ alpha.
+Axiom minus_SNoCut_eq_lem : forall v , SNo v -> forall L R , SNoCutP L R -> v = SNoCut L R -> - v = SNoCut {- z|z :e R} {- w|w :e L}.
+Axiom minus_SNoCut_eq : forall L R , SNoCutP L R -> - SNoCut L R = SNoCut {- z|z :e R} {- w|w :e L}.
+Axiom minus_SNo_Lt_contra1 : forall x y , SNo x -> SNo y -> - x < y -> - y < x.
+Axiom minus_SNo_Lt_contra2 : forall x y , SNo x -> SNo y -> x < - y -> y < - x.
+Axiom mordinal_SNoLev_min_2 : forall alpha , ordinal alpha -> forall z , SNo z -> SNoLev z :e ordsucc alpha -> - alpha <= z.
+Axiom minus_SNo_SNoS_omega : forall x :e SNoS_ omega , - x :e SNoS_ omega.
+Axiom SNoL_minus_SNoR : forall x , SNo x -> SNoL (- x) = {- w|w :e SNoR x}.
+End SurrealMinus.

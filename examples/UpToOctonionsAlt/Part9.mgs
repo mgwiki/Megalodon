@@ -1,0 +1,45 @@
+Section SurrealSqrt.
+Prefix - 358 := minus_SNo.
+Infix + 360 right  := add_SNo.
+Infix * 355 right  := mul_SNo.
+Infix :/: 353 := div_SNo.
+Infix < 490 := SNoLt.
+(* Unicode <= "2264" *)
+Infix <= 490 := SNoLe.
+Infix ^ 342 right  := exp_SNo_nat.
+Definition SNoL_nonneg : set -> set := fun x => {w :e SNoL x|0 <= w}.
+Axiom SNoL_nonneg_0 : SNoL_nonneg 0 = 0.
+Axiom SNoL_nonneg_1 : SNoL_nonneg 1 = 1.
+Definition SNo_sqrtauxset : set -> set -> set -> set := fun Y Z x => \/_ y :e Y , {(x + y * z) :/: (y + z)|z :e Z,0 < y + z}.
+Axiom SNo_sqrtauxset_I : forall Y Z x , forall y :e Y , forall z :e Z , 0 < y + z -> (x + y * z) :/: (y + z) :e SNo_sqrtauxset Y Z x.
+Axiom SNo_sqrtauxset_E : forall Y Z x , forall u :e SNo_sqrtauxset Y Z x , forall p : prop , (forall y :e Y , forall z :e Z , 0 < y + z -> u = (x + y * z) :/: (y + z) -> p) -> p.
+Axiom SNo_sqrtauxset_0 : forall Z x , SNo_sqrtauxset 0 Z x = 0.
+Axiom SNo_sqrtauxset_0' : forall Y x , SNo_sqrtauxset Y 0 x = 0.
+Definition SNo_sqrtaux : set -> (set -> set) -> set -> set := fun x g => nat_primrec ({g w|w :e SNoL_nonneg x},{g z|z :e SNoR x}) (fun k p => (p 0 :\/: SNo_sqrtauxset (p 0) (p 1) x,p 1 :\/: SNo_sqrtauxset (p 0) (p 0) x :\/: SNo_sqrtauxset (p 1) (p 1) x)).
+Axiom SNo_sqrtaux_0 : forall x , forall g : set -> set , SNo_sqrtaux x g 0 = ({g w|w :e SNoL_nonneg x},{g z|z :e SNoR x}).
+Axiom SNo_sqrtaux_S : forall x , forall g : set -> set , forall n , nat_p n -> SNo_sqrtaux x g (ordsucc n) = (SNo_sqrtaux x g n 0 :\/: SNo_sqrtauxset (SNo_sqrtaux x g n 0) (SNo_sqrtaux x g n 1) x,SNo_sqrtaux x g n 1 :\/: SNo_sqrtauxset (SNo_sqrtaux x g n 0) (SNo_sqrtaux x g n 0) x :\/: SNo_sqrtauxset (SNo_sqrtaux x g n 1) (SNo_sqrtaux x g n 1) x).
+Axiom SNo_sqrtaux_mon_lem : forall x , forall g : set -> set , forall m , nat_p m -> forall n , nat_p n -> SNo_sqrtaux x g m 0 c= SNo_sqrtaux x g (add_nat m n) 0 /\ SNo_sqrtaux x g m 1 c= SNo_sqrtaux x g (add_nat m n) 1.
+Axiom SNo_sqrtaux_mon : forall x , forall g : set -> set , forall m , nat_p m -> forall n , nat_p n -> m c= n -> SNo_sqrtaux x g m 0 c= SNo_sqrtaux x g n 0 /\ SNo_sqrtaux x g m 1 c= SNo_sqrtaux x g n 1.
+Axiom SNo_sqrtaux_ext : forall x , SNo x -> forall g h : set -> set , (forall x' :e SNoS_ (SNoLev x) , g x' = h x') -> forall k , nat_p k -> SNo_sqrtaux x g k = SNo_sqrtaux x h k.
+Section sqrt_SNo_nonneg.
+Let G : set -> (set -> set) -> set := fun x g => SNoCut (\/_ k :e omega , SNo_sqrtaux x g k 0) (\/_ k :e omega , SNo_sqrtaux x g k 1).
+(* Parameter sqrt_SNo_nonneg "83d279e5aa419fbbd248d65c78365bc07f35773623616e9f2ff1cab03bb53e87" "71d15253c75b86e7fa4727323f2048ac8eeb6097cdf84c78a32c8477edd521d4" *)
+Definition sqrt_SNo_nonneg : set -> set := SNo_rec_i G.
+Axiom sqrt_SNo_nonneg_eq : forall x , SNo x -> sqrt_SNo_nonneg x = G x sqrt_SNo_nonneg.
+Axiom sqrt_SNo_nonneg_prop1a : forall x , SNo x -> 0 <= x -> (forall w :e SNoS_ (SNoLev x) , 0 <= w -> SNo (sqrt_SNo_nonneg w) /\ 0 <= sqrt_SNo_nonneg w /\ sqrt_SNo_nonneg w * sqrt_SNo_nonneg w = w) -> forall k , nat_p k -> (forall y :e SNo_sqrtaux x sqrt_SNo_nonneg k 0 , SNo y /\ 0 <= y /\ y * y < x) /\ (forall y :e SNo_sqrtaux x sqrt_SNo_nonneg k 1 , SNo y /\ 0 <= y /\ x < y * y).
+Axiom sqrt_SNo_nonneg_prop1b : forall x , SNo x -> 0 <= x -> (forall k , nat_p k -> (forall y :e SNo_sqrtaux x sqrt_SNo_nonneg k 0 , SNo y /\ 0 <= y /\ y * y < x) /\ (forall y :e SNo_sqrtaux x sqrt_SNo_nonneg k 1 , SNo y /\ 0 <= y /\ x < y * y)) -> SNoCutP (\/_ k :e omega , SNo_sqrtaux x sqrt_SNo_nonneg k 0) (\/_ k :e omega , SNo_sqrtaux x sqrt_SNo_nonneg k 1).
+Axiom sqrt_SNo_nonneg_prop1c : forall x , SNo x -> 0 <= x -> SNoCutP (\/_ k :e omega , SNo_sqrtaux x sqrt_SNo_nonneg k 0) (\/_ k :e omega , SNo_sqrtaux x sqrt_SNo_nonneg k 1) -> (forall z :e (\/_ k :e omega , SNo_sqrtaux x sqrt_SNo_nonneg k 1) , forall p : prop , (SNo z -> 0 <= z -> x < z * z -> p) -> p) -> 0 <= G x sqrt_SNo_nonneg.
+Axiom sqrt_SNo_nonneg_prop1d : forall x , SNo x -> 0 <= x -> (forall w :e SNoS_ (SNoLev x) , 0 <= w -> SNo (sqrt_SNo_nonneg w) /\ 0 <= sqrt_SNo_nonneg w /\ sqrt_SNo_nonneg w * sqrt_SNo_nonneg w = w) -> SNoCutP (\/_ k :e omega , SNo_sqrtaux x sqrt_SNo_nonneg k 0) (\/_ k :e omega , SNo_sqrtaux x sqrt_SNo_nonneg k 1) -> 0 <= G x sqrt_SNo_nonneg -> G x sqrt_SNo_nonneg * G x sqrt_SNo_nonneg < x -> False.
+Axiom sqrt_SNo_nonneg_prop1e : forall x , SNo x -> 0 <= x -> (forall w :e SNoS_ (SNoLev x) , 0 <= w -> SNo (sqrt_SNo_nonneg w) /\ 0 <= sqrt_SNo_nonneg w /\ sqrt_SNo_nonneg w * sqrt_SNo_nonneg w = w) -> SNoCutP (\/_ k :e omega , SNo_sqrtaux x sqrt_SNo_nonneg k 0) (\/_ k :e omega , SNo_sqrtaux x sqrt_SNo_nonneg k 1) -> 0 <= G x sqrt_SNo_nonneg -> x < G x sqrt_SNo_nonneg * G x sqrt_SNo_nonneg -> False.
+Axiom sqrt_SNo_nonneg_prop1 : forall x , SNo x -> 0 <= x -> SNo (sqrt_SNo_nonneg x) /\ 0 <= sqrt_SNo_nonneg x /\ sqrt_SNo_nonneg x * sqrt_SNo_nonneg x = x.
+End sqrt_SNo_nonneg.
+Axiom SNo_sqrtaux_0_1_prop : forall x , SNo x -> 0 <= x -> forall k , nat_p k -> (forall y :e SNo_sqrtaux x sqrt_SNo_nonneg k 0 , SNo y /\ 0 <= y /\ y * y < x) /\ (forall y :e SNo_sqrtaux x sqrt_SNo_nonneg k 1 , SNo y /\ 0 <= y /\ x < y * y).
+Axiom SNo_sqrtaux_0_prop : forall x , SNo x -> 0 <= x -> forall k , nat_p k -> forall y :e SNo_sqrtaux x sqrt_SNo_nonneg k 0 , SNo y /\ 0 <= y /\ y * y < x.
+Axiom SNo_sqrtaux_1_prop : forall x , SNo x -> 0 <= x -> forall k , nat_p k -> forall y :e SNo_sqrtaux x sqrt_SNo_nonneg k 1 , SNo y /\ 0 <= y /\ x < y * y.
+Axiom SNo_sqrt_SNo_SNoCutP : forall x , SNo x -> 0 <= x -> SNoCutP (\/_ k :e omega , SNo_sqrtaux x sqrt_SNo_nonneg k 0) (\/_ k :e omega , SNo_sqrtaux x sqrt_SNo_nonneg k 1).
+Axiom SNo_sqrt_SNo_nonneg : forall x , SNo x -> 0 <= x -> SNo (sqrt_SNo_nonneg x).
+Axiom sqrt_SNo_nonneg_nonneg : forall x , SNo x -> 0 <= x -> 0 <= sqrt_SNo_nonneg x.
+Axiom sqrt_SNo_nonneg_sqr : forall x , SNo x -> 0 <= x -> sqrt_SNo_nonneg x * sqrt_SNo_nonneg x = x.
+Axiom sqrt_SNo_nonneg_0 : sqrt_SNo_nonneg 0 = 0.
+Axiom sqrt_SNo_nonneg_1 : sqrt_SNo_nonneg 1 = 1.
+End SurrealSqrt.

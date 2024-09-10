@@ -113,7 +113,9 @@ val sei_signaspec : (int -> 'a -> int * 'a) -> 'a -> signaspec * 'a
 val seo_signa : (int -> int -> 'a -> 'a) -> signa -> 'a -> 'a
 val sei_signa : (int -> 'a -> int * 'a) -> 'a -> signa * 'a
 
+(*
 val hashsigna : signa -> hashval
+*)
 
 val signaspec_signa : signaspec -> signa
 val signaspec_burncost : signaspec -> int64

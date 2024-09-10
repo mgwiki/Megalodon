@@ -1,0 +1,75 @@
+Section Int.
+Prefix - 358 := minus_SNo.
+Infix + 360 right  := add_SNo.
+Infix * 355 right  := mul_SNo.
+(* Parameter int "f7cd39d139f71b389f61d3cf639bf341d01dac1be60ad65b40ee3aa5218e0043" "90ee851305d1ba4b80424ec6e2760ebabb1fd3e399fcb5c6b5c814d898138c16" *)
+Parameter int : set.
+Axiom int_SNo_cases : forall p : set -> prop , (forall n :e omega , p n) -> (forall n :e omega , p (- n)) -> forall x :e int , p x.
+Axiom int_3_cases : forall n :e int , forall p : prop , (forall m :e omega , n = - ordsucc m -> p) -> (n = 0 -> p) -> (forall m :e omega , n = ordsucc m -> p) -> p.
+Axiom int_SNo : forall x :e int , SNo x.
+Axiom Subq_omega_int : omega c= int.
+Axiom int_minus_SNo_omega : forall n :e omega , - n :e int.
+Axiom int_add_SNo_lem : forall n :e omega , forall m , nat_p m -> - n + m :e int.
+Axiom int_add_SNo : forall x y :e int , x + y :e int.
+Axiom int_minus_SNo : forall x :e int , - x :e int.
+Axiom int_mul_SNo : forall x y :e int , x * y :e int.
+End Int.
+Section SurrealAbs.
+Prefix - 358 := minus_SNo.
+Infix + 360 right  := add_SNo.
+Infix * 355 right  := mul_SNo.
+(* Parameter abs_SNo "9f9389c36823b2e0124a7fe367eb786d080772b5171a5d059b10c47361cef0ef" "34f6dccfd6f62ca020248cdfbd473fcb15d8d9c5c55d1ec7c5ab6284006ff40f" *)
+Parameter abs_SNo : set -> set.
+Axiom nonneg_abs_SNo : forall x , 0 <= x -> abs_SNo x = x.
+Axiom not_nonneg_abs_SNo : forall x , ~ (0 <= x) -> abs_SNo x = - x.
+Axiom abs_SNo_0 : abs_SNo 0 = 0.
+Axiom pos_abs_SNo : forall x , 0 < x -> abs_SNo x = x.
+Axiom neg_abs_SNo : forall x , SNo x -> x < 0 -> abs_SNo x = - x.
+Axiom SNo_abs_SNo : forall x , SNo x -> SNo (abs_SNo x).
+Axiom abs_SNo_Lev : forall x , SNo x -> SNoLev (abs_SNo x) = SNoLev x.
+Axiom abs_SNo_minus : forall x , SNo x -> abs_SNo (- x) = abs_SNo x.
+Axiom abs_SNo_dist_swap : forall x y , SNo x -> SNo y -> abs_SNo (x + - y) = abs_SNo (y + - x).
+Axiom SNo_triangle : forall x y , SNo x -> SNo y -> abs_SNo (x + y) <= abs_SNo x + abs_SNo y.
+Axiom SNo_triangle2 : forall x y z , SNo x -> SNo y -> SNo z -> abs_SNo (x + - z) <= abs_SNo (x + - y) + abs_SNo (y + - z).
+End SurrealAbs.
+Section SNoMaxMin.
+Prefix - 358 := minus_SNo.
+Infix + 360 right  := add_SNo.
+Infix * 355 right  := mul_SNo.
+Infix ^ 342 right  := exp_SNo_nat.
+Infix < 490 := SNoLt.
+(* Unicode <= "2264" *)
+Infix <= 490 := SNoLe.
+Definition SNo_max_of : set -> set -> prop := fun X x => x :e X /\ SNo x /\ forall y :e X , SNo y -> y <= x.
+Definition SNo_min_of : set -> set -> prop := fun X x => x :e X /\ SNo x /\ forall y :e X , SNo y -> x <= y.
+Axiom minus_SNo_max_min : forall X y , (forall x :e X , SNo x) -> SNo_max_of X y -> SNo_min_of {- x|x :e X} (- y).
+Axiom minus_SNo_max_min' : forall X y , (forall x :e X , SNo x) -> SNo_max_of {- x|x :e X} y -> SNo_min_of X (- y).
+Axiom minus_SNo_min_max : forall X y , (forall x :e X , SNo x) -> SNo_min_of X y -> SNo_max_of {- x|x :e X} (- y).
+Axiom double_SNo_max_1 : forall x y , SNo x -> SNo_max_of (SNoL x) y -> forall z , SNo z -> x < z -> y + z < x + x -> exists w :e SNoR z , y + w = x + x.
+Axiom double_SNo_min_1 : forall x y , SNo x -> SNo_min_of (SNoR x) y -> forall z , SNo z -> z < x -> x + x < y + z -> exists w :e SNoL z , y + w = x + x.
+Axiom finite_max_exists : forall X , (forall x :e X , SNo x) -> finite X -> X <> 0 -> exists x , SNo_max_of X x.
+Axiom finite_min_exists : forall X , (forall x :e X , SNo x) -> finite X -> X <> 0 -> exists x , SNo_min_of X x.
+Axiom SNoS_omega_SNoL_max_exists : forall x :e SNoS_ omega , SNoL x = 0 \/ exists y , SNo_max_of (SNoL x) y.
+Axiom SNoS_omega_SNoR_min_exists : forall x :e SNoS_ omega , SNoR x = 0 \/ exists y , SNo_min_of (SNoR x) y.
+End SNoMaxMin.
+Section DiadicRationals.
+Prefix - 358 := minus_SNo.
+Infix + 360 right  := add_SNo.
+Infix * 355 right  := mul_SNo.
+Infix < 490 := SNoLt.
+(* Unicode <= "2264" *)
+Infix <= 490 := SNoLe.
+Infix ^ 342 right  := exp_SNo_nat.
+Axiom nonneg_diadic_rational_p_SNoS_omega : forall k :e omega , forall n , nat_p n -> eps_ k * n :e SNoS_ omega.
+Definition diadic_rational_p : set -> prop := fun x => exists k :e omega , exists m :e int , x = eps_ k * m.
+Axiom diadic_rational_p_SNoS_omega : forall x , diadic_rational_p x -> x :e SNoS_ omega.
+Axiom int_diadic_rational_p : forall m :e int , diadic_rational_p m.
+Axiom omega_diadic_rational_p : forall m :e omega , diadic_rational_p m.
+Axiom eps_diadic_rational_p : forall k :e omega , diadic_rational_p (eps_ k).
+Axiom minus_SNo_diadic_rational_p : forall x , diadic_rational_p x -> diadic_rational_p (- x).
+Axiom mul_SNo_diadic_rational_p : forall x y , diadic_rational_p x -> diadic_rational_p y -> diadic_rational_p (x * y).
+Axiom add_SNo_diadic_rational_p : forall x y , diadic_rational_p x -> diadic_rational_p y -> diadic_rational_p (x + y).
+Axiom SNoS_omega_diadic_rational_p_lem : forall n , nat_p n -> forall x , SNo x -> SNoLev x = n -> diadic_rational_p x.
+Axiom SNoS_omega_diadic_rational_p : forall x :e SNoS_ omega , diadic_rational_p x.
+Axiom mul_SNo_SNoS_omega : forall x y :e SNoS_ omega , x * y :e SNoS_ omega.
+End DiadicRationals.

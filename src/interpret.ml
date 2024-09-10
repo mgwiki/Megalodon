@@ -295,7 +295,17 @@ let rec extract_tm_r a poly sgtmof sgtm cxtp cxtm =
 	    if (!verbosity > 19) then (Printf.printf "looked up in sg %s\nand found %s\n" x (tm_to_str m); flush stdout);
 	    (m,extr_tpoftm sgtmof (cxtmdb cxtm) m)
 	  with Not_found ->
-	    raise (Failure("Unknown term " ^ x ^ " -- it might be a proof in the position where a term is expected"))
+            if !pfgtheory = SetMM then
+              begin (** two special symbols wi and wal in SetMM that becomes Imp(-,-) and All(Set,-) in Megalodon **)
+                if x = "wi" then
+                  (Lam(Prop,Lam(Prop,Imp(DB(1),DB(0)))),Ar(Prop,Ar(Prop,Prop)))
+                else if x = "wal" then
+                  (Lam(Ar(Set,Prop),All(Set,DB(0))),Ar(Ar(Set,Prop),Prop))
+                else
+	          raise (Failure("Unknown term " ^ x ^ " -- it might be a proof in the position where a term is expected"))
+              end
+            else
+	      raise (Failure("Unknown term " ^ x ^ " -- it might be a proof in the position where a term is expected"))
       end
   | Implop(Na(x),a1) when List.mem_assoc (x,1) poly ->
       let xa = List.assoc (x,1) poly in
@@ -342,6 +352,17 @@ let rec extract_tm_r a poly sgtmof sgtm cxtp cxtm =
       let a6tp = extract_tp a6 cxtp in
       let xd = List.assoc x sgtm cxtp cxtm in
       (TpAp(TpAp(TpAp(TpAp(TpAp(TpAp(xd,a1tp),a2tp),a3tp),a4tp),a5tp),a6tp),tpsubst xa [a1tp;a2tp;a3tp;a4tp;a5tp;a6tp])
+  | Implop(Na(x),a1) when !pfgtheory = SetMM && x = "wal" -> (** special treatment of wal for SetMM **)
+     let n1 = check_tm_r a1 (Ar(Set,Prop)) poly sgtmof sgtm cxtp cxtm in
+     begin
+       match n1 with
+       | Lam(Set,n1b) -> (All(Set,n1b),Prop)
+       | _ -> (Ap(Lam(Ar(Set,Prop),All(Set,DB(0))),n1),Prop)
+     end
+  | Implop(Implop(Na(x),a1),a2) when !pfgtheory = SetMM && x = "wi" -> (** special treatment of wal for SetMM **)
+      let n1 = check_tm_r a1 Prop poly sgtmof sgtm cxtp cxtm in
+      let n2 = check_tm_r a2 Prop poly sgtmof sgtm cxtp cxtm in
+      (Imp(n1,n2),Prop)
   | Implop(a1,a2) ->
       let (n1,n1tp) = extract_tm_r a1 poly sgtmof sgtm cxtp cxtm in
       begin

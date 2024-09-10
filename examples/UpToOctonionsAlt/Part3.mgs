@@ -1,0 +1,203 @@
+Section TaggedSets.
+Let tag : set -> set := fun alpha => SetAdjoin alpha {1}.
+Postfix ' 100 := tag.
+Axiom not_TransSet_Sing1 : ~ TransSet {1}.
+Axiom not_ordinal_Sing1 : ~ ordinal {1}.
+Axiom tagged_not_ordinal : forall y , ~ ordinal (y ').
+Axiom tagged_notin_ordinal : forall alpha y , ordinal alpha -> (y ') /:e alpha.
+Axiom tagged_eqE_Subq : forall alpha beta , ordinal alpha -> alpha ' = beta ' -> alpha c= beta.
+Axiom tagged_eqE_eq : forall alpha beta , ordinal alpha -> ordinal beta -> alpha ' = beta ' -> alpha = beta.
+Axiom tagged_ReplE : forall alpha beta , ordinal alpha -> ordinal beta -> beta ' :e {gamma '|gamma :e alpha} -> beta :e alpha.
+Axiom ordinal_notin_tagged_Repl : forall alpha Y , ordinal alpha -> alpha /:e {y '|y :e Y}.
+Definition SNoElts_ : set -> set := fun alpha => alpha :\/: {beta '|beta :e alpha}.
+Axiom SNoElts_mon : forall alpha beta , alpha c= beta -> SNoElts_ alpha c= SNoElts_ beta.
+Definition SNo_ : set -> set -> prop := fun alpha x => x c= SNoElts_ alpha /\ forall beta :e alpha , exactly1of2 (beta ' :e x) (beta :e x).
+Definition PSNo : set -> (set -> prop) -> set := fun alpha p => {beta :e alpha|p beta} :\/: {beta '|beta :e alpha,~ p beta}.
+Axiom PNoEq_PSNo : forall alpha , ordinal alpha -> forall p : set -> prop , PNoEq_ alpha (fun beta => beta :e PSNo alpha p) p.
+Axiom SNo_PSNo : forall alpha , ordinal alpha -> forall p : set -> prop , SNo_ alpha (PSNo alpha p).
+Axiom SNo_PSNo_eta_ : forall alpha x , ordinal alpha -> SNo_ alpha x -> x = PSNo alpha (fun beta => beta :e x).
+(* Parameter SNo "87d7604c7ea9a2ae0537066afb358a94e6ac0cd80ba277e6b064422035a620cf" "11faa7a742daf8e4f9aaf08e90b175467e22d0e6ad3ed089af1be90cfc17314b" *)
+Parameter SNo : set -> prop.
+Axiom SNo_SNo : forall alpha , ordinal alpha -> forall z , SNo_ alpha z -> SNo z.
+(* Parameter SNoLev "bf1decfd8f4025a2271f2a64d1290eae65933d0f2f0f04b89520449195f1aeb8" "293b77d05dab711767d698fb4484aab2a884304256765be0733e6bd5348119e8" *)
+Parameter SNoLev : set -> set.
+Axiom SNoLev_uniq_Subq : forall x alpha beta , ordinal alpha -> ordinal beta -> SNo_ alpha x -> SNo_ beta x -> alpha c= beta.
+Axiom SNoLev_uniq : forall x alpha beta , ordinal alpha -> ordinal beta -> SNo_ alpha x -> SNo_ beta x -> alpha = beta.
+Axiom SNoLev_prop : forall x , SNo x -> ordinal (SNoLev x) /\ SNo_ (SNoLev x) x.
+Axiom SNoLev_ordinal : forall x , SNo x -> ordinal (SNoLev x).
+Axiom SNoLev_ : forall x , SNo x -> SNo_ (SNoLev x) x.
+Axiom SNo_PSNo_eta : forall x , SNo x -> x = PSNo (SNoLev x) (fun beta => beta :e x).
+Axiom SNoLev_PSNo : forall alpha , ordinal alpha -> forall p : set -> prop , SNoLev (PSNo alpha p) = alpha.
+Axiom SNo_Subq : forall x y , SNo x -> SNo y -> SNoLev x c= SNoLev y -> (forall alpha :e SNoLev x , alpha :e x <-> alpha :e y) -> x c= y.
+Definition SNoEq_ : set -> set -> set -> prop := fun alpha x y => PNoEq_ alpha (fun beta => beta :e x) (fun beta => beta :e y).
+Axiom SNoEq_I : forall alpha x y , (forall beta :e alpha , beta :e x <-> beta :e y) -> SNoEq_ alpha x y.
+Axiom SNo_eq : forall x y , SNo x -> SNo y -> SNoLev x = SNoLev y -> SNoEq_ (SNoLev x) x y -> x = y.
+End TaggedSets.
+Definition SNoLt : set -> set -> prop := fun x y => PNoLt (SNoLev x) (fun beta => beta :e x) (SNoLev y) (fun beta => beta :e y).
+Infix < 490 := SNoLt.
+Definition SNoLe : set -> set -> prop := fun x y => PNoLe (SNoLev x) (fun beta => beta :e x) (SNoLev y) (fun beta => beta :e y).
+(* Unicode <= "2264" *)
+Infix <= 490 := SNoLe.
+Axiom SNoLtLe : forall x y , x < y -> x <= y.
+Axiom SNoLeE : forall x y , SNo x -> SNo y -> x <= y -> x < y \/ x = y.
+Axiom SNoEq_sym_ : forall alpha x y , SNoEq_ alpha x y -> SNoEq_ alpha y x.
+Axiom SNoEq_tra_ : forall alpha x y z , SNoEq_ alpha x y -> SNoEq_ alpha y z -> SNoEq_ alpha x z.
+Axiom SNoLtE : forall x y , SNo x -> SNo y -> x < y -> forall p : prop , (forall z , SNo z -> SNoLev z :e SNoLev x :/\: SNoLev y -> SNoEq_ (SNoLev z) z x -> SNoEq_ (SNoLev z) z y -> x < z -> z < y -> SNoLev z /:e x -> SNoLev z :e y -> p) -> (SNoLev x :e SNoLev y -> SNoEq_ (SNoLev x) x y -> SNoLev x :e y -> p) -> (SNoLev y :e SNoLev x -> SNoEq_ (SNoLev y) x y -> SNoLev y /:e x -> p) -> p.
+Axiom SNoLtI2 : forall x y , SNoLev x :e SNoLev y -> SNoEq_ (SNoLev x) x y -> SNoLev x :e y -> x < y.
+Axiom SNoLtI3 : forall x y , SNoLev y :e SNoLev x -> SNoEq_ (SNoLev y) x y -> SNoLev y /:e x -> x < y.
+Axiom SNoLt_irref : forall x , ~ SNoLt x x.
+Axiom SNoLt_trichotomy_or : forall x y , SNo x -> SNo y -> x < y \/ x = y \/ y < x.
+Axiom SNoLt_trichotomy_or_impred : forall x y , SNo x -> SNo y -> forall p : prop , (x < y -> p) -> (x = y -> p) -> (y < x -> p) -> p.
+Axiom SNoLt_tra : forall x y z , SNo x -> SNo y -> SNo z -> x < y -> y < z -> x < z.
+Axiom SNoLe_ref : forall x , SNoLe x x.
+Axiom SNoLe_antisym : forall x y , SNo x -> SNo y -> x <= y -> y <= x -> x = y.
+Axiom SNoLtLe_tra : forall x y z , SNo x -> SNo y -> SNo z -> x < y -> y <= z -> x < z.
+Axiom SNoLeLt_tra : forall x y z , SNo x -> SNo y -> SNo z -> x <= y -> y < z -> x < z.
+Axiom SNoLe_tra : forall x y z , SNo x -> SNo y -> SNo z -> x <= y -> y <= z -> x <= z.
+Axiom SNoLtLe_or : forall x y , SNo x -> SNo y -> x < y \/ y <= x.
+Axiom SNoLt_PSNo_PNoLt : forall alpha beta , forall p q : set -> prop , ordinal alpha -> ordinal beta -> PSNo alpha p < PSNo beta q -> PNoLt alpha p beta q.
+Axiom PNoLt_SNoLt_PSNo : forall alpha beta , forall p q : set -> prop , ordinal alpha -> ordinal beta -> PNoLt alpha p beta q -> PSNo alpha p < PSNo beta q.
+Definition SNoCut : set -> set -> set := fun L R => PSNo (PNo_bd (fun alpha p => ordinal alpha /\ PSNo alpha p :e L) (fun alpha p => ordinal alpha /\ PSNo alpha p :e R)) (PNo_pred (fun alpha p => ordinal alpha /\ PSNo alpha p :e L) (fun alpha p => ordinal alpha /\ PSNo alpha p :e R)).
+Definition SNoCutP : set -> set -> prop := fun L R => (forall x :e L , SNo x) /\ (forall y :e R , SNo y) /\ (forall x :e L , forall y :e R , x < y).
+Axiom SNoCutP_SNoCut : forall L R , SNoCutP L R -> SNo (SNoCut L R) /\ SNoLev (SNoCut L R) :e ordsucc ((\/_ x :e L , ordsucc (SNoLev x)) :\/: (\/_ y :e R , ordsucc (SNoLev y))) /\ (forall x :e L , x < SNoCut L R) /\ (forall y :e R , SNoCut L R < y) /\ (forall z , SNo z -> (forall x :e L , x < z) -> (forall y :e R , z < y) -> SNoLev (SNoCut L R) c= SNoLev z /\ SNoEq_ (SNoLev (SNoCut L R)) (SNoCut L R) z).
+Axiom SNoCutP_SNoCut_impred : forall L R , SNoCutP L R -> forall p : prop , (SNo (SNoCut L R) -> SNoLev (SNoCut L R) :e ordsucc ((\/_ x :e L , ordsucc (SNoLev x)) :\/: (\/_ y :e R , ordsucc (SNoLev y))) -> (forall x :e L , x < SNoCut L R) -> (forall y :e R , SNoCut L R < y) -> (forall z , SNo z -> (forall x :e L , x < z) -> (forall y :e R , z < y) -> SNoLev (SNoCut L R) c= SNoLev z /\ SNoEq_ (SNoLev (SNoCut L R)) (SNoCut L R) z) -> p) -> p.
+Axiom SNoCutP_L_0 : forall L , (forall x :e L , SNo x) -> SNoCutP L 0.
+Axiom SNoCutP_0_R : forall R , (forall x :e R , SNo x) -> SNoCutP 0 R.
+Axiom SNoCutP_0_0 : SNoCutP 0 0.
+Definition SNoS_ : set -> set := fun alpha => {x :e Power (SNoElts_ alpha)|exists beta :e alpha , SNo_ beta x}.
+Axiom SNoS_E : forall alpha , ordinal alpha -> forall x :e SNoS_ alpha , exists beta :e alpha , SNo_ beta x.
+Section TaggedSets2.
+Let tag : set -> set := fun alpha => SetAdjoin alpha {1}.
+Postfix ' 100 := tag.
+Axiom SNoS_I : forall alpha , ordinal alpha -> forall x , forall beta :e alpha , SNo_ beta x -> x :e SNoS_ alpha.
+Axiom SNoS_I2 : forall x y , SNo x -> SNo y -> SNoLev x :e SNoLev y -> x :e SNoS_ (SNoLev y).
+Axiom SNoS_Subq : forall alpha beta , ordinal alpha -> ordinal beta -> alpha c= beta -> SNoS_ alpha c= SNoS_ beta.
+Axiom SNoLev_uniq2 : forall alpha , ordinal alpha -> forall x , SNo_ alpha x -> SNoLev x = alpha.
+Axiom SNoS_E2 : forall alpha , ordinal alpha -> forall x :e SNoS_ alpha , forall p : prop , (SNoLev x :e alpha -> ordinal (SNoLev x) -> SNo x -> SNo_ (SNoLev x) x -> p) -> p.
+Axiom SNoS_In_neq : forall w , SNo w -> forall x :e SNoS_ (SNoLev w) , x <> w.
+Axiom SNoS_SNoLev : forall z , SNo z -> z :e SNoS_ (ordsucc (SNoLev z)).
+Definition SNoL : set -> set := fun z => {x :e SNoS_ (SNoLev z)|x < z}.
+Definition SNoR : set -> set := fun z => {y :e SNoS_ (SNoLev z)|z < y}.
+Axiom SNoCutP_SNoL_SNoR : forall z , SNo z -> SNoCutP (SNoL z) (SNoR z).
+Axiom SNoL_E : forall x , SNo x -> forall w :e SNoL x , forall p : prop , (SNo w -> SNoLev w :e SNoLev x -> w < x -> p) -> p.
+Axiom SNoR_E : forall x , SNo x -> forall z :e SNoR x , forall p : prop , (SNo z -> SNoLev z :e SNoLev x -> x < z -> p) -> p.
+Axiom SNoL_SNoS_ : forall z , SNoL z c= SNoS_ (SNoLev z).
+Axiom SNoR_SNoS_ : forall z , SNoR z c= SNoS_ (SNoLev z).
+Axiom SNoL_SNoS : forall x , SNo x -> forall w :e SNoL x , w :e SNoS_ (SNoLev x).
+Axiom SNoR_SNoS : forall x , SNo x -> forall z :e SNoR x , z :e SNoS_ (SNoLev x).
+Axiom SNoL_I : forall z , SNo z -> forall x , SNo x -> SNoLev x :e SNoLev z -> x < z -> x :e SNoL z.
+Axiom SNoR_I : forall z , SNo z -> forall y , SNo y -> SNoLev y :e SNoLev z -> z < y -> y :e SNoR z.
+Axiom SNo_eta : forall z , SNo z -> z = SNoCut (SNoL z) (SNoR z).
+Axiom SNoCutP_SNo_SNoCut : forall L R , SNoCutP L R -> SNo (SNoCut L R).
+Axiom SNoCutP_SNoCut_L : forall L R , SNoCutP L R -> forall x :e L , x < SNoCut L R.
+Axiom SNoCutP_SNoCut_R : forall L R , SNoCutP L R -> forall y :e R , SNoCut L R < y.
+Axiom SNoCutP_SNoCut_fst : forall L R , SNoCutP L R -> forall z , SNo z -> (forall x :e L , x < z) -> (forall y :e R , z < y) -> SNoLev (SNoCut L R) c= SNoLev z /\ SNoEq_ (SNoLev (SNoCut L R)) (SNoCut L R) z.
+Axiom SNoCut_Le : forall L1 R1 L2 R2 , SNoCutP L1 R1 -> SNoCutP L2 R2 -> (forall w :e L1 , w < SNoCut L2 R2) -> (forall z :e R2 , SNoCut L1 R1 < z) -> SNoCut L1 R1 <= SNoCut L2 R2.
+Axiom SNoCut_ext : forall L1 R1 L2 R2 , SNoCutP L1 R1 -> SNoCutP L2 R2 -> (forall w :e L1 , w < SNoCut L2 R2) -> (forall z :e R1 , SNoCut L2 R2 < z) -> (forall w :e L2 , w < SNoCut L1 R1) -> (forall z :e R2 , SNoCut L1 R1 < z) -> SNoCut L1 R1 = SNoCut L2 R2.
+Axiom SNoLt_SNoL_or_SNoR_impred : forall x y , SNo x -> SNo y -> x < y -> forall p : prop , (forall z :e SNoL y , z :e SNoR x -> p) -> (x :e SNoL y -> p) -> (y :e SNoR x -> p) -> p.
+Axiom SNoL_or_SNoR_impred : forall x y , SNo x -> SNo y -> forall p : prop , (x = y -> p) -> (forall z :e SNoL y , z :e SNoR x -> p) -> (x :e SNoL y -> p) -> (y :e SNoR x -> p) -> (forall z :e SNoR y , z :e SNoL x -> p) -> (x :e SNoR y -> p) -> (y :e SNoL x -> p) -> p.
+Axiom SNoL_SNoCutP_ex : forall L R , SNoCutP L R -> forall w :e SNoL (SNoCut L R) , exists w' :e L , w <= w'.
+Axiom SNoR_SNoCutP_ex : forall L R , SNoCutP L R -> forall z :e SNoR (SNoCut L R) , exists z' :e R , z' <= z.
+Axiom ordinal_SNo_ : forall alpha , ordinal alpha -> SNo_ alpha alpha.
+Axiom ordinal_SNo : forall alpha , ordinal alpha -> SNo alpha.
+Axiom ordinal_SNoLev : forall alpha , ordinal alpha -> SNoLev alpha = alpha.
+Axiom ordinal_SNoLev_max : forall alpha , ordinal alpha -> forall z , SNo z -> SNoLev z :e alpha -> z < alpha.
+Axiom ordinal_SNoL : forall alpha , ordinal alpha -> SNoL alpha = SNoS_ alpha.
+Axiom ordinal_SNoR : forall alpha , ordinal alpha -> SNoR alpha = Empty.
+Axiom nat_p_SNo : forall n , nat_p n -> SNo n.
+Axiom omega_SNo : forall n :e omega , SNo n.
+Axiom omega_SNoS_omega : omega c= SNoS_ omega.
+Axiom ordinal_In_SNoLt : forall alpha , ordinal alpha -> forall beta :e alpha , beta < alpha.
+Axiom ordinal_SNoLev_max_2 : forall alpha , ordinal alpha -> forall z , SNo z -> SNoLev z :e ordsucc alpha -> z <= alpha.
+Axiom ordinal_Subq_SNoLe : forall alpha beta , ordinal alpha -> ordinal beta -> alpha c= beta -> alpha <= beta.
+Axiom ordinal_SNoLt_In : forall alpha beta , ordinal alpha -> ordinal beta -> alpha < beta -> alpha :e beta.
+Axiom omega_nonneg : forall m :e omega , 0 <= m.
+Axiom SNo_0 : SNo 0.
+Axiom SNo_1 : SNo 1.
+Axiom SNo_2 : SNo 2.
+Axiom SNoLev_0 : SNoLev 0 = 0.
+Axiom SNoCut_0_0 : SNoCut 0 0 = 0.
+Axiom SNoL_0 : SNoL 0 = 0.
+Axiom SNoR_0 : SNoR 0 = 0.
+Axiom SNoL_1 : SNoL 1 = 1.
+Axiom SNoR_1 : SNoR 1 = 0.
+Axiom SNo_max_SNoLev : forall x , SNo x -> (forall y :e SNoS_ (SNoLev x) , y < x) -> SNoLev x = x.
+Axiom SNo_max_ordinal : forall x , SNo x -> (forall y :e SNoS_ (SNoLev x) , y < x) -> ordinal x.
+Axiom pos_low_eq_one : forall x , SNo x -> 0 < x -> SNoLev x c= 1 -> x = 1.
+Definition SNo_extend0 : set -> set := fun x => PSNo (ordsucc (SNoLev x)) (fun delta => delta :e x /\ delta <> SNoLev x).
+Definition SNo_extend1 : set -> set := fun x => PSNo (ordsucc (SNoLev x)) (fun delta => delta :e x \/ delta = SNoLev x).
+Axiom SNo_extend0_SNo_ : forall x , SNo x -> SNo_ (ordsucc (SNoLev x)) (SNo_extend0 x).
+Axiom SNo_extend1_SNo_ : forall x , SNo x -> SNo_ (ordsucc (SNoLev x)) (SNo_extend1 x).
+Axiom SNo_extend0_SNo : forall x , SNo x -> SNo (SNo_extend0 x).
+Axiom SNo_extend1_SNo : forall x , SNo x -> SNo (SNo_extend1 x).
+Axiom SNo_extend0_SNoLev : forall x , SNo x -> SNoLev (SNo_extend0 x) = ordsucc (SNoLev x).
+Axiom SNo_extend1_SNoLev : forall x , SNo x -> SNoLev (SNo_extend1 x) = ordsucc (SNoLev x).
+Axiom SNo_extend0_nIn : forall x , SNo x -> SNoLev x /:e SNo_extend0 x.
+Axiom SNo_extend1_In : forall x , SNo x -> SNoLev x :e SNo_extend1 x.
+Axiom SNo_extend0_SNoEq : forall x , SNo x -> SNoEq_ (SNoLev x) (SNo_extend0 x) x.
+Axiom SNo_extend1_SNoEq : forall x , SNo x -> SNoEq_ (SNoLev x) (SNo_extend1 x) x.
+Axiom SNoLev_0_eq_0 : forall x , SNo x -> SNoLev x = 0 -> x = 0.
+Axiom SNo_0_eq_0 : forall q , SNo_ 0 q -> q = 0.
+Definition eps_ : set -> set := fun n => {0} :\/: {(ordsucc m) '|m :e n}.
+Axiom eps_ordinal_In_eq_0 : forall n alpha , ordinal alpha -> alpha :e eps_ n -> alpha = 0.
+Axiom eps_0_1 : eps_ 0 = 1.
+Axiom SNo__eps_ : forall n :e omega , SNo_ (ordsucc n) (eps_ n).
+Axiom SNo_eps_ : forall n :e omega , SNo (eps_ n).
+Axiom SNo_eps_1 : SNo (eps_ 1).
+Axiom SNoLev_eps_ : forall n :e omega , SNoLev (eps_ n) = ordsucc n.
+Axiom SNo_eps_SNoS_omega : forall n :e omega , eps_ n :e SNoS_ omega.
+Axiom SNo_eps_decr : forall n :e omega , forall m :e n , eps_ n < eps_ m.
+Axiom SNo_eps_pos : forall n :e omega , 0 < eps_ n.
+Axiom SNo_pos_eps_Lt : forall n , nat_p n -> forall x :e SNoS_ (ordsucc n) , 0 < x -> eps_ n < x.
+Axiom SNo_pos_eps_Le : forall n , nat_p n -> forall x :e SNoS_ (ordsucc (ordsucc n)) , 0 < x -> eps_ n <= x.
+Axiom eps_SNo_eq : forall n , nat_p n -> forall x :e SNoS_ (ordsucc n) , 0 < x -> SNoEq_ (SNoLev x) (eps_ n) x -> exists m :e n , x = eps_ m.
+Axiom eps_SNoCutP : forall n :e omega , SNoCutP {0} {eps_ m|m :e n}.
+Axiom eps_SNoCut : forall n :e omega , eps_ n = SNoCut {0} {eps_ m|m :e n}.
+End TaggedSets2.
+Axiom SNo_etaE : forall z , SNo z -> forall p : prop , (forall L R , SNoCutP L R -> (forall x :e L , SNoLev x :e SNoLev z) -> (forall y :e R , SNoLev y :e SNoLev z) -> z = SNoCut L R -> p) -> p.
+Axiom SNo_ind : forall P : set -> prop , (forall L R , SNoCutP L R -> (forall x :e L , P x) -> (forall y :e R , P y) -> P (SNoCut L R)) -> forall z , SNo z -> P z.
+Section SurrealRecI.
+Variable F : set -> (set -> set) -> set.
+Let default : set := Eps_i (fun _ => True).
+Let G : set -> (set -> set -> set) -> set -> set := fun alpha g => If_ii (ordinal alpha) (fun z : set => if z :e SNoS_ (ordsucc alpha) then F z (fun w => g (SNoLev w) w) else default) (fun z : set => default).
+(* Parameter SNo_rec_i "352082c509ab97c1757375f37a2ac62ed806c7b39944c98161720a584364bfaf" "be45dfaed6c479503a967f3834400c4fd18a8a567c8887787251ed89579f7be3" *)
+Parameter SNo_rec_i : set -> set.
+Hypothesis Fr : forall z , SNo z -> forall g h : set -> set , (forall w :e SNoS_ (SNoLev z) , g w = h w) -> F z g = F z h.
+Axiom SNo_rec_i_eq : forall z , SNo z -> SNo_rec_i z = F z SNo_rec_i.
+End SurrealRecI.
+Section SurrealRecII.
+Variable F : set -> (set -> (set -> set)) -> (set -> set).
+Let default : (set -> set) := Descr_ii (fun _ => True).
+Let G : set -> (set -> set -> (set -> set)) -> set -> (set -> set) := fun alpha g => If_iii (ordinal alpha) (fun z : set => If_ii (z :e SNoS_ (ordsucc alpha)) (F z (fun w => g (SNoLev w) w)) default) (fun z : set => default).
+(* Parameter SNo_rec_ii "030b1b3db48f720b8db18b1192717cad8f204fff5fff81201b9a2414f5036417" "e148e62186e718374accb69cda703e3440725cca8832aed55c0b32731f7401ab" *)
+Parameter SNo_rec_ii : set -> (set -> set).
+Hypothesis Fr : forall z , SNo z -> forall g h : set -> (set -> set) , (forall w :e SNoS_ (SNoLev z) , g w = h w) -> F z g = F z h.
+Axiom SNo_rec_ii_eq : forall z , SNo z -> SNo_rec_ii z = F z SNo_rec_ii.
+End SurrealRecII.
+Section SurrealRec2.
+Variable F : set -> set -> (set -> set -> set) -> set.
+Let G : set -> (set -> set -> set) -> set -> (set -> set) -> set := fun w f z g => F w z (fun x y => if x = w then g y else f x y).
+Let H : set -> (set -> set -> set) -> set -> set := fun w f z => if SNo z then SNo_rec_i (G w f) z else Empty.
+(* Parameter SNo_rec2 "9c6267051fa817eed39b404ea37e7913b3571fe071763da2ebc1baa56b4b77f5" "7d10ab58310ebefb7f8bf63883310aa10fc2535f53bb48db513a868bc02ec028" *)
+Parameter SNo_rec2 : set -> set -> set.
+Hypothesis Fr : forall w , SNo w -> forall z , SNo z -> forall g h : set -> set -> set , (forall x :e SNoS_ (SNoLev w) , forall y , SNo y -> g x y = h x y) -> (forall y :e SNoS_ (SNoLev z) , g w y = h w y) -> F w z g = F w z h.
+Axiom SNo_rec2_G_prop : forall w , SNo w -> forall f k : set -> set -> set , (forall x :e SNoS_ (SNoLev w) , f x = k x) -> forall z , SNo z -> forall g h : set -> set , (forall u :e SNoS_ (SNoLev z) , g u = h u) -> G w f z g = G w k z h.
+Axiom SNo_rec2_eq_1 : forall w , SNo w -> forall f : set -> set -> set , forall z , SNo z -> SNo_rec_i (G w f) z = G w f z (SNo_rec_i (G w f)).
+Axiom SNo_rec2_eq : forall w , SNo w -> forall z , SNo z -> SNo_rec2 w z = F w z SNo_rec2.
+End SurrealRec2.
+Axiom SNo_ordinal_ind : forall P : set -> prop , (forall alpha , ordinal alpha -> forall x :e SNoS_ alpha , P x) -> (forall x , SNo x -> P x).
+Axiom SNo_ordinal_ind2 : forall P : set -> set -> prop , (forall alpha , ordinal alpha -> forall beta , ordinal beta -> forall x :e SNoS_ alpha , forall y :e SNoS_ beta , P x y) -> (forall x y , SNo x -> SNo y -> P x y).
+Axiom SNo_ordinal_ind3 : forall P : set -> set -> set -> prop , (forall alpha , ordinal alpha -> forall beta , ordinal beta -> forall gamma , ordinal gamma -> forall x :e SNoS_ alpha , forall y :e SNoS_ beta , forall z :e SNoS_ gamma , P x y z) -> (forall x y z , SNo x -> SNo y -> SNo z -> P x y z).
+Axiom SNoLev_ind : forall P : set -> prop , (forall x , SNo x -> (forall w :e SNoS_ (SNoLev x) , P w) -> P x) -> (forall x , SNo x -> P x).
+Axiom SNoLev_ind2 : forall P : set -> set -> prop , (forall x y , SNo x -> SNo y -> (forall w :e SNoS_ (SNoLev x) , P w y) -> (forall z :e SNoS_ (SNoLev y) , P x z) -> (forall w :e SNoS_ (SNoLev x) , forall z :e SNoS_ (SNoLev y) , P w z) -> P x y) -> forall x y , SNo x -> SNo y -> P x y.
+Axiom SNoLev_ind3 : forall P : set -> set -> set -> prop , (forall x y z , SNo x -> SNo y -> SNo z -> (forall u :e SNoS_ (SNoLev x) , P u y z) -> (forall v :e SNoS_ (SNoLev y) , P x v z) -> (forall w :e SNoS_ (SNoLev z) , P x y w) -> (forall u :e SNoS_ (SNoLev x) , forall v :e SNoS_ (SNoLev y) , P u v z) -> (forall u :e SNoS_ (SNoLev x) , forall w :e SNoS_ (SNoLev z) , P u y w) -> (forall v :e SNoS_ (SNoLev y) , forall w :e SNoS_ (SNoLev z) , P x v w) -> (forall u :e SNoS_ (SNoLev x) , forall v :e SNoS_ (SNoLev y) , forall w :e SNoS_ (SNoLev z) , P u v w) -> P x y z) -> forall x y z , SNo x -> SNo y -> SNo z -> P x y z.
+Axiom SNo_omega : SNo omega.
+Axiom SNoLt_0_1 : 0 < 1.
+Axiom SNoLt_0_2 : 0 < 2.
+Axiom SNoLt_1_2 : 1 < 2.
+Axiom restr_SNo_ : forall x , SNo x -> forall alpha :e SNoLev x , SNo_ alpha (x :/\: SNoElts_ alpha).
+Axiom restr_SNo : forall x , SNo x -> forall alpha :e SNoLev x , SNo (x :/\: SNoElts_ alpha).
+Axiom restr_SNoLev : forall x , SNo x -> forall alpha :e SNoLev x , SNoLev (x :/\: SNoElts_ alpha) = alpha.
+Axiom restr_SNoEq : forall x , SNo x -> forall alpha :e SNoLev x , SNoEq_ alpha (x :/\: SNoElts_ alpha) x.
+Axiom SNo_extend0_restr_eq : forall x , SNo x -> x = SNo_extend0 x :/\: SNoElts_ (SNoLev x).
+Axiom SNo_extend1_restr_eq : forall x , SNo x -> x = SNo_extend1 x :/\: SNoElts_ (SNoLev x).

@@ -113,7 +113,7 @@ let tp_to_str m =
   seosbf (seo_tp seosb m (c,None));
   Buffer.contents c
 
-let hashtp m = hashtag (Sha256.sha256str (tp_to_str m)) 64l
+let hashtp m = hashtag (Hash.sha256 (tp_to_str m)) 64l
 
 let rec sei_tp i c =
   let (b,c) = i 2 c in
@@ -148,7 +148,7 @@ let hashtpl al =
   if al = [] then
     None
   else
-    Some(hashtag (Sha256.sha256str (tpl_to_str al)) 65l)
+    Some(hashtag (Hash.sha256 (tpl_to_str al)) 65l)
 
 (** ** tm serialization ***)
 let rec seo_tm o m c =
@@ -207,7 +207,7 @@ let tm_to_str m =
   seosbf (seo_tm seosb m (c,None));
   Buffer.contents c
 
-let hashtm m = hashtag (Sha256.sha256str (tm_to_str m)) 66l
+let hashtm m = hashtag (Hash.sha256 (tm_to_str m)) 66l
 
 let rec sei_tm i c =
   let (x,c) = i 3 c in
@@ -301,7 +301,7 @@ let pf_to_str m =
   seosbf (seo_pf seosb m (c,None));
   Buffer.contents c
 
-let hashpf m = hashtag (Sha256.sha256str (pf_to_str m)) 67l
+let hashpf m = hashtag (Hash.sha256 (pf_to_str m)) 67l
 
 let rec sei_pf i c =
   let (x,c) = i 3 c in
@@ -481,7 +481,7 @@ let doc_to_str m =
   seosbf (seo_doc seosb m (c,None));
   Buffer.contents c
 
-let hashdoc m = hashtag (Sha256.sha256str (doc_to_str m)) 70l
+let hashdoc m = hashtag (Hash.sha256 (doc_to_str m)) 70l
 
 (** ** pdoc serialization ***)
 let rec seo_pdoc o dl c =
@@ -537,7 +537,7 @@ let pdoc_to_str m =
   seosbf (seo_pdoc seosb m (c,None));
   Buffer.contents c
 
-let hashpdoc m = hashtag (Sha256.sha256str (pdoc_to_str m)) 71l
+let hashpdoc m = hashtag (Hash.sha256 (pdoc_to_str m)) 71l
 
 let rec sei_pdoc i c =
   let (b,c) = i 2 c in
@@ -729,6 +729,7 @@ let rec signaspec_knowns s =
 
 let signaspec_signa s = (signaspec_signas s,(signaspec_trms s,signaspec_knowns s))
 
+(*
 let hashgsigna (tl,kl) =
   hashpair
     (hashlist
@@ -740,6 +741,7 @@ let hashgsigna (tl,kl) =
     (hashlist (List.map (fun (k,p) -> (hashpair k (hashtm p))) kl))
 
 let hashsigna (sl,(tl,kl)) = hashpair (hashlist sl) (hashgsigna (tl,kl))
+*)
 
 let seo_gsigna o s c =
   seo_prod

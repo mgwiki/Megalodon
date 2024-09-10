@@ -1,0 +1,118 @@
+Section SurrealMul.
+Prefix - 358 := minus_SNo.
+Infix + 360 right  := add_SNo.
+(* Parameter mul_SNo "f56bf39b8eea93d7f63da529dedb477ae1ab1255c645c47d8915623f364f2d6b" "48d05483e628cb37379dd5d279684d471d85c642fe63533c3ad520b84b18df9d" *)
+Parameter mul_SNo : set -> set -> set.
+Infix * 355 right  := mul_SNo.
+Axiom mul_SNo_eq : forall x , SNo x -> forall y , SNo y -> x * y = SNoCut ({(w 0) * y + x * (w 1) + - (w 0) * (w 1)|w :e SNoL x :*: SNoL y} :\/: {(z 0) * y + x * (z 1) + - (z 0) * (z 1)|z :e SNoR x :*: SNoR y}) ({(w 0) * y + x * (w 1) + - (w 0) * (w 1)|w :e SNoL x :*: SNoR y} :\/: {(z 0) * y + x * (z 1) + - (z 0) * (z 1)|z :e SNoR x :*: SNoL y}).
+Axiom mul_SNo_eq_2 : forall x y , SNo x -> SNo y -> forall p : prop , (forall L R , (forall u , u :e L -> (forall q : prop , (forall w0 :e SNoL x , forall w1 :e SNoL y , u = w0 * y + x * w1 + - w0 * w1 -> q) -> (forall z0 :e SNoR x , forall z1 :e SNoR y , u = z0 * y + x * z1 + - z0 * z1 -> q) -> q)) -> (forall w0 :e SNoL x , forall w1 :e SNoL y , w0 * y + x * w1 + - w0 * w1 :e L) -> (forall z0 :e SNoR x , forall z1 :e SNoR y , z0 * y + x * z1 + - z0 * z1 :e L) -> (forall u , u :e R -> (forall q : prop , (forall w0 :e SNoL x , forall z1 :e SNoR y , u = w0 * y + x * z1 + - w0 * z1 -> q) -> (forall z0 :e SNoR x , forall w1 :e SNoL y , u = z0 * y + x * w1 + - z0 * w1 -> q) -> q)) -> (forall w0 :e SNoL x , forall z1 :e SNoR y , w0 * y + x * z1 + - w0 * z1 :e R) -> (forall z0 :e SNoR x , forall w1 :e SNoL y , z0 * y + x * w1 + - z0 * w1 :e R) -> x * y = SNoCut L R -> p) -> p.
+Axiom mul_SNo_prop_1 : forall x , SNo x -> forall y , SNo y -> forall p : prop , (SNo (x * y) -> (forall u :e SNoL x , forall v :e SNoL y , u * y + x * v < x * y + u * v) -> (forall u :e SNoR x , forall v :e SNoR y , u * y + x * v < x * y + u * v) -> (forall u :e SNoL x , forall v :e SNoR y , x * y + u * v < u * y + x * v) -> (forall u :e SNoR x , forall v :e SNoL y , x * y + u * v < u * y + x * v) -> p) -> p.
+Axiom SNo_mul_SNo : forall x y , SNo x -> SNo y -> SNo (x * y).
+Axiom SNo_mul_SNo_lem : forall x y u v , SNo x -> SNo y -> SNo u -> SNo v -> SNo (u * y + x * v + - (u * v)).
+Axiom SNo_mul_SNo_3 : forall x y z , SNo x -> SNo y -> SNo z -> SNo (x * y * z).
+Axiom mul_SNo_eq_3 : forall x y , SNo x -> SNo y -> forall p : prop , (forall L R , SNoCutP L R -> (forall u , u :e L -> (forall q : prop , (forall w0 :e SNoL x , forall w1 :e SNoL y , u = w0 * y + x * w1 + - w0 * w1 -> q) -> (forall z0 :e SNoR x , forall z1 :e SNoR y , u = z0 * y + x * z1 + - z0 * z1 -> q) -> q)) -> (forall w0 :e SNoL x , forall w1 :e SNoL y , w0 * y + x * w1 + - w0 * w1 :e L) -> (forall z0 :e SNoR x , forall z1 :e SNoR y , z0 * y + x * z1 + - z0 * z1 :e L) -> (forall u , u :e R -> (forall q : prop , (forall w0 :e SNoL x , forall z1 :e SNoR y , u = w0 * y + x * z1 + - w0 * z1 -> q) -> (forall z0 :e SNoR x , forall w1 :e SNoL y , u = z0 * y + x * w1 + - z0 * w1 -> q) -> q)) -> (forall w0 :e SNoL x , forall z1 :e SNoR y , w0 * y + x * z1 + - w0 * z1 :e R) -> (forall z0 :e SNoR x , forall w1 :e SNoL y , z0 * y + x * w1 + - z0 * w1 :e R) -> x * y = SNoCut L R -> p) -> p.
+Axiom mul_SNo_Lt : forall x y u v , SNo x -> SNo y -> SNo u -> SNo v -> u < x -> v < y -> u * y + x * v < x * y + u * v.
+Axiom mul_SNo_Le : forall x y u v , SNo x -> SNo y -> SNo u -> SNo v -> u <= x -> v <= y -> u * y + x * v <= x * y + u * v.
+Axiom mul_SNo_SNoL_interpolate : forall x y , SNo x -> SNo y -> forall u :e SNoL (x * y) , (exists v :e SNoL x , exists w :e SNoL y , u + v * w <= v * y + x * w) \/ (exists v :e SNoR x , exists w :e SNoR y , u + v * w <= v * y + x * w).
+Axiom mul_SNo_SNoL_interpolate_impred : forall x y , SNo x -> SNo y -> forall u :e SNoL (x * y) , forall p : prop , (forall v :e SNoL x , forall w :e SNoL y , u + v * w <= v * y + x * w -> p) -> (forall v :e SNoR x , forall w :e SNoR y , u + v * w <= v * y + x * w -> p) -> p.
+Axiom mul_SNo_SNoR_interpolate : forall x y , SNo x -> SNo y -> forall u :e SNoR (x * y) , (exists v :e SNoL x , exists w :e SNoR y , v * y + x * w <= u + v * w) \/ (exists v :e SNoR x , exists w :e SNoL y , v * y + x * w <= u + v * w).
+Axiom mul_SNo_SNoR_interpolate_impred : forall x y , SNo x -> SNo y -> forall u :e SNoR (x * y) , forall p : prop , (forall v :e SNoL x , forall w :e SNoR y , v * y + x * w <= u + v * w -> p) -> (forall v :e SNoR x , forall w :e SNoL y , v * y + x * w <= u + v * w -> p) -> p.
+Axiom mul_SNo_Subq_lem : forall x y X Y Z W , forall U U' , (forall u , u :e U -> (forall q : prop , (forall w0 :e X , forall w1 :e Y , u = w0 * y + x * w1 + - w0 * w1 -> q) -> (forall z0 :e Z , forall z1 :e W , u = z0 * y + x * z1 + - z0 * z1 -> q) -> q)) -> (forall w0 :e X , forall w1 :e Y , w0 * y + x * w1 + - w0 * w1 :e U') -> (forall w0 :e Z , forall w1 :e W , w0 * y + x * w1 + - w0 * w1 :e U') -> U c= U'.
+Axiom mul_SNo_zeroR : forall x , SNo x -> x * 0 = 0.
+Axiom mul_SNo_oneR : forall x , SNo x -> x * 1 = x.
+Axiom mul_SNo_com : forall x y , SNo x -> SNo y -> x * y = y * x.
+Axiom mul_SNo_minus_distrL : forall x y , SNo x -> SNo y -> (- x) * y = - x * y.
+Axiom mul_SNo_minus_distrR : forall x y , SNo x -> SNo y -> x * (- y) = - (x * y).
+Axiom mul_SNo_distrR : forall x y z , SNo x -> SNo y -> SNo z -> (x + y) * z = x * z + y * z.
+Axiom mul_SNo_distrL : forall x y z , SNo x -> SNo y -> SNo z -> x * (y + z) = x * y + x * z.
+Section mul_SNo_assoc_lems.
+Variable M : set -> set -> set.
+Infix * 355 right  := M.
+Hypothesis SNo_M : forall x y , SNo x -> SNo y -> SNo (x * y).
+Hypothesis DL : forall x y z , SNo x -> SNo y -> SNo z -> x * (y + z) = x * y + x * z.
+Hypothesis DR : forall x y z , SNo x -> SNo y -> SNo z -> (x + y) * z = x * z + y * z.
+Hypothesis IL : forall x y , SNo x -> SNo y -> forall u :e SNoL (x * y) , forall p : prop , (forall v :e SNoL x , forall w :e SNoL y , u + v * w <= v * y + x * w -> p) -> (forall v :e SNoR x , forall w :e SNoR y , u + v * w <= v * y + x * w -> p) -> p.
+Hypothesis IR : forall x y , SNo x -> SNo y -> forall u :e SNoR (x * y) , forall p : prop , (forall v :e SNoL x , forall w :e SNoR y , v * y + x * w <= u + v * w -> p) -> (forall v :e SNoR x , forall w :e SNoL y , v * y + x * w <= u + v * w -> p) -> p.
+Hypothesis M_Lt : forall x y u v , SNo x -> SNo y -> SNo u -> SNo v -> u < x -> v < y -> u * y + x * v < x * y + u * v.
+Hypothesis M_Le : forall x y u v , SNo x -> SNo y -> SNo u -> SNo v -> u <= x -> v <= y -> u * y + x * v <= x * y + u * v.
+Axiom mul_SNo_assoc_lem1 : forall x y z , SNo x -> SNo y -> SNo z -> (forall u :e SNoS_ (SNoLev x) , u * (y * z) = (u * y) * z) -> (forall v :e SNoS_ (SNoLev y) , x * (v * z) = (x * v) * z) -> (forall w :e SNoS_ (SNoLev z) , x * (y * w) = (x * y) * w) -> (forall u :e SNoS_ (SNoLev x) , forall v :e SNoS_ (SNoLev y) , u * (v * z) = (u * v) * z) -> (forall u :e SNoS_ (SNoLev x) , forall w :e SNoS_ (SNoLev z) , u * (y * w) = (u * y) * w) -> (forall v :e SNoS_ (SNoLev y) , forall w :e SNoS_ (SNoLev z) , x * (v * w) = (x * v) * w) -> (forall u :e SNoS_ (SNoLev x) , forall v :e SNoS_ (SNoLev y) , forall w :e SNoS_ (SNoLev z) , u * (v * w) = (u * v) * w) -> forall L , (forall u :e L , forall q : prop , (forall v :e SNoL x , forall w :e SNoL (y * z) , u = v * (y * z) + x * w + - v * w -> q) -> (forall v :e SNoR x , forall w :e SNoR (y * z) , u = v * (y * z) + x * w + - v * w -> q) -> q) -> forall u :e L , u < (x * y) * z.
+Axiom mul_SNo_assoc_lem2 : forall x y z , SNo x -> SNo y -> SNo z -> (forall u :e SNoS_ (SNoLev x) , u * (y * z) = (u * y) * z) -> (forall v :e SNoS_ (SNoLev y) , x * (v * z) = (x * v) * z) -> (forall w :e SNoS_ (SNoLev z) , x * (y * w) = (x * y) * w) -> (forall u :e SNoS_ (SNoLev x) , forall v :e SNoS_ (SNoLev y) , u * (v * z) = (u * v) * z) -> (forall u :e SNoS_ (SNoLev x) , forall w :e SNoS_ (SNoLev z) , u * (y * w) = (u * y) * w) -> (forall v :e SNoS_ (SNoLev y) , forall w :e SNoS_ (SNoLev z) , x * (v * w) = (x * v) * w) -> (forall u :e SNoS_ (SNoLev x) , forall v :e SNoS_ (SNoLev y) , forall w :e SNoS_ (SNoLev z) , u * (v * w) = (u * v) * w) -> forall R , (forall u :e R , forall q : prop , (forall v :e SNoL x , forall w :e SNoR (y * z) , u = v * (y * z) + x * w + - v * w -> q) -> (forall v :e SNoR x , forall w :e SNoL (y * z) , u = v * (y * z) + x * w + - v * w -> q) -> q) -> forall u :e R , (x * y) * z < u.
+End mul_SNo_assoc_lems.
+Axiom mul_SNo_assoc : forall x y z , SNo x -> SNo y -> SNo z -> x * (y * z) = (x * y) * z.
+Axiom mul_nat_mul_SNo : forall n m :e omega , mul_nat n m = n * m.
+Axiom mul_SNo_In_omega : forall n m :e omega , n * m :e omega.
+Axiom mul_SNo_zeroL : forall x , SNo x -> 0 * x = 0.
+Axiom mul_SNo_oneL : forall x , SNo x -> 1 * x = x.
+Axiom SNo_gt2_double_ltS : forall x , SNo x -> 1 < x -> x + 1 < 2 * x.
+Axiom pos_mul_SNo_Lt : forall x y z , SNo x -> 0 < x -> SNo y -> SNo z -> y < z -> x * y < x * z.
+Axiom nonneg_mul_SNo_Le : forall x y z , SNo x -> 0 <= x -> SNo y -> SNo z -> y <= z -> x * y <= x * z.
+Axiom neg_mul_SNo_Lt : forall x y z , SNo x -> x < 0 -> SNo y -> SNo z -> z < y -> x * y < x * z.
+Axiom pos_mul_SNo_Lt' : forall x y z , SNo x -> SNo y -> SNo z -> 0 < z -> x < y -> x * z < y * z.
+Axiom mul_SNo_Lt1_pos_Lt : forall x y , SNo x -> SNo y -> x < 1 -> 0 < y -> x * y < y.
+Axiom nonneg_mul_SNo_Le' : forall x y z , SNo x -> SNo y -> SNo z -> 0 <= z -> x <= y -> x * z <= y * z.
+Axiom mul_SNo_Le1_nonneg_Le : forall x y , SNo x -> SNo y -> x <= 1 -> 0 <= y -> x * y <= y.
+Axiom pos_mul_SNo_Lt2 : forall x y z w , SNo x -> SNo y -> SNo z -> SNo w -> 0 < x -> 0 < y -> x < z -> y < w -> x * y < z * w.
+Axiom nonneg_mul_SNo_Le2 : forall x y z w , SNo x -> SNo y -> SNo z -> SNo w -> 0 <= x -> 0 <= y -> x <= z -> y <= w -> x * y <= z * w.
+Axiom mul_SNo_pos_pos : forall x y , SNo x -> SNo y -> 0 < x -> 0 < y -> 0 < x * y.
+Axiom mul_SNo_pos_neg : forall x y , SNo x -> SNo y -> 0 < x -> y < 0 -> x * y < 0.
+Axiom mul_SNo_neg_pos : forall x y , SNo x -> SNo y -> x < 0 -> 0 < y -> x * y < 0.
+Axiom mul_SNo_neg_neg : forall x y , SNo x -> SNo y -> x < 0 -> y < 0 -> 0 < x * y.
+Axiom mul_SNo_nonneg_nonneg : forall x y , SNo x -> SNo y -> 0 <= x -> 0 <= y -> 0 <= x * y.
+Axiom mul_SNo_nonpos_pos : forall x y , SNo x -> SNo y -> x <= 0 -> 0 < y -> x * y <= 0.
+Axiom mul_SNo_nonpos_neg : forall x y , SNo x -> SNo y -> x <= 0 -> y < 0 -> 0 <= x * y.
+Axiom nonpos_mul_SNo_Le : forall x y z , SNo x -> x <= 0 -> SNo y -> SNo z -> z <= y -> x * y <= x * z.
+Axiom SNo_sqr_nonneg : forall x , SNo x -> 0 <= x * x.
+Axiom SNo_zero_or_sqr_pos : forall x , SNo x -> x = 0 \/ 0 < x * x.
+Axiom SNo_pos_sqr_uniq : forall x y , SNo x -> SNo y -> 0 < x -> 0 < y -> x * x = y * y -> x = y.
+Axiom SNo_nonneg_sqr_uniq : forall x y , SNo x -> SNo y -> 0 <= x -> 0 <= y -> x * x = y * y -> x = y.
+Axiom SNo_foil : forall x y z w , SNo x -> SNo y -> SNo z -> SNo w -> (x + y) * (z + w) = x * z + x * w + y * z + y * w.
+Axiom mul_SNo_minus_minus : forall x y , SNo x -> SNo y -> (- x) * (- y) = x * y.
+Axiom mul_SNo_com_3_0_1 : forall x y z , SNo x -> SNo y -> SNo z -> x * y * z = y * x * z.
+Axiom mul_SNo_com_3b_1_2 : forall x y z , SNo x -> SNo y -> SNo z -> (x * y) * z = (x * z) * y.
+Axiom mul_SNo_com_4_inner_mid : forall x y z w , SNo x -> SNo y -> SNo z -> SNo w -> (x * y) * (z * w) = (x * z) * (y * w).
+Axiom mul_SNo_rotate_3_1 : forall x y z , SNo x -> SNo y -> SNo z -> x * y * z = z * x * y.
+Axiom mul_SNo_rotate_4_1 : forall x y z w , SNo x -> SNo y -> SNo z -> SNo w -> x * y * z * w = w * x * y * z.
+Axiom SNo_foil_mm : forall x y z w , SNo x -> SNo y -> SNo z -> SNo w -> (x + - y) * (z + - w) = x * z + - x * w + - y * z + y * w.
+Axiom mul_SNo_nonzero_cancel : forall x y z , SNo x -> x <> 0 -> SNo y -> SNo z -> x * y = x * z -> y = z.
+Axiom mul_SNoCutP_lem : forall Lx Rx Ly Ry x y , SNoCutP Lx Rx -> SNoCutP Ly Ry -> x = SNoCut Lx Rx -> y = SNoCut Ly Ry -> SNoCutP ({w 0 * y + x * w 1 + - w 0 * w 1|w :e Lx :*: Ly} :\/: {z 0 * y + x * z 1 + - z 0 * z 1|z :e Rx :*: Ry}) ({w 0 * y + x * w 1 + - w 0 * w 1|w :e Lx :*: Ry} :\/: {z 0 * y + x * z 1 + - z 0 * z 1|z :e Rx :*: Ly}) /\ x * y = SNoCut ({w 0 * y + x * w 1 + - w 0 * w 1|w :e Lx :*: Ly} :\/: {z 0 * y + x * z 1 + - z 0 * z 1|z :e Rx :*: Ry}) ({w 0 * y + x * w 1 + - w 0 * w 1|w :e Lx :*: Ry} :\/: {z 0 * y + x * z 1 + - z 0 * z 1|z :e Rx :*: Ly}) /\ forall q : prop , (forall LxLy' RxRy' LxRy' RxLy' , (forall u :e LxLy' , forall p : prop , (forall w :e Lx , forall w' :e Ly , SNo w -> SNo w' -> w < x -> w' < y -> u = w * y + x * w' + - w * w' -> p) -> p) -> (forall w :e Lx , forall w' :e Ly , w * y + x * w' + - w * w' :e LxLy') -> (forall u :e RxRy' , forall p : prop , (forall z :e Rx , forall z' :e Ry , SNo z -> SNo z' -> x < z -> y < z' -> u = z * y + x * z' + - z * z' -> p) -> p) -> (forall z :e Rx , forall z' :e Ry , z * y + x * z' + - z * z' :e RxRy') -> (forall u :e LxRy' , forall p : prop , (forall w :e Lx , forall z :e Ry , SNo w -> SNo z -> w < x -> y < z -> u = w * y + x * z + - w * z -> p) -> p) -> (forall w :e Lx , forall z :e Ry , w * y + x * z + - w * z :e LxRy') -> (forall u :e RxLy' , forall p : prop , (forall z :e Rx , forall w :e Ly , SNo z -> SNo w -> x < z -> w < y -> u = z * y + x * w + - z * w -> p) -> p) -> (forall z :e Rx , forall w :e Ly , z * y + x * w + - z * w :e RxLy') -> SNoCutP (LxLy' :\/: RxRy') (LxRy' :\/: RxLy') -> x * y = SNoCut (LxLy' :\/: RxRy') (LxRy' :\/: RxLy') -> q) -> q.
+Axiom mul_SNoCutP_gen : forall Lx Rx Ly Ry x y , SNoCutP Lx Rx -> SNoCutP Ly Ry -> x = SNoCut Lx Rx -> y = SNoCut Ly Ry -> SNoCutP ({w 0 * y + x * w 1 + - w 0 * w 1|w :e Lx :*: Ly} :\/: {z 0 * y + x * z 1 + - z 0 * z 1|z :e Rx :*: Ry}) ({w 0 * y + x * w 1 + - w 0 * w 1|w :e Lx :*: Ry} :\/: {z 0 * y + x * z 1 + - z 0 * z 1|z :e Rx :*: Ly}).
+Axiom mul_SNoCut_eq : forall Lx Rx Ly Ry x y , SNoCutP Lx Rx -> SNoCutP Ly Ry -> x = SNoCut Lx Rx -> y = SNoCut Ly Ry -> x * y = SNoCut ({w 0 * y + x * w 1 + - w 0 * w 1|w :e Lx :*: Ly} :\/: {z 0 * y + x * z 1 + - z 0 * z 1|z :e Rx :*: Ry}) ({w 0 * y + x * w 1 + - w 0 * w 1|w :e Lx :*: Ry} :\/: {z 0 * y + x * z 1 + - z 0 * z 1|z :e Rx :*: Ly}).
+Axiom mul_SNoCut_abs : forall Lx Rx Ly Ry x y , SNoCutP Lx Rx -> SNoCutP Ly Ry -> x = SNoCut Lx Rx -> y = SNoCut Ly Ry -> forall q : prop , (forall LxLy' RxRy' LxRy' RxLy' , (forall u :e LxLy' , forall p : prop , (forall w :e Lx , forall w' :e Ly , SNo w -> SNo w' -> w < x -> w' < y -> u = w * y + x * w' + - w * w' -> p) -> p) -> (forall w :e Lx , forall w' :e Ly , w * y + x * w' + - w * w' :e LxLy') -> (forall u :e RxRy' , forall p : prop , (forall z :e Rx , forall z' :e Ry , SNo z -> SNo z' -> x < z -> y < z' -> u = z * y + x * z' + - z * z' -> p) -> p) -> (forall z :e Rx , forall z' :e Ry , z * y + x * z' + - z * z' :e RxRy') -> (forall u :e LxRy' , forall p : prop , (forall w :e Lx , forall z :e Ry , SNo w -> SNo z -> w < x -> y < z -> u = w * y + x * z + - w * z -> p) -> p) -> (forall w :e Lx , forall z :e Ry , w * y + x * z + - w * z :e LxRy') -> (forall u :e RxLy' , forall p : prop , (forall z :e Rx , forall w :e Ly , SNo z -> SNo w -> x < z -> w < y -> u = z * y + x * w + - z * w -> p) -> p) -> (forall z :e Rx , forall w :e Ly , z * y + x * w + - z * w :e RxLy') -> SNoCutP (LxLy' :\/: RxRy') (LxRy' :\/: RxLy') -> x * y = SNoCut (LxLy' :\/: RxRy') (LxRy' :\/: RxLy') -> q) -> q.
+Axiom mul_SNo_SNoCut_SNoL_interpolate : forall Lx Rx Ly Ry , SNoCutP Lx Rx -> SNoCutP Ly Ry -> forall x y , x = SNoCut Lx Rx -> y = SNoCut Ly Ry -> forall u :e SNoL (x * y) , (exists v :e Lx , exists w :e Ly , u + v * w <= v * y + x * w) \/ (exists v :e Rx , exists w :e Ry , u + v * w <= v * y + x * w).
+Axiom mul_SNo_SNoCut_SNoL_interpolate_impred : forall Lx Rx Ly Ry , SNoCutP Lx Rx -> SNoCutP Ly Ry -> forall x y , x = SNoCut Lx Rx -> y = SNoCut Ly Ry -> forall u :e SNoL (x * y) , forall p : prop , (forall v :e Lx , forall w :e Ly , u + v * w <= v * y + x * w -> p) -> (forall v :e Rx , forall w :e Ry , u + v * w <= v * y + x * w -> p) -> p.
+Axiom mul_SNo_SNoCut_SNoR_interpolate : forall Lx Rx Ly Ry , SNoCutP Lx Rx -> SNoCutP Ly Ry -> forall x y , x = SNoCut Lx Rx -> y = SNoCut Ly Ry -> forall u :e SNoR (x * y) , (exists v :e Lx , exists w :e Ry , v * y + x * w <= u + v * w) \/ (exists v :e Rx , exists w :e Ly , v * y + x * w <= u + v * w).
+Axiom mul_SNo_SNoCut_SNoR_interpolate_impred : forall Lx Rx Ly Ry , SNoCutP Lx Rx -> SNoCutP Ly Ry -> forall x y , x = SNoCut Lx Rx -> y = SNoCut Ly Ry -> forall u :e SNoR (x * y) , forall p : prop , (forall v :e Lx , forall w :e Ry , v * y + x * w <= u + v * w -> p) -> (forall v :e Rx , forall w :e Ly , v * y + x * w <= u + v * w -> p) -> p.
+End SurrealMul.
+Section SurrealExp.
+Prefix - 358 := minus_SNo.
+Infix + 360 right  := add_SNo.
+Infix * 355 right  := mul_SNo.
+(* Parameter exp_SNo_nat "6ec032f955c377b8953cff1c37d3572125487a6587167afb5fdec25c2350b3c3" "cc51438984361070fa0036749984849f690f86f00488651aabd635e92983c745" *)
+Parameter exp_SNo_nat : set -> set -> set.
+Infix ^ 342 right  := exp_SNo_nat.
+Axiom exp_SNo_nat_0 : forall x , SNo x -> x ^ 0 = 1.
+Axiom exp_SNo_nat_S : forall x , SNo x -> forall n , nat_p n -> x ^ (ordsucc n) = x * x ^ n.
+Axiom exp_SNo_nat_1 : forall x , SNo x -> x ^ 1 = x.
+Axiom exp_SNo_nat_2 : forall x , SNo x -> x ^ 2 = x * x.
+Axiom SNo_sqr_nonneg' : forall x , SNo x -> 0 <= x ^ 2.
+Axiom SNo_zero_or_sqr_pos' : forall x , SNo x -> x = 0 \/ 0 < x ^ 2.
+Axiom SNo_exp_SNo_nat : forall x , SNo x -> forall n , nat_p n -> SNo (x ^ n).
+Axiom nat_exp_SNo_nat : forall x , nat_p x -> forall n , nat_p n -> nat_p (x ^ n).
+Axiom eps_ordsucc_half_add : forall n , nat_p n -> eps_ (ordsucc n) + eps_ (ordsucc n) = eps_ n.
+Axiom eps_1_half_eq1 : eps_ 1 + eps_ 1 = 1.
+Axiom eps_1_half_eq2 : 2 * eps_ 1 = 1.
+Axiom double_eps_1 : forall x y z , SNo x -> SNo y -> SNo z -> x + x = y + z -> x = eps_ 1 * (y + z).
+Axiom exp_SNo_1_bd : forall x , SNo x -> 1 <= x -> forall n , nat_p n -> 1 <= x ^ n.
+Axiom exp_SNo_2_bd : forall n , nat_p n -> n < 2 ^ n.
+Axiom mul_SNo_eps_power_2 : forall n , nat_p n -> eps_ n * 2 ^ n = 1.
+Axiom eps_bd_1 : forall n :e omega , eps_ n <= 1.
+Axiom mul_SNo_eps_power_2' : forall n , nat_p n -> 2 ^ n * eps_ n = 1.
+Axiom exp_SNo_nat_mul_add : forall x , SNo x -> forall m , nat_p m -> forall n , nat_p n -> x ^ m * x ^ n = x ^ (m + n).
+Axiom exp_SNo_nat_mul_add' : forall x , SNo x -> forall m n :e omega , x ^ m * x ^ n = x ^ (m + n).
+Axiom exp_SNo_nat_pos : forall x , SNo x -> 0 < x -> forall n , nat_p n -> 0 < x ^ n.
+Axiom mul_SNo_eps_eps_add_SNo : forall m n :e omega , eps_ m * eps_ n = eps_ (m + n).
+Axiom SNoS_omega_Lev_equip : forall n , nat_p n -> equip {x :e SNoS_ omega|SNoLev x = n} (2 ^ n).
+Axiom SNoS_finite : forall n :e omega , finite (SNoS_ n).
+Axiom SNoS_omega_SNoL_finite : forall x :e SNoS_ omega , finite (SNoL x).
+Axiom SNoS_omega_SNoR_finite : forall x :e SNoS_ omega , finite (SNoR x).
+End SurrealExp.

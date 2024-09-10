@@ -1,0 +1,53 @@
+Definition False : prop := forall p:prop, p.
+
+Definition not : prop -> prop := fun A:prop => A -> False.
+
+(* Unicode ~ "00ac" *)
+Prefix ~ 700 := not.
+
+Definition and : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> B -> p) -> p.
+
+(* Unicode /\ "2227" *)
+Infix /\ 780 left := and.
+
+Definition or : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> p) -> (B -> p) -> p.
+
+(* Unicode \/ "2228" *)
+Infix \/ 785 left := or.
+
+Section Eq.
+Variable A:SType.
+Definition eq : A->A->prop := fun x y:A => forall Q:A->A->prop, Q x y -> Q y x.
+Definition neq : A->A->prop := fun x y:A => ~ eq x y.
+End Eq.
+
+Infix = 502 := eq.
+(* Unicode <> "2260" *)
+Infix <> 502 := neq.
+
+Section Ex.
+Variable A:SType.
+Definition ex : (A->prop)->prop := fun Q:A->prop => forall P:prop, (forall x:A, Q x -> P) -> P.
+End Ex.
+
+(* Unicode exists "2203" *)
+Binder+ exists , := ex.
+
+Parameter In: set->set->prop.
+
+Definition Subq : set -> set -> prop := fun A B => forall x :e A, x :e B.
+
+Binder+ exists , := ex; and.
+
+Parameter Empty : set.
+
+(* Parameter ordsucc "9db634daee7fc36315ddda5f5f694934869921e9c5f55e8b25c91c0a07c5cbec" "65d8837d7b0172ae830bed36c8407fcd41b7d875033d2284eb2df245b42295a6" *)
+Parameter ordsucc : set->set.
+
+Notation Nat Empty ordsucc.
+
+(* Unicode Power "1D4AB" *)
+Parameter Power : set->set.
+
+(* Parameter equip "5719b3150f582144388b11e7da6c992f73c9f410c816893fdc1019f1b12097e0" "eb44199255e899126f4cd0bbf8cf2f5222a90aa4da547822cd6d81c671587877" *)
+Parameter equip: set->set->prop.

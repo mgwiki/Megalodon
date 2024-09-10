@@ -1,0 +1,93 @@
+(* Unicode Sigma_ "2211" *)
+Binder+ Sigma_ , := Sigma.
+(* Unicode :*: "2a2f" *)
+Infix :*: 440 left  := setprod.
+(* Unicode Pi_ "220f" *)
+Binder+ Pi_ , := Pi.
+(* Superscript :^: *)
+Infix :^: 430 left  := setexp.
+(* Parameter DescrR_i_io_1 "1f005fdad5c6f98763a15a5e5539088f5d43b7d1be866b0b204fda1ce9ed9248" "1d3fd4a14ef05bd43f5c147d7966cf05fd2fed808eea94f56380454b9a6044b2" *)
+Parameter DescrR_i_io_1 : (set -> (set -> prop) -> prop) -> set.
+(* Parameter DescrR_i_io_2 "28d8599686476258c12dcc5fc5f5974335febd7d5259e1a8e5918b7f9b91ca03" "768eb2ad186988375e6055394e36e90c81323954b8a44eb08816fb7a84db2272" *)
+Parameter DescrR_i_io_2 : (set -> (set -> prop) -> prop) -> set -> prop.
+Axiom DescrR_i_io_12 : forall R : set -> (set -> prop) -> prop , (exists x , (exists y : set -> prop , R x y) /\ (forall y z : set -> prop , R x y -> R x z -> y = z)) -> R (DescrR_i_io_1 R) (DescrR_i_io_2 R).
+Definition PNoEq_ : set -> (set -> prop) -> (set -> prop) -> prop := fun alpha p q => forall beta :e alpha , p beta <-> q beta.
+Axiom PNoEq_ref_ : forall alpha , forall p : set -> prop , PNoEq_ alpha p p.
+Axiom PNoEq_sym_ : forall alpha , forall p q : set -> prop , PNoEq_ alpha p q -> PNoEq_ alpha q p.
+Axiom PNoEq_tra_ : forall alpha , forall p q r : set -> prop , PNoEq_ alpha p q -> PNoEq_ alpha q r -> PNoEq_ alpha p r.
+Axiom PNoEq_antimon_ : forall p q : set -> prop , forall alpha , ordinal alpha -> forall beta :e alpha , PNoEq_ alpha p q -> PNoEq_ beta p q.
+Definition PNoLt_ : set -> (set -> prop) -> (set -> prop) -> prop := fun alpha p q => exists beta :e alpha , PNoEq_ beta p q /\ ~ p beta /\ q beta.
+Axiom PNoLt_E_ : forall alpha , forall p q : set -> prop , PNoLt_ alpha p q -> forall R : prop , (forall beta , beta :e alpha -> PNoEq_ beta p q -> ~ p beta -> q beta -> R) -> R.
+Axiom PNoLt_irref_ : forall alpha , forall p : set -> prop , ~ PNoLt_ alpha p p.
+Axiom PNoLt_mon_ : forall p q : set -> prop , forall alpha , ordinal alpha -> forall beta :e alpha , PNoLt_ beta p q -> PNoLt_ alpha p q.
+Axiom PNoLt_trichotomy_or_ : forall p q : set -> prop , forall alpha , ordinal alpha -> PNoLt_ alpha p q \/ PNoEq_ alpha p q \/ PNoLt_ alpha q p.
+Axiom PNoLt_tra_ : forall alpha , ordinal alpha -> forall p q r : set -> prop , PNoLt_ alpha p q -> PNoLt_ alpha q r -> PNoLt_ alpha p r.
+(* Parameter PNoLt "2336eb45d48549dd8a6a128edc17a8761fd9043c180691483bcf16e1acc9f00a" "8f57a05ce4764eff8bc94b278352b6755f1a46566cd7220a5488a4a595a47189" *)
+Parameter PNoLt : set -> (set -> prop) -> set -> (set -> prop) -> prop.
+Axiom PNoLtI1 : forall alpha beta , forall p q : set -> prop , PNoLt_ (alpha :/\: beta) p q -> PNoLt alpha p beta q.
+Axiom PNoLtI2 : forall alpha beta , forall p q : set -> prop , alpha :e beta -> PNoEq_ alpha p q -> q alpha -> PNoLt alpha p beta q.
+Axiom PNoLtI3 : forall alpha beta , forall p q : set -> prop , beta :e alpha -> PNoEq_ beta p q -> ~ p beta -> PNoLt alpha p beta q.
+Axiom PNoLtE : forall alpha beta , forall p q : set -> prop , PNoLt alpha p beta q -> forall R : prop , (PNoLt_ (alpha :/\: beta) p q -> R) -> (alpha :e beta -> PNoEq_ alpha p q -> q alpha -> R) -> (beta :e alpha -> PNoEq_ beta p q -> ~ p beta -> R) -> R.
+Axiom PNoLt_irref : forall alpha , forall p : set -> prop , ~ PNoLt alpha p alpha p.
+Axiom PNoLt_trichotomy_or : forall alpha beta , forall p q : set -> prop , ordinal alpha -> ordinal beta -> PNoLt alpha p beta q \/ alpha = beta /\ PNoEq_ alpha p q \/ PNoLt beta q alpha p.
+Axiom PNoLtEq_tra : forall alpha beta , ordinal alpha -> ordinal beta -> forall p q r : set -> prop , PNoLt alpha p beta q -> PNoEq_ beta q r -> PNoLt alpha p beta r.
+Axiom PNoEqLt_tra : forall alpha beta , ordinal alpha -> ordinal beta -> forall p q r : set -> prop , PNoEq_ alpha p q -> PNoLt alpha q beta r -> PNoLt alpha p beta r.
+Axiom PNoLt_tra : forall alpha beta gamma , ordinal alpha -> ordinal beta -> ordinal gamma -> forall p q r : set -> prop , PNoLt alpha p beta q -> PNoLt beta q gamma r -> PNoLt alpha p gamma r.
+Definition PNoLe : set -> (set -> prop) -> set -> (set -> prop) -> prop := fun alpha p beta q => PNoLt alpha p beta q \/ alpha = beta /\ PNoEq_ alpha p q.
+Axiom PNoLeI1 : forall alpha beta , forall p q : set -> prop , PNoLt alpha p beta q -> PNoLe alpha p beta q.
+Axiom PNoLeI2 : forall alpha , forall p q : set -> prop , PNoEq_ alpha p q -> PNoLe alpha p alpha q.
+Axiom PNoLe_ref : forall alpha , forall p : set -> prop , PNoLe alpha p alpha p.
+Axiom PNoLe_antisym : forall alpha beta , ordinal alpha -> ordinal beta -> forall p q : set -> prop , PNoLe alpha p beta q -> PNoLe beta q alpha p -> alpha = beta /\ PNoEq_ alpha p q.
+Axiom PNoLtLe_tra : forall alpha beta gamma , ordinal alpha -> ordinal beta -> ordinal gamma -> forall p q r : set -> prop , PNoLt alpha p beta q -> PNoLe beta q gamma r -> PNoLt alpha p gamma r.
+Axiom PNoLeLt_tra : forall alpha beta gamma , ordinal alpha -> ordinal beta -> ordinal gamma -> forall p q r : set -> prop , PNoLe alpha p beta q -> PNoLt beta q gamma r -> PNoLt alpha p gamma r.
+Axiom PNoEqLe_tra : forall alpha beta , ordinal alpha -> ordinal beta -> forall p q r : set -> prop , PNoEq_ alpha p q -> PNoLe alpha q beta r -> PNoLe alpha p beta r.
+Axiom PNoLe_tra : forall alpha beta gamma , ordinal alpha -> ordinal beta -> ordinal gamma -> forall p q r : set -> prop , PNoLe alpha p beta q -> PNoLe beta q gamma r -> PNoLe alpha p gamma r.
+Definition PNo_downc : (set -> (set -> prop) -> prop) -> set -> (set -> prop) -> prop := fun L alpha p => exists beta , ordinal beta /\ exists q : set -> prop , L beta q /\ PNoLe alpha p beta q.
+Definition PNo_upc : (set -> (set -> prop) -> prop) -> set -> (set -> prop) -> prop := fun R alpha p => exists beta , ordinal beta /\ exists q : set -> prop , R beta q /\ PNoLe beta q alpha p.
+Axiom PNoLe_downc : forall L : set -> (set -> prop) -> prop , forall alpha beta , forall p q : set -> prop , ordinal alpha -> ordinal beta -> PNo_downc L alpha p -> PNoLe beta q alpha p -> PNo_downc L beta q.
+Axiom PNo_downc_ref : forall L : set -> (set -> prop) -> prop , forall alpha , ordinal alpha -> forall p : set -> prop , L alpha p -> PNo_downc L alpha p.
+Axiom PNo_upc_ref : forall R : set -> (set -> prop) -> prop , forall alpha , ordinal alpha -> forall p : set -> prop , R alpha p -> PNo_upc R alpha p.
+Axiom PNoLe_upc : forall R : set -> (set -> prop) -> prop , forall alpha beta , forall p q : set -> prop , ordinal alpha -> ordinal beta -> PNo_upc R alpha p -> PNoLe alpha p beta q -> PNo_upc R beta q.
+Definition PNoLt_pwise : (set -> (set -> prop) -> prop) -> (set -> (set -> prop) -> prop) -> prop := fun L R => forall gamma , ordinal gamma -> forall p : set -> prop , L gamma p -> forall delta , ordinal delta -> forall q : set -> prop , R delta q -> PNoLt gamma p delta q.
+Axiom PNoLt_pwise_downc_upc : forall L R : set -> (set -> prop) -> prop , PNoLt_pwise L R -> PNoLt_pwise (PNo_downc L) (PNo_upc R).
+Definition PNo_rel_strict_upperbd : (set -> (set -> prop) -> prop) -> set -> (set -> prop) -> prop := fun L alpha p => forall beta :e alpha , forall q : set -> prop , PNo_downc L beta q -> PNoLt beta q alpha p.
+Definition PNo_rel_strict_lowerbd : (set -> (set -> prop) -> prop) -> set -> (set -> prop) -> prop := fun R alpha p => forall beta :e alpha , forall q : set -> prop , PNo_upc R beta q -> PNoLt alpha p beta q.
+Definition PNo_rel_strict_imv : (set -> (set -> prop) -> prop) -> (set -> (set -> prop) -> prop) -> set -> (set -> prop) -> prop := fun L R alpha p => PNo_rel_strict_upperbd L alpha p /\ PNo_rel_strict_lowerbd R alpha p.
+Axiom PNoEq_rel_strict_upperbd : forall L : set -> (set -> prop) -> prop , forall alpha , ordinal alpha -> forall p q : set -> prop , PNoEq_ alpha p q -> PNo_rel_strict_upperbd L alpha p -> PNo_rel_strict_upperbd L alpha q.
+Axiom PNo_rel_strict_upperbd_antimon : forall L : set -> (set -> prop) -> prop , forall alpha , ordinal alpha -> forall p : set -> prop , forall beta :e alpha , PNo_rel_strict_upperbd L alpha p -> PNo_rel_strict_upperbd L beta p.
+Axiom PNoEq_rel_strict_lowerbd : forall R : set -> (set -> prop) -> prop , forall alpha , ordinal alpha -> forall p q : set -> prop , PNoEq_ alpha p q -> PNo_rel_strict_lowerbd R alpha p -> PNo_rel_strict_lowerbd R alpha q.
+Axiom PNo_rel_strict_lowerbd_antimon : forall R : set -> (set -> prop) -> prop , forall alpha , ordinal alpha -> forall p : set -> prop , forall beta :e alpha , PNo_rel_strict_lowerbd R alpha p -> PNo_rel_strict_lowerbd R beta p.
+Axiom PNoEq_rel_strict_imv : forall L R : set -> (set -> prop) -> prop , forall alpha , ordinal alpha -> forall p q : set -> prop , PNoEq_ alpha p q -> PNo_rel_strict_imv L R alpha p -> PNo_rel_strict_imv L R alpha q.
+Axiom PNo_rel_strict_imv_antimon : forall L R : set -> (set -> prop) -> prop , forall alpha , ordinal alpha -> forall p : set -> prop , forall beta :e alpha , PNo_rel_strict_imv L R alpha p -> PNo_rel_strict_imv L R beta p.
+Definition PNo_rel_strict_uniq_imv : (set -> (set -> prop) -> prop) -> (set -> (set -> prop) -> prop) -> set -> (set -> prop) -> prop := fun L R alpha p => PNo_rel_strict_imv L R alpha p /\ forall q : set -> prop , PNo_rel_strict_imv L R alpha q -> PNoEq_ alpha p q.
+Definition PNo_rel_strict_split_imv : (set -> (set -> prop) -> prop) -> (set -> (set -> prop) -> prop) -> set -> (set -> prop) -> prop := fun L R alpha p => PNo_rel_strict_imv L R (ordsucc alpha) (fun delta => p delta /\ delta <> alpha) /\ PNo_rel_strict_imv L R (ordsucc alpha) (fun delta => p delta \/ delta = alpha).
+Axiom PNo_extend0_eq : forall alpha , forall p : set -> prop , PNoEq_ alpha p (fun delta => p delta /\ delta <> alpha).
+Axiom PNo_extend1_eq : forall alpha , forall p : set -> prop , PNoEq_ alpha p (fun delta => p delta \/ delta = alpha).
+Axiom PNo_rel_imv_ex : forall L R : set -> (set -> prop) -> prop , PNoLt_pwise L R -> forall alpha , ordinal alpha -> (exists p : set -> prop , PNo_rel_strict_uniq_imv L R alpha p) \/ (exists tau :e alpha , exists p : set -> prop , PNo_rel_strict_split_imv L R tau p).
+Definition PNo_lenbdd : set -> (set -> (set -> prop) -> prop) -> prop := fun alpha L => forall beta , forall p : set -> prop , L beta p -> beta :e alpha.
+Axiom PNo_lenbdd_strict_imv_extend0 : forall L R : set -> (set -> prop) -> prop , forall alpha , ordinal alpha -> PNo_lenbdd alpha L -> PNo_lenbdd alpha R -> forall p : set -> prop , PNo_rel_strict_imv L R alpha p -> PNo_rel_strict_imv L R (ordsucc alpha) (fun delta => p delta /\ delta <> alpha).
+Axiom PNo_lenbdd_strict_imv_extend1 : forall L R : set -> (set -> prop) -> prop , forall alpha , ordinal alpha -> PNo_lenbdd alpha L -> PNo_lenbdd alpha R -> forall p : set -> prop , PNo_rel_strict_imv L R alpha p -> PNo_rel_strict_imv L R (ordsucc alpha) (fun delta => p delta \/ delta = alpha).
+Axiom PNo_lenbdd_strict_imv_split : forall L R : set -> (set -> prop) -> prop , forall alpha , ordinal alpha -> PNo_lenbdd alpha L -> PNo_lenbdd alpha R -> forall p : set -> prop , PNo_rel_strict_imv L R alpha p -> PNo_rel_strict_split_imv L R alpha p.
+Axiom PNo_rel_imv_bdd_ex : forall L R : set -> (set -> prop) -> prop , PNoLt_pwise L R -> forall alpha , ordinal alpha -> PNo_lenbdd alpha L -> PNo_lenbdd alpha R -> exists beta :e ordsucc alpha , exists p : set -> prop , PNo_rel_strict_split_imv L R beta p.
+Definition PNo_strict_upperbd : (set -> (set -> prop) -> prop) -> set -> (set -> prop) -> prop := fun L alpha p => forall beta , ordinal beta -> forall q : set -> prop , L beta q -> PNoLt beta q alpha p.
+Definition PNo_strict_lowerbd : (set -> (set -> prop) -> prop) -> set -> (set -> prop) -> prop := fun R alpha p => forall beta , ordinal beta -> forall q : set -> prop , R beta q -> PNoLt alpha p beta q.
+Definition PNo_strict_imv : (set -> (set -> prop) -> prop) -> (set -> (set -> prop) -> prop) -> set -> (set -> prop) -> prop := fun L R alpha p => PNo_strict_upperbd L alpha p /\ PNo_strict_lowerbd R alpha p.
+Axiom PNoEq_strict_upperbd : forall L : set -> (set -> prop) -> prop , forall alpha , ordinal alpha -> forall p q : set -> prop , PNoEq_ alpha p q -> PNo_strict_upperbd L alpha p -> PNo_strict_upperbd L alpha q.
+Axiom PNoEq_strict_lowerbd : forall R : set -> (set -> prop) -> prop , forall alpha , ordinal alpha -> forall p q : set -> prop , PNoEq_ alpha p q -> PNo_strict_lowerbd R alpha p -> PNo_strict_lowerbd R alpha q.
+Axiom PNoEq_strict_imv : forall L R : set -> (set -> prop) -> prop , forall alpha , ordinal alpha -> forall p q : set -> prop , PNoEq_ alpha p q -> PNo_strict_imv L R alpha p -> PNo_strict_imv L R alpha q.
+Axiom PNo_strict_upperbd_imp_rel_strict_upperbd : forall L : set -> (set -> prop) -> prop , forall alpha , ordinal alpha -> forall beta :e ordsucc alpha , forall p : set -> prop , PNo_strict_upperbd L alpha p -> PNo_rel_strict_upperbd L beta p.
+Axiom PNo_strict_lowerbd_imp_rel_strict_lowerbd : forall R : set -> (set -> prop) -> prop , forall alpha , ordinal alpha -> forall beta :e ordsucc alpha , forall p : set -> prop , PNo_strict_lowerbd R alpha p -> PNo_rel_strict_lowerbd R beta p.
+Axiom PNo_strict_imv_imp_rel_strict_imv : forall L R : set -> (set -> prop) -> prop , forall alpha , ordinal alpha -> forall beta :e ordsucc alpha , forall p : set -> prop , PNo_strict_imv L R alpha p -> PNo_rel_strict_imv L R beta p.
+Axiom PNo_rel_split_imv_imp_strict_imv : forall L R : set -> (set -> prop) -> prop , forall alpha , ordinal alpha -> forall p : set -> prop , PNo_rel_strict_split_imv L R alpha p -> PNo_strict_imv L R alpha p.
+Axiom PNo_lenbdd_strict_imv_ex : forall L R : set -> (set -> prop) -> prop , PNoLt_pwise L R -> forall alpha , ordinal alpha -> PNo_lenbdd alpha L -> PNo_lenbdd alpha R -> exists beta :e ordsucc alpha , exists p : set -> prop , PNo_strict_imv L R beta p.
+Definition PNo_least_rep : (set -> (set -> prop) -> prop) -> (set -> (set -> prop) -> prop) -> set -> (set -> prop) -> prop := fun L R beta p => ordinal beta /\ PNo_strict_imv L R beta p /\ forall gamma :e beta , forall q : set -> prop , ~ PNo_strict_imv L R gamma q.
+Definition PNo_least_rep2 : (set -> (set -> prop) -> prop) -> (set -> (set -> prop) -> prop) -> set -> (set -> prop) -> prop := fun L R beta p => PNo_least_rep L R beta p /\ forall x , x /:e beta -> ~ p x.
+Axiom PNo_strict_imv_pred_eq : forall L R : set -> (set -> prop) -> prop , PNoLt_pwise L R -> forall alpha , ordinal alpha -> forall p q : set -> prop , PNo_least_rep L R alpha p -> PNo_strict_imv L R alpha q -> forall beta :e alpha , p beta <-> q beta.
+Axiom PNo_lenbdd_least_rep2_exuniq2 : forall L R : set -> (set -> prop) -> prop , PNoLt_pwise L R -> forall alpha , ordinal alpha -> PNo_lenbdd alpha L -> PNo_lenbdd alpha R -> exists beta , (exists p : set -> prop , PNo_least_rep2 L R beta p) /\ (forall p q : set -> prop , PNo_least_rep2 L R beta p -> PNo_least_rep2 L R beta q -> p = q).
+(* Parameter PNo_bd "1b39e85278dd9e820e7b6258957386ac55934d784aa3702c57a28ec807453b01" "ed76e76de9b58e621daa601cca73b4159a437ba0e73114924cb92ec8044f2aa2" *)
+Parameter PNo_bd : (set -> (set -> prop) -> prop) -> (set -> (set -> prop) -> prop) -> set.
+(* Parameter PNo_pred "be07c39b18a3aa93f066f4c064fee3941ec27cfd07a4728b6209135c77ce5704" "b2d51dcfccb9527e9551b0d0c47d891c9031a1d4ee87bba5a9ae5215025d107a" *)
+Parameter PNo_pred : (set -> (set -> prop) -> prop) -> (set -> (set -> prop) -> prop) -> set -> prop.
+Axiom PNo_bd_pred_lem : forall L R : set -> (set -> prop) -> prop , PNoLt_pwise L R -> forall alpha , ordinal alpha -> PNo_lenbdd alpha L -> PNo_lenbdd alpha R -> PNo_least_rep2 L R (PNo_bd L R) (PNo_pred L R).
+Axiom PNo_bd_pred : forall L R : set -> (set -> prop) -> prop , PNoLt_pwise L R -> forall alpha , ordinal alpha -> PNo_lenbdd alpha L -> PNo_lenbdd alpha R -> PNo_least_rep L R (PNo_bd L R) (PNo_pred L R).
+Axiom PNo_bd_In : forall L R : set -> (set -> prop) -> prop , PNoLt_pwise L R -> forall alpha , ordinal alpha -> PNo_lenbdd alpha L -> PNo_lenbdd alpha R -> PNo_bd L R :e ordsucc alpha.

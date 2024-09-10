@@ -1,0 +1,228 @@
+Section SurOctonions.
+Axiom octonion_tag_fresh : forall x , HSNo x -> forall u :e x , {4} /:e u.
+Definition HSNo_pair : set -> set -> set := pair_tag {4}.
+Axiom HSNo_pair_0 : forall x , HSNo_pair x 0 = x.
+Axiom HSNo_pair_prop_1 : forall x1 y1 x2 y2 , HSNo x1 -> HSNo x2 -> HSNo_pair x1 y1 = HSNo_pair x2 y2 -> x1 = x2.
+Axiom HSNo_pair_prop_2 : forall x1 y1 x2 y2 , HSNo x1 -> HSNo y1 -> HSNo x2 -> HSNo y2 -> HSNo_pair x1 y1 = HSNo_pair x2 y2 -> y1 = y2.
+Definition OSNo : set -> prop := CD_carr {4} HSNo.
+Axiom OSNo_I : forall x y , HSNo x -> HSNo y -> OSNo (HSNo_pair x y).
+Axiom OSNo_E : forall z , OSNo z -> forall p : set -> prop , (forall x y , HSNo x -> HSNo y -> z = HSNo_pair x y -> p (HSNo_pair x y)) -> p z.
+Axiom HSNo_OSNo : forall x , HSNo x -> OSNo x.
+Axiom OSNo_0 : OSNo 0.
+Axiom OSNo_1 : OSNo 1.
+Let ctag : set -> set := fun alpha => SetAdjoin alpha {4}.
+Postfix '' 100 := ctag.
+Axiom OSNo_ExtendedSNoElt_5 : forall z , OSNo z -> ExtendedSNoElt_ 5 z.
+Prefix - 358 := minus_HSNo.
+Infix + 360 right  := add_HSNo.
+Infix * 355 right  := mul_HSNo.
+Infix :/: 353 := div_HSNo.
+Postfix ' 100 := conj_HSNo.
+Let i := Complex_i.
+Let j := Quaternion_j.
+Let k := Quaternion_k.
+Definition OSNo_proj0 : set -> set := CD_proj0 {4} HSNo.
+Definition OSNo_proj1 : set -> set := CD_proj1 {4} HSNo.
+Let p0 : set -> set := OSNo_proj0.
+Let p1 : set -> set := OSNo_proj1.
+Let pa : set -> set -> set := HSNo_pair.
+Axiom OSNo_proj0_1 : forall z , OSNo z -> HSNo (p0 z) /\ exists y , HSNo y /\ z = pa (p0 z) y.
+Axiom OSNo_proj0_2 : forall x y , HSNo x -> HSNo y -> p0 (pa x y) = x.
+Axiom OSNo_proj1_1 : forall z , OSNo z -> HSNo (p1 z) /\ z = pa (p0 z) (p1 z).
+Axiom OSNo_proj1_2 : forall x y , HSNo x -> HSNo y -> p1 (pa x y) = y.
+Axiom OSNo_proj0R : forall z , OSNo z -> HSNo (p0 z).
+Axiom OSNo_proj1R : forall z , OSNo z -> HSNo (p1 z).
+Axiom OSNo_proj0p1 : forall z , OSNo z -> z = pa (p0 z) (p1 z).
+Axiom OSNo_proj0proj1_split : forall z w , OSNo z -> OSNo w -> p0 z = p0 w -> p1 z = p1 w -> z = w.
+Definition OSNoLev : set -> set := fun z => HSNoLev (p0 z) :\/: HSNoLev (p1 z).
+Axiom OSNoLev_ordinal : forall z , OSNo z -> ordinal (OSNoLev z).
+Definition minus_OSNo : set -> set := CD_minus {4} HSNo minus_HSNo.
+Definition conj_OSNo : set -> set := CD_conj {4} HSNo minus_HSNo conj_HSNo.
+Definition add_OSNo : set -> set -> set := CD_add {4} HSNo add_HSNo.
+Definition mul_OSNo : set -> set -> set := CD_mul {4} HSNo minus_HSNo conj_HSNo add_HSNo mul_HSNo.
+Definition exp_OSNo_nat : set -> set -> set := CD_exp_nat {4} HSNo minus_HSNo conj_HSNo add_HSNo mul_HSNo.
+Let plus' := add_OSNo.
+Let mult' := mul_OSNo.
+Prefix :-: 358 := minus_OSNo.
+Postfix '' 100 := conj_OSNo.
+Infix :+: 360 right  := add_OSNo.
+Infix :*: 355 right  := mul_OSNo.
+Infix :^: 355 right  := exp_OSNo_nat.
+Axiom OSNo_minus_OSNo : forall z , OSNo z -> OSNo (minus_OSNo z).
+Axiom minus_OSNo_proj0 : forall z , OSNo z -> p0 (:-: z) = - p0 z.
+Axiom minus_OSNo_proj1 : forall z , OSNo z -> p1 (:-: z) = - p1 z.
+Axiom OSNo_conj_OSNo : forall z , OSNo z -> OSNo (conj_OSNo z).
+Axiom conj_OSNo_proj0 : forall z , OSNo z -> p0 (z '') = (p0 z) '.
+Axiom conj_OSNo_proj1 : forall z , OSNo z -> p1 (z '') = - p1 z.
+Axiom OSNo_add_OSNo : forall z w , OSNo z -> OSNo w -> OSNo (add_OSNo z w).
+Axiom add_OSNo_proj0 : forall z w , OSNo z -> OSNo w -> p0 (plus' z w) = p0 z + p0 w.
+Axiom add_OSNo_proj1 : forall z w , OSNo z -> OSNo w -> p1 (plus' z w) = p1 z + p1 w.
+Axiom OSNo_mul_OSNo : forall z w , OSNo z -> OSNo w -> OSNo (z :*: w).
+Axiom mul_OSNo_proj0 : forall z w , OSNo z -> OSNo w -> p0 (mult' z w) = p0 z * p0 w + - (p1 w ' * p1 z).
+Axiom mul_OSNo_proj1 : forall z w , OSNo z -> OSNo w -> p1 (mult' z w) = p1 w * p0 z + p1 z * p0 w '.
+Axiom HSNo_OSNo_proj0 : forall x , HSNo x -> p0 x = x.
+Axiom HSNo_OSNo_proj1 : forall x , HSNo x -> p1 x = 0.
+Axiom OSNo_p0_0 : p0 0 = 0.
+Axiom OSNo_p1_0 : p1 0 = 0.
+Axiom OSNo_p0_1 : p0 1 = 1.
+Axiom OSNo_p1_1 : p1 1 = 0.
+Axiom OSNo_p0_i : p0 i = i.
+Axiom OSNo_p1_i : p1 i = 0.
+Axiom OSNo_p0_j : p0 j = j.
+Axiom OSNo_p1_j : p1 j = 0.
+Axiom OSNo_p0_k : p0 k = k.
+Axiom OSNo_p1_k : p1 k = 0.
+Axiom minus_OSNo_minus_HSNo : forall x , HSNo x -> :-: x = - x.
+Axiom minus_OSNo_0 : :-: 0 = 0.
+Axiom conj_OSNo_conj_HSNo : forall x , HSNo x -> x '' = x '.
+Axiom conj_OSNo_0 : 0 '' = 0.
+Axiom conj_OSNo_1 : 1 '' = 1.
+Axiom add_OSNo_add_HSNo : forall x y , HSNo x -> HSNo y -> x :+: y = x + y.
+Axiom mul_OSNo_mul_HSNo : forall x y , HSNo x -> HSNo y -> x :*: y = x * y.
+Axiom minus_OSNo_invol : forall z , OSNo z -> :-: :-: z = z.
+Axiom conj_OSNo_invol : forall z , OSNo z -> z '' '' = z.
+Axiom conj_minus_OSNo : forall z , OSNo z -> (:-: z) '' = :-: (z '').
+Axiom minus_add_OSNo : forall z w , OSNo z -> OSNo w -> :-: (z :+: w) = :-: z :+: :-: w.
+Axiom conj_add_OSNo : forall z w , OSNo z -> OSNo w -> (z :+: w) '' = z '' :+: w ''.
+Axiom add_OSNo_com : forall z w , OSNo z -> OSNo w -> z :+: w = w :+: z.
+Axiom add_OSNo_assoc : forall z w v , OSNo z -> OSNo w -> OSNo v -> (z :+: w) :+: v = z :+: (w :+: v).
+Axiom add_OSNo_0L : forall z , OSNo z -> add_OSNo 0 z = z.
+Axiom add_OSNo_0R : forall z , OSNo z -> add_OSNo z 0 = z.
+Axiom add_OSNo_minus_OSNo_linv : forall z , OSNo z -> add_OSNo (minus_OSNo z) z = 0.
+Axiom add_OSNo_minus_OSNo_rinv : forall z , OSNo z -> add_OSNo z (minus_OSNo z) = 0.
+Axiom mul_OSNo_0R : forall z , OSNo z -> z :*: 0 = 0.
+Axiom mul_OSNo_0L : forall z , OSNo z -> 0 :*: z = 0.
+Axiom mul_OSNo_1R : forall z , OSNo z -> z :*: 1 = z.
+Axiom mul_OSNo_1L : forall z , OSNo z -> 1 :*: z = z.
+Axiom conj_mul_OSNo : forall z w , OSNo z -> OSNo w -> (z :*: w) '' = w '' :*: z ''.
+Axiom mul_OSNo_distrL : forall z w u , OSNo z -> OSNo w -> OSNo u -> z :*: (w :+: u) = z :*: w :+: z :*: u.
+Axiom mul_OSNo_distrR : forall z w u , OSNo z -> OSNo w -> OSNo u -> (z :+: w) :*: u = z :*: u :+: w :*: u.
+Axiom minus_mul_OSNo_distrR : forall z w , OSNo z -> OSNo w -> z :*: (:-: w) = :-: z :*: w.
+Axiom minus_mul_OSNo_distrL : forall z w , OSNo z -> OSNo w -> (:-: z) :*: w = :-: z :*: w.
+Axiom exp_OSNo_nat_0 : forall z , z :^: 0 = 1.
+Axiom exp_OSNo_nat_S : forall z n , nat_p n -> z :^: (ordsucc n) = z :*: z :^: n.
+Axiom exp_OSNo_nat_1 : forall z , OSNo z -> z :^: 1 = z.
+Axiom exp_OSNo_nat_2 : forall z , OSNo z -> z :^: 2 = z :*: z.
+Axiom OSNo_exp_OSNo_nat : forall z , OSNo z -> forall n , nat_p n -> OSNo (z :^: n).
+Axiom add_HSNo_com_3b_1_2 : forall x y z , HSNo x -> HSNo y -> HSNo z -> (x + y) + z = (x + z) + y.
+Axiom add_HSNo_com_4_inner_mid : forall x y z w , HSNo x -> HSNo y -> HSNo z -> HSNo w -> (x + y) + (z + w) = (x + z) + (y + w).
+Axiom add_HSNo_rotate_4_0312 : forall x y z w , HSNo x -> HSNo y -> HSNo z -> HSNo w -> (x + y) + (z + w) = (x + w) + (y + z).
+Definition Octonion_i0 : set := pa 0 1.
+Definition Octonion_i3 : set := pa 0 (- Complex_i).
+Definition Octonion_i5 : set := pa 0 (- Quaternion_k).
+Definition Octonion_i6 : set := pa 0 (- Quaternion_j).
+Let i0 := Octonion_i0.
+Let i1 := Complex_i.
+Let i2 := Quaternion_j.
+Let i3 := Octonion_i3.
+Let i4 := Quaternion_k.
+Let i5 := Octonion_i5.
+Let i6 := Octonion_i6.
+Axiom OSNo_Complex_i : OSNo i.
+Axiom OSNo_Quaternion_j : OSNo j.
+Axiom OSNo_Quaternion_k : OSNo k.
+Axiom OSNo_Octonion_i0 : OSNo i0.
+Axiom OSNo_Octonion_i3 : OSNo i3.
+Axiom OSNo_Octonion_i5 : OSNo i5.
+Axiom OSNo_Octonion_i6 : OSNo i6.
+Axiom OSNo_p0_i0 : p0 i0 = 0.
+Axiom OSNo_p1_i0 : p1 i0 = 1.
+Axiom OSNo_p0_i3 : p0 i3 = 0.
+Axiom OSNo_p1_i3 : p1 i3 = - i.
+Axiom OSNo_p0_i5 : p0 i5 = 0.
+Axiom OSNo_p1_i5 : p1 i5 = - k.
+Axiom OSNo_p0_i6 : p0 i6 = 0.
+Axiom OSNo_p1_i6 : p1 i6 = - j.
+Axiom Octonion_i1_sqr : i1 :*: i1 = :-: 1.
+Axiom Octonion_i2_sqr : i2 :*: i2 = :-: 1.
+Axiom Octonion_i4_sqr : i4 :*: i4 = :-: 1.
+Axiom Octonion_i0_sqr : i0 :*: i0 = :-: 1.
+Axiom Octonion_i3_sqr : i3 :*: i3 = :-: 1.
+Axiom Octonion_i5_sqr : i5 :*: i5 = :-: 1.
+Axiom Octonion_i6_sqr : i6 :*: i6 = :-: 1.
+Axiom Octonion_i1_i2 : i1 :*: i2 = i4.
+Axiom Octonion_i2_i1 : i2 :*: i1 = :-: i4.
+Axiom Octonion_i2_i4 : i2 :*: i4 = i1.
+Axiom Octonion_i4_i2 : i4 :*: i2 = :-: i1.
+Axiom Octonion_i4_i1 : i4 :*: i1 = i2.
+Axiom Octonion_i1_i4 : i1 :*: i4 = :-: i2.
+Axiom Octonion_i2_i3 : i2 :*: i3 = i5.
+Axiom Octonion_i3_i2 : i3 :*: i2 = :-: i5.
+Axiom Octonion_i3_i5 : i3 :*: i5 = i2.
+Axiom Octonion_i5_i3 : i5 :*: i3 = :-: i2.
+Axiom Octonion_i5_i2 : i5 :*: i2 = i3.
+Axiom Octonion_i2_i5 : i2 :*: i5 = :-: i3.
+Axiom Octonion_i3_i4 : i3 :*: i4 = i6.
+Axiom Octonion_i4_i3 : i4 :*: i3 = :-: i6.
+Axiom Octonion_i4_i6 : i4 :*: i6 = i3.
+Axiom Octonion_i6_i4 : i6 :*: i4 = :-: i3.
+Axiom Octonion_i6_i3 : i6 :*: i3 = i4.
+Axiom Octonion_i3_i6 : i3 :*: i6 = :-: i4.
+Axiom Octonion_i4_i5 : i4 :*: i5 = i0.
+Axiom Octonion_i5_i4 : i5 :*: i4 = :-: i0.
+Axiom Octonion_i5_i0 : i5 :*: i0 = i4.
+Axiom Octonion_i0_i5 : i0 :*: i5 = :-: i4.
+Axiom Octonion_i0_i4 : i0 :*: i4 = i5.
+Axiom Octonion_i4_i0 : i4 :*: i0 = :-: i5.
+Axiom Octonion_i5_i6 : i5 :*: i6 = i1.
+Axiom Octonion_i6_i5 : i6 :*: i5 = :-: i1.
+Axiom Octonion_i6_i1 : i6 :*: i1 = i5.
+Axiom Octonion_i1_i6 : i1 :*: i6 = :-: i5.
+Axiom Octonion_i1_i5 : i1 :*: i5 = i6.
+Axiom Octonion_i5_i1 : i5 :*: i1 = :-: i6.
+Axiom Octonion_i6_i0 : i6 :*: i0 = i2.
+Axiom Octonion_i0_i6 : i0 :*: i6 = :-: i2.
+Axiom Octonion_i0_i2 : i0 :*: i2 = i6.
+Axiom Octonion_i2_i0 : i2 :*: i0 = :-: i6.
+Axiom Octonion_i2_i6 : i2 :*: i6 = i0.
+Axiom Octonion_i6_i2 : i6 :*: i2 = :-: i0.
+Axiom Octonion_i0_i1 : i0 :*: i1 = i3.
+Axiom Octonion_i1_i0 : i1 :*: i0 = :-: i3.
+Axiom Octonion_i1_i3 : i1 :*: i3 = i0.
+Axiom Octonion_i3_i1 : i3 :*: i1 = :-: i0.
+Axiom Octonion_i3_i0 : i3 :*: i0 = i1.
+Axiom Octonion_i0_i3 : i0 :*: i3 = :-: i1.
+End SurOctonions.
+Section Octonions.
+Prefix - 358 := minus_OSNo.
+Infix + 360 right  := add_OSNo.
+Infix * 355 right  := mul_OSNo.
+Let i0 := Octonion_i0.
+Let i1 := Complex_i.
+Let i2 := Quaternion_j.
+Let i3 := Octonion_i3.
+Let i4 := Quaternion_k.
+Let i5 := Octonion_i5.
+Let i6 := Octonion_i6.
+Let i := Complex_i.
+Let j := Quaternion_j.
+Let k := Quaternion_k.
+Let p0 : set -> set := OSNo_proj0.
+Let p1 : set -> set := OSNo_proj1.
+Let pa : set -> set -> set := HSNo_pair.
+Definition octonion : set := {pa (u 0) (u 1)|u :e quaternion :*: quaternion}.
+Axiom octonion_I : forall x y :e quaternion , pa x y :e octonion.
+Axiom octonion_E : forall z :e octonion , forall p : prop , (forall x y :e quaternion , z = pa x y -> p) -> p.
+Axiom octonion_OSNo : forall z :e octonion , OSNo z.
+Axiom quaternion_octonion : quaternion c= octonion.
+Axiom octonion_0 : 0 :e octonion.
+Axiom octonion_1 : 1 :e octonion.
+Axiom octonion_i : i :e octonion.
+Axiom octonion_j : j :e octonion.
+Axiom octonion_k : k :e octonion.
+Axiom octonion_i0 : i0 :e octonion.
+Axiom octonion_i3 : i3 :e octonion.
+Axiom octonion_i5 : i5 :e octonion.
+Axiom octonion_i6 : i6 :e octonion.
+Axiom octonion_p0_eq : forall x y :e quaternion , p0 (pa x y) = x.
+Axiom octonion_p1_eq : forall x y :e quaternion , p1 (pa x y) = y.
+Axiom octonion_p0_quaternion : forall z :e octonion , p0 z :e quaternion.
+Axiom octonion_p1_quaternion : forall z :e octonion , p1 z :e quaternion.
+Axiom octonion_proj0proj1_split : forall z w :e octonion , p0 z = p0 w -> p1 z = p1 w -> z = w.
+Axiom octonion_minus_OSNo : forall z :e octonion , - z :e octonion.
+Axiom octonion_conj_OSNo : forall z :e octonion , conj_OSNo z :e octonion.
+Axiom octonion_add_OSNo : forall z w :e octonion , z + w :e octonion.
+Axiom octonion_mul_OSNo : forall z w :e octonion , z * w :e octonion.
+Axiom quaternion_p0_eq' : forall x :e quaternion , p0 x = x.
+Axiom quaternion_p1_eq' : forall x :e quaternion , p1 x = 0.
+End Octonions.

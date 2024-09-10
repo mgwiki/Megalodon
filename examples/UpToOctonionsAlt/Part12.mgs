@@ -1,0 +1,195 @@
+Section Tags.
+Variable tagn : set.
+Hypothesis tagn_nat : nat_p tagn.
+Hypothesis tagn_1 : 1 :e tagn.
+Axiom not_TransSet_Sing_tagn : ~ TransSet {tagn}.
+Axiom not_ordinal_Sing_tagn : ~ ordinal {tagn}.
+End Tags.
+Section ExtendedSNo.
+Let tag : set -> set := fun alpha => SetAdjoin alpha {1}.
+Postfix ' 100 := tag.
+Definition ExtendedSNoElt_ : set -> set -> prop := fun n x => forall v :e Union x , ordinal v \/ exists i :e n , v = {i}.
+Axiom extension_SNoElt_mon : forall M N , M c= N -> forall x , ExtendedSNoElt_ M x -> ExtendedSNoElt_ N x.
+Axiom Sing_nat_fresh_extension : forall n , nat_p n -> 1 :e n -> forall x , ExtendedSNoElt_ n x -> forall u :e x , {n} /:e u.
+Axiom SNo_ExtendedSNoElt_2 : forall x , SNo x -> ExtendedSNoElt_ 2 x.
+End ExtendedSNo.
+Section SurComplex.
+Let tag : set -> set := fun alpha => SetAdjoin alpha {1}.
+Postfix ' 100 := tag.
+Axiom complex_tag_fresh : forall x , SNo x -> forall u :e x , {2} /:e u.
+Definition SNo_pair : set -> set -> set := pair_tag {2}.
+Axiom SNo_pair_0 : forall x , SNo_pair x 0 = x.
+Axiom SNo_pair_prop_1 : forall x1 y1 x2 y2 , SNo x1 -> SNo x2 -> SNo_pair x1 y1 = SNo_pair x2 y2 -> x1 = x2.
+Axiom SNo_pair_prop_2 : forall x1 y1 x2 y2 , SNo x1 -> SNo y1 -> SNo x2 -> SNo y2 -> SNo_pair x1 y1 = SNo_pair x2 y2 -> y1 = y2.
+Definition CSNo : set -> prop := CD_carr {2} SNo.
+Axiom CSNo_I : forall x y , SNo x -> SNo y -> CSNo (SNo_pair x y).
+Axiom CSNo_E : forall z , CSNo z -> forall p : set -> prop , (forall x y , SNo x -> SNo y -> z = SNo_pair x y -> p (SNo_pair x y)) -> p z.
+Axiom SNo_CSNo : forall x , SNo x -> CSNo x.
+Axiom CSNo_0 : CSNo 0.
+Axiom CSNo_1 : CSNo 1.
+Let ctag : set -> set := fun alpha => SetAdjoin alpha {2}.
+Postfix '' 100 := ctag.
+Axiom CSNo_ExtendedSNoElt_3 : forall z , CSNo z -> ExtendedSNoElt_ 3 z.
+Prefix - 358 := minus_SNo.
+Infix + 360 right  := add_SNo.
+Infix * 355 right  := mul_SNo.
+Infix :/: 353 := div_SNo.
+Infix ^ 342 right  := exp_SNo_nat.
+Definition Complex_i : set := SNo_pair 0 1.
+Definition CSNo_Re : set -> set := CD_proj0 {2} SNo.
+Definition CSNo_Im : set -> set := CD_proj1 {2} SNo.
+Let i := Complex_i.
+Let Re : set -> set := CSNo_Re.
+Let Im : set -> set := CSNo_Im.
+Let pa : set -> set -> set := SNo_pair.
+Axiom CSNo_Re1 : forall z , CSNo z -> SNo (Re z) /\ exists y , SNo y /\ z = pa (Re z) y.
+Axiom CSNo_Re2 : forall x y , SNo x -> SNo y -> Re (pa x y) = x.
+Axiom CSNo_Im1 : forall z , CSNo z -> SNo (Im z) /\ z = pa (Re z) (Im z).
+Axiom CSNo_Im2 : forall x y , SNo x -> SNo y -> Im (pa x y) = y.
+Axiom CSNo_ReR : forall z , CSNo z -> SNo (Re z).
+Axiom CSNo_ImR : forall z , CSNo z -> SNo (Im z).
+Axiom CSNo_ReIm : forall z , CSNo z -> z = pa (Re z) (Im z).
+Axiom CSNo_ReIm_split : forall z w , CSNo z -> CSNo w -> Re z = Re w -> Im z = Im w -> z = w.
+Definition CSNoLev : set -> set := fun z => SNoLev (Re z) :\/: SNoLev (Im z).
+Axiom CSNoLev_ordinal : forall z , CSNo z -> ordinal (CSNoLev z).
+Let conj : set -> set := fun x => x.
+Definition minus_CSNo : set -> set := CD_minus {2} SNo minus_SNo.
+Definition conj_CSNo : set -> set := CD_conj {2} SNo minus_SNo conj.
+Definition add_CSNo : set -> set -> set := CD_add {2} SNo add_SNo.
+Definition mul_CSNo : set -> set -> set := CD_mul {2} SNo minus_SNo conj add_SNo mul_SNo.
+Definition exp_CSNo_nat : set -> set -> set := CD_exp_nat {2} SNo minus_SNo conj add_SNo mul_SNo.
+Definition abs_sqr_CSNo : set -> set := fun z => Re z ^ 2 + Im z ^ 2.
+Definition recip_CSNo : set -> set := fun z => pa (Re z :/: abs_sqr_CSNo z) (- (Im z :/: abs_sqr_CSNo z)).
+Let plus' := add_CSNo.
+Let mult' := mul_CSNo.
+Prefix :-: 358 := minus_CSNo.
+Postfix ' 100 := conj_CSNo.
+Infix :+: 360 right  := add_CSNo.
+Infix :*: 355 right  := mul_CSNo.
+Infix :^: 355 right  := exp_CSNo_nat.
+Definition div_CSNo : set -> set -> set := fun z w => z :*: recip_CSNo w.
+Axiom CSNo_Complex_i : CSNo i.
+Axiom CSNo_minus_CSNo : forall z , CSNo z -> CSNo (minus_CSNo z).
+Axiom minus_CSNo_CRe : forall z , CSNo z -> Re (:-: z) = - Re z.
+Axiom minus_CSNo_CIm : forall z , CSNo z -> Im (:-: z) = - Im z.
+Axiom CSNo_conj_CSNo : forall z , CSNo z -> CSNo (conj_CSNo z).
+Axiom conj_CSNo_CRe : forall z , CSNo z -> Re (z ') = Re z.
+Axiom conj_CSNo_CIm : forall z , CSNo z -> Im (z ') = - Im z.
+Axiom CSNo_add_CSNo : forall z w , CSNo z -> CSNo w -> CSNo (add_CSNo z w).
+Axiom CSNo_add_CSNo_3 : forall z w v , CSNo z -> CSNo w -> CSNo v -> CSNo (z :+: w :+: v).
+Axiom add_CSNo_CRe : forall z w , CSNo z -> CSNo w -> Re (plus' z w) = Re z + Re w.
+Axiom add_CSNo_CIm : forall z w , CSNo z -> CSNo w -> Im (plus' z w) = Im z + Im w.
+Axiom CSNo_mul_CSNo : forall z w , CSNo z -> CSNo w -> CSNo (z :*: w).
+Axiom CSNo_mul_CSNo_3 : forall z w v , CSNo z -> CSNo w -> CSNo v -> CSNo (z :*: w :*: v).
+Axiom mul_CSNo_CRe : forall z w , CSNo z -> CSNo w -> Re (mult' z w) = Re z * Re w + - (Im w * Im z).
+Axiom mul_CSNo_CIm : forall z w , CSNo z -> CSNo w -> Im (mult' z w) = Im w * Re z + Im z * Re w.
+Axiom SNo_Re : forall x , SNo x -> Re x = x.
+Axiom SNo_Im : forall x , SNo x -> Im x = 0.
+Axiom Re_0 : Re 0 = 0.
+Axiom Im_0 : Im 0 = 0.
+Axiom Re_1 : Re 1 = 1.
+Axiom Im_1 : Im 1 = 0.
+Axiom Re_i : Re i = 0.
+Axiom Im_i : Im i = 1.
+Axiom conj_CSNo_id_SNo : forall x , SNo x -> x ' = x.
+Axiom conj_CSNo_0 : 0 ' = 0.
+Axiom conj_CSNo_1 : 1 ' = 1.
+Axiom conj_CSNo_i : i ' = :-: i.
+Axiom minus_CSNo_minus_SNo : forall x , SNo x -> :-: x = - x.
+Axiom minus_CSNo_0 : :-: 0 = 0.
+Axiom add_CSNo_add_SNo : forall x y , SNo x -> SNo y -> x :+: y = x + y.
+Axiom mul_CSNo_mul_SNo : forall x y , SNo x -> SNo y -> x :*: y = x * y.
+Axiom minus_CSNo_invol : forall z , CSNo z -> :-: :-: z = z.
+Axiom conj_CSNo_invol : forall z , CSNo z -> z ' ' = z.
+Axiom conj_minus_CSNo : forall z , CSNo z -> (:-: z) ' = :-: (z ').
+Axiom minus_add_CSNo : forall z w , CSNo z -> CSNo w -> :-: (z :+: w) = :-: z :+: :-: w.
+Axiom conj_add_CSNo : forall z w , CSNo z -> CSNo w -> (z :+: w) ' = z ' :+: w '.
+Axiom add_CSNo_com : forall z w , CSNo z -> CSNo w -> z :+: w = w :+: z.
+Axiom add_CSNo_assoc : forall z w v , CSNo z -> CSNo w -> CSNo v -> (z :+: w) :+: v = z :+: (w :+: v).
+Axiom add_CSNo_0L : forall z , CSNo z -> add_CSNo 0 z = z.
+Axiom add_CSNo_0R : forall z , CSNo z -> add_CSNo z 0 = z.
+Axiom add_CSNo_minus_CSNo_linv : forall z , CSNo z -> add_CSNo (minus_CSNo z) z = 0.
+Axiom add_CSNo_minus_CSNo_rinv : forall z , CSNo z -> add_CSNo z (minus_CSNo z) = 0.
+Axiom mul_CSNo_0R : forall z , CSNo z -> z :*: 0 = 0.
+Axiom mul_CSNo_0L : forall z , CSNo z -> 0 :*: z = 0.
+Axiom mul_CSNo_1R : forall z , CSNo z -> z :*: 1 = z.
+Axiom mul_CSNo_1L : forall z , CSNo z -> 1 :*: z = z.
+Axiom conj_mul_CSNo : forall z w , CSNo z -> CSNo w -> (z :*: w) ' = w ' :*: z '.
+Axiom mul_CSNo_distrL : forall z w u , CSNo z -> CSNo w -> CSNo u -> z :*: (w :+: u) = z :*: w :+: z :*: u.
+Axiom mul_CSNo_distrR : forall z w u , CSNo z -> CSNo w -> CSNo u -> (z :+: w) :*: u = z :*: u :+: w :*: u.
+Axiom minus_mul_CSNo_distrR : forall z w , CSNo z -> CSNo w -> z :*: (:-: w) = :-: z :*: w.
+Axiom minus_mul_CSNo_distrL : forall z w , CSNo z -> CSNo w -> (:-: z) :*: w = :-: z :*: w.
+Axiom exp_CSNo_nat_0 : forall z , z :^: 0 = 1.
+Axiom exp_CSNo_nat_S : forall z n , nat_p n -> z :^: (ordsucc n) = z :*: z :^: n.
+Axiom exp_CSNo_nat_1 : forall z , CSNo z -> z :^: 1 = z.
+Axiom exp_CSNo_nat_2 : forall z , CSNo z -> z :^: 2 = z :*: z.
+Axiom CSNo_exp_CSNo_nat : forall z , CSNo z -> forall n , nat_p n -> CSNo (z :^: n).
+Axiom add_SNo_rotate_4_0312 : forall x y z w , SNo x -> SNo y -> SNo z -> SNo w -> (x + y) + (z + w) = (x + w) + (y + z).
+Axiom mul_CSNo_com : forall z w , CSNo z -> CSNo w -> z :*: w = w :*: z.
+Axiom mul_CSNo_assoc : forall z w v , CSNo z -> CSNo w -> CSNo v -> z :*: (w :*: v) = (z :*: w) :*: v.
+Axiom Complex_i_sqr : i :*: i = :-: 1.
+Axiom SNo_abs_sqr_CSNo : forall z , CSNo z -> SNo (abs_sqr_CSNo z).
+Axiom abs_sqr_CSNo_nonneg : forall z , CSNo z -> 0 <= abs_sqr_CSNo z.
+Axiom abs_sqr_CSNo_zero : forall z , CSNo z -> abs_sqr_CSNo z = 0 -> z = 0.
+Axiom CSNo_recip_CSNo : forall z , CSNo z -> CSNo (recip_CSNo z).
+Axiom CSNo_relative_recip : forall z , CSNo z -> forall u , SNo u -> (Re z ^ 2 + Im z ^ 2) * u = 1 -> z :*: (u :*: Re z :+: :-: i :*: u :*: Im z) = 1.
+Axiom recip_CSNo_invR : forall z , CSNo z -> z <> 0 -> z :*: recip_CSNo z = 1.
+Axiom recip_CSNo_invL : forall z , CSNo z -> z <> 0 -> recip_CSNo z :*: z = 1.
+Axiom CSNo_div_CSNo : forall z w , CSNo z -> CSNo w -> CSNo (div_CSNo z w).
+Axiom mul_div_CSNo_invL : forall z w , CSNo z -> CSNo w -> w <> 0 -> (div_CSNo z w) :*: w = z.
+Axiom mul_div_CSNo_invR : forall z w , CSNo z -> CSNo w -> w <> 0 -> w :*: (div_CSNo z w) = z.
+Axiom sqrt_SNo_nonneg_sqr_id : forall x , SNo x -> 0 <= x -> sqrt_SNo_nonneg (x ^ 2) = x.
+Axiom sqrt_SNo_nonneg_mon_strict : forall x y , SNo x -> SNo y -> 0 <= x -> x < y -> sqrt_SNo_nonneg x < sqrt_SNo_nonneg y.
+Axiom sqrt_SNo_nonneg_mon : forall x y , SNo x -> SNo y -> 0 <= x -> x <= y -> sqrt_SNo_nonneg x <= sqrt_SNo_nonneg y.
+Axiom sqrt_SNo_nonneg_mul_SNo : forall x y , SNo x -> SNo y -> 0 <= x -> 0 <= y -> sqrt_SNo_nonneg (x * y) = sqrt_SNo_nonneg x * sqrt_SNo_nonneg y.
+Definition modulus_CSNo : set -> set := fun z => sqrt_SNo_nonneg (abs_sqr_CSNo z).
+Axiom SNo_modulus_CSNo : forall z , CSNo z -> SNo (modulus_CSNo z).
+Axiom modulus_CSNo_nonneg : forall z , CSNo z -> 0 <= modulus_CSNo z.
+Definition sqrt_CSNo : set -> set := fun z => if Im z < 0 \/ Im z = 0 /\ Re z < 0 then pa (sqrt_SNo_nonneg (eps_ 1 * (Re z + modulus_CSNo z))) (- sqrt_SNo_nonneg (eps_ 1 * (- Re z + modulus_CSNo z))) else pa (sqrt_SNo_nonneg (eps_ 1 * (Re z + modulus_CSNo z))) (sqrt_SNo_nonneg (eps_ 1 * (- Re z + modulus_CSNo z))).
+Axiom sqrt_CSNo_sqrt : forall z , CSNo z -> sqrt_CSNo z :^: 2 = z.
+End SurComplex.
+Section Complex.
+Prefix - 358 := minus_CSNo.
+Infix + 360 right  := add_CSNo.
+Infix * 355 right  := mul_CSNo.
+Infix < 490 := SNoLt.
+(* Unicode <= "2264" *)
+Infix <= 490 := SNoLe.
+Let i := Complex_i.
+Let Re : set -> set := CSNo_Re.
+Let Im : set -> set := CSNo_Im.
+Let pa : set -> set -> set := SNo_pair.
+Definition complex : set := {pa (u 0) (u 1)|u :e real :*: real}.
+Axiom complex_I : forall x y :e real , pa x y :e complex.
+Axiom complex_E : forall z :e complex , forall p : prop , (forall x y :e real , z = pa x y -> p) -> p.
+Axiom complex_CSNo : forall z :e complex , CSNo z.
+Axiom real_complex : real c= complex.
+Axiom complex_0 : 0 :e complex.
+Axiom complex_1 : 1 :e complex.
+Axiom complex_i : i :e complex.
+Axiom complex_Re_eq : forall x y :e real , Re (pa x y) = x.
+Axiom complex_Im_eq : forall x y :e real , Im (pa x y) = y.
+Axiom complex_Re_real : forall z :e complex , Re z :e real.
+Axiom complex_Im_real : forall z :e complex , Im z :e real.
+Axiom complex_ReIm_split : forall z w :e complex , Re z = Re w -> Im z = Im w -> z = w.
+Axiom complex_minus_CSNo : forall z :e complex , - z :e complex.
+Axiom complex_conj_CSNo : forall z :e complex , conj_CSNo z :e complex.
+Axiom complex_add_CSNo : forall z w :e complex , z + w :e complex.
+Axiom complex_mul_CSNo : forall z w :e complex , z * w :e complex.
+Axiom real_Re_eq : forall x :e real , Re x = x.
+Axiom real_Im_eq : forall x :e real , Im x = 0.
+Axiom mul_i_real_eq : forall x :e real , i * x = pa 0 x.
+Axiom real_Re_i_eq : forall x :e real , Re (i * x) = 0.
+Axiom real_Im_i_eq : forall x :e real , Im (i * x) = x.
+Axiom complex_eta : forall z :e complex , z = Re z + i * Im z.
+Section ComplexDiv.
+Prefix - 358 := minus_SNo.
+Infix + 360 right  := add_SNo.
+Infix * 355 right  := mul_SNo.
+Infix :/: 353 := div_SNo.
+Infix ^ 342 right  := exp_SNo_nat.
+Axiom complex_recip_CSNo : forall z :e complex , recip_CSNo z :e complex.
+Axiom complex_div_CSNo : forall z w :e complex , div_CSNo z w :e complex.
+End ComplexDiv.
+Axiom complex_real_set_eq : real = {z :e complex|Re z = z}.
+End Complex.
