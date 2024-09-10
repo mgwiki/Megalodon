@@ -14,15 +14,23 @@ megalodon -owned ownedNov222023 form100/100thms_12.mg
 See pfgbounties/README for details about conjectures with Proofgold
 bounties on them as of September 2023.
 
-* MetaMath set.mm Translation:
+* MetaMath set.mm Translations:
 
-A translation of MetaMath's set.mm library (as of the middle of 2022)
-as 40558 Megalodon-checkable theorems (each in its own file) is
-available here:
+There are two translations of MetaMath's set.mm library (as of the
+middle of 2024) as 40558 Megalodon-checkable theorems.
+
+In the SetMM theory, each theorem (each in its own file) is available here:
+
+http://grid01.ciirc.cvut.cz/~chad/setmmmgpfg/setmmmg.tgz
+
+(Note: setmmmg.tgz unzips to about 600MB directory.)
+
+In the Egal theory, each theorem (each in its own file) is available here:
 
 http://grid01.ciirc.cvut.cz/~chad/mmmg.tgz
 
 (Note: mmmg.tgz unzips to a 657MB directory.)
+
 
 * Mizar Mathematical Library Translation:
 
