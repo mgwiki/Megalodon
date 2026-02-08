@@ -3365,10 +3365,12 @@ let mgcheck c =
       if !verbosity > 59 then (Printf.printf "Main Loop Start\n"; flush stdout);
       match !proving with
       | None ->
+          Syntax.set_html_item_start_line !lineno;
 	  let (ditem,tr) = parse_docitem !tl in
 	  tl := tr;
 	  evaluate_docitem ditem
       | Some (thmname,i,gpgtm,gphv,pfggphv) -> (*** reading a proof ***)
+          Syntax.set_html_item_start_line !lineno;
 	  let (pitem,tr) = parse_pftacitem !tl in
 	  tl := tr;
 	  evaluate_pftac pitem thmname i gpgtm gphv pfggphv

@@ -4848,6 +4848,19 @@ let pf_complexity d =
 let globalhrefs = ref false
 let localhrefh : (string,unit) Hashtbl.t = Hashtbl.create 100
 
+(* --- Source line tracking for HTML output --- *)
+let html_item_start_line : int ref = ref 1
+
+let set_html_item_start_line (l:int) =
+  html_item_start_line := l
+
+let output_srcline_html ch =
+  (* You can style this with CSS; using data-line makes it easy to target in JS too *)
+  Printf.fprintf ch "<span class='srcline' data-line='%d'>L%d</span>"
+    !html_item_start_line !html_item_start_line
+
+
+
 let output_unicode_html ch u =
   output_string ch "&#x";
   output_string ch u;
@@ -5338,7 +5351,14 @@ and output_ltree_html_c cx ch a stmh sknh =
           output_string ch " <span class='keyword'>else</span> ");
       output_ltree_html cx ch c stmh sknh
 
+
 let output_docitem_html cx ch ditem stmh sknh =
+  let wrap k =
+    output_string ch "<div class='docitemwrap'>";
+    output_srcline_html ch;
+    k ();
+    output_string ch "</div>\n"
+  in
   match ditem with
   | Author(x,yl) -> ()
   | Title(x) -> ()
@@ -5383,6 +5403,7 @@ let output_docitem_html cx ch ditem stmh sknh =
      Printf.fprintf ch "<div class='sectionend'>End of Section <b>%s</b></div>\n" x;
      Printf.fprintf ch "</div>\n"
   | VarDecl(xl,i,a) ->
+     wrap (fun () ->
       output_string ch "<div class='vardecl'><span class='docitemkeyword'>Variable</span> <span class='ltree'>";
       List.iter
 	(fun x ->
@@ -5393,13 +5414,17 @@ let output_docitem_html cx ch ditem stmh sknh =
       output_asckind_html ch i;
       output_ltree_html cx ch a stmh sknh;
       output_string ch "</span></div>\n";
+    )
   | LetDecl(x,None,b) ->
+     wrap (fun () ->
       output_string ch "<div class='letdecl'><span class='docitemkeyword'>Let</span> <span class='ltree'>";
       output_string ch x;
       output_string ch " &#x225d; ";
       output_ltree_html cx ch b stmh sknh;
       output_string ch "</span></div>\n";
+      )
   | LetDecl(x,Some(i,a),b) ->
+     wrap (fun () ->
       output_string ch "<div class='letdecl'><span class='docitemkeyword'>Let</span> <span class='ltree'>";
       output_string ch x;
       output_string ch " ";
@@ -5408,12 +5433,15 @@ let output_docitem_html cx ch ditem stmh sknh =
       output_string ch " &#x225d; ";
       output_ltree_html cx ch b stmh sknh;
       output_string ch "</span></div>\n";
+    )
   | HypDecl(x,b) ->
+     wrap (fun () ->
       output_string ch "<div class='hypdecl'><span class='docitemkeyword'>Hypothesis</span> <span class='ltree'>";
       output_string ch x;
       output_string ch " : ";
       output_ltree_html cx ch b stmh sknh;
       output_string ch "</span></div>\n";
+      )
   | PostInfixDecl(x,b,p,InfixNone) ->
       incr notationhrefcntr;
       Printf.fprintf ch "<div class='infixdecl'><a name='notation_%d'/><b>Notation</b>. We use <span class='ltree'>" !notationhrefcntr;
@@ -5717,6 +5745,7 @@ let output_docitem_html cx ch ditem stmh sknh =
       end
   | ParamHash(x,h,_) -> ()
   | DefDecl(x,None,a) ->
+     wrap (fun () ->
       Hashtbl.add localhrefh x ();
       output_string ch "<a name='";
       output_string ch (url_friendly_name x);
@@ -5746,7 +5775,9 @@ let output_docitem_html cx ch ditem stmh sknh =
 	    output_string ch ", <I>x</I> &#x2286; <I>A</I> &#x2192; <I>B</I></span>.</div>\n";
 	  end
       end
+    )
   | DefDecl(x,Some b,a) ->
+     wrap (fun () ->
       Hashtbl.add localhrefh x ();
       output_string ch "<a name='";
       output_string ch (url_friendly_name x);
@@ -5777,8 +5808,10 @@ let output_docitem_html cx ch ditem stmh sknh =
 	    output_name_whrefa_html cx ch "set" stmh sknh;
 	    output_string ch ", <I>x</I> &#x2286; <I>A</I> &#x2192; <I>B</I></span>.</div>\n";
 	  end
-      end
+	  end
+	  )
   | AxDecl(x,a) ->
+     wrap (fun () ->
       Hashtbl.add localhrefh x ();
       output_string ch "<a name='";
       output_string ch (url_friendly_name x);
@@ -5795,8 +5828,10 @@ let output_docitem_html cx ch ditem stmh sknh =
           Printf.fprintf ch "<div class='pfglinks'>In Proofgold the corresponding term root is <a href='%s?b=%s'>%s...</a> and proposition id is <a href='%s?b=%s'>%s...</a></div>\n" !explorerurl xpfgtmroot (String.sub xpfgtmroot 0 6) !explorerurl xpfgpropid (String.sub xpfgpropid 0 6);
         with Not_found -> ()
       end;
+    )
   | ThmDecl(c,x,a) ->
-      Hashtbl.add localhrefh x ();
+     wrap (fun () ->
+  Hashtbl.add localhrefh x ();
       output_string ch "<a name='";
       output_string ch (url_friendly_name x);
       output_string ch "'/>";
@@ -5817,7 +5852,8 @@ let output_docitem_html cx ch ditem stmh sknh =
       incr thmcount;
       Buffer.reset pftext;
       Printf.fprintf ch "<div id='pf%d' class='proof'><div class='proofpres' onclick='g(this)'><b>Proof:</b><br/>" !thmcount
-
+      )
+     
 let text_row_col txt =
   let nli = ref 1 in
   let nch = ref 0 in
@@ -5836,7 +5872,14 @@ let rec output_comma_list_str ch f y yl =
   | [] -> Printf.fprintf ch " and "; f y
   | z::yr -> f y; Printf.fprintf ch ", "; output_comma_list_str ch f z yr
 
+
 let output_pftacitem_html cx ch pftac stmh sknh laststructact =
+  let wrap k =
+    output_string ch "<div class='pftacwrap'>";
+    output_srcline_html ch;
+    k ();
+    output_string ch "</div>\n"
+  in
   match pftac with
   | PfStruct i when i < 4 ->
       if laststructact = 1 then
@@ -5849,26 +5892,35 @@ let output_pftacitem_html cx ch pftac stmh sknh laststructact =
   | PfStruct 5 -> output_string ch "</div>";
   | PfStruct _ -> ()
   | Exact(a) ->
+     wrap (fun () ->
       output_string ch "<div class='exact'>An <span class='pftackeyword'>exact</span> proof term for the current goal is <span class='ltree'>";
       output_ltree_html cx ch a stmh sknh;
       output_string ch "</span>.</div>\n"
+    )
   | LetTac(xl,None) ->
+       wrap (fun () ->
       output_string ch "<div class='lettac'><span class='pftackeyword'>Let</span> <span class='ltree'>";
       output_comma_names_html ch xl;
       output_string ch "</span> be given.</div>\n"
+      )
   | LetTac(xl,Some a) ->
+     wrap (fun () ->
       output_string ch "<div class='lettac'><span class='pftackeyword'>Let</span> <span class='ltree'>";
       output_comma_names_html ch xl;
       output_string ch "</span> of type <span class='ltree'>";
       output_ltree_html cx ch a stmh sknh;
       output_string ch "</span> be given.</div>\n"
+)
   | SetTac(x,None,a) ->
-      output_string ch "<div class='settac'><span class='pftackeyword'>Set</span> <span class='ltree'>";
+     wrap (fun () ->
+  output_string ch "<div class='settac'><span class='pftackeyword'>Set</span> <span class='ltree'>";
       output_string ch x;
       output_string ch "</span> to be the term <span class='ltree'>";
       output_ltree_html cx ch a stmh sknh;
       output_string ch "</span>.</div>\n"
+      )
   | SetTac(x,Some(b),a) ->
+     wrap (fun () ->
       output_string ch "<div class='settac'><span class='pftackeyword'>Set</span> <span class='ltree'>";
       output_string ch x;
       output_string ch "</span> to be the term <span class='ltree'>";
@@ -5876,27 +5928,37 @@ let output_pftacitem_html cx ch pftac stmh sknh laststructact =
       output_string ch "</span> of type <span class='ltree'>";
       output_ltree_html cx ch b stmh sknh;
       output_string ch "</span>.</div>\n"
+)
   | AssumeTac(xl,None) ->
-      output_string ch "<div class='assumetac'><span class='pftackeyword'>Assume</span> <span class='ltree'>";
+     wrap (fun () ->
+  output_string ch "<div class='assumetac'><span class='pftackeyword'>Assume</span> <span class='ltree'>";
       output_names_html ch xl;
       output_string ch "</span>.</div>\n"
+      )
   | AssumeTac(xl,Some a) ->
+     wrap (fun () ->
       output_string ch "<div class='assumetac'><span class='pftackeyword'>Assume</span> <span class='ltree'>";
       output_names_html ch xl;
       output_string ch "</span>: <span class='ltree'>";
       output_ltree_html cx ch a stmh sknh;
       output_string ch "</span>.</div>\n"
+)
   | ApplyTac(a) ->
+       wrap (fun () ->
       output_string ch "<div class='applytac'><span class='pftackeyword'>Apply</span> <span class='ltree'>";
       output_ltree_html cx ch a stmh sknh;
       output_string ch "</span> to the current goal.</div>\n"
+      )
   | ClaimTac(x,a) ->
+     wrap (fun () ->
       output_string ch "<div class='claimtac'>We prove the intermediate <span class='pftackeyword'>claim</span> <span class='ltree'>";
       output_name_html ch x;
       output_string ch "</span>: <span class='ltree'>";
       output_ltree_html cx ch a stmh sknh;
       output_string ch "</span>.</div>\n"
+  )
   | ProveTac(a,bl) ->
+       wrap (fun () ->
       output_string ch "<div class='provetac'>We will <span class='pftackeyword'>prove</span> ";
       output_ltree_html cx ch a stmh sknh;
       List.iter (fun b ->
@@ -5904,14 +5966,18 @@ let output_pftacitem_html cx ch pftac stmh sknh laststructact =
 	output_ltree_html cx ch b stmh sknh;
 	output_string ch "</span>")
 	bl;
-      output_string ch ".</div>\n"
+	output_string ch ".</div>\n"
+	)
   | CasesTac(a,cl) ->
       raise (Failure("Cases tactic not yet implemented"))
   | WitnessTac(a) ->
-      output_string ch "<div class='witnesstac'>We use <span class='ltree'>";
+     wrap (fun () ->
+  output_string ch "<div class='witnesstac'>We use <span class='ltree'>";
       output_ltree_html cx ch a stmh sknh;
       output_string ch "</span> to <span class='pftackeyword'>witness</span> the existential quantifier.</div>\n";
-  | RewriteTac(s,a,il) ->
+      )
+     | RewriteTac(s,a,il) ->
+     wrap (fun () ->
       output_string ch "<div class='rewritetac'><span class='pftackeyword'>rewrite</span> the current goal using <span class='ltree'>";
       output_ltree_html cx ch a stmh sknh;
       output_string ch "</span>";
@@ -5941,6 +6007,7 @@ let output_pftacitem_html cx ch pftac stmh sknh laststructact =
 	    posl i j kl
       end;
       output_string ch ".</div>\n"
+      )
   | SpecialTac(x,[]) -> Printf.fprintf ch "<div>Use %s.</div>\n" x
   | SpecialTac(x,y::yl) ->
      Printf.fprintf ch "<div>Use %s with " x;
@@ -5958,6 +6025,7 @@ Printf.fprintf ch "<textarea id='pf%dcodetext' rows=%d cols=%d>%s</textarea><br/
       Printf.fprintf ch "<div id='pf%dcoderesp' class='proofcoderesp'/></div>" !thmcount; *)
       output_string ch "</div></div></div>\n"
   | Admitted ->
+     wrap (fun () ->
       if laststructact < 0 then
 	begin
 	  output_string ch "<div class='admitted'>The rest of the proof is missing.</div>\n";
@@ -5979,7 +6047,8 @@ Printf.fprintf ch "<textarea id='pf%dcodetext' rows=%d cols=%d>%s</textarea><br/
 	  Printf.fprintf ch "<textarea id='pf%dcodetext' rows=%d cols=%d>%s</textarea><br/><input type='button' value='Check' onclick='h(this)'/>\n" !thmcount rowcount colcount pftxt;
 	  Printf.fprintf ch "<div id='pf%dcoderesp' class='proofcoderesp'/></div>" !thmcount;
 	  output_string ch "</div></div></div>\n"
-	end
+	  end
+	  )
   | Admit ->
       output_string ch "<div class='admit'>The rest of this subproof is missing.</div>"
 
