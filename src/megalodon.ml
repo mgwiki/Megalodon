@@ -3938,6 +3938,10 @@ let _ =
 	  begin
 	    pfgsummary := true;
 	  end
+	else if Sys.argv.(!j) = "-nopfglinks" then
+	  begin
+	    Syntax.set_show_pfglinks false;
+	  end	    
 	else if Sys.argv.(!j) = "-indout" then
 	  begin
 	    includingsigfile := false;

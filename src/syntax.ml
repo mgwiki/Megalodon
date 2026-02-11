@@ -4845,6 +4845,11 @@ let pf_complexity d =
     pbetas2;
   !complexity
 
+
+let show_pfglinks = ref true
+let set_show_pfglinks b = show_pfglinks := b
+
+
 let globalhrefs = ref false
 let localhrefh : (string,unit) Hashtbl.t = Hashtbl.create 100
 
@@ -5710,6 +5715,7 @@ let output_docitem_html cx ch ditem stmh sknh =
       output_string ch "</span> is a term of type <span class='ltree'>";
       output_ltree_html cx ch a stmh sknh;
       output_string ch "</span>.</div>\n";
+      if !show_pfglinks then
       begin
         try
           let xpfgtmroot = Hashtbl.find pfgtmroot x in
@@ -5755,6 +5761,7 @@ let output_docitem_html cx ch ditem stmh sknh =
       output_string ch "</span> to be <span class='ltree'>";
       output_ltree_html cx ch a stmh sknh;
       output_string ch "</span>.</div>\n";
+      if !show_pfglinks then
       begin
         try
           let xpfgtmroot = Hashtbl.find pfgtmroot x in
@@ -5789,6 +5796,7 @@ let output_docitem_html cx ch ditem stmh sknh =
       output_string ch "</span> of type <span class='ltree'>";
       output_ltree_html cx ch b stmh sknh;
       output_string ch "</span>.</div>\n";
+      if !show_pfglinks then      
       begin
         try
           let xpfgtmroot = Hashtbl.find pfgtmroot x in
@@ -5821,6 +5829,7 @@ let output_docitem_html cx ch ditem stmh sknh =
       output_string ch "</span>) We take the following as an axiom:\n<div class='axiomprop'><span class='ltree'>";
       output_ltree_html cx ch a stmh sknh;
       output_string ch "</span></div></div>\n";
+      if !show_pfglinks then
       begin
         try
           let xpfgtmroot = Hashtbl.find pfgtmroot x in
@@ -5842,6 +5851,7 @@ let output_docitem_html cx ch ditem stmh sknh =
       output_string ch "</span>) <div class='thmprop'><span class='ltree'>";
       output_ltree_html cx ch a stmh sknh;
       output_string ch "</span></div></div>\n";
+      if !show_pfglinks then      
       begin
         try
           let xpfgtmroot = Hashtbl.find pfgtmroot x in

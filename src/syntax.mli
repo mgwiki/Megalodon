@@ -3,6 +3,7 @@
 (*** Jan 18 2014 ***)
 
 val set_html_item_start_line : int -> unit
+val set_show_pfglinks : bool -> unit
 
 val sexprinfo : bool ref;;
 val reportbushydeps : out_channel option ref;;
