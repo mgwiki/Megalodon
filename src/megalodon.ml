@@ -333,6 +333,26 @@ let extract_pfg_id l =
     | None -> raise (Failure "bad owned file line")
   end
 
+(* Trusted are proved only with things that were proved or trusted because in owned or index *)
+let istrustedhash = Hashtbl.create 1000;;
+let rec istrusted name = function
+  | Hyp(_) -> ()
+  | Known(h) ->
+     begin
+       try
+         let localname = Hashtbl.find pfgknh h in
+         if Hashtbl.mem istrustedhash localname then ()
+         else failwith (Printf.sprintf "Theorem %s ends with Qed but should not as it depends on non-proved %s" name localname)
+       with Not_found ->
+         if Hashtbl.mem istrustedhash h then ()
+         else failwith (Printf.sprintf "Theorem %s ends with Qed but should not as it depends on non-proved %s" name h)
+     end
+  | PTpAp(d1,a2) -> istrusted name d1
+  | PTmAp(d1,m2) -> istrusted name d1
+  | PPfAp(d1,d2) -> istrusted name d1; istrusted name d2
+  | PLam(m1,d2) -> istrusted name d2
+  | TLam(a1,d2) -> istrusted name d2;;
+
 let read_ownedfile c =
   try
     while true do
@@ -368,8 +388,8 @@ let read_indexfile c =
       | IndexKnown(h) ->
 	  if not (valid_id_p h) then raise (Failure(h ^ " in index file is not a valid id"));
           if !verbosity > 10 then Printf.printf "  Hashtbl.add indexknowns \"%s\" ();\n" h;
-	  if not (Hashtbl.mem indexknowns h) then
-	    Hashtbl.add indexknowns h ()
+	  Hashtbl.replace indexknowns h ();
+          Hashtbl.replace istrustedhash h ()
     done
   with
   | Lexer.Eof ->
@@ -1563,7 +1583,7 @@ let evaluate_docitem_1 ditem =
           if !pfgsummary then
             Printf.printf "Known:%s:%s:%s\n" x (Hash.hashval_hexstring pfgpure) (Hash.hashval_hexstring pfgahv);
         end;
-      (*
+
       if not (Hashtbl.mem indexknowns ahv) &&
            begin
              if i = 0 then
@@ -1573,9 +1593,9 @@ let evaluate_docitem_1 ditem =
                false
            end
       then
-        begin
-          Printf.printf "WARNING: The id %s for the proposition for axiom %s [pfg %s] is not indexed as previously known.\n" ahv x (Hash.hashval_hexstring (pfg_propid agtm));
-        end; *)
+        Printf.printf "WARNING: The id %s for the proposition for axiom %s [pfg %s] is not indexed as previously known.\n" ahv x (Hash.hashval_hexstring (pfg_propid agtm))
+      else
+        Hashtbl.replace istrustedhash x ();
       Hashtbl.add indexknowns ahv ();
       secstack := List.map (fun (y,f,atl,apl,st,sp) -> (y,f,atl,apl,st,(x,apl (Known(ahv)))::sp)) !secstack;
       if (!verbosity > 3) then (Printf.printf "Proposition of Axiom %s : %s was assigned id %s\n" x (tm_to_str agtm) ahv; flush stdout);
@@ -2945,7 +2965,9 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                     Hashtbl.add pfgknph gphv gpgtm;
                   end;
 	        if !pfgout && i = 0 then
-	          pfgmain := PfgThm(gphv,thmname,gpgtm,dgpf)::!pfgmain
+	          pfgmain := PfgThm(gphv,thmname,gpgtm,dgpf)::!pfgmain;
+                istrusted thmname dgpf; (* Raises an exception if not proved *)
+                Hashtbl.add istrustedhash gphv ()
 	      end;
 	      if (!verbosity > 19) then (Printf.printf "Double checking:\n%s\n%s\n" (pf_to_str dgpf) (tm_to_str gpgtm); flush stdout);
 	      match
