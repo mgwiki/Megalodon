@@ -3101,7 +3101,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                       let content = Buffer.contents sb in
                       if !abyproblemscached then
                         let fn = "cache/" ^ Hash.hashval_hexstring (Hash.sha256 content) ^ ".fof.p" in
-                        if checkfail (fn ^ ".out") then Printf.printf "ERROR: aby at line %i char %i fails" !lineno !charno else
+                        if checkfail (fn ^ ".out") then Printf.printf "ERROR: aby at line %i char %i fails\n" !lineno !charno else
                         begin
                           let ch = open_out fn in
                           Printf.fprintf ch "%s" content;
@@ -3149,7 +3149,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                       let content = Buffer.contents sb in
                       if !abyproblemscached then
                         let fn = "cache/" ^ Hash.hashval_hexstring (Hash.sha256 content) ^ ".thf.p" in
-                        if checkfail (fn ^ ".out") then Printf.printf "ERROR: aby at line %i char %i fails" !lineno !charno else
+                        if checkfail (fn ^ ".out") then Printf.printf "ERROR: aby at line %i char %i fails\n" !lineno !charno else
                         begin
                           let ch = open_out fn in
                           Printf.fprintf ch "%s" content;
