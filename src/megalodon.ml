@@ -8,6 +8,7 @@ open Interpret
 let mycnt = ref 0;;
 let doublecheckpf = ref true;;
 let createabyprobs = ref false;;
+let abyproblemscached = ref false;;
 let sb : Buffer.t = Buffer.create 10000;;
 let bushy = ref false;;
 let bushykdeps : (string,unit) Hashtbl.t = Hashtbl.create 10;;
@@ -3064,8 +3065,9 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                      try
                        ignore (List.assoc x !sigpf !ctxtp cxtm cxpf)
                      with Not_found ->
-	                   raise (Failure("Unknown proof " ^ x ^ " -- it might be a term in a position where a proof is expected")))
+	                   if x <> "-" then raise (Failure("Unknown proof " ^ x ^ " -- it might be a term in a position where a proof is expected")))
              xl;
+           let checkfail fn = (Sys.file_exists fn && Sys.command ("grep -q '\\(Theorem\\|ContradictoryAxioms\\)' " ^ fn) = 1) in
            if !createabyprobs then
              begin
                begin
@@ -3074,12 +3076,12 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                  | Some(c) ->
                     try
                       let z = fof_prop_str claimtm (tptpizecxtm cxtm) 0 in (** only if the conclusion is FO **)
-                      let conjn = Printf.sprintf "%s_%d_%d" c !lineno !charno in
+                      let conjn = if !abyproblemscached then "" else Printf.sprintf "%s_%d_%d" c !lineno !charno in
                       Buffer.clear sb;
                       let xfound : (string,unit) Hashtbl.t = Hashtbl.create 10 in
                       List.iter
                         (fun (cl,h,x,a) ->
-                          if cl = "type" || cl = "def" && not (Hashtbl.mem sigdelta_opaque h) || cl = "known" && List.mem x xl then
+                          if cl = "type" || cl = "def" && not (Hashtbl.mem sigdelta_opaque h) || cl = "known" && (List.mem x xl || xl = ["-"]) then
                             begin
                               Hashtbl.add xfound x ();
                               Buffer.add_string sb (Printf.sprintf "%s\n" a)
@@ -3096,33 +3098,43 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                       List.iter
                         (fun x -> if not (Hashtbl.mem xfound x) then raise NotFO)
                         xl;
-                      let fn = Printf.sprintf "%s.%d.%d.fof.p" c !lineno !charno in
-                      let ch = open_out fn in
-                      Printf.fprintf ch "%s" (Buffer.contents sb);
-                      close_out ch
+                      let content = Buffer.contents sb in
+                      if !abyproblemscached then
+                        let fn = "cache/" ^ Hash.hashval_hexstring (Hash.sha256 content) ^ ".fof.p" in
+                        if checkfail (fn ^ ".out") then Printf.printf "ERROR: aby at line %i char %i fails" !lineno !charno else
+                        begin
+                          let ch = open_out fn in
+                          Printf.fprintf ch "%s" content;
+                          close_out ch
+                        end
+                      else
+                        begin
+                          let fn = Printf.sprintf "%s.%d.%d.fof.p" c !lineno !charno in
+                          let ch = open_out fn in
+                          Printf.fprintf ch "%s" content;
+                          close_out ch
+                        end
                     with NotFO -> ()
                end;
                begin
                  match !th0 with
                  | None -> ()
                  | Some(c) ->
-                    let fn = Printf.sprintf "%s.%d.%d.th0.p" c !lineno !charno in
-                    let conjn = Printf.sprintf "%s_%d_%d" c !lineno !charno in
-                    let ch = open_out fn in
+                    Buffer.clear sb;
                     List.iter
                       (fun (cl,h,x,a) ->
-                        if cl = "type" || cl = "def" && not (Hashtbl.mem sigdelta_opaque h) || cl = "known" && List.mem x xl then
-                          Printf.fprintf ch "%s\n" a)
+                        if cl = "type" || cl = "def" && not (Hashtbl.mem sigdelta_opaque h) || cl = "known" && (List.mem x xl || xl = ["-"]) then
+                          Printf.bprintf sb "%s\n" a)
                       (List.rev !th0sg);
                     let rec th0_cx cxtm =
                       match cxtm with
                       | [] -> ()
                       | (x,(a,d))::cxtmr ->
                          th0_cx cxtmr;
-                         Printf.fprintf ch "thf(%s_tp,type,(%s : %s)).\n" (tptpize_name x) (tptpize_name x) (th0_stp_str a);
+                         Printf.bprintf sb "thf(%s_tp,type,(%s : %s)).\n" (tptpize_name x) (tptpize_name x) (th0_stp_str a);
                          match d with
                          | Some(d) ->
-                            Printf.fprintf ch "thf(%s_def,definition,(%s = %s)).\n" (tptpize_name x) (tptpize_name x) (th0_str d (tptpizecxtm cxtmr))
+                            Printf.bprintf sb "thf(%s_def,definition,(%s = %s)).\n" (tptpize_name x) (tptpize_name x) (th0_str d (tptpizecxtm cxtmr))
                          | None -> ()
                     in
                     th0_cx cxtm;
@@ -3130,10 +3142,26 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                       (fun (x,p) ->
                         if List.mem x xl then
                           let a = th0_str p (tptpizecxtm cxtm) in
-                          Printf.fprintf ch "thf(%s,axiom,%s).\n" (tptpize_name x) a)
+                          Printf.bprintf sb "thf(%s,axiom,%s).\n" (tptpize_name x) a)
                       cxpf;
-                    Printf.fprintf ch "thf(conj_%s,conjecture,%s).\n" conjn (th0_str claimtm (tptpizecxtm cxtm));
-                    close_out ch
+                    let conjn = if !abyproblemscached then "" else Printf.sprintf "%s_%d_%d" c !lineno !charno in
+                    Printf.bprintf sb "thf(conj_%s,conjecture,%s).\n" conjn (th0_str claimtm (tptpizecxtm cxtm));
+                      let content = Buffer.contents sb in
+                      if !abyproblemscached then
+                        let fn = "cache/" ^ Hash.hashval_hexstring (Hash.sha256 content) ^ ".thf.p" in
+                        if checkfail (fn ^ ".out") then Printf.printf "ERROR: aby at line %i char %i fails" !lineno !charno else
+                        begin
+                          let ch = open_out fn in
+                          Printf.fprintf ch "%s" content;
+                          close_out ch
+                        end
+                      else
+                        begin
+                          let fn = Printf.sprintf "%s.%d.%d.th0.p" c !lineno !charno in
+                          let ch = open_out fn in
+                          Printf.fprintf ch "%s" content;
+                          close_out ch
+                        end
                end;
              end;
            admitpfstateatp pfst;
