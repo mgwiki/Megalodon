@@ -43,6 +43,7 @@ type token =
   | AUTHOR
   | ADMITTED
   | ADMIT
+  | ABY
   | SECTION
   | END
   | LETDEC

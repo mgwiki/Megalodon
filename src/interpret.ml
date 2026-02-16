@@ -10,10 +10,11 @@ open Megaauto
 let verbosity = ref 1
 let tpabbrev : (string,tp) Hashtbl.t = Hashtbl.create 10
 let proving : (string * int * tm * string * Hash.hashval) option ref = ref None
-let prooffun : (pf list -> pf) ref = ref (fun _ -> raise (Failure "Bug. Proof construction function has not been set"))
+type pos = int * int
+let prooffun : ((pos option * pf) list -> pf) ref = ref (fun _ -> raise (Failure "Bug. Proof construction function has not been set"))
 let deltaset : string list ref = ref []
 type pfstatetype =
-  | PfStateGoal of tm * (string * (tp * tm option)) list * (string * tm) list
+  | PfStateGoal of pos option * tm * (string * (tp * tm option)) list * (string * tm) list
   | PfStateSep of int * bool
 let pfstate : pfstatetype list ref = ref []
 

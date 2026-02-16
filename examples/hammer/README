@@ -1,0 +1,75 @@
+A version of the file 100thms_12.mg using ATPs is here as 100thms_12_h.mg.
+It can be checked (without calling ATPs for the "aby" proofs) as follows:
+
+megalodon 100thms_12_h.mg
+
+There are 3401 proofs that claim to be done by the "aby" tactic.
+Creating ATP problem files corresponding to the "aby" calls can be done as follows:
+
+megalodon -createhammerprobs hammer 100thms_12_h.mg
+
+This will create 3401 th0 files with names
+
+hammer.<lineno>.<charno>.th0.p
+
+and 1618 fof files with names
+
+hammer.<lineno>.<charno>.fof.p
+
+Every "aby" call generates a th0 file, but only those with a
+first-order conclusion and first-order dependencies yield an fof file.
+The "aby" call can be justified by having a higher-order ATP
+prove the th0 file or having a first-order ATP prove the fof file.
+
+In practice these 3401 goals can be justified by one of the following calls (in order of success):
+
+Vampire called as follows:
+vampire_rel_static_forIsabelle_6878 --input-syntax tptp --mode portfolio --schedule snake_slh -t 60 <th0file>
+
+Vampire called as follows:
+vampire_rel_static_forIsabelle_6878 --input-syntax tptp --mode portfolio --schedule snake_tptp_hol -t 60 <th0file>
+
+Zipperposition ? called as follows:
+run_portfolio_coop <th0file> 60 1 ../tmp
+
+E (3.1.0-ho) called as follows:
+eprover-ho -s --auto-schedule --cpu-limit=60 <th0file>
+
+Lash (1.14) called as follows:
+lash -t 60 <th0file>
+
+Vampire (a version from from Jan 2025) called as follows:
+vampire -t 60 --mode portfolio --cores 1 <foffile>
+
+Note that ATPs are sometimes nondeterministic, so one may need to call the ATP multiple
+times before obtaining a success. In practice we have found that these 14 th0 files
+may require multiple calls to Vampire before success is reported.
+
+hammer.1833.123.th0.p
+hammer.2544.74.th0.p
+hammer.3663.120.th0.p
+hammer.3920.286.th0.p
+hammer.5598.110.th0.p
+hammer.6506.142.th0.p
+hammer.6524.100.th0.p
+hammer.7130.73.th0.p
+hammer.10871.373.th0.p
+hammer.11006.216.th0.p
+hammer.11750.80.th0.p
+hammer.11817.145.th0.p
+hammer.14805.178.th0.p
+hammer.15612.94.th0.p
+
+In tests, for each of these 14 files at least one of a hundred calls like
+
+vampire_rel_static_forIsabelle_6878 --input-syntax tptp --mode portfolio --schedule snake_slh -t 60 <th0file>
+
+or
+
+vampire_rel_static_forIsabelle_6878 --input-syntax tptp --mode portfolio --schedule snake_tptp_hol -t 60 <th0file>
+
+should report success.
+
+The curious reader can inspect the lines for these "aby" calls in 100thms_12_h.mg.
+
+The file ATPresults2025 lasts all the hammer files (leaving * for [th0|fof]) and which ATPs solved them.
