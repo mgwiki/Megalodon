@@ -335,17 +335,19 @@ let extract_pfg_id l =
 
 (* Trusted are proved only with things that were proved or trusted because in owned or index *)
 let istrustedhash = Hashtbl.create 1000;;
+Hashtbl.add istrustedhash "5626ac8cb7c90418f6c980ffedd6f45097048659977d8690c44f9d34feb6b2d3" ();; (* Egal / Ext *)
+let sigknh_rev : (string,string) Hashtbl.t  = Hashtbl.create 1000;;
 let rec istrusted name = function
   | Hyp(_) -> ()
   | Known(h) ->
      begin
-       try
-         let localname = Hashtbl.find pfgknh h in
-         if Hashtbl.mem istrustedhash localname then ()
-         else failwith (Printf.sprintf "Theorem %s ends with Qed but should not as it depends on non-proved %s" name localname)
-       with Not_found ->
-         if Hashtbl.mem istrustedhash h then ()
-         else failwith (Printf.sprintf "Theorem %s ends with Qed but should not as it depends on non-proved %s" name h)
+       if Hashtbl.mem istrustedhash h then ()
+       else
+         try
+           let localname = Hashtbl.find sigknh_rev h in (* They are axioms so we cannot use pfg reverse mapping *)
+           failwith (Printf.sprintf "Theorem %s ends with Qed but should not as it depends on non-proved %s" name localname)
+         with
+           Not_found -> failwith (Printf.sprintf "Theorem %s ends with Qed but should not as it depends on non-proved %s" name h)
      end
   | PTpAp(d1,a2) -> istrusted name d1
   | PTmAp(d1,m2) -> istrusted name d1
@@ -1554,6 +1556,7 @@ let evaluate_docitem_1 ditem =
       if !verbosity > 5 then Printf.printf "(MGPROPID \"%s\" \"%s\")\n" x ahv;
       add_sigdelta ahv (i,agtm);
       Hashtbl.add sigknh x ahv;
+      Hashtbl.add sigknh_rev ahv x;
       begin
         if i = 0 then
           begin
@@ -1595,7 +1598,7 @@ let evaluate_docitem_1 ditem =
       then
         Printf.printf "WARNING: The id %s for the proposition for axiom %s [pfg %s] is not indexed as previously known.\n" ahv x (Hash.hashval_hexstring (pfg_propid agtm))
       else
-        Hashtbl.replace istrustedhash x ();
+        Hashtbl.replace istrustedhash ahv ();
       Hashtbl.add indexknowns ahv ();
       secstack := List.map (fun (y,f,atl,apl,st,sp) -> (y,f,atl,apl,st,(x,apl (Known(ahv)))::sp)) !secstack;
       if (!verbosity > 3) then (Printf.printf "Proposition of Axiom %s : %s was assigned id %s\n" x (tm_to_str agtm) ahv; flush stdout);
@@ -1614,6 +1617,7 @@ let evaluate_docitem_1 ditem =
       let pfgahv = pfg_propid agtm in
       (*      if !verbosity > 5 && (Hashtbl.mem indexknowns ahv || Hashtbl.mem ownedprop pfgahv) then (Printf.printf "Warning: The id %s for the proposition for theorem %s is already known.\n" ahv x; flush stdout); *)
       Hashtbl.add sigknh x ahv;
+      Hashtbl.add sigknh_rev ahv x;
       Hashtbl.add ownedprop pfgahv ();
       if i = 0 && (!pfgsummary || not (!html = None)) then
         begin
