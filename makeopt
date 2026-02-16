@@ -128,7 +128,7 @@ if [ $? -gt 0 ]
 then
     exit 1
 fi
-$OCAMLOPT -o bin/megalodon unix.cmxa bin/hashbtcstub.o bin/hashbtc.cmx bin/ser.cmx bin/hashaux.cmx bin/hash.cmx bin/hashold.cmx bin/mathdata.cmx bin/mathdatapfg.cmx bin/syntax.cmx bin/parser.cmx bin/lexer.cmx bin/megaauto.cmx bin/interpret.cmx bin/megalodon.cmx
+$OCAMLOPT -o bin/megalodon -I +unix unix.cmxa bin/hashbtcstub.o bin/hashbtc.cmx bin/ser.cmx bin/hashaux.cmx bin/hash.cmx bin/hashold.cmx bin/mathdata.cmx bin/mathdatapfg.cmx bin/syntax.cmx bin/parser.cmx bin/lexer.cmx bin/megaauto.cmx bin/interpret.cmx bin/megalodon.cmx
 if [ $? -gt 0 ]
 then
     exit 1
