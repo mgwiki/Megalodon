@@ -3026,6 +3026,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
 		  end
 	      end;
 	      treasure := None;
+              failwith "Qed is not allowed for a proof with admits, use Admitted instead."
 	  end
 	else
 	  raise (Failure("Proof of " ^ thmname ^ " is incomplete"))
