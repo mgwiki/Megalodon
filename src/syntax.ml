@@ -3484,6 +3484,9 @@ let rec tm_to_str m =
      begin
        try
          Hashtbl.find tmh_legend h
+       with Not_found ->
+       try
+         List.nth ["Eps";"In";"Empty";"Union";"Power";"Repl";"UnivOf"] (Hashtbl.find pfgegalprim h)
        with Not_found -> "#" ^ h
      end
   | Prim(i) ->

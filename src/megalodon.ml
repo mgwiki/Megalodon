@@ -1227,6 +1227,7 @@ let evaluate_docitem_1 ditem =
 		begin
                   if i = 0 then Hashtbl.add pfgtmph xhv (x,agtp,None);
 		  if !pfgout && i = 0 then pfgmain := PfgParam(xhv,x,agtp)::!pfgmain;
+                  Hashtbl.add tmh_legend xhv x
 		end;
 		begin
 		  if !sqlout then
@@ -1341,6 +1342,7 @@ let evaluate_docitem_1 ditem =
 	  begin
             if i = 0 then Hashtbl.add pfgtmph xhv (x,bgtp,Some(bgtm));
 	    if !pfgout && i = 0 then pfgmain := PfgDef(xhv,x,bgtp,bgtm)::!pfgmain;
+            Hashtbl.add tmh_legend xhv x
 	  end;
 	  begin
 	    if !sqlout then
@@ -1450,6 +1452,7 @@ let evaluate_docitem_1 ditem =
 	  begin
             if i = 0 then Hashtbl.add pfgtmph xhv (x,agtp,Some(bgtm));
 	    if !pfgout && i = 0 then pfgmain := PfgDef(xhv,x,agtp,bgtm)::!pfgmain;
+            Hashtbl.add tmh_legend xhv x
 	  end;
 	  begin
 	    if !sqlout then
