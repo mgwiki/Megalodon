@@ -78,6 +78,7 @@ type token =
   | AUTHOR
   | ADMITTED
   | ADMIT
+  | ABY
   | SECTION
   | END
   | LETDEC
@@ -155,6 +156,7 @@ let tok_to_str tok =
   | AUTHOR -> "Author"
   | ADMITTED -> "Admitted"
   | ADMIT -> "admit"
+  | ABY -> "aby"
   | SECTION -> "Section"
   | END -> "End"
   | LETDEC -> "Let"
@@ -1095,6 +1097,10 @@ let parse_pftacitem tl =
   | (QED,tr) -> let tu = read_expected_ts [DOT] tr in (Qed,tu)
   | (ADMITTED,tr) -> let tu = read_expected_ts [DOT] tr in (Admitted,tu)
   | (ADMIT,tr) -> let tu = read_expected_ts [DOT] tr in (Admit,tu)
+  | (ABY,tr) ->
+     let (xl,ts) = parse_Names tr in
+     let tv = read_expected_ts [DOT] ts in
+     (Aby(xl),tv)
   | (EXACT,tr) ->
       let (a,tu) = parse_ltree tr in
       let tv = read_expected_ts [DOT] tu in

@@ -7,10 +7,11 @@ open Syntax
 val verbosity : int ref
 val tpabbrev : (string,tp) Hashtbl.t
 val proving : (string * int * tm * string * Hash.hashval) option ref
-val prooffun :  (pf list -> pf) ref
+type pos = int * int
+val prooffun :  ((pos option * pf) list -> pf) ref
 val deltaset : string list ref
 type pfstatetype =
-  | PfStateGoal of tm * (string * (tp * tm option)) list * (string * tm) list
+  | PfStateGoal of pos option * tm * (string * (tp * tm option)) list * (string * tm) list
   | PfStateSep of int * bool
 val pfstate : pfstatetype list ref
 

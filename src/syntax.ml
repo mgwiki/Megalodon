@@ -3455,6 +3455,7 @@ type pftacitem =
   | Qed
   | Admitted
   | Admit
+  | Aby of string list
 
 type docorpftacitem =
   | DocItem : docitem -> docorpftacitem
@@ -5982,6 +5983,15 @@ Printf.fprintf ch "<textarea id='pf%dcodetext' rows=%d cols=%d>%s</textarea><br/
 	end
   | Admit ->
       output_string ch "<div class='admit'>The rest of this subproof is missing.</div>"
+  | Aby(xl) ->
+     match List.rev xl with
+     | [] -> Printf.fprintf ch "<div class='aby'>The rest of this subproof can be completed by an ATP.</div>\n"
+     | [x] -> Printf.fprintf ch "<div class='aby'>The rest of this subproof can be completed by an ATP using %s.</div>\n" x
+     | [x;y] -> Printf.fprintf ch "<div class='aby'>The rest of this subproof can be completed by an ATP using %s and %s.</div>\n" y x
+     | x::y::zr ->
+        Printf.fprintf ch "<div class='aby'>The rest of this subproof can be completed by an ATP using ";
+        List.iter (fun z -> Printf.fprintf ch "%s, " z) (List.rev zr);
+        Printf.fprintf ch "%s and %s.</div>\n" y x
 
 let rec stp_html_string_1 a p =
   match a with
@@ -6812,6 +6822,15 @@ let output_pftacitem_latex ch pftac stmh sknh laststructact =
      Printf.fprintf ch "{\\it{Proof unfinished.}}\n\\end{proof}\n\n"
   | Admit ->
      Printf.fprintf ch "{\\it{Subproof unfinished.}}\n"
+  | Aby(xl) ->
+     match List.rev xl with
+     | [] -> Printf.fprintf ch "{\\it{Subproof by an ATP.}}\n"
+     | [x] -> Printf.fprintf ch "{\\it{Subproof by an ATP using %s.}}\n" x
+     | [x;y] -> Printf.fprintf ch "{\\it{Subproof by an ATP using %s and %s.}}\n" y x
+     | x::y::zr ->
+        Printf.fprintf ch "{\\it{Subproof by an ATP using ";
+        List.iter (fun z -> Printf.fprintf ch "%s, " z) (List.rev zr);
+        Printf.fprintf ch "%s and %s.}}\n" y x
 
 let rec tp_pfgset_str a =
   match a with
@@ -8407,16 +8426,28 @@ let rec fo_gentp_arity a =
   | Ar(Set,a) -> let (b,n) = fo_gentp_arity a in (b,1 + n)
   | _ -> raise NotFO
 
-let rec fof_trm_str m cxtm =
+let rec fof_trm_str m cxtm n =
   let (h,sp) = head_spine m [] in
   match h with
   | DB(i) ->
      begin
-       if sp = [] && i < List.length cxtm then
+       if sp = [] && i < n then
          begin
            let (x,a) = List.nth cxtm i in
            if a = Set then
              x
+           else
+             raise NotFO
+         end
+       else if n <= i then
+         begin
+           let (x,a) = List.nth cxtm i in
+           let (b,n) = fo_gentp_arity a in
+           if b = Set && n = List.length sp then
+             if sp = [] then
+               tptpize_name x
+             else
+               Printf.sprintf "%s(%s)" (tptpize_name x) (fof_spine_str sp cxtm n "")
            else
              raise NotFO
          end
@@ -8431,46 +8462,61 @@ let rec fof_trm_str m cxtm =
            if a = Set then
              x
            else
-             Printf.sprintf "%s(%s)" x (fof_spine_str sp cxtm "")
+             Printf.sprintf "%s(%s)" x (fof_spine_str sp cxtm n "")
          else
            raise NotFO
        with Not_found -> raise NotFO
      end
   | _ -> raise NotFO
-and fof_spine_str sp cxtm sep =
+and fof_spine_str sp cxtm n sep =
   match sp with
   | [] -> ""
-  | m::spr -> Printf.sprintf "%s%s%s" sep (fof_trm_str m cxtm) (fof_spine_str spr cxtm ",")
+  | m::spr -> Printf.sprintf "%s%s%s" sep (fof_trm_str m cxtm n) (fof_spine_str spr cxtm n ",")
 
-let rec fof_prop_str m cxtm =
+let rec fof_prop_str m cxtm n =
   match m with
   | Imp(m1,m2) ->
-     Printf.sprintf "(%s => %s)" (fof_prop_str m1 cxtm) (fof_prop_str m2 cxtm)
+     Printf.sprintf "(%s => %s)" (fof_prop_str m1 cxtm n) (fof_prop_str m2 cxtm n)
   | All(Set,m1) ->
      let x = Printf.sprintf "X%d" (List.length cxtm) in
-     Printf.sprintf "(! [%s] : %s)" x (fof_prop_str m1 ((x,Set)::cxtm))
+     Printf.sprintf "(! [%s] : %s)" x (fof_prop_str m1 ((x,Set)::cxtm) (n+1))
   | TmH(h) when h = "5867641425602c707eaecd5be95229f6fd709c9b58d50af108dfe27cb49ac069" ->
      "$true"
   | TmH(h) when h = "5bf697cb0d1cdefbe881504469f6c48cc388994115b82514dfc4fb5e67ac1a87" ->
      "$false"
   | Ap(TmH(h),m1) when h = "058f630dd89cad5a22daa56e097e3bdf85ce16ebd3dbf7994e404e2a98800f7f" ->
-     Printf.sprintf "~ %s" (fof_prop_str m1 cxtm)
+     Printf.sprintf "~ %s" (fof_prop_str m1 cxtm n)
   | Ap(Ap(TmH(h),m1),m2) when h = "87fba1d2da67f06ec37e7ab47c3ef935ef8137209b42e40205afb5afd835b738" ->
-     Printf.sprintf "(%s & %s)" (fof_prop_str m1 cxtm) (fof_prop_str m2 cxtm)
+     Printf.sprintf "(%s & %s)" (fof_prop_str m1 cxtm n) (fof_prop_str m2 cxtm n)
   | Ap(Ap(TmH(h),m1),m2) when h = "cfe97741543f37f0262568fe55abbab5772999079ff734a49f37ed123e4363d7" ->
-     Printf.sprintf "(%s | %s)" (fof_prop_str m1 cxtm) (fof_prop_str m2 cxtm)
+     Printf.sprintf "(%s | %s)" (fof_prop_str m1 cxtm n) (fof_prop_str m2 cxtm n)
   | Ap(Ap(TmH(h),m1),m2) when h = "9c60bab687728bc4482e12da2b08b8dbc10f5d71f5cab91acec3c00a79b335a3" ->
-     Printf.sprintf "(%s <=> %s)" (fof_prop_str m1 cxtm) (fof_prop_str m2 cxtm)
+     Printf.sprintf "(%s <=> %s)" (fof_prop_str m1 cxtm n) (fof_prop_str m2 cxtm n)
   | Ap(TpAp(TmH(h),a),Lam(_,m1)) when h = "912ad2cdc2d23bb8aa0a5070945f2a90976a948b0e8308917244591f3747f099" ->
      let x = Printf.sprintf "X%d" (List.length cxtm) in
-     Printf.sprintf "(? [%s] : %s)" x (fof_prop_str m1 ((x,a)::cxtm))
+     Printf.sprintf "(? [%s] : %s)" x (fof_prop_str m1 ((x,a)::cxtm) (n+1))
   | Ap(Ap(TpAp(TmH(h),a),m1),m2) when h = "5a6af35fb6d6bea477dd0f822b8e01ca0d57cc50dfd41744307bc94597fdaa4a" ->
-     Printf.sprintf "(%s = %s)" (fof_trm_str m1 cxtm) (fof_trm_str m2 cxtm)
+     Printf.sprintf "(%s = %s)" (fof_trm_str m1 cxtm n) (fof_trm_str m2 cxtm n)
   | Ap(Ap(TpAp(TmH(h),a),m1),m2) when h = "7966a66a9bb198103c2a540ccd5ebebdff33c10843cc10eebfc98715e142989c" ->
-     Printf.sprintf "~ (%s = %s)" (fof_trm_str m1 cxtm) (fof_trm_str m2 cxtm)
+     Printf.sprintf "~ (%s = %s)" (fof_trm_str m1 cxtm n) (fof_trm_str m2 cxtm n)
   | _ ->
      let (h,sp) = head_spine m [] in
      match h with
+     | DB(i) ->
+        if n <= i then
+          begin
+            let (x,a) = List.nth cxtm i in
+            let (b,n) = fo_gentp_arity a in
+            if b = Prop && n = List.length sp then
+              if sp = [] then
+                tptpize_name x
+              else
+                Printf.sprintf "%s(%s)" (tptpize_name x) (fof_spine_str sp cxtm n "")
+            else
+              raise NotFO
+          end
+        else
+          raise NotFO
      | TmH(h) ->
         begin
           try
@@ -8479,7 +8525,7 @@ let rec fof_prop_str m cxtm =
               if a = Prop then
                 x
               else
-                Printf.sprintf "%s(%s)" x (fof_spine_str sp cxtm "")
+                Printf.sprintf "%s(%s)" x (fof_spine_str sp cxtm n "")
             else
               raise NotFO
           with Not_found -> raise NotFO
@@ -8554,8 +8600,8 @@ let rec th0_str m cxtm =
 
 let rec fof_def_str_r a d m cx =
   match a with
-  | Set -> Printf.sprintf "(%s = %s)" (fof_trm_str d cx) (fof_trm_str m cx)
-  | Prop -> Printf.sprintf "(%s <=> %s)" (fof_prop_str d cx) (fof_prop_str m cx)
+  | Set -> Printf.sprintf "(%s = %s)" (fof_trm_str d cx 0) (fof_trm_str m cx 0)
+  | Prop -> Printf.sprintf "(%s <=> %s)" (fof_prop_str d cx 0) (fof_prop_str m cx 0)
   | Ar(Set,a2) ->
      let x = Printf.sprintf "X%d" (List.length cx) in
      Printf.sprintf "(! [%s:$i] : %s)" x (fof_def_str_r a2 (Ap(tmshift 0 1 d,DB(0))) (gen_lam_body m) ((x,Set)::cx))
@@ -8584,6 +8630,16 @@ let tm_deps m =
   let r = ref [] in
   Hashtbl.iter (fun k () -> r := k::!r) h;
   !r
+
+let rec pf_used d j usedknowns usedhyps =
+  match d with
+  | Hyp(i) -> if j <= i then Hashtbl.replace usedhyps (i-j) ()
+  | Known(h) -> Hashtbl.replace usedknowns h ()
+  | PTpAp(d1,_) -> pf_used d1 j usedknowns usedhyps
+  | PTmAp(d1,_) -> pf_used d1 j usedknowns usedhyps
+  | PPfAp(d1,d2) -> pf_used d1 j usedknowns usedhyps; pf_used d2 j usedknowns usedhyps
+  | PLam(_,d1) -> pf_used d1 (j+1) usedknowns usedhyps
+  | TLam(_,d1) -> pf_used d1 j usedknowns usedhyps
 
 let logicop : (string,unit) Hashtbl.t = Hashtbl.create 100;;
 Hashtbl.add logicop "5867641425602c707eaecd5be95229f6fd709c9b58d50af108dfe27cb49ac069" ();;

@@ -156,6 +156,7 @@ type pftacitem =
   | Qed
   | Admitted
   | Admit
+  | Aby of string list
 
 type docorpftacitem =
   | DocItem : docitem -> docorpftacitem
@@ -317,8 +318,8 @@ val optimize_pf_2 : (string,ptm) Hashtbl.t -> (string,ptp) Hashtbl.t -> pf -> in
 exception NotFO
 val tptpize_name : string -> string
 val tptp_id_name : (string,string * tp) Hashtbl.t
-val fof_trm_str : tm -> (string * tp) list -> string
-val fof_prop_str : tm -> (string * tp) list -> string
+val fof_trm_str : tm -> (string * tp) list -> int -> string
+val fof_prop_str : tm -> (string * tp) list -> int -> string
 val th0_str : tm -> (string * tp) list -> string
 val th0_stp_str : tp -> string
 val fof_def_str : tp -> string -> tm -> string
@@ -328,3 +329,5 @@ val beta_report : unit -> unit
 
 val logicop : (string,unit) Hashtbl.t
 val tm_deps : tm -> tm list
+
+val pf_used : pf -> int -> (string,unit) Hashtbl.t -> (int,unit) Hashtbl.t -> unit

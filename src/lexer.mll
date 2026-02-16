@@ -106,6 +106,7 @@ rule token = parse
 | "Author" as lxm { update_char_pos lxm; AUTHOR }
 | "Admitted" as lxm { update_char_pos lxm; ADMITTED }
 | "admit" as lxm { update_char_pos lxm; ADMIT }
+| "aby" as lxm { update_char_pos lxm; ABY }
 | "TEXT" as lxm { update_char_pos lxm; TEXT }
 | ['\'']['_''+''-''*''^''~''=''<''>''/''\\']*['\''] as lxm { update_char_pos lxm; NAM(lxm) }
 | [':']['_''+''-''*''^''~''=''<''>''/''\\']*[':'] as lxm { update_char_pos lxm; NAM(lxm) }
