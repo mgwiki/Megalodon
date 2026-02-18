@@ -3381,10 +3381,13 @@ let rec output_ltree ch a =
 
 let rec ltree_to_atree a =
   match a with
+  | NaL(x) -> Na(x)
+  | ImplopL(a,b) -> Implop(ltree_to_atree a,ltree_to_atree b)
+  | ParenL(a,[]) -> ltree_to_atree a
+  | ParenL(a,b::cl) -> Tuple(ltree_to_atree a,ltree_to_atree b,List.map ltree_to_atree cl)
   | ByteL(x) -> Byte(x)
   | StringL(x) -> String(x)
   | QStringL(x) -> QString(x)
-  | NaL(x) -> Na(x)
   | NuL(b,x,y,z) -> Nu(b,x,y,z)
   | LeL(x,None,a,c) -> Le(x,None,ltree_to_atree a,ltree_to_atree c)
   | LeL(x,Some(i,b),a,c) -> Le(x,Some(i,ltree_to_atree b),ltree_to_atree a,ltree_to_atree c)
@@ -3401,14 +3404,11 @@ let rec ltree_to_atree a =
   | PreoL(x,a) -> Preo(x,ltree_to_atree a)
   | PostoL(x,a) -> Posto(x,ltree_to_atree a)
   | InfoL(x,a,b) -> Info(x,ltree_to_atree a,ltree_to_atree b)
-  | ImplopL(a,b) -> Implop(ltree_to_atree a,ltree_to_atree b)
   | SepL(x,i,a,b) -> Sep(x,i,ltree_to_atree a,ltree_to_atree b)
   | RepL(x,i,a,b) -> Rep(x,i,ltree_to_atree a,ltree_to_atree b)
   | SepRepL(x,i,a,b,c) -> SepRep(x,i,ltree_to_atree a,ltree_to_atree b,ltree_to_atree c)
   | SetEnumL(al) -> SetEnum(List.map ltree_to_atree al)
   | MTupleL(a,bl) -> MTuple(ltree_to_atree a,List.map ltree_to_atree bl)
-  | ParenL(a,[]) -> ltree_to_atree a
-  | ParenL(a,b::cl) -> Tuple(ltree_to_atree a,ltree_to_atree b,List.map ltree_to_atree cl)
   | IfThenElseL(a,b,c) -> IfThenElse(ltree_to_atree a,ltree_to_atree b,ltree_to_atree c)
 
 type picase = Postfix | InfixNone | InfixLeft | InfixRight
@@ -3579,11 +3579,8 @@ let rec tmshift i j m =
 
 let rec tmtplookup_rec ctxtm x i =
   match ctxtm with
-  | ((y,(a,None))::_) when y = x -> (DB i,a)
-  | ((y,(a,Some(m)))::_) when y = x && i = 0 -> (m,a)
-  | ((y,(a,Some(m)))::_) when y = x -> (tmshift 0 i m,a)
-  | ((_,(_,None))::r) -> tmtplookup_rec r x (i+1) (*** Shift for variables ***)
-  | ((_,(_,Some(_)))::r) -> tmtplookup_rec r x i (*** Do not shift for lets ***)
+  | ((y,(a,None))::r) -> if y = x then (DB i,a) else tmtplookup_rec r x (i+1) (*** Shift for variables ***)
+  | ((y,(a,Some(m)))::r) -> if y = x then if i = 0 then (m,a) else (tmshift 0 i m,a) else tmtplookup_rec r x i (*** Do not shift for lets ***)
   | [] -> raise Not_found
 
 let tmtplookup ctxtm x =
@@ -4305,13 +4302,13 @@ let rec tm_to_mtm q =
 
 let rec mtm_to_tm q =
   match q with
-  | MVar(_,_) -> raise Not_found
-  | MDB i -> DB i
-  | MTmH h -> TmH h
-  | MPrim i -> Prim i
-  | MTpAp(q1,a) -> TpAp(mtm_to_tm q1,a)
   | MAp(q1,q2) -> Ap(mtm_to_tm q1,mtm_to_tm q2)
+  | MTmH h -> TmH h
+  | MDB i -> DB i
+  | MTpAp(q1,a) -> TpAp(mtm_to_tm q1,a)
   | MImp(q1,q2) -> Imp(mtm_to_tm q1,mtm_to_tm q2)
+  | MVar(_,_) -> raise Not_found
+  | MPrim i -> Prim i
   | MLam(a,q1) -> Lam(a,mtm_to_tm q1)
   | MAll(a,q1) -> All(a,mtm_to_tm q1)
 
@@ -4463,6 +4460,11 @@ let rec pattern_invert k sigma q =
 
 let rec pattern_match sdel p q theta =
   match (p,q) with
+  | (MAp(p1,p2),Ap(q1,q2)) ->
+      let theta = pattern_match sdel p1 q1 theta in
+      pattern_match sdel p2 q2 theta
+  | (MTmH h,TmH k) when h = k -> theta
+  | (MDB i,DB j) when i = j -> theta
   | (MVar(x,sigma),_) ->
       begin
 	try
@@ -4474,15 +4476,10 @@ let rec pattern_match sdel p q theta =
 	    (fun y -> if x = y then m else theta y)
 	  with Not_found -> raise MatchFail
       end
-  | (MDB i,DB j) when i = j -> theta
   | (MPrim i,Prim j) when i = j -> theta
-  | (MTmH h,TmH k) when h = k -> theta
   | (MTpAp(MTmH h,a1),TpAp(TmH k,b1)) when h = k && a1 = b1 -> theta
   | (MTpAp(MTpAp(MTmH h,a1),a2),TpAp(TpAp(TmH k,b1),b2)) when h = k && a1 = b1 && a2 = b2 -> theta
   | (MTpAp(MTpAp(MTpAp(MTmH h,a1),a2),a3),TpAp(TpAp(TpAp(TmH k,b1),b2),b3)) when h = k && a1 = b1 && a2 = b2 && a3 = b3 -> theta
-  | (MAp(p1,p2),Ap(q1,q2)) ->
-      let theta = pattern_match sdel p1 q1 theta in
-      pattern_match sdel p2 q2 theta
   | (MImp(p1,p2),Imp(q1,q2)) ->
       let theta = pattern_match sdel p1 q1 theta in
       pattern_match sdel p2 q2 theta
