@@ -3457,6 +3457,7 @@ type pftacitem =
   | Admit
   | Aby of string list
 
+(*
 type docorpftacitem =
   | DocItem : docitem -> docorpftacitem
   | PfTacItem : pftacitem -> docorpftacitem
@@ -3469,6 +3470,7 @@ type formalmetablockitem =
   | DocPromise of string * string list
 
 type formalmetablock = formalmetablockitem list
+*)
 
 let rec tp_to_str m =
   match m with

@@ -161,6 +161,7 @@ type pftacitem =
   | Admit
   | Aby of string list
 
+(*
 type docorpftacitem =
   | DocItem : docitem -> docorpftacitem
   | PfTacItem : pftacitem -> docorpftacitem
@@ -173,6 +174,7 @@ type formalmetablockitem =
   | DocPromise of string * string list
 
 type formalmetablock = formalmetablockitem list
+*)
 
 val tp_to_str : tp -> string
 val tm_to_str : tm -> string
