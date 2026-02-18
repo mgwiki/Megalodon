@@ -99,6 +99,7 @@ let ownedoutfile : string option ref = ref None;;
 let ownedobj : (Hash.hashval,unit) Hashtbl.t = Hashtbl.create 1000;;
 let ownedprop : (Hash.hashval,unit) Hashtbl.t = Hashtbl.create 1000;;
 
+
 let combsigtm sgtmloc secstack =
   (List.concat
      (List.map (fun l -> List.map (fun (x,m,a,n,b) -> (x,(n,b))) l)
@@ -433,7 +434,7 @@ let sigknh : (string,string) Hashtbl.t  = Hashtbl.create 1000;;
 let sigtmof : (string,ptp) Hashtbl.t  = Hashtbl.create 1000;;
 let sigdelta : (string,ptm) Hashtbl.t = Hashtbl.create 1000;;
 let sigdelta_opaque : (string,ptm) Hashtbl.t = Hashtbl.create 1000;;
-let sigtm = ref [];;
+let sigtm = ref (Hashtbl.create 100);;
 let sigpf = ref [];;
 let polytm = ref [];;
 let polypf = ref [];;
@@ -817,6 +818,7 @@ let evaluate_docitem_1 ditem =
   | Section(x) ->
      begin
        secstack := (x,!popfn,!aptmloc,!appfloc,!sigtm,!sigpf)::!secstack;
+       sigtm := Hashtbl.copy !sigtm;
        popfn := (fun () -> ());
      end
   | End(x) ->
@@ -1156,7 +1158,7 @@ let evaluate_docitem_1 ditem =
       if !reporteachitem then (Printf.printf "++ %s\n" x; flush stdout);
       if !pfgtheory = SetMM && (x = "wi" || x = "wal") then raise (Failure (Printf.sprintf "%s is a reserved built-in name for SetMM" x));
       let a = ltree_to_atree a in
-      if List.mem_assoc x !sigtm || List.mem_assoc x !sigpf || List.mem x !ctxtp || List.mem_assoc x !ctxtm || List.mem_assoc x !ctxpf then
+      if Hashtbl.mem !sigtm x || List.mem_assoc x !sigpf || List.mem x !ctxtp || List.mem_assoc x !ctxtm || List.mem_assoc x !ctxpf then
 	raise (Failure(x ^ " has already been used."));
       if (!verbosity > 9) then (Printf.printf "Param %s : " x; output_ltree stdout (atree_to_ltree a); Printf.printf "\n"; flush stdout);
       let i = List.length !ctxtp in
@@ -1219,12 +1221,12 @@ let evaluate_docitem_1 ditem =
 	    pushpolytm ((x,i),agtp);
 	  if i = 0 && not (Hashtbl.mem indextms xhv) then Hashtbl.add indextms xhv xtp; (*** since this is a primitive, it doesn't really need to be indexed. However, indexing it will allow me to use parameters with different names for the primitives if I want. ***)
 	  let m = TmH xhv in
-	  sigtm := (x,!aptmloc m)::!sigtm;
-	  secstack := List.map (fun (y,f,atl,apl,st,sp) -> (y,f,atl,apl,(x,atl m)::st,sp)) !secstack
+	  Hashtbl.replace !sigtm x (!aptmloc m);
+	  secstack := List.map (fun (y,f,atl,apl,st,sp) -> (y,f,atl,apl,((Hashtbl.replace st x (atl m)); st),sp)) !secstack
 	with Not_found ->
 	  begin
 	    if (i > 0) then raise (Failure(x ^ " must be defined. The only polymorphic parameter allowed are built-in primitives."));
-	    if List.mem_assoc x !sigtm || List.mem_assoc x !sigpf || List.mem x !ctxtp || List.mem_assoc x !ctxtm || List.mem_assoc x !ctxpf then
+	    if Hashtbl.mem !sigtm x || List.mem_assoc x !sigpf || List.mem x !ctxtp || List.mem_assoc x !ctxtm || List.mem_assoc x !ctxpf then
 	      raise (Failure(x ^ " has already been used."))
 	    else
 	      try
@@ -1277,8 +1279,8 @@ let evaluate_docitem_1 ditem =
 		    if agtp <> itp then raise (Failure("The id " ^ xhv ^ " associated with the parameter " ^ x ^ " has is indexed to have the type " ^ tp_to_str itp ^ " not " ^ tp_to_str agtp));
 		    Hashtbl.add sigtmof xhv (i,agtp);
 		    let m = TmH xhv in
-		    sigtm := (x,!aptmloc m)::!sigtm;
-		    secstack := List.map (fun (y,f,atl,apl,st,sp) -> (y,f,atl,apl,(x,atl m)::st,sp)) !secstack
+		    Hashtbl.replace !sigtm x (!aptmloc m);
+                    secstack := List.map (fun (y,f,atl,apl,st,sp) -> (y,f,atl,apl,((Hashtbl.replace st x (atl m)); st),sp)) !secstack
 		  with
                   | Not_found ->
                      try
@@ -1291,8 +1293,8 @@ let evaluate_docitem_1 ditem =
                        (*                       if not (Hashtbl.mem ownedobj pfghthy) then raise Not_found; (** proofgold knows it **) *)
 		       Hashtbl.add sigtmof xhv (i,agtp);
 		       let m = TmH xhv in
-		       sigtm := (x,!aptmloc m)::!sigtm;
-		       secstack := List.map (fun (y,f,atl,apl,st,sp) -> (y,f,atl,apl,(x,atl m)::st,sp)) !secstack
+		       Hashtbl.replace !sigtm x (!aptmloc m);
+                       secstack := List.map (fun (y,f,atl,apl,st,sp) -> (y,f,atl,apl,((Hashtbl.replace st x (atl m)); st),sp)) !secstack
 		     with
                      | Not_found ->
                         ()
@@ -1306,7 +1308,7 @@ let evaluate_docitem_1 ditem =
       if !reporteachitem then (Printf.printf "++ %s\n" x; flush stdout);
       if !pfgtheory = SetMM && (x = "wi" || x = "wal") then raise (Failure (Printf.sprintf "%s is a reserved built-in name for SetMM" x));
       let b = ltree_to_atree b in
-      if List.mem_assoc x !sigtm || List.mem_assoc x !sigpf || List.mem x !ctxtp || List.mem_assoc x !ctxtm || List.mem_assoc x !ctxpf then
+      if Hashtbl.mem !sigtm x || List.mem_assoc x !sigpf || List.mem x !ctxtp || List.mem_assoc x !ctxtm || List.mem_assoc x !ctxpf then
 	raise (Failure(x ^ " has already been used."))
       else
 	begin
@@ -1406,8 +1408,8 @@ let evaluate_docitem_1 ditem =
 		Hashtbl.add indextms xhv bgtp
 	    end;
 	  let m = TmH xhv in
-	  sigtm := (x,!aptmloc m)::!sigtm;
-	  secstack := List.map (fun (y,f,atl,apl,st,sp) -> (y,f,atl,apl,(x,atl m)::st,sp)) !secstack;
+	  Hashtbl.replace !sigtm x (!aptmloc m);
+	  secstack := List.map (fun (y,f,atl,apl,st,sp) -> (y,f,atl,apl,((Hashtbl.replace st x (atl m)); st),sp)) !secstack;
 	  if (!verbosity > 19) then (Printf.printf "i = %d\nbtm = %s\nbtp = %s\n" i (tm_to_str btm) (tp_to_str btp); flush stdout);
 	end
   | DefDecl(x,Some a,b) ->
@@ -1415,7 +1417,7 @@ let evaluate_docitem_1 ditem =
       if !pfgtheory = SetMM && (x = "wi" || x = "wal") then raise (Failure (Printf.sprintf "%s is a reserved built-in name for SetMM" x));
       let a = ltree_to_atree a in
       let b = ltree_to_atree b in
-      if List.mem_assoc x !sigtm || List.mem_assoc x !sigpf || List.mem x !ctxtp || List.mem_assoc x !ctxtm || List.mem_assoc x !ctxpf then
+      if Hashtbl.mem !sigtm x || List.mem_assoc x !sigpf || List.mem x !ctxtp || List.mem_assoc x !ctxtm || List.mem_assoc x !ctxpf then
 	raise (Failure(x ^ " has already been used."))
       else
 	begin
@@ -1516,14 +1518,14 @@ let evaluate_docitem_1 ditem =
 		Hashtbl.add indextms xhv agtp
 	    end;
 	  let m = TmH xhv in
-	  sigtm := (x,!aptmloc m)::!sigtm;
-	  secstack := List.map (fun (y,f,atl,apl,st,sp) -> (y,f,atl,apl,(x,atl m)::st,sp)) !secstack;
+	  Hashtbl.replace !sigtm x (!aptmloc m);
+	  secstack := List.map (fun (y,f,atl,apl,st,sp) -> (y,f,atl,apl,((Hashtbl.replace st x (atl m)); st),sp)) !secstack;
 	  if (!verbosity > 19) then (Printf.printf "i = %d\nbtm = %s\nbtp = %s\n" i (tm_to_str btm) (tp_to_str atp); flush stdout);
 	end
   | AxDecl(x,a) ->
       if !reporteachitem then (Printf.printf "++ %s\n" x; flush stdout);
       let a = ltree_to_atree a in
-      if List.mem_assoc x !sigtm || List.mem_assoc x !sigpf || List.mem x !ctxtp || List.mem_assoc x !ctxtm || List.mem_assoc x !ctxpf then
+      if Hashtbl.mem !sigtm x || List.mem_assoc x !sigpf || List.mem x !ctxtp || List.mem_assoc x !ctxtm || List.mem_assoc x !ctxpf then
 	raise (Failure(x ^ " has already been used."));
       let i = List.length !ctxtp in
       let atm = check_tm a Prop !polytm sigtmof !sigtm !ctxtp !ctxtm in
@@ -1606,7 +1608,7 @@ let evaluate_docitem_1 ditem =
   | ThmDecl(c,x,a) ->
       if !pfgtheory = SetMM && (x = "wi" || x = "wal") then raise (Failure (Printf.sprintf "%s is a reserved built-in name for SetMM" x));
       let a = ltree_to_atree a in
-      if List.mem_assoc x !sigtm || List.mem_assoc x !sigpf || List.mem x !ctxtp || List.mem_assoc x !ctxtm || List.mem_assoc x !ctxpf then
+      if Hashtbl.mem !sigtm x || List.mem_assoc x !sigpf || List.mem x !ctxtp || List.mem_assoc x !ctxtm || List.mem_assoc x !ctxpf then
 	raise (Failure(x ^ " has already been used."));
       if !includingsigfile then raise (Failure("Included signature file includes a theorem (" ^ x ^ "), but should only include axioms."));
       let i = List.length !ctxtp in

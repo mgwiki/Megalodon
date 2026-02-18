@@ -292,7 +292,7 @@ let rec extract_tm_r a poly sgtmof sgtm cxtp cxtm =
 	with Not_found ->
 	  try
 	    if (!verbosity > 19) then (Printf.printf "about to lookup in sgtm %s\n" x; flush stdout);
-	    let m = List.assoc x sgtm cxtp cxtm in
+	    let m = Hashtbl.find sgtm x cxtp cxtm in
 	    if (!verbosity > 19) then (Printf.printf "looked up in sg %s\nand found %s\n" x (tm_to_str m); flush stdout);
 	    (m,extr_tpoftm sgtmof (cxtmdb cxtm) m)
 	  with Not_found ->
@@ -311,20 +311,20 @@ let rec extract_tm_r a poly sgtmof sgtm cxtp cxtm =
   | Implop(Na(x),a1) when List.mem_assoc (x,1) poly ->
       let xa = List.assoc (x,1) poly in
       let a1tp = extract_tp a1 cxtp in
-      let xd = List.assoc x sgtm cxtp cxtm in
+      let xd = Hashtbl.find sgtm x cxtp cxtm in
       (TpAp(xd,a1tp),tpsubst xa [a1tp])
   | Implop(Implop(Na(x),a1),a2) when List.mem_assoc (x,2) poly ->
       let xa = List.assoc (x,2) poly in
       let a1tp = extract_tp a1 cxtp in
       let a2tp = extract_tp a2 cxtp in
-      let xd = List.assoc x sgtm cxtp cxtm in
+      let xd = Hashtbl.find sgtm x cxtp cxtm in
       (TpAp(TpAp(xd,a1tp),a2tp),tpsubst xa [a1tp;a2tp])
   | Implop(Implop(Implop(Na(x),a1),a2),a3) when List.mem_assoc (x,3) poly ->
       let xa = List.assoc (x,3) poly in
       let a1tp = extract_tp a1 cxtp in
       let a2tp = extract_tp a2 cxtp in
       let a3tp = extract_tp a3 cxtp in
-      let xd = List.assoc x sgtm cxtp cxtm in
+      let xd = Hashtbl.find sgtm x cxtp cxtm in
       (TpAp(TpAp(TpAp(xd,a1tp),a2tp),a3tp),tpsubst xa [a1tp;a2tp;a3tp])
   | Implop(Implop(Implop(Implop(Na(x),a1),a2),a3),a4) when List.mem_assoc (x,4) poly ->
       let xa = List.assoc (x,4) poly in
@@ -332,7 +332,7 @@ let rec extract_tm_r a poly sgtmof sgtm cxtp cxtm =
       let a2tp = extract_tp a2 cxtp in
       let a3tp = extract_tp a3 cxtp in
       let a4tp = extract_tp a4 cxtp in
-      let xd = List.assoc x sgtm cxtp cxtm in
+      let xd = Hashtbl.find sgtm x cxtp cxtm in
       (TpAp(TpAp(TpAp(TpAp(xd,a1tp),a2tp),a3tp),a4tp),tpsubst xa [a1tp;a2tp;a3tp;a4tp])
   | Implop(Implop(Implop(Implop(Implop(Na(x),a1),a2),a3),a4),a5) when List.mem_assoc (x,5) poly ->
       let xa = List.assoc (x,5) poly in
@@ -341,7 +341,7 @@ let rec extract_tm_r a poly sgtmof sgtm cxtp cxtm =
       let a3tp = extract_tp a3 cxtp in
       let a4tp = extract_tp a4 cxtp in
       let a5tp = extract_tp a5 cxtp in
-      let xd = List.assoc x sgtm cxtp cxtm in
+      let xd = Hashtbl.find sgtm x cxtp cxtm in
       (TpAp(TpAp(TpAp(TpAp(TpAp(xd,a1tp),a2tp),a3tp),a4tp),a5tp),tpsubst xa [a1tp;a2tp;a3tp;a4tp;a5tp])
   | Implop(Implop(Implop(Implop(Implop(Implop(Na(x),a1),a2),a3),a4),a5),a6) when List.mem_assoc (x,6) poly ->
       let xa = List.assoc (x,6) poly in
@@ -351,7 +351,7 @@ let rec extract_tm_r a poly sgtmof sgtm cxtp cxtm =
       let a4tp = extract_tp a4 cxtp in
       let a5tp = extract_tp a5 cxtp in
       let a6tp = extract_tp a6 cxtp in
-      let xd = List.assoc x sgtm cxtp cxtm in
+      let xd = Hashtbl.find sgtm x cxtp cxtm in
       (TpAp(TpAp(TpAp(TpAp(TpAp(TpAp(xd,a1tp),a2tp),a3tp),a4tp),a5tp),a6tp),tpsubst xa [a1tp;a2tp;a3tp;a4tp;a5tp;a6tp])
   | Implop(Na(x),a1) when !pfgtheory = SetMM && x = "wal" -> (** special treatment of wal for SetMM **)
      let n1 = check_tm_r a1 (Ar(Set,Prop)) poly sgtmof sgtm cxtp cxtm in
@@ -424,7 +424,7 @@ In the remaining cases, atp is monomorphic (no TpVars):
 	  match xb with
 	  | Na(xbn) when List.mem_assoc (xbn,1) poly ->
 	      begin
-		let bindop = List.assoc xbn sgtm cxtp cxtm in
+		let bindop = Hashtbl.find sgtm xbn cxtp cxtm in
 		let bindoptp = List.assoc (xbn,1) poly in
 		match (bindoptp,xco) with
 		| (Ar(Ar(TpVar 0,Prop),TpVar 0),None) -> (*** Case 1 ***)
@@ -524,7 +524,7 @@ In the remaining cases, atp is monomorphic (no TpVars):
 		| Ar(TpVar 0,Ar(TpVar 0,rtp)) ->
 		    let (a1tm,a1tp) = extract_tm_r a1 poly sgtmof sgtm cxtp cxtm in
 		    let a2tm = check_tm_r a2 a1tp poly sgtmof sgtm cxtp cxtm in
-		    let xd = List.assoc xo sgtm cxtp cxtm in
+		    let xd = Hashtbl.find sgtm xo cxtp cxtm in
 		    (Ap(Ap(TpAp(xd,a1tp),a1tm),a2tm),tpsubst rtp [a1tp])
 		| _ -> raise (Failure(x ^ " has an inappropriate type to be a polymorphic infix operator; expected ?0 -> ?0 -> ..."))
 	      end
