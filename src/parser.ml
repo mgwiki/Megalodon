@@ -323,25 +323,15 @@ Hashtbl.add disallowedprefixpriorities 790 ();;
 
 let penv : parseenv =
   fun x ->
-    let p =
-      try
-	Some(Hashtbl.find penv_preop x)
-      with Not_found -> None
-    in
+    let p = Hashtbl.find_opt penv_preop x in
     let q =
       try
 	let _ = proj_name x in (*** _0, _1, _2, etc. are the names of postfix operators for projections of metatuples ***)
 	Some(1,Postfix)
       with Not_found ->
-	try
-	  Some(Hashtbl.find penv_postinfop x)
-	with Not_found -> None
+	Hashtbl.find_opt penv_postinfop x
     in
-    let r =
-      try
-	Some(Hashtbl.find penv_binder x)
-      with Not_found -> None
-    in
+    let r = Hashtbl.find_opt penv_binder x in
     (p,q,r)
 
 type tokenstream =
