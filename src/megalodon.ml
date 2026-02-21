@@ -6,6 +6,7 @@ open Megaauto
 open Interpret
 
 let mycnt = ref 0;;
+let allowincompleteqed = ref false;;
 let doublecheckpf = ref true;;
 let createabyprobs = ref false;;
 let abyproblemscached = ref false;;
@@ -2972,7 +2973,8 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                   end;
 	        if !pfgout && i = 0 then
 	          pfgmain := PfgThm(gphv,thmname,gpgtm,dgpf)::!pfgmain;
-                istrusted thmname dgpf; (* Raises an exception if not proved *)
+                if not !allowincompleteqed then
+                  istrusted thmname dgpf; (* Raises an exception if not proved *)
                 Hashtbl.add istrustedhash gphv ()
 	      end;
 	      if (!verbosity > 19) then (Printf.printf "Double checking:\n%s\n%s\n" (pf_to_str dgpf) (tm_to_str gpgtm); flush stdout);
@@ -3028,7 +3030,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
 		  end
 	      end;
 	      treasure := None;
-              failwith "Qed is not allowed for a proof with admits, use Admitted instead."
+              if not !allowincompleteqed then failwith "Qed is not allowed for a proof with admits, use Admitted instead."
 	  end
 	else
 	  raise (Failure("Proof of " ^ thmname ^ " is incomplete"))
@@ -4493,6 +4495,8 @@ let _ =
           eagerdeltas := true
         else if Sys.argv.(!j) = "-nodoublecheck" then
           doublecheckpf := false
+        else if Sys.argv.(!j) = "-allowincompleteqed" then
+          allowincompleteqed := true
         else if Sys.argv.(!j) = "-fof" then
           begin
 	    if !j < i-2 then
