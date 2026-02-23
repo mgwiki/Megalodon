@@ -24,6 +24,13 @@ To use the HF theory, use the -hf command line argument.
 To use the HOAS theory, use the -hoas command line argument.
 To use the SetMM theory, use the -setmm command line argument.
 
+To generate Megawiki entries, use `-megawiki <directory>`.
+Megalodon will create `<directory>/d`, `<directory>/t` and `<directory>/c`.
+Definitions go to `d/<objecthash>`.
+Theorems only go to `t/<propositionhash>` when they end with a successful
+`Qed` (after proof checking). Otherwise the statement is written to
+`c/<propositionhash>` as a conjecture entry.
+
 Examples for each theory are in
 
 examples/egal

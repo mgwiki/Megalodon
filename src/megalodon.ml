@@ -91,8 +91,6 @@ let solvesproblemfile : string option ref = ref None
 let thmsasexercises : bool ref = ref false
 let exercises : string list ref = ref []
 
-let admits : bool ref = ref false
-
 let indoutfile : string option ref = ref None;;
 let indextms : (string,tp) Hashtbl.t = Hashtbl.create 1000;;
 let indexknowns : (string,unit) Hashtbl.t = Hashtbl.create 1000;;
@@ -417,6 +415,16 @@ let read_indexfile c =
 
 let latex = ref None;;
 let html = ref None;;
+type megawiki_state = { ddir:string; tdir:string; cdir:string };;
+type megawiki_thm_state =
+  {
+    hash:string;
+    tempfile:string;
+    tmpout:out_channel;
+    statement_html:string;
+  };;
+let megawiki : megawiki_state option ref = ref None;;
+let megawiki_thm : megawiki_thm_state option ref = ref None;;
 let inchan = ref None;; (*** This is a possible second channel for reading the input file currently used to record a literal copy of the text of proofs ***)
 let inchanline = ref 1;;
 let inchanchar = ref 0;;
@@ -448,6 +456,71 @@ let handlepolysnow () =
   futurepolypf := [];;
 let pushpolytm a = futurepolytm := a::!futurepolytm;;
 let pushpolypf a = futurepolypf := a::!futurepolypf;;
+
+let ensure_directory path =
+  if Sys.file_exists path then
+    begin
+      let st = Unix.stat path in
+      if st.Unix.st_kind <> Unix.S_DIR then
+        raise (Failure(Printf.sprintf "%s exists but is not a directory" path))
+    end
+  else
+    Unix.mkdir path 0o755
+
+let setup_megawiki root =
+  ensure_directory root;
+  let ddir = Filename.concat root "d" in
+  let tdir = Filename.concat root "t" in
+  let cdir = Filename.concat root "c" in
+  ensure_directory ddir;
+  ensure_directory tdir;
+  ensure_directory cdir;
+  { ddir = ddir; tdir = tdir; cdir = cdir }
+
+let close_out_noerr ch =
+  try close_out ch with _ -> ()
+
+let rec find_substring_from s sub i =
+  let ls = String.length s in
+  let lsub = String.length sub in
+  if i + lsub > ls then
+    None
+  else if String.sub s i lsub = sub then
+    Some i
+  else
+    find_substring_from s sub (i+1)
+
+let theorem_statement_only_html frag =
+  match find_substring_from frag "<div id='pf" 0 with
+  | Some i -> String.sub frag 0 i ^ "</div></div>\n"
+  | None -> frag
+
+let finalize_megawiki_theorem proved =
+  match !megawiki,!megawiki_thm with
+  | Some mw,Some st ->
+      close_out_noerr st.tmpout;
+      let tpath = Filename.concat mw.tdir st.hash in
+      let cpath = Filename.concat mw.cdir st.hash in
+      begin
+        if Sys.file_exists tpath then Sys.remove tpath;
+        if Sys.file_exists cpath then Sys.remove cpath;
+        if proved then
+          Sys.rename st.tempfile tpath
+        else
+          begin
+            let ch = open_out cpath in
+            output_string ch st.statement_html;
+            close_out ch;
+            if Sys.file_exists st.tempfile then Sys.remove st.tempfile;
+          end
+      end;
+      megawiki_thm := None
+  | _,Some st ->
+      close_out_noerr st.tmpout;
+      if Sys.file_exists st.tempfile then Sys.remove st.tempfile;
+      megawiki_thm := None
+  | _,None -> ()
+
 (*** special cases so that the certain tactics get activated ***)
 let activate_special_knowns h =
   if h = !expolyI then
@@ -681,6 +754,43 @@ let buffer_to_line_char c b li1 ch1 li2 ch2 =
 let ctxtp = ref []
 let ctxtm = ref []
 let ctxpf = ref []
+
+let html_context () =
+  (List.map (fun (x,_) -> x) !ctxpf) @ (List.map (fun (x,_) -> x) !ctxtm) @ !ctxtp
+
+let render_docitem_html_fragment cx ditem =
+  let fn = Filename.temp_file "megalodon_docitem_" ".htmlfrag" in
+  let cleanup () =
+    try Sys.remove fn with _ -> ()
+  in
+  try
+    let ch = open_out fn in
+    output_docitem_html cx ch ditem sigtmh sigknh;
+    close_out ch;
+    let c = open_in fn in
+    let n = in_channel_length c in
+    let s = really_input_string c n in
+    close_in c;
+    cleanup ();
+    s
+  with e ->
+    cleanup ();
+    raise e
+
+let pftac_html_channels () =
+  let cl = ref [] in
+  begin
+    match !html with
+    | Some hc -> cl := hc::!cl
+    | None -> ()
+  end;
+  begin
+    match !megawiki_thm with
+    | Some st -> cl := st.tmpout::!cl
+    | None -> ()
+  end;
+  List.rev !cl
+
 let tparclos = ref (fun a -> a)
 let tmallclos = ref (fun m -> m)
 let tmlamclos = ref (fun m -> m)
@@ -1622,7 +1732,7 @@ let evaluate_docitem_1 ditem =
       Hashtbl.add sigknh x ahv;
       Hashtbl.add sigknh_rev ahv x;
       Hashtbl.add ownedprop pfgahv ();
-      if i = 0 && (!pfgsummary || not (!html = None)) then
+      if i = 0 && (!pfgsummary || not (!html = None) || not (!megawiki = None)) then
         begin
           let (pfgpure,pfgahv) = pfg_propid2 agtm in
           Hashtbl.add pfgtmroot x (Hash.hashval_hexstring pfgpure);
@@ -1771,29 +1881,102 @@ let evaluate_docitem_1 ditem =
 let evaluate_docitem ditem =
   evaluate_docitem_1 ditem;
   begin
-    match !html with
-    | Some hc ->
-       begin
-	 output_docitem_html ((List.map (fun (x,_) -> x) !ctxpf) @ (List.map (fun (x,_) -> x) !ctxtm) @ !ctxtp) hc ditem sigtmh sigknh;
-	 match ditem with
-	 | ThmDecl(_,x,_) ->
-	    begin
-	      match !inchan with
-	      | Some(c) ->
-		 begin
-		   try
-		     let h = Hashtbl.find sigknh x in
-		     currtmid := h
-		   with Not_found -> ()
-		 end;
-		 pflinestart := !lineno;
-		 pfcharstart := !charno;
-		 skip_to_line_char c inchanline inchanchar !lineno !charno;
-	      | None -> ()
-	    end
-	 | _ -> ()
-       end
-    | None -> ()
+    let cx = html_context () in
+    let html_targets = ref [] in
+    let theorem_for_megawiki =
+      match !megawiki,ditem with
+      | Some(_),ThmDecl(_,_,_) -> true
+      | _ -> false
+    in
+    begin
+      match !html with
+      | Some hc ->
+         html_targets := (hc,false)::!html_targets
+      | None -> ()
+    end;
+    begin
+      match !megawiki with
+      | Some mw ->
+         begin
+           match ditem with
+           | DefDecl(x,_,_) ->
+              begin
+                try
+                  let xh = Hashtbl.find pfgobjid x in
+                  let ch = open_out (Filename.concat mw.ddir xh) in
+                  html_targets := (ch,true)::!html_targets
+                with Not_found -> ()
+              end
+           | ThmDecl(_,_,_) -> ()
+           | _ -> ()
+         end
+      | None -> ()
+    end;
+    let html_targets = List.rev !html_targets in
+    let frag_cache = ref None in
+    let get_frag () =
+      match !frag_cache with
+      | Some s -> s
+      | None ->
+          let s = render_docitem_html_fragment cx ditem in
+          frag_cache := Some s;
+          s
+    in
+    begin
+      if theorem_for_megawiki || List.length html_targets > 1 then
+        let frag = get_frag () in
+        List.iter (fun (hc,_) -> output_string hc frag) html_targets
+      else
+        match html_targets with
+        | [] -> ()
+        | [(hc,_)] ->
+           output_docitem_html cx hc ditem sigtmh sigknh
+        | _ -> ()
+    end;
+    List.iter (fun (hc,close_now) -> if close_now then close_out hc) html_targets;
+    begin
+      match !megawiki,ditem with
+      | Some(mw),ThmDecl(_,x,_) ->
+         finalize_megawiki_theorem false;
+         begin
+           try
+             let xh = Hashtbl.find pfgpropid x in
+             let frag = get_frag () in
+             let tmpfn = Filename.concat mw.tdir (xh ^ ".tmp") in
+             if Sys.file_exists tmpfn then Sys.remove tmpfn;
+             let ch = open_out tmpfn in
+             output_string ch frag;
+             let sth = theorem_statement_only_html frag in
+             megawiki_thm := Some({ hash = xh; tempfile = tmpfn; tmpout = ch; statement_html = sth });
+           with Not_found ->
+             megawiki_thm := None
+         end
+      | _ -> ()
+    end;
+    begin
+      match ditem with
+      | ThmDecl(_,x,_) ->
+         begin
+           match !html,!megawiki_thm with
+           | None,None -> ()
+           | _,_ ->
+              begin
+                match !inchan with
+                | Some(c) ->
+                   begin
+                     try
+                       let h = Hashtbl.find sigknh x in
+                       currtmid := h
+                     with Not_found -> ()
+                   end;
+                   pflinestart := !lineno;
+                   pfcharstart := !charno;
+                   skip_to_line_char c inchanline inchanchar !lineno !charno;
+                | None -> ()
+              end
+         end
+      | _ -> ()
+    end
   end;
   match !latex with
   | Some hc ->
@@ -1983,6 +2166,7 @@ let postprobs cls startpos endpos claimtm cxtm cxpf d =
     end
 
 let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
+  let megawiki_target : bool option ref = ref None in
   begin
     match !th0,!th0singlesubgoal with
     | Some(c),Some(ln,cn) ->
@@ -2114,7 +2298,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
          end
       | _ -> ()
     end;
-  match pitem with
+  (match pitem with
   | PfStruct i when i < 4 ->
       if !verbosity > 19 then (Printf.printf "pfstruct %d\nLength of pfstate stack: %d\n" i (List.length !pfstate); print_pfstate (); flush stdout);
       begin
@@ -2266,7 +2450,6 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
              with SearchLimit ->
                admitpfstateatp pfst;
 	       pfstate := pfstr;
-	       admits := true;
 	       prooffun := (fun _ -> raise AdmittedPf)               
            end
 	| _ ->
@@ -3014,8 +3197,10 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
 			| None -> ()
 		      end
 		  end;
+                  megawiki_target := Some true;
 	    with AdmittedPf ->
               if !sexprinfo then Printf.printf "(QEDWITHADMITS)\n";
+              megawiki_target := Some false;
 	      if (!verbosity > 9) then (Printf.printf "Theorem %s admitted\n" thmname; flush stdout);
               if !pfgout && i = 0 then pfgmain := PfgConj(gphv,thmname,gpgtm)::!pfgmain;
 	      if (!ajax && !ajaxactive) then (Printf.printf "I$"; exit 1);
@@ -3061,8 +3246,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                 (th0sg := ("known",gphv,thmname,Printf.sprintf "thf(%s,axiom,%s). %% %s" (tptpize_name thmname) (th0_str gpgtm []) gphv)::!th0sg)
           end;
 	pfstate := [];
-	treasure := None;
-	admits := true;
+		treasure := None;
 	begin
 	  if !sqlout then
 	    begin
@@ -3073,15 +3257,15 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
 	      | None -> ()
 	    end
 	end;
+        megawiki_target := Some false;
       end
   | Admit ->
       begin
 	match !pfstate with
 	| (pfst::pfstr) ->
-           admitpfstateatp pfst;
-	   pfstate := pfstr;
-	   admits := true;
-	   prooffun := (fun _ -> raise AdmittedPf)
+	           admitpfstateatp pfst;
+		   pfstate := pfstr;
+		   prooffun := (fun _ -> raise AdmittedPf)
 	| [] -> raise (Failure("No goal to admit"))
       end
   | Aby(xl) ->
@@ -3195,10 +3379,9 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                         end
                end;
              end;
-           admitpfstateatp pfst;
-	   pfstate := pfstr;
-	   admits := true;
-	   prooffun := (fun _ -> raise AdmittedPf)
+	           admitpfstateatp pfst;
+		   pfstate := pfstr;
+		   prooffun := (fun _ -> raise AdmittedPf)
 	| _ -> raise (Failure("No goal to aby"))
       end
   | SpecialTac(x,[]) when x = "distinct" ->
@@ -3799,15 +3982,16 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
        | _ -> raise (Failure("f_equal tactic cannot be used when there is no claim"))
      end
   | _ ->
-      raise (Failure("Unknown proof tactic"))
+      raise (Failure("Unknown proof tactic")));
+  !megawiki_target
 
 let rec evaluate_pftac_2 () =
   match !pfstate with
   | PfStateSep(j,false)::pfstr ->
       begin
-	match !html with
-	| Some hc -> output_pftacitem_html ((List.map (fun (x,_) -> x) !ctxpf) @ (List.map (fun (x,_) -> x) !ctxtm) @ !ctxtp) hc (PfStruct(j)) sigtmh sigknh 3
-	| None -> ()
+        List.iter
+          (fun hc -> output_pftacitem_html (html_context ()) hc (PfStruct(j)) sigtmh sigknh 3)
+          (pftac_html_channels ())
       end;
       begin
 	match !latex with
@@ -3839,18 +4023,17 @@ let evaluate_pftac pitem thmname i gpgtm gphv pfggphv =
           close_out f
        | _ -> ()
   end;
-  evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv;
+  let megawiki_target = evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv in
   begin
-    match !html with
-    | Some hc ->
-(*	if pitem = Qed || pitem = Admitted then
-	  begin
-	    match !inchan with
-	    | Some(c) -> buffer_to_line_char c pftext inchanline inchanchar !lineno !charno
-	    | None -> ()
-	  end; *)
-	output_pftacitem_html ((List.map (fun (x,_) -> x) !ctxpf) @ (List.map (fun (x,_) -> x) !ctxtm) @ !ctxtp) hc pitem sigtmh sigknh !laststructaction
-    | None -> ()
+(*    if pitem = Qed || pitem = Admitted then
+      begin
+        match !inchan with
+        | Some(c) -> buffer_to_line_char c pftext inchanline inchanchar !lineno !charno
+        | None -> ()
+      end; *)
+    List.iter
+      (fun hc -> output_pftacitem_html (html_context ()) hc pitem sigtmh sigknh !laststructaction)
+      (pftac_html_channels ())
   end;
   begin
     match !latex with
@@ -3865,7 +4048,12 @@ let evaluate_pftac pitem thmname i gpgtm gphv pfggphv =
     | None -> ()
   end;
   if !verbosity > 19 then (Printf.printf "pre2 pfstruct %d\nLength of pfstate stack: %d\n" i (List.length !pfstate); print_pfstate (); flush stdout);
-  evaluate_pftac_2 ()
+  evaluate_pftac_2 ();
+  begin
+    match megawiki_target with
+    | Some(b) -> finalize_megawiki_theorem b
+    | None -> ()
+  end
 
 let init_env () =
   ctxtp := [];
@@ -4090,6 +4278,7 @@ let mgcheck c =
 	if (!verbosity > 9) then (Printf.printf "done.\n"; flush stdout)
     end
   | ParsingError(x,l1,c1,l2,c2) ->
+      finalize_megawiki_theorem false;
       if !webout then
 	begin
           Printf.printf "AS%d:%d:%d:%d\n"  l1 c1 l2 c2;
@@ -4107,6 +4296,7 @@ let mgcheck c =
 	  exit 1
 	end
   | Failure(x) ->
+      finalize_megawiki_theorem false;
       if !webout then
 	begin
           Printf.printf "AF%d:%d\n"  !lineno !charno;
@@ -4490,6 +4680,16 @@ let _ =
 	      end
 	    else
 	      raise (Failure("Expected -html <filename>"))
+          end
+        else if Sys.argv.(!j) = "-megawiki" then
+          begin
+            if !j < i-2 then
+              begin
+                incr j;
+                megawiki := Some(setup_megawiki (Sys.argv.(!j)))
+              end
+            else
+              raise (Failure("Expected -megawiki <directory>"))
           end
         else if Sys.argv.(!j) = "-eagerdeltas" then
           eagerdeltas := true
@@ -4956,6 +5156,7 @@ let _ =
     | Some(ch) -> close_out ch
     | None -> ()
   end;
+  finalize_megawiki_theorem false;
   begin
     match !html with
     | Some hc ->
