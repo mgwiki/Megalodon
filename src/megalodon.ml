@@ -498,6 +498,12 @@ let theorem_statement_only_html frag =
   | Some i -> String.sub frag 0 i ^ "</div></div>\n"
   | None -> frag
 
+let megawiki_theorem_exists pfgahv =
+  match !megawiki with
+  | Some mw ->
+      Sys.file_exists (Filename.concat mw.tdir (Hash.hashval_hexstring pfgahv))
+  | None -> false
+
 let finalize_megawiki_theorem proved =
   match !megawiki,!megawiki_thm with
   | Some mw,Some st ->
@@ -1719,7 +1725,8 @@ let evaluate_docitem_1 ditem =
            begin
              if i = 0 then
                let pfgahv = pfg_propid agtm in
-               not (Hashtbl.mem ownedprop pfgahv)
+               not (Hashtbl.mem ownedprop pfgahv) &&
+               not (megawiki_theorem_exists pfgahv)
              else
                false
            end
