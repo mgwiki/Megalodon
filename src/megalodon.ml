@@ -480,6 +480,9 @@ let setup_megawiki root =
 let close_out_noerr ch =
   try close_out ch with _ -> ()
 
+let remove_file_if_exists path =
+  if Sys.file_exists path then Sys.remove path
+
 let rec find_substring_from s sub i =
   let ls = String.length s in
   let lsub = String.length sub in
@@ -502,22 +505,34 @@ let finalize_megawiki_theorem proved =
       let tpath = Filename.concat mw.tdir st.hash in
       let cpath = Filename.concat mw.cdir st.hash in
       begin
-        if Sys.file_exists tpath then Sys.remove tpath;
-        if Sys.file_exists cpath then Sys.remove cpath;
         if proved then
-          Sys.rename st.tempfile tpath
+          begin
+            remove_file_if_exists cpath;
+            if Sys.file_exists tpath then
+              remove_file_if_exists st.tempfile
+            else if Sys.file_exists st.tempfile then
+              Sys.rename st.tempfile tpath
+          end
         else
           begin
-            let ch = open_out cpath in
-            output_string ch st.statement_html;
-            close_out ch;
-            if Sys.file_exists st.tempfile then Sys.remove st.tempfile;
-          end
+            if Sys.file_exists st.tempfile then
+              begin
+                if Sys.file_exists tpath || Sys.file_exists cpath then
+                  Sys.remove st.tempfile
+                else
+                  begin
+                    let ch = open_out cpath in
+                    output_string ch st.statement_html;
+                    close_out ch;
+                    Sys.remove st.tempfile;
+                  end
+              end
+          end;
       end;
       megawiki_thm := None
   | _,Some st ->
       close_out_noerr st.tmpout;
-      if Sys.file_exists st.tempfile then Sys.remove st.tempfile;
+      remove_file_if_exists st.tempfile;
       megawiki_thm := None
   | _,None -> ()
 
@@ -1903,8 +1918,12 @@ let evaluate_docitem ditem =
               begin
                 try
                   let xh = Hashtbl.find pfgobjid x in
-                  let ch = open_out (Filename.concat mw.ddir xh) in
-                  html_targets := (ch,true)::!html_targets
+                  let dpath = Filename.concat mw.ddir xh in
+                  if not (Sys.file_exists dpath) then
+                    begin
+                      let ch = open_out dpath in
+                      html_targets := (ch,true)::!html_targets
+                    end
                 with Not_found -> ()
               end
            | ThmDecl(_,_,_) -> ()
