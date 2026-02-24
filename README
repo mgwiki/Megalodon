@@ -30,6 +30,12 @@ Definitions go to `d/<objecthash>`.
 Theorems only go to `t/<propositionhash>` when they end with a successful
 `Qed` (after proof checking). Otherwise the statement is written to
 `c/<propositionhash>` as a conjecture entry.
+With `-allowincompleteqed`, a `Qed` that is accepted but not trusted is also
+written to `c/<propositionhash>`.
+If an entry already exists, it is left unchanged and not rewritten.
+When a theorem is fully proved, any existing `c/<propositionhash>` is removed.
+Whenever a new entry is written to `d/`, `t/`, or `c/`, a line
+`<hash> <name>` is appended to `<directory>/legend`.
 
 Examples for each theory are in
 

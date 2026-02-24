@@ -419,6 +419,7 @@ type megawiki_state = { ddir:string; tdir:string; cdir:string };;
 type megawiki_thm_state =
   {
     hash:string;
+    name:string;
     tempfile:string;
     tmpout:out_channel;
     statement_html:string;
@@ -483,6 +484,14 @@ let close_out_noerr ch =
 let remove_file_if_exists path =
   if Sys.file_exists path then Sys.remove path
 
+let append_megawiki_legend mw hash name =
+  let ch = open_out_gen [Open_creat;Open_text;Open_append] 0o644 (Filename.concat (Filename.dirname mw.ddir) "legend") in
+  output_string ch hash;
+  output_char ch ' ';
+  output_string ch name;
+  output_char ch '\n';
+  close_out ch
+
 let rec find_substring_from s sub i =
   let ls = String.length s in
   let lsub = String.length sub in
@@ -517,7 +526,10 @@ let finalize_megawiki_theorem proved =
             if Sys.file_exists tpath then
               remove_file_if_exists st.tempfile
             else if Sys.file_exists st.tempfile then
-              Sys.rename st.tempfile tpath
+              begin
+                Sys.rename st.tempfile tpath;
+                append_megawiki_legend mw st.hash st.name
+              end
           end
         else
           begin
@@ -531,6 +543,7 @@ let finalize_megawiki_theorem proved =
                     output_string ch st.statement_html;
                     close_out ch;
                     Sys.remove st.tempfile;
+                    append_megawiki_legend mw st.hash st.name;
                   end
               end
           end;
@@ -1913,7 +1926,7 @@ let evaluate_docitem ditem =
     begin
       match !html with
       | Some hc ->
-         html_targets := (hc,false)::!html_targets
+         html_targets := (hc,false,None)::!html_targets
       | None -> ()
     end;
     begin
@@ -1929,7 +1942,7 @@ let evaluate_docitem ditem =
                   if not (Sys.file_exists dpath) then
                     begin
                       let ch = open_out dpath in
-                      html_targets := (ch,true)::!html_targets
+                      html_targets := (ch,true,Some(xh,x))::!html_targets
                     end
                 with Not_found -> ()
               end
@@ -1951,15 +1964,24 @@ let evaluate_docitem ditem =
     begin
       if theorem_for_megawiki || List.length html_targets > 1 then
         let frag = get_frag () in
-        List.iter (fun (hc,_) -> output_string hc frag) html_targets
+        List.iter (fun (hc,_,_) -> output_string hc frag) html_targets
       else
         match html_targets with
         | [] -> ()
-        | [(hc,_)] ->
+        | [(hc,_,_)] ->
            output_docitem_html cx hc ditem sigtmh sigknh
         | _ -> ()
     end;
-    List.iter (fun (hc,close_now) -> if close_now then close_out hc) html_targets;
+    List.iter
+      (fun (hc,close_now,legend_opt) ->
+        if close_now then
+          begin
+            close_out hc;
+            match !megawiki,legend_opt with
+            | Some mw,Some(hash,name) -> append_megawiki_legend mw hash name
+            | _,_ -> ()
+          end)
+      html_targets;
     begin
       match !megawiki,ditem with
       | Some(mw),ThmDecl(_,x,_) ->
@@ -1973,7 +1995,7 @@ let evaluate_docitem ditem =
              let ch = open_out tmpfn in
              output_string ch frag;
              let sth = theorem_statement_only_html frag in
-             megawiki_thm := Some({ hash = xh; tempfile = tmpfn; tmpout = ch; statement_html = sth });
+             megawiki_thm := Some({ hash = xh; name = x; tempfile = tmpfn; tmpout = ch; statement_html = sth });
            with Not_found ->
              megawiki_thm := None
          end
@@ -3175,16 +3197,24 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
               let dgpf = if !optimizepf1 then optimize_pf_1 dgpf else dgpf in
               let dgpf = if !optimizepf2 then optimize_pf_2 sigdelta sigtmof dgpf !optimizepf2tc !optimizepf2pc else dgpf in
               let dgpf = if !normalizepf then normalize_pf dgpf else dgpf in
+	      let qed_is_complete = ref true in
 	      begin
-                if i = 0 then
-                  begin
-                    Hashtbl.add pfgknph gphv gpgtm;
-                  end;
-	        if !pfgout && i = 0 then
-	          pfgmain := PfgThm(gphv,thmname,gpgtm,dgpf)::!pfgmain;
-                if not !allowincompleteqed then
-                  istrusted thmname dgpf; (* Raises an exception if not proved *)
-                Hashtbl.add istrustedhash gphv ()
+		if i = 0 then
+		  begin
+		    Hashtbl.add pfgknph gphv gpgtm;
+		  end;
+		if !pfgout && i = 0 then
+		  pfgmain := PfgThm(gphv,thmname,gpgtm,dgpf)::!pfgmain;
+	        if not !allowincompleteqed then
+	          istrusted thmname dgpf (* Raises an exception if not proved *)
+	        else
+	          begin
+	            try
+	              istrusted thmname dgpf
+	            with Failure(_) ->
+	              qed_is_complete := false
+	          end;
+	        Hashtbl.add istrustedhash gphv ()
 	      end;
 	      if (!verbosity > 19) then (Printf.printf "Double checking:\n%s\n%s\n" (pf_to_str dgpf) (tm_to_str gpgtm); flush stdout);
 	      match
@@ -3223,7 +3253,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
 			| None -> ()
 		      end
 		  end;
-                  megawiki_target := Some true;
+	          megawiki_target := Some(!qed_is_complete);
 	    with AdmittedPf ->
               if !sexprinfo then Printf.printf "(QEDWITHADMITS)\n";
               megawiki_target := Some false;
