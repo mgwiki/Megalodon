@@ -1,6 +1,7 @@
 (* File: lexer.mll *)
 (* Author: Chad E Brown *)
 (* Created: September 2011 (Scavanaged from holitmus; Changed to Coq syntax) *)
+(* Copyright (c) 2026 AI4REASON *)
 
 {
 open Parser        (* The type token is defined in parser.mli *)
@@ -9,6 +10,7 @@ exception Eof
 rule token = parse
 | [' ' '\t' '\r']     { incr charno; token lexbuf }     (* skip white space *)
 | ['\n']         { incr lineno; charno := 0; token lexbuf }     (* skip white space *)
+| "//" [^'\n']* ['\n'] as lxm { update_pos lxm; token lexbuf } (* skip one line comment *)
 | ['(']['*']['*']['*']*[^'*']*['*']+[')'] as lxm { update_pos lxm; token lexbuf }     (* skip comments *)
 | "(*" as lxm          { update_char_pos lxm; OPENCOM }
 | "*)" as lxm          { update_char_pos lxm; CLOSECOM }
@@ -66,32 +68,33 @@ rule token = parse
 | ">=" as lxm          { update_char_pos lxm; NAM(lxm) }
 | "<=" as lxm          { update_char_pos lxm; NAM(lxm) }
 | "'"          { incr charno; NAM("'") }
-| "Section" as lxm         { update_char_pos lxm; SECTION }
-| "End" as lxm         { update_char_pos lxm; END }
-| "Let" as lxm         { update_char_pos lxm; LETDEC }
-| "Variable" as lxm         { update_char_pos lxm; VAR }
-| "Hypothesis" as lxm         { update_char_pos lxm; HYP }
+| "Section" as lxm         { warn_about_leading_spaces lxm; update_char_pos lxm; SECTION }
+| "End" as lxm         { warn_about_leading_spaces lxm; update_char_pos lxm; END }
+| "Let" as lxm         { warn_about_leading_spaces lxm; update_char_pos lxm; LETDEC }
+| "Variable" as lxm         { warn_about_leading_spaces lxm; update_char_pos lxm; VAR }
+| "Hypothesis" as lxm         { warn_about_leading_spaces lxm; update_char_pos lxm; HYP }
 | "Parameter" as lxm       { update_char_pos lxm; PARAM }
-| "Axiom" as lxm       { update_char_pos lxm; AXIOM }
-| "Lemma" as lxm       { update_char_pos lxm; THEOREM(lxm) }
-| "Theorem" as lxm       { update_char_pos lxm; THEOREM(lxm) }
-| "Example" as lxm       { update_char_pos lxm; THEOREM(lxm) }
-| "Fact" as lxm       { update_char_pos lxm; THEOREM(lxm) }
-| "Remark" as lxm       { update_char_pos lxm; THEOREM(lxm) }
-| "Corollary" as lxm       { update_char_pos lxm; THEOREM(lxm) }
-| "Proposition" as lxm       { update_char_pos lxm; THEOREM(lxm) }
-| "Property" as lxm       { update_char_pos lxm; THEOREM(lxm) }
+| "Axiom" as lxm       { warn_about_leading_spaces lxm; update_char_pos lxm; AXIOM }
+| "ProofArchived" as lxm       { warn_about_leading_spaces lxm; update_char_pos lxm; AXIOM }
+| "Lemma" as lxm       { warn_about_leading_spaces lxm; update_char_pos_thm lxm; THEOREM(lxm) }
+| "Theorem" as lxm       { warn_about_leading_spaces lxm; update_char_pos_thm lxm; THEOREM(lxm) }
+| "Example" as lxm       { warn_about_leading_spaces lxm; update_char_pos_thm lxm; THEOREM(lxm) }
+| "Fact" as lxm       { warn_about_leading_spaces lxm; update_char_pos_thm lxm; THEOREM(lxm) }
+| "Remark" as lxm       { warn_about_leading_spaces lxm; update_char_pos_thm lxm; THEOREM(lxm) }
+| "Corollary" as lxm       { warn_about_leading_spaces lxm; update_char_pos_thm lxm; THEOREM(lxm) }
+| "Proposition" as lxm       { warn_about_leading_spaces lxm; update_char_pos_thm lxm; THEOREM(lxm) }
+| "Property" as lxm       { warn_about_leading_spaces lxm; update_char_pos_thm lxm; THEOREM(lxm) }
 | "exact" as lxm       { update_char_pos lxm; EXACT }
-| "Qed" as lxm       { update_char_pos lxm; QED }
-| "Axiom" as lxm       { update_char_pos lxm; AXIOM }
-| "Conjecture" as lxm       { update_char_pos lxm; CONJECTURE }
-| "Definition" as lxm         { update_char_pos lxm; DEF }
-| "Infix" as lxm         { update_char_pos lxm; INFIX }
-| "Postfix" as lxm         { update_char_pos lxm; POSTFIX }
-| "Prefix" as lxm         { update_char_pos lxm; PREFIX }
-| "Binder" as lxm         { update_char_pos lxm; BINDER }
-| "Binder+" as lxm         { update_char_pos lxm; BINDERPLUS }
-| "Notation" as lxm         { update_char_pos lxm; NOTATION }
+| "Qed" as lxm       { warn_about_leading_spaces lxm; update_char_pos lxm; QED }
+| "Axiom" as lxm       { warn_about_leading_spaces lxm; update_char_pos lxm; AXIOM }
+| "Conjecture" as lxm       { warn_about_leading_spaces lxm; update_char_pos lxm; CONJECTURE }
+| "Definition" as lxm         { warn_about_leading_spaces lxm; update_char_pos lxm; DEF }
+| "Infix" as lxm         { warn_about_leading_spaces lxm; update_char_pos lxm; INFIX }
+| "Postfix" as lxm         { warn_about_leading_spaces lxm; update_char_pos lxm; POSTFIX }
+| "Prefix" as lxm         { warn_about_leading_spaces lxm; update_char_pos lxm; PREFIX }
+| "Binder" as lxm         { warn_about_leading_spaces lxm; update_char_pos lxm; BINDER }
+| "Binder+" as lxm         { warn_about_leading_spaces lxm; update_char_pos lxm; BINDERPLUS }
+| "Notation" as lxm         { warn_about_leading_spaces lxm; update_char_pos lxm; NOTATION }
 | "Unicode" as lxm         { update_char_pos lxm; UNICODE }
 | "Subscript" as lxm       { update_char_pos lxm; SUBSCRIPT }
 | "Superscript" as lxm       { update_char_pos lxm; SUPERSCRIPT }
@@ -104,7 +107,7 @@ rule token = parse
 | "Treasure" as lxm { update_char_pos lxm; TREASURE }
 | "Title" as lxm { update_char_pos lxm; TITLE }
 | "Author" as lxm { update_char_pos lxm; AUTHOR }
-| "Admitted" as lxm { update_char_pos lxm; ADMITTED }
+| "Admitted" as lxm { warn_about_leading_spaces lxm; update_char_pos lxm; ADMITTED }
 | "admit" as lxm { update_char_pos lxm; ADMIT }
 | "aby" as lxm { update_char_pos lxm; ABY }
 | "TEXT" as lxm { update_char_pos lxm; TEXT }

@@ -1,3 +1,4 @@
+(* Copyright (c) 2026 AI4REASON *)
 (* Copyright (c) 2020-2023 CIIRC (Czech Institute of Informatics, Robotics and Cybernetics) / CTU (Czech Technical University) *)
 (*** File: interpret.ml ***)
 (*** Chad E Brown ***)
@@ -6,6 +7,10 @@
 open Syntax
 open Parser
 open Megaauto
+
+let currthm = ref ""
+let admittedthms : (string,unit) Hashtbl.t = Hashtbl.create 10
+let admittedthmsdeps : (string,string) Hashtbl.t = Hashtbl.create 10
 
 let verbosity = ref 1
 let tpabbrev : (string,tp) Hashtbl.t = Hashtbl.create 10
@@ -1298,6 +1303,7 @@ let rec extract_pf_r a polyt polyp sgtmof sgdelta sgtm sgpf cxtp cxtm cxpf =
 	    let d = List.assoc x sgpf cxtp cxtm cxpf in
 	    let (p,dl) = extr_propofpf sgdelta sgtmof (cxtmdb cxtm) (cxpfdb cxpf) d !deltaset in
 	    deltaset := dl;
+            if Hashtbl.mem admittedthms x && not (!currthm = "") && not (List.mem !currthm (Hashtbl.find_all admittedthmsdeps x)) then Hashtbl.add admittedthmsdeps x !currthm;
 	    (d,p)
 	  with Not_found ->
 	    raise (Failure("Unknown proof " ^ x ^ " -- it might be a term in a position where a proof is expected"))

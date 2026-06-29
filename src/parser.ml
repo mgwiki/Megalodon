@@ -1,5 +1,9 @@
+(* Copyright (c) 2026 AI4REASON *)
 open Syntax
 
+let warnaboutleadingspaces = ref false
+let thmstart : (int * int) ref = ref (0,0)
+let thmend : (int * int) ref = ref (0,0)
 let lineno : int ref = ref 1
 let charno : int ref = ref 0
 
@@ -20,6 +24,14 @@ let hexval c =
 (*** Assume no newlines ***)
 let update_char_pos s =
   charno := !charno + String.length s
+
+let update_char_pos_thm s =
+  thmstart := (!lineno,!charno);
+  charno := !charno + String.length s
+
+let warn_about_leading_spaces s =
+  if !warnaboutleadingspaces && !charno > 1 then
+    Printf.printf "WARNING: There are unhelpful leading spaces before %s on Line %d (or %s should be moved to the next line). Please remove these and other unhelpful leading spaces. The only helpful leading spaces are for multiline terms and formulas and inside of structured proofs.\n" s !lineno s
 
 (*** May have newlines ***)
 let rec update_pos_rec s i =
@@ -1051,6 +1063,7 @@ let parse_docitem tl =
       let tu = read_expected_ts [COLON] ts in
       let (a,tv) = parse_ltree tu in
       let tw = read_expected_ts [DOT] tv in
+      thmend := (!lineno,!charno);
       (ThmDecl(c,x,a),tw)
   | _ -> raise (ParsingError("Expected a Document Item",li,ch,!lineno,!charno))
 

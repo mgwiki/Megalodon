@@ -1,3 +1,4 @@
+(* Copyright (c) 2026 AI4REASON *)
 (* Copyright (c) 2020-2025 CIIRC (Czech Institute of Informatics, Robotics and Cybernetics) / CTU (Czech Technical University) *)
 
 open Syntax
@@ -5,9 +6,17 @@ open Parser
 open Megaauto
 open Interpret
 
+let preambleassig = ref false;;
+let stm = ref "";;
 let mycnt = ref 0;;
+let archivefile = ref None;;
 let allowincompleteqed = ref false;;
 let doublecheckpf = ref true;;
+let maxbottlenecksreport = ref 3;;
+let removepfs = ref None;;
+let countremovedpfs = ref 0;;
+let pfposinfo = ref [];;
+let warnaboutreproven = ref false;;
 let createabyprobs = ref false;;
 let abyproblemscached = ref false;;
 let sb : Buffer.t = Buffer.create 10000;;
@@ -415,6 +424,12 @@ let read_indexfile c =
 
 let latex = ref None;;
 let html = ref None;;
+let htmlonlypfgsupp = ref false;;
+let supported = ref false;;
+let pfgsuppparam : (string,unit) Hashtbl.t = Hashtbl.create 100;;
+let pfgsuppdef : (string,unit) Hashtbl.t = Hashtbl.create 100;;
+let pfgsuppknown : (string,unit) Hashtbl.t = Hashtbl.create 100;;
+let pfgsuppthm : (string,unit) Hashtbl.t = Hashtbl.create 100;;
 type megawiki_state = { ddir:string; tdir:string; cdir:string };;
 type megawiki_thm_state =
   {
@@ -467,6 +482,34 @@ let ensure_directory path =
     end
   else
     Unix.mkdir path 0o755
+
+let read_pfg_supp fn =
+  let f = open_in fn in
+  try
+    while true do
+      let l = input_line f in
+      let ln = String.length l in
+      if ln = 70 then
+        if String.sub l 0 6 = "Param:" then
+          Hashtbl.replace pfgsuppparam (String.sub l 6 64) ()
+        else if String.sub l 0 6 = "Known:" then
+          Hashtbl.replace pfgsuppknown (String.sub l 6 64) ()
+        else
+          ()
+      else if ln = 68 then
+        if String.sub l 0 4 = "Def:" then
+          Hashtbl.replace pfgsuppdef (String.sub l 4 64) ()
+        else if String.sub l 0 4 = "Thm:" then
+          Hashtbl.replace pfgsuppthm (String.sub l 4 64) ()
+        else
+          ()
+      else if ln = 69 && String.sub l 0 5 = "Conj:" then
+        Hashtbl.replace pfgsuppthm (String.sub l 5 64) ()
+      else
+        ()
+    done
+  with End_of_file ->
+    close_in f
 
 let setup_megawiki root =
   ensure_directory root;
@@ -815,7 +858,9 @@ let pftac_html_channels () =
   let cl = ref [] in
   begin
     match !html with
-    | Some hc -> cl := hc::!cl
+    | Some hc ->
+       if not !includingsigfile && (not !htmlonlypfgsupp || !supported) then
+         cl := hc::!cl
     | None -> ()
   end;
   begin
@@ -1316,6 +1361,7 @@ let evaluate_docitem_1 ditem =
 	  if (xi,xtp) <> (i,agtp) then raise (Failure(x ^ " is the name of a built-in primitive which does not have the given type."));
 	  if i > 6 then raise (Failure("It is forbidden to have more than 6 type variables."));
 	  let xhv = tm_id (Prim(xj)) sigtmof sigdelta in
+          supported := Hashtbl.mem pfgsuppparam xhv;
           if !sexprinfo then Printf.printf "(PRIM %d \"%s\" \"%s\" %s %d)\n" xj x xhv (tp_to_sexpr agtp) !lineno;
 	  if x = "Empty" then set0 := Some(xhv);
 	  add_sigdelta xhv (0,Prim(xj));
@@ -1376,6 +1422,7 @@ let evaluate_docitem_1 ditem =
 	    else
 	      try
 		let xhv = Hashtbl.find sigtmh x in
+                supported := Hashtbl.mem pfgsuppparam xhv;
                 if !sexprinfo then Printf.printf "(PARAM \"%s\" \"%s\" %d %s %d)\n" x xhv i (tp_to_sexpr agtp) !lineno;
 		if !pfgtheory = Egal then megaauto_set_item xhv false;
                 if !pfgtheory = Egal && xhv = "7a7fd30507c2156eeace3d2784ada104fee81316a9d6f02db384ad7f0a180e26" then seqcons := Some(xhv);
@@ -1396,7 +1443,7 @@ let evaluate_docitem_1 ditem =
                 end;
 		begin
                   if i = 0 then Hashtbl.add pfgtmph xhv (x,agtp,None);
-		  if !pfgout && i = 0 then pfgmain := PfgParam(xhv,x,agtp)::!pfgmain;
+		  if !pfgout && i = 0 && not !includingsigfile then pfgmain := PfgParam(xhv,x,agtp)::!pfgmain;
                   Hashtbl.add tmh_legend xhv x
 		end;
 		begin
@@ -1442,8 +1489,8 @@ let evaluate_docitem_1 ditem =
                        secstack := List.map (fun (y,f,atl,apl,st,sp) -> (y,f,atl,apl,((Hashtbl.replace st x (atl m)); st),sp)) !secstack
 		     with
                      | Not_found ->
-                        ()
-                          (*		        raise (Failure("The given id " ^ xhv ^ " for " ^ x ^ " is not a known index for a term.")) *)
+                         (* () *)
+                         raise (Failure("The given id " ^ xhv ^ " for " ^ x ^ " is not a known index for a term.")) (* this was commented out, but it really should be a failure right? *)
 		end
    	      with Not_found ->
 		raise (Failure("Unknown id for " ^ x))
@@ -1464,6 +1511,7 @@ let evaluate_docitem_1 ditem =
 	  let bgtm = !tmlamclos btm in
 	  let bgtp = !tparclos btp in
 	  let xhv = ptm_lam_id (i,bgtm) sigtmof sigdelta in
+          supported := Hashtbl.mem pfgsuppparam xhv || Hashtbl.mem pfgsuppdef xhv;
 	  if !pfgtheory = Egal then megaauto_set_item xhv true;
           if !pfgtheory = Egal && xhv = "7a7fd30507c2156eeace3d2784ada104fee81316a9d6f02db384ad7f0a180e26" then seqcons := Some(xhv);
           if fofp() && i = 0 && not (Hashtbl.mem fofskip xhv) then
@@ -1511,7 +1559,7 @@ let evaluate_docitem_1 ditem =
 	  add_sigdelta xhv (i,bgtm);
 	  begin
             if i = 0 then Hashtbl.add pfgtmph xhv (x,bgtp,Some(bgtm));
-	    if !pfgout && i = 0 then pfgmain := PfgDef(xhv,x,bgtp,bgtm)::!pfgmain;
+	    if !pfgout && i = 0 && not !includingsigfile then pfgmain := PfgDef(xhv,x,bgtp,bgtm)::!pfgmain;
             Hashtbl.add tmh_legend xhv x
 	  end;
 	  begin
@@ -1574,6 +1622,7 @@ let evaluate_docitem_1 ditem =
 	  let bgtm = !tmlamclos btm in
 	  let agtp = !tparclos atp in
 	  let xhv = ptm_lam_id (i,bgtm) sigtmof sigdelta in
+          supported := Hashtbl.mem pfgsuppparam xhv || Hashtbl.mem pfgsuppdef xhv;
 	  if !pfgtheory = Egal then megaauto_set_item xhv true;
           if !pfgtheory = Egal && xhv = "7a7fd30507c2156eeace3d2784ada104fee81316a9d6f02db384ad7f0a180e26" then seqcons := Some(xhv);
           if fofp() && i = 0 && not (Hashtbl.mem fofskip xhv) then
@@ -1610,6 +1659,14 @@ let evaluate_docitem_1 ditem =
             if i = 0 then
               let (pure,pfghv) = pfg_objid bgtm agtp in
               (*              if !includingsigfile && not (Hashtbl.mem ownedobj pfghv) then Printf.printf "WARNING: The pfg id %s for the object %s is not owned.\n" (Hash.hashval_hexstring pfghv) x; *)
+              if !includingsigfile then
+                begin
+                  if not (Hashtbl.mem ownedobj pfghv || Hashtbl.mem indextms xhv) then
+                    if !preambleassig then
+                      includingsigfile := false
+                    else
+                      raise (Failure ("Unknown definition " ^ x ^ " in signature file"))
+                end;
               if !pfgsummary then Printf.printf "Def:%s:%s:%s\n" x (Hash.hashval_hexstring pure) (Hash.hashval_hexstring pfghv);
               Hashtbl.add pfgtmroot x (Hash.hashval_hexstring pure);
               Hashtbl.add pfgobjid x (Hash.hashval_hexstring pfghv);
@@ -1621,7 +1678,7 @@ let evaluate_docitem_1 ditem =
 	  add_sigdelta xhv (i,bgtm);
 	  begin
             if i = 0 then Hashtbl.add pfgtmph xhv (x,agtp,Some(bgtm));
-	    if !pfgout && i = 0 then pfgmain := PfgDef(xhv,x,agtp,bgtm)::!pfgmain;
+	    if !pfgout && i = 0 && not !includingsigfile then pfgmain := PfgDef(xhv,x,agtp,bgtm)::!pfgmain;
             Hashtbl.add tmh_legend xhv x
 	  end;
 	  begin
@@ -1676,6 +1733,7 @@ let evaluate_docitem_1 ditem =
       let atm = check_tm a Prop !polytm sigtmof !sigtm !ctxtp !ctxtm in
       let agtm = !tmallclos atm in
       let ahv = ptm_all_id (i,agtm) sigtmof sigdelta in
+      supported := Hashtbl.mem pfgsuppknown ahv || Hashtbl.mem pfgsuppthm ahv;
       if !pfgtheory = HF then
         begin
           try
@@ -1709,7 +1767,7 @@ let evaluate_docitem_1 ditem =
           begin
             Hashtbl.add pfgknph ahv agtm;
           end;
-	if !pfgout && i = 0 then pfgmain := PfgKnown(ahv,x,agtm)::!pfgmain
+	if !pfgout && i = 0 && not !includingsigfile then pfgmain := PfgKnown(ahv,x,agtm)::!pfgmain
       end;
       activate_special_knowns ahv;
       begin
@@ -1745,28 +1803,36 @@ let evaluate_docitem_1 ditem =
            end
       then
         Printf.printf "WARNING: The id %s for the proposition for axiom %s [pfg %s] is not indexed as previously known.\n" ahv x (Hash.hashval_hexstring (pfg_propid agtm))
+        (* (Printf.printf "ERROR: The id %s for the proposition for axiom %s [pfg %s] is not indexed as previously known.\nYou have to prove it (or leave it as admitted).\n" ahv x (Hash.hashval_hexstring (pfg_propid agtm)); exit 1) *) (* Chad treats this as an error so he comments the warning and uncomments this error. If Chad wants to allow it, the next line outputting UNKNOWN so the instances are easier to find. *)
+        (*          (Printf.printf "(UNKNOWN \"%s\" \"%s\" \"%s\")\n" ahv x (Hash.hashval_hexstring (pfg_propid agtm)); flush stdout) *)
       else
         Hashtbl.replace istrustedhash ahv ();
-      Hashtbl.add indexknowns ahv ();
+      Hashtbl.replace indexknowns ahv ();
       secstack := List.map (fun (y,f,atl,apl,st,sp) -> (y,f,atl,apl,st,(x,apl (Known(ahv)))::sp)) !secstack;
       if (!verbosity > 3) then (Printf.printf "Proposition of Axiom %s : %s was assigned id %s\n" x (tm_to_str agtm) ahv; flush stdout);
       ()
   | ThmDecl(c,x,a) ->
+      currthm := x;
       if !pfgtheory = SetMM && (x = "wi" || x = "wal") then raise (Failure (Printf.sprintf "%s is a reserved built-in name for SetMM" x));
       let a = ltree_to_atree a in
       if Hashtbl.mem !sigtm x || List.mem_assoc x !sigpf || List.mem x !ctxtp || List.mem_assoc x !ctxtm || List.mem_assoc x !ctxpf then
 	raise (Failure(x ^ " has already been used."));
-      if !includingsigfile then raise (Failure("Included signature file includes a theorem (" ^ x ^ "), but should only include axioms."));
+      if !includingsigfile then if !preambleassig then includingsigfile := false else raise (Failure("Included signature file includes a theorem (" ^ x ^ "), but should only include axioms."));
       let i = List.length !ctxtp in
       let atm = check_tm a Prop !polytm sigtmof !sigtm !ctxtp !ctxtm in
       let agtm = !tmallclos atm in
       let ahv = ptm_all_id (i,agtm) sigtmof sigdelta in
+      supported := Hashtbl.mem pfgsuppknown ahv || Hashtbl.mem pfgsuppthm ahv;
       if !verbosity > 5 then Printf.printf "(MGPROPID \"%s\" \"%s\")\n" x ahv;
       let pfgahv = pfg_propid agtm in
-      (*      if !verbosity > 5 && (Hashtbl.mem indexknowns ahv || Hashtbl.mem ownedprop pfgahv) then (Printf.printf "Warning: The id %s for the proposition for theorem %s is already known.\n" ahv x; flush stdout); *)
+      if !warnaboutreproven && (Hashtbl.mem indexknowns ahv || Hashtbl.mem ownedprop pfgahv) then
+        begin
+          Printf.printf "WARNING: The proposition given in theorem %s is already known, so it should be included as an Axiom or ProofArchived declaration instead.\n" x;
+          flush stdout;
+        end;
       Hashtbl.add sigknh x ahv;
       Hashtbl.add sigknh_rev ahv x;
-      Hashtbl.add ownedprop pfgahv ();
+      (** Hashtbl.add ownedprop pfgahv ()  This was a major bug! **)
       if i = 0 && (!pfgsummary || not (!html = None) || not (!megawiki = None)) then
         begin
           let (pfgpure,pfgahv) = pfg_propid2 agtm in
@@ -1926,7 +1992,8 @@ let evaluate_docitem ditem =
     begin
       match !html with
       | Some hc ->
-         html_targets := (hc,false,None)::!html_targets
+         if not !includingsigfile && (not !htmlonlypfgsupp || !supported) then
+           html_targets := (hc,false,None)::!html_targets
       | None -> ()
     end;
     begin
@@ -3155,12 +3222,13 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
       end
   | Qed ->
       begin
+        currthm := "";
 	if !pfstate = [] then
 	  begin
 	    try
 	      if !verbosity > 19 then (Printf.printf "Qed start\n"; flush stdout);
-	      if not (Hashtbl.mem indexknowns gphv) then Hashtbl.add indexknowns gphv ();
-              if not (Hashtbl.mem ownedprop pfggphv) then Hashtbl.add ownedprop pfggphv ();
+	      Hashtbl.replace indexknowns gphv ();
+              Hashtbl.replace ownedprop pfggphv ();
 	      activate_special_knowns gphv;
 	      if !pfgtheory = Egal then megaauto_set_known gphv;
               if fofp() && i = 0 && not (Hashtbl.mem fofskip gphv) then
@@ -3203,7 +3271,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
 		  begin
 		    Hashtbl.add pfgknph gphv gpgtm;
 		  end;
-		if !pfgout && i = 0 then
+		if !pfgout && i = 0 && not !includingsigfile then
 		  pfgmain := PfgThm(gphv,thmname,gpgtm,dgpf)::!pfgmain;
 	        if not !allowincompleteqed then
 	          istrusted thmname dgpf (* Raises an exception if not proved *)
@@ -3229,7 +3297,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
 	      | Some(dl) ->
 		  deltaset := dl;
                   if !sexprinfo then (List.iter (fun d -> Printf.printf "(DELTA \"%s\")\n" d) dl; Printf.printf "(QED)\n");
-                  if !pfgout then List.iter (fun d -> Hashtbl.add pfgdelta d ()) !deltaset;
+                  if !pfgout && not !includingsigfile then List.iter (fun d -> Hashtbl.add pfgdelta d ()) !deltaset;
 		  if (!verbosity > 19) then (Printf.printf "Delta Set:"; List.iter (fun h -> Printf.printf " %s" h) dl; Printf.printf "\n"; flush stdout);
 		  let dhv = ppf_id (i,dgpf) sigtmof sigdelta in
 		  if (!verbosity > 3) then (Printf.printf "Proof %s\n of %s was assigned id %s\n" (pf_to_str dgpf) thmname dhv; flush stdout);
@@ -3258,7 +3326,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
               if !sexprinfo then Printf.printf "(QEDWITHADMITS)\n";
               megawiki_target := Some false;
 	      if (!verbosity > 9) then (Printf.printf "Theorem %s admitted\n" thmname; flush stdout);
-              if !pfgout && i = 0 then pfgmain := PfgConj(gphv,thmname,gpgtm)::!pfgmain;
+              if !pfgout && i = 0 && not !includingsigfile then pfgmain := PfgConj(gphv,thmname,gpgtm)::!pfgmain;
 	      if (!ajax && !ajaxactive) then (Printf.printf "I$"; exit 1);
 	      begin
 		if !sqlout then
@@ -3278,8 +3346,10 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
       end
   | Admitted ->
       begin
+        if not (!currthm = "") then Hashtbl.add admittedthms !currthm ();
+        currthm := "";
         if !sexprinfo then Printf.printf "(ADMITTED)\n";
-        if !pfgout && i = 0 then pfgmain := PfgConj(gphv,thmname,gpgtm)::!pfgmain;
+        if !pfgout && i = 0 && not !includingsigfile then pfgmain := PfgConj(gphv,thmname,gpgtm)::!pfgmain;
 	if i > 0 then (*** x will look polymorphic with i types after the appropriate section is ended ***)
 	  pushpolypf ((thmname,i),gpgtm);
 	activate_special_knowns gphv;
@@ -4318,6 +4388,15 @@ let mgcheck c =
           Syntax.set_html_item_start_line !lineno;
 	  let (pitem,tr) = parse_pftacitem !tl in
 	  tl := tr;
+          if pitem = Qed then
+            begin
+              match !removepfs with
+              | None -> ()
+              | Some(_) ->
+                 let (l1,c1) = !thmstart in
+                 let (l2,c2) = !thmend in
+                 pfposinfo := (l1,c1,l2,c2+1,!lineno,!charno+1)::!pfposinfo
+            end;
 	  evaluate_pftac pitem thmname i gpgtm gphv pfggphv
     done
   with
@@ -4671,6 +4750,7 @@ let _ =
   expoly := preset_ptm_lam_id (1,Lam(Ar(TpVar(0),Prop),All(Prop,Imp(All(TpVar(0),Imp(Ap(DB(2),DB(0)),DB(1))),DB(0)))));
   expolyI := preset_ptm_all_id (1,All(Ar(TpVar(0),Prop),All(TpVar(0),Imp(Ap(DB(1),DB(0)),Ap(TpAp(TmH(!expoly),TpVar(0)),DB(1))))));
   preset_mizar_index();
+  stm := string_of_float (Unix.time());
   let i = Array.length Sys.argv in
   if i = 1 then
     mgcheck stdin (*** if no arguments are given, read and check from stdin ***)
@@ -4723,6 +4803,19 @@ let _ =
           end
         else if Sys.argv.(!j) = "-globalhrefs" then
           globalhrefs := true
+        else if Sys.argv.(!j) = "-preambleassig" then
+          preambleassig := true
+        else if Sys.argv.(!j) = "-htmlonlypfgsupp" then
+          begin
+            if !j < i-2 then
+              begin
+                incr j;
+                read_pfg_supp (Sys.argv.(!j));
+                htmlonlypfgsupp := true;
+              end
+            else
+              raise (Failure "-htmlonlypfgsupp should be followed by a pfg summary2 file")
+          end
         else if Sys.argv.(!j) = "-html" then
           begin
 	    if !j < i-2 then
@@ -4751,6 +4844,26 @@ let _ =
           eagerdeltas := true
         else if Sys.argv.(!j) = "-nodoublecheck" then
           doublecheckpf := false
+        else if Sys.argv.(!j) = "-archivefile" then
+          begin
+	    if !j < i-2 then
+	      begin
+		incr j;
+                archivefile := Some(Sys.argv.(!j))
+	      end
+	    else
+	      raise (Failure("Expected -archivefile <outfile>"))
+          end
+        else if Sys.argv.(!j) = "-removepfs" then
+          begin
+	    if !j < i-2 then
+	      begin
+		incr j;
+                removepfs := Some(Sys.argv.(!j))
+	      end
+	    else
+	      raise (Failure("Expected -removepfs <outfile>"))
+          end
         else if Sys.argv.(!j) = "-allowincompleteqed" then
           allowincompleteqed := true
         else if Sys.argv.(!j) = "-fof" then
@@ -4954,10 +5067,19 @@ let _ =
 	  begin
 	    pfgsummary := true;
 	  end
+	else if Sys.argv.(!j) = "-pfgsummary2" then
+	  begin
+            pfgout := true;
+	    pfgsummary2 := true;
+	  end
 	else if Sys.argv.(!j) = "-nopfglinks" then
 	  begin
 	    Syntax.set_show_pfglinks false;
 	  end	    
+        else if Sys.argv.(!j) = "-warnaboutreproven" then
+          warnaboutreproven := true
+        else if Sys.argv.(!j) = "-warnaboutleadingspaces" then
+          warnaboutleadingspaces := true
 	else if Sys.argv.(!j) = "-indout" then
 	  begin
 	    includingsigfile := false;
@@ -5085,6 +5207,16 @@ let _ =
 	    else
 	      raise (Failure("Expected -v <verbositynumber>"))
 	  end
+	else if Sys.argv.(!j) = "-maxbottlenecksreport" then
+	  begin
+	    if !j < i-2 then
+	      begin
+		incr j;
+		maxbottlenecksreport := int_of_string (Sys.argv.(!j))
+	      end
+	    else
+	      raise (Failure("Expected -v <verbositynumber>"))
+	  end
 	else if Sys.argv.(!j) = "-explorerurl" then
 	  begin
 	    if !j < i-2 then
@@ -5120,16 +5252,115 @@ let _ =
 	let c = open_in (Sys.argv.(i-1)) in
         begin
           match !sexprallsubgoals with
-          | None -> mgcheck c
+          | None ->
+	     if !preambleassig then includingsigfile := true;
+	     mgcheck c
           | Some(seaspre,seasincl,i) ->
              let fn = Printf.sprintf "%s_incl_%d.lisp" seaspre i in
              let f = open_out fn in
              if not (seasincl = "") then Printf.fprintf f "(INCLUDE \"%s\")\n" seasincl;
              sexprallsubgoals_inclfile := Some(f);
+	     if !preambleassig then includingsigfile := true;
              mgcheck c;
              close_out f
         end;
 	close_in c;
+        begin
+          match !removepfs with
+          | None -> ()
+          | Some(outfn) ->
+             pfposinfo := List.rev !pfposinfo;
+             let infn = ref (Sys.argv.(i-1)) in
+             let tmpname = ref false in
+             if !infn = outfn then
+               begin
+                 tmpname := true;
+                 let tmstmp = ref (int_of_float (Unix.time ())) in
+                 try
+                   while true do
+                     let tmpfn = Printf.sprintf "%s.%d" !infn !tmstmp in
+                     if Sys.file_exists tmpfn then
+                       incr tmstmp
+                     else
+                       begin
+                         Sys.rename !infn tmpfn;
+                         infn := tmpfn;
+                         raise Exit
+                       end
+                   done
+                 with Exit -> ()
+               end;
+	     let c = open_in !infn in
+             lineno := 1;
+             charno := 0;
+             let d = open_out outfn in
+             let triggerlineno1 = ref 0 in
+             let triggercharno1 = ref 0 in
+             let triggerlineno2 = ref 0 in
+             let triggercharno2 = ref 0 in
+             let triggerlineno3 = ref 0 in
+             let triggercharno3 = ref 0 in
+             let removepfphase = ref 0 in
+             let pop_pfposinfo () =
+               match !pfposinfo with
+               | (l1,c1,l2,c2,l3,c3)::r ->
+                  triggerlineno1 := l1;
+                  triggercharno1 := c1;
+                  triggerlineno2 := l2;
+                  triggercharno2 := c2;
+                  triggerlineno3 := l3;
+                  triggercharno3 := c3;
+                  pfposinfo := r
+               | [] -> removepfphase := 3
+             in
+             pop_pfposinfo ();
+             try
+               let skipuntilspace = ref false in
+               let skipuntilendpf = ref false in
+               let getchar () =
+                 let ch = input_char c in
+                 if ch = '\n' then
+                   (incr lineno; charno := 0)
+                 else
+                   incr charno;
+                 ch
+               in
+               let past_trigger triglineno trigcharno =
+                 !lineno > triglineno || (!lineno = triglineno && !charno >= trigcharno)
+               in
+               while true do
+                 let ch = getchar () in
+                 if !skipuntilspace && ch = ' ' then skipuntilspace := false;
+                 if !removepfphase = 0 && past_trigger !triggerlineno1 !triggercharno1 then
+                   begin
+                     removepfphase := 1;
+                     if ch = '\n' then Printf.fprintf d "%c" ch;
+                     (match !archivefile with Some(x) -> Printf.fprintf d "// Proof in %s\n" x | None -> ());
+                     Printf.fprintf d "ProofArchived";
+                     skipuntilspace := true;
+                   end
+                 else if !removepfphase = 1 && past_trigger !triggerlineno2 !triggercharno2 then
+                   begin
+                     removepfphase := 2;
+                     skipuntilendpf := true;
+                     incr countremovedpfs;
+                   end
+                 else if !removepfphase = 2 && past_trigger !triggerlineno3 !triggercharno3 then
+                   begin
+                     removepfphase := 0;
+                     skipuntilendpf := false;
+                     pop_pfposinfo ();
+                   end;
+                 if not !skipuntilspace && not !skipuntilendpf then
+                   output_char d ch;
+                 (*                 if !skipuntilendpf && ch = '\n' then (output_char d '/'; output_char d '/') *)
+               done
+             with
+             | End_of_file ->
+                close_in c;
+                close_out d;
+                if !tmpname then Sys.remove !infn
+        end;
         if !pfgout then
           begin
             begin
@@ -5147,30 +5378,48 @@ let _ =
                    if not (pfg_prim_id_p xhv) then
                      begin
                        try
-                         let pfghv = Hashtbl.find pfgtmhh xhv in
-                         Printf.printf "Param %s %s : %s\n" (Hash.hashval_hexstring pfghv) x (tp_pfg_str agtp);
-                         Hashtbl.add pfgtmh xhv x
+                         if !pfgsummary2 then
+                           Printf.printf "Param:%s\n" xhv
+                         else
+                           let pfghv = Hashtbl.find pfgtmhh xhv in
+                           Printf.printf "Param %s %s : %s\n" (Hash.hashval_hexstring pfghv) x (tp_pfg_str agtp);
+                           Hashtbl.add pfgtmh xhv x
                        with Not_found ->
                          Printf.printf "%% ERROR: No pfg id for %s [%s] obj\n" x xhv
                      end
                 | PfgDef(xhv,x,a,m) ->
                    begin
                      tm_pfg_decl pfgdelta pfgtmph m;
-                     Printf.printf "Def %s : %s\n := %s\n" x (tp_pfg_str a) (tm_pfg_str m);
-                     Hashtbl.add pfgtmh xhv x
+                     if !pfgsummary2 then
+                       Printf.printf "Def:%s\n" xhv
+                     else
+                       begin
+                         Printf.printf "Def %s : %s\n := %s\n" x (tp_pfg_str a) (tm_pfg_str m);
+                         Hashtbl.add pfgtmh xhv x
+                       end
                    end
                 | PfgKnown(xhv,x,p) ->
                    begin
                      tm_pfg_decl pfgdelta pfgtmph p;
-                     Printf.printf "Known %s : %s\n" x (tm_pfg_str p);
-	             Hashtbl.add pfgknh xhv x;
-                     Hashtbl.add pfgknph xhv p;
+                     if !pfgsummary2 then
+                       Printf.printf "Known:%s\n" xhv
+                     else
+                       begin
+                         Printf.printf "Known %s : %s\n" x (tm_pfg_str p);
+	                 Hashtbl.add pfgknh xhv x;
+                         Hashtbl.add pfgknph xhv p;
+                       end
                    end
                 | PfgConj(xhv,x,p) ->
                    begin
-                     tm_pfg_decl pfgdelta pfgtmph p;
-                     Printf.printf "Conj %s : %s\n" x (tm_pfg_str p);
-	             Hashtbl.add pfgknh xhv x;
+                     if !pfgsummary2 then
+                       Printf.printf "Conj:%s\n" xhv
+                     else
+                       begin
+                         tm_pfg_decl pfgdelta pfgtmph p;
+                         Printf.printf "Conj %s : %s\n" x (tm_pfg_str p);
+	                 Hashtbl.add pfgknh xhv x;
+                       end
                    end
                 | PfgThm(xhv,x,p,d) ->
                    begin
@@ -5178,9 +5427,14 @@ let _ =
                      pf_pfg_decl pfgdelta pfgtmph pfgknph d;
                      let d1 = if !optimizepf1 then optimize_pf_1 d else d in
                      let d2 = if !optimizepf2 then optimize_pf_2 sigdelta sigtmof d1 !optimizepf2tc !optimizepf2pc else d1 in
-                     Printf.printf "Thm %s : %s\n := %s\n" x (tm_pfg_str p) (pf_pfg_str d2);
-	             Hashtbl.add pfgknh xhv x;
-                     Hashtbl.add pfgknph xhv p;
+                     if !pfgsummary2 then
+                       Printf.printf "Thm:%s\n" xhv
+                     else
+                       begin
+                         Printf.printf "Thm %s : %s\n := %s\n" x (tm_pfg_str p) (pf_pfg_str d2);
+	                 Hashtbl.add pfgknh xhv x;
+                         Hashtbl.add pfgknph xhv p;
+                       end
                    end)
               (List.rev !pfgmain)
           end;
@@ -5250,5 +5504,65 @@ let _ =
 	  close_out c
       | None ->
 	  ()
-    end
+    end;
+  Printf.printf "Everything looks good.\n";
+  if !countremovedpfs > 0 then
+    Printf.printf "%d completed proof%s been removed for efficiency.\n" !countremovedpfs (if !countremovedpfs = 1 then " has" else "s have");
+  let admittedthmsrecdeps : (string,string list) Hashtbl.t = Hashtbl.create 10 in
+  let rec union xl yl =
+    match xl with
+    | [] -> yl
+    | x::xr -> if List.mem x yl then union xr yl else union xr (x::yl)
+  in
+  let rec recdeps xl r =
+    match xl with
+    | [] -> r
+    | x::xr ->
+       if List.mem x r then
+         recdeps xr r
+       else
+         try
+           let r2 = Hashtbl.find admittedthmsrecdeps x in
+           recdeps xr (x::union r2 r)
+         with Not_found ->
+           let dl = Hashtbl.find_all admittedthmsdeps x in
+           let r2 = recdeps dl [] in
+           Hashtbl.replace admittedthmsrecdeps x r2;
+           recdeps xr (x::union r2 r)
+  in
+  let topbottlenecks = ref [] in
+  let rec filter_len n l =
+    if n <= 0 then
+      []
+    else
+      match l with
+      | z::lr -> z::filter_len (n-1) lr
+      | [] -> []
+  in
+  let rec insert_sort_and_filter n (x,rl) l =
+    if n <= 0 then
+      []
+    else
+      match l with
+      | (_,yrl)::lr when rl > yrl -> (x,rl)::filter_len (n-1) l
+      | (y,yrl)::lr -> (y,yrl)::insert_sort_and_filter (n-1) (x,rl) lr
+      | [] -> [(x,rl)]
+  in
+  Hashtbl.iter
+    (fun x () ->
+      try
+        let r = Hashtbl.find admittedthmsrecdeps x in
+        topbottlenecks := insert_sort_and_filter !maxbottlenecksreport (x,List.length r) !topbottlenecks
+      with
+      | Not_found ->
+         let r = recdeps (Hashtbl.find_all admittedthmsdeps x) [] in
+         Hashtbl.replace admittedthmsrecdeps x r;
+         topbottlenecks := insert_sort_and_filter !maxbottlenecksreport (x,List.length r) !topbottlenecks)
+    admittedthms;
+  let bottlenecksl = List.length !topbottlenecks in
+  if bottlenecksl > 0 then
+    begin
+      Printf.printf "The top unproven theorem%s" (if bottlenecksl = 1 then " is\n" else "s are\n");
+      List.iter (fun (x,rl) -> Printf.printf "%s which is used in %d future proof%s so far.\n" x rl (if rl = 1 then "" else "s")) !topbottlenecks
+    end;
 ;;

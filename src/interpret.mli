@@ -4,6 +4,10 @@
 
 open Syntax
 
+val currthm : string ref
+val admittedthms : (string,unit) Hashtbl.t
+val admittedthmsdeps : (string,string) Hashtbl.t
+
 val verbosity : int ref
 val tpabbrev : (string,tp) Hashtbl.t
 val proving : (string * int * tm * string * Hash.hashval) option ref

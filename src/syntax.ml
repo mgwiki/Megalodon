@@ -3,6 +3,7 @@
 (*** Chad E. Brown ***)
 (*** Jan 18 2014 (Egal version started) ***)
 
+let pfgsummary2 = ref false
 let sexprinfo = ref false;;
 let reportbushydeps = ref None;;
 
@@ -4864,7 +4865,7 @@ let set_html_item_start_line (l:int) =
 
 let output_srcline_html ch =
   (* You can style this with CSS; using data-line makes it easy to target in JS too *)
-  Printf.fprintf ch "<span class='srcline' data-line='%d'>L%d</span>"
+  Printf.fprintf ch "<span class='srcline' data-line='%d' style='display:none;'>L%d</span>"
     !html_item_start_line !html_item_start_line
 
 
@@ -7618,7 +7619,10 @@ let rec tm_pfgegal_decl dh tmph m =
              match om with
              | Some(m) ->
                 tm_pfgegal_decl dh tmph m;
-                Printf.printf "Def %s : %s\n := %s\n" x (tp_pfgset_str a) (tm_pfgegal_str_r m [])
+                if !pfgsummary2 then
+                  Printf.printf "Def:%s\n" h
+                else
+                  Printf.printf "Def %s : %s\n := %s\n" x (tp_pfgset_str a) (tm_pfgegal_str_r m [])
              | _ -> raise (Failure (Printf.sprintf "delta required for %s [%s] but do not have def" x h))
            end
          else
@@ -7626,7 +7630,10 @@ let rec tm_pfgegal_decl dh tmph m =
              try
                let pfghv = Hashtbl.find pfgtmhh h in
                Hashtbl.add pfgtmh h x;
-               Printf.printf "Param %s %s : %s\n" (Hash.hashval_hexstring pfghv) x (tp_pfgset_str a)
+               if !pfgsummary2 then
+                 Printf.printf "Param:%s\n" h
+               else
+                 Printf.printf "Param %s %s : %s\n" (Hash.hashval_hexstring pfghv) x (tp_pfgset_str a)
              with Not_found -> raise (Failure (Printf.sprintf "do not know pfg id corresponding to %s" h))
            end
        with Not_found -> raise (Failure (Printf.sprintf "cannot find info for %s to create pfg version" h))
@@ -7762,8 +7769,13 @@ let rec pf_pfgegal_decl dh tmph knph d =
            Hashtbl.find pfgegalknname h
          with _ -> incr knowncnt; Printf.sprintf "Known%d" !knowncnt
        in
-       Printf.printf "Known %s : %s\n" nm (tm_pfgegal_str_r p []);
-       Hashtbl.add pfgknh h nm
+       if !pfgsummary2 then
+         Printf.printf "Known:%s\n" h
+       else
+         begin
+           Printf.printf "Known %s : %s\n" nm (tm_pfgegal_str_r p []);
+           Hashtbl.add pfgknh h nm
+         end
      end
   | PTpAp(d1,_) -> pf_pfgegal_decl dh tmph knph d1
   | PTmAp(d1,m2) -> tm_pfgegal_decl dh tmph m2; pf_pfgegal_decl dh tmph knph d1

@@ -1,8 +1,14 @@
+(* Copyright (c) 2026 AI4REASON *)
 open Syntax
 
+val warnaboutleadingspaces : bool ref
+val thmstart : (int * int) ref
+val thmend : (int * int) ref
 val lineno : int ref
 val charno : int ref
 val update_char_pos : string -> unit
+val update_char_pos_thm : string -> unit
+val warn_about_leading_spaces : string -> unit
 val update_pos : string -> unit
 exception ParsingError of string * int * int * int * int
 
