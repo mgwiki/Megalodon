@@ -75,7 +75,7 @@ VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_live_aby_smoke.sh
 ```
 
 Smoke-test the restricted native reconstruction path on the early hammer `aby`
-block through `Subq_ref`:
+block through `Subq_tra`:
 
 ```sh
 VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_native_aby_smoke.sh
