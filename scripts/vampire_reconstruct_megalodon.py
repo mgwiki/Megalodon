@@ -61,6 +61,27 @@ class RunningVampire:
     started_at: float
 
 
+@dataclass(frozen=True)
+class Token:
+    value: str
+
+
+@dataclass(frozen=True)
+class Expr:
+    kind: str
+    value: str | None = None
+    args: tuple["Expr", ...] = ()
+    sort: str | None = None
+
+
+@dataclass(frozen=True)
+class ProofRule:
+    name: str
+    binders: tuple[str, ...]
+    premises: tuple[Expr, ...]
+    conclusion: Expr
+
+
 def sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -277,6 +298,191 @@ def proposition_after_colon(line: str, prefix: str) -> tuple[str, str] | None:
     return name.strip(), proposition[:-1].strip()
 
 
+TOKEN_RE = re.compile(r"->|[A-Za-z_][A-Za-z0-9_']*|[0-9]+|[(),:=]")
+
+
+def tokenize_expr(text: str) -> list[Token]:
+    tokens: list[Token] = []
+    index = 0
+    while index < len(text):
+        if text[index].isspace():
+            index += 1
+            continue
+        match = TOKEN_RE.match(text, index)
+        if not match:
+            raise ValueError(f"unexpected expression text at {index}: {text[index:index + 20]}")
+        tokens.append(Token(match.group(0)))
+        index = match.end()
+    return tokens
+
+
+class ExprParser:
+    def __init__(self, text: str):
+        self.tokens = tokenize_expr(text)
+        self.index = 0
+
+    def peek(self) -> str | None:
+        if self.index >= len(self.tokens):
+            return None
+        return self.tokens[self.index].value
+
+    def pop(self, value: str | None = None) -> str:
+        token = self.peek()
+        if token is None:
+            raise ValueError("unexpected end of expression")
+        if value is not None and token != value:
+            raise ValueError(f"expected {value}, got {token}")
+        self.index += 1
+        return token
+
+    def parse(self) -> Expr:
+        expr = self.parse_arrow()
+        if self.peek() is not None:
+            raise ValueError(f"unexpected token {self.peek()}")
+        return expr
+
+    def parse_arrow(self) -> Expr:
+        left = self.parse_forall()
+        if self.peek() == "->":
+            self.pop("->")
+            right = self.parse_arrow()
+            return Expr("arrow", args=(left, right))
+        return left
+
+    def parse_forall(self) -> Expr:
+        if self.peek() != "forall":
+            return self.parse_eq()
+        self.pop("forall")
+        name = self.pop()
+        self.pop(":")
+        sort_tokens: list[str] = []
+        while self.peek() is not None and self.peek() != ",":
+            sort_tokens.append(self.pop())
+        self.pop(",")
+        return Expr("forall", value=name, sort="".join(sort_tokens), args=(self.parse_arrow(),))
+
+    def parse_eq(self) -> Expr:
+        left = self.parse_app()
+        if self.peek() == "=":
+            self.pop("=")
+            right = self.parse_app()
+            return Expr("eq", args=(left, right))
+        return left
+
+    def parse_app(self) -> Expr:
+        atoms = [self.parse_atom()]
+        while self.peek() is not None and self.peek() not in {")", ",", "->", "="}:
+            atoms.append(self.parse_atom())
+        if len(atoms) == 1:
+            return atoms[0]
+        return Expr("app", args=tuple(atoms))
+
+    def parse_atom(self) -> Expr:
+        token = self.peek()
+        if token is None:
+            raise ValueError("unexpected end of expression")
+        if token == "(":
+            self.pop("(")
+            expr = self.parse_arrow()
+            self.pop(")")
+            return expr
+        if token in {")", ",", ":", "=", "->"}:
+            raise ValueError(f"unexpected token {token}")
+        return Expr("var", value=self.pop())
+
+
+def parse_expr(text: str) -> Expr | None:
+    try:
+        return ExprParser(text).parse()
+    except ValueError:
+        return None
+
+
+def expr_text(expr: Expr, context: str = "top") -> str:
+    if expr.kind == "var":
+        assert expr.value is not None
+        return expr.value
+    if expr.kind == "app":
+        text = " ".join(expr_text(arg, "app_arg") for arg in expr.args)
+    elif expr.kind == "eq":
+        text = f"{expr_text(expr.args[0], 'eq_side')} = {expr_text(expr.args[1], 'eq_side')}"
+    elif expr.kind == "arrow":
+        text = f"{expr_text(expr.args[0], 'arrow_left')} -> {expr_text(expr.args[1], 'arrow_right')}"
+    elif expr.kind == "forall":
+        assert expr.value is not None and expr.sort is not None
+        text = f"forall {expr.value}:{expr.sort}, {expr_text(expr.args[0])}"
+    else:
+        raise ValueError(f"unknown expression kind {expr.kind}")
+    if context in {"app_arg", "eq_side"} and expr.kind in {"app", "eq", "arrow", "forall"}:
+        return f"({text})"
+    if context == "arrow_left" and expr.kind == "arrow":
+        return f"({text})"
+    return text
+
+
+def expr_key(expr: Expr) -> str:
+    return expr_text(expr)
+
+
+def proof_arg_text(expr: Expr) -> str:
+    if expr.kind == "var":
+        return expr_text(expr)
+    return f"({expr_text(expr)})"
+
+
+def collect_foralls(expr: Expr) -> tuple[list[tuple[str, str]], Expr]:
+    binders: list[tuple[str, str]] = []
+    while expr.kind == "forall":
+        assert expr.value is not None and expr.sort is not None
+        binders.append((expr.value, expr.sort))
+        expr = expr.args[0]
+    return binders, expr
+
+
+def split_arrows(expr: Expr) -> tuple[list[Expr], Expr]:
+    premises: list[Expr] = []
+    while expr.kind == "arrow":
+        premises.append(expr.args[0])
+        expr = expr.args[1]
+    return premises, expr
+
+
+def match_expr(pattern: Expr, target: Expr, variables: set[str], subst: dict[str, Expr]) -> bool:
+    if pattern.kind == "var" and pattern.value in variables:
+        previous = subst.get(pattern.value)
+        if previous is None:
+            subst[pattern.value] = target
+            return True
+        return expr_key(previous) == expr_key(target)
+    if pattern.kind != target.kind or pattern.value != target.value or pattern.sort != target.sort:
+        return False
+    if len(pattern.args) != len(target.args):
+        return False
+    return all(match_expr(left, right, variables, subst) for left, right in zip(pattern.args, target.args))
+
+
+def substitute_expr(expr: Expr, subst: dict[str, Expr]) -> Expr:
+    if expr.kind == "var" and expr.value in subst:
+        return subst[expr.value]
+    if not expr.args:
+        return expr
+    return Expr(expr.kind, value=expr.value, args=tuple(substitute_expr(arg, subst) for arg in expr.args), sort=expr.sort)
+
+
+def make_proof_rule(name: str, proposition: str) -> ProofRule | None:
+    expr = parse_expr(proposition)
+    if expr is None:
+        return None
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    return ProofRule(
+        name=name,
+        binders=tuple(name for name, _ in binders),
+        premises=tuple(premises),
+        conclusion=conclusion,
+    )
+
+
 IDENTIFIER_CHARS = "_'0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 FORALL_RE = re.compile(r"forall (?P<name>[_A-Za-z][_A-Za-z0-9']*):(?P<sort>[^,]+), ")
 
@@ -346,11 +552,119 @@ def canonical_proposition(proposition: str) -> str:
     return canonicalize_segment(proposition, [0])
 
 
+def direct_proof_expr(expr: Expr) -> str | None:
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    binder_names = [name for name, _ in binders]
+
+    if len(premises) == 1 and expr_key(premises[0]) == expr_key(conclusion):
+        args = binder_names + ["H0"]
+        return f"({' '.join(['fun'] + args + ['=>', 'H0'])})"
+
+    if not premises and conclusion.kind == "eq" and expr_key(conclusion.args[0]) == expr_key(conclusion.args[1]):
+        args = binder_names + ["Q", "H"]
+        return f"({' '.join(['fun'] + args + ['=>', 'H'])})"
+
+    if (
+        len(premises) == 2
+        and all(premise.kind == "eq" for premise in premises)
+        and conclusion.kind == "eq"
+        and expr_key(premises[0].args[0]) == expr_key(conclusion.args[0])
+        and expr_key(premises[0].args[1]) == expr_key(premises[1].args[0])
+        and expr_key(premises[1].args[1]) == expr_key(conclusion.args[1])
+    ):
+        args = binder_names + ["H0", "H1", "Q", "H"]
+        return f"({' '.join(['fun'] + args + ['=>', 'H1', 'Q', '(H0 Q H)'])})"
+
+    return None
+
+
+def proof_for_expr(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    allow_rule: bool = True,
+) -> str | None:
+    key = expr_key(expr)
+    proof = known.get(key) or known_canonical.get(canonical_proposition(key))
+    if proof is not None:
+        return proof
+
+    direct = direct_proof_expr(expr)
+    if direct is not None:
+        return direct
+
+    if not allow_rule:
+        return None
+
+    for rule in reversed(rules):
+        subst: dict[str, Expr] = {}
+        if not match_expr(rule.conclusion, expr, set(rule.binders), subst):
+            continue
+        if any(binder not in subst for binder in rule.binders):
+            continue
+        premise_proofs: list[str] = []
+        ok = True
+        for premise in rule.premises:
+            premise_proof = proof_for_expr(
+                substitute_expr(premise, subst),
+                known,
+                known_canonical,
+                rules,
+                allow_rule=False,
+            )
+            if premise_proof is None:
+                ok = False
+                break
+            premise_proofs.append(premise_proof)
+        if not ok:
+            continue
+        args = [proof_arg_text(subst[binder]) for binder in rule.binders]
+        parts = [rule.name] + args + premise_proofs
+        return parts[0] if len(parts) == 1 else f"({' '.join(parts)})"
+
+    return None
+
+
+def proof_for_proposition(
+    proposition: str,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+) -> str | None:
+    proof = known.get(proposition) or known_canonical.get(canonical_proposition(proposition))
+    if proof is not None:
+        return proof
+    expr = parse_expr(proposition)
+    if expr is None:
+        return None
+    return proof_for_expr(expr, known, known_canonical, rules)
+
+
+def remember_proposition(
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    name: str,
+    proposition: str,
+) -> None:
+    known.setdefault(proposition, name)
+    known_canonical.setdefault(canonical_proposition(proposition), name)
+    expr = parse_expr(proposition)
+    if expr is not None:
+        known.setdefault(expr_key(expr), name)
+        known_canonical.setdefault(canonical_proposition(expr_key(expr)), name)
+    rule = make_proof_rule(name, proposition)
+    if rule is not None:
+        rules.append(rule)
+
+
 def fill_repeated_claim_admits(lines: list[str]) -> list[str]:
     known: dict[str, str] = {}
     known_canonical: dict[str, str] = {}
+    rules: list[ProofRule] = []
     theorem: str | None = None
-    theorem_canonical: str | None = None
     result = list(lines)
     index = 0
     while index < len(result):
@@ -358,28 +672,25 @@ def fill_repeated_claim_admits(lines: list[str]) -> list[str]:
         axiom = proposition_after_colon(line, "Axiom ")
         if axiom is not None:
             name, proposition = axiom
-            known.setdefault(proposition, name)
-            known_canonical.setdefault(canonical_proposition(proposition), name)
+            remember_proposition(known, known_canonical, rules, name, proposition)
             index += 1
             continue
         theorem_match = proposition_after_colon(line, "Theorem ")
         if theorem_match is not None:
             _, theorem = theorem_match
-            theorem_canonical = canonical_proposition(theorem)
             index += 1
             continue
         claim = proposition_after_colon(line, "claim ")
         if claim is not None:
             name, proposition = claim
-            proof_name = known.get(proposition) or known_canonical.get(canonical_proposition(proposition))
+            proof_name = proof_for_proposition(proposition, known, known_canonical, rules)
             if proof_name is not None and index + 1 < len(result) and result[index + 1] == "{ admit. }":
                 result[index + 1] = "{ exact " + proof_name + ". }"
-            known.setdefault(proposition, name)
-            known_canonical.setdefault(canonical_proposition(proposition), name)
+            remember_proposition(known, known_canonical, rules, name, proposition)
             index += 2
             continue
         if line == "admit." and theorem is not None:
-            proof_name = known.get(theorem) or (known_canonical.get(theorem_canonical) if theorem_canonical is not None else None)
+            proof_name = proof_for_proposition(theorem, known, known_canonical, rules)
             if proof_name is not None:
                 result[index] = "exact " + proof_name + "."
         index += 1
@@ -464,6 +775,52 @@ def check_megalodon_source_candidate(
     header: list[str] | None = None,
 ) -> list[str]:
     return check_megalodon_lines(megalodon, repo, proof, index, lines, "source candidate", header=header)
+
+
+def summarize_claim_skeleton(path: Path) -> dict[str, object]:
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    header: dict[str, str] = {}
+    for line in lines:
+        if not line.startswith("// "):
+            break
+        key, separator, value = line[3:].partition(":")
+        if separator:
+            header[key.strip().replace(" ", "_")] = value.strip()
+    first_remaining: list[str] = []
+    for index, line in enumerate(lines):
+        if line == "{ admit. }" and index > 0:
+            first_remaining.append(lines[index - 1])
+        elif line == "admit." and index > 0:
+            first_remaining.append(lines[index - 1])
+        if len(first_remaining) >= 5:
+            break
+    return {
+        "file": str(path),
+        "problem": header.get("problem"),
+        "proof": header.get("proof"),
+        "source": header.get("source"),
+        "enclosing_theorem": header.get("enclosing_theorem"),
+        "source_line": header.get("source_line"),
+        "claims": sum(1 for line in lines if line.startswith("claim ")),
+        "claim_admits": sum(1 for line in lines if line == "{ admit. }"),
+        "final_admits": sum(1 for line in lines if line == "admit."),
+        "filled_claims": sum(1 for line in lines if line.startswith("{ exact ")),
+        "first_remaining": first_remaining,
+    }
+
+
+def write_claim_skeleton_index(directory: Path) -> Path | None:
+    if not directory.exists():
+        return None
+    paths = sorted(directory.glob("*.mg"))
+    if not paths:
+        return None
+    index = directory / "index.jsonl"
+    with index.open("w", encoding="utf-8") as handle:
+        for path in paths:
+            handle.write(json.dumps(summarize_claim_skeleton(path), sort_keys=True))
+            handle.write("\n")
+    return index
 
 
 def start_vampire(repo: Path, args: argparse.Namespace, proof_dir: Path, item: tuple[int, int, Path]) -> RunningVampire:
@@ -862,6 +1219,9 @@ def main() -> int:
             print(f"checked {checked_skeletons} Megalodon claim skeletons")
             if claim_skeleton_dir is not None:
                 print(f"claim skeleton dir: {claim_skeleton_dir}")
+                index = write_claim_skeleton_index(claim_skeleton_dir)
+                if index is not None:
+                    print(f"claim skeleton index: {index}")
         return 0
 
     if not megalodon.exists():
@@ -923,6 +1283,9 @@ def main() -> int:
         print(f"checked {checked_skeletons} Megalodon claim skeletons")
         if claim_skeleton_dir is not None:
             print(f"claim skeleton dir: {claim_skeleton_dir}")
+            index = write_claim_skeleton_index(claim_skeleton_dir)
+            if index is not None:
+                print(f"claim skeleton index: {index}")
     print(f"manifest: {manifest}")
     return 0
 
