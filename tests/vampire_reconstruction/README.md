@@ -131,7 +131,8 @@ When a checked source candidate proves the same proposition as an admitted
 skeleton claim, the checker inlines that proof body into the skeleton claim so
 the generated file remains connected to the Vampire clause outline.  The fill
 pass also uses generated definitions plus one-step Leibniz congruence to prove
-simple equality rewrites under a shared function symbol.
+simple equality rewrites under a shared function symbol, and it can build short
+equality chains using instantiated quantified equality facts.
 
 ```sh
 python3 scripts/vampire_reconstruct_megalodon.py \

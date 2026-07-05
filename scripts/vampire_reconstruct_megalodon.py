@@ -885,6 +885,96 @@ def equality_chain_proof(expr: Expr, eq_facts: list[EqFact], max_depth: int = 3)
     return None
 
 
+def rule_application_parts(
+    rule: ProofRule,
+    subst: dict[str, Expr],
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+) -> list[str] | None:
+    if any(binder not in subst for binder in rule.binders):
+        return None
+    parts = [rule.name] + [proof_arg_text(subst[binder]) for binder in rule.binders]
+    for premise in rule.premises:
+        premise_proof = proof_for_expr(
+            substitute_expr(premise, subst),
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            allow_rule=False,
+        )
+        if premise_proof is None:
+            return None
+        parts.append(premise_proof)
+    return parts
+
+
+def rule_application_text(parts: list[str]) -> str:
+    return parts[0] if len(parts) == 1 else f"({' '.join(parts)})"
+
+
+def equality_rule_chain_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    max_depth: int = 3,
+) -> str | None:
+    if expr.kind != "eq":
+        return None
+    start = normalize_defined_expr(expr.args[0], definitions)
+    target = normalize_defined_expr(expr.args[1], definitions)
+    if expr_key(start) == expr_key(target):
+        return "(fun Q H => H)"
+
+    def edges(node: Expr) -> list[tuple[Expr, str]]:
+        found: list[tuple[Expr, str]] = []
+        for fact in eq_facts:
+            if expr_key(normalize_defined_expr(fact.left, definitions)) == expr_key(node):
+                found.append((normalize_defined_expr(fact.right, definitions), fact.proof))
+            if expr_key(normalize_defined_expr(fact.right, definitions)) == expr_key(node):
+                found.append((normalize_defined_expr(fact.left, definitions), eq_symmetry_proof(fact.proof, fact.left)))
+        for rule in rules:
+            if rule.conclusion.kind != "eq":
+                continue
+            variables = set(rule.binders)
+            direct_subst: dict[str, Expr] = {}
+            if match_expr(rule.conclusion.args[0], node, variables, direct_subst):
+                parts = rule_application_parts(rule, direct_subst, known, known_canonical, rules, eq_facts, definitions)
+                if parts is not None:
+                    found.append((normalize_defined_expr(substitute_expr(rule.conclusion.args[1], direct_subst), definitions), rule_application_text(parts)))
+            reverse_subst: dict[str, Expr] = {}
+            if match_expr(rule.conclusion.args[1], node, variables, reverse_subst):
+                parts = rule_application_parts(rule, reverse_subst, known, known_canonical, rules, eq_facts, definitions)
+                if parts is not None:
+                    proof = rule_application_text(parts)
+                    found.append((normalize_defined_expr(substitute_expr(rule.conclusion.args[0], reverse_subst), definitions), eq_symmetry_proof(proof, substitute_expr(rule.conclusion.args[0], reverse_subst))))
+        return found
+
+    queue: list[tuple[Expr, list[str]]] = [(start, [])]
+    seen = {expr_key(start)}
+    while queue:
+        node, proofs = queue.pop(0)
+        if len(proofs) >= max_depth:
+            continue
+        for next_node, proof in edges(node):
+            key = expr_key(next_node)
+            if key in seen:
+                continue
+            next_proofs = proofs + [proof]
+            if key == expr_key(target):
+                return eq_transitivity_proof(next_proofs)
+            seen.add(key)
+            queue.append((next_node, next_proofs))
+    return None
+
+
 def app_context_text(head: Expr, args: tuple[Expr, ...], hole_index: int, hole_name: str) -> str:
     parts = [expr_text(head)]
     for index, arg in enumerate(args):
@@ -1031,12 +1121,16 @@ def proof_for_expr(
     if normalized_eq_proof is not None:
         return normalized_eq_proof
 
+    if not allow_rule:
+        return None
+
+    rule_chain_proof = equality_rule_chain_proof(expr, known, known_canonical, rules, eq_facts, definitions)
+    if rule_chain_proof is not None:
+        return rule_chain_proof
+
     congruence_proof = equality_congruence_proof(expr, known, known_canonical, rules, eq_facts, definitions)
     if congruence_proof is not None:
         return congruence_proof
-
-    if not allow_rule:
-        return None
 
     for rule in reversed(rules):
         subst: dict[str, Expr] = {}
