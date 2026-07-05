@@ -51,10 +51,11 @@ reconstructor, so `-allowincompleteqed` is still required.
 For the currently supported native reconstruction fragment, add
 `-vampireabynative`.  This tries to turn a certified `aby` goal into a native
 Megalodon proof term using deterministic introduction, hypothesis,
-False-elimination, and Church-encoded conjunction projection/reconstruction
-before falling back to the certificate admit.  Use `-vampireabynativestrict` to
-fail instead of falling back when the native fragment cannot reconstruct the
-certified proof.
+False-elimination, bounded implication-chain application, Church-encoded
+conjunction projection/reconstruction, and Church-encoded disjunction
+introduction before falling back to the certificate admit.  Use
+`-vampireabynativestrict` to fail instead of falling back when the native
+fragment cannot reconstruct the certified proof.
 
 Smoke-test the live Megalodon/Vampire path on the first hammer `aby`:
 
