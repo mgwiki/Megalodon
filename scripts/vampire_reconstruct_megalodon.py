@@ -1742,6 +1742,158 @@ def empty_power_singleton_proof(expr: Expr, rules: list[ProofRule]) -> str | Non
     return proof if forward else eq_symmetry_proof(proof, power_empty)
 
 
+def app_args(expr: Expr, head: str, arity: int) -> tuple[Expr, ...] | None:
+    if expr.kind != "app" or len(expr.args) != arity + 1:
+        return None
+    if expr.args[0].kind != "var" or expr.args[0].value != head:
+        return None
+    return expr.args[1:]
+
+
+def find_repl_intro_elim_rules(rules: list[ProofRule]) -> tuple[str | None, str | None]:
+    intro = None
+    elim = None
+    for rule in rules:
+        b = {name: Expr("var", value=name) for name in rule.binders}
+        if len(rule.binders) == 3 and len(rule.premises) == 1:
+            repl = Expr("app", args=(Expr("var", value="Repl"), b[rule.binders[0]], b[rule.binders[1]]))
+            image = Expr("app", args=(b[rule.binders[1]], b[rule.binders[2]]))
+            if atom2(rule.premises[0], "In", b[rule.binders[2]], b[rule.binders[0]]) and atom2(rule.conclusion, "In", image, repl):
+                intro = rule.name
+            if atom2(rule.premises[0], "In", b[rule.binders[2]], repl):
+                elim = rule.name
+    return intro, elim
+
+
+def repl_elimination_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if len(binders) != 3 or len(premises) != 1:
+        return None
+    names = [name for name, _ in binders]
+    sorts = [sort for _, sort in binders]
+    if sorts != ["set", "set->set", "set->prop"]:
+        return None
+    target_binders, target_body = collect_foralls(conclusion)
+    target_premises, target_conclusion = split_arrows(target_body)
+    if len(target_binders) != 1 or target_binders[0][1] != "set" or len(target_premises) != 1:
+        return None
+    source_set, function, predicate = [Expr("var", value=name) for name in names]
+    target = Expr("var", value=target_binders[0][0])
+    repl = Expr("app", args=(Expr("var", value="Repl"), source_set, function))
+    if not atom2(target_premises[0], "In", target, repl):
+        return None
+    if target_conclusion.kind != "app" or len(target_conclusion.args) != 2 or expr_key(target_conclusion.args[0]) != names[2] or expr_key(target_conclusion.args[1]) != target_binders[0][0]:
+        return None
+    if premises[0].kind != "forall":
+        return None
+    _, step_body = collect_foralls(premises[0])
+    step_premises, step_conclusion = split_arrows(step_body)
+    if len(step_premises) != 1 or step_conclusion.kind != "app" or len(step_conclusion.args) != 2:
+        return None
+    if expr_key(step_conclusion.args[0]) != predicate.value:
+        return None
+    elim = None
+    _, elim = find_repl_intro_elim_rules(rules)
+    if elim is None:
+        return None
+    args = names + ["H0", "H1"]
+    return (
+        f"(fun {names[0]} {names[1]} {names[2]} H0 {target_binders[0][0]} H1 => "
+        f"({elim} {names[0]} {names[1]} {target_binders[0][0]} H1 ({names[2]} {target_binders[0][0]}) "
+        f"(fun W HW HE => HE (fun zz:set => {names[2]} zz) (H0 W HW))))"
+    )
+
+
+def image_monotone_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if len(binders) != 3 or len(premises) != 1:
+        return None
+    names = [name for name, _ in binders]
+    sorts = [sort for _, sort in binders]
+    if sorts != ["set->set", "set", "set"]:
+        return None
+    target_binders, target_body = collect_foralls(conclusion)
+    target_premises, target_conclusion = split_arrows(target_body)
+    if len(target_binders) != 1 or target_binders[0][1] != "set" or len(target_premises) != 1:
+        return None
+    function, source, target = [Expr("var", value=name) for name in names]
+    image = Expr("var", value=target_binders[0][0])
+    source_repl = Expr("app", args=(Expr("var", value="Repl"), source, function))
+    target_repl = Expr("app", args=(Expr("var", value="Repl"), target, function))
+    if not atom2(target_premises[0], "In", image, source_repl) or not atom2(target_conclusion, "In", image, target_repl):
+        return None
+    intro, elim = find_repl_intro_elim_rules(rules)
+    if intro is None or elim is None:
+        return None
+    return (
+        f"(fun {names[0]} {names[1]} {names[2]} Hsub {target_binders[0][0]} Himg => "
+        f"({elim} {names[1]} {names[0]} {target_binders[0][0]} Himg (In {target_binders[0][0]} (Repl {names[2]} {names[0]})) "
+        f"(fun W HW HE => HE (fun zz:set => In zz (Repl {names[2]} {names[0]})) "
+        f"({intro} {names[2]} {names[0]} W (Hsub W HW)))))"
+    )
+
+
+def image_in_power_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if len(binders) != 1 or len(premises) != 1:
+        return None
+    subset_name, subset_sort = binders[0]
+    if subset_sort != "set":
+        return None
+    subset = Expr("var", value=subset_name)
+    if not atom2(premises[0], "In", subset, unary_app("Power", Expr("var", value="A"))):
+        return None
+    if not atom2(
+        conclusion,
+        "In",
+        Expr(
+            "app",
+            args=(
+                Expr("var", value="Repl"),
+                Expr(
+                    "app",
+                    args=(
+                        Expr("var", value="setminus"),
+                        Expr("var", value="B"),
+                        Expr("app", args=(Expr("var", value="Repl"), Expr("app", args=(Expr("var", value="setminus"), Expr("var", value="A"), subset)), Expr("var", value="f"))),
+                    ),
+                ),
+                Expr("var", value="g"),
+            ),
+        ),
+        unary_app("Power", Expr("var", value="A")),
+    ):
+        return None
+    setminus_power = None
+    image_power = None
+    map_into = None
+    for rule in rules:
+        b = {name: Expr("var", value=name) for name in rule.binders}
+        if len(rule.binders) == 2 and not rule.premises:
+            if atom2(rule.conclusion, "In", Expr("app", args=(Expr("var", value="setminus"), b[rule.binders[0]], b[rule.binders[1]])), unary_app("Power", b[rule.binders[0]])):
+                setminus_power = rule.name
+        if len(rule.binders) == 1 and len(rule.premises) == 1:
+            if atom2(rule.premises[0], "In", b[rule.binders[0]], Expr("var", value="B")) and atom2(rule.conclusion, "In", Expr("app", args=(Expr("var", value="g"), b[rule.binders[0]])), Expr("var", value="A")):
+                map_into = rule.name
+        if len(rule.binders) == 3 and len(rule.premises) == 1:
+            conclusion_binders, conclusion_body = collect_foralls(rule.conclusion)
+            conclusion_premises, conclusion_final = split_arrows(conclusion_body)
+            concl_args = app_args(conclusion_final, "In", 2)
+            if conclusion_binders and conclusion_premises and concl_args is not None and app_args(concl_args[0], "Repl", 2) is not None and app_args(concl_args[1], "Power", 1) is not None:
+                image_power = rule.name
+    if setminus_power is None or image_power is None or map_into is None:
+        return None
+    inner = f"(setminus A {subset_name})"
+    return (
+        f"(fun {subset_name} H0 => "
+        f"({image_power} B A g {map_into} (setminus B (Repl {inner} f)) "
+        f"({setminus_power} B (Repl {inner} f))))"
+    )
+
+
 def proof_for_expr(
     expr: Expr,
     known: dict[str, str],
@@ -1762,6 +1914,14 @@ def proof_for_expr(
     direct = direct_proof_expr(expr)
     if direct is not None:
         return direct
+
+    for derived in (
+        repl_elimination_proof(expr, rules),
+        image_monotone_proof(expr, rules),
+        image_in_power_proof(expr, rules),
+    ):
+        if derived is not None:
+            return derived
 
     or_intro = vampire_or_intro_proof(expr, known, known_canonical, rules, eq_facts, definitions, rule_depth)
     if or_intro is not None:
