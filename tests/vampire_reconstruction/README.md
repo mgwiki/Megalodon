@@ -134,8 +134,11 @@ the generated file remains connected to the Vampire clause outline.  The fill
 pass also uses generated definitions plus one-step Leibniz congruence to prove
 simple equality rewrites under a shared function symbol; equality-chain search
 can also lift known or instantiated equality rewrites through application
-arguments.  For quantified or implicational claims, it can introduce the
-binders/premises and then run the same proof search on the resulting body.
+arguments.  For atomic propositions, it can transport a known atom across
+proved argument equalities, and it can rewrite one target argument across an
+equality before applying a bounded nested rule chain.  For quantified or
+implicational claims, it can introduce the binders/premises and then run the
+same proof search on the resulting body.
 
 ```sh
 python3 scripts/vampire_reconstruct_megalodon.py \
