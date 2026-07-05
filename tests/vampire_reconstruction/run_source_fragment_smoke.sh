@@ -120,6 +120,13 @@ thf(hr,axiom,((r @ a) @ b)).
 thf(goal,conjecture,((r @ (add @ a @ e)) @ (add @ b @ e))).
 EOF
 
+cat > "$work_dir/name_recovery.th0.p" <<'EOF'
+thf(c_Foo_5Fbar,type,(c_Foo_5Fbar : $i)).
+thf(c_Baz,type,(c_Baz : $i > $o)).
+thf(h,axiom,(c_Baz @ c_Foo_5Fbar)).
+thf(goal,conjecture,(c_Baz @ c_Foo_5Fbar)).
+EOF
+
 run_case conjunction_intro
 run_case conjunction_projection
 run_case equality_rewrite
@@ -127,6 +134,7 @@ run_case equality_normalization
 run_case predicate_equality_rewrite
 run_case reverse_equality_normalization
 run_case binary_predicate_simplification
+run_case name_recovery
 assert_contains "$work_dir/equality_rewrite.mg" "claim L0:"
 assert_contains "$work_dir/equality_rewrite.mg" "rewrite <- L0."
 assert_contains "$work_dir/equality_normalization.mg" "claim L0:"
@@ -136,3 +144,5 @@ assert_contains "$work_dir/predicate_equality_rewrite.mg" "fun Zeq:set"
 assert_contains "$work_dir/reverse_equality_normalization.mg" "rewrite <- L0."
 assert_contains "$work_dir/reverse_equality_normalization.mg" "rewrite <- L1."
 assert_contains "$work_dir/binary_predicate_simplification.mg" "fun Zeq:set"
+assert_contains "$work_dir/name_recovery.mg" "Variable Foo_bar:set."
+assert_contains "$work_dir/name_recovery.mg" "Variable Baz:set->prop."
