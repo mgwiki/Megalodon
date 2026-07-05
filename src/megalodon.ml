@@ -882,23 +882,26 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
        match try_intro () with
        | Some(d) -> d
        | None ->
-          match native_aby_nand_or depth cx hyps goal a b with
+          match native_aby_if_correct depth cx hyps goal a b with
           | Some(d) -> d
           | None ->
-             if allow_imp then
-               begin
-                 match find_or_elim_hyp depth cx hyps goal 0 with
-                 | Some(d) -> d
-                 | None ->
-                    match find_imp_elim_hyp allow_or depth cx hyps goal 0 with
+             match native_aby_nand_or depth cx hyps goal a b with
+             | Some(d) -> d
+             | None ->
+                if allow_imp then
+                  begin
+                    match find_or_elim_hyp depth cx hyps goal 0 with
                     | Some(d) -> d
                     | None ->
-                       match find_known_elim allow_or depth cx hyps goal with
+                       match find_imp_elim_hyp allow_or depth cx hyps goal 0 with
                        | Some(d) -> d
-                       | None -> raise SearchBacktrack
-               end
-             else
-               raise SearchBacktrack
+                       | None ->
+                          match find_known_elim allow_or depth cx hyps goal with
+                          | Some(d) -> d
+                          | None -> raise SearchBacktrack
+                  end
+                else
+                  raise SearchBacktrack
      end
   | _ ->
      begin
@@ -1067,6 +1070,69 @@ and native_aby_nand_or depth cx hyps goal a b =
        | Failure(_) -> None
      end
   | _ -> None
+and native_aby_if_correct depth cx hyps goal a b =
+  if depth <= 0 then None else
+  try
+    let and_h = egal_and_id in
+    let eps_ax_h = Hashtbl.find sigknh "Eps_i_ax" in
+    let p_x_y =
+      match a,b with
+      | Ap(Ap(TmH(ah1),p),eqx), Ap(Ap(TmH(ah2),notp),eqy) when ah1 = and_h && ah2 = and_h ->
+         begin
+           match is_eq_tm eqx, is_eq_tm eqy with
+           | Some(Set,ifx,x), Some(Set,ify,y) ->
+              begin
+                match conv ifx ify sigdelta [] with
+                | Some(_) ->
+                   let expected_notp = Imp(p,TmH(egal_false_id)) in
+                   begin
+                     match conv notp expected_notp sigdelta [] with
+                     | Some(_) -> Some(p,notp,x,y)
+                     | None -> None
+                   end
+                | None -> None
+              end
+           | _ -> None
+         end
+      | _ -> None
+    in
+    match p_x_y with
+    | Some(p,notp,x,y) ->
+       begin
+         match native_aby_known_xm p with
+         | Some(dxm) ->
+            let p1 = tmshift 0 1 p in
+            let notp1 = tmshift 0 1 notp in
+            let x1 = tmshift 0 1 x in
+            let y1 = tmshift 0 1 y in
+            let q =
+              Lam(Set,
+                  Ap(Ap(TmH(egal_or_id),
+                        Ap(Ap(TmH(egal_and_id),p1),eq_tm Set (DB(0)) x1)),
+                     Ap(Ap(TmH(egal_and_id),notp1),eq_tm Set (DB(0)) y1)))
+            in
+            let dp =
+              native_aby_direct_depth
+                true true (depth-1) cx (p::hyps) (Ap(q,x))
+            in
+            let dnotp =
+              native_aby_direct_depth
+                true true (depth-1) cx (notp::hyps) (Ap(q,y))
+            in
+            let dcase_p =
+              PPfAp(PTmAp(PTmAp(Known(eps_ax_h),q),x),dp)
+            in
+            let dcase_notp =
+              PPfAp(PTmAp(PTmAp(Known(eps_ax_h),q),y),dnotp)
+            in
+            Some(PPfAp(PPfAp(PTmAp(dxm,goal),PLam(p,dcase_p)),PLam(notp,dcase_notp)))
+         | None -> None
+       end
+    | None -> None
+  with
+  | Not_found -> None
+  | SearchBacktrack -> None
+  | Failure(_) -> None
 and eq_trans_proof depth cx hyps a x z =
   if depth <= 0 then None else
   let rec try_middle_terms scancx i =
@@ -4924,36 +4990,59 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                end;
              end;
            begin
-             match !vampireaby with
-             | None -> ()
-             | Some(_) ->
-                let conjn = Printf.sprintf "vampireaby_%d_%d" !lineno !charno in
-                let content = th0_aby_problem_content claimtm cxtm cxpf xl conjn in
-                run_vampire_aby_certificate content
-           end;
-           begin
-             if !vampireabynative then
-               match native_aby_reconstruct claimtm cxtm cxpf xl with
-               | Some(d) ->
-                  let currprooffun = !prooffun in
-                  let endpos = Some(!lineno,!charno) in
-                  prooffun := (fun dl -> currprooffun ((endpos,d)::dl));
-                  pfstate := pfstr
-               | None ->
-                  if !vampireabynativestrict then
-                    raise (Failure(Printf.sprintf "Native reconstruction failed for certified aby at line %d char %d" !lineno !charno))
-                  else
-                    begin
-	              admitpfstateatp pfst;
-		      pfstate := pfstr;
-		      prooffun := (fun _ -> raise AdmittedPf)
-                    end
-             else
-               begin
-	         admitpfstateatp pfst;
-		 pfstate := pfstr;
-		 prooffun := (fun _ -> raise AdmittedPf)
-               end
+             let native_aby_result =
+               if !vampireabynative then
+                 native_aby_reconstruct claimtm cxtm cxpf xl
+               else
+                 None
+             in
+             begin
+               match !vampireaby with
+               | None -> ()
+               | Some(_) ->
+                  let conjn = Printf.sprintf "vampireaby_%d_%d" !lineno !charno in
+                  let content = th0_aby_problem_content claimtm cxtm cxpf xl conjn in
+                  try
+                    run_vampire_aby_certificate content
+                  with
+                  | Failure(msg) ->
+                     begin
+                       match native_aby_result with
+                       | Some(_) ->
+                          if !verbosity > 2 then
+                            begin
+                              Printf.printf
+                                "Vampire did not certify aby at line %d char %d; using native reconstruction (%s)\n"
+                                !lineno !charno msg;
+                              flush stdout
+                            end
+                       | None -> raise (Failure(msg))
+                     end
+             end;
+             begin
+               if !vampireabynative then
+                 match native_aby_result with
+                 | Some(d) ->
+                    let currprooffun = !prooffun in
+                    let endpos = Some(!lineno,!charno) in
+                    prooffun := (fun dl -> currprooffun ((endpos,d)::dl));
+                    pfstate := pfstr
+                 | None ->
+                    if !vampireabynativestrict then
+                      raise (Failure(Printf.sprintf "Native reconstruction failed for certified aby at line %d char %d" !lineno !charno))
+                    else
+                      begin
+	                admitpfstateatp pfst;
+		        pfstate := pfstr;
+		        prooffun := (fun _ -> raise AdmittedPf)
+                      end
+               else
+                 begin
+	           admitpfstateatp pfst;
+	           pfstate := pfstr;
+		   prooffun := (fun _ -> raise AdmittedPf)
+	                 end
+	             end
            end
 	| _ -> raise (Failure("No goal to aby"))
       end

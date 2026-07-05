@@ -53,8 +53,8 @@ equality, so definition-only goals such as subset reflexivity remain easy for
 Vampire.
 
 For the currently supported native reconstruction fragment, add
-`-vampireabynative`.  This tries to turn a certified `aby` goal into a native
-Megalodon proof term using deterministic introduction, hypothesis,
+`-vampireabynative`.  This tries to turn an `aby` goal into a native Megalodon
+proof term using deterministic introduction, hypothesis,
 False-elimination, definitional negation introduction/application, bounded
 implication-chain application, Church-encoded conjunction
 projection/reconstruction, Church-encoded disjunction introduction/elimination,
@@ -73,12 +73,16 @@ reconstruct the replacement-over-empty argument through `Empty_eq` and
 `ReplI`, `ReplE_impred`, and pointwise equality hypotheses; combined with
 `set_ext`, this reconstructs replacement extensionality equalities.  It also
 handles the inverse-replacement equality pattern using nested replacement
-elimination/introduction and element-position equality rewriting.  Transparent
+elimination/introduction and element-position equality rewriting, and the
+`If_i_correct` choice split through `Eps_i_ax` and `xm`.  Transparent
 definitions that expose Church-encoded disjunctions can be eliminated as local
 hypotheses.  It expands the local `neq` definition, plus transparent definitions
-that expose `forall` or `->`, before falling back to the certificate admit.  Use
+that expose `forall` or `->`, before falling back to the certificate admit.
+When both `-vampireaby` and `-vampireabynative` are enabled, Megalodon still
+emits and checks Vampire certificates when Vampire succeeds; if Vampire times
+out but native reconstruction succeeds, the checked native proof is used.  Use
 `-vampireabynativestrict` to fail instead of falling back when the native
-fragment cannot reconstruct the certified proof.
+fragment cannot reconstruct the goal.
 
 Smoke-test the live Megalodon/Vampire path on the first hammer `aby`:
 
@@ -87,7 +91,7 @@ VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_live_aby_smoke.sh
 ```
 
 Smoke-test the restricted native reconstruction path on the early hammer `aby`
-block through `Repl_inv_eq`:
+block through `If_i_correct`:
 
 ```sh
 VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_native_aby_smoke.sh
