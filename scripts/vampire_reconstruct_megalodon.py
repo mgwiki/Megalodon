@@ -1778,6 +1778,9 @@ def comment_text(value: object) -> str:
 
 SOURCE_DEPENDENCY_RE = re.compile(r"\baby\b(?P<body>[^.]*)\.")
 SOURCE_IDENTIFIER_RE = re.compile(r"[_A-Za-z][_A-Za-z0-9']*")
+SOURCE_DECL_RE = re.compile(
+    r"^\s*(?:Theorem|Lemma|Example|Fact|Remark|Corollary|Proposition|Property|Definition|Axiom)\s+(?P<name>[_A-Za-z][_A-Za-z0-9']*)\b"
+)
 SOURCE_DEPENDENCY_KEYWORDS = {
     "aby",
     "admit",
@@ -1810,6 +1813,21 @@ def source_dependency_names(line_text: str | None) -> list[str]:
     return names
 
 
+def source_dependency_locations(source: str | None, names: list[str]) -> list[str]:
+    if source is None or not names:
+        return []
+    path = Path(source)
+    if not path.exists():
+        return []
+    wanted = set(names)
+    found: dict[str, int] = {}
+    for index, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), start=1):
+        match = SOURCE_DECL_RE.match(line)
+        if match and match.group("name") in wanted and match.group("name") not in found:
+            found[match.group("name")] = index
+    return [f"{name}@{found[name]}" for name in names if name in found]
+
+
 def skeleton_header(obligation: Obligation) -> list[str]:
     header = [
         "// Vampire/Megalodon reconstruction skeleton.",
@@ -1824,6 +1842,9 @@ def skeleton_header(obligation: Obligation) -> list[str]:
     dependencies = source_dependency_names(obligation.source_line_text)
     if dependencies:
         header.append(f"// source dependencies: {', '.join(comment_text(name) for name in dependencies)}")
+        locations = source_dependency_locations(obligation.source, dependencies)
+        if locations:
+            header.append(f"// source dependency locations: {', '.join(comment_text(location) for location in locations)}")
     return header
 
 
