@@ -1114,6 +1114,83 @@ def equality_congruence_proof(
     return f"(fun Q:set->prop => fun H:Q ({expr_text(left)}) => {proof_term_text(argument_proof)} (fun z:set => Q ({context})) H)"
 
 
+def atomic_transport_context(head: Expr, args: tuple[Expr, ...], hole_index: int, hole_name: str) -> str:
+    parts = [expr_text(head)]
+    for index, arg in enumerate(args):
+        parts.append(hole_name if index == hole_index else proof_arg_text(arg))
+    return " ".join(parts)
+
+
+def atomic_transport_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    allow_rule: bool,
+) -> str | None:
+    if expr.kind != "app" or len(expr.args) < 2:
+        return None
+
+    target = normalize_defined_expr(expr, definitions)
+    if target.kind != "app" or len(target.args) < 2:
+        return None
+
+    seen: set[str] = set()
+    for proposition, known_proof in list(known.items()):
+        if proposition in seen:
+            continue
+        seen.add(proposition)
+        source = parse_expr(proposition)
+        if source is None:
+            continue
+        source = normalize_defined_expr(source, definitions)
+        if source.kind != "app" or len(source.args) != len(target.args):
+            continue
+        if expr_key(source.args[0]) != expr_key(target.args[0]):
+            continue
+
+        current_args = list(source.args[1:])
+        proof = known_proof
+        ok = True
+        for index, (current_arg, target_arg) in enumerate(zip(current_args, target.args[1:])):
+            if expr_key(current_arg) == expr_key(target_arg):
+                continue
+            equality = Expr("eq", args=(current_arg, target_arg))
+            equality_proof = proof_for_expr(
+                equality,
+                known,
+                known_canonical,
+                rules,
+                eq_facts,
+                definitions,
+                allow_rule=allow_rule,
+            )
+            if equality_proof is None:
+                reverse_equality = Expr("eq", args=(target_arg, current_arg))
+                reverse_proof = proof_for_expr(
+                    reverse_equality,
+                    known,
+                    known_canonical,
+                    rules,
+                    eq_facts,
+                    definitions,
+                    allow_rule=allow_rule,
+                )
+                if reverse_proof is not None:
+                    equality_proof = eq_symmetry_proof(reverse_proof, target_arg)
+            if equality_proof is None:
+                ok = False
+                break
+            context = atomic_transport_context(target.args[0], tuple(current_args), index, "z")
+            proof = f"{proof_term_text(equality_proof)} (fun z:set => {context}) ({proof})"
+            current_args[index] = target_arg
+        if ok:
+            return proof
+    return None
+
+
 def direct_proof_expr(expr: Expr) -> str | None:
     binders, body = collect_foralls(expr)
     premises, conclusion = split_arrows(body)
@@ -1216,6 +1293,18 @@ def proof_for_expr(
     congruence_proof = equality_congruence_proof(expr, known, known_canonical, rules, eq_facts, definitions)
     if congruence_proof is not None:
         return congruence_proof
+
+    transport_proof = atomic_transport_proof(
+        expr,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        allow_rule=allow_rule,
+    )
+    if transport_proof is not None:
+        return transport_proof
 
     if not allow_rule:
         return None
