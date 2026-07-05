@@ -100,12 +100,24 @@ thf(mul_empty,axiom,(! [X:$i] : (e = (mul @ X @ e)))).
 thf(goal,conjecture,((mul @ n @ e) = (mul @ m @ e))).
 EOF
 
+cat > "$work_dir/binary_predicate_simplification.th0.p" <<'EOF'
+thf(e,type,(e : $i)).
+thf(a,type,(a : $i)).
+thf(b,type,(b : $i)).
+thf(add,type,(add : $i > $i > $i)).
+thf(r,type,(r : $i > $i > $o)).
+thf(add_empty,axiom,(! [X:$i] : ((add @ X @ e) = X))).
+thf(hr,axiom,((r @ a) @ b)).
+thf(goal,conjecture,((r @ (add @ a @ e)) @ (add @ b @ e))).
+EOF
+
 run_case conjunction_intro
 run_case conjunction_projection
 run_case equality_rewrite
 run_case equality_normalization
 run_case predicate_equality_rewrite
 run_case reverse_equality_normalization
+run_case binary_predicate_simplification
 assert_contains "$work_dir/equality_rewrite.mg" "claim L0:"
 assert_contains "$work_dir/equality_rewrite.mg" "rewrite <- L0."
 assert_contains "$work_dir/equality_normalization.mg" "claim L0:"
@@ -114,3 +126,4 @@ assert_contains "$work_dir/equality_normalization.mg" "rewrite L1."
 assert_contains "$work_dir/predicate_equality_rewrite.mg" "fun Zeq:set"
 assert_contains "$work_dir/reverse_equality_normalization.mg" "rewrite <- L0."
 assert_contains "$work_dir/reverse_equality_normalization.mg" "rewrite <- L1."
+assert_contains "$work_dir/binary_predicate_simplification.mg" "fun Zeq:set"
