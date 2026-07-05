@@ -22,6 +22,19 @@ Run the full 100-obligation suite:
 VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_100_th0.sh
 ```
 
+The driver exports all TH0 problems first, then keeps several Vampire
+subprocesses running in parallel and finally writes/checks a manifest of the
+captured proof outputs.  To use a scratch directory outside the repo and more
+workers:
+
+```sh
+TMPDIR=/project/tmp \
+VAMPIRE=/path/to/vampire \
+MEGALODON_VAMPIRE_JOBS=20 \
+tests/vampire_reconstruction/run_100_th0.sh \
+  --work-dir /project/tmp/megalodon_vampire_reconstruction
+```
+
 With a Vampire build or schedule that differs from the one used to create
 `ATPresults2025`, collect the first 100 successful proofs from the candidate
 pool:
@@ -108,6 +121,7 @@ Useful overrides:
 ```sh
 MEGALODON_VAMPIRE_LIMIT=100
 MEGALODON_VAMPIRE_TIMEOUT=60
+MEGALODON_VAMPIRE_JOBS=10
 ```
 
 Outputs are written under `tests/vampire_reconstruction/work/`, including

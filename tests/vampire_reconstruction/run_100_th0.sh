@@ -10,4 +10,5 @@ fi
 python3 scripts/vampire_reconstruct_megalodon.py \
   --limit "${MEGALODON_VAMPIRE_LIMIT:-100}" \
   --timeout "${MEGALODON_VAMPIRE_TIMEOUT:-60}" \
+  --jobs "${MEGALODON_VAMPIRE_JOBS:-10}" \
   "$@"
