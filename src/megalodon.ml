@@ -940,6 +940,9 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
                      match eq_repl_empty_proof depth cx hyps a x z with
                      | Some(d) -> d
                      | None ->
+                        match eq_repl_inv_proof depth cx hyps a x z with
+                        | Some(d) -> d
+                        | None ->
                         match eq_refl_proof depth cx hyps a x z with
                         | Some(d) -> d
                         | None ->
@@ -957,9 +960,12 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
                 match repl_ext_sub_proof depth cx hyps goal with
                 | Some(d) -> d
                 | None ->
-                   match eq_pred_rewrite_proof depth cx hyps goal with
+                   match eq_in_elem_rewrite_proof depth cx hyps goal with
                    | Some(d) -> d
-                   | None -> try_remaining ()
+                   | None ->
+                      match eq_pred_rewrite_proof depth cx hyps goal with
+                      | Some(d) -> d
+                      | None -> try_remaining ()
        in
        match is_eq_tm goal with
        | Some(_) -> direct_fallback ()
@@ -1196,6 +1202,148 @@ and eq_repl_empty_proof depth cx hyps a x z =
   | Not_found -> None
   | SearchBacktrack -> None
   | Failure(_) -> None
+and eq_repl_inv_proof depth cx hyps a lhs rhs =
+  if depth <= 0 || a <> Set then None else
+  try
+    let repl_h = Hashtbl.find sigtmh "Repl" in
+    let in_h = Hashtbl.find sigtmh "In" in
+    let set_ext_h = Hashtbl.find sigknh "set_ext" in
+    let replI_h = Hashtbl.find sigknh "ReplI" in
+    let replE_impred_h = Hashtbl.find sigknh "ReplE_impred" in
+    let in_tm x y = Ap(Ap(TmH(in_h),x),y) in
+    let repl_tm x f = Ap(Ap(TmH(repl_h),x),f) in
+    let elem_q target use_rhs =
+      let elem = if use_rhs then DB(0) else DB(1) in
+      Lam(Set,Lam(Set,in_tm elem (tmshift 0 2 target)))
+    in
+    let app_elem_q fn target use_rhs =
+      let elem = if use_rhs then DB(0) else DB(1) in
+      Lam(Set,Lam(Set,in_tm (Ap(tmshift 0 2 fn,elem)) (tmshift 0 2 target)))
+    in
+    let find_inv x f g =
+      let fx = Ap(tmshift 0 1 f,DB(0)) in
+      let gfx = Ap(tmshift 0 1 g,fx) in
+      let expected_eq =
+        eq_tm Set gfx (DB(0))
+      in
+      let rec scan scanhyps i =
+        match scanhyps with
+        | All(Set,Imp(Ap(p,DB(0)),q))::r ->
+           begin
+             match conv q expected_eq sigdelta [] with
+             | Some(_) -> Some(i,p)
+             | None -> scan r (i+1)
+           end
+        | _::r -> scan r (i+1)
+        | [] -> None
+      in
+      scan hyps 0
+    in
+    let find_domain_pred x p =
+      let expected = All(Set,Imp(in_tm (DB(0)) (tmshift 0 1 x),Ap(p,DB(0)))) in
+      let rec scan scanhyps i =
+        match scanhyps with
+        | h::r ->
+           begin
+             match conv h expected sigdelta [] with
+             | Some(_) -> Some(i)
+             | None -> scan r (i+1)
+           end
+        | [] -> None
+      in
+      scan hyps 0
+    in
+    match lhs, rhs with
+    | Ap(Ap(TmH(rh1),Ap(Ap(TmH(rh2),x),f)),g), xrhs when rh1 = repl_h && rh2 = repl_h ->
+       begin
+         match conv x xrhs sigdelta [] with
+         | Some(_) ->
+            begin
+              match find_inv x f g with
+              | Some(inv_i,p) ->
+                 begin
+                   match find_domain_pred x p with
+                   | Some(hx_i) ->
+                      let left = lhs in
+                      let right = rhs in
+                      let inner = repl_tm x f in
+                      let x1 = tmshift 0 1 x in
+                      let f1 = tmshift 0 1 f in
+                      let g1 = tmshift 0 1 g in
+                      let inner1 = tmshift 0 1 inner in
+                      let left1 = tmshift 0 1 left in
+                      let y = DB(0) in
+                      let y_in_left = in_tm y left1 in
+                      let y_in_right = in_tm y x1 in
+                      let x2 = tmshift 0 2 x in
+                      let f2 = tmshift 0 2 f in
+                      let g2 = tmshift 0 2 g in
+                      let inner2 = tmshift 0 2 inner in
+                      let z = DB(0) in
+                      let yz = DB(1) in
+                      let y_in_x_after_z = in_tm yz x2 in
+                      let z_in_inner = in_tm z inner2 in
+                      let y_eq_gz = eq_tm Set yz (Ap(g2,z)) in
+                      let x3 = tmshift 0 3 x in
+                      let f3 = tmshift 0 3 f in
+                      let g3 = tmshift 0 3 g in
+                      let w = DB(0) in
+                      let z3 = DB(1) in
+                      let w_in_x = in_tm w x3 in
+                      let z_eq_fw = eq_tm Set z3 (Ap(f3,w)) in
+                      let hpw = PPfAp(PTmAp(Hyp(hx_i+5),w),Hyp(1)) in
+                      let dinv_w = PPfAp(PTmAp(Hyp(inv_i+5),w),hpw) in
+                      let dgfw_in_x = PPfAp(PTmAp(dinv_w,elem_q x3 true),Hyp(1)) in
+                      let dgz_in_x = PPfAp(PTmAp(Hyp(0),app_elem_q g3 x3 true),dgfw_in_x) in
+                      let dy_in_x = PPfAp(PTmAp(Hyp(2),elem_q x3 true),dgz_in_x) in
+                      let inner_branch = TLam(Set,PLam(w_in_x,PLam(z_eq_fw,dy_in_x))) in
+                      let inner_elim =
+                        PPfAp
+                          (PTmAp
+                             (PPfAp
+                                (PTmAp(PTmAp(PTmAp(Known(replE_impred_h),x2),f2),z),
+                                 Hyp(1)),
+                              y_in_x_after_z),
+                           inner_branch)
+                      in
+                      let outer_branch = TLam(Set,PLam(z_in_inner,PLam(y_eq_gz,inner_elim))) in
+                      let left_sub =
+                        TLam(Set,
+                             PLam(y_in_left,
+                                  PPfAp
+                                    (PTmAp
+                                       (PPfAp
+                                          (PTmAp(PTmAp(PTmAp(Known(replE_impred_h),inner1),g1),y),
+                                           Hyp(0)),
+                                        y_in_right),
+                                     outer_branch)))
+                      in
+                      let hpy = PPfAp(PTmAp(Hyp(hx_i+1),y),Hyp(0)) in
+                      let dinv_y = PPfAp(PTmAp(Hyp(inv_i+1),y),hpy) in
+                      let dfy_in_inner =
+                        PPfAp
+                          (PTmAp(PTmAp(PTmAp(Known(replI_h),x1),f1),y),
+                           Hyp(0))
+                      in
+                      let dgy_in_left =
+                        PPfAp
+                          (PTmAp(PTmAp(PTmAp(Known(replI_h),inner1),g1),Ap(f1,y)),
+                           dfy_in_inner)
+                      in
+                      let dy_in_left = PPfAp(PTmAp(dinv_y,elem_q left1 false),dgy_in_left) in
+                      let right_sub = TLam(Set,PLam(y_in_right,dy_in_left)) in
+                      Some(PPfAp(PPfAp(PTmAp(PTmAp(Known(set_ext_h),left),right),left_sub),right_sub))
+                   | None -> None
+                 end
+              | None -> None
+            end
+         | None -> None
+       end
+    | _ -> None
+  with
+  | Not_found -> None
+  | SearchBacktrack -> None
+  | Failure(_) -> None
 and repl_ext_sub_proof depth cx hyps goal =
   if depth <= 0 then None else
   try
@@ -1321,6 +1469,70 @@ and repl_ext_sub_proof depth cx hyps goal =
          | [] -> None
        in
        scan_source hyps 0
+    | _ -> None
+  with
+  | Not_found -> None
+  | SearchBacktrack -> None
+  | Failure(_) -> None
+and eq_in_elem_rewrite_proof depth cx hyps goal =
+  if depth <= 0 then None else
+  try
+    let in_h = Hashtbl.find sigtmh "In" in
+    let rewrite_q target use_rhs =
+      let elem = if use_rhs then DB(0) else DB(1) in
+      Lam(Set,Lam(Set,Ap(Ap(TmH(in_h),elem),tmshift 0 2 target)))
+    in
+    match goal with
+    | Ap(Ap(TmH(ih),t),target) when ih = in_h ->
+       let rec scan scanhyps i =
+         match scanhyps with
+         | p::r ->
+            begin
+              match is_eq_tm p with
+              | Some(a,l,rhs) when a = Set ->
+                 let try_left () =
+                   match conv l t sigdelta [] with
+                   | Some(_) ->
+                      begin
+                        try
+                          let source = Ap(Ap(TmH(in_h),rhs),target) in
+                          let dsource = native_aby_direct_depth true true (depth-1) cx hyps source in
+                          Some(PPfAp(PTmAp(Hyp(i),rewrite_q target true),dsource))
+                        with
+                        | SearchBacktrack -> None
+                        | Failure(_) -> None
+                      end
+                   | None -> None
+                 in
+                 let try_right () =
+                   match conv rhs t sigdelta [] with
+                   | Some(_) ->
+                      begin
+                        try
+                          let source = Ap(Ap(TmH(in_h),l),target) in
+                          let dsource = native_aby_direct_depth true true (depth-1) cx hyps source in
+                          Some(PPfAp(PTmAp(Hyp(i),rewrite_q target false),dsource))
+                        with
+                        | SearchBacktrack -> None
+                        | Failure(_) -> None
+                      end
+                   | None -> None
+                 in
+                 begin
+                   match try_left () with
+                   | Some(d) -> Some(d)
+                   | None ->
+                      begin
+                        match try_right () with
+                        | Some(d) -> Some(d)
+                        | None -> scan r (i+1)
+                      end
+                 end
+              | _ -> scan r (i+1)
+            end
+         | [] -> None
+       in
+       scan hyps 0
     | _ -> None
   with
   | Not_found -> None

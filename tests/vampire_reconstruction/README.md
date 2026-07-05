@@ -71,7 +71,9 @@ classical NAND-to-or pattern used with named excluded middle facts.  It can also
 reconstruct the replacement-over-empty argument through `Empty_eq` and
 `ReplE_impred`, plus replacement extensionality subset arguments from
 `ReplI`, `ReplE_impred`, and pointwise equality hypotheses; combined with
-`set_ext`, this reconstructs replacement extensionality equalities.  Transparent
+`set_ext`, this reconstructs replacement extensionality equalities.  It also
+handles the inverse-replacement equality pattern using nested replacement
+elimination/introduction and element-position equality rewriting.  Transparent
 definitions that expose Church-encoded disjunctions can be eliminated as local
 hypotheses.  It expands the local `neq` definition, plus transparent definitions
 that expose `forall` or `->`, before falling back to the certificate admit.  Use
@@ -85,7 +87,7 @@ VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_live_aby_smoke.sh
 ```
 
 Smoke-test the restricted native reconstruction path on the early hammer `aby`
-block through `ReplEq_ext`:
+block through `Repl_inv_eq`:
 
 ```sh
 VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_native_aby_smoke.sh
