@@ -653,6 +653,7 @@ let rec has_or_hyp hyps =
 
 let egal_false_id = "5bf697cb0d1cdefbe881504469f6c48cc388994115b82514dfc4fb5e67ac1a87"
 let egal_not_id = "058f630dd89cad5a22daa56e097e3bdf85ce16ebd3dbf7994e404e2a98800f7f"
+let egal_ex_id = "912ad2cdc2d23bb8aa0a5070945f2a90976a948b0e8308917244591f3747f099"
 
 let rec and_elim_proof sgdelta d p goal =
   match conv p goal sgdelta [] with
@@ -687,6 +688,12 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
   | Imp(p,q) -> PLam(p,native_aby_direct_depth allow_imp allow_or depth cx (p::hyps) q)
   | Ap(TmH(h),p) when h = egal_not_id -> PLam(p,native_aby_direct_depth allow_imp allow_or depth cx (p::hyps) (TmH(egal_false_id)))
   | All(a,q) -> TLam(a,native_aby_direct_depth allow_imp allow_or depth (a::cx) (List.map (tmshift 0 1) hyps) q)
+  | Ap(TpAp(TmH(h),a),q) when h = egal_ex_id ->
+     begin
+       match find_ex_intro depth cx hyps a q 0 with
+       | Some(d) -> d
+       | None -> raise SearchBacktrack
+     end
   | Ap(Ap(TmH(h),a),b) when h = egal_and_id ->
      let da = native_aby_direct_depth allow_imp allow_or (depth-1) cx hyps a in
      let db = native_aby_direct_depth allow_imp allow_or (depth-1) cx hyps b in
@@ -741,6 +748,27 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
                else
                  raise SearchBacktrack
      end
+and find_ex_intro depth cx hyps a q i =
+  let rec find_ex_intro_rec scancx i =
+    match scancx with
+    | b::r ->
+       let try_rest () = find_ex_intro_rec r (i+1) in
+       if b = a then
+         begin
+           let w = DB(i) in
+           try
+             let dq = native_aby_direct_depth true true (depth-1) cx hyps (Ap(q,w)) in
+             let dq = pfshift 0 1 (pftmshift 0 1 dq) in
+             Some(TLam(Prop,PLam(All(a,Imp(Ap(tmshift 0 2 q,DB(0)),DB(1))),PPfAp(PTmAp(Hyp(0),tmshift 0 1 w),dq))))
+           with
+           | SearchBacktrack -> try_rest ()
+           | Failure(_) -> try_rest ()
+         end
+       else
+         try_rest ()
+    | [] -> None
+  in
+  find_ex_intro_rec cx i
 and find_or_elim_hyp depth cx hyps goal i =
   let rec find_or_elim_hyp_rec scanhyps i =
     match scanhyps with
