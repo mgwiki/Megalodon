@@ -654,6 +654,7 @@ let rec has_or_hyp hyps =
 let egal_false_id = "5bf697cb0d1cdefbe881504469f6c48cc388994115b82514dfc4fb5e67ac1a87"
 let egal_not_id = "058f630dd89cad5a22daa56e097e3bdf85ce16ebd3dbf7994e404e2a98800f7f"
 let egal_ex_id = "912ad2cdc2d23bb8aa0a5070945f2a90976a948b0e8308917244591f3747f099"
+let egal_iff_id = "9c60bab687728bc4482e12da2b08b8dbc10f5d71f5cab91acec3c00a79b335a3"
 
 let rec and_elim_proof sgdelta d p goal =
   match conv p goal sgdelta [] with
@@ -676,6 +677,13 @@ let rec find_and_elim_hyp sgdelta hyps goal i =
   | (Ap(Ap(TmH(h),_),_) as p)::r when h = egal_and_id ->
      begin
        match and_elim_proof sgdelta (Hyp(i)) p goal with
+       | Some(d) -> Some(d)
+       | None -> find_and_elim_hyp sgdelta r goal (i+1)
+     end
+  | Ap(Ap(TmH(h),a),b)::r when h = egal_iff_id ->
+     let p_as_and = Ap(Ap(TmH(egal_and_id),Imp(a,b)),Imp(b,a)) in
+     begin
+       match and_elim_proof sgdelta (Hyp(i)) p_as_and goal with
        | Some(d) -> Some(d)
        | None -> find_and_elim_hyp sgdelta r goal (i+1)
      end
@@ -820,6 +828,23 @@ and find_imp_elim_hyp allow_or depth cx hyps goal i =
 and apply_imp_chain allow_or depth cx hyps d p goal =
   if depth <= 0 then None else
   match p with
+  | Ap(Ap(TmH(h),a),b) when h = egal_iff_id ->
+     let p_as_and = Ap(Ap(TmH(egal_and_id),Imp(a,b)),Imp(b,a)) in
+     let try_forward () =
+       match and_elim_proof sigdelta d p_as_and (Imp(a,b)) with
+       | Some(dab) -> apply_imp_chain allow_or depth cx hyps dab (Imp(a,b)) goal
+       | None -> None
+     in
+     let try_backward () =
+       match and_elim_proof sigdelta d p_as_and (Imp(b,a)) with
+       | Some(dba) -> apply_imp_chain allow_or depth cx hyps dba (Imp(b,a)) goal
+       | None -> None
+     in
+     begin
+       match try_forward () with
+       | Some(d) -> Some(d)
+       | None -> try_backward ()
+     end
   | Ap(TmH(h),a) when h = egal_not_id ->
      apply_imp_chain allow_or depth cx hyps d (Imp(a,TmH(egal_false_id))) goal
   | Imp(a,b) ->
