@@ -1213,16 +1213,16 @@ def proof_for_expr(
     if normalized_eq_proof is not None:
         return normalized_eq_proof
 
+    congruence_proof = equality_congruence_proof(expr, known, known_canonical, rules, eq_facts, definitions)
+    if congruence_proof is not None:
+        return congruence_proof
+
     if not allow_rule:
         return None
 
     rule_chain_proof = equality_rule_chain_proof(expr, known, known_canonical, rules, eq_facts, definitions)
     if rule_chain_proof is not None:
         return rule_chain_proof
-
-    congruence_proof = equality_congruence_proof(expr, known, known_canonical, rules, eq_facts, definitions)
-    if congruence_proof is not None:
-        return congruence_proof
 
     for rule in reversed(rules):
         subst: dict[str, Expr] = {}
