@@ -2093,6 +2093,108 @@ def image_in_power_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
     )
 
 
+def if_union_successor_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+) -> str | None:
+    if expr.kind != "eq":
+        return None
+    left = expr.args[0]
+    right = expr.args[1]
+    if left.kind != "app" or len(left.args) != 4:
+        return None
+    if left.args[0].kind != "var" or left.args[0].value != "If_i":
+        return None
+    condition, then_branch, else_branch = left.args[1:]
+    cond_args = app_args(condition, "In", 2)
+    if cond_args is None:
+        return None
+    union_args = app_args(cond_args[0], "Union", 1)
+    succ_args = app_args(cond_args[1], "ordsucc", 1)
+    if union_args is None or succ_args is None:
+        return None
+    succ_inner_args = app_args(union_args[0], "ordsucc", 1)
+    if succ_inner_args is None or expr_key(succ_inner_args[0]) != expr_key(succ_args[0]):
+        return None
+    base = succ_args[0]
+    union_succ = cond_args[0]
+    if then_branch.kind != "app" or right.kind != "app" or len(then_branch.args) != len(right.args) or len(right.args) < 2:
+        return None
+    if expr_key(then_branch.args[0]) != expr_key(right.args[0]):
+        return None
+    different = [
+        index
+        for index, (left_arg, right_arg) in enumerate(zip(then_branch.args[1:], right.args[1:]), start=1)
+        if expr_key(left_arg) != expr_key(right_arg)
+    ]
+    if different != [1, 2]:
+        return None
+    if expr_key(then_branch.args[1]) != expr_key(union_succ) or expr_key(right.args[1]) != expr_key(base):
+        return None
+    left_rec = then_branch.args[2]
+    right_rec = right.args[2]
+    left_rec_args = app_args(left_rec, "In_rec_i", 2)
+    right_rec_args = app_args(right_rec, "In_rec_i", 2)
+    if left_rec_args is None or right_rec_args is None:
+        return None
+    if expr_key(left_rec_args[0]) != expr_key(right_rec_args[0]):
+        return None
+    if expr_key(left_rec_args[1]) != expr_key(union_succ) or expr_key(right_rec_args[1]) != expr_key(base):
+        return None
+
+    if_rule = None
+    union_rule = None
+    succ_in_rule = None
+    for rule in rules:
+        b = {name: Expr("var", value=name) for name in rule.binders}
+        if len(rule.binders) == 3 and len(rule.premises) == 1:
+            if_rule_conclusion = Expr(
+                "eq",
+                args=(
+                    Expr("app", args=(Expr("var", value="If_i"), b[rule.binders[0]], b[rule.binders[1]], b[rule.binders[2]])),
+                    b[rule.binders[1]],
+                ),
+            )
+            if expr_key(rule.conclusion) == expr_key(if_rule_conclusion):
+                if_rule = rule.name
+        if len(rule.binders) == 1 and not rule.premises:
+            if atom2(rule.conclusion, "In", b[rule.binders[0]], unary_app("ordsucc", b[rule.binders[0]])):
+                succ_in_rule = rule.name
+        if len(rule.binders) == 1 and len(rule.premises) == 1 and rule.conclusion.kind == "eq":
+            expected_left = unary_app("Union", unary_app("ordsucc", b[rule.binders[0]]))
+            if expr_key(rule.conclusion.args[0]) == expr_key(expected_left) and expr_key(rule.conclusion.args[1]) == rule.binders[0]:
+                union_rule = rule
+    if if_rule is None or succ_in_rule is None or union_rule is None:
+        return None
+
+    subst = {union_rule.binders[0]: base}
+    premise = substitute_expr(union_rule.premises[0], subst)
+    premise_proof = known.get(expr_key(premise)) or known_canonical.get(canonical_proposition(expr_key(premise)))
+    if premise_proof is None:
+        return None
+    base_text = expr_text(base)
+    base_arg = proof_arg_text(base)
+    union_text = expr_text(union_succ)
+    union_arg = proof_arg_text(union_succ)
+    condition_text = proof_arg_text(condition)
+    then_text = proof_arg_text(then_branch)
+    else_text = proof_arg_text(else_branch)
+    rec_fun_text = proof_arg_text(left_rec_args[0])
+    head_text = expr_text(then_branch.args[0])
+    union_eq = f"({union_rule.name} {base_text} {premise_proof})"
+    union_eq_sym = f"({union_eq} (fun zz:set => zz = {union_text}) (fun R Hr => Hr))"
+    condition_proof = f"({union_eq_sym} (fun zz:set => In zz (ordsucc {base_text})) ({succ_in_rule} {base_text}))"
+    if_proof = f"({if_rule} {condition_text} {then_text} {else_text} {condition_proof})"
+    return (
+        f"(fun Q:set->prop => fun H:Q ({expr_text(left)}) => "
+        f"{union_eq} (fun zz:set => Q ({head_text} {base_arg} (In_rec_i {rec_fun_text} zz))) "
+        f"({union_eq} (fun zz:set => Q ({head_text} zz (In_rec_i {rec_fun_text} {union_arg}))) "
+        f"({if_proof} Q H)))"
+    )
+
+
 def find_pair_sigma_rules(rules: list[ProofRule]) -> tuple[str | None, str | None, str | None]:
     proj0_pair = None
     proj1_pair = None
@@ -2225,6 +2327,10 @@ def proof_for_expr(
     direct = direct_proof_expr(expr)
     if direct is not None:
         return direct
+
+    if_union = if_union_successor_proof(expr, known, known_canonical, rules)
+    if if_union is not None:
+        return if_union
 
     for derived in (
         repl_elimination_proof(expr, rules),
