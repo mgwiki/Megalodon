@@ -937,18 +937,21 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
                   match eq_prop_ext_proof depth cx hyps a x z with
                   | Some(d) -> d
                   | None ->
-                     match eq_refl_proof depth cx hyps a x z with
+                     match eq_repl_empty_proof depth cx hyps a x z with
                      | Some(d) -> d
                      | None ->
-                        match eq_sym_proof depth cx hyps a x z with
+                        match eq_refl_proof depth cx hyps a x z with
                         | Some(d) -> d
                         | None ->
-                           match eq_trans_proof depth cx hyps a x z with
+                           match eq_sym_proof depth cx hyps a x z with
                            | Some(d) -> d
                            | None ->
-                              match eq_func_ext_proof depth cx hyps a x z with
+                              match eq_trans_proof depth cx hyps a x z with
                               | Some(d) -> d
-                           | None -> try_remaining ()
+                              | None ->
+                                 match eq_func_ext_proof depth cx hyps a x z with
+                                 | Some(d) -> d
+                                 | None -> try_remaining ()
                 end
              | None ->
                 match eq_pred_rewrite_proof depth cx hyps goal with
@@ -1143,6 +1146,50 @@ and eq_func_ext_proof depth cx hyps a f g =
        | Failure(_) -> None
      end
   | _ -> None
+and eq_repl_empty_proof depth cx hyps a x z =
+  if depth <= 0 || a <> Set then None else
+  try
+    let empty_h = Hashtbl.find sigtmh "Empty" in
+    let repl_h = Hashtbl.find sigtmh "Repl" in
+    let in_h = Hashtbl.find sigtmh "In" in
+    let empty_eq_h = Hashtbl.find sigknh "Empty_eq" in
+    let emptyE_h = Hashtbl.find sigknh "EmptyE" in
+    let replE_impred_h = Hashtbl.find sigknh "ReplE_impred" in
+    match x, z with
+    | Ap(Ap(TmH(h),empty),f), TmH(eh) when h = repl_h && eh = empty_h ->
+       begin
+         match conv empty (TmH(empty_h)) sigdelta [] with
+         | Some(_) ->
+            let repl_empty_f = Ap(Ap(TmH(repl_h),TmH(empty_h)),f) in
+            let shifted_repl_empty_f = tmshift 0 1 repl_empty_f in
+            let shifted_f = tmshift 0 1 f in
+            let y_in_repl = Ap(Ap(TmH(in_h),DB(0)),shifted_repl_empty_f) in
+            let emptyE_x = PTmAp(Known(emptyE_h),DB(0)) in
+            let branch_false = PPfAp(emptyE_x,Hyp(1)) in
+            let y_eq_fx = eq_tm Set (DB(1)) (Ap(tmshift 0 1 shifted_f,DB(0))) in
+            let branch =
+              TLam(Set,
+                   PLam(Ap(Ap(TmH(in_h),DB(0)),tmshift 0 2 (TmH(empty_h))),
+                        PLam(y_eq_fx,branch_false)))
+            in
+            let repl_elim =
+              PPfAp
+                (PTmAp
+                   (PPfAp
+                      (PTmAp(PTmAp(PTmAp(Known(replE_impred_h),TmH(empty_h)),shifted_f),DB(0)),
+                       Hyp(0)),
+                    TmH(egal_false_id)),
+                 branch)
+            in
+            let notin_proof = TLam(Set,PLam(y_in_repl,repl_elim)) in
+            Some(PPfAp(PTmAp(Known(empty_eq_h),repl_empty_f),notin_proof))
+         | None -> None
+       end
+    | _ -> None
+  with
+  | Not_found -> None
+  | SearchBacktrack -> None
+  | Failure(_) -> None
 and eq_pred_rewrite_proof depth cx hyps goal =
   if depth <= 0 then None else
   match goal with
