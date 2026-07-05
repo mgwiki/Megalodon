@@ -27,6 +27,7 @@ from typing import Iterable
 RESULT_RE = re.compile(r"^hammer\.(?P<line>[0-9]+)\.(?P<char>[0-9]+)\.\*\.p:")
 PROBLEM_RE = re.compile(r"^(?P<prefix>.*)\.(?P<line>[0-9]+)\.(?P<char>[0-9]+)\.th0\.p$")
 PROVED_RE = re.compile(r"SZS status (Theorem|Unsatisfiable|ContradictoryAxioms)\b")
+FATAL_OUTPUT_RE = re.compile(r"Aborted by signal|ASSERTION|User error|missing .* implementation", re.IGNORECASE)
 
 
 @dataclass
@@ -157,8 +158,12 @@ def vampire_command(args: argparse.Namespace, problem: Path, proof_path: Path) -
 
 def proof_has_reconstruction_payload(text: str, proof_mode: str) -> bool:
     if proof_mode == "leancheck":
-        return "end vamproof" in text or "theorem fullProof" in text
+        return "end vamproof" in text and "theorem fullProof" in text
     return "inference(" in text or "SZS output start Proof" in text or "Refutation" in text
+
+
+def proof_has_fatal_output(text: str) -> bool:
+    return FATAL_OUTPUT_RE.search(text) is not None
 
 
 def proof_mode_from_path(path: Path) -> str:
@@ -175,6 +180,7 @@ def start_vampire(repo: Path, args: argparse.Namespace, proof_dir: Path, item: t
         cmd,
         cwd=str(repo),
         text=True,
+        errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         start_new_session=True,
@@ -231,10 +237,15 @@ def finish_vampire(
         status=status,
         command=running.command,
     )
-    proof_payload_ok = proof_has_reconstruction_payload(out, args.proof_mode) if status else False
+    proof_payload_ok = proof_has_reconstruction_payload(out, args.proof_mode)
     failure = None
     if timed_out:
         failure = f"{running.problem.name}: Vampire subprocess timed out"
+    elif proof_has_fatal_output(out):
+        failure = f"{running.problem.name}: Vampire output contained a fatal error marker"
+    elif args.proof_mode == "leancheck":
+        if not proof_payload_ok:
+            failure = f"{running.problem.name}: Vampire LeanChecker output had no complete Lean proof payload"
     elif not status:
         failure = f"{running.problem.name}: Vampire did not report a proved SZS status"
     elif not proof_payload_ok:
@@ -347,9 +358,15 @@ def check_existing(manifest: Path) -> list[Obligation]:
         if obligation.proof_sha256 and sha256(proof) != obligation.proof_sha256:
             failures.append(f"{proof}: proof hash changed")
         text = proof.read_text(encoding="utf-8", errors="replace")
-        if not PROVED_RE.search(text):
+        proof_mode = proof_mode_from_path(proof)
+        if proof_has_fatal_output(text):
+            failures.append(f"{proof}: fatal error marker")
+        elif proof_mode == "leancheck":
+            if not proof_has_reconstruction_payload(text, proof_mode):
+                failures.append(f"{proof}: no complete Lean proof payload")
+        elif not PROVED_RE.search(text):
             failures.append(f"{proof}: no proved SZS status")
-        elif not proof_has_reconstruction_payload(text, proof_mode_from_path(proof)):
+        elif not proof_has_reconstruction_payload(text, proof_mode):
             failures.append(f"{proof}: no proof payload")
     if failures:
         for failure in failures:
