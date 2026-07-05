@@ -33,6 +33,7 @@ FATAL_OUTPUT_RE = re.compile(r"Aborted by signal|ASSERTION|User error|missing .*
 MEGALODON_SOURCE_LINE_RE = re.compile(r'^megalodon_source_line\("(?P<line>(?:\\.|[^"\\])*)"\)\.$')
 MEGALODON_STEP_RE = re.compile(r'^megalodon_step\((?P<id>[0-9]+),"(?P<rule>(?:\\.|[^"\\])*)"')
 FRESH_SET_RE = re.compile(r"^sF[0-9]+$")
+DEFINITION_RE = re.compile(r"^Definition (?P<name>[_A-Za-z][_A-Za-z0-9']*) : (?P<sort>[^:]+?) := (?P<body>.*)\.$")
 
 
 @dataclass
@@ -476,6 +477,10 @@ def proof_arg_text(expr: Expr) -> str:
     return f"({expr_text(expr)})"
 
 
+def proof_term_text(proof: str) -> str:
+    return proof if proof.startswith("(") and proof.endswith(")") else f"({proof})"
+
+
 def collect_foralls(expr: Expr) -> tuple[list[tuple[str, str]], Expr]:
     binders: list[tuple[str, str]] = []
     while expr.kind == "forall":
@@ -880,6 +885,58 @@ def equality_chain_proof(expr: Expr, eq_facts: list[EqFact], max_depth: int = 3)
     return None
 
 
+def app_context_text(head: Expr, args: tuple[Expr, ...], hole_index: int, hole_name: str) -> str:
+    parts = [expr_text(head)]
+    for index, arg in enumerate(args):
+        parts.append(hole_name if index == hole_index else proof_arg_text(arg))
+    return " ".join(parts)
+
+
+def equality_congruence_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+) -> str | None:
+    if expr.kind != "eq":
+        return None
+    left = normalize_defined_expr(expr.args[0], definitions)
+    right = normalize_defined_expr(expr.args[1], definitions)
+    if left.kind != "app" or right.kind != "app" or len(left.args) != len(right.args) or len(left.args) < 2:
+        return None
+    if expr_key(left.args[0]) != expr_key(right.args[0]):
+        return None
+
+    different = [
+        index
+        for index, (left_arg, right_arg) in enumerate(zip(left.args[1:], right.args[1:]))
+        if expr_key(left_arg) != expr_key(right_arg)
+    ]
+    if len(different) != 1:
+        return None
+
+    arg_index = different[0]
+    left_arg = left.args[arg_index + 1]
+    right_arg = right.args[arg_index + 1]
+    argument_equality = Expr("eq", args=(left_arg, right_arg))
+    argument_proof = proof_for_expr(
+        argument_equality,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        allow_rule=False,
+    )
+    if argument_proof is None:
+        return None
+
+    context = app_context_text(left.args[0], left.args[1:], arg_index, "z")
+    return f"(fun Q H => {proof_term_text(argument_proof)} (fun z:set => Q ({context})) H)"
+
+
 def direct_proof_expr(expr: Expr) -> str | None:
     binders, body = collect_foralls(expr)
     premises, conclusion = split_arrows(body)
@@ -946,6 +1003,7 @@ def proof_for_expr(
     known_canonical: dict[str, str],
     rules: list[ProofRule],
     eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
     allow_rule: bool = True,
 ) -> str | None:
     key = expr_key(expr)
@@ -957,9 +1015,25 @@ def proof_for_expr(
     if direct is not None:
         return direct
 
+    normalized = normalize_defined_expr(expr, definitions)
+    if expr_key(normalized) != expr_key(expr):
+        normalized_direct = direct_proof_expr(normalized)
+        if normalized_direct is not None:
+            return normalized_direct
+        if normalized.kind == "eq" and expr_key(normalized.args[0]) == expr_key(normalized.args[1]):
+            return "(fun Q H => H)"
+
     eq_proof = equality_chain_proof(expr, eq_facts)
     if eq_proof is not None:
         return eq_proof
+
+    normalized_eq_proof = equality_chain_proof(normalized, eq_facts)
+    if normalized_eq_proof is not None:
+        return normalized_eq_proof
+
+    congruence_proof = equality_congruence_proof(expr, known, known_canonical, rules, eq_facts, definitions)
+    if congruence_proof is not None:
+        return congruence_proof
 
     if not allow_rule:
         return None
@@ -979,6 +1053,7 @@ def proof_for_expr(
                 known_canonical,
                 rules,
                 eq_facts,
+                definitions,
                 allow_rule=False,
             )
             if premise_proof is None:
@@ -1000,6 +1075,7 @@ def proof_for_proposition(
     known_canonical: dict[str, str],
     rules: list[ProofRule],
     eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
 ) -> str | None:
     proof = known.get(proposition) or known_canonical.get(canonical_proposition(proposition))
     if proof is not None:
@@ -1007,7 +1083,7 @@ def proof_for_proposition(
     expr = parse_expr(proposition)
     if expr is None:
         return None
-    return proof_for_expr(expr, known, known_canonical, rules, eq_facts)
+    return proof_for_expr(expr, known, known_canonical, rules, eq_facts, definitions)
 
 
 def remember_proposition(
@@ -1037,11 +1113,25 @@ def fill_repeated_claim_admits(lines: list[str]) -> list[str]:
     known_canonical: dict[str, str] = {}
     rules: list[ProofRule] = []
     eq_facts: list[EqFact] = []
+    definitions: dict[str, DefinitionInfo] = {}
     theorem: str | None = None
     result = list(lines)
     index = 0
     while index < len(result):
         line = result[index]
+        definition_match = DEFINITION_RE.match(line)
+        if definition_match:
+            body = parse_expr(definition_match.group("body").strip())
+            if body is not None:
+                definitions[definition_match.group("name")] = DefinitionInfo(
+                    definition_match.group("sort").strip(),
+                    definition_match.group("body").strip(),
+                    "(fun Q H => H)",
+                    (),
+                    body,
+                )
+            index += 1
+            continue
         axiom = proposition_after_colon(line, "Axiom ")
         if axiom is not None:
             name, proposition = axiom
@@ -1056,14 +1146,14 @@ def fill_repeated_claim_admits(lines: list[str]) -> list[str]:
         claim = proposition_after_colon(line, "claim ")
         if claim is not None:
             name, proposition = claim
-            proof_name = proof_for_proposition(proposition, known, known_canonical, rules, eq_facts)
+            proof_name = proof_for_proposition(proposition, known, known_canonical, rules, eq_facts, definitions)
             if proof_name is not None and index + 1 < len(result) and result[index + 1] == "{ admit. }":
                 result[index + 1] = "{ exact " + proof_name + ". }"
             remember_proposition(known, known_canonical, rules, eq_facts, name, proposition)
             index += 2
             continue
         if line == "admit." and theorem is not None:
-            proof_name = proof_for_proposition(theorem, known, known_canonical, rules, eq_facts)
+            proof_name = proof_for_proposition(theorem, known, known_canonical, rules, eq_facts, definitions)
             if proof_name is not None:
                 result[index] = "exact " + proof_name + "."
         index += 1

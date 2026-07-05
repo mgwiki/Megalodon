@@ -129,7 +129,9 @@ equalities.  It also fills finite successor-induction applications of the form
 `P Empty -> (forall x, P x -> P (ordsucc x)) -> P (ordsucc ... Empty)`.
 When a checked source candidate proves the same proposition as an admitted
 skeleton claim, the checker inlines that proof body into the skeleton claim so
-the generated file remains connected to the Vampire clause outline.
+the generated file remains connected to the Vampire clause outline.  The fill
+pass also uses generated definitions plus one-step Leibniz congruence to prove
+simple equality rewrites under a shared function symbol.
 
 ```sh
 python3 scripts/vampire_reconstruct_megalodon.py \
