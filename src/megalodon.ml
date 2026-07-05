@@ -528,7 +528,18 @@ let vampire_output_has_proof_payload s =
   || string_contains_sub s "SZS output start Proof"
   || string_contains_sub s "Refutation"
   || string_contains_sub s "end vamproof"
+  || string_contains_sub s "theorem fullProof"
   || string_contains_sub s "theorem full_proof"
+  || (string_contains_sub s "megalodon_reconstruction_start."
+      && string_contains_sub s "megalodon_step("
+      && string_contains_sub s "megalodon_final_step("
+      && string_contains_sub s "megalodon_reconstruction_end.")
+
+let vampire_proof_options proof =
+  match proof with
+  | "leancheck" -> "--output_mode lean --proof_extra lean --skolemization syntactic --shuffle_input off"
+  | "megalodon" -> "--proof_extra lean --skolemization syntactic --shuffle_input off"
+  | _ -> ""
 
 let status_to_string status =
   match status with
@@ -550,11 +561,12 @@ let run_vampire_aby_certificate content =
      Printf.fprintf ch "%s" content;
      close_out ch;
      let cmd =
-       Printf.sprintf "%s --input_syntax tptp --mode portfolio --schedule %s -t %d --proof %s %s 2>&1"
+       Printf.sprintf "%s --input_syntax tptp --mode portfolio --schedule %s -t %d --proof %s %s %s 2>&1"
          (Filename.quote vampire)
          (Filename.quote !vampireabyschedule)
          !vampireabytimeout
          (Filename.quote !vampireabyproof)
+         (vampire_proof_options !vampireabyproof)
          (Filename.quote problem_file)
      in
      let (out,status) = run_command_capture cmd in
@@ -7027,7 +7039,7 @@ let _ =
                 vampireabyproof := Sys.argv.(!j)
 	      end
 	    else
-	      raise (Failure("Expected -vampireabyproof <tptp|leancheck>"))
+	      raise (Failure("Expected -vampireabyproof <tptp|leancheck|megalodon>"))
           end
         else if Sys.argv.(!j) = "-vampireabynative" then
           begin

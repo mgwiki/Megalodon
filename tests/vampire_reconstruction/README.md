@@ -100,7 +100,8 @@ This report is intended to guide generic reconstruction work by Vampire
 inference rule, rather than by Megalodon library theorem names.
 
 Run Megalodon itself with live Vampire certification for each `aby` THF
-obligation:
+obligation.  Use `-vampireabyproof megalodon` to exercise Vampire's
+Megalodon reconstruction backend directly:
 
 ```sh
 ./bin/megalodon \
@@ -108,12 +109,16 @@ obligation:
   -vampireaby /path/to/vampire \
   -vampireabytimeout 60 \
   -vampireabyoutdir vampire_aby \
+  -vampireabyproof megalodon \
   examples/hammer/100thms_12_h.mg
 ```
 
 The live mode writes the exact THF problem generated at each `aby`, runs
-Vampire with `--proof tptp`, and fails the Megalodon check unless Vampire
-reports a proved SZS status and emits a proof payload.  This is a strict
+Vampire with the selected `-vampireabyproof` mode, and fails the Megalodon
+check unless Vampire reports a proved SZS status and emits a proof payload.  In
+`megalodon` mode Megalodon passes Vampire the reconstruction options
+`--proof_extra lean --skolemization syntactic --shuffle_input off` and requires
+the `megalodon_reconstruction_*` payload markers.  This is a strict
 certificate gate for `aby`; it is not yet a native Megalodon kernel proof-term
 reconstructor, so `-allowincompleteqed` is still required.  The generated THF
 conjecture and selected local hypotheses are head-expanded at transparent
@@ -164,6 +169,9 @@ Smoke-test the live Megalodon/Vampire path on the first hammer `aby`:
 ```sh
 VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_live_aby_smoke.sh
 ```
+
+Set `MEGALODON_VAMPIRE_PROOF=megalodon` to smoke-test the Vampire Megalodon
+reconstruction backend through Megalodon's live `aby` path.
 
 Smoke-test the restricted native reconstruction path on the early hammer `aby`
 block through the binary-union algebra lemmas:

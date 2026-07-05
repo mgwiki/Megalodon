@@ -12,6 +12,9 @@ if [ -z "${VAMPIRE:-}" ]; then
   exit 2
 fi
 
+export TMPDIR="${TMPDIR:-/project/tmp}"
+mkdir -p "$TMPDIR"
+
 tmp_mg="$(mktemp)"
 tmp_out="$(mktemp -d)"
 log="$(mktemp)"
