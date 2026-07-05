@@ -470,7 +470,7 @@ def tptp_function_definition_infos(
     return definitions
 
 
-TOKEN_RE = re.compile(r"->|[A-Za-z_][A-Za-z0-9_']*|[0-9]+|[(),:=]")
+TOKEN_RE = re.compile(r"->|=>|[A-Za-z_][A-Za-z0-9_']*|[0-9]+|[(),:=]")
 
 
 def tokenize_expr(text: str) -> list[Token]:
@@ -543,7 +543,7 @@ class ExprParser:
 
     def parse_app(self) -> Expr:
         atoms = [self.parse_atom()]
-        while self.peek() is not None and self.peek() not in {")", ",", "->", "="}:
+        while self.peek() is not None and self.peek() not in {")", ",", "->", "=>", "="}:
             atoms.append(self.parse_atom())
         if len(atoms) == 1:
             return atoms[0]
@@ -553,14 +553,26 @@ class ExprParser:
         token = self.peek()
         if token is None:
             raise ValueError("unexpected end of expression")
+        if token == "fun":
+            return self.parse_lambda()
         if token == "(":
             self.pop("(")
             expr = self.parse_arrow()
             self.pop(")")
             return expr
-        if token in {")", ",", ":", "=", "->"}:
+        if token in {")", ",", ":", "=", "->", "=>"}:
             raise ValueError(f"unexpected token {token}")
         return Expr("var", value=self.pop())
+
+    def parse_lambda(self) -> Expr:
+        self.pop("fun")
+        name = self.pop()
+        self.pop(":")
+        sort_tokens: list[str] = []
+        while self.peek() is not None and self.peek() != "=>":
+            sort_tokens.append(self.pop())
+        self.pop("=>")
+        return Expr("lambda", value=name, sort="".join(sort_tokens), args=(self.parse_arrow(),))
 
 
 def parse_expr(text: str) -> Expr | None:
@@ -583,9 +595,12 @@ def expr_text(expr: Expr, context: str = "top") -> str:
     elif expr.kind == "forall":
         assert expr.value is not None and expr.sort is not None
         text = f"forall {expr.value}:{expr.sort}, {expr_text(expr.args[0])}"
+    elif expr.kind == "lambda":
+        assert expr.value is not None and expr.sort is not None
+        text = f"fun {expr.value}:{expr.sort} => {expr_text(expr.args[0])}"
     else:
         raise ValueError(f"unknown expression kind {expr.kind}")
-    if context in {"app_arg", "eq_side"} and expr.kind in {"app", "eq", "arrow", "forall"}:
+    if context in {"app_arg", "eq_side"} and expr.kind in {"app", "eq", "arrow", "forall", "lambda"}:
         return f"({text})"
     if context == "arrow_left" and expr.kind == "arrow":
         return f"({text})"
@@ -642,6 +657,8 @@ def substitute_expr(expr: Expr, subst: dict[str, Expr]) -> Expr:
         return subst[expr.value]
     if not expr.args:
         return expr
+    if expr.kind in {"forall", "lambda"} and expr.value in subst:
+        subst = {name: value for name, value in subst.items() if name != expr.value}
     return Expr(expr.kind, value=expr.value, args=tuple(substitute_expr(arg, subst) for arg in expr.args), sort=expr.sort)
 
 
@@ -978,7 +995,41 @@ def canonicalize_segment(text: str, next_var: list[int]) -> str:
     return "".join(result)
 
 
+def canonical_expr_text(expr: Expr, env: dict[str, str], next_var: list[int]) -> str:
+    if expr.kind == "var":
+        assert expr.value is not None
+        return env.get(expr.value, expr.value)
+    if expr.kind == "app":
+        return " ".join(
+            canonical_expr_text(arg, env, next_var)
+            if arg.kind == "var"
+            else f"({canonical_expr_text(arg, env, next_var)})"
+            for arg in expr.args
+        )
+    if expr.kind == "eq":
+        return f"{canonical_expr_text(expr.args[0], env, next_var)} = {canonical_expr_text(expr.args[1], env, next_var)}"
+    if expr.kind == "arrow":
+        left = canonical_expr_text(expr.args[0], env, next_var)
+        if expr.args[0].kind == "arrow":
+            left = f"({left})"
+        return f"{left} -> {canonical_expr_text(expr.args[1], env, next_var)}"
+    if expr.kind in {"forall", "lambda"}:
+        assert expr.value is not None and expr.sort is not None
+        replacement = f"__v{next_var[0]}"
+        next_var[0] += 1
+        inner_env = dict(env)
+        inner_env[expr.value] = replacement
+        body = canonical_expr_text(expr.args[0], inner_env, next_var)
+        if expr.kind == "forall":
+            return f"forall {replacement}:{expr.sort}, {body}"
+        return f"fun {replacement}:{expr.sort} => {body}"
+    raise ValueError(f"unknown expression kind {expr.kind}")
+
+
 def canonical_proposition(proposition: str) -> str:
+    expr = parse_expr(proposition)
+    if expr is not None:
+        return canonical_expr_text(expr, {}, [0])
     return canonicalize_segment(proposition, [0])
 
 
