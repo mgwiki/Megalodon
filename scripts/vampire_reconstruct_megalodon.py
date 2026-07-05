@@ -737,6 +737,17 @@ def fill_source_candidate_claims(lines: list[str], proof_text: str | None) -> li
     source_proofs = source_candidate_claim_proofs(proof_text)
     if not source_proofs:
         return list(lines)
+    available_axioms = {
+        claim[0]
+        for line in lines
+        for claim in [proposition_after_colon(line, "Axiom ")]
+        if claim is not None
+    }
+
+    def references_available(lines: list[str]) -> bool:
+        referenced = set(re.findall(r"\bax[0-9]+\b", "\n".join(lines)))
+        return referenced <= available_axioms
+
     used: set[str] = set()
     result: list[str] = []
     index = 0
@@ -750,6 +761,7 @@ def fill_source_candidate_claims(lines: list[str], proof_text: str | None) -> li
             and claim[1] not in used
             and index + 1 < len(lines)
             and lines[index + 1] == "{ admit. }"
+            and references_available(source_proofs[claim[1]])
         ):
             result.append("{")
             result.extend(source_proofs[claim[1]])
