@@ -43,6 +43,16 @@ pool:
 VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_100_th0.sh --collect-successes
 ```
 
+Summarize the Vampire inference rules appearing in a collected manifest:
+
+```sh
+python3 scripts/vampire_proof_rule_report.py \
+  /project/tmp/megalodon_vampire_reconstruction/manifest.jsonl
+```
+
+This report is intended to guide generic reconstruction work by Vampire
+inference rule, rather than by Megalodon library theorem names.
+
 Run Megalodon itself with live Vampire certification for each `aby` THF
 obligation:
 

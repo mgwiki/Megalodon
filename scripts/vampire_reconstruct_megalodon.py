@@ -138,13 +138,26 @@ def vampire_command(args: argparse.Namespace, problem: Path, proof_path: Path) -
                 args.proof_mode,
             ]
         )
+        if args.proof_mode == "leancheck":
+            cmd.extend(
+                [
+                    "--output_mode",
+                    "lean",
+                    "--proof_extra",
+                    "lean",
+                    "--skolemization",
+                    "syntactic",
+                    "--shuffle_input",
+                    "off",
+                ]
+            )
     cmd.append(str(problem))
     return cmd
 
 
 def proof_has_reconstruction_payload(text: str, proof_mode: str) -> bool:
     if proof_mode == "leancheck":
-        return "end vamproof" in text or "theorem full_proof" in text
+        return "end vamproof" in text or "theorem fullProof" in text
     return "inference(" in text or "SZS output start Proof" in text or "Refutation" in text
 
 
