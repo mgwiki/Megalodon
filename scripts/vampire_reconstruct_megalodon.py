@@ -329,6 +329,39 @@ def extract_megalodon_claim_skeletons(text: str) -> list[list[str]]:
     )
 
 
+def vampire_step_contexts(proof_text: str | None) -> dict[str, str]:
+    if proof_text is None:
+        return {}
+    contexts: dict[str, str] = {}
+    role_re = re.compile(r"\b(?:tff|cnf)\([^,]+,\s*(?P<role>[^,\s)]+)")
+    for line in proof_text.splitlines():
+        match = MEGALODON_STEP_FORMULA_RE.match(line.strip())
+        if match is None:
+            continue
+        step = "S" + match.group("id")
+        rule = json.loads(f'"{match.group("rule")}"')
+        formula = json.loads(f'"{match.group("formula")}"')
+        role_match = role_re.search(formula)
+        role = role_match.group("role") if role_match else "unknown_role"
+        contexts[step] = f"{rule}, {role}"
+    return contexts
+
+
+def annotate_remaining_admits(lines: list[str], proof_text: str | None) -> list[str]:
+    contexts = vampire_step_contexts(proof_text)
+    if not contexts:
+        return list(lines)
+    result: list[str] = []
+    for index, line in enumerate(lines):
+        claim = proposition_after_colon(line, "claim ")
+        if claim is not None and index + 1 < len(lines) and lines[index + 1] == "{ admit. }":
+            context = contexts.get(claim[0])
+            if context is not None:
+                result.append(f"// vampire step {claim[0]}: {comment_text(context)}")
+        result.append(line)
+    return result
+
+
 def proposition_after_colon(line: str, prefix: str) -> tuple[str, str] | None:
     if not line.startswith(prefix):
         return None
@@ -2550,6 +2583,7 @@ def check_megalodon_lines(
     output_lines = add_recovered_input_equalities(output_lines, proof_text)
     output_lines = fill_source_candidate_claims(output_lines, proof_text)
     output_lines = fill_repeated_claim_admits(output_lines) if fill_repeated_admits else output_lines
+    output_lines = annotate_remaining_admits(output_lines, proof_text)
     if header:
         output_lines = header + output_lines
     if output_dir is None:
