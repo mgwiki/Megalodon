@@ -589,8 +589,16 @@ let th0_aby_problem_content claimtm cxtm cxpf xl conjn =
   Buffer.clear sb;
   List.iter
     (fun (cl,h,x,a) ->
-      if cl = "type" || cl = "def" && not (Hashtbl.mem sigdelta_opaque h) || cl = "known" && (List.mem x xl || xl = ["-"]) then
-        Printf.bprintf sb "%s\n" a)
+      if cl = "type" || cl = "def" && not (Hashtbl.mem sigdelta_opaque h) then
+        Printf.bprintf sb "%s\n" a
+      else if cl = "known" && (List.mem x xl || xl = ["-"]) then
+        begin
+          try
+            let (_,p) = Hashtbl.find sigdelta h in
+            Printf.bprintf sb "thf(%s,axiom,%s). %% %s\n" (tptpize_name x) (th0_str (th0_aby_head_expand p) []) h
+          with Not_found ->
+            Printf.bprintf sb "%s\n" a
+        end)
     (List.rev !th0sg);
   let rec th0_cx cxtm =
     match cxtm with
@@ -691,6 +699,38 @@ let rec find_eq_hyp sgdelta hyps a l r i =
        | None -> find_eq_hyp sgdelta tl a l r (i+1)
      end
   | [] -> None
+
+let native_aby_add_inst_term cx a m acc =
+  try
+    if extr_tpoftm sigtmof cx m = a && not (List.exists (fun n -> n = m) acc) then
+      m::acc
+    else
+      acc
+  with _ -> acc
+
+let rec native_aby_collect_inst_terms cx a m acc =
+  let acc = native_aby_add_inst_term cx a m acc in
+  match m with
+  | Ap(m1,m2) ->
+     native_aby_collect_inst_terms cx a m2 (native_aby_collect_inst_terms cx a m1 acc)
+  | TpAp(m1,_) -> native_aby_collect_inst_terms cx a m1 acc
+  | Imp(m1,m2) ->
+     native_aby_collect_inst_terms cx a m2 (native_aby_collect_inst_terms cx a m1 acc)
+  | _ -> acc
+
+let native_aby_inst_terms cx hyps goal a =
+  let rec add_vars scancx i acc =
+    match scancx with
+    | b::r ->
+       let acc = if b = a then native_aby_add_inst_term cx a (DB(i)) acc else acc in
+       add_vars r (i+1) acc
+    | [] -> acc
+  in
+  List.rev
+    (List.fold_left
+       (fun acc m -> native_aby_collect_inst_terms cx a m acc)
+       (add_vars cx 0 [])
+       (goal::hyps))
 
 let rec and_elim_proof sgdelta d p goal =
   match conv p goal sgdelta [] with
@@ -974,21 +1014,17 @@ and apply_imp_chain allow_or depth cx hyps d p goal =
   if depth <= 0 then None else
   match p with
   | All(a,b) ->
-     let rec try_terms scancx i =
-       match scancx with
-       | c::r ->
-          let w = DB(i) in
-          if c = a then
-            begin
-              match apply_imp_chain allow_or (depth-1) cx hyps (PTmAp(d,w)) (tmsubst b 0 w) goal with
-              | Some(d) -> Some(d)
-              | None -> try_terms r (i+1)
-            end
-          else
-            try_terms r (i+1)
+     let rec try_terms terms =
+       match terms with
+       | w::r ->
+          begin
+            match apply_imp_chain allow_or (depth-1) cx hyps (PTmAp(d,w)) (tmsubst b 0 w) goal with
+            | Some(d) -> Some(d)
+            | None -> try_terms r
+          end
        | [] -> None
      in
-     try_terms cx 0
+     try_terms (native_aby_inst_terms cx hyps goal a)
   | Ap(Ap(TmH(h),a),b) when h = egal_iff_id ->
      let p_as_and = Ap(Ap(TmH(egal_and_id),Imp(a,b)),Imp(b,a)) in
      let try_forward () =
