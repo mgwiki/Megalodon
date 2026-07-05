@@ -37,7 +37,9 @@ MEGALODON_STEP_FORMULA_RE = re.compile(
 )
 FRESH_SET_RE = re.compile(r"^sF[0-9]+$")
 VAMPIRE_DEPENDENCY_RE = re.compile(r"^(s[FK]|db)[0-9]+$")
+INFERRED_DEPENDENCY_RE = re.compile(r"^[_A-Za-z][_A-Za-z0-9']*$")
 DEFINITION_RE = re.compile(r"^Definition (?P<name>[_A-Za-z][_A-Za-z0-9']*) : (?P<sort>[^:]+?) := (?P<body>.*)\.$")
+THF_TYPE_RE = re.compile(r"^thf\([^,]+,\s*type,\s*\((?P<name>[^:\s]+)\s*:\s*(?P<sort>.*?)\)\)\.", re.DOTALL)
 
 
 @dataclass
@@ -472,6 +474,12 @@ def decode_tptp_identifier(name: str) -> str:
     return re.sub(r"_([0-9A-Fa-f]{2})", lambda match: chr(int(match.group(1), 16)), name)
 
 
+def tptp_sort_to_megalodon(sort: str) -> str:
+    text = sort.strip().replace("$i", "set").replace("$o", "prop").replace(">", "->")
+    text = re.sub(r"\s+", "", text)
+    return strip_balanced_parens(text)
+
+
 def tptp_term_to_expr(text: str) -> Expr | None:
     text = strip_balanced_parens(text)
     parts = split_tptp_application(text)
@@ -653,6 +661,63 @@ def add_recovered_input_equalities(lines: list[str], proof_text: str | None) -> 
     return result
 
 
+def problem_path_for_proof(proof: Path) -> Path | None:
+    suffix = ".megalodon.out"
+    if not proof.name.endswith(suffix):
+        return None
+    problem_name = proof.name[: -len(suffix)] + ".p"
+    candidate = proof.parent.parent / problem_name
+    return candidate if candidate.exists() else None
+
+
+def add_problem_type_variables(lines: list[str], proof: Path | None, proof_text: str | None) -> list[str]:
+    if proof is None:
+        return list(lines)
+    problem = problem_path_for_proof(proof)
+    if problem is None:
+        return list(lines)
+    existing = {
+        item[0]
+        for line in lines
+        for item in [proposition_after_colon(line, "Variable ")]
+        if item is not None
+    }
+    existing.update(
+        match.group("name")
+        for line in lines
+        for match in [DEFINITION_RE.match(line)]
+        if match is not None
+    )
+    used_text = "\n".join(lines)
+    if proof_text is not None:
+        used_text += "\n" + proof_text
+    additions: list[str] = []
+    for line in problem.read_text(encoding="utf-8", errors="replace").splitlines():
+        match = THF_TYPE_RE.match(line.split("%", 1)[0].strip())
+        if match is None:
+            continue
+        raw_name = match.group("name")
+        name = decode_tptp_identifier(raw_name)
+        if name in existing or not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", name):
+            continue
+        if name not in used_text and raw_name not in used_text:
+            continue
+        existing.add(name)
+        additions.append(f"Variable {name}:{tptp_sort_to_megalodon(match.group('sort'))}.")
+    if not additions:
+        return list(lines)
+    result: list[str] = []
+    inserted = False
+    for line in lines:
+        if not inserted and (line.startswith("Variable ") or line.startswith("Axiom ") or line.startswith("Theorem ")):
+            result.extend(additions)
+            inserted = True
+        result.append(line)
+    if not inserted:
+        result.extend(additions)
+    return result
+
+
 def tptp_function_definition_infos(
     proof_text: str,
     variable_sorts: dict[str, str],
@@ -677,8 +742,19 @@ def tptp_function_definition_infos(
             if body is None:
                 continue
             definition_sorts = {name: info.sort for name, info in definitions.items()}
-            target_sort = variable_sorts.get(target) or expr_sort(body, {**variable_sorts, **definition_sorts})
+            body_sort = expr_sort(body, {**variable_sorts, **definition_sorts})
+            target_sort = variable_sorts.get(target) or body_sort
             if target_sort is None:
+                continue
+            if body_sort is not None and body_sort != target_sort:
+                continue
+            if (
+                body_sort is None
+                and body.kind == "var"
+                and body.value is not None
+                and VAMPIRE_DEPENDENCY_RE.match(body.value)
+                and len(split_sort_arrows(target_sort)) > 1
+            ):
                 continue
             arg_sorts = sort_argument_sorts(target_sort)
             binders = tuple(f"X{index}" for index in range(len(arg_sorts)))
@@ -1044,16 +1120,48 @@ def fresh_dependency_variables(
         before = len(inferred_sorts)
         for definition in definitions.values():
             pieces = split_sort_arrows(definition.sort)
-            binder_sorts = pieces[:-1]
-            result_sort = pieces[-1] if pieces else None
+            binder_sorts = pieces[: len(definition.binders)]
+            result_sort = sort_after_arguments(definition.sort, len(definition.binders))
             local_sorts = {**known_sorts, **inferred_sorts, **dict(zip(definition.binders, binder_sorts))}
             infer_argument_sorts_from_expr(definition.body, local_sorts, inferred_sorts, result_sort)
         changed = len(inferred_sorts) != before
     return {
         name: sort
         for name, sort in inferred_sorts.items()
-        if VAMPIRE_DEPENDENCY_RE.match(name) and name not in known_sorts
+        if (VAMPIRE_DEPENDENCY_RE.match(name) or INFERRED_DEPENDENCY_RE.match(name))
+        and name not in known_sorts
+        and not name.startswith("X")
     }
+
+
+def expr_variables(expr: Expr) -> set[str]:
+    found: set[str] = set()
+    if expr.kind == "var" and expr.value is not None:
+        found.add(expr.value)
+    for arg in expr.args:
+        found.update(expr_variables(arg))
+    if expr.kind in {"forall", "lambda"} and expr.value is not None:
+        found.discard(expr.value)
+    return found
+
+
+def ordered_definitions(definitions: dict[str, DefinitionInfo]) -> list[tuple[str, DefinitionInfo]]:
+    remaining = dict(definitions)
+    ordered: list[tuple[str, DefinitionInfo]] = []
+    emitted: set[str] = set()
+    while remaining:
+        progressed = False
+        for name, definition in list(remaining.items()):
+            dependencies = expr_variables(definition.body) - set(definition.binders)
+            if not (dependencies & set(remaining.keys()) - {name}):
+                ordered.append((name, definition))
+                emitted.add(name)
+                del remaining[name]
+                progressed = True
+        if not progressed:
+            ordered.extend(remaining.items())
+            break
+    return ordered
 
 
 def normalize_defined_expr(expr: Expr, definitions: dict[str, DefinitionInfo]) -> Expr:
@@ -1165,6 +1273,25 @@ def add_function_definition_skeletons(lines: list[str], proof_text: str | None) 
         definitions.setdefault(target, definition)
         definition_claims[claim_name] = definition.proof
 
+    dependency_variables: dict[str, str] = {}
+    changed = True
+    while changed:
+        changed = False
+        next_dependencies = fresh_dependency_variables(definitions, {**variable_sorts, **dependency_variables})
+        for name, sort in next_dependencies.items():
+            if name not in dependency_variables:
+                dependency_variables[name] = sort
+                changed = True
+        extended_sorts = {
+            **variable_sorts,
+            **dependency_variables,
+            **{name: definition.sort for name, definition in definitions.items()},
+        }
+        for name, definition in tptp_function_definition_infos(proof_text, extended_sorts).items():
+            if name not in definitions:
+                definitions[name] = definition
+                changed = True
+
     if not definitions:
         return list(lines)
 
@@ -1181,7 +1308,7 @@ def add_function_definition_skeletons(lines: list[str], proof_text: str | None) 
         if not inserted_definitions and (line.startswith("Axiom ") or line.startswith("Theorem ")):
             for name, sort in dependency_variables.items():
                 result.append(f"Variable {name}:{sort}.")
-            for name, definition in definitions.items():
+            for name, definition in ordered_definitions(definitions):
                 result.append(f"Definition {name} : {definition.sort} := {definition.body_text}.")
             inserted_definitions = True
         result.append(line)
@@ -1197,7 +1324,7 @@ def add_function_definition_skeletons(lines: list[str], proof_text: str | None) 
     if not inserted_definitions:
         for name, sort in dependency_variables.items():
             result.append(f"Variable {name}:{sort}.")
-        for name, definition in definitions.items():
+        for name, definition in ordered_definitions(definitions):
             result.append(f"Definition {name} : {definition.sort} := {definition.body_text}.")
     return result
 
@@ -2988,14 +3115,14 @@ def fill_repeated_claim_admits(lines: list[str]) -> list[str]:
             name, proposition = claim
             proof_name = proof_for_proposition(proposition, known, known_canonical, rules, eq_facts, definitions)
             if proof_name is not None and index + 1 < len(result) and result[index + 1] == "{ admit. }":
-                result[index + 1] = "{ exact " + proof_name + ". }"
+                result[index + 1] = "{ exact " + proof_argument_text(proof_name) + ". }"
             remember_proposition(known, known_canonical, rules, eq_facts, name, proposition)
             index += 2 if index + 1 < len(result) and result[index + 1].startswith("{ ") else 1
             continue
         if line == "admit." and theorem is not None:
             proof_name = proof_for_proposition(theorem, known, known_canonical, rules, eq_facts, definitions)
             if proof_name is not None:
-                result[index] = "exact " + proof_name + "."
+                result[index] = "exact " + proof_argument_text(proof_name) + "."
         index += 1
     return result
 
@@ -3120,6 +3247,7 @@ def check_megalodon_lines(
     proof_text: str | None = None,
 ) -> list[str]:
     safe_kind = kind.replace(" ", "_")
+    lines = add_problem_type_variables(lines, proof, proof_text)
     output_lines = add_function_definition_skeletons(lines, proof_text)
     output_lines = add_recovered_input_equalities(output_lines, proof_text)
     output_lines = fill_source_candidate_claims(output_lines, proof_text)
@@ -3147,11 +3275,43 @@ def check_megalodon_lines(
         candidate = output_dir / f"{proof.stem}.{safe_kind}{index}.mg"
         candidate.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
         delete_after = False
+    def demote_failed_exact(stdout: str) -> bool:
+        if not allow_incomplete or kind != "claim skeleton":
+            return False
+        match = re.search(r"Failure at line (?P<line>[0-9]+) char [0-9]+:", stdout)
+        if match is None:
+            return False
+        line_index = int(match.group("line")) - 1
+        if not (0 <= line_index < len(output_lines)):
+            return False
+        candidates = [line_index]
+        if output_lines[line_index].startswith("{ exact ") and line_index > 0:
+            candidates.append(line_index)
+        if line_index + 1 < len(output_lines):
+            candidates.append(line_index + 1)
+        for candidate_index in candidates:
+            if (
+                0 <= candidate_index < len(output_lines)
+                and output_lines[candidate_index].startswith("{ exact ")
+                and candidate_index > 0
+                and output_lines[candidate_index - 1].startswith("claim ")
+            ):
+                output_lines[candidate_index] = "{ admit. }"
+                candidate.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
+                return True
+        return False
+
     try:
         cmd = [str(megalodon)]
         if allow_incomplete:
             cmd.append("-allowincompleteqed")
         cmd.append(str(candidate))
+        for _ in range(8):
+            proc = run(cmd, repo)
+            if proc.returncode == 0:
+                return []
+            if not demote_failed_exact(proc.stdout):
+                return [f"{proof}: Megalodon rejected {kind} {index}: {proc.stdout.strip()}"]
         proc = run(cmd, repo)
         if proc.returncode != 0:
             return [f"{proof}: Megalodon rejected {kind} {index}: {proc.stdout.strip()}"]
