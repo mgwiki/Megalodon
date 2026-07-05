@@ -25,6 +25,8 @@ let vampireabyoutdir : string ref = ref "vampire_aby";;
 let vampireabytimeout : int ref = ref 60;;
 let vampireabyschedule : string ref = ref "casc";;
 let vampireabyproof : string ref = ref "tptp";;
+let vampireabynative : bool ref = ref false;;
+let vampireabynativestrict : bool ref = ref false;;
 let bushy = ref false;;
 let bushykdeps : (string,unit) Hashtbl.t = Hashtbl.create 10;;
 let bushyhdeps : (int,unit) Hashtbl.t = Hashtbl.create 10;;
@@ -599,6 +601,94 @@ let th0_aby_problem_content claimtm cxtm cxpf xl conjn =
     cxpf;
   Printf.bprintf sb "thf(conj_%s,conjecture,%s).\n" conjn (th0_str claimtm (tptpizecxtm cxtm));
   Buffer.contents sb
+
+let rec find_hyp_proving sgdelta hyps goal i =
+  match hyps with
+  | p::r ->
+     begin
+       match conv p goal sgdelta [] with
+       | Some(_) -> Some(Hyp(i))
+       | None -> find_hyp_proving sgdelta r goal (i+1)
+     end
+  | [] -> None
+
+let rec find_false_hyp sgdelta hyps i =
+  match hyps with
+  | p::r ->
+     begin
+       match conv p (All(Prop,DB(0))) sgdelta [] with
+       | Some(_) -> Some(Hyp(i))
+       | None -> find_false_hyp sgdelta r (i+1)
+     end
+  | [] -> None
+
+let egal_and_id = "87fba1d2da67f06ec37e7ab47c3ef935ef8137209b42e40205afb5afd835b738"
+
+let rec find_and_elim_hyp sgdelta hyps goal i =
+  match hyps with
+  | Ap(Ap(TmH(h),a),b)::r when h = egal_and_id ->
+     begin
+       match conv a goal sgdelta [] with
+       | Some(_) -> Some(PPfAp(PTmAp(Hyp(i),goal),PLam(a,PLam(b,Hyp(1)))))
+       | None ->
+          begin
+            match conv b goal sgdelta [] with
+            | Some(_) -> Some(PPfAp(PTmAp(Hyp(i),goal),PLam(a,PLam(b,Hyp(0)))))
+            | None -> find_and_elim_hyp sgdelta r goal (i+1)
+          end
+     end
+  | _::r -> find_and_elim_hyp sgdelta r goal (i+1)
+  | [] -> None
+
+let rec native_aby_direct cx hyps goal =
+  match goal with
+  | Imp(p,q) -> PLam(p,native_aby_direct cx (p::hyps) q)
+  | All(a,q) -> TLam(a,native_aby_direct (a::cx) (List.map (tmshift 0 1) hyps) q)
+  | Ap(Ap(TmH(h),a),b) when h = egal_and_id ->
+     let da = native_aby_direct cx hyps a in
+     let db = native_aby_direct cx hyps b in
+     let da = pfshift 0 1 (pftmshift 0 1 da) in
+     let db = pfshift 0 1 (pftmshift 0 1 db) in
+     TLam(Prop,PLam(Imp(tmshift 0 1 a,Imp(tmshift 0 1 b,DB(0))),PPfAp(PPfAp(Hyp(0),da),db)))
+  | _ ->
+     begin
+       match find_hyp_proving sigdelta hyps goal 0 with
+       | Some(d) -> d
+       | None ->
+          match find_and_elim_hyp sigdelta hyps goal 0 with
+          | Some(d) -> d
+          | None ->
+          match find_false_hyp sigdelta hyps 0 with
+          | Some(d) -> PTmAp(d,goal)
+          | None -> raise SearchBacktrack
+     end
+
+let native_aby_reconstruct claimtm cxtm cxpf =
+  let cx = List.map (fun (_, (a, _)) -> a) cxtm in
+  let hyps = List.map (fun (_, p) -> p) cxpf in
+  let check_candidate d =
+    match check_propofpf sigdelta sigtmof cx hyps d claimtm [] with
+    | Some(_) -> Some(d)
+    | None -> None
+  in
+  let try_direct () =
+    try
+      check_candidate (native_aby_direct cx hyps claimtm)
+    with
+    | SearchBacktrack -> None
+    | Failure(_) -> None
+  in
+  let try_megaauto () =
+    try
+      check_candidate (megaauto "" "+" cx hyps claimtm)
+    with
+    | SearchLimit -> None
+    | SearchBacktrack -> None
+    | Failure(_) -> None
+  in
+  match try_direct () with
+  | Some(d) -> Some(d)
+  | None -> try_megaauto ()
 
 let read_pfg_supp fn =
   let f = open_in fn in
@@ -3605,9 +3695,30 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                 let content = th0_aby_problem_content claimtm cxtm cxpf xl conjn in
                 run_vampire_aby_certificate content
            end;
-	           admitpfstateatp pfst;
-		   pfstate := pfstr;
-		   prooffun := (fun _ -> raise AdmittedPf)
+           begin
+             if !vampireabynative then
+               match native_aby_reconstruct claimtm cxtm cxpf with
+               | Some(d) ->
+                  let currprooffun = !prooffun in
+                  let endpos = Some(!lineno,!charno) in
+                  prooffun := (fun dl -> currprooffun ((endpos,d)::dl));
+                  pfstate := pfstr
+               | None ->
+                  if !vampireabynativestrict then
+                    raise (Failure(Printf.sprintf "Native reconstruction failed for certified aby at line %d char %d" !lineno !charno))
+                  else
+                    begin
+	              admitpfstateatp pfst;
+		      pfstate := pfstr;
+		      prooffun := (fun _ -> raise AdmittedPf)
+                    end
+             else
+               begin
+	         admitpfstateatp pfst;
+		 pfstate := pfstr;
+		 prooffun := (fun _ -> raise AdmittedPf)
+               end
+           end
 	| _ -> raise (Failure("No goal to aby"))
       end
   | SpecialTac(x,[]) when x = "distinct" ->
@@ -5047,6 +5158,15 @@ let _ =
 	      end
 	    else
 	      raise (Failure("Expected -vampireabyproof <tptp|leancheck>"))
+          end
+        else if Sys.argv.(!j) = "-vampireabynative" then
+          begin
+            vampireabynative := true
+          end
+        else if Sys.argv.(!j) = "-vampireabynativestrict" then
+          begin
+            vampireabynative := true;
+            vampireabynativestrict := true
           end
         else if Sys.argv.(!j) = "-fofallsubgoals" then
           begin

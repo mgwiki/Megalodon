@@ -48,10 +48,25 @@ reports a proved SZS status and emits a proof payload.  This is a strict
 certificate gate for `aby`; it is not yet a native Megalodon kernel proof-term
 reconstructor, so `-allowincompleteqed` is still required.
 
+For the currently supported native reconstruction fragment, add
+`-vampireabynative`.  This tries to turn a certified `aby` goal into a native
+Megalodon proof term using deterministic introduction, hypothesis,
+False-elimination, and Church-encoded conjunction projection/reconstruction
+before falling back to the certificate admit.  Use `-vampireabynativestrict` to
+fail instead of falling back when the native fragment cannot reconstruct the
+certified proof.
+
 Smoke-test the live Megalodon/Vampire path on the first hammer `aby`:
 
 ```sh
 VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_live_aby_smoke.sh
+```
+
+Smoke-test the restricted native reconstruction path on the first three hammer
+`aby` calls:
+
+```sh
+VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_native_aby_smoke.sh
 ```
 
 Useful overrides:
