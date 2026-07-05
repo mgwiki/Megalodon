@@ -1380,6 +1380,8 @@ def proof_for_expr(
     rule_depth: int = 2,
 ) -> str | None:
     key = expr_key(expr)
+    if key == "vampire_true":
+        return "(fun P H => H)"
     proof = known.get(key) or known_canonical.get(canonical_proposition(key))
     if proof is not None:
         return proof
