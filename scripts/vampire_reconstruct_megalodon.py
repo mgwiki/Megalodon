@@ -893,6 +893,22 @@ def substitute_expr(expr: Expr, subst: dict[str, Expr]) -> Expr:
     return Expr(expr.kind, value=expr.value, args=tuple(substitute_expr(arg, subst) for arg in expr.args), sort=expr.sort)
 
 
+def replace_expr(expr: Expr, needle: Expr, replacement: Expr) -> tuple[Expr, bool]:
+    if expr_key(expr) == expr_key(needle):
+        return replacement, True
+    if not expr.args:
+        return expr, False
+    changed = False
+    args: list[Expr] = []
+    for arg in expr.args:
+        replaced, arg_changed = replace_expr(arg, needle, replacement)
+        args.append(replaced)
+        changed = changed or arg_changed
+    if not changed:
+        return expr, False
+    return Expr(expr.kind, value=expr.value, args=tuple(args), sort=expr.sort), True
+
+
 def make_proof_rule(name: str, proposition: str) -> ProofRule | None:
     expr = parse_expr(proposition)
     if expr is None:
@@ -2164,6 +2180,115 @@ def binary_transitivity_proof(
     return None
 
 
+def repl_eliminator_name(known: dict[str, str]) -> str | None:
+    for proposition, proof in known.items():
+        parsed = parse_expr(proposition)
+        if parsed is None:
+            continue
+        steps, conclusion = sequential_rule_steps(parsed)
+        binders = [step.name for step in steps if step.kind == "binder"]
+        if len(steps) < 6 or len(binders) < 4 or conclusion.kind != "var" or conclusion.value != binders[3]:
+            continue
+        if steps[0].kind != "binder" or steps[1].kind != "binder" or steps[2].kind != "binder":
+            continue
+        if steps[3].kind != "premise" or steps[3].expr is None:
+            continue
+        base = Expr("var", value=binders[0])
+        function = Expr("var", value=binders[1])
+        image = Expr("var", value=binders[2])
+        repl = Expr("app", args=(Expr("var", value="Repl"), base, function))
+        if not atom2(steps[3].expr, "In", image, repl):
+            continue
+        if steps[4].kind != "binder" or steps[5].kind != "premise" or steps[5].expr is None:
+            continue
+        continuation_binders, continuation_body = collect_foralls(steps[5].expr)
+        continuation_premises, continuation_conclusion = split_arrows(continuation_body)
+        if len(continuation_binders) != 1 or len(continuation_premises) != 2:
+            continue
+        preimage = Expr("var", value=continuation_binders[0][0])
+        if not atom2(continuation_premises[0], "In", preimage, base):
+            continue
+        function_preimage = Expr("app", args=(function, preimage))
+        if (
+            continuation_premises[1].kind == "eq"
+            and expr_key(continuation_premises[1].args[0]) == expr_key(function_preimage)
+            and expr_key(continuation_premises[1].args[1]) == expr_key(image)
+            and continuation_conclusion.kind == "var"
+            and continuation_conclusion.value == binders[3]
+        ):
+            return proof
+    return None
+
+
+def repl_elimination_goal_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 0:
+        return None
+    eliminator = repl_eliminator_name(known)
+    if eliminator is None:
+        return None
+
+    seen: set[str] = set()
+    for proposition, image_proof in list(known.items()):
+        if image_proof in seen:
+            continue
+        seen.add(image_proof)
+        parsed = parse_expr(proposition)
+        if parsed is None:
+            continue
+        atom = binary_atom_parts(parsed)
+        if atom is None or atom[0] != "In":
+            continue
+        image = atom[1]
+        repl = atom[2]
+        if repl.kind != "app" or len(repl.args) != 3 or expr_key(repl.args[0]) != "Repl":
+            continue
+        base = repl.args[1]
+        function = repl.args[2]
+        preimage_name = fresh_identifier("W", expr_text(expr), expr_text(base), expr_text(function))
+        preimage = Expr("var", value=preimage_name)
+        function_preimage = append_application_args(function, [preimage])
+        target_at_preimage, changed = replace_expr(expr, image, function_preimage)
+        if not changed:
+            continue
+        context_expr, context_changed = replace_expr(expr, image, Expr("var", value="z"))
+        if not context_changed:
+            continue
+
+        local_known = dict(known)
+        local_known_canonical = dict(known_canonical)
+        local_rules = list(rules)
+        local_eq_facts = list(eq_facts)
+        membership = f"In {preimage_name} {proof_arg_text(base)}"
+        remember_proposition(local_known, local_known_canonical, local_rules, local_eq_facts, "Hw", membership)
+        preimage_proof = proof_for_expr(
+            target_at_preimage,
+            local_known,
+            local_known_canonical,
+            local_rules,
+            local_eq_facts,
+            definitions,
+            allow_rule=True,
+            rule_depth=rule_depth - 1,
+        )
+        if preimage_proof is None:
+            continue
+        return (
+            f"({eliminator} {proof_arg_text(base)} {proof_arg_text(function)} {proof_arg_text(image)} "
+            f"{proof_argument_text(image_proof)} {proof_arg_text(expr)} "
+            f"(fun {preimage_name}:set => fun Hw => fun Heq => "
+            f"Heq (fun z:set => {expr_text(context_expr)}) {proof_argument_text(preimage_proof)}))"
+        )
+    return None
+
+
 def empty_power_singleton_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
     if expr.kind != "eq":
         return None
@@ -2680,6 +2805,19 @@ def proof_for_expr(
         )
         if transitivity_proof is not None:
             return transitivity_proof
+
+    if allow_rule:
+        repl_goal_proof = repl_elimination_goal_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth,
+        )
+        if repl_goal_proof is not None:
+            return repl_goal_proof
 
     congruence_proof = equality_congruence_proof(expr, known, known_canonical, rules, eq_facts, definitions, rule_depth)
     if congruence_proof is not None:
