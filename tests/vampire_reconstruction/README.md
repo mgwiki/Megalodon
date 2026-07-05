@@ -43,6 +43,28 @@ pool:
 VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_100_th0.sh --collect-successes
 ```
 
+Collect Lean proof-reconstruction artifacts from a Vampire build with
+`--proof leancheck` support:
+
+```sh
+TMPDIR=/project/tmp \
+VAMPIRE=/path/to/vampire \
+python3 scripts/vampire_reconstruct_megalodon.py \
+  --work-dir /project/tmp/megalodon_vampire_leancheck \
+  --limit 100 \
+  --timeout 10 \
+  --jobs 20 \
+  --proof-mode leancheck \
+  --collect-successes
+```
+
+LeanChecker mode asks Vampire for Lean output with the required
+`--output_mode lean --proof_extra lean --skolemization syntactic
+--shuffle_input off` options.  The manifest check requires a complete Lean
+payload (`theorem fullProof` through `end vamproof`) and rejects fatal Vampire
+markers.  It does not run the Lean kernel by itself; that requires a local Lean
+toolchain and the `VampLean` module imported by Vampire's generated files.
+
 Summarize the Vampire inference rules appearing in a collected manifest:
 
 ```sh
