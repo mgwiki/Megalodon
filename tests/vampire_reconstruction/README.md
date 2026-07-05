@@ -112,6 +112,11 @@ render the original formula-level proof steps and renderable clause steps as
 Megalodon propositions.  This is a development artifact, not a trusted
 certificate: each rendered Vampire step is written as a `claim S...` with
 `admit`, and the file is checked only with `-allowincompleteqed`.
+When the Python checker writes skeleton `.mg` files, it adds comments linking
+the skeleton back to the source Megalodon file, enclosing theorem, and `aby`
+line/column. It also performs a conservative first fill pass: claims whose
+proposition exactly matches an earlier axiom or claim are proved with `exact`
+instead of a fresh `admit`.
 
 ```sh
 python3 scripts/vampire_reconstruct_megalodon.py \
@@ -140,7 +145,9 @@ python3 scripts/vampire_reconstruct_megalodon.py \
 ```
 
 This path does not rescan the full candidate pool; it reruns exactly the known
-solvable problem files listed in the manifest.
+solvable problem files listed in the manifest. The driver caps Vampire timeouts
+at 10 seconds even if a larger `--timeout` is passed, to avoid spending time in
+unsuccessful portfolio strategies.
 
 Megalodon mode asks Vampire for the same replay information that LeanChecker
 uses (`--proof_extra lean --skolemization syntactic --shuffle_input off`) but

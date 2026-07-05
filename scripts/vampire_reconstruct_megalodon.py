@@ -43,6 +43,11 @@ class Obligation:
     proof_sha256: str | None = None
     status: str | None = None
     command: list[str] | None = None
+    source: str | None = None
+    source_sha256: str | None = None
+    source_line_text: str | None = None
+    theorem_name: str | None = None
+    theorem_line: int | None = None
 
 
 @dataclass
@@ -113,6 +118,37 @@ def generate_problems(repo: Path, megalodon: Path, source: Path, prefix: Path) -
     if proc.returncode != 0:
         sys.stderr.write(proc.stdout)
         raise SystemExit(f"Megalodon TH0 generation failed with exit code {proc.returncode}")
+
+
+THEOREM_RE = re.compile(r"^\s*(?:Theorem|Lemma|Example|Fact|Remark|Corollary|Proposition|Property)\s+(?P<name>[^:\s]+)")
+
+
+def source_context(source: Path | None, line: int) -> dict[str, str | int | None]:
+    if source is None or not source.exists():
+        return {
+            "source": str(source) if source is not None else None,
+            "source_sha256": None,
+            "source_line_text": None,
+            "theorem_name": None,
+            "theorem_line": None,
+        }
+    rows = source.read_text(encoding="utf-8", errors="replace").splitlines()
+    line_text = rows[line - 1].strip() if 1 <= line <= len(rows) else None
+    theorem_name = None
+    theorem_line = None
+    for index in range(min(line, len(rows)), 0, -1):
+        match = THEOREM_RE.match(rows[index - 1])
+        if match:
+            theorem_name = match.group("name")
+            theorem_line = index
+            break
+    return {
+        "source": str(source),
+        "source_sha256": sha256(source),
+        "source_line_text": line_text,
+        "theorem_name": theorem_name,
+        "theorem_line": theorem_line,
+    }
 
 
 def select_obligations(prefix: Path, vampire_lines: set[int], minimum: int) -> list[tuple[int, int, Path]]:
@@ -231,6 +267,70 @@ def extract_megalodon_claim_skeletons(text: str) -> list[list[str]]:
     )
 
 
+def proposition_after_colon(line: str, prefix: str) -> tuple[str, str] | None:
+    if not line.startswith(prefix):
+        return None
+    rest = line[len(prefix):]
+    name, separator, proposition = rest.partition(":")
+    if not separator or not proposition.endswith("."):
+        return None
+    return name.strip(), proposition[:-1].strip()
+
+
+def fill_repeated_claim_admits(lines: list[str]) -> list[str]:
+    known: dict[str, str] = {}
+    theorem: str | None = None
+    result = list(lines)
+    index = 0
+    while index < len(result):
+        line = result[index]
+        axiom = proposition_after_colon(line, "Axiom ")
+        if axiom is not None:
+            name, proposition = axiom
+            known.setdefault(proposition, name)
+            index += 1
+            continue
+        theorem_match = proposition_after_colon(line, "Theorem ")
+        if theorem_match is not None:
+            _, theorem = theorem_match
+            index += 1
+            continue
+        claim = proposition_after_colon(line, "claim ")
+        if claim is not None:
+            name, proposition = claim
+            proof_name = known.get(proposition)
+            if proof_name is not None and index + 1 < len(result) and result[index + 1] == "{ admit. }":
+                result[index + 1] = "{ exact " + proof_name + ". }"
+            known.setdefault(proposition, name)
+            index += 2
+            continue
+        if line == "admit." and theorem is not None:
+            proof_name = known.get(theorem)
+            if proof_name is not None:
+                result[index] = "exact " + proof_name + "."
+        index += 1
+    return result
+
+
+def comment_text(value: object) -> str:
+    text = "" if value is None else str(value)
+    return text.replace("\r", " ").replace("\n", " ")
+
+
+def skeleton_header(obligation: Obligation) -> list[str]:
+    header = [
+        "// Vampire/Megalodon reconstruction skeleton.",
+        f"// problem: {comment_text(obligation.problem)}",
+        f"// proof: {comment_text(obligation.proof)}",
+        f"// source: {comment_text(obligation.source)}:{obligation.line}:{obligation.char}",
+    ]
+    if obligation.theorem_name is not None:
+        header.append(f"// enclosing theorem: {comment_text(obligation.theorem_name)} at line {obligation.theorem_line}")
+    if obligation.source_line_text is not None:
+        header.append(f"// source line: {comment_text(obligation.source_line_text)}")
+    return header
+
+
 def check_megalodon_lines(
     megalodon: Path,
     repo: Path,
@@ -240,8 +340,13 @@ def check_megalodon_lines(
     kind: str,
     allow_incomplete: bool = False,
     output_dir: Path | None = None,
+    header: list[str] | None = None,
+    fill_repeated_admits: bool = False,
 ) -> list[str]:
     safe_kind = kind.replace(" ", "_")
+    output_lines = fill_repeated_claim_admits(lines) if fill_repeated_admits else list(lines)
+    if header:
+        output_lines = header + output_lines
     if output_dir is None:
         tmp_root = Path(os.environ.get("TMPDIR", "/project/tmp"))
         tmp_root.mkdir(parents=True, exist_ok=True)
@@ -254,13 +359,13 @@ def check_megalodon_lines(
             delete=False,
         ) as handle:
             candidate = Path(handle.name)
-            handle.write("\n".join(lines))
+            handle.write("\n".join(output_lines))
             handle.write("\n")
         delete_after = True
     else:
         output_dir.mkdir(parents=True, exist_ok=True)
         candidate = output_dir / f"{proof.stem}.{safe_kind}{index}.mg"
-        candidate.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        candidate.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
         delete_after = False
     try:
         cmd = [str(megalodon)]
@@ -282,8 +387,9 @@ def check_megalodon_source_candidate(
     proof: Path,
     index: int,
     lines: list[str],
+    header: list[str] | None = None,
 ) -> list[str]:
-    return check_megalodon_lines(megalodon, repo, proof, index, lines, "source candidate")
+    return check_megalodon_lines(megalodon, repo, proof, index, lines, "source candidate", header=header)
 
 
 def start_vampire(repo: Path, args: argparse.Namespace, proof_dir: Path, item: tuple[int, int, Path]) -> RunningVampire:
@@ -350,6 +456,7 @@ def finish_vampire(
         proof_sha256=sha256(running.proof_path),
         status=status,
         command=running.command,
+        **source_context(getattr(args, "resolved_source", None), running.line),
     )
     proof_payload_ok = proof_has_reconstruction_payload(out, args.proof_mode)
     failure = None
@@ -402,7 +509,7 @@ def run_vampire_suite(
             now = time.monotonic()
             made_progress = False
             for item in list(running):
-                timed_out = item.process.poll() is None and now - item.started_at > args.timeout + 15
+                timed_out = item.process.poll() is None and now - item.started_at > args.timeout
                 if item.process.poll() is None and not timed_out:
                     continue
                 running.remove(item)
@@ -461,6 +568,7 @@ def check_obligation(
     obligation: Obligation,
     repo: Path,
     megalodon: Path,
+    source: Path | None = None,
     check_megalodon_sources: bool = False,
     require_megalodon_sources: bool = False,
     check_claim_skeletons: bool = False,
@@ -495,14 +603,19 @@ def check_obligation(
         failures.append(f"{proof}: no proved SZS status")
     elif not proof_has_reconstruction_payload(text, proof_mode):
         failures.append(f"{proof}: no proof payload")
+    if proof_mode == "megalodon" and obligation.source is None and source is not None:
+        for field, value in source_context(source, obligation.line).items():
+            setattr(obligation, field, value)
     if proof_mode == "megalodon" and (check_megalodon_sources or require_megalodon_sources):
+        header = skeleton_header(obligation)
         candidates = extract_megalodon_source_candidates(text)
         if require_megalodon_sources and not candidates:
             failures.append(f"{proof}: no Megalodon source candidate")
         for index, lines in enumerate(candidates):
             checked_sources += 1
-            failures.extend(check_megalodon_source_candidate(megalodon, repo, proof, index, lines))
+            failures.extend(check_megalodon_source_candidate(megalodon, repo, proof, index, lines, header=header))
     if proof_mode == "megalodon" and (check_claim_skeletons or require_claim_skeletons or claim_skeleton_dir is not None):
+        header = skeleton_header(obligation)
         skeletons = extract_megalodon_claim_skeletons(text)
         if require_claim_skeletons and not skeletons:
             failures.append(f"{proof}: no Megalodon claim skeleton")
@@ -519,6 +632,8 @@ def check_obligation(
                         "claim skeleton",
                         allow_incomplete=True,
                         output_dir=claim_skeleton_dir,
+                        header=header,
+                        fill_repeated_admits=True,
                     )
                 )
             elif claim_skeleton_dir is not None:
@@ -529,8 +644,10 @@ def check_obligation(
                     index,
                     lines,
                     "claim skeleton",
-                    allow_incomplete=False,
+                    allow_incomplete=True,
                     output_dir=claim_skeleton_dir,
+                    header=header,
+                    fill_repeated_admits=True,
                 )
     return failures, checked_sources, checked_skeletons
 
@@ -540,6 +657,7 @@ def check_existing(
     repo: Path,
     megalodon: Path,
     jobs: int = 1,
+    source: Path | None = None,
     check_megalodon_sources: bool = False,
     require_megalodon_sources: bool = False,
     check_claim_skeletons: bool = False,
@@ -561,6 +679,7 @@ def check_existing(
                 obligation,
                 repo,
                 megalodon,
+                source,
                 check_megalodon_sources=check_megalodon_sources,
                 require_megalodon_sources=require_megalodon_sources,
                 check_claim_skeletons=check_claim_skeletons,
@@ -578,6 +697,7 @@ def check_existing(
                     obligation,
                     repo,
                     megalodon,
+                    source,
                     check_megalodon_sources,
                     require_megalodon_sources,
                     check_claim_skeletons,
@@ -614,7 +734,7 @@ def main() -> int:
     parser.add_argument("--results", type=Path, default=Path("examples/hammer/ATPresults2025"))
     parser.add_argument("--work-dir", type=Path, default=Path("tests/vampire_reconstruction/work"))
     parser.add_argument("--limit", type=int, default=100)
-    parser.add_argument("--timeout", type=int, default=60)
+    parser.add_argument("--timeout", type=int, default=10)
     parser.add_argument("--jobs", type=int, default=int(os.environ.get("MEGALODON_VAMPIRE_JOBS", "1")))
     parser.add_argument("--progress", type=int, default=10)
     parser.add_argument("--schedule", default="casc")
@@ -635,6 +755,9 @@ def main() -> int:
     repo = args.repo.resolve()
     megalodon = (repo / args.megalodon).resolve() if not args.megalodon.is_absolute() else args.megalodon
     source = (repo / args.source).resolve() if not args.source.is_absolute() else args.source
+    args.resolved_source = source
+    if args.timeout > 10:
+        args.timeout = 10
     results = (repo / args.results).resolve() if not args.results.is_absolute() else args.results
     work_dir = (repo / args.work_dir).resolve() if not args.work_dir.is_absolute() else args.work_dir
     claim_skeleton_dir = None
@@ -651,6 +774,7 @@ def main() -> int:
             repo,
             megalodon,
             args.jobs,
+            source,
             check_megalodon_sources=args.check_megalodon_sources,
             require_megalodon_sources=args.require_megalodon_sources,
             check_claim_skeletons=args.check_claim_skeletons,
@@ -711,6 +835,7 @@ def main() -> int:
             repo,
             megalodon,
             args.jobs,
+            source,
             check_megalodon_sources=args.check_megalodon_sources,
             require_megalodon_sources=args.require_megalodon_sources,
             check_claim_skeletons=args.check_claim_skeletons,
