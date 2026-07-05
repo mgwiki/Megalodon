@@ -702,6 +702,8 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
        | Some(d) -> d
        | None -> raise SearchBacktrack
      end
+  | Ap(Ap(TmH(h),a),b) when h = egal_iff_id ->
+     native_aby_direct_depth allow_imp allow_or (depth-1) cx hyps (Ap(Ap(TmH(egal_and_id),Imp(a,b)),Imp(b,a)))
   | Ap(Ap(TmH(h),a),b) when h = egal_and_id ->
      let da = native_aby_direct_depth allow_imp allow_or (depth-1) cx hyps a in
      let db = native_aby_direct_depth allow_imp allow_or (depth-1) cx hyps b in
