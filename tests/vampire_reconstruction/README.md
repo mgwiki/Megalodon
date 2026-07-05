@@ -56,8 +56,8 @@ implication-chain application, Church-encoded conjunction
 projection/reconstruction, Church-encoded disjunction introduction/elimination,
 Church-encoded existential introduction from bound witnesses, and
 definition-backed `iff` introduction/projection.  It also handles Leibniz
-equality transitivity from matching local equality hypotheses before falling back
-to the certificate admit.  Use
+equality symmetry/transitivity from matching local equality hypotheses and expands
+the local `neq` definition before falling back to the certificate admit.  Use
 `-vampireabynativestrict` to fail instead of falling back when the native
 fragment cannot reconstruct the certified proof.
 
@@ -67,8 +67,8 @@ Smoke-test the live Megalodon/Vampire path on the first hammer `aby`:
 VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_live_aby_smoke.sh
 ```
 
-Smoke-test the restricted native reconstruction path on the early hammer
-early hammer `aby` block through `eq_i_tra`:
+Smoke-test the restricted native reconstruction path on the early hammer `aby`
+block through `neq_i_sym`:
 
 ```sh
 VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_native_aby_smoke.sh

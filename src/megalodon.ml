@@ -655,6 +655,7 @@ let egal_false_id = "5bf697cb0d1cdefbe881504469f6c48cc388994115b82514dfc4fb5e67a
 let egal_not_id = "058f630dd89cad5a22daa56e097e3bdf85ce16ebd3dbf7994e404e2a98800f7f"
 let egal_ex_id = "912ad2cdc2d23bb8aa0a5070945f2a90976a948b0e8308917244591f3747f099"
 let egal_iff_id = "9c60bab687728bc4482e12da2b08b8dbc10f5d71f5cab91acec3c00a79b335a3"
+let egal_neq_id = "7966a66a9bb198103c2a540ccd5ebebdff33c10843cc10eebfc98715e142989c"
 
 let eq_tm a l r = Ap(Ap(TpAp(TmH(!eqPoly),a),l),r)
 
@@ -717,6 +718,7 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
   match goal with
   | Imp(p,q) -> PLam(p,native_aby_direct_depth allow_imp allow_or depth cx (p::hyps) q)
   | Ap(TmH(h),p) when h = egal_not_id -> PLam(p,native_aby_direct_depth allow_imp allow_or depth cx (p::hyps) (TmH(egal_false_id)))
+  | Ap(Ap(TpAp(TmH(h),a),x),y) when h = egal_neq_id -> PLam(eq_tm a x y,native_aby_direct_depth allow_imp allow_or depth cx (eq_tm a x y::hyps) (TmH(egal_false_id)))
   | All(a,q) -> TLam(a,native_aby_direct_depth allow_imp allow_or depth (a::cx) (List.map (tmshift 0 1) hyps) q)
   | Ap(TpAp(TmH(h),a),q) when h = egal_ex_id ->
      begin
@@ -757,12 +759,6 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
        | SearchBacktrack -> try_right ()
        | Failure(_) -> try_right ()
      end
-  | Ap(Ap(TpAp(TmH(h),a),x),z) when h = !eqPoly ->
-     begin
-       match eq_trans_proof depth cx hyps a x z with
-       | Some(d) -> d
-       | None -> raise SearchBacktrack
-     end
   | _ ->
      begin
        match find_hyp_proving sigdelta hyps goal 0 with
@@ -774,17 +770,30 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
           match find_false_hyp sigdelta hyps 0 with
           | Some(d) -> PTmAp(d,goal)
           | None ->
-             if allow_or && has_or_hyp hyps then
-               match find_or_elim_hyp depth cx hyps goal 0 with
-               | Some(d) -> d
-               | None -> raise SearchBacktrack
-             else
-               if allow_imp then
-                 match find_imp_elim_hyp allow_or depth cx hyps goal 0 with
+             let try_remaining () =
+               if allow_or && has_or_hyp hyps then
+                 match find_or_elim_hyp depth cx hyps goal 0 with
                  | Some(d) -> d
                  | None -> raise SearchBacktrack
                else
-                 raise SearchBacktrack
+                 if allow_imp then
+                   match find_imp_elim_hyp allow_or depth cx hyps goal 0 with
+                   | Some(d) -> d
+                   | None -> raise SearchBacktrack
+                 else
+                   raise SearchBacktrack
+             in
+             match is_eq_tm goal with
+             | Some(a,x,z) ->
+                begin
+                  match eq_sym_proof depth cx hyps a x z with
+                  | Some(d) -> d
+                  | None ->
+                     match eq_trans_proof depth cx hyps a x z with
+                     | Some(d) -> d
+                     | None -> try_remaining ()
+                end
+             | None -> try_remaining ()
      end
 and eq_trans_proof depth cx hyps a x z =
   if depth <= 0 then None else
@@ -812,6 +821,17 @@ and eq_trans_proof depth cx hyps a x z =
     | [] -> None
   in
   try_middle_terms cx 0
+and eq_sym_proof depth cx hyps a x z =
+  if depth <= 0 then None else
+  match find_eq_hyp sigdelta hyps a z x 0 with
+  | Some(dzx) ->
+     let x1 = tmshift 0 1 x in
+     let z1 = tmshift 0 1 z in
+     let dzx = pfshift 0 1 (pftmshift 0 1 dzx) in
+     let qxz = Ap(Ap(DB(0),x1),z1) in
+     let q_swap = Lam(a,Lam(a,Ap(Ap(DB(2),DB(0)),DB(1)))) in
+     Some(TLam(Ar(a,Ar(a,Prop)),PLam(qxz,PPfAp(PTmAp(dzx,q_swap),Hyp(0)))))
+  | None -> None
 and find_ex_intro depth cx hyps a q i =
   let rec find_ex_intro_rec scancx i =
     match scancx with
@@ -903,6 +923,8 @@ and apply_imp_chain allow_or depth cx hyps d p goal =
      end
   | Ap(TmH(h),a) when h = egal_not_id ->
      apply_imp_chain allow_or depth cx hyps d (Imp(a,TmH(egal_false_id))) goal
+  | Ap(Ap(TpAp(TmH(h),a),x),y) when h = egal_neq_id ->
+     apply_imp_chain allow_or depth cx hyps d (Imp(eq_tm a x y,TmH(egal_false_id))) goal
   | Imp(a,b) ->
      begin
        try
