@@ -1211,12 +1211,26 @@ def equality_rule_chain_proof(
                 parts = rule_application_parts(rule, direct_subst, known, known_canonical, rules, eq_facts, definitions, max(0, rule_depth - 1))
                 if parts is not None:
                     found.append((normalize_defined_expr(substitute_expr(rule.conclusion.args[1], direct_subst), definitions), rule_application_text(parts)))
+                else:
+                    target_subst = dict(direct_subst)
+                    if match_expr(rule.conclusion.args[1], target, variables, target_subst):
+                        parts = rule_application_parts(rule, target_subst, known, known_canonical, rules, eq_facts, definitions, max(0, rule_depth - 1))
+                        if parts is not None:
+                            found.append((normalize_defined_expr(substitute_expr(rule.conclusion.args[1], target_subst), definitions), rule_application_text(parts)))
             reverse_subst: dict[str, Expr] = {}
             if match_expr(rule.conclusion.args[1], node, variables, reverse_subst):
                 parts = rule_application_parts(rule, reverse_subst, known, known_canonical, rules, eq_facts, definitions, max(0, rule_depth - 1))
                 if parts is not None:
                     proof = rule_application_text(parts)
                     found.append((normalize_defined_expr(substitute_expr(rule.conclusion.args[0], reverse_subst), definitions), eq_symmetry_proof(proof, substitute_expr(rule.conclusion.args[0], reverse_subst))))
+                else:
+                    target_subst = dict(reverse_subst)
+                    if match_expr(rule.conclusion.args[0], target, variables, target_subst):
+                        parts = rule_application_parts(rule, target_subst, known, known_canonical, rules, eq_facts, definitions, max(0, rule_depth - 1))
+                        if parts is not None:
+                            proof = rule_application_text(parts)
+                            replacement = substitute_expr(rule.conclusion.args[0], target_subst)
+                            found.append((normalize_defined_expr(replacement, definitions), eq_symmetry_proof(proof, replacement)))
         found.extend(congruence_edges(node))
         return found
 
@@ -1894,6 +1908,118 @@ def image_in_power_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
     )
 
 
+def find_pair_sigma_rules(rules: list[ProofRule]) -> tuple[str | None, str | None, str | None]:
+    proj0_pair = None
+    proj1_pair = None
+    proj1_sigma = None
+    for rule in rules:
+        b = {name: Expr("var", value=name) for name in rule.binders}
+        if len(rule.binders) == 2 and not rule.premises and rule.conclusion.kind == "eq":
+            left, right = rule.conclusion.args
+            pair = Expr("app", args=(Expr("var", value="setsum"), b[rule.binders[0]], b[rule.binders[1]]))
+            if expr_key(left) == expr_key(Expr("app", args=(Expr("var", value="proj0"), pair))) and expr_key(right) == rule.binders[0]:
+                proj0_pair = rule.name
+            if expr_key(left) == expr_key(Expr("app", args=(Expr("var", value="proj1"), pair))) and expr_key(right) == rule.binders[1]:
+                proj1_pair = rule.name
+        if len(rule.binders) == 3 and len(rule.premises) == 1:
+            base, family, pair_var = (b[name] for name in rule.binders)
+            sigma = Expr("app", args=(Expr("var", value="Sigma"), base, family))
+            if not atom2(rule.premises[0], "In", pair_var, sigma):
+                continue
+            proj0 = Expr("app", args=(Expr("var", value="proj0"), pair_var))
+            proj1 = Expr("app", args=(Expr("var", value="proj1"), pair_var))
+            fiber = Expr("app", args=(family, proj0))
+            if atom2(rule.conclusion, "In", proj1, fiber):
+                proj1_sigma = rule.name
+    return proj0_pair, proj1_pair, proj1_sigma
+
+
+def pair_sigma_e1_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if len(binders) != 4 or len(premises) != 1:
+        return None
+    names = [name for name, _ in binders]
+    sorts = [sort for _, sort in binders]
+    if sorts != ["set", "set->set", "set", "set"]:
+        return None
+    base, family, left, right = (Expr("var", value=name) for name in names)
+    pair = Expr("app", args=(Expr("var", value="setsum"), left, right))
+    sigma = Expr("app", args=(Expr("var", value="Sigma"), base, family))
+    if not atom2(premises[0], "In", pair, sigma):
+        return None
+    if not atom2(conclusion, "In", right, Expr("app", args=(family, left))):
+        return None
+    proj0_pair, proj1_pair, proj1_sigma = find_pair_sigma_rules(rules)
+    if proj0_pair is None or proj1_pair is None or proj1_sigma is None:
+        return None
+    return (
+        f"(fun {names[0]} {names[1]} {names[2]} {names[3]} H0 => "
+        f"({proj1_pair} {names[2]} {names[3]}) (fun zz:set => In zz ({names[1]} {names[2]})) "
+        f"(({proj0_pair} {names[2]} {names[3]}) "
+        f"(fun zz:set => In (proj1 (setsum {names[2]} {names[3]})) ({names[1]} zz)) "
+        f"({proj1_sigma} {names[0]} {names[1]} (setsum {names[2]} {names[3]}) H0)))"
+    )
+
+
+def find_ap_projection_rules(rules: list[ProofRule]) -> tuple[str | None, str | None, str | None]:
+    proj0_ap = None
+    proj1_ap = None
+    proj1_sigma = None
+    for rule in rules:
+        b = {name: Expr("var", value=name) for name in rule.binders}
+        if len(rule.binders) == 1 and not rule.premises and rule.conclusion.kind == "eq":
+            item = b[rule.binders[0]]
+            left, right = rule.conclusion.args
+            proj0 = Expr("app", args=(Expr("var", value="proj0"), item))
+            proj1 = Expr("app", args=(Expr("var", value="proj1"), item))
+            ap0 = Expr("app", args=(Expr("var", value="ap"), item, Expr("var", value="Empty")))
+            ap1 = Expr("app", args=(Expr("var", value="ap"), item, unary_app("ordsucc", Expr("var", value="Empty"))))
+            if expr_key(left) == expr_key(proj0) and expr_key(right) == expr_key(ap0):
+                proj0_ap = rule.name
+            if expr_key(left) == expr_key(proj1) and expr_key(right) == expr_key(ap1):
+                proj1_ap = rule.name
+        if len(rule.binders) == 3 and len(rule.premises) == 1:
+            base, family, pair_var = (b[name] for name in rule.binders)
+            sigma = Expr("app", args=(Expr("var", value="Sigma"), base, family))
+            if not atom2(rule.premises[0], "In", pair_var, sigma):
+                continue
+            proj0 = Expr("app", args=(Expr("var", value="proj0"), pair_var))
+            proj1 = Expr("app", args=(Expr("var", value="proj1"), pair_var))
+            fiber = Expr("app", args=(family, proj0))
+            if atom2(rule.conclusion, "In", proj1, fiber):
+                proj1_sigma = rule.name
+    return proj0_ap, proj1_ap, proj1_sigma
+
+
+def ap1_sigma_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if len(binders) != 3 or len(premises) != 1:
+        return None
+    names = [name for name, _ in binders]
+    sorts = [sort for _, sort in binders]
+    if sorts != ["set", "set->set", "set"]:
+        return None
+    base, family, pair = (Expr("var", value=name) for name in names)
+    sigma = Expr("app", args=(Expr("var", value="Sigma"), base, family))
+    if not atom2(premises[0], "In", pair, sigma):
+        return None
+    ap0 = Expr("app", args=(Expr("var", value="ap"), pair, Expr("var", value="Empty")))
+    ap1 = Expr("app", args=(Expr("var", value="ap"), pair, unary_app("ordsucc", Expr("var", value="Empty"))))
+    if not atom2(conclusion, "In", ap1, Expr("app", args=(family, ap0))):
+        return None
+    proj0_ap, proj1_ap, proj1_sigma = find_ap_projection_rules(rules)
+    if proj0_ap is None or proj1_ap is None or proj1_sigma is None:
+        return None
+    return (
+        f"(fun {names[0]} {names[1]} {names[2]} H0 => "
+        f"({proj1_ap} {names[2]}) (fun zz:set => In zz ({names[1]} (ap {names[2]} Empty))) "
+        f"(({proj0_ap} {names[2]}) (fun zz:set => In (proj1 {names[2]}) ({names[1]} zz)) "
+        f"({proj1_sigma} {names[0]} {names[1]} {names[2]} H0)))"
+    )
+
+
 def proof_for_expr(
     expr: Expr,
     known: dict[str, str],
@@ -1919,6 +2045,8 @@ def proof_for_expr(
         repl_elimination_proof(expr, rules),
         image_monotone_proof(expr, rules),
         image_in_power_proof(expr, rules),
+        pair_sigma_e1_proof(expr, rules),
+        ap1_sigma_proof(expr, rules),
     ):
         if derived is not None:
             return derived
@@ -2203,6 +2331,32 @@ def source_dependency_locations(source: str | None, names: list[str]) -> list[st
     return [f"{name}@{found[name]}" for name in names if name in found]
 
 
+def source_local_dependency_locations(source: str | None, theorem_line: int | None, line: int, names: list[str]) -> list[str]:
+    if source is None or theorem_line is None or not names:
+        return []
+    path = Path(source)
+    if not path.exists():
+        return []
+    rows = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    wanted = set(names)
+    found: dict[str, tuple[int, str]] = {}
+    for index in range(max(1, theorem_line), min(line, len(rows)) + 1):
+        row = rows[index - 1].strip()
+        for command in re.finditer(r"\b(?P<keyword>let|assume)\s+(?P<body>[^.]*)\.", row):
+            keyword = command.group("keyword")
+            body = command.group("body")
+            for token in SOURCE_IDENTIFIER_RE.findall(body):
+                if token in wanted and token not in found:
+                    found[token] = (index, keyword)
+        claim = re.match(r"claim\s+(?P<name>[_A-Za-z][_A-Za-z0-9']*)\s*:", row)
+        if claim and claim.group("name") in wanted and claim.group("name") not in found:
+            found[claim.group("name")] = (index, "claim")
+        local_set = re.match(r"set\s+(?P<name>[_A-Za-z][_A-Za-z0-9']*)\s*:", row)
+        if local_set and local_set.group("name") in wanted and local_set.group("name") not in found:
+            found[local_set.group("name")] = (index, "set")
+    return [f"{name}@{found[name][0]}({found[name][1]})" for name in names if name in found]
+
+
 def skeleton_header(obligation: Obligation) -> list[str]:
     header = [
         "// Vampire/Megalodon reconstruction skeleton.",
@@ -2220,6 +2374,9 @@ def skeleton_header(obligation: Obligation) -> list[str]:
         locations = source_dependency_locations(obligation.source, dependencies)
         if locations:
             header.append(f"// source dependency locations: {', '.join(comment_text(location) for location in locations)}")
+        local_locations = source_local_dependency_locations(obligation.source, obligation.theorem_line, obligation.line, dependencies)
+        if local_locations:
+            header.append(f"// source local dependencies: {', '.join(comment_text(location) for location in local_locations)}")
     return header
 
 
@@ -2312,6 +2469,7 @@ def summarize_claim_skeleton(path: Path) -> dict[str, object]:
         "enclosing_theorem": header.get("enclosing_theorem"),
         "source_line": header.get("source_line"),
         "source_dependencies": header.get("source_dependencies"),
+        "source_local_dependencies": header.get("source_local_dependencies"),
         "claims": sum(1 for line in lines if line.startswith("claim ")),
         "claim_admits": sum(1 for line in lines if line == "{ admit. }"),
         "final_admits": sum(1 for line in lines if line == "admit."),
