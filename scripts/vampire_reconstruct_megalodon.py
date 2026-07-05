@@ -1351,6 +1351,40 @@ def comment_text(value: object) -> str:
     return text.replace("\r", " ").replace("\n", " ")
 
 
+SOURCE_DEPENDENCY_RE = re.compile(r"\baby\b(?P<body>[^.]*)\.")
+SOURCE_IDENTIFIER_RE = re.compile(r"[_A-Za-z][_A-Za-z0-9']*")
+SOURCE_DEPENDENCY_KEYWORDS = {
+    "aby",
+    "admit",
+    "apply",
+    "assume",
+    "claim",
+    "exact",
+    "fun",
+    "let",
+    "prove",
+    "prop",
+    "rewrite",
+    "set",
+}
+
+
+def source_dependency_names(line_text: str | None) -> list[str]:
+    if line_text is None:
+        return []
+    match = SOURCE_DEPENDENCY_RE.search(line_text)
+    if match is None:
+        return []
+    names: list[str] = []
+    seen: set[str] = set()
+    for token in SOURCE_IDENTIFIER_RE.findall(match.group("body")):
+        if token in SOURCE_DEPENDENCY_KEYWORDS or token in seen:
+            continue
+        seen.add(token)
+        names.append(token)
+    return names
+
+
 def skeleton_header(obligation: Obligation) -> list[str]:
     header = [
         "// Vampire/Megalodon reconstruction skeleton.",
@@ -1362,6 +1396,9 @@ def skeleton_header(obligation: Obligation) -> list[str]:
         header.append(f"// enclosing theorem: {comment_text(obligation.theorem_name)} at line {obligation.theorem_line}")
     if obligation.source_line_text is not None:
         header.append(f"// source line: {comment_text(obligation.source_line_text)}")
+    dependencies = source_dependency_names(obligation.source_line_text)
+    if dependencies:
+        header.append(f"// source dependencies: {', '.join(comment_text(name) for name in dependencies)}")
     return header
 
 
@@ -1453,6 +1490,7 @@ def summarize_claim_skeleton(path: Path) -> dict[str, object]:
         "source": header.get("source"),
         "enclosing_theorem": header.get("enclosing_theorem"),
         "source_line": header.get("source_line"),
+        "source_dependencies": header.get("source_dependencies"),
         "claims": sum(1 for line in lines if line.startswith("claim ")),
         "claim_admits": sum(1 for line in lines if line == "{ admit. }"),
         "final_admits": sum(1 for line in lines if line == "admit."),
