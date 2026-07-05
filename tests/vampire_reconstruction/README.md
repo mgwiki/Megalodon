@@ -220,6 +220,15 @@ VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_live_aby_smoke.sh
 Set `MEGALODON_VAMPIRE_PROOF=megalodon` to smoke-test the Vampire Megalodon
 reconstruction backend through Megalodon's live `aby` path.
 
+Smoke-test Vampire's checked Megalodon source-term fragment directly:
+
+```sh
+VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_source_fragment_smoke.sh
+```
+
+This covers input axioms plus Church-encoded conjunction introduction and
+projection without rescanning the hammer problem pool.
+
 Smoke-test the restricted native reconstruction path on the early hammer `aby`
 block through the binary-union algebra lemmas:
 

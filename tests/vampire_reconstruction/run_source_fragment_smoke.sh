@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/../.."
+
+if [ ! -x bin/megalodon ]; then
+  ./makeopt
+fi
+
+VAMPIRE="${VAMPIRE:-vampire}"
+TMPDIR="${TMPDIR:-/project/tmp}"
+mkdir -p "$TMPDIR"
+
+work_dir="${MEGALODON_VAMPIRE_SOURCE_SMOKE_DIR:-$TMPDIR/megalodon_vampire_source_fragment_smoke}"
+rm -rf "$work_dir"
+mkdir -p "$work_dir"
+
+run_case() {
+  local name="$1"
+  local problem="$work_dir/$name.th0.p"
+  local output="$work_dir/$name.out"
+  local source="$work_dir/$name.mg"
+
+  "$VAMPIRE" \
+    --input_syntax tptp \
+    --mode portfolio \
+    --schedule casc \
+    -t "${MEGALODON_VAMPIRE_TIMEOUT:-10}" \
+    --proof megalodon \
+    --proof_extra lean \
+    --skolemization syntactic \
+    --shuffle_input off \
+    "$problem" > "$output" 2>&1
+
+  sed -n 's/^megalodon_source_line("\(.*\)")./\1/p' "$output" > "$source"
+  if [ ! -s "$source" ]; then
+    sed -n '1,120p' "$output" >&2
+    echo "missing Megalodon source candidate for $name" >&2
+    return 1
+  fi
+  bin/megalodon "$source"
+}
+
+cat > "$work_dir/conjunction_intro.th0.p" <<'EOF'
+thf(p,type,(p : $o)).
+thf(q,type,(q : $o)).
+thf(hp,axiom,p).
+thf(hq,axiom,q).
+thf(conj,conjecture,(p & q)).
+EOF
+
+cat > "$work_dir/conjunction_projection.th0.p" <<'EOF'
+thf(p,type,(p : $o)).
+thf(q,type,(q : $o)).
+thf(hpq,axiom,(p & q)).
+thf(conj,conjecture,p).
+EOF
+
+run_case conjunction_intro
+run_case conjunction_projection
