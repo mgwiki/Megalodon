@@ -895,6 +895,7 @@ def rule_application_parts(
     rules: list[ProofRule],
     eq_facts: list[EqFact],
     definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
 ) -> list[str] | None:
     if any(binder not in subst for binder in rule.binders):
         return None
@@ -907,7 +908,8 @@ def rule_application_parts(
             rules,
             eq_facts,
             definitions,
-            allow_rule=False,
+            allow_rule=rule_depth > 0,
+            rule_depth=max(0, rule_depth - 1),
         )
         if premise_proof is None:
             return None
@@ -927,6 +929,7 @@ def equality_rule_chain_proof(
     eq_facts: list[EqFact],
     definitions: dict[str, DefinitionInfo],
     max_depth: int = 3,
+    rule_depth: int = 2,
 ) -> str | None:
     if expr.kind != "eq":
         return None
@@ -957,12 +960,12 @@ def equality_rule_chain_proof(
                 variables = set(rule.binders)
                 direct_subst: dict[str, Expr] = {}
                 if match_expr(rule.conclusion.args[0], arg, variables, direct_subst):
-                    parts = rule_application_parts(rule, direct_subst, known, known_canonical, rules, eq_facts, definitions)
+                    parts = rule_application_parts(rule, direct_subst, known, known_canonical, rules, eq_facts, definitions, max(0, rule_depth - 1))
                     if parts is not None:
                         rewrites.append((normalize_defined_expr(substitute_expr(rule.conclusion.args[1], direct_subst), definitions), rule_application_text(parts)))
                 reverse_subst: dict[str, Expr] = {}
                 if match_expr(rule.conclusion.args[1], arg, variables, reverse_subst):
-                    parts = rule_application_parts(rule, reverse_subst, known, known_canonical, rules, eq_facts, definitions)
+                    parts = rule_application_parts(rule, reverse_subst, known, known_canonical, rules, eq_facts, definitions, max(0, rule_depth - 1))
                     if parts is not None:
                         proof = rule_application_text(parts)
                         replacement = substitute_expr(rule.conclusion.args[0], reverse_subst)
@@ -988,12 +991,12 @@ def equality_rule_chain_proof(
             variables = set(rule.binders)
             direct_subst: dict[str, Expr] = {}
             if match_expr(rule.conclusion.args[0], node, variables, direct_subst):
-                parts = rule_application_parts(rule, direct_subst, known, known_canonical, rules, eq_facts, definitions)
+                parts = rule_application_parts(rule, direct_subst, known, known_canonical, rules, eq_facts, definitions, max(0, rule_depth - 1))
                 if parts is not None:
                     found.append((normalize_defined_expr(substitute_expr(rule.conclusion.args[1], direct_subst), definitions), rule_application_text(parts)))
             reverse_subst: dict[str, Expr] = {}
             if match_expr(rule.conclusion.args[1], node, variables, reverse_subst):
-                parts = rule_application_parts(rule, reverse_subst, known, known_canonical, rules, eq_facts, definitions)
+                parts = rule_application_parts(rule, reverse_subst, known, known_canonical, rules, eq_facts, definitions, max(0, rule_depth - 1))
                 if parts is not None:
                     proof = rule_application_text(parts)
                     found.append((normalize_defined_expr(substitute_expr(rule.conclusion.args[0], reverse_subst), definitions), eq_symmetry_proof(proof, substitute_expr(rule.conclusion.args[0], reverse_subst))))
@@ -1025,6 +1028,7 @@ def introduction_proof(
     rules: list[ProofRule],
     eq_facts: list[EqFact],
     definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
 ) -> str | None:
     binders, body = collect_foralls(expr)
     premises, conclusion = split_arrows(body)
@@ -1036,8 +1040,14 @@ def introduction_proof(
     local_rules = list(rules)
     local_eq_facts = list(eq_facts)
     args = [name for name, _ in binders]
+    used_names = set(args)
+    used_names.update(known.values())
     for index, premise in enumerate(premises):
         name = "H" + str(index)
+        while name in used_names:
+            index += 1
+            name = "H" + str(index)
+        used_names.add(name)
         args.append(name)
         remember_proposition(
             local_known,
@@ -1056,6 +1066,7 @@ def introduction_proof(
         local_eq_facts,
         definitions,
         allow_rule=True,
+        rule_depth=rule_depth,
     )
     if proof is None:
         return None
@@ -1076,6 +1087,7 @@ def equality_congruence_proof(
     rules: list[ProofRule],
     eq_facts: list[EqFact],
     definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
 ) -> str | None:
     if expr.kind != "eq":
         return None
@@ -1105,7 +1117,8 @@ def equality_congruence_proof(
         rules,
         eq_facts,
         definitions,
-        allow_rule=False,
+        allow_rule=rule_depth > 0,
+        rule_depth=max(0, rule_depth - 1),
     )
     if argument_proof is None:
         return None
@@ -1129,6 +1142,7 @@ def atomic_transport_proof(
     eq_facts: list[EqFact],
     definitions: dict[str, DefinitionInfo],
     allow_rule: bool,
+    rule_depth: int,
 ) -> str | None:
     if expr.kind != "app" or len(expr.args) < 2:
         return None
@@ -1166,6 +1180,7 @@ def atomic_transport_proof(
                 eq_facts,
                 definitions,
                 allow_rule=allow_rule,
+                rule_depth=rule_depth,
             )
             if equality_proof is None:
                 reverse_equality = Expr("eq", args=(target_arg, current_arg))
@@ -1177,6 +1192,7 @@ def atomic_transport_proof(
                     eq_facts,
                     definitions,
                     allow_rule=allow_rule,
+                    rule_depth=rule_depth,
                 )
                 if reverse_proof is not None:
                     equality_proof = eq_symmetry_proof(reverse_proof, target_arg)
@@ -1188,6 +1204,96 @@ def atomic_transport_proof(
             current_args[index] = target_arg
         if ok:
             return proof
+    return None
+
+
+def equality_rewrites_to_target(
+    target: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> list[tuple[Expr, str]]:
+    found: list[tuple[Expr, str]] = []
+    target_key = expr_key(normalize_defined_expr(target, definitions))
+    for fact in eq_facts:
+        left = normalize_defined_expr(fact.left, definitions)
+        right = normalize_defined_expr(fact.right, definitions)
+        if expr_key(right) == target_key:
+            found.append((left, fact.proof))
+        if expr_key(left) == target_key:
+            found.append((right, eq_symmetry_proof(fact.proof, fact.left)))
+
+    if rule_depth <= 0:
+        return found
+
+    for rule in rules:
+        if rule.conclusion.kind != "eq":
+            continue
+        variables = set(rule.binders)
+        direct_subst: dict[str, Expr] = {}
+        if match_expr(rule.conclusion.args[1], target, variables, direct_subst):
+            parts = rule_application_parts(rule, direct_subst, known, known_canonical, rules, eq_facts, definitions, rule_depth - 1)
+            if parts is not None:
+                source = normalize_defined_expr(substitute_expr(rule.conclusion.args[0], direct_subst), definitions)
+                found.append((source, rule_application_text(parts)))
+        reverse_subst: dict[str, Expr] = {}
+        if match_expr(rule.conclusion.args[0], target, variables, reverse_subst):
+            parts = rule_application_parts(rule, reverse_subst, known, known_canonical, rules, eq_facts, definitions, rule_depth - 1)
+            if parts is not None:
+                source = normalize_defined_expr(substitute_expr(rule.conclusion.args[1], reverse_subst), definitions)
+                proof = rule_application_text(parts)
+                found.append((source, eq_symmetry_proof(proof, target)))
+    return found
+
+
+def atomic_rewrite_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 0:
+        return None
+    target = normalize_defined_expr(expr, definitions)
+    if target.kind != "app" or len(target.args) < 2:
+        return None
+
+    target_args = list(target.args[1:])
+    for index, target_arg in enumerate(target_args):
+        for source_arg, equality_proof in equality_rewrites_to_target(
+            target_arg,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth,
+        ):
+            if expr_key(source_arg) == expr_key(target_arg):
+                continue
+            source_args = target_args.copy()
+            source_args[index] = source_arg
+            source = Expr("app", args=(target.args[0],) + tuple(source_args))
+            source_proof = proof_for_expr(
+                source,
+                known,
+                known_canonical,
+                rules,
+                eq_facts,
+                definitions,
+                allow_rule=True,
+                rule_depth=rule_depth - 1,
+            )
+            if source_proof is None:
+                continue
+            context = atomic_transport_context(target.args[0], tuple(source_args), index, "z")
+            return f"{proof_term_text(equality_proof)} (fun z:set => {context}) ({source_proof})"
     return None
 
 
@@ -1259,6 +1365,7 @@ def proof_for_expr(
     eq_facts: list[EqFact],
     definitions: dict[str, DefinitionInfo],
     allow_rule: bool = True,
+    rule_depth: int = 2,
 ) -> str | None:
     key = expr_key(expr)
     proof = known.get(key) or known_canonical.get(canonical_proposition(key))
@@ -1270,7 +1377,7 @@ def proof_for_expr(
         return direct
 
     if allow_rule:
-        introduced = introduction_proof(expr, known, known_canonical, rules, eq_facts, definitions)
+        introduced = introduction_proof(expr, known, known_canonical, rules, eq_facts, definitions, rule_depth)
         if introduced is not None:
             return introduced
 
@@ -1290,7 +1397,7 @@ def proof_for_expr(
     if normalized_eq_proof is not None:
         return normalized_eq_proof
 
-    congruence_proof = equality_congruence_proof(expr, known, known_canonical, rules, eq_facts, definitions)
+    congruence_proof = equality_congruence_proof(expr, known, known_canonical, rules, eq_facts, definitions, rule_depth)
     if congruence_proof is not None:
         return congruence_proof
 
@@ -1302,6 +1409,7 @@ def proof_for_expr(
         eq_facts,
         definitions,
         allow_rule=allow_rule,
+        rule_depth=rule_depth,
     )
     if transport_proof is not None:
         return transport_proof
@@ -1309,7 +1417,19 @@ def proof_for_expr(
     if not allow_rule:
         return None
 
-    rule_chain_proof = equality_rule_chain_proof(expr, known, known_canonical, rules, eq_facts, definitions)
+    rewritten_atom_proof = atomic_rewrite_proof(
+        expr,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        rule_depth=rule_depth,
+    )
+    if rewritten_atom_proof is not None:
+        return rewritten_atom_proof
+
+    rule_chain_proof = equality_rule_chain_proof(expr, known, known_canonical, rules, eq_facts, definitions, rule_depth=rule_depth)
     if rule_chain_proof is not None:
         return rule_chain_proof
 
@@ -1329,7 +1449,8 @@ def proof_for_expr(
                 rules,
                 eq_facts,
                 definitions,
-                allow_rule=False,
+                allow_rule=rule_depth > 0,
+                rule_depth=max(0, rule_depth - 1),
             )
             if premise_proof is None:
                 ok = False
