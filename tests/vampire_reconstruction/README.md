@@ -66,9 +66,10 @@ equality symmetry/transitivity from matching local equality hypotheses,
 direct elimination of named `iff` facts such as set constructors, the classical
 double-negation pattern used to prove existential De Morgan consequences,
 function/proposition extensionality for pointwise proposition equality, and the
-classical NAND-to-or pattern used with named excluded middle facts.  It expands
-the local `neq` definition, plus transparent definitions that expose `forall` or
-`->`, before falling back to the certificate admit.  Use
+classical NAND-to-or pattern used with named excluded middle facts.  Transparent
+definitions that expose Church-encoded disjunctions can be eliminated as local
+hypotheses.  It expands the local `neq` definition, plus transparent definitions
+that expose `forall` or `->`, before falling back to the certificate admit.  Use
 `-vampireabynativestrict` to fail instead of falling back when the native
 fragment cannot reconstruct the certified proof.
 
@@ -79,7 +80,7 @@ VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_live_aby_smoke.sh
 ```
 
 Smoke-test the restricted native reconstruction path on the early hammer `aby`
-block through `eq_or_nand`:
+block through `exactly1of2_or`:
 
 ```sh
 VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_native_aby_smoke.sh

@@ -884,7 +884,21 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
        | None ->
           match native_aby_nand_or depth cx hyps goal a b with
           | Some(d) -> d
-          | None -> raise SearchBacktrack
+          | None ->
+             if allow_imp then
+               begin
+                 match find_or_elim_hyp depth cx hyps goal 0 with
+                 | Some(d) -> d
+                 | None ->
+                    match find_imp_elim_hyp allow_or depth cx hyps goal 0 with
+                    | Some(d) -> d
+                    | None ->
+                       match find_known_elim allow_or depth cx hyps goal with
+                       | Some(d) -> d
+                       | None -> raise SearchBacktrack
+               end
+             else
+               raise SearchBacktrack
      end
   | _ ->
      begin
@@ -1199,7 +1213,24 @@ and or_elim_proof depth cx hyps d p goal =
        | SearchBacktrack -> None
        | Failure(_) -> None
      end
-  | _ -> None
+  | All(Prop,Imp(Imp(a,DB(0)),Imp(Imp(b,DB(0)),DB(0)))) ->
+     begin
+       try
+         let a0 = tmsubst a 0 goal in
+         let b0 = tmsubst b 0 goal in
+         let da = prove_or_branch (depth-1) cx hyps a0 goal in
+         let db = prove_or_branch (depth-1) cx hyps b0 goal in
+         Some(PPfAp(PPfAp(PTmAp(d,goal),PLam(a0,da)),PLam(b0,db)))
+       with
+       | SearchBacktrack -> None
+       | Failure(_) -> None
+     end
+  | _ ->
+     let p_hn = fst (headnorm p sigdelta []) in
+     if p_hn <> tm_beta_eta_norm p then
+       or_elim_proof (depth-1) cx hyps d p_hn goal
+     else
+       None
 and find_imp_elim_hyp allow_or depth cx hyps goal i =
   let rec find_imp_elim_hyp_rec scanhyps i =
     match scanhyps with
