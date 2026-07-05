@@ -91,6 +91,15 @@ class EqFact:
     proof: str
 
 
+@dataclass(frozen=True)
+class DefinitionInfo:
+    sort: str
+    body_text: str
+    proof: str
+    binders: tuple[str, ...]
+    body: Expr
+
+
 def sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -512,23 +521,105 @@ def make_eq_fact(name: str, proposition: str) -> EqFact | None:
     return EqFact(conclusion.args[0], conclusion.args[1], name)
 
 
-def fresh_set_definition(name: str, proposition: str, variable_sorts: dict[str, str]) -> tuple[str, str] | None:
+def fresh_definition(proposition: str, variable_sorts: dict[str, str]) -> tuple[str, DefinitionInfo] | None:
     expr = parse_expr(proposition)
-    if expr is None or expr.kind != "eq":
+    if expr is None:
         return None
-    left, right = expr.args
+
+    binders, body = collect_foralls(expr)
+    if body.kind != "eq":
+        return None
+    binder_names = [name for name, _ in binders]
+    binder_sorts = [sort for _, sort in binders]
+    left, right = body.args
     candidates: list[tuple[Expr, Expr]] = []
     if right.kind == "var" and right.value is not None:
         candidates.append((right, left))
     if left.kind == "var" and left.value is not None:
         candidates.append((left, right))
+    if binders:
+        if right.kind == "app" and right.args and right.args[0].kind == "var":
+            candidates.append((right, left))
+        if left.kind == "app" and left.args and left.args[0].kind == "var":
+            candidates.append((left, right))
     for target, body in candidates:
-        assert target.value is not None
-        if target.value != name and FRESH_SET_RE.match(target.value) and variable_sorts.get(target.value) == "set":
-            body_text = expr_text(body)
-            if target.value not in body_text.split():
-                return target.value, body_text
+        if target.kind == "var":
+            target_name = target.value
+            target_args: tuple[Expr, ...] = ()
+        elif target.kind == "app" and target.args and target.args[0].kind == "var":
+            target_name = target.args[0].value
+            target_args = target.args[1:]
+        else:
+            continue
+        if target_name is None or not FRESH_SET_RE.match(target_name):
+            continue
+        if len(target_args) != len(binder_names):
+            continue
+        if any(arg.kind != "var" or arg.value != name for arg, name in zip(target_args, binder_names)):
+            continue
+        target_sort = variable_sorts.get(target_name)
+        if target_sort is None:
+            continue
+        expected_sort = "->".join(binder_sorts + ["set"])
+        if target_sort != expected_sort:
+            continue
+        body_text = expr_text(body)
+        if target_name in body_text.split():
+            continue
+        if binders:
+            proof = f"({' '.join(['fun'] + binder_names + ['Q', 'H', '=>', 'H'])})"
+            definition_body = body_text
+            for binder_name, binder_sort in reversed(binders):
+                definition_body = f"fun {binder_name}:{binder_sort} => {definition_body}"
+        else:
+            proof = "(fun Q H => H)"
+            definition_body = body_text
+        body_expr = parse_expr(body_text)
+        if body_expr is None:
+            continue
+        return target_name, DefinitionInfo(target_sort, definition_body, proof, tuple(binder_names), body_expr)
     return None
+
+
+def normalize_defined_expr(expr: Expr, definitions: dict[str, DefinitionInfo]) -> Expr:
+    if expr.kind == "var":
+        assert expr.value is not None
+        definition = definitions.get(expr.value)
+        if definition is not None and not definition.binders:
+            return normalize_defined_expr(definition.body, definitions)
+        return expr
+    if expr.kind == "app" and expr.args and expr.args[0].kind == "var":
+        head = expr.args[0]
+        assert head.value is not None
+        args = tuple(normalize_defined_expr(arg, definitions) for arg in expr.args[1:])
+        definition = definitions.get(head.value)
+        if definition is not None and len(definition.binders) == len(args):
+            subst = dict(zip(definition.binders, args))
+            return normalize_defined_expr(substitute_expr(definition.body, subst), definitions)
+        return Expr("app", args=(head,) + args)
+    if not expr.args:
+        return expr
+    return Expr(
+        expr.kind,
+        value=expr.value,
+        args=tuple(normalize_defined_expr(arg, definitions) for arg in expr.args),
+        sort=expr.sort,
+    )
+
+
+def definition_reflexivity_proof(proposition: str, definitions: dict[str, DefinitionInfo]) -> str | None:
+    expr = parse_expr(proposition)
+    if expr is None:
+        return None
+    binders, body = collect_foralls(expr)
+    if body.kind != "eq":
+        return None
+    left = normalize_defined_expr(body.args[0], definitions)
+    right = normalize_defined_expr(body.args[1], definitions)
+    if expr_key(left) != expr_key(right):
+        return None
+    args = [name for name, _ in binders] + ["Q", "H"]
+    return f"({' '.join(['fun'] + args + ['=>', 'H'])})"
 
 
 def add_function_definition_skeletons(lines: list[str], proof_text: str | None) -> list[str]:
@@ -545,8 +636,8 @@ def add_function_definition_skeletons(lines: list[str], proof_text: str | None) 
         if match:
             variable_sorts[match.group("name")] = match.group("sort").strip()
 
-    definitions: dict[str, str] = {}
-    definition_claims: set[str] = set()
+    definitions: dict[str, DefinitionInfo] = {}
+    definition_claims: dict[str, str] = {}
     for line in lines:
         claim = proposition_after_colon(line, "claim ")
         if claim is None:
@@ -554,12 +645,12 @@ def add_function_definition_skeletons(lines: list[str], proof_text: str | None) 
         claim_name, proposition = claim
         if claim_name not in definition_step_names:
             continue
-        found = fresh_set_definition(claim_name, proposition, variable_sorts)
+        found = fresh_definition(proposition, variable_sorts)
         if found is None:
             continue
-        target, body = found
-        definitions.setdefault(target, body)
-        definition_claims.add(claim_name)
+        target, definition = found
+        definitions.setdefault(target, definition)
+        definition_claims[claim_name] = definition.proof
 
     if not definitions:
         return list(lines)
@@ -574,25 +665,22 @@ def add_function_definition_skeletons(lines: list[str], proof_text: str | None) 
             index += 1
             continue
         if not inserted_definitions and (line.startswith("Axiom ") or line.startswith("Theorem ")):
-            for name, body in definitions.items():
-                result.append(f"Definition {name} : set := {body}.")
+            for name, definition in definitions.items():
+                result.append(f"Definition {name} : {definition.sort} := {definition.body_text}.")
             inserted_definitions = True
         result.append(line)
         claim = proposition_after_colon(line, "claim ")
-        if (
-            claim is not None
-            and claim[0] in definition_claims
-            and index + 1 < len(lines)
-            and lines[index + 1] == "{ admit. }"
-        ):
-            result.append("{ exact (fun Q H => H). }")
-            index += 2
-            continue
+        if claim is not None and index + 1 < len(lines) and lines[index + 1] == "{ admit. }":
+            proof = definition_claims.get(claim[0]) or definition_reflexivity_proof(claim[1], definitions)
+            if proof is not None:
+                result.append("{ exact " + proof + ". }")
+                index += 2
+                continue
         index += 1
 
     if not inserted_definitions:
-        for name, body in definitions.items():
-            result.append(f"Definition {name} : set := {body}.")
+        for name, definition in definitions.items():
+            result.append(f"Definition {name} : {definition.sort} := {definition.body_text}.")
     return result
 
 
