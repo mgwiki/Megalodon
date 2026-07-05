@@ -882,32 +882,35 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
        match try_intro () with
        | Some(d) -> d
        | None ->
-          match native_aby_upair_elim depth cx hyps goal a b with
+          match native_aby_binunion_elim depth cx hyps goal a b with
           | Some(d) -> d
           | None ->
-             match native_aby_xm_or_cases depth cx hyps goal a b with
+             match native_aby_upair_elim depth cx hyps goal a b with
              | Some(d) -> d
              | None ->
-                match native_aby_if_correct depth cx hyps goal a b with
+                match native_aby_xm_or_cases depth cx hyps goal a b with
                 | Some(d) -> d
                 | None ->
-                   match native_aby_nand_or depth cx hyps goal a b with
+                   match native_aby_if_correct depth cx hyps goal a b with
                    | Some(d) -> d
                    | None ->
-                      if allow_imp then
-                        begin
-                          match find_or_elim_hyp depth cx hyps goal 0 with
-                          | Some(d) -> d
-                          | None ->
-                             match find_imp_elim_hyp allow_or depth cx hyps goal 0 with
+                      match native_aby_nand_or depth cx hyps goal a b with
+                      | Some(d) -> d
+                      | None ->
+                         if allow_imp then
+                           begin
+                             match find_or_elim_hyp depth cx hyps goal 0 with
                              | Some(d) -> d
                              | None ->
-                                match find_known_elim allow_or depth cx hyps goal with
+                                match find_imp_elim_hyp allow_or depth cx hyps goal 0 with
                                 | Some(d) -> d
-                                | None -> raise SearchBacktrack
-                        end
-                      else
-                        raise SearchBacktrack
+                                | None ->
+                                   match find_known_elim allow_or depth cx hyps goal with
+                                   | Some(d) -> d
+                                   | None -> raise SearchBacktrack
+                           end
+                         else
+                           raise SearchBacktrack
      end
   | _ ->
      begin
@@ -943,6 +946,9 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
              match is_eq_tm goal with
              | Some(a,x,z) ->
                 begin
+                  match native_aby_binunion_eq_proof depth cx hyps a x z with
+                  | Some(d) -> d
+                  | None ->
                   match eq_prop_ext_proof depth cx hyps a x z with
                   | Some(d) -> d
                   | None ->
@@ -969,33 +975,45 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
                                     | None -> try_remaining ()
                 end
              | None ->
+                match native_aby_binunion_sub_proof depth cx hyps goal with
+                | Some(d) -> d
+                | None ->
+                   match native_aby_binunion_intro depth cx hyps goal with
+                   | Some(d) -> d
+                   | None ->
+                      match native_aby_upair_intro depth cx hyps goal with
+                      | Some(d) -> d
+                      | None ->
+                         match repl_ext_sub_proof depth cx hyps goal with
+                         | Some(d) -> d
+                         | None ->
+                            match eq_in_elem_rewrite_proof depth cx hyps goal with
+                            | Some(d) -> d
+                            | None ->
+                               match eq_pred_rewrite_proof depth cx hyps goal with
+                               | Some(d) -> d
+                               | None -> try_remaining ()
+       in
+       match is_eq_tm goal with
+       | Some(_) -> direct_fallback ()
+       | None ->
+          match native_aby_binunion_sub_proof depth cx hyps goal with
+          | Some(d) -> d
+          | None ->
+             match native_aby_binunion_intro depth cx hyps goal with
+             | Some(d) -> d
+             | None ->
                 match native_aby_upair_intro depth cx hyps goal with
                 | Some(d) -> d
                 | None ->
                    match repl_ext_sub_proof depth cx hyps goal with
                    | Some(d) -> d
                    | None ->
-                      match eq_in_elem_rewrite_proof depth cx hyps goal with
-                      | Some(d) -> d
-                      | None ->
-                         match eq_pred_rewrite_proof depth cx hyps goal with
-                         | Some(d) -> d
-                         | None -> try_remaining ()
-       in
-       match is_eq_tm goal with
-       | Some(_) -> direct_fallback ()
-       | None ->
-          match native_aby_upair_intro depth cx hyps goal with
-          | Some(d) -> d
-          | None ->
-             match repl_ext_sub_proof depth cx hyps goal with
-             | Some(d) -> d
-             | None ->
-                let goal_hn = fst (headnorm goal sigdelta []) in
-                if goal_hn <> tm_beta_eta_norm goal then
-                  native_aby_direct_depth allow_imp allow_or (depth-1) cx hyps goal_hn
-                else
-                  direct_fallback ()
+                      let goal_hn = fst (headnorm goal sigdelta []) in
+                      if goal_hn <> tm_beta_eta_norm goal then
+                        native_aby_direct_depth allow_imp allow_or (depth-1) cx hyps goal_hn
+                      else
+                        direct_fallback ()
      end
 and native_aby_classical_ex depth cx hyps goal =
   if depth <= 0 then None else
@@ -1272,6 +1290,327 @@ and native_aby_upair_intro depth cx hyps goal =
          | None -> try_right ()
        end
     | _ -> None
+  with
+  | Not_found -> None
+  | SearchBacktrack -> None
+  | Failure(_) -> None
+and native_aby_binunion_intro depth cx hyps goal =
+  if depth <= 0 then None else
+  try
+    let in_h = Hashtbl.find sigtmh "In" in
+    let union_h = Hashtbl.find sigtmh "Union" in
+    let upair_h = Hashtbl.find sigtmh "UPair" in
+    let binunion_h = Hashtbl.find sigtmh "binunion" in
+    let unionI_h = Hashtbl.find sigknh "UnionI" in
+    let upairI1_h = Hashtbl.find sigknh "UPairI1" in
+    let upairI2_h = Hashtbl.find sigknh "UPairI2" in
+    let in_tm x y = Ap(Ap(TmH(in_h),x),y) in
+    let build container elem member dmem dmember =
+      PPfAp
+        (PPfAp
+           (PTmAp(PTmAp(PTmAp(Known(unionI_h),container),elem),member),
+            dmem),
+         dmember)
+    in
+    let try_sources elem left right container =
+      let try_left () =
+        try
+          let dmem = native_aby_direct_depth true true (depth-1) cx hyps (in_tm elem left) in
+          let dleft = PTmAp(PTmAp(Known(upairI1_h),left),right) in
+          Some(build container elem left dmem dleft)
+        with
+        | SearchBacktrack -> None
+        | Failure(_) -> None
+      in
+      let try_right () =
+        try
+          let dmem = native_aby_direct_depth true true (depth-1) cx hyps (in_tm elem right) in
+          let dright = PTmAp(PTmAp(Known(upairI2_h),left),right) in
+          Some(build container elem right dmem dright)
+        with
+        | SearchBacktrack -> None
+        | Failure(_) -> None
+      in
+      match try_left () with
+      | Some(d) -> Some(d)
+      | None -> try_right ()
+    in
+    match goal with
+    | Ap(Ap(TmH(ih),elem),target) when ih = in_h ->
+       begin
+         match target with
+         | Ap(Ap(TmH(bh),left),right) when bh = binunion_h ->
+            let container = Ap(Ap(TmH(upair_h),left),right) in
+            try_sources elem left right container
+         | Ap(TmH(uh),Ap(Ap(TmH(ph),left),right)) when uh = union_h && ph = upair_h ->
+            try_sources elem left right target
+         | _ -> None
+       end
+    | _ -> None
+  with
+  | Not_found -> None
+  | SearchBacktrack -> None
+  | Failure(_) -> None
+and native_aby_binunion_elim depth cx hyps goal a b =
+  if depth <= 0 then None else
+  try
+    let in_h = Hashtbl.find sigtmh "In" in
+    let upair_h = Hashtbl.find sigtmh "UPair" in
+    let binunion_h = Hashtbl.find sigtmh "binunion" in
+    let unionE_impred_h = Hashtbl.find sigknh "UnionE_impred" in
+    let upairE_h = Hashtbl.find sigknh "UPairE" in
+    let in_tm x y = Ap(Ap(TmH(in_h),x),y) in
+    match a,b with
+    | Ap(Ap(TmH(ih1),elem),left), Ap(Ap(TmH(ih2),elem2),right)
+         when ih1 = in_h && ih2 = in_h ->
+       begin
+         match conv elem elem2 sigdelta [] with
+         | Some(_) ->
+            let union_target = Ap(Ap(TmH(binunion_h),left),right) in
+            let expected_hyp = in_tm elem union_target in
+            let container = Ap(Ap(TmH(upair_h),left),right) in
+            let rec scan scanhyps i =
+              match scanhyps with
+              | h::r ->
+                 begin
+                   match conv h expected_hyp sigdelta [] with
+                   | Some(_) ->
+                      let left1 = tmshift 0 1 left in
+                      let right1 = tmshift 0 1 right in
+                      let elem1 = tmshift 0 1 elem in
+                      let container1 = tmshift 0 1 container in
+                      let w = DB(0) in
+                      let elem_in_w = in_tm elem1 w in
+                      let w_in_container = in_tm w container1 in
+                      let shifted_hyps = List.map (tmshift 0 1) hyps in
+                      let branch_goal = tmshift 0 1 goal in
+                      let eq_w_left = eq_tm Set w left1 in
+                      let eq_w_right = eq_tm Set w right1 in
+                      let pair_or = Ap(Ap(TmH(egal_or_id),eq_w_left),eq_w_right) in
+                      let dpair =
+                        PPfAp
+                          (PTmAp(PTmAp(PTmAp(Known(upairE_h),w),left1),right1),
+                           Hyp(0))
+                      in
+                      begin
+                        match or_elim_proof
+                                (depth-1)
+                                (Set::cx)
+                                (w_in_container::elem_in_w::shifted_hyps)
+                                dpair
+                                pair_or
+                                branch_goal with
+                        | Some(body) ->
+                           let branch = TLam(Set,PLam(elem_in_w,PLam(w_in_container,body))) in
+                           Some
+                             (PPfAp
+                                (PTmAp
+                                   (PPfAp
+                                      (PTmAp(PTmAp(Known(unionE_impred_h),container),elem),
+                                       Hyp(i)),
+                                    goal),
+                                 branch))
+                        | None -> scan r (i+1)
+                      end
+                   | None -> scan r (i+1)
+                 end
+              | [] -> None
+            in
+            scan hyps 0
+         | None -> None
+       end
+    | _ -> None
+  with
+  | Not_found -> None
+  | SearchBacktrack -> None
+  | Failure(_) -> None
+and native_aby_binunion_shape binunion_h union_h upair_h m =
+  match m with
+  | Ap(Ap(TmH(h),left),right) when h = binunion_h -> Some(left,right)
+  | Ap(TmH(uh),Ap(Ap(TmH(ph),left),right)) when uh = union_h && ph = upair_h -> Some(left,right)
+  | _ -> None
+and native_aby_binunion_contains binunion_h union_h upair_h m =
+  match native_aby_binunion_shape binunion_h union_h upair_h m with
+  | Some(_) -> true
+  | None ->
+  match m with
+  | Ap(m,n) -> native_aby_binunion_contains binunion_h union_h upair_h m || native_aby_binunion_contains binunion_h union_h upair_h n
+  | TpAp(m,_) -> native_aby_binunion_contains binunion_h union_h upair_h m
+  | Lam(_,m) | All(_,m) -> native_aby_binunion_contains binunion_h union_h upair_h m
+  | Imp(m,n) -> native_aby_binunion_contains binunion_h union_h upair_h m || native_aby_binunion_contains binunion_h union_h upair_h n
+  | _ -> false
+and native_aby_binunion_membership depth cx hyps elem target =
+  if depth <= 0 then raise SearchBacktrack else
+  let in_h = Hashtbl.find sigtmh "In" in
+  let subq_h = Hashtbl.find sigtmh "Subq" in
+  let empty_h = Hashtbl.find sigtmh "Empty" in
+  let union_h = Hashtbl.find sigtmh "Union" in
+  let upair_h = Hashtbl.find sigtmh "UPair" in
+  let binunion_h = Hashtbl.find sigtmh "binunion" in
+  let unionI_h = Hashtbl.find sigknh "UnionI" in
+  let binunionE_h = Hashtbl.find sigknh "binunionE" in
+  let upairI1_h = Hashtbl.find sigknh "UPairI1" in
+  let upairI2_h = Hashtbl.find sigknh "UPairI2" in
+  let emptyE_h = Hashtbl.find sigknh "EmptyE" in
+  let in_tm x y = Ap(Ap(TmH(in_h),x),y) in
+  let goal = in_tm elem target in
+  let build_intro container member dmem dmember =
+    PPfAp
+      (PPfAp
+         (PTmAp(PTmAp(PTmAp(Known(unionI_h),container),elem),member),
+          dmem),
+       dmember)
+  in
+  let find_empty_elim () =
+    let rec scan scanhyps i =
+      match scanhyps with
+      | Ap(Ap(TmH(ih),e),TmH(eh))::r when ih = in_h && eh = empty_h ->
+         let dfalse = PPfAp(PTmAp(Known(emptyE_h),e),Hyp(i)) in
+         Some(PTmAp(dfalse,goal))
+      | _::r -> scan r (i+1)
+      | [] -> None
+    in
+    scan hyps 0
+  in
+  let try_intro_target () =
+    match native_aby_binunion_shape binunion_h union_h upair_h target with
+    | Some(left,right) ->
+       let container = Ap(Ap(TmH(upair_h),left),right) in
+       let try_left () =
+         try
+           let dmem = native_aby_binunion_membership (depth-1) cx hyps elem left in
+           let dleft = PTmAp(PTmAp(Known(upairI1_h),left),right) in
+           Some(build_intro container left dmem dleft)
+         with
+         | SearchBacktrack -> None
+         | Failure(_) -> None
+       in
+       let try_right () =
+         try
+           let dmem = native_aby_binunion_membership (depth-1) cx hyps elem right in
+           let dright = PTmAp(PTmAp(Known(upairI2_h),left),right) in
+           Some(build_intro container right dmem dright)
+         with
+         | SearchBacktrack -> None
+         | Failure(_) -> None
+       in
+       begin
+         match try_left () with
+         | Some(d) -> Some(d)
+         | None -> try_right ()
+       end
+    | None -> None
+  in
+  let try_elim_source () =
+    let rec scan scanhyps i =
+      match scanhyps with
+      | Ap(Ap(TmH(ih),e),source)::r when ih = in_h ->
+         begin
+           match conv e elem sigdelta [], native_aby_binunion_shape binunion_h union_h upair_h source with
+           | Some(_), Some(left,right) ->
+              let a = in_tm elem left in
+              let b = in_tm elem right in
+              let d_or =
+                PPfAp
+                  (PTmAp(PTmAp(PTmAp(Known(binunionE_h),left),right),elem),
+                   Hyp(i))
+              in
+              begin
+                try
+                  let da = native_aby_binunion_membership (depth-1) cx (a::hyps) elem target in
+                  let db = native_aby_binunion_membership (depth-1) cx (b::hyps) elem target in
+                  Some(PPfAp(PPfAp(PTmAp(d_or,goal),PLam(a,da)),PLam(b,db)))
+                with
+                | SearchBacktrack -> scan r (i+1)
+                | Failure(_) -> scan r (i+1)
+              end
+           | _ -> scan r (i+1)
+         end
+      | _::r -> scan r (i+1)
+      | [] -> None
+    in
+    scan hyps 0
+  in
+  let try_subq_hyp () =
+    let rec scan scanhyps i =
+      match scanhyps with
+      | Ap(Ap(TmH(h),source),target2)::r when h = subq_h ->
+         begin
+           match conv target2 target sigdelta [] with
+           | Some(_) ->
+              begin
+                try
+                  let dsource = native_aby_binunion_membership (depth-1) cx hyps elem source in
+                  Some(PPfAp(PTmAp(Hyp(i),elem),dsource))
+                with
+                | SearchBacktrack -> scan r (i+1)
+                | Failure(_) -> scan r (i+1)
+              end
+           | None -> scan r (i+1)
+         end
+      | _::r -> scan r (i+1)
+      | [] -> None
+    in
+    scan hyps 0
+  in
+  match find_hyp_proving sigdelta hyps goal 0 with
+  | Some(d) -> d
+  | None ->
+     match find_empty_elim () with
+     | Some(d) -> d
+     | None ->
+        match try_subq_hyp () with
+        | Some(d) -> d
+        | None ->
+           match try_elim_source () with
+           | Some(d) -> d
+           | None ->
+              match try_intro_target () with
+              | Some(d) -> d
+              | None -> raise SearchBacktrack
+and native_aby_binunion_sub_proof depth cx hyps goal =
+  if depth <= 0 then None else
+  try
+    let subq_h = Hashtbl.find sigtmh "Subq" in
+    let in_h = Hashtbl.find sigtmh "In" in
+    match goal with
+    | Ap(Ap(TmH(h),source),target) when h = subq_h ->
+       let source1 = tmshift 0 1 source in
+       let target1 = tmshift 0 1 target in
+       let elem = DB(0) in
+       let elem_in_source = Ap(Ap(TmH(in_h),elem),source1) in
+       let body =
+         native_aby_binunion_membership
+           (depth-1)
+           (Set::cx)
+           (elem_in_source::List.map (tmshift 0 1) hyps)
+           elem
+           target1
+       in
+       Some(TLam(Set,PLam(elem_in_source,body)))
+    | _ -> None
+  with
+  | Not_found -> None
+  | SearchBacktrack -> None
+  | Failure(_) -> None
+and native_aby_binunion_eq_proof depth cx hyps a lhs rhs =
+  if depth <= 0 || a <> Set then None else
+  try
+    let binunion_h = Hashtbl.find sigtmh "binunion" in
+    let union_h = Hashtbl.find sigtmh "Union" in
+    let upair_h = Hashtbl.find sigtmh "UPair" in
+    if not (native_aby_binunion_contains binunion_h union_h upair_h lhs || native_aby_binunion_contains binunion_h union_h upair_h rhs) then
+      None
+    else
+      let subq_h = Hashtbl.find sigtmh "Subq" in
+      let set_ext_h = Hashtbl.find sigknh "set_ext" in
+      let left_sub_goal = Ap(Ap(TmH(subq_h),lhs),rhs) in
+      let right_sub_goal = Ap(Ap(TmH(subq_h),rhs),lhs) in
+      match native_aby_binunion_sub_proof depth cx hyps left_sub_goal,
+            native_aby_binunion_sub_proof depth cx hyps right_sub_goal with
+      | Some(left_sub), Some(right_sub) ->
+         Some(PPfAp(PPfAp(PTmAp(PTmAp(Known(set_ext_h),lhs),rhs),left_sub),right_sub))
+      | _ -> None
   with
   | Not_found -> None
   | SearchBacktrack -> None

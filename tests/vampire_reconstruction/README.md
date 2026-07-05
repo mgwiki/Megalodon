@@ -77,10 +77,13 @@ elimination/introduction and element-position equality rewriting, and the
 `If_i_correct` choice split through `Eps_i_ax` and `xm`.  It also reconstructs
 classical excluded-middle case splits that prove disjunctions, including
 `If_i_or`, and the unordered-pair replacement patterns behind `UPairE`,
-`UPairI1`, and `UPairI2`.  Transparent definitions that expose Church-encoded
-disjunctions can be eliminated as local hypotheses.  It expands the local `neq`
-definition, plus transparent definitions that expose `forall` or `->`, before
-falling back to the certificate admit.
+`UPairI1`, and `UPairI2`.  It handles binary-union introduction/elimination and
+deterministic membership transport through binary-union subset/equality goals,
+including the early associativity, commutativity, identity, and subset-minimality
+lemmas.  Transparent definitions that expose Church-encoded disjunctions can be
+eliminated as local hypotheses.  It expands the local `neq` definition, plus
+transparent definitions that expose `forall` or `->`, before falling back to the
+certificate admit.
 When both `-vampireaby` and `-vampireabynative` are enabled, Megalodon still
 emits and checks Vampire certificates when Vampire succeeds; if Vampire times
 out but native reconstruction succeeds, the checked native proof is used.  Use
@@ -94,7 +97,7 @@ VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_live_aby_smoke.sh
 ```
 
 Smoke-test the restricted native reconstruction path on the early hammer `aby`
-block through the unordered-pair introduction/elimination theorems:
+block through the binary-union algebra lemmas:
 
 ```sh
 VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_native_aby_smoke.sh
