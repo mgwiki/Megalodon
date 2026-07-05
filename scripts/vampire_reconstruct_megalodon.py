@@ -990,8 +990,22 @@ def proof_head(proof: str) -> str:
     return f"({proof})"
 
 
+def fresh_identifier(base: str, *texts: str) -> str:
+    used = set()
+    for text in texts:
+        used.update(re.findall(r"[_A-Za-z][_A-Za-z0-9']*", text))
+    name = base
+    index = 0
+    while name in used:
+        index += 1
+        name = f"{base}{index}"
+    return name
+
+
 def eq_symmetry_proof(proof: str, left: Expr) -> str:
-    return f"({proof_head(proof)} (fun z:set => z = {expr_text(left)}) (fun R Hr => Hr))"
+    left_text = expr_text(left)
+    name = fresh_identifier("zz", left_text)
+    return f"({proof_head(proof)} (fun {name}:set => {name} = {left_text}) (fun R Hr => Hr))"
 
 
 def eq_transitivity_proof(proofs: list[str], start_text: str | None = None) -> str | None:
@@ -1553,6 +1567,67 @@ def vampire_or_intro_proof(
     return None
 
 
+def equality_direct_rule_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if expr.kind != "eq" or rule_depth <= 0:
+        return None
+    target_pairs = [(expr.args[0], expr.args[1])]
+    normalized_pair = (normalize_defined_expr(expr.args[0], definitions), normalize_defined_expr(expr.args[1], definitions))
+    if (expr_key(normalized_pair[0]), expr_key(normalized_pair[1])) != (expr_key(expr.args[0]), expr_key(expr.args[1])):
+        target_pairs.append(normalized_pair)
+
+    for target_left, target_right in target_pairs:
+        for rule in reversed(rules):
+            if rule.conclusion.kind != "eq":
+                continue
+            variables = set(rule.binders)
+
+            direct_subst: dict[str, Expr] = {}
+            if (
+                match_expr(rule.conclusion.args[0], target_left, variables, direct_subst)
+                and match_expr(rule.conclusion.args[1], target_right, variables, direct_subst)
+            ):
+                parts = rule_application_parts(
+                    rule,
+                    direct_subst,
+                    known,
+                    known_canonical,
+                    rules,
+                    eq_facts,
+                    definitions,
+                    rule_depth - 1,
+                )
+                if parts is not None:
+                    return rule_application_text(parts)
+
+            reverse_subst: dict[str, Expr] = {}
+            if (
+                match_expr(rule.conclusion.args[0], target_right, variables, reverse_subst)
+                and match_expr(rule.conclusion.args[1], target_left, variables, reverse_subst)
+            ):
+                parts = rule_application_parts(
+                    rule,
+                    reverse_subst,
+                    known,
+                    known_canonical,
+                    rules,
+                    eq_facts,
+                    definitions,
+                    rule_depth - 1,
+                )
+                if parts is not None:
+                    proof = rule_application_text(parts)
+                    return eq_symmetry_proof(proof, target_right)
+    return None
+
+
 def proof_for_expr(
     expr: Expr,
     known: dict[str, str],
@@ -1598,6 +1673,19 @@ def proof_for_expr(
     normalized_eq_proof = equality_chain_proof(normalized, eq_facts)
     if normalized_eq_proof is not None:
         return normalized_eq_proof
+
+    if allow_rule:
+        direct_rule_proof = equality_direct_rule_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth,
+        )
+        if direct_rule_proof is not None:
+            return direct_rule_proof
 
     congruence_proof = equality_congruence_proof(expr, known, known_canonical, rules, eq_facts, definitions, rule_depth)
     if congruence_proof is not None:
