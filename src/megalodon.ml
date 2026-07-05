@@ -651,6 +651,9 @@ let rec has_or_hyp hyps =
   | _::r -> has_or_hyp r
   | [] -> false
 
+let egal_false_id = "5bf697cb0d1cdefbe881504469f6c48cc388994115b82514dfc4fb5e67ac1a87"
+let egal_not_id = "058f630dd89cad5a22daa56e097e3bdf85ce16ebd3dbf7994e404e2a98800f7f"
+
 let rec and_elim_proof sgdelta d p goal =
   match conv p goal sgdelta [] with
   | Some(_) -> Some(d)
@@ -682,6 +685,7 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
   if depth <= 0 then raise SearchBacktrack;
   match goal with
   | Imp(p,q) -> PLam(p,native_aby_direct_depth allow_imp allow_or depth cx (p::hyps) q)
+  | Ap(TmH(h),p) when h = egal_not_id -> PLam(p,native_aby_direct_depth allow_imp allow_or depth cx (p::hyps) (TmH(egal_false_id)))
   | All(a,q) -> TLam(a,native_aby_direct_depth allow_imp allow_or depth (a::cx) (List.map (tmshift 0 1) hyps) q)
   | Ap(Ap(TmH(h),a),b) when h = egal_and_id ->
      let da = native_aby_direct_depth allow_imp allow_or (depth-1) cx hyps a in
@@ -788,6 +792,8 @@ and find_imp_elim_hyp allow_or depth cx hyps goal i =
 and apply_imp_chain allow_or depth cx hyps d p goal =
   if depth <= 0 then None else
   match p with
+  | Ap(TmH(h),a) when h = egal_not_id ->
+     apply_imp_chain allow_or depth cx hyps d (Imp(a,TmH(egal_false_id))) goal
   | Imp(a,b) ->
      begin
        try
