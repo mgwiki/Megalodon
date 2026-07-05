@@ -427,6 +427,158 @@ def append_application_args(expr: Expr, args: list[Expr]) -> Expr:
     return Expr("app", args=(expr,) + tuple(args))
 
 
+def split_top_level_equality(text: str) -> tuple[str, str] | None:
+    text = strip_balanced_parens(text)
+    depth = 0
+    for index, char in enumerate(text):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth < 0:
+                return None
+        elif char == "=" and depth == 0:
+            return text[:index].strip(), text[index + 1 :].strip()
+    return None
+
+
+def tptp_input_equality(formula: str) -> tuple[Expr, Expr] | None:
+    match = re.match(r"\s*tff\([^,]+,\s*axiom,\s*(?P<body>.*)\)\.\s*$", formula, re.DOTALL)
+    if match is None:
+        return None
+    sides = split_top_level_equality(match.group("body"))
+    if sides is None:
+        return None
+    left = tptp_term_to_expr(sides[0])
+    right = tptp_term_to_expr(sides[1])
+    if left is None or right is None:
+        return None
+    return left, right
+
+
+def sort_after_arguments(sort: str, argument_count: int) -> str | None:
+    pieces = [piece.strip() for piece in sort.split("->")]
+    if argument_count >= len(pieces):
+        return None
+    return "->".join(pieces[argument_count:])
+
+
+def expr_sort(expr: Expr, variable_sorts: dict[str, str]) -> str | None:
+    if expr.kind == "var":
+        assert expr.value is not None
+        return variable_sorts.get(expr.value)
+    if expr.kind == "app" and expr.args:
+        head_sort = expr_sort(expr.args[0], variable_sorts)
+        if head_sort is None:
+            return None
+        return sort_after_arguments(head_sort, len(expr.args) - 1)
+    return None
+
+
+def pointwise_set_equality_proposition(left: Expr, right: Expr, sort: str) -> str | None:
+    pieces = [piece.strip() for piece in sort.split("->")]
+    if len(pieces) < 2 or pieces[-1] != "set" or any(piece != "set" for piece in pieces[:-1]):
+        return None
+    binders = [Expr("var", value=f"X{index}") for index in range(len(pieces) - 1)]
+    left_text = expr_text(append_application_args(left, binders))
+    right_text = expr_text(append_application_args(right, binders))
+    proposition = f"{left_text} = {right_text}"
+    for binder in reversed(binders):
+        assert binder.value is not None
+        proposition = f"forall {binder.value}:set, {proposition}"
+    return proposition
+
+
+def recovered_input_equalities(proof_text: str, variable_sorts: dict[str, str]) -> list[str]:
+    recovered: list[str] = []
+    seen: set[str] = set()
+    for line in proof_text.splitlines():
+        match = MEGALODON_STEP_FORMULA_RE.match(line.strip())
+        if match is None or json.loads(f'"{match.group("rule")}"') != "input":
+            continue
+        formula = json.loads(f'"{match.group("formula")}"')
+        equality = tptp_input_equality(formula)
+        if equality is None:
+            continue
+        left, right = equality
+        left_sort = expr_sort(left, variable_sorts)
+        right_sort = expr_sort(right, variable_sorts)
+        if left_sort is None or left_sort != right_sort:
+            continue
+        proposition = pointwise_set_equality_proposition(left, right, left_sort)
+        if proposition is not None and proposition not in seen:
+            seen.add(proposition)
+            recovered.append(proposition)
+    return recovered
+
+
+def add_recovered_input_equalities(lines: list[str], proof_text: str | None) -> list[str]:
+    if proof_text is None:
+        return list(lines)
+    variable_sorts: dict[str, str] = {}
+    variable_re = re.compile(r"^Variable (?P<name>[_A-Za-z][_A-Za-z0-9']*):(?P<sort>[^.]+)\.$")
+    for line in lines:
+        match = variable_re.match(line)
+        if match:
+            variable_sorts[match.group("name")] = match.group("sort").strip()
+    propositions = recovered_input_equalities(proof_text, variable_sorts)
+    if not propositions:
+        return list(lines)
+
+    existing_propositions = {
+        axiom[1]
+        for line in lines
+        for axiom in [proposition_after_colon(line, "Axiom ")]
+        if axiom is not None
+    }
+    propositions = [proposition for proposition in propositions if proposition not in existing_propositions]
+    if not propositions:
+        return list(lines)
+
+    has_equality_prelude = any(line.startswith("Definition vampire_eq ") for line in lines) and any(
+        line.startswith("Infix = ") for line in lines
+    )
+    used_axiom_names = {
+        axiom[0]
+        for line in lines
+        for axiom in [proposition_after_colon(line, "Axiom ")]
+        if axiom is not None
+    }
+
+    result: list[str] = []
+    inserted_prelude = has_equality_prelude
+    inserted_axioms = False
+    axiom_index = 0
+    for line in lines:
+        if not inserted_prelude and (line.startswith("Variable ") or line.startswith("Axiom ") or line.startswith("Theorem ")):
+            result.append("Definition vampire_eq : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y.")
+            result.append("Infix = 502 := vampire_eq.")
+            inserted_prelude = True
+        if not inserted_axioms and line.startswith("Theorem "):
+            for proposition in propositions:
+                while f"ax_recovered_{axiom_index}" in used_axiom_names:
+                    axiom_index += 1
+                name = f"ax_recovered_{axiom_index}"
+                used_axiom_names.add(name)
+                result.append(f"Axiom {name}:{proposition}.")
+                axiom_index += 1
+            inserted_axioms = True
+        result.append(line)
+
+    if not inserted_prelude:
+        result.append("Definition vampire_eq : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y.")
+        result.append("Infix = 502 := vampire_eq.")
+    if not inserted_axioms:
+        for proposition in propositions:
+            while f"ax_recovered_{axiom_index}" in used_axiom_names:
+                axiom_index += 1
+            name = f"ax_recovered_{axiom_index}"
+            used_axiom_names.add(name)
+            result.append(f"Axiom {name}:{proposition}.")
+            axiom_index += 1
+    return result
+
+
 def tptp_function_definition_infos(
     proof_text: str,
     variable_sorts: dict[str, str],
@@ -2395,6 +2547,7 @@ def check_megalodon_lines(
 ) -> list[str]:
     safe_kind = kind.replace(" ", "_")
     output_lines = add_function_definition_skeletons(lines, proof_text)
+    output_lines = add_recovered_input_equalities(output_lines, proof_text)
     output_lines = fill_source_candidate_claims(output_lines, proof_text)
     output_lines = fill_repeated_claim_admits(output_lines) if fill_repeated_admits else output_lines
     if header:
