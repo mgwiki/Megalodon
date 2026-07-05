@@ -656,6 +656,28 @@ let egal_not_id = "058f630dd89cad5a22daa56e097e3bdf85ce16ebd3dbf7994e404e2a98800
 let egal_ex_id = "912ad2cdc2d23bb8aa0a5070945f2a90976a948b0e8308917244591f3747f099"
 let egal_iff_id = "9c60bab687728bc4482e12da2b08b8dbc10f5d71f5cab91acec3c00a79b335a3"
 
+let eq_tm a l r = Ap(Ap(TpAp(TmH(!eqPoly),a),l),r)
+
+let is_eq_tm m =
+  match m with
+  | Ap(Ap(TpAp(TmH(h),a),l),r) when h = !eqPoly -> Some(a,l,r)
+  | _ -> None
+
+let rec find_eq_hyp sgdelta hyps a l r i =
+  match hyps with
+  | p::tl ->
+     begin
+       match is_eq_tm p with
+       | Some(_,_,_) ->
+          begin
+            match conv p (eq_tm a l r) sgdelta [] with
+            | Some(_) -> Some(Hyp(i))
+            | None -> find_eq_hyp sgdelta tl a l r (i+1)
+          end
+       | None -> find_eq_hyp sgdelta tl a l r (i+1)
+     end
+  | [] -> None
+
 let rec and_elim_proof sgdelta d p goal =
   match conv p goal sgdelta [] with
   | Some(_) -> Some(d)
@@ -735,6 +757,12 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
        | SearchBacktrack -> try_right ()
        | Failure(_) -> try_right ()
      end
+  | Ap(Ap(TpAp(TmH(h),a),x),z) when h = !eqPoly ->
+     begin
+       match eq_trans_proof depth cx hyps a x z with
+       | Some(d) -> d
+       | None -> raise SearchBacktrack
+     end
   | _ ->
      begin
        match find_hyp_proving sigdelta hyps goal 0 with
@@ -758,6 +786,32 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
                else
                  raise SearchBacktrack
      end
+and eq_trans_proof depth cx hyps a x z =
+  if depth <= 0 then None else
+  let rec try_middle_terms scancx i =
+    match scancx with
+    | b::tl ->
+       let y = DB(i) in
+       if b = a then begin
+         match find_eq_hyp sigdelta hyps a x y 0, find_eq_hyp sigdelta hyps a y z 0 with
+         | Some(dxy), Some(dyz) ->
+            let x1 = tmshift 0 1 x in
+            let z1 = tmshift 0 1 z in
+            let z3 = tmshift 0 2 z1 in
+            let dxy = pfshift 0 1 (pftmshift 0 1 dxy) in
+            let dyz = pfshift 0 1 (pftmshift 0 1 dyz) in
+            let qxz = Ap(Ap(DB(0),x1),z1) in
+            let q_u_z = Lam(a,Lam(a,Ap(Ap(DB(2),DB(1)),z3))) in
+            let q_z_v = Lam(a,Lam(a,Ap(Ap(DB(2),z3),DB(0)))) in
+            let qyz = PPfAp(PTmAp(dxy,q_u_z),Hyp(0)) in
+            let qzy = PPfAp(PTmAp(dyz,DB(0)),qyz) in
+            Some(TLam(Ar(a,Ar(a,Prop)),PLam(qxz,PPfAp(PTmAp(dxy,q_z_v),qzy))))
+         | _ -> try_middle_terms tl (i+1)
+       end else
+         try_middle_terms tl (i+1)
+    | [] -> None
+  in
+  try_middle_terms cx 0
 and find_ex_intro depth cx hyps a q i =
   let rec find_ex_intro_rec scancx i =
     match scancx with
