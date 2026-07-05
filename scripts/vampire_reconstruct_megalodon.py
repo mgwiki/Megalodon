@@ -2754,6 +2754,26 @@ def summarize_claim_skeleton(path: Path) -> dict[str, object]:
             first_remaining.append(lines[index - 1])
         if len(first_remaining) >= 5:
             break
+    claim_admits = 0
+    refutation_implication_admits = 0
+    false_admits = 0
+    constructive_admits = 0
+    admitted_roles: dict[str, int] = {}
+    for index, line in enumerate(lines):
+        if line != "{ admit. }" or index == 0:
+            continue
+        claim_admits += 1
+        claim = proposition_after_colon(lines[index - 1], "claim ")
+        proposition = claim[1] if claim is not None else ""
+        if proposition == "vampire_false":
+            false_admits += 1
+        elif proposition.endswith("-> vampire_false"):
+            refutation_implication_admits += 1
+        else:
+            constructive_admits += 1
+        if index >= 2 and lines[index - 2].startswith("// vampire step "):
+            role = lines[index - 2].split(": ", 1)[1] if ": " in lines[index - 2] else lines[index - 2]
+            admitted_roles[role] = admitted_roles.get(role, 0) + 1
     return {
         "file": str(path),
         "problem": header.get("problem"),
@@ -2764,11 +2784,36 @@ def summarize_claim_skeleton(path: Path) -> dict[str, object]:
         "source_dependencies": header.get("source_dependencies"),
         "source_local_dependencies": header.get("source_local_dependencies"),
         "claims": sum(1 for line in lines if line.startswith("claim ")),
-        "claim_admits": sum(1 for line in lines if line == "{ admit. }"),
+        "claim_admits": claim_admits,
+        "constructive_claim_admits": constructive_admits,
+        "refutation_implication_admits": refutation_implication_admits,
+        "false_claim_admits": false_admits,
+        "admitted_vampire_roles": admitted_roles,
         "final_admits": sum(1 for line in lines if line == "admit."),
         "filled_claims": sum(1 for line in lines if line.startswith("{ exact ")),
         "first_remaining": first_remaining,
     }
+
+
+def write_claim_skeleton_summary(index: Path, rows: list[dict[str, object]]) -> Path:
+    summary = {
+        "files": len(rows),
+        "claims": sum(int(row["claims"]) for row in rows),
+        "claim_admits": sum(int(row["claim_admits"]) for row in rows),
+        "constructive_claim_admits": sum(int(row["constructive_claim_admits"]) for row in rows),
+        "refutation_implication_admits": sum(int(row["refutation_implication_admits"]) for row in rows),
+        "false_claim_admits": sum(int(row["false_claim_admits"]) for row in rows),
+        "final_admits": sum(int(row["final_admits"]) for row in rows),
+        "filled_claims": sum(int(row["filled_claims"]) for row in rows),
+    }
+    role_counts: dict[str, int] = {}
+    for row in rows:
+        for role, count in dict(row["admitted_vampire_roles"]).items():
+            role_counts[str(role)] = role_counts.get(str(role), 0) + int(count)
+    summary["admitted_vampire_roles"] = role_counts
+    path = index.with_suffix(".summary.json")
+    path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
 
 
 def write_claim_skeleton_index(directory: Path) -> Path | None:
@@ -2778,10 +2823,12 @@ def write_claim_skeleton_index(directory: Path) -> Path | None:
     if not paths:
         return None
     index = directory / "index.jsonl"
+    rows = [summarize_claim_skeleton(path) for path in paths]
     with index.open("w", encoding="utf-8") as handle:
-        for path in paths:
-            handle.write(json.dumps(summarize_claim_skeleton(path), sort_keys=True))
+        for row in rows:
+            handle.write(json.dumps(row, sort_keys=True))
             handle.write("\n")
+    write_claim_skeleton_summary(index, rows)
     return index
 
 
