@@ -277,9 +277,80 @@ def proposition_after_colon(line: str, prefix: str) -> tuple[str, str] | None:
     return name.strip(), proposition[:-1].strip()
 
 
+IDENTIFIER_CHARS = "_'0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+FORALL_RE = re.compile(r"forall (?P<name>[_A-Za-z][_A-Za-z0-9']*):(?P<sort>[^,]+), ")
+
+
+def replace_identifier(text: str, name: str, replacement: str) -> str:
+    result = []
+    index = 0
+    while index < len(text):
+        found = text.find(name, index)
+        if found < 0:
+            result.append(text[index:])
+            break
+        before_ok = found == 0 or text[found - 1] not in IDENTIFIER_CHARS
+        after_index = found + len(name)
+        after_ok = after_index == len(text) or text[after_index] not in IDENTIFIER_CHARS
+        if before_ok and after_ok:
+            result.append(text[index:found])
+            result.append(replacement)
+            index = after_index
+        else:
+            result.append(text[index:after_index])
+            index = after_index
+    return "".join(result)
+
+
+def forall_scope_end(text: str, forall_index: int) -> int:
+    if forall_index > 0 and text[forall_index - 1] == "(":
+        depth = 0
+        for index in range(forall_index - 1, len(text)):
+            if text[index] == "(":
+                depth += 1
+            elif text[index] == ")":
+                depth -= 1
+                if depth == 0:
+                    return index
+    return len(text)
+
+
+def find_forall(text: str, start: int) -> re.Match[str] | None:
+    for match in FORALL_RE.finditer(text, start):
+        if match.start() == 0 or text[match.start() - 1] not in IDENTIFIER_CHARS:
+            return match
+    return None
+
+
+def canonicalize_segment(text: str, next_var: list[int]) -> str:
+    result = []
+    index = 0
+    while True:
+        match = find_forall(text, index)
+        if match is None:
+            result.append(text[index:])
+            break
+        result.append(text[index:match.start()])
+        replacement = f"__v{next_var[0]}"
+        next_var[0] += 1
+        body_start = match.end()
+        scope_end = forall_scope_end(text, match.start())
+        body = replace_identifier(text[body_start:scope_end], match.group("name"), replacement)
+        result.append(f"forall {replacement}:{match.group('sort').strip()}, ")
+        result.append(canonicalize_segment(body, next_var))
+        index = scope_end
+    return "".join(result)
+
+
+def canonical_proposition(proposition: str) -> str:
+    return canonicalize_segment(proposition, [0])
+
+
 def fill_repeated_claim_admits(lines: list[str]) -> list[str]:
     known: dict[str, str] = {}
+    known_canonical: dict[str, str] = {}
     theorem: str | None = None
+    theorem_canonical: str | None = None
     result = list(lines)
     index = 0
     while index < len(result):
@@ -288,24 +359,27 @@ def fill_repeated_claim_admits(lines: list[str]) -> list[str]:
         if axiom is not None:
             name, proposition = axiom
             known.setdefault(proposition, name)
+            known_canonical.setdefault(canonical_proposition(proposition), name)
             index += 1
             continue
         theorem_match = proposition_after_colon(line, "Theorem ")
         if theorem_match is not None:
             _, theorem = theorem_match
+            theorem_canonical = canonical_proposition(theorem)
             index += 1
             continue
         claim = proposition_after_colon(line, "claim ")
         if claim is not None:
             name, proposition = claim
-            proof_name = known.get(proposition)
+            proof_name = known.get(proposition) or known_canonical.get(canonical_proposition(proposition))
             if proof_name is not None and index + 1 < len(result) and result[index + 1] == "{ admit. }":
                 result[index + 1] = "{ exact " + proof_name + ". }"
             known.setdefault(proposition, name)
+            known_canonical.setdefault(canonical_proposition(proposition), name)
             index += 2
             continue
         if line == "admit." and theorem is not None:
-            proof_name = known.get(theorem)
+            proof_name = known.get(theorem) or (known_canonical.get(theorem_canonical) if theorem_canonical is not None else None)
             if proof_name is not None:
                 result[index] = "exact " + proof_name + "."
         index += 1

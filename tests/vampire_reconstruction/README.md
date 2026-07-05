@@ -115,8 +115,8 @@ certificate: each rendered Vampire step is written as a `claim S...` with
 When the Python checker writes skeleton `.mg` files, it adds comments linking
 the skeleton back to the source Megalodon file, enclosing theorem, and `aby`
 line/column. It also performs a conservative first fill pass: claims whose
-proposition exactly matches an earlier axiom or claim are proved with `exact`
-instead of a fresh `admit`.
+proposition exactly matches, up to `forall` binder renaming, an earlier axiom or
+claim are proved with `exact` instead of a fresh `admit`.
 
 ```sh
 python3 scripts/vampire_reconstruct_megalodon.py \
