@@ -93,12 +93,48 @@ python3 scripts/vampire_reconstruct_megalodon.py \
   --jobs 20
 ```
 
+When Vampire emits `megalodon_source_line(...)` candidates, the manifest
+checker can extract those source files and check them with Megalodon in
+parallel:
+
+```sh
+python3 scripts/vampire_reconstruct_megalodon.py \
+  --check-existing /project/tmp/megalodon_vampire_megalodon/manifest.jsonl \
+  --jobs 20 \
+  --check-megalodon-sources
+```
+
+Add `--require-megalodon-sources` once the Vampire backend is expected to emit
+a checked Megalodon source candidate for every recorded proof.
+
+For development iterations, avoid rediscovering solvable problems.  First keep
+one manifest of Vampire-solvable TH0 files, then rerun only those files with
+the current Vampire binary:
+
+```sh
+TMPDIR=/project/tmp \
+VAMPIRE=/path/to/current/vampire \
+python3 scripts/vampire_reconstruct_megalodon.py \
+  --from-manifest /project/tmp/megalodon_vampire_megalodon_100/manifest.jsonl \
+  --work-dir /project/tmp/megalodon_vampire_iteration \
+  --limit 100 \
+  --timeout 10 \
+  --jobs 20 \
+  --proof-mode megalodon \
+  --check-megalodon-sources
+```
+
+This path does not rescan the full candidate pool; it reruns exactly the known
+solvable problem files listed in the manifest.
+
 Megalodon mode asks Vampire for the same replay information that LeanChecker
 uses (`--proof_extra lean --skolemization syntactic --shuffle_input off`) but
 emits a Megalodon reconstruction outline instead of Lean syntax.  The outline
 records each proof unit, its Vampire inference rule, parent unit ids, and
-whether replay/substitution information was recovered.  Later reconstruction
-passes should replace those outline entries by Megalodon `exact` proof terms.
+whether replay/substitution information was recovered.  For the currently
+supported theorem fragment, Vampire also emits Megalodon source candidates
+containing an `exact` proof term; the Python driver only extracts and checks
+those candidates, it does not translate the proof.
 
 Summarize the Vampire inference rules appearing in a collected manifest:
 

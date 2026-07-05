@@ -19,6 +19,7 @@ import signal
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -29,6 +30,7 @@ RESULT_RE = re.compile(r"^hammer\.(?P<line>[0-9]+)\.(?P<char>[0-9]+)\.\*\.p:")
 PROBLEM_RE = re.compile(r"^(?P<prefix>.*)\.(?P<line>[0-9]+)\.(?P<char>[0-9]+)\.th0\.p$")
 PROVED_RE = re.compile(r"SZS status (Theorem|Unsatisfiable|ContradictoryAxioms)\b")
 FATAL_OUTPUT_RE = re.compile(r"Aborted by signal|ASSERTION|User error|missing .* implementation", re.IGNORECASE)
+MEGALODON_SOURCE_LINE_RE = re.compile(r'^megalodon_source_line\("(?P<line>(?:\\.|[^"\\])*)"\)\.$')
 
 
 @dataclass
@@ -120,6 +122,17 @@ def select_obligations(prefix: Path, vampire_lines: set[int], minimum: int) -> l
     return selected
 
 
+def obligations_from_manifest(manifest: Path) -> list[tuple[int, int, Path]]:
+    selected = []
+    for row in manifest.read_text(encoding="utf-8").splitlines():
+        if not row.strip():
+            continue
+        obligation = Obligation(**json.loads(row))
+        selected.append((obligation.line, obligation.char, Path(obligation.problem)))
+    selected.sort()
+    return selected
+
+
 def vampire_command(args: argparse.Namespace, problem: Path, proof_path: Path) -> list[str]:
     cmd = [str(args.vampire)]
     if args.vampire_arg:
@@ -180,6 +193,55 @@ def proof_mode_from_path(path: Path) -> str:
     if path.name.endswith(".megalodon.out"):
         return "megalodon"
     return "tptp"
+
+
+def extract_megalodon_source_candidates(text: str) -> list[list[str]]:
+    candidates: list[list[str]] = []
+    current: list[str] | None = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line == "megalodon_source_candidate_start.":
+            current = []
+            continue
+        if line == "megalodon_source_candidate_end.":
+            if current is not None:
+                candidates.append(current)
+            current = None
+            continue
+        if current is not None:
+            match = MEGALODON_SOURCE_LINE_RE.match(line)
+            if match:
+                current.append(json.loads(f'"{match.group("line")}"'))
+    return candidates
+
+
+def check_megalodon_source_candidate(
+    megalodon: Path,
+    repo: Path,
+    proof: Path,
+    index: int,
+    lines: list[str],
+) -> list[str]:
+    tmp_root = Path(os.environ.get("TMPDIR", "/project/tmp"))
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        suffix=".mg",
+        prefix=f"{proof.stem}.{index}.",
+        dir=tmp_root,
+        delete=False,
+    ) as handle:
+        candidate = Path(handle.name)
+        handle.write("\n".join(lines))
+        handle.write("\n")
+    try:
+        proc = run([str(megalodon), str(candidate)], repo)
+        if proc.returncode != 0:
+            return [f"{proof}: Megalodon rejected source candidate {index}: {proc.stdout.strip()}"]
+    finally:
+        candidate.unlink(missing_ok=True)
+    return []
 
 
 def start_vampire(repo: Path, args: argparse.Namespace, proof_dir: Path, item: tuple[int, int, Path]) -> RunningVampire:
@@ -349,17 +411,24 @@ def run_vampire_suite(
     return obligations
 
 
-def check_obligation(obligation: Obligation) -> list[str]:
+def check_obligation(
+    obligation: Obligation,
+    repo: Path,
+    megalodon: Path,
+    check_megalodon_sources: bool = False,
+    require_megalodon_sources: bool = False,
+) -> tuple[list[str], int]:
     failures = []
+    checked_sources = 0
     problem = Path(obligation.problem)
     proof = Path(obligation.proof)
     if not problem.exists():
-        return [f"{problem}: missing problem file"]
+        return [f"{problem}: missing problem file"], checked_sources
     if sha256(problem) != obligation.problem_sha256:
         failures.append(f"{problem}: problem hash changed")
     if not proof.exists():
         failures.append(f"{proof}: missing proof file")
-        return failures
+        return failures, checked_sources
     if obligation.proof_sha256 and sha256(proof) != obligation.proof_sha256:
         failures.append(f"{proof}: proof hash changed")
     text = proof.read_text(encoding="utf-8", errors="replace")
@@ -376,30 +445,66 @@ def check_obligation(obligation: Obligation) -> list[str]:
         failures.append(f"{proof}: no proved SZS status")
     elif not proof_has_reconstruction_payload(text, proof_mode):
         failures.append(f"{proof}: no proof payload")
-    return failures
+    if proof_mode == "megalodon" and (check_megalodon_sources or require_megalodon_sources):
+        candidates = extract_megalodon_source_candidates(text)
+        if require_megalodon_sources and not candidates:
+            failures.append(f"{proof}: no Megalodon source candidate")
+        for index, lines in enumerate(candidates):
+            checked_sources += 1
+            failures.extend(check_megalodon_source_candidate(megalodon, repo, proof, index, lines))
+    return failures, checked_sources
 
 
-def check_existing(manifest: Path, jobs: int = 1) -> list[Obligation]:
+def check_existing(
+    manifest: Path,
+    repo: Path,
+    megalodon: Path,
+    jobs: int = 1,
+    check_megalodon_sources: bool = False,
+    require_megalodon_sources: bool = False,
+) -> tuple[list[Obligation], int]:
     obligations = []
     for row in manifest.read_text(encoding="utf-8").splitlines():
         if row.strip():
             obligations.append(Obligation(**json.loads(row)))
 
     failures = []
+    checked_sources = 0
     workers = max(1, jobs)
     if workers == 1:
         for obligation in obligations:
-            failures.extend(check_obligation(obligation))
+            item_failures, item_sources = check_obligation(
+                obligation,
+                repo,
+                megalodon,
+                check_megalodon_sources=check_megalodon_sources,
+                require_megalodon_sources=require_megalodon_sources,
+            )
+            failures.extend(item_failures)
+            checked_sources += item_sources
     else:
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-            for item_failures in executor.map(check_obligation, obligations):
+            futures = [
+                executor.submit(
+                    check_obligation,
+                    obligation,
+                    repo,
+                    megalodon,
+                    check_megalodon_sources,
+                    require_megalodon_sources,
+                )
+                for obligation in obligations
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                item_failures, item_sources = future.result()
                 failures.extend(item_failures)
+                checked_sources += item_sources
 
     if failures:
         for failure in failures:
             print(failure, file=sys.stderr)
         raise SystemExit(f"{len(failures)} manifest checks failed")
-    return obligations
+    return obligations, checked_sources
 
 
 def write_manifest(path: Path, obligations: Iterable[Obligation]) -> None:
@@ -427,6 +532,9 @@ def main() -> int:
     parser.add_argument("--collect-successes", action="store_true")
     parser.add_argument("--generate-only", action="store_true")
     parser.add_argument("--check-existing", type=Path)
+    parser.add_argument("--from-manifest", type=Path)
+    parser.add_argument("--check-megalodon-sources", action="store_true")
+    parser.add_argument("--require-megalodon-sources", action="store_true")
     args = parser.parse_args()
 
     repo = args.repo.resolve()
@@ -436,8 +544,17 @@ def main() -> int:
     work_dir = (repo / args.work_dir).resolve() if not args.work_dir.is_absolute() else args.work_dir
 
     if args.check_existing:
-        obligations = check_existing(args.check_existing, args.jobs)
+        obligations, checked_sources = check_existing(
+            args.check_existing,
+            repo,
+            megalodon,
+            args.jobs,
+            check_megalodon_sources=args.check_megalodon_sources,
+            require_megalodon_sources=args.require_megalodon_sources,
+        )
         print(f"checked {len(obligations)} recorded Vampire proof outputs")
+        if args.check_megalodon_sources or args.require_megalodon_sources:
+            print(f"checked {checked_sources} Megalodon source candidates")
         return 0
 
     if not megalodon.exists():
@@ -445,14 +562,23 @@ def main() -> int:
 
     work_dir.mkdir(parents=True, exist_ok=True)
     prefix = work_dir / "hammer"
-    generate_problems(repo, megalodon, source, prefix)
-    selected = select_obligations(prefix, parse_vampire_lines(results), args.limit)
-    selected_for_run = selected if args.collect_successes else selected[: args.limit]
+    if args.from_manifest:
+        selected = obligations_from_manifest(args.from_manifest)
+        if len(selected) < args.limit:
+            raise SystemExit(f"Need {args.limit} known-solvable obligations, found {len(selected)} in {args.from_manifest}")
+        selected_for_run = selected[: args.limit]
+    else:
+        generate_problems(repo, megalodon, source, prefix)
+        selected = select_obligations(prefix, parse_vampire_lines(results), args.limit)
+        selected_for_run = selected if args.collect_successes else selected[: args.limit]
     selection_path = work_dir / "selected_th0.txt"
     selection_path.write_text("\n".join(str(path) for _, _, path in selected_for_run) + "\n", encoding="utf-8")
 
     if args.generate_only:
-        print(f"generated {len(generated_th0(prefix))} TH0 obligations")
+        if args.from_manifest:
+            print(f"selected {len(selected_for_run)} known-solvable obligations from {args.from_manifest}")
+        else:
+            print(f"generated {len(generated_th0(prefix))} TH0 obligations")
         print(f"selected {len(selected_for_run)} HO-Vampire obligations in {selection_path}")
         return 0
 
@@ -462,7 +588,19 @@ def main() -> int:
     obligations = run_vampire_suite(repo, args, selected_for_run, work_dir / "proofs")
     manifest = work_dir / "manifest.jsonl"
     write_manifest(manifest, obligations)
+    checked_sources = 0
+    if args.check_megalodon_sources or args.require_megalodon_sources:
+        _, checked_sources = check_existing(
+            manifest,
+            repo,
+            megalodon,
+            args.jobs,
+            check_megalodon_sources=args.check_megalodon_sources,
+            require_megalodon_sources=args.require_megalodon_sources,
+        )
     print(f"checked {len(obligations)} Vampire proofs")
+    if args.check_megalodon_sources or args.require_megalodon_sources:
+        print(f"checked {checked_sources} Megalodon source candidates")
     print(f"manifest: {manifest}")
     return 0
 
