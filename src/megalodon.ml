@@ -948,9 +948,12 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
                            | None ->
                               match eq_func_ext_proof depth cx hyps a x z with
                               | Some(d) -> d
-                              | None -> try_remaining ()
+                           | None -> try_remaining ()
                 end
-             | None -> try_remaining ()
+             | None ->
+                match eq_pred_rewrite_proof depth cx hyps goal with
+                | Some(d) -> d
+                | None -> try_remaining ()
        in
        match is_eq_tm goal with
        | Some(_) -> direct_fallback ()
@@ -1139,6 +1142,60 @@ and eq_func_ext_proof depth cx hyps a f g =
        | SearchBacktrack -> None
        | Failure(_) -> None
      end
+  | _ -> None
+and eq_pred_rewrite_proof depth cx hyps goal =
+  if depth <= 0 then None else
+  match goal with
+  | Ap(pred,t) ->
+     let rec scan scanhyps i =
+       match scanhyps with
+       | p::r ->
+          begin
+            match is_eq_tm p with
+            | Some(a,l,rhs) ->
+               let try_left () =
+                 match conv l t sigdelta [] with
+                 | Some(_) ->
+                    begin
+                      try
+                        let source = Ap(pred,rhs) in
+                        let dsource = native_aby_direct_depth true true (depth-1) cx hyps source in
+                        let q = Lam(a,Lam(a,Ap(tmshift 0 2 pred,DB(0)))) in
+                        Some(PPfAp(PTmAp(Hyp(i),q),dsource))
+                      with
+                      | SearchBacktrack -> None
+                      | Failure(_) -> None
+                    end
+                 | None -> None
+               in
+               let try_right () =
+                 match conv rhs t sigdelta [] with
+                 | Some(_) ->
+                    begin
+                      try
+                        let source = Ap(pred,l) in
+                        let dsource = native_aby_direct_depth true true (depth-1) cx hyps source in
+                        let q = Lam(a,Lam(a,Ap(tmshift 0 2 pred,DB(1)))) in
+                        Some(PPfAp(PTmAp(Hyp(i),q),dsource))
+                      with
+                      | SearchBacktrack -> None
+                      | Failure(_) -> None
+                    end
+                 | None -> None
+               in
+               begin
+                 match try_left () with
+                 | Some(d) -> Some(d)
+                 | None ->
+                    match try_right () with
+                    | Some(d) -> Some(d)
+                    | None -> scan r (i+1)
+               end
+            | None -> scan r (i+1)
+          end
+       | [] -> None
+     in
+     scan hyps 0
   | _ -> None
 and find_ex_intro depth cx hyps a q i =
   let rec find_ex_intro_rec scancx i =
