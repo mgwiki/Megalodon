@@ -226,8 +226,8 @@ Smoke-test Vampire's checked Megalodon source-term fragment directly:
 VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_source_fragment_smoke.sh
 ```
 
-This covers input axioms plus Church-encoded conjunction introduction and
-projection without rescanning the hammer problem pool.
+This covers input axioms, Church-encoded conjunction introduction/projection,
+and Leibniz equality rewriting without rescanning the hammer problem pool.
 
 Smoke-test the restricted native reconstruction path on the early hammer `aby`
 block through the binary-union algebra lemmas:

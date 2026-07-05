@@ -41,6 +41,15 @@ run_case() {
   bin/megalodon "$source"
 }
 
+assert_contains() {
+  local file="$1"
+  local pattern="$2"
+  if ! grep -Fq "$pattern" "$file"; then
+    echo "expected $file to contain: $pattern" >&2
+    return 1
+  fi
+}
+
 cat > "$work_dir/conjunction_intro.th0.p" <<'EOF'
 thf(p,type,(p : $o)).
 thf(q,type,(q : $o)).
@@ -56,5 +65,17 @@ thf(hpq,axiom,(p & q)).
 thf(conj,conjecture,p).
 EOF
 
+cat > "$work_dir/equality_rewrite.th0.p" <<'EOF'
+thf(a,type,(a : $i)).
+thf(b,type,(b : $i)).
+thf(p,type,(p : $i > $o)).
+thf(hp,axiom,(p @ a)).
+thf(heq,axiom,(a = b)).
+thf(goal,conjecture,(p @ b)).
+EOF
+
 run_case conjunction_intro
 run_case conjunction_projection
+run_case equality_rewrite
+assert_contains "$work_dir/equality_rewrite.mg" "claim L0:"
+assert_contains "$work_dir/equality_rewrite.mg" "rewrite <- L0."
