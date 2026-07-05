@@ -2527,6 +2527,7 @@ def main() -> int:
     parser.add_argument("--vampire-arg", action="append", nargs="+")
     parser.add_argument("--collect-successes", action="store_true")
     parser.add_argument("--generate-only", action="store_true")
+    parser.add_argument("--select-all-generated", action="store_true")
     parser.add_argument("--check-existing", type=Path)
     parser.add_argument("--from-manifest", type=Path)
     parser.add_argument("--check-megalodon-sources", action="store_true")
@@ -2589,7 +2590,12 @@ def main() -> int:
         selected_for_run = selected if args.collect_successes else selected[: args.limit]
     else:
         generate_problems(repo, megalodon, source, prefix)
-        selected = select_obligations(prefix, parse_vampire_lines(results), args.limit)
+        if args.select_all_generated:
+            selected = generated_th0(prefix)
+            if len(selected) < args.limit:
+                raise SystemExit(f"Need {args.limit} generated TH0 obligations, found {len(selected)}")
+        else:
+            selected = select_obligations(prefix, parse_vampire_lines(results), args.limit)
         selected_for_run = selected if args.collect_successes else selected[: args.limit]
     selection_path = work_dir / "selected_th0.txt"
     selection_path.write_text("\n".join(str(path) for _, _, path in selected_for_run) + "\n", encoding="utf-8")

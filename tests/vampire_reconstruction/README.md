@@ -43,6 +43,31 @@ pool:
 VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_100_th0.sh --collect-successes
 ```
 
+For larger Megalodon developments that contain `aby` sites but do not have an
+`ATPresults2025`-style solvability index, export all TH0 obligations once and
+collect bounded Vampire successes directly from the generated files:
+
+```sh
+TMPDIR=/project/tmp \
+VAMPIRE=/path/to/vampire \
+python3 scripts/vampire_reconstruct_megalodon.py \
+  --source path/to/larger_development_with_aby.mg \
+  --work-dir /project/tmp/megalodon_vampire_form100 \
+  --select-all-generated \
+  --collect-successes \
+  --limit 100 \
+  --timeout 10 \
+  --jobs 20 \
+  --proof-mode megalodon \
+  --check-claim-skeletons \
+  --require-claim-skeletons \
+  --claim-skeleton-dir /project/tmp/megalodon_vampire_form100_mg
+```
+
+The driver still caps individual Vampire runs at 10 seconds.  With
+`--collect-successes`, it stops scheduling once the requested number of
+successful proof payloads has been recorded.
+
 Collect Lean proof-reconstruction artifacts from a Vampire build with
 `--proof leancheck` support:
 
