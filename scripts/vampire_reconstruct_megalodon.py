@@ -36,6 +36,7 @@ MEGALODON_STEP_FORMULA_RE = re.compile(
     r'^megalodon_step\((?P<id>[0-9]+),"(?P<rule>(?:\\.|[^"\\])*)","[^"]*",\[[^]]*\],(?:true|false),[0-9]+,"(?P<formula>(?:\\.|[^"\\])*)"\)\.$'
 )
 FRESH_SET_RE = re.compile(r"^sF[0-9]+$")
+VAMPIRE_DEPENDENCY_RE = re.compile(r"^(s[FK]|db)[0-9]+$")
 DEFINITION_RE = re.compile(r"^Definition (?P<name>[_A-Za-z][_A-Za-z0-9']*) : (?P<sort>[^:]+?) := (?P<body>.*)\.$")
 
 
@@ -400,6 +401,39 @@ def strip_balanced_parens(text: str) -> str:
     return text
 
 
+def split_sort_arrows(sort: str) -> list[str]:
+    text = strip_balanced_parens(sort)
+    pieces: list[str] = []
+    start = 0
+    depth = 0
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth < 0:
+                return [sort.strip()]
+        elif char == "-" and index + 1 < len(text) and text[index + 1] == ">" and depth == 0:
+            pieces.append(strip_balanced_parens(text[start:index].strip()))
+            start = index + 2
+            index += 1
+        index += 1
+    if depth != 0:
+        return [sort.strip()]
+    pieces.append(strip_balanced_parens(text[start:].strip()))
+    return [piece for piece in pieces if piece]
+
+
+def join_sort_arrows(pieces: Iterable[str]) -> str:
+    rendered: list[str] = []
+    for piece in pieces:
+        stripped = strip_balanced_parens(piece)
+        rendered.append(f"({stripped})" if len(split_sort_arrows(stripped)) > 1 else stripped)
+    return "->".join(rendered)
+
+
 def split_tptp_application(text: str) -> list[str] | None:
     text = strip_balanced_parens(text)
     parts: list[str] = []
@@ -448,7 +482,7 @@ def tptp_term_to_expr(text: str) -> Expr | None:
 
 
 def sort_argument_sorts(sort: str) -> list[str]:
-    pieces = [piece.strip() for piece in sort.split("->")]
+    pieces = split_sort_arrows(sort)
     return pieces[:-1] if len(pieces) > 1 and pieces[-1] == "set" else []
 
 
@@ -490,10 +524,10 @@ def tptp_input_equality(formula: str) -> tuple[Expr, Expr] | None:
 
 
 def sort_after_arguments(sort: str, argument_count: int) -> str | None:
-    pieces = [piece.strip() for piece in sort.split("->")]
+    pieces = split_sort_arrows(sort)
     if argument_count >= len(pieces):
         return None
-    return "->".join(pieces[argument_count:])
+    return join_sort_arrows(pieces[argument_count:])
 
 
 def expr_sort(expr: Expr, variable_sorts: dict[str, str]) -> str | None:
@@ -509,7 +543,7 @@ def expr_sort(expr: Expr, variable_sorts: dict[str, str]) -> str | None:
 
 
 def pointwise_set_equality_proposition(left: Expr, right: Expr, sort: str) -> str | None:
-    pieces = [piece.strip() for piece in sort.split("->")]
+    pieces = split_sort_arrows(sort)
     if len(pieces) < 2 or pieces[-1] != "set" or any(piece != "set" for piece in pieces[:-1]):
         return None
     binders = [Expr("var", value=f"X{index}") for index in range(len(pieces) - 1)]
@@ -632,13 +666,14 @@ def tptp_function_definition_infos(
             target = decode_tptp_identifier(strip_balanced_parens(target_text))
             if not FRESH_SET_RE.match(target):
                 continue
-            target_sort = variable_sorts.get(target)
-            if target_sort is None:
-                continue
-            arg_sorts = sort_argument_sorts(target_sort)
             body = tptp_term_to_expr(body_text)
             if body is None:
                 continue
+            definition_sorts = {name: info.sort for name, info in definitions.items()}
+            target_sort = variable_sorts.get(target) or expr_sort(body, {**variable_sorts, **definition_sorts})
+            if target_sort is None:
+                continue
+            arg_sorts = sort_argument_sorts(target_sort)
             binders = tuple(f"X{index}" for index in range(len(arg_sorts)))
             body = append_application_args(body, [Expr("var", value=name) for name in binders])
             body_expr_text = expr_text(body)
@@ -932,6 +967,68 @@ def fresh_definition(proposition: str, variable_sorts: dict[str, str]) -> tuple[
     return None
 
 
+def infer_argument_sorts_from_expr(
+    expr: Expr,
+    known_sorts: dict[str, str],
+    inferred_sorts: dict[str, str],
+    expected_sort: str | None = None,
+) -> None:
+    if expr.kind == "var" and expr.value is not None and expected_sort is not None:
+        inferred_sorts.setdefault(expr.value, expected_sort)
+        return
+    if expr.kind == "app" and expr.args:
+        head = expr.args[0]
+        if head.kind == "var" and head.value is not None:
+            head_sort = known_sorts.get(head.value) or inferred_sorts.get(head.value)
+            if head_sort is not None:
+                pieces = split_sort_arrows(head_sort)
+                for arg, arg_sort in zip(expr.args[1:], pieces[:-1]):
+                    if arg.kind == "var" and arg.value is not None:
+                        inferred_sorts.setdefault(arg.value, arg_sort)
+            elif expected_sort is not None:
+                arg_sorts = [
+                    (known_sorts.get(arg.value) or inferred_sorts.get(arg.value))
+                    if arg.kind == "var" and arg.value is not None
+                    else None
+                    for arg in expr.args[1:]
+                ]
+                if all(arg_sort is not None for arg_sort in arg_sorts):
+                    head_sort_pieces = [arg_sort for arg_sort in arg_sorts if arg_sort is not None]
+                    head_sort_pieces.append(expected_sort)
+                    inferred_sorts.setdefault(
+                        head.value,
+                        join_sort_arrows(head_sort_pieces),
+                    )
+        for arg in expr.args:
+            infer_argument_sorts_from_expr(arg, known_sorts, inferred_sorts)
+        return
+    for arg in expr.args:
+        infer_argument_sorts_from_expr(arg, known_sorts, inferred_sorts)
+
+
+def fresh_dependency_variables(
+    definitions: dict[str, DefinitionInfo],
+    variable_sorts: dict[str, str],
+) -> dict[str, str]:
+    known_sorts = {**variable_sorts, **{name: definition.sort for name, definition in definitions.items()}}
+    inferred_sorts: dict[str, str] = {}
+    changed = True
+    while changed:
+        before = len(inferred_sorts)
+        for definition in definitions.values():
+            pieces = split_sort_arrows(definition.sort)
+            binder_sorts = pieces[:-1]
+            result_sort = pieces[-1] if pieces else None
+            local_sorts = {**known_sorts, **inferred_sorts, **dict(zip(definition.binders, binder_sorts))}
+            infer_argument_sorts_from_expr(definition.body, local_sorts, inferred_sorts, result_sort)
+        changed = len(inferred_sorts) != before
+    return {
+        name: sort
+        for name, sort in inferred_sorts.items()
+        if VAMPIRE_DEPENDENCY_RE.match(name) and name not in known_sorts
+    }
+
+
 def normalize_defined_expr(expr: Expr, definitions: dict[str, DefinitionInfo]) -> Expr:
     if expr.kind == "var":
         assert expr.value is not None
@@ -1044,6 +1141,7 @@ def add_function_definition_skeletons(lines: list[str], proof_text: str | None) 
     if not definitions:
         return list(lines)
 
+    dependency_variables = fresh_dependency_variables(definitions, variable_sorts)
     result: list[str] = []
     inserted_definitions = False
     index = 0
@@ -1054,6 +1152,8 @@ def add_function_definition_skeletons(lines: list[str], proof_text: str | None) 
             index += 1
             continue
         if not inserted_definitions and (line.startswith("Axiom ") or line.startswith("Theorem ")):
+            for name, sort in dependency_variables.items():
+                result.append(f"Variable {name}:{sort}.")
             for name, definition in definitions.items():
                 result.append(f"Definition {name} : {definition.sort} := {definition.body_text}.")
             inserted_definitions = True
@@ -1068,6 +1168,8 @@ def add_function_definition_skeletons(lines: list[str], proof_text: str | None) 
         index += 1
 
     if not inserted_definitions:
+        for name, sort in dependency_variables.items():
+            result.append(f"Variable {name}:{sort}.")
         for name, definition in definitions.items():
             result.append(f"Definition {name} : {definition.sort} := {definition.body_text}.")
     return result
