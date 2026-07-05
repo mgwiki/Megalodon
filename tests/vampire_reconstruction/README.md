@@ -114,8 +114,9 @@ certificate: each rendered Vampire step is written as a `claim S...` with
 `admit`, and the file is checked only with `-allowincompleteqed`.
 When the Python checker writes skeleton `.mg` files, it adds comments linking
 the skeleton back to the source Megalodon file, enclosing theorem, and `aby`
-line/column. It also writes `index.jsonl` in the skeleton directory with source,
-theorem, claim, and remaining-admit counts for each file.  The checker performs
+line/column, plus the dependency names parsed from simple `aby ...` source
+lines. It also writes `index.jsonl` in the skeleton directory with source,
+dependency, theorem, claim, and remaining-admit counts for each file.  The checker performs
 a conservative fill pass before writing: claims whose proposition exactly
 matches an earlier axiom or claim, up to `forall` binder renaming, are proved
 with `exact`; it also fills small proof-term patterns such as `A -> A`,
@@ -131,10 +132,10 @@ When a checked source candidate proves the same proposition as an admitted
 skeleton claim, the checker inlines that proof body into the skeleton claim so
 the generated file remains connected to the Vampire clause outline.  The fill
 pass also uses generated definitions plus one-step Leibniz congruence to prove
-simple equality rewrites under a shared function symbol, and it can build short
-equality chains using instantiated quantified equality facts.  For quantified
-or implicational claims, it can introduce the binders/premises and then run the
-same proof search on the resulting body.
+simple equality rewrites under a shared function symbol; equality-chain search
+can also lift known or instantiated equality rewrites through application
+arguments.  For quantified or implicational claims, it can introduce the
+binders/premises and then run the same proof search on the resulting body.
 
 ```sh
 python3 scripts/vampire_reconstruct_megalodon.py \
