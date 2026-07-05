@@ -53,7 +53,7 @@ For the currently supported native reconstruction fragment, add
 Megalodon proof term using deterministic introduction, hypothesis,
 False-elimination, bounded implication-chain application, Church-encoded
 conjunction projection/reconstruction, and Church-encoded disjunction
-introduction before falling back to the certificate admit.  Use
+introduction/elimination before falling back to the certificate admit.  Use
 `-vampireabynativestrict` to fail instead of falling back when the native
 fragment cannot reconstruct the certified proof.
 
@@ -63,8 +63,8 @@ Smoke-test the live Megalodon/Vampire path on the first hammer `aby`:
 VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_live_aby_smoke.sh
 ```
 
-Smoke-test the restricted native reconstruction path on the first three hammer
-`aby` calls:
+Smoke-test the restricted native reconstruction path on the early hammer
+propositional `aby` block through `and7I`:
 
 ```sh
 VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_native_aby_smoke.sh

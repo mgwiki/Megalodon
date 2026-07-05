@@ -606,9 +606,21 @@ let rec find_hyp_proving sgdelta hyps goal i =
   match hyps with
   | p::r ->
      begin
-       match conv p goal sgdelta [] with
-       | Some(_) -> Some(Hyp(i))
-       | None -> find_hyp_proving sgdelta r goal (i+1)
+       match p,goal with
+       | Imp(_,_), Imp(_,_)
+       | All(_,_), All(_)
+       | DB(_), DB(_)
+       | TmH(_), TmH(_)
+       | Prim(_), Prim(_)
+       | TpAp(_,_), TpAp(_,_)
+       | Ap(_,_), Ap(_,_)
+       | Lam(_,_), Lam(_,_) ->
+          begin
+            match conv p goal sgdelta [] with
+            | Some(_) -> Some(Hyp(i))
+            | None -> find_hyp_proving sgdelta r goal (i+1)
+          end
+       | _ -> find_hyp_proving sgdelta r goal (i+1)
      end
   | [] -> None
 
@@ -616,9 +628,14 @@ let rec find_false_hyp sgdelta hyps i =
   match hyps with
   | p::r ->
      begin
-       match conv p (All(Prop,DB(0))) sgdelta [] with
-       | Some(_) -> Some(Hyp(i))
-       | None -> find_false_hyp sgdelta r (i+1)
+       match p with
+       | All(_,_) | TmH(_) ->
+          begin
+            match conv p (All(Prop,DB(0))) sgdelta [] with
+            | Some(_) -> Some(Hyp(i))
+            | None -> find_false_hyp sgdelta r (i+1)
+          end
+       | _ -> find_false_hyp sgdelta r (i+1)
      end
   | [] -> None
 
@@ -627,6 +644,12 @@ let egal_and_intro_id = "7f6246d08629eeb16eab93529ffe4f929f43344833ab88c77863936
 let egal_or_id = "cfe97741543f37f0262568fe55abbab5772999079ff734a49f37ed123e4363d7"
 let egal_or_intro_left_id = "d5fdb4f6cfb82cab64716bee0629544da9b7530752eb0873529def98362fd6b4"
 let egal_or_intro_right_id = "5ee4a4103f04cabe781fcdc73566d7dd74b33cb621a83145e1fcff8855469827"
+
+let rec has_or_hyp hyps =
+  match hyps with
+  | Ap(Ap(TmH(h),_),_)::_ when h = egal_or_id -> true
+  | _::r -> has_or_hyp r
+  | [] -> false
 
 let rec and_elim_proof sgdelta d p goal =
   match conv p goal sgdelta [] with
@@ -646,22 +669,23 @@ let rec and_elim_proof sgdelta d p goal =
 
 let rec find_and_elim_hyp sgdelta hyps goal i =
   match hyps with
-  | p::r ->
+  | (Ap(Ap(TmH(h),_),_) as p)::r when h = egal_and_id ->
      begin
        match and_elim_proof sgdelta (Hyp(i)) p goal with
        | Some(d) -> Some(d)
        | None -> find_and_elim_hyp sgdelta r goal (i+1)
      end
+  | _::r -> find_and_elim_hyp sgdelta r goal (i+1)
   | [] -> None
 
-let rec native_aby_direct_depth allow_imp depth cx hyps goal =
+let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
   if depth <= 0 then raise SearchBacktrack;
   match goal with
-  | Imp(p,q) -> PLam(p,native_aby_direct_depth allow_imp depth cx (p::hyps) q)
-  | All(a,q) -> TLam(a,native_aby_direct_depth allow_imp depth (a::cx) (List.map (tmshift 0 1) hyps) q)
+  | Imp(p,q) -> PLam(p,native_aby_direct_depth allow_imp allow_or depth cx (p::hyps) q)
+  | All(a,q) -> TLam(a,native_aby_direct_depth allow_imp allow_or depth (a::cx) (List.map (tmshift 0 1) hyps) q)
   | Ap(Ap(TmH(h),a),b) when h = egal_and_id ->
-     let da = native_aby_direct_depth allow_imp (depth-1) cx hyps a in
-     let db = native_aby_direct_depth allow_imp (depth-1) cx hyps b in
+     let da = native_aby_direct_depth allow_imp allow_or (depth-1) cx hyps a in
+     let db = native_aby_direct_depth allow_imp allow_or (depth-1) cx hyps b in
      if Hashtbl.mem sigdelta egal_and_intro_id then
        PPfAp(PPfAp(PTmAp(PTmAp(Known(egal_and_intro_id),a),b),da),db)
      else
@@ -670,7 +694,7 @@ let rec native_aby_direct_depth allow_imp depth cx hyps goal =
        TLam(Prop,PLam(Imp(tmshift 0 1 a,Imp(tmshift 0 1 b,DB(0))),PPfAp(PPfAp(Hyp(0),da),db)))
   | Ap(Ap(TmH(h),a),b) when h = egal_or_id ->
      let try_left () =
-       let da = native_aby_direct_depth false (depth-1) cx hyps a in
+       let da = native_aby_direct_depth false false (depth-1) cx hyps a in
        if Hashtbl.mem sigdelta egal_or_intro_left_id then
          PPfAp(PTmAp(PTmAp(Known(egal_or_intro_left_id),a),b),da)
        else
@@ -678,7 +702,7 @@ let rec native_aby_direct_depth allow_imp depth cx hyps goal =
          TLam(Prop,PLam(Imp(tmshift 0 1 a,DB(0)),PLam(Imp(tmshift 0 1 b,DB(0)),PPfAp(Hyp(1),da))))
      in
      let try_right () =
-       let db = native_aby_direct_depth false (depth-1) cx hyps b in
+       let db = native_aby_direct_depth false false (depth-1) cx hyps b in
        if Hashtbl.mem sigdelta egal_or_intro_right_id then
          PPfAp(PTmAp(PTmAp(Known(egal_or_intro_right_id),a),b),db)
        else
@@ -701,41 +725,85 @@ let rec native_aby_direct_depth allow_imp depth cx hyps goal =
           match find_false_hyp sigdelta hyps 0 with
           | Some(d) -> PTmAp(d,goal)
           | None ->
-             if allow_imp then
-               match find_imp_elim_hyp depth cx hyps goal 0 with
+             if allow_or && has_or_hyp hyps then
+               match find_or_elim_hyp depth cx hyps goal 0 with
                | Some(d) -> d
                | None -> raise SearchBacktrack
              else
-               raise SearchBacktrack
+               if allow_imp then
+                 match find_imp_elim_hyp allow_or depth cx hyps goal 0 with
+                 | Some(d) -> d
+                 | None -> raise SearchBacktrack
+               else
+                 raise SearchBacktrack
      end
-and find_imp_elim_hyp depth cx hyps goal i =
-  match hyps with
-  | p::r ->
+and find_or_elim_hyp depth cx hyps goal i =
+  let rec find_or_elim_hyp_rec scanhyps i =
+    match scanhyps with
+    | p::r ->
+       begin
+         match or_elim_proof (depth-1) cx hyps (Hyp(i)) p goal with
+         | Some(d) -> Some(d)
+         | None -> find_or_elim_hyp_rec r (i+1)
+       end
+    | [] -> None
+  in
+  find_or_elim_hyp_rec hyps i
+and prove_or_branch depth cx hyps p goal =
+  if depth <= 0 then raise SearchBacktrack else
+  match p with
+  | Ap(Ap(TmH(h),_),_) when h = egal_or_id ->
      begin
-       match apply_imp_chain (depth-1) cx hyps (Hyp(i)) p goal with
-       | Some(d) -> Some(d)
-       | None -> find_imp_elim_hyp depth cx hyps goal (i+1)
+       match or_elim_proof (depth-1) cx (p::hyps) (Hyp(0)) p goal with
+       | Some(d) -> d
+       | None -> raise SearchBacktrack
      end
-  | [] -> None
-and apply_imp_chain depth cx hyps d p goal =
+  | _ -> native_aby_direct_depth true false (depth-1) cx (p::hyps) goal
+and or_elim_proof depth cx hyps d p goal =
   if depth <= 0 then None else
-  match conv p goal sigdelta [] with
-  | Some(_) -> Some(d)
-  | None ->
-     match p with
-     | Imp(a,b) ->
-        begin
-          try
-            let da = native_aby_direct_depth true (depth-1) cx hyps a in
-            apply_imp_chain (depth-1) cx hyps (PPfAp(d,da)) b goal
-          with
-          | SearchBacktrack -> None
-          | Failure(_) -> None
-        end
-     | _ -> None
+  match p with
+  | Ap(Ap(TmH(h),a),b) when h = egal_or_id ->
+     begin
+       try
+         let da = prove_or_branch (depth-1) cx hyps a goal in
+         let db = prove_or_branch (depth-1) cx hyps b goal in
+         Some(PPfAp(PPfAp(PTmAp(d,goal),PLam(a,da)),PLam(b,db)))
+       with
+       | SearchBacktrack -> None
+       | Failure(_) -> None
+     end
+  | _ -> None
+and find_imp_elim_hyp allow_or depth cx hyps goal i =
+  let rec find_imp_elim_hyp_rec scanhyps i =
+    match scanhyps with
+    | p::r ->
+       begin
+         match apply_imp_chain allow_or (depth-1) cx hyps (Hyp(i)) p goal with
+         | Some(d) -> Some(d)
+         | None -> find_imp_elim_hyp_rec r (i+1)
+       end
+    | [] -> None
+  in
+  find_imp_elim_hyp_rec hyps i
+and apply_imp_chain allow_or depth cx hyps d p goal =
+  if depth <= 0 then None else
+  match p with
+  | Imp(a,b) ->
+     begin
+       try
+         let da = native_aby_direct_depth true allow_or (depth-1) cx hyps a in
+         apply_imp_chain allow_or (depth-1) cx hyps (PPfAp(d,da)) b goal
+       with
+       | SearchBacktrack -> None
+       | Failure(_) -> None
+     end
+  | _ ->
+     match conv p goal sigdelta [] with
+     | Some(_) -> Some(d)
+     | None -> None
 
 let native_aby_direct cx hyps goal =
-  native_aby_direct_depth true 16 cx hyps goal
+  native_aby_direct_depth true true 16 cx hyps goal
 
 let native_aby_reconstruct claimtm cxtm cxpf =
   let cx = List.map (fun (_, (a, _)) -> a) cxtm in
