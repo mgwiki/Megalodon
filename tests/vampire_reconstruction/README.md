@@ -140,6 +140,12 @@ equality before applying a bounded nested rule chain.  For quantified or
 implicational claims, it can introduce the binders/premises and then run the
 same proof search on the resulting body.
 
+The Vampire backend can render claim skeletons containing THF lambda terms,
+formula-valued function arguments, negation, disjunction, conjunction, and
+set-sorted existentials.  Existentials in rendered formulas are represented by
+a skeleton-local `vampire_exists_set` variable, because the claim skeleton is
+an admitted development artifact rather than the trusted certificate.
+
 ```sh
 python3 scripts/vampire_reconstruct_megalodon.py \
   --check-existing /project/tmp/megalodon_vampire_megalodon/manifest.jsonl \
