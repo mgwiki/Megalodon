@@ -108,10 +108,10 @@ Add `--require-megalodon-sources` once the Vampire backend is expected to emit
 a checked Megalodon source candidate for every recorded proof.
 
 Vampire's Megalodon backend also emits an admitted claim skeleton when it can
-render the original formula-level proof steps as Megalodon propositions.  This
-is a development artifact, not a trusted certificate: each rendered Vampire step
-is written as a `claim S...` with `admit`, and the file is checked only with
-`-allowincompleteqed`.
+render the original formula-level proof steps and renderable clause steps as
+Megalodon propositions.  This is a development artifact, not a trusted
+certificate: each rendered Vampire step is written as a `claim S...` with
+`admit`, and the file is checked only with `-allowincompleteqed`.
 
 ```sh
 python3 scripts/vampire_reconstruct_megalodon.py \
