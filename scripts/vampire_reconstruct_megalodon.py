@@ -82,6 +82,13 @@ class ProofRule:
     conclusion: Expr
 
 
+@dataclass(frozen=True)
+class EqFact:
+    left: Expr
+    right: Expr
+    proof: str
+
+
 def sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -483,6 +490,17 @@ def make_proof_rule(name: str, proposition: str) -> ProofRule | None:
     )
 
 
+def make_eq_fact(name: str, proposition: str) -> EqFact | None:
+    expr = parse_expr(proposition)
+    if expr is None:
+        return None
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if binders or premises or conclusion.kind != "eq":
+        return None
+    return EqFact(conclusion.args[0], conclusion.args[1], name)
+
+
 IDENTIFIER_CHARS = "_'0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 FORALL_RE = re.compile(r"forall (?P<name>[_A-Za-z][_A-Za-z0-9']*):(?P<sort>[^,]+), ")
 
@@ -552,6 +570,61 @@ def canonical_proposition(proposition: str) -> str:
     return canonicalize_segment(proposition, [0])
 
 
+def proof_head(proof: str) -> str:
+    if re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", proof):
+        return proof
+    if proof.startswith("(") and proof.endswith(")"):
+        return proof
+    return f"({proof})"
+
+
+def eq_symmetry_proof(proof: str, left: Expr) -> str:
+    return f"({proof_head(proof)} (fun z:set => z = {expr_text(left)}) (fun R Hr => Hr))"
+
+
+def eq_transitivity_proof(proofs: list[str]) -> str | None:
+    if not proofs:
+        return None
+    if len(proofs) == 1:
+        return proofs[0]
+    term = "H"
+    for proof in proofs:
+        term = f"{proof_head(proof)} Q ({term})"
+    return f"(fun Q H => {term})"
+
+
+def equality_chain_proof(expr: Expr, eq_facts: list[EqFact], max_depth: int = 3) -> str | None:
+    if expr.kind != "eq":
+        return None
+    start = expr_key(expr.args[0])
+    target = expr_key(expr.args[1])
+    if start == target:
+        return "(fun Q H => H)"
+
+    edges: dict[str, list[tuple[str, str]]] = {}
+    for fact in eq_facts:
+        left_key = expr_key(fact.left)
+        right_key = expr_key(fact.right)
+        edges.setdefault(left_key, []).append((right_key, fact.proof))
+        edges.setdefault(right_key, []).append((left_key, eq_symmetry_proof(fact.proof, fact.left)))
+
+    queue: list[tuple[str, list[str]]] = [(start, [])]
+    seen = {start}
+    while queue:
+        node, proofs = queue.pop(0)
+        if len(proofs) >= max_depth:
+            continue
+        for next_node, proof in edges.get(node, []):
+            if next_node in seen:
+                continue
+            next_proofs = proofs + [proof]
+            if next_node == target:
+                return eq_transitivity_proof(next_proofs)
+            seen.add(next_node)
+            queue.append((next_node, next_proofs))
+    return None
+
+
 def direct_proof_expr(expr: Expr) -> str | None:
     binders, body = collect_foralls(expr)
     premises, conclusion = split_arrows(body)
@@ -584,6 +657,7 @@ def proof_for_expr(
     known: dict[str, str],
     known_canonical: dict[str, str],
     rules: list[ProofRule],
+    eq_facts: list[EqFact],
     allow_rule: bool = True,
 ) -> str | None:
     key = expr_key(expr)
@@ -594,6 +668,10 @@ def proof_for_expr(
     direct = direct_proof_expr(expr)
     if direct is not None:
         return direct
+
+    eq_proof = equality_chain_proof(expr, eq_facts)
+    if eq_proof is not None:
+        return eq_proof
 
     if not allow_rule:
         return None
@@ -612,6 +690,7 @@ def proof_for_expr(
                 known,
                 known_canonical,
                 rules,
+                eq_facts,
                 allow_rule=False,
             )
             if premise_proof is None:
@@ -632,6 +711,7 @@ def proof_for_proposition(
     known: dict[str, str],
     known_canonical: dict[str, str],
     rules: list[ProofRule],
+    eq_facts: list[EqFact],
 ) -> str | None:
     proof = known.get(proposition) or known_canonical.get(canonical_proposition(proposition))
     if proof is not None:
@@ -639,13 +719,14 @@ def proof_for_proposition(
     expr = parse_expr(proposition)
     if expr is None:
         return None
-    return proof_for_expr(expr, known, known_canonical, rules)
+    return proof_for_expr(expr, known, known_canonical, rules, eq_facts)
 
 
 def remember_proposition(
     known: dict[str, str],
     known_canonical: dict[str, str],
     rules: list[ProofRule],
+    eq_facts: list[EqFact],
     name: str,
     proposition: str,
 ) -> None:
@@ -658,12 +739,16 @@ def remember_proposition(
     rule = make_proof_rule(name, proposition)
     if rule is not None:
         rules.append(rule)
+    eq_fact = make_eq_fact(name, proposition)
+    if eq_fact is not None:
+        eq_facts.append(eq_fact)
 
 
 def fill_repeated_claim_admits(lines: list[str]) -> list[str]:
     known: dict[str, str] = {}
     known_canonical: dict[str, str] = {}
     rules: list[ProofRule] = []
+    eq_facts: list[EqFact] = []
     theorem: str | None = None
     result = list(lines)
     index = 0
@@ -672,7 +757,7 @@ def fill_repeated_claim_admits(lines: list[str]) -> list[str]:
         axiom = proposition_after_colon(line, "Axiom ")
         if axiom is not None:
             name, proposition = axiom
-            remember_proposition(known, known_canonical, rules, name, proposition)
+            remember_proposition(known, known_canonical, rules, eq_facts, name, proposition)
             index += 1
             continue
         theorem_match = proposition_after_colon(line, "Theorem ")
@@ -683,14 +768,14 @@ def fill_repeated_claim_admits(lines: list[str]) -> list[str]:
         claim = proposition_after_colon(line, "claim ")
         if claim is not None:
             name, proposition = claim
-            proof_name = proof_for_proposition(proposition, known, known_canonical, rules)
+            proof_name = proof_for_proposition(proposition, known, known_canonical, rules, eq_facts)
             if proof_name is not None and index + 1 < len(result) and result[index + 1] == "{ admit. }":
                 result[index + 1] = "{ exact " + proof_name + ". }"
-            remember_proposition(known, known_canonical, rules, name, proposition)
+            remember_proposition(known, known_canonical, rules, eq_facts, name, proposition)
             index += 2
             continue
         if line == "admit." and theorem is not None:
-            proof_name = proof_for_proposition(theorem, known, known_canonical, rules)
+            proof_name = proof_for_proposition(theorem, known, known_canonical, rules, eq_facts)
             if proof_name is not None:
                 result[index] = "exact " + proof_name + "."
         index += 1
