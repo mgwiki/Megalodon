@@ -842,7 +842,7 @@ def eq_symmetry_proof(proof: str, left: Expr) -> str:
     return f"({proof_head(proof)} (fun z:set => z = {expr_text(left)}) (fun R Hr => Hr))"
 
 
-def eq_transitivity_proof(proofs: list[str]) -> str | None:
+def eq_transitivity_proof(proofs: list[str], start_text: str | None = None) -> str | None:
     if not proofs:
         return None
     if len(proofs) == 1:
@@ -850,7 +850,9 @@ def eq_transitivity_proof(proofs: list[str]) -> str | None:
     term = "H"
     for proof in proofs:
         term = f"{proof_head(proof)} Q ({term})"
-    return f"(fun Q H => {term})"
+    if start_text is None:
+        return f"(fun Q H => {term})"
+    return f"(fun Q:set->prop => fun H:Q ({start_text}) => {term})"
 
 
 def equality_chain_proof(expr: Expr, eq_facts: list[EqFact], max_depth: int = 3) -> str | None:
@@ -879,7 +881,7 @@ def equality_chain_proof(expr: Expr, eq_facts: list[EqFact], max_depth: int = 3)
                 continue
             next_proofs = proofs + [proof]
             if next_node == target:
-                return eq_transitivity_proof(next_proofs)
+                return eq_transitivity_proof(next_proofs, expr_text(expr.args[0]))
             seen.add(next_node)
             queue.append((next_node, next_proofs))
     return None
@@ -933,6 +935,46 @@ def equality_rule_chain_proof(
     if expr_key(start) == expr_key(target):
         return "(fun Q H => H)"
 
+    def congruence_edges(node: Expr) -> list[tuple[Expr, str]]:
+        if node.kind != "app" or len(node.args) < 2:
+            return []
+
+        found: list[tuple[Expr, str]] = []
+        args = list(node.args)
+        for index, arg in enumerate(node.args[1:], start=1):
+            arg_key = expr_key(normalize_defined_expr(arg, definitions))
+            rewrites: list[tuple[Expr, str]] = []
+            for fact in eq_facts:
+                left = normalize_defined_expr(fact.left, definitions)
+                right = normalize_defined_expr(fact.right, definitions)
+                if expr_key(left) == arg_key:
+                    rewrites.append((right, fact.proof))
+                if expr_key(right) == arg_key:
+                    rewrites.append((left, eq_symmetry_proof(fact.proof, fact.left)))
+            for rule in rules:
+                if rule.conclusion.kind != "eq":
+                    continue
+                variables = set(rule.binders)
+                direct_subst: dict[str, Expr] = {}
+                if match_expr(rule.conclusion.args[0], arg, variables, direct_subst):
+                    parts = rule_application_parts(rule, direct_subst, known, known_canonical, rules, eq_facts, definitions)
+                    if parts is not None:
+                        rewrites.append((normalize_defined_expr(substitute_expr(rule.conclusion.args[1], direct_subst), definitions), rule_application_text(parts)))
+                reverse_subst: dict[str, Expr] = {}
+                if match_expr(rule.conclusion.args[1], arg, variables, reverse_subst):
+                    parts = rule_application_parts(rule, reverse_subst, known, known_canonical, rules, eq_facts, definitions)
+                    if parts is not None:
+                        proof = rule_application_text(parts)
+                        replacement = substitute_expr(rule.conclusion.args[0], reverse_subst)
+                        rewrites.append((normalize_defined_expr(replacement, definitions), eq_symmetry_proof(proof, replacement)))
+            for replacement, argument_proof in rewrites:
+                next_args = args.copy()
+                next_args[index] = replacement
+                context = app_context_text(node.args[0], tuple(node.args[1:]), index - 1, "z")
+                proof = f"(fun Q:set->prop => fun H:Q ({expr_text(node)}) => {proof_term_text(argument_proof)} (fun z:set => Q ({context})) H)"
+                found.append((Expr("app", args=tuple(next_args)), proof))
+        return found
+
     def edges(node: Expr) -> list[tuple[Expr, str]]:
         found: list[tuple[Expr, str]] = []
         for fact in eq_facts:
@@ -955,6 +997,7 @@ def equality_rule_chain_proof(
                 if parts is not None:
                     proof = rule_application_text(parts)
                     found.append((normalize_defined_expr(substitute_expr(rule.conclusion.args[0], reverse_subst), definitions), eq_symmetry_proof(proof, substitute_expr(rule.conclusion.args[0], reverse_subst))))
+        found.extend(congruence_edges(node))
         return found
 
     queue: list[tuple[Expr, list[str]]] = [(start, [])]
@@ -969,7 +1012,7 @@ def equality_rule_chain_proof(
                 continue
             next_proofs = proofs + [proof]
             if key == expr_key(target):
-                return eq_transitivity_proof(next_proofs)
+                return eq_transitivity_proof(next_proofs, expr_text(start))
             seen.add(key)
             queue.append((next_node, next_proofs))
     return None
@@ -1068,7 +1111,7 @@ def equality_congruence_proof(
         return None
 
     context = app_context_text(left.args[0], left.args[1:], arg_index, "z")
-    return f"(fun Q H => {proof_term_text(argument_proof)} (fun z:set => Q ({context})) H)"
+    return f"(fun Q:set->prop => fun H:Q ({expr_text(left)}) => {proof_term_text(argument_proof)} (fun z:set => Q ({context})) H)"
 
 
 def direct_proof_expr(expr: Expr) -> str | None:
