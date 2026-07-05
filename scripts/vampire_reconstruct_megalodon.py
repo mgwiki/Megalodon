@@ -2074,8 +2074,94 @@ def atom2(expr: Expr, head: str, left: Expr, right: Expr) -> bool:
     )
 
 
+def binary_atom_parts(expr: Expr) -> tuple[str, Expr, Expr] | None:
+    if expr.kind != "app" or len(expr.args) != 3 or expr.args[0].kind != "var" or expr.args[0].value is None:
+        return None
+    return expr.args[0].value, expr.args[1], expr.args[2]
+
+
 def unary_app(head: str, arg: Expr) -> Expr:
     return Expr("app", args=(Expr("var", value=head), arg))
+
+
+def binary_transitivity_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 0:
+        return None
+    target = binary_atom_parts(expr)
+    if target is None:
+        return None
+    target_head, target_left, target_right = target
+    known_atoms: list[tuple[str, Expr, Expr, str]] = []
+    seen_proofs: set[str] = set()
+    for proposition, proof in known.items():
+        if proof in seen_proofs:
+            continue
+        parsed = parse_expr(proposition)
+        if parsed is None:
+            continue
+        atom = binary_atom_parts(parsed)
+        if atom is None:
+            continue
+        seen_proofs.add(proof)
+        head, left, right = atom
+        if head == target_head:
+            known_atoms.append((head, left, right, proof))
+
+    for rule in reversed(rules):
+        if len(rule.binders) != 3:
+            continue
+        conclusion = binary_atom_parts(rule.conclusion)
+        if conclusion is None or conclusion[0] != target_head:
+            continue
+        binder_vars = {name: Expr("var", value=name) for name in rule.binders}
+        if expr_key(conclusion[1]) != rule.binders[0] or expr_key(conclusion[2]) != rule.binders[2]:
+            continue
+        left_relation = Expr("app", args=(Expr("var", value=target_head), binder_vars[rule.binders[0]], binder_vars[rule.binders[1]]))
+        right_relation = Expr("app", args=(Expr("var", value=target_head), binder_vars[rule.binders[1]], binder_vars[rule.binders[2]]))
+        if not any(expr_key(premise) == expr_key(left_relation) for premise in rule.premises):
+            continue
+        if not any(expr_key(premise) == expr_key(right_relation) for premise in rule.premises):
+            continue
+        for _, left, middle, _ in known_atoms:
+            if expr_key(left) != expr_key(target_left):
+                continue
+            for _, middle2, right, _ in known_atoms:
+                if expr_key(middle2) != expr_key(middle) or expr_key(right) != expr_key(target_right):
+                    continue
+                subst = {
+                    rule.binders[0]: target_left,
+                    rule.binders[1]: middle,
+                    rule.binders[2]: target_right,
+                }
+                premise_proofs: list[str] = []
+                ok = True
+                for premise in rule.premises:
+                    premise_proof = proof_for_expr(
+                        substitute_expr(premise, subst),
+                        known,
+                        known_canonical,
+                        rules,
+                        eq_facts,
+                        definitions,
+                        allow_rule=True,
+                        rule_depth=rule_depth - 1,
+                    )
+                    if premise_proof is None:
+                        ok = False
+                        break
+                    premise_proofs.append(proof_argument_text(premise_proof))
+                if ok:
+                    args = [proof_arg_text(subst[binder]) for binder in rule.binders]
+                    return rule_application_text([rule.name] + args + premise_proofs)
+    return None
 
 
 def empty_power_singleton_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
@@ -2581,6 +2667,19 @@ def proof_for_expr(
         )
         if sequential_rule_proof is not None:
             return sequential_rule_proof
+
+    if allow_rule:
+        transitivity_proof = binary_transitivity_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth,
+        )
+        if transitivity_proof is not None:
+            return transitivity_proof
 
     congruence_proof = equality_congruence_proof(expr, known, known_canonical, rules, eq_facts, definitions, rule_depth)
     if congruence_proof is not None:
