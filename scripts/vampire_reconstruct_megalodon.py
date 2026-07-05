@@ -1679,6 +1679,69 @@ def equality_direct_rule_proof(
     return None
 
 
+def atom2(expr: Expr, head: str, left: Expr, right: Expr) -> bool:
+    return (
+        expr.kind == "app"
+        and len(expr.args) == 3
+        and expr.args[0].kind == "var"
+        and expr.args[0].value == head
+        and expr_key(expr.args[1]) == expr_key(left)
+        and expr_key(expr.args[2]) == expr_key(right)
+    )
+
+
+def unary_app(head: str, arg: Expr) -> Expr:
+    return Expr("app", args=(Expr("var", value=head), arg))
+
+
+def empty_power_singleton_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
+    if expr.kind != "eq":
+        return None
+    empty = Expr("var", value="Empty")
+    power_empty = unary_app("Power", empty)
+    sing_empty = unary_app("Sing", empty)
+    forward = expr_key(expr.args[0]) == expr_key(power_empty) and expr_key(expr.args[1]) == expr_key(sing_empty)
+    reverse = expr_key(expr.args[0]) == expr_key(sing_empty) and expr_key(expr.args[1]) == expr_key(power_empty)
+    if not forward and not reverse:
+        return None
+
+    names: dict[str, str] = {}
+    for rule in rules:
+        b = {name: Expr("var", value=name) for name in rule.binders}
+        if len(rule.binders) >= 2 and len(rule.premises) == 2 and rule.conclusion.kind == "eq":
+            if expr_key(rule.conclusion.args[0]) == rule.binders[0] and expr_key(rule.conclusion.args[1]) == rule.binders[1]:
+                names.setdefault("ext", rule.name)
+        if len(rule.binders) == 1 and len(rule.premises) == 1 and rule.conclusion.kind == "eq":
+            if expr_key(rule.conclusion.args[0]) == "Empty" and expr_key(rule.conclusion.args[1]) == rule.binders[0]:
+                names.setdefault("empty_eq", rule.name)
+        if len(rule.binders) == 1 and not rule.premises:
+            if atom2(rule.conclusion, "In", empty, unary_app("Power", b[rule.binders[0]])):
+                names.setdefault("power_empty", rule.name)
+            if atom2(rule.conclusion, "In", b[rule.binders[0]], unary_app("Sing", b[rule.binders[0]])):
+                names.setdefault("sing_intro", rule.name)
+        if len(rule.binders) == 2 and len(rule.premises) == 1:
+            if atom2(rule.premises[0], "In", b[rule.binders[1]], unary_app("Power", b[rule.binders[0]])):
+                names.setdefault("power_elim", rule.name)
+            if (
+                atom2(rule.premises[0], "In", b[rule.binders[1]], unary_app("Sing", b[rule.binders[0]]))
+                and rule.conclusion.kind == "eq"
+                and expr_key(rule.conclusion.args[0]) == rule.binders[0]
+                and expr_key(rule.conclusion.args[1]) == rule.binders[1]
+            ):
+                names.setdefault("sing_elim", rule.name)
+
+    if {"ext", "empty_eq", "power_empty", "power_elim", "sing_intro", "sing_elim"} - names.keys():
+        return None
+    proof = (
+        f"({names['ext']} (Power Empty) (Sing Empty) "
+        f"(fun X H => ({names['empty_eq']} X ({names['power_elim']} Empty X H)) "
+        f"(fun zz:set => In zz (Sing Empty)) ({names['sing_intro']} Empty)) "
+        f"(fun X H => ({names['sing_elim']} Empty X H) "
+        f"(fun zz:set => In zz (Power Empty)) ({names['power_empty']} Empty)))"
+    )
+    return proof if forward else eq_symmetry_proof(proof, power_empty)
+
+
 def proof_for_expr(
     expr: Expr,
     known: dict[str, str],
@@ -1724,6 +1787,10 @@ def proof_for_expr(
     normalized_eq_proof = equality_chain_proof(normalized, eq_facts)
     if normalized_eq_proof is not None:
         return normalized_eq_proof
+
+    empty_power = empty_power_singleton_proof(expr, rules)
+    if empty_power is not None:
+        return empty_power
 
     if allow_rule:
         direct_rule_proof = equality_direct_rule_proof(
