@@ -138,7 +138,7 @@ let th0sg = ref []
 let th0sgps1 = ref []
 
 let fofp () = not (!fof = None)
-let th0p () = not (!th0 = None)
+let th0p () = not (!th0 = None) || not (!vampireaby = None)
 
 let read_aby_script fn =
   let f = open_in fn in
@@ -657,6 +657,8 @@ let egal_ex_id = "912ad2cdc2d23bb8aa0a5070945f2a90976a948b0e8308917244591f3747f0
 let egal_iff_id = "9c60bab687728bc4482e12da2b08b8dbc10f5d71f5cab91acec3c00a79b335a3"
 let egal_neq_id = "7966a66a9bb198103c2a540ccd5ebebdff33c10843cc10eebfc98715e142989c"
 
+let native_aby_knowns : (tm * pf) list ref = ref []
+
 let eq_tm a l r = Ap(Ap(TpAp(TmH(!eqPoly),a),l),r)
 
 let is_eq_tm m =
@@ -771,17 +773,23 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
           | Some(d) -> PTmAp(d,goal)
           | None ->
              let try_remaining () =
-               if allow_or && has_or_hyp hyps then
-                 match find_or_elim_hyp depth cx hyps goal 0 with
-                 | Some(d) -> d
-                 | None -> raise SearchBacktrack
-               else
-                 if allow_imp then
-                   match find_imp_elim_hyp allow_or depth cx hyps goal 0 with
-                   | Some(d) -> d
-                   | None -> raise SearchBacktrack
-                 else
-                   raise SearchBacktrack
+               match find_ex_elim_hyp depth cx hyps goal 0 with
+               | Some(d) -> d
+               | None ->
+                  if allow_or && has_or_hyp hyps then
+                    match find_or_elim_hyp depth cx hyps goal 0 with
+                    | Some(d) -> d
+                    | None -> raise SearchBacktrack
+                  else
+                    if allow_imp then
+                      match find_imp_elim_hyp allow_or depth cx hyps goal 0 with
+                      | Some(d) -> d
+                      | None ->
+                         match find_known_elim allow_or depth cx hyps goal with
+                         | Some(d) -> d
+                         | None -> raise SearchBacktrack
+                    else
+                      raise SearchBacktrack
              in
              match is_eq_tm goal with
              | Some(a,x,z) ->
@@ -853,6 +861,34 @@ and find_ex_intro depth cx hyps a q i =
     | [] -> None
   in
   find_ex_intro_rec cx i
+and find_ex_elim_hyp depth cx hyps goal i =
+  let rec find_ex_elim_hyp_rec scanhyps i =
+    match scanhyps with
+    | p::r ->
+       begin
+         match ex_elim_proof (depth-1) cx hyps (Hyp(i)) p goal with
+         | Some(d) -> Some(d)
+         | None -> find_ex_elim_hyp_rec r (i+1)
+       end
+    | [] -> None
+  in
+  find_ex_elim_hyp_rec hyps i
+and ex_elim_proof depth cx hyps d p goal =
+  if depth <= 0 then None else
+  match p with
+  | Ap(TpAp(TmH(h),a),q) when h = egal_ex_id ->
+     begin
+       try
+         let qx = Ap(tmshift 0 1 q,DB(0)) in
+         let branch_goal = tmshift 0 1 goal in
+         let branch_hyps = qx::List.map (tmshift 0 1) hyps in
+         let branch = native_aby_direct_depth true true (depth-1) (a::cx) branch_hyps branch_goal in
+         Some(PPfAp(PTmAp(d,goal),TLam(a,PLam(qx,branch))))
+       with
+       | SearchBacktrack -> None
+       | Failure(_) -> None
+     end
+  | _ -> None
 and find_or_elim_hyp depth cx hyps goal i =
   let rec find_or_elim_hyp_rec scanhyps i =
     match scanhyps with
@@ -901,9 +937,37 @@ and find_imp_elim_hyp allow_or depth cx hyps goal i =
     | [] -> None
   in
   find_imp_elim_hyp_rec hyps i
+and find_known_elim allow_or depth cx hyps goal =
+  let rec find_known_elim_rec knowns =
+    match knowns with
+    | (p,d)::r ->
+       begin
+         match apply_imp_chain allow_or (depth-1) cx hyps d p goal with
+         | Some(d) -> Some(d)
+         | None -> find_known_elim_rec r
+       end
+    | [] -> None
+  in
+  find_known_elim_rec !native_aby_knowns
 and apply_imp_chain allow_or depth cx hyps d p goal =
   if depth <= 0 then None else
   match p with
+  | All(a,b) ->
+     let rec try_terms scancx i =
+       match scancx with
+       | c::r ->
+          let w = DB(i) in
+          if c = a then
+            begin
+              match apply_imp_chain allow_or (depth-1) cx hyps (PTmAp(d,w)) (tmsubst b 0 w) goal with
+              | Some(d) -> Some(d)
+              | None -> try_terms r (i+1)
+            end
+          else
+            try_terms r (i+1)
+       | [] -> None
+     in
+     try_terms cx 0
   | Ap(Ap(TmH(h),a),b) when h = egal_iff_id ->
      let p_as_and = Ap(Ap(TmH(egal_and_id),Imp(a,b)),Imp(b,a)) in
      let try_forward () =
@@ -942,9 +1006,29 @@ and apply_imp_chain allow_or depth cx hyps d p goal =
 let native_aby_direct cx hyps goal =
   native_aby_direct_depth true true 16 cx hyps goal
 
-let native_aby_reconstruct claimtm cxtm cxpf =
+let native_aby_named_knowns xl =
+  let rec native_aby_named_knowns_rec xl acc =
+    match xl with
+    | x::r when x = "-" -> native_aby_named_knowns_rec r acc
+    | x::r ->
+       begin
+         try
+           let h = Hashtbl.find sigknh x in
+           let (i,p) = Hashtbl.find sigdelta h in
+           if i = 0 then
+             native_aby_named_knowns_rec r ((p,Known(h))::acc)
+           else
+             native_aby_named_knowns_rec r acc
+         with Not_found -> native_aby_named_knowns_rec r acc
+       end
+    | [] -> List.rev acc
+  in
+  native_aby_named_knowns_rec xl []
+
+let native_aby_reconstruct claimtm cxtm cxpf xl =
   let cx = List.map (fun (_, (a, _)) -> a) cxtm in
   let hyps = List.map (fun (_, p) -> p) cxpf in
+  native_aby_knowns := native_aby_named_knowns xl;
   let check_candidate d =
     match check_propofpf sigdelta sigtmof cx hyps d claimtm [] with
     | Some(_) -> Some(d)
@@ -3976,7 +4060,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
            end;
            begin
              if !vampireabynative then
-               match native_aby_reconstruct claimtm cxtm cxpf with
+               match native_aby_reconstruct claimtm cxtm cxpf xl with
                | Some(d) ->
                   let currprooffun = !prooffun in
                   let endpos = Some(!lineno,!charno) in

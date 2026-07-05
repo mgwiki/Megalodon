@@ -54,7 +54,9 @@ Megalodon proof term using deterministic introduction, hypothesis,
 False-elimination, definitional negation introduction/application, bounded
 implication-chain application, Church-encoded conjunction
 projection/reconstruction, Church-encoded disjunction introduction/elimination,
-Church-encoded existential introduction from bound witnesses, and
+Church-encoded existential introduction from bound witnesses/elimination from
+local existential hypotheses, named `aby` dependencies instantiated over local
+variables, and
 definition-backed `iff` introduction/projection.  It also handles Leibniz
 equality symmetry/transitivity from matching local equality hypotheses and expands
 the local `neq` definition before falling back to the certificate admit.  Use
@@ -68,7 +70,7 @@ VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_live_aby_smoke.sh
 ```
 
 Smoke-test the restricted native reconstruction path on the early hammer `aby`
-block through `neq_i_sym`:
+block through `prop_ext_2`:
 
 ```sh
 VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_native_aby_smoke.sh
