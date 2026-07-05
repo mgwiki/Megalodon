@@ -32,6 +32,9 @@ PROVED_RE = re.compile(r"SZS status (Theorem|Unsatisfiable|ContradictoryAxioms)\
 FATAL_OUTPUT_RE = re.compile(r"Aborted by signal|ASSERTION|User error|missing .* implementation", re.IGNORECASE)
 MEGALODON_SOURCE_LINE_RE = re.compile(r'^megalodon_source_line\("(?P<line>(?:\\.|[^"\\])*)"\)\.$')
 MEGALODON_STEP_RE = re.compile(r'^megalodon_step\((?P<id>[0-9]+),"(?P<rule>(?:\\.|[^"\\])*)"')
+MEGALODON_STEP_FORMULA_RE = re.compile(
+    r'^megalodon_step\((?P<id>[0-9]+),"(?P<rule>(?:\\.|[^"\\])*)","[^"]*",\[[^]]*\],(?:true|false),[0-9]+,"(?P<formula>(?:\\.|[^"\\])*)"\)\.$'
+)
 FRESH_SET_RE = re.compile(r"^sF[0-9]+$")
 DEFINITION_RE = re.compile(r"^Definition (?P<name>[_A-Za-z][_A-Za-z0-9']*) : (?P<sort>[^:]+?) := (?P<body>.*)\.$")
 
@@ -345,6 +348,128 @@ def function_definition_step_ids(proof_text: str) -> set[str]:
     return ids
 
 
+def strip_balanced_parens(text: str) -> str:
+    text = text.strip()
+    while text.startswith("(") and text.endswith(")"):
+        depth = 0
+        balanced = True
+        for index, char in enumerate(text):
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0 and index != len(text) - 1:
+                    balanced = False
+                    break
+        if not balanced or depth != 0:
+            break
+        text = text[1:-1].strip()
+    return text
+
+
+def split_tptp_application(text: str) -> list[str] | None:
+    text = strip_balanced_parens(text)
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth < 0:
+                return None
+        elif char == "@" and depth == 0:
+            parts.append(text[start:index].strip())
+            start = index + 1
+        index += 1
+    if depth != 0:
+        return None
+    parts.append(text[start:].strip())
+    return [part for part in parts if part]
+
+
+def decode_tptp_identifier(name: str) -> str:
+    name = name.strip()
+    if name.startswith("c_"):
+        name = name[2:]
+    return re.sub(r"_([0-9A-Fa-f]{2})", lambda match: chr(int(match.group(1), 16)), name)
+
+
+def tptp_term_to_expr(text: str) -> Expr | None:
+    text = strip_balanced_parens(text)
+    parts = split_tptp_application(text)
+    if parts is None:
+        return None
+    if len(parts) == 1:
+        name = decode_tptp_identifier(parts[0])
+        if not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", name):
+            return None
+        return Expr("var", value=name)
+    args = [tptp_term_to_expr(part) for part in parts]
+    if any(arg is None for arg in args):
+        return None
+    return Expr("app", args=tuple(arg for arg in args if arg is not None))
+
+
+def sort_argument_sorts(sort: str) -> list[str]:
+    pieces = [piece.strip() for piece in sort.split("->")]
+    return pieces[:-1] if len(pieces) > 1 and pieces[-1] == "set" else []
+
+
+def append_application_args(expr: Expr, args: list[Expr]) -> Expr:
+    if not args:
+        return expr
+    if expr.kind == "app":
+        return Expr("app", args=expr.args + tuple(args))
+    return Expr("app", args=(expr,) + tuple(args))
+
+
+def tptp_function_definition_infos(
+    proof_text: str,
+    variable_sorts: dict[str, str],
+) -> dict[str, DefinitionInfo]:
+    definitions: dict[str, DefinitionInfo] = {}
+    equation_re = re.compile(r"cnf\([^,]+,axiom,\s*\((?P<left>.*)\s*=\s*(?P<right>sF[0-9]+|.*)\)\s*\)\.", re.DOTALL)
+    for line in proof_text.splitlines():
+        match = MEGALODON_STEP_FORMULA_RE.match(line.strip())
+        if match is None or json.loads(f'"{match.group("rule")}"') != "function definition":
+            continue
+        formula = json.loads(f'"{match.group("formula")}"')
+        equation = equation_re.search(formula)
+        if equation is None:
+            continue
+        sides = [strip_balanced_parens(equation.group("left")), strip_balanced_parens(equation.group("right"))]
+        candidates = [(sides[0], sides[1]), (sides[1], sides[0])]
+        for target_text, body_text in candidates:
+            target = decode_tptp_identifier(strip_balanced_parens(target_text))
+            if not FRESH_SET_RE.match(target):
+                continue
+            target_sort = variable_sorts.get(target)
+            if target_sort is None:
+                continue
+            arg_sorts = sort_argument_sorts(target_sort)
+            body = tptp_term_to_expr(body_text)
+            if body is None:
+                continue
+            binders = tuple(f"X{index}" for index in range(len(arg_sorts)))
+            body = append_application_args(body, [Expr("var", value=name) for name in binders])
+            body_expr_text = expr_text(body)
+            definition_body = body_expr_text
+            for binder_name, binder_sort in reversed(list(zip(binders, arg_sorts))):
+                definition_body = f"fun {binder_name}:{binder_sort} => {definition_body}"
+            proof_args = list(binders) + ["Q", "H"]
+            proof = f"({' '.join(['fun'] + proof_args + ['=>', 'H'])})"
+            definitions.setdefault(
+                target,
+                DefinitionInfo(target_sort, definition_body, proof, binders, body),
+            )
+            break
+    return definitions
+
+
 TOKEN_RE = re.compile(r"->|[A-Za-z_][A-Za-z0-9_']*|[0-9]+|[(),:=]")
 
 
@@ -646,6 +771,21 @@ def definition_reflexivity_proof(proposition: str, definitions: dict[str, Defini
     return f"({' '.join(['fun'] + args + ['=>', 'H'])})"
 
 
+def parse_definition_body(body_text: str) -> tuple[tuple[str, ...], Expr] | None:
+    binders: list[str] = []
+    text = body_text.strip()
+    while text.startswith("fun "):
+        match = re.match(r"fun (?P<name>[_A-Za-z][_A-Za-z0-9']*):(?P<sort>[^=]+?) => (?P<body>.*)$", text)
+        if match is None:
+            return None
+        binders.append(match.group("name"))
+        text = match.group("body").strip()
+    body = parse_expr(text)
+    if body is None:
+        return None
+    return tuple(binders), body
+
+
 def unary_application(expr: Expr) -> tuple[str, Expr] | None:
     if expr.kind != "app" or len(expr.args) != 2 or expr.args[0].kind != "var" or expr.args[0].value is None:
         return None
@@ -683,7 +823,7 @@ def add_function_definition_skeletons(lines: list[str], proof_text: str | None) 
         if match:
             variable_sorts[match.group("name")] = match.group("sort").strip()
 
-    definitions: dict[str, DefinitionInfo] = {}
+    definitions: dict[str, DefinitionInfo] = tptp_function_definition_infos(proof_text, variable_sorts)
     definition_claims: dict[str, str] = {}
     for line in lines:
         claim = proposition_after_colon(line, "claim ")
@@ -1369,6 +1509,50 @@ def direct_proof_expr(expr: Expr) -> str | None:
     return None
 
 
+def vampire_or_intro_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if (
+        expr.kind != "app"
+        or len(expr.args) != 3
+        or expr.args[0].kind != "var"
+        or expr.args[0].value != "vampire_or"
+    ):
+        return None
+    left, right = expr.args[1], expr.args[2]
+    left_proof = proof_for_expr(
+        left,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        allow_rule=rule_depth > 0,
+        rule_depth=max(0, rule_depth - 1),
+    )
+    if left_proof is not None:
+        return f"(fun P Hleft Hright => Hleft {proof_term_text(left_proof)})"
+    right_proof = proof_for_expr(
+        right,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        allow_rule=rule_depth > 0,
+        rule_depth=max(0, rule_depth - 1),
+    )
+    if right_proof is not None:
+        return f"(fun P Hleft Hright => Hright {proof_term_text(right_proof)})"
+    return None
+
+
 def proof_for_expr(
     expr: Expr,
     known: dict[str, str],
@@ -1389,6 +1573,10 @@ def proof_for_expr(
     direct = direct_proof_expr(expr)
     if direct is not None:
         return direct
+
+    or_intro = vampire_or_intro_proof(expr, known, known_canonical, rules, eq_facts, definitions, rule_depth)
+    if or_intro is not None:
+        return or_intro
 
     if allow_rule:
         introduced = introduction_proof(expr, known, known_canonical, rules, eq_facts, definitions, rule_depth)
@@ -1527,17 +1715,30 @@ def fill_repeated_claim_admits(lines: list[str]) -> list[str]:
     theorem: str | None = None
     result = list(lines)
     index = 0
+    block_depth = 0
     while index < len(result):
         line = result[index]
+        if block_depth > 0:
+            if line == "{":
+                block_depth += 1
+            elif line == "}":
+                block_depth -= 1
+            index += 1
+            continue
+        if line == "{":
+            block_depth = 1
+            index += 1
+            continue
         definition_match = DEFINITION_RE.match(line)
         if definition_match:
-            body = parse_expr(definition_match.group("body").strip())
-            if body is not None:
+            parsed_definition = parse_definition_body(definition_match.group("body").strip())
+            if parsed_definition is not None:
+                binders, body = parsed_definition
                 definitions[definition_match.group("name")] = DefinitionInfo(
                     definition_match.group("sort").strip(),
                     definition_match.group("body").strip(),
                     "(fun Q H => H)",
-                    (),
+                    binders,
                     body,
                 )
             index += 1
@@ -1560,7 +1761,7 @@ def fill_repeated_claim_admits(lines: list[str]) -> list[str]:
             if proof_name is not None and index + 1 < len(result) and result[index + 1] == "{ admit. }":
                 result[index + 1] = "{ exact " + proof_name + ". }"
             remember_proposition(known, known_canonical, rules, eq_facts, name, proposition)
-            index += 2
+            index += 2 if index + 1 < len(result) and result[index + 1].startswith("{ ") else 1
             continue
         if line == "admit." and theorem is not None:
             proof_name = proof_for_proposition(theorem, known, known_canonical, rules, eq_facts, definitions)
