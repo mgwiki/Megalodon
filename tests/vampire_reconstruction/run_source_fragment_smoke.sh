@@ -74,8 +74,21 @@ thf(heq,axiom,(a = b)).
 thf(goal,conjecture,(p @ b)).
 EOF
 
+cat > "$work_dir/equality_normalization.th0.p" <<'EOF'
+thf(e,type,(e : $i)).
+thf(n,type,(n : $i)).
+thf(m,type,(m : $i)).
+thf(add,type,(add : $i > $i > $i)).
+thf(add_empty,axiom,(! [X:$i] : ((add @ X @ e) = X))).
+thf(goal,conjecture,((add @ (add @ n @ m) @ e) = (add @ n @ (add @ m @ e)))).
+EOF
+
 run_case conjunction_intro
 run_case conjunction_projection
 run_case equality_rewrite
+run_case equality_normalization
 assert_contains "$work_dir/equality_rewrite.mg" "claim L0:"
 assert_contains "$work_dir/equality_rewrite.mg" "rewrite <- L0."
+assert_contains "$work_dir/equality_normalization.mg" "claim L0:"
+assert_contains "$work_dir/equality_normalization.mg" "claim L1:"
+assert_contains "$work_dir/equality_normalization.mg" "rewrite L1."
