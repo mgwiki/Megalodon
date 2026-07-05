@@ -20,6 +20,11 @@ let warnaboutreproven = ref false;;
 let createabyprobs = ref false;;
 let abyproblemscached = ref false;;
 let sb : Buffer.t = Buffer.create 10000;;
+let vampireaby : string option ref = ref None;;
+let vampireabyoutdir : string ref = ref "vampire_aby";;
+let vampireabytimeout : int ref = ref 60;;
+let vampireabyschedule : string ref = ref "casc";;
+let vampireabyproof : string ref = ref "tptp";;
 let bushy = ref false;;
 let bushykdeps : (string,unit) Hashtbl.t = Hashtbl.create 10;;
 let bushyhdeps : (int,unit) Hashtbl.t = Hashtbl.create 10;;
@@ -482,6 +487,118 @@ let ensure_directory path =
     end
   else
     Unix.mkdir path 0o755
+
+let rec string_contains_at s needle i =
+  let sl = String.length s in
+  let nl = String.length needle in
+  if nl = 0 then
+    true
+  else if i + nl > sl then
+    false
+  else if String.sub s i nl = needle then
+    true
+  else
+    string_contains_at s needle (i+1)
+
+let string_contains_sub s needle = string_contains_at s needle 0
+
+let rec read_process_lines ch b =
+  try
+    Buffer.add_string b (input_line ch);
+    Buffer.add_char b '\n';
+    read_process_lines ch b
+  with End_of_file -> ()
+
+let run_command_capture cmd =
+  let ch = Unix.open_process_in cmd in
+  let b = Buffer.create 4096 in
+  read_process_lines ch b;
+  let status = Unix.close_process_in ch in
+  (Buffer.contents b,status)
+
+let vampire_output_proved s =
+  string_contains_sub s "SZS status Theorem"
+  || string_contains_sub s "SZS status Unsatisfiable"
+  || string_contains_sub s "SZS status ContradictoryAxioms"
+
+let vampire_output_has_proof_payload s =
+  string_contains_sub s "inference("
+  || string_contains_sub s "SZS output start Proof"
+  || string_contains_sub s "Refutation"
+  || string_contains_sub s "end vamproof"
+  || string_contains_sub s "theorem full_proof"
+
+let status_to_string status =
+  match status with
+  | Unix.WEXITED n -> Printf.sprintf "exit %d" n
+  | Unix.WSIGNALED n -> Printf.sprintf "signal %d" n
+  | Unix.WSTOPPED n -> Printf.sprintf "stopped %d" n
+
+let run_vampire_aby_certificate content =
+  match !vampireaby with
+  | None -> ()
+  | Some(vampire) ->
+     ensure_directory !vampireabyoutdir;
+     let digest = Hash.hashval_hexstring (Hash.sha256 content) in
+     let short_digest = String.sub digest 0 16 in
+     let base = Printf.sprintf "aby.%d.%d.%s" !lineno !charno short_digest in
+     let problem_file = Filename.concat !vampireabyoutdir (base ^ ".thf.p") in
+     let proof_file = Filename.concat !vampireabyoutdir (base ^ "." ^ !vampireabyproof ^ ".out") in
+     let ch = open_out problem_file in
+     Printf.fprintf ch "%s" content;
+     close_out ch;
+     let cmd =
+       Printf.sprintf "%s --input_syntax tptp --mode portfolio --schedule %s -t %d --proof %s %s 2>&1"
+         (Filename.quote vampire)
+         (Filename.quote !vampireabyschedule)
+         !vampireabytimeout
+         (Filename.quote !vampireabyproof)
+         (Filename.quote problem_file)
+     in
+     let (out,status) = run_command_capture cmd in
+     let ch = open_out proof_file in
+     Printf.fprintf ch "%s" out;
+     close_out ch;
+     if vampire_output_proved out && vampire_output_has_proof_payload out then
+       begin
+         if !verbosity > 2 then
+           Printf.printf "Vampire certified aby at line %d char %d (%s)\n" !lineno !charno digest;
+         flush stdout
+       end
+     else
+       raise
+         (Failure
+            (Printf.sprintf
+               "Vampire failed to certify aby at line %d char %d (%s, proof output %s)"
+               !lineno !charno (status_to_string status) proof_file))
+
+let th0_aby_problem_content claimtm cxtm cxpf xl conjn =
+  Buffer.clear sb;
+  List.iter
+    (fun (cl,h,x,a) ->
+      if cl = "type" || cl = "def" && not (Hashtbl.mem sigdelta_opaque h) || cl = "known" && (List.mem x xl || xl = ["-"]) then
+        Printf.bprintf sb "%s\n" a)
+    (List.rev !th0sg);
+  let rec th0_cx cxtm =
+    match cxtm with
+    | [] -> ()
+    | (x,(a,d))::cxtmr ->
+       th0_cx cxtmr;
+       Printf.bprintf sb "thf(%s_tp,type,(%s : %s)).\n" (tptpize_name x) (tptpize_name x) (th0_stp_str a);
+       match d with
+       | Some(d) ->
+          Printf.bprintf sb "thf(%s_def,definition,(%s = %s)).\n" (tptpize_name x) (tptpize_name x) (th0_str d (tptpizecxtm cxtmr))
+       | None -> ()
+  in
+  th0_cx cxtm;
+  List.iter
+    (fun (x,p) ->
+      if List.mem x xl then
+        let a = th0_str p (tptpizecxtm cxtm) in
+        Printf.bprintf sb "thf(%s,axiom,%s).\n" (tptpize_name x) a)
+    cxpf;
+  Printf.bprintf sb "thf(conj_%s,conjecture,%s).\n" conjn (th0_str claimtm (tptpizecxtm cxtm));
+  Buffer.contents sb
 
 let read_pfg_supp fn =
   let f = open_in fn in
@@ -3461,50 +3578,33 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                  match !th0 with
                  | None -> ()
                  | Some(c) ->
-                    Buffer.clear sb;
-                    List.iter
-                      (fun (cl,h,x,a) ->
-                        if cl = "type" || cl = "def" && not (Hashtbl.mem sigdelta_opaque h) || cl = "known" && (List.mem x xl || xl = ["-"]) then
-                          Printf.bprintf sb "%s\n" a)
-                      (List.rev !th0sg);
-                    let rec th0_cx cxtm =
-                      match cxtm with
-                      | [] -> ()
-                      | (x,(a,d))::cxtmr ->
-                         th0_cx cxtmr;
-                         Printf.bprintf sb "thf(%s_tp,type,(%s : %s)).\n" (tptpize_name x) (tptpize_name x) (th0_stp_str a);
-                         match d with
-                         | Some(d) ->
-                            Printf.bprintf sb "thf(%s_def,definition,(%s = %s)).\n" (tptpize_name x) (tptpize_name x) (th0_str d (tptpizecxtm cxtmr))
-                         | None -> ()
-                    in
-                    th0_cx cxtm;
-                    List.iter
-                      (fun (x,p) ->
-                        if List.mem x xl then
-                          let a = th0_str p (tptpizecxtm cxtm) in
-                          Printf.bprintf sb "thf(%s,axiom,%s).\n" (tptpize_name x) a)
-                      cxpf;
                     let conjn = if !abyproblemscached then "" else Printf.sprintf "%s_%d_%d" c !lineno !charno in
-                    Printf.bprintf sb "thf(conj_%s,conjecture,%s).\n" conjn (th0_str claimtm (tptpizecxtm cxtm));
-                      let content = Buffer.contents sb in
-                      if !abyproblemscached then
-                        let fn = "cache/" ^ Hash.hashval_hexstring (Hash.sha256 content) ^ ".thf.p" in
-                        if checkfail (fn ^ ".out") then Printf.printf "ERROR: aby at line %i char %i fails\n" !lineno !charno else
-                        begin
-                          let ch = open_out fn in
-                          Printf.fprintf ch "%s" content;
-                          close_out ch
-                        end
-                      else
-                        begin
-                          let fn = Printf.sprintf "%s.%d.%d.th0.p" c !lineno !charno in
-                          let ch = open_out fn in
-                          Printf.fprintf ch "%s" content;
-                          close_out ch
-                        end
+                    let content = th0_aby_problem_content claimtm cxtm cxpf xl conjn in
+                    if !abyproblemscached then
+                      let fn = "cache/" ^ Hash.hashval_hexstring (Hash.sha256 content) ^ ".thf.p" in
+                      if checkfail (fn ^ ".out") then Printf.printf "ERROR: aby at line %i char %i fails\n" !lineno !charno else
+                      begin
+                        let ch = open_out fn in
+                        Printf.fprintf ch "%s" content;
+                        close_out ch
+                      end
+                    else
+                      begin
+                        let fn = Printf.sprintf "%s.%d.%d.th0.p" c !lineno !charno in
+                        let ch = open_out fn in
+                        Printf.fprintf ch "%s" content;
+                        close_out ch
+                      end
                end;
              end;
+           begin
+             match !vampireaby with
+             | None -> ()
+             | Some(_) ->
+                let conjn = Printf.sprintf "vampireaby_%d_%d" !lineno !charno in
+                let content = th0_aby_problem_content claimtm cxtm cxpf xl conjn in
+                run_vampire_aby_certificate content
+           end;
 	           admitpfstateatp pfst;
 		   pfstate := pfstr;
 		   prooffun := (fun _ -> raise AdmittedPf)
@@ -4897,6 +4997,56 @@ let _ =
 	      end
 	    else
 	      raise (Failure("Expected -createabyprobs <fileprefix>"))
+          end
+        else if Sys.argv.(!j) = "-vampireaby" then
+          begin
+	    if !j < i-2 then
+	      begin
+		incr j;
+                vampireaby := Some(Sys.argv.(!j))
+	      end
+	    else
+	      raise (Failure("Expected -vampireaby <vampire-binary>"))
+          end
+        else if Sys.argv.(!j) = "-vampireabyoutdir" then
+          begin
+	    if !j < i-2 then
+	      begin
+		incr j;
+                vampireabyoutdir := Sys.argv.(!j)
+	      end
+	    else
+	      raise (Failure("Expected -vampireabyoutdir <directory>"))
+          end
+        else if Sys.argv.(!j) = "-vampireabytimeout" then
+          begin
+	    if !j < i-2 then
+	      begin
+		incr j;
+                vampireabytimeout := int_of_string (Sys.argv.(!j))
+	      end
+	    else
+	      raise (Failure("Expected -vampireabytimeout <seconds>"))
+          end
+        else if Sys.argv.(!j) = "-vampireabyschedule" then
+          begin
+	    if !j < i-2 then
+	      begin
+		incr j;
+                vampireabyschedule := Sys.argv.(!j)
+	      end
+	    else
+	      raise (Failure("Expected -vampireabyschedule <schedule>"))
+          end
+        else if Sys.argv.(!j) = "-vampireabyproof" then
+          begin
+	    if !j < i-2 then
+	      begin
+		incr j;
+                vampireabyproof := Sys.argv.(!j)
+	      end
+	    else
+	      raise (Failure("Expected -vampireabyproof <tptp|leancheck>"))
           end
         else if Sys.argv.(!j) = "-fofallsubgoals" then
           begin

@@ -30,6 +30,30 @@ pool:
 VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_100_th0.sh --collect-successes
 ```
 
+Run Megalodon itself with live Vampire certification for each `aby` THF
+obligation:
+
+```sh
+./bin/megalodon \
+  -allowincompleteqed \
+  -vampireaby /path/to/vampire \
+  -vampireabytimeout 60 \
+  -vampireabyoutdir vampire_aby \
+  examples/hammer/100thms_12_h.mg
+```
+
+The live mode writes the exact THF problem generated at each `aby`, runs
+Vampire with `--proof tptp`, and fails the Megalodon check unless Vampire
+reports a proved SZS status and emits a proof payload.  This is a strict
+certificate gate for `aby`; it is not yet a native Megalodon kernel proof-term
+reconstructor, so `-allowincompleteqed` is still required.
+
+Smoke-test the live Megalodon/Vampire path on the first hammer `aby`:
+
+```sh
+VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_live_aby_smoke.sh
+```
+
 Useful overrides:
 
 ```sh
