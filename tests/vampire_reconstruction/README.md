@@ -46,7 +46,11 @@ The live mode writes the exact THF problem generated at each `aby`, runs
 Vampire with `--proof tptp`, and fails the Megalodon check unless Vampire
 reports a proved SZS status and emits a proof payload.  This is a strict
 certificate gate for `aby`; it is not yet a native Megalodon kernel proof-term
-reconstructor, so `-allowincompleteqed` is still required.
+reconstructor, so `-allowincompleteqed` is still required.  The generated THF
+conjecture and selected local hypotheses are head-expanded at transparent
+definitions when that exposes `forall` or `->`, while preserving native THF
+equality, so definition-only goals such as subset reflexivity remain easy for
+Vampire.
 
 For the currently supported native reconstruction fragment, add
 `-vampireabynative`.  This tries to turn a certified `aby` goal into a native
@@ -59,7 +63,8 @@ local existential hypotheses, named `aby` dependencies instantiated over local
 variables, and
 definition-backed `iff` introduction/projection.  It also handles Leibniz
 equality symmetry/transitivity from matching local equality hypotheses and expands
-the local `neq` definition before falling back to the certificate admit.  Use
+the local `neq` definition, plus transparent definitions that expose `forall` or
+`->`, before falling back to the certificate admit.  Use
 `-vampireabynativestrict` to fail instead of falling back when the native
 fragment cannot reconstruct the certified proof.
 
@@ -70,7 +75,7 @@ VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_live_aby_smoke.sh
 ```
 
 Smoke-test the restricted native reconstruction path on the early hammer `aby`
-block through `prop_ext_2`:
+block through `Subq_ref`:
 
 ```sh
 VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_native_aby_smoke.sh

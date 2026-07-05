@@ -574,6 +574,17 @@ let run_vampire_aby_certificate content =
                "Vampire failed to certify aby at line %d char %d (%s, proof output %s)"
                !lineno !charno (status_to_string status) proof_file))
 
+let rec th0_aby_head_expand m =
+  let m0 = tm_beta_eta_norm m in
+  match m0 with
+  | Ap(Ap(TpAp(TmH(h),_),_),_) when h = !eqPoly -> m0
+  | _ ->
+     let (m1,_) = headnorm m0 sigdelta [] in
+     match m1 with
+     | All(a,q) -> All(a,th0_aby_head_expand q)
+     | Imp(p,q) -> Imp(th0_aby_head_expand p,th0_aby_head_expand q)
+     | _ -> m0
+
 let th0_aby_problem_content claimtm cxtm cxpf xl conjn =
   Buffer.clear sb;
   List.iter
@@ -596,10 +607,10 @@ let th0_aby_problem_content claimtm cxtm cxpf xl conjn =
   List.iter
     (fun (x,p) ->
       if List.mem x xl then
-        let a = th0_str p (tptpizecxtm cxtm) in
+        let a = th0_str (th0_aby_head_expand p) (tptpizecxtm cxtm) in
         Printf.bprintf sb "thf(%s,axiom,%s).\n" (tptpize_name x) a)
     cxpf;
-  Printf.bprintf sb "thf(conj_%s,conjecture,%s).\n" conjn (th0_str claimtm (tptpizecxtm cxtm));
+  Printf.bprintf sb "thf(conj_%s,conjecture,%s).\n" conjn (th0_str (th0_aby_head_expand claimtm) (tptpizecxtm cxtm));
   Buffer.contents sb
 
 let rec find_hyp_proving sgdelta hyps goal i =
@@ -763,6 +774,7 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
      end
   | _ ->
      begin
+       let direct_fallback () =
        match find_hyp_proving sigdelta hyps goal 0 with
        | Some(d) -> d
        | None ->
@@ -802,6 +814,15 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
                      | None -> try_remaining ()
                 end
              | None -> try_remaining ()
+       in
+       match is_eq_tm goal with
+       | Some(_) -> direct_fallback ()
+       | None ->
+          let goal_hn = fst (headnorm goal sigdelta []) in
+          if goal_hn <> tm_beta_eta_norm goal then
+            native_aby_direct_depth allow_imp allow_or (depth-1) cx hyps goal_hn
+          else
+            direct_fallback ()
      end
 and eq_trans_proof depth cx hyps a x z =
   if depth <= 0 then None else
@@ -999,9 +1020,21 @@ and apply_imp_chain allow_or depth cx hyps d p goal =
        | Failure(_) -> None
      end
   | _ ->
-     match conv p goal sigdelta [] with
-     | Some(_) -> Some(d)
-     | None -> None
+     match is_eq_tm p with
+     | Some(_) ->
+        begin
+          match conv p goal sigdelta [] with
+          | Some(_) -> Some(d)
+          | None -> None
+        end
+     | None ->
+        let p_hn = fst (headnorm p sigdelta []) in
+        if p_hn <> tm_beta_eta_norm p then
+          apply_imp_chain allow_or (depth-1) cx hyps d p_hn goal
+        else
+          match conv p goal sigdelta [] with
+          | Some(_) -> Some(d)
+          | None -> None
 
 let native_aby_direct cx hyps goal =
   native_aby_direct_depth true true 16 cx hyps goal
