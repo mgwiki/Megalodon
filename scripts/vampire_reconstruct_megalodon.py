@@ -10,6 +10,7 @@ as HO-Vampire-solvable in examples/hammer/ATPresults2025.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -348,41 +349,52 @@ def run_vampire_suite(
     return obligations
 
 
-def check_existing(manifest: Path) -> list[Obligation]:
-    obligations = []
+def check_obligation(obligation: Obligation) -> list[str]:
     failures = []
+    problem = Path(obligation.problem)
+    proof = Path(obligation.proof)
+    if not problem.exists():
+        return [f"{problem}: missing problem file"]
+    if sha256(problem) != obligation.problem_sha256:
+        failures.append(f"{problem}: problem hash changed")
+    if not proof.exists():
+        failures.append(f"{proof}: missing proof file")
+        return failures
+    if obligation.proof_sha256 and sha256(proof) != obligation.proof_sha256:
+        failures.append(f"{proof}: proof hash changed")
+    text = proof.read_text(encoding="utf-8", errors="replace")
+    proof_mode = proof_mode_from_path(proof)
+    if proof_has_fatal_output(text):
+        failures.append(f"{proof}: fatal error marker")
+    elif proof_mode == "leancheck":
+        if not proof_has_reconstruction_payload(text, proof_mode):
+            failures.append(f"{proof}: no complete Lean proof payload")
+    elif proof_mode == "megalodon":
+        if not proof_has_reconstruction_payload(text, proof_mode):
+            failures.append(f"{proof}: no complete Megalodon reconstruction payload")
+    elif not PROVED_RE.search(text):
+        failures.append(f"{proof}: no proved SZS status")
+    elif not proof_has_reconstruction_payload(text, proof_mode):
+        failures.append(f"{proof}: no proof payload")
+    return failures
+
+
+def check_existing(manifest: Path, jobs: int = 1) -> list[Obligation]:
+    obligations = []
     for row in manifest.read_text(encoding="utf-8").splitlines():
-        if not row.strip():
-            continue
-        data = json.loads(row)
-        obligation = Obligation(**data)
-        obligations.append(obligation)
-        problem = Path(obligation.problem)
-        proof = Path(obligation.proof)
-        if not problem.exists():
-            failures.append(f"{problem}: missing problem file")
-            continue
-        if sha256(problem) != obligation.problem_sha256:
-            failures.append(f"{problem}: problem hash changed")
-        if not proof.exists():
-            failures.append(f"{proof}: missing proof file")
-            continue
-        if obligation.proof_sha256 and sha256(proof) != obligation.proof_sha256:
-            failures.append(f"{proof}: proof hash changed")
-        text = proof.read_text(encoding="utf-8", errors="replace")
-        proof_mode = proof_mode_from_path(proof)
-        if proof_has_fatal_output(text):
-            failures.append(f"{proof}: fatal error marker")
-        elif proof_mode == "leancheck":
-            if not proof_has_reconstruction_payload(text, proof_mode):
-                failures.append(f"{proof}: no complete Lean proof payload")
-        elif proof_mode == "megalodon":
-            if not proof_has_reconstruction_payload(text, proof_mode):
-                failures.append(f"{proof}: no complete Megalodon reconstruction payload")
-        elif not PROVED_RE.search(text):
-            failures.append(f"{proof}: no proved SZS status")
-        elif not proof_has_reconstruction_payload(text, proof_mode):
-            failures.append(f"{proof}: no proof payload")
+        if row.strip():
+            obligations.append(Obligation(**json.loads(row)))
+
+    failures = []
+    workers = max(1, jobs)
+    if workers == 1:
+        for obligation in obligations:
+            failures.extend(check_obligation(obligation))
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            for item_failures in executor.map(check_obligation, obligations):
+                failures.extend(item_failures)
+
     if failures:
         for failure in failures:
             print(failure, file=sys.stderr)
@@ -424,7 +436,7 @@ def main() -> int:
     work_dir = (repo / args.work_dir).resolve() if not args.work_dir.is_absolute() else args.work_dir
 
     if args.check_existing:
-        obligations = check_existing(args.check_existing)
+        obligations = check_existing(args.check_existing, args.jobs)
         print(f"checked {len(obligations)} recorded Vampire proof outputs")
         return 0
 

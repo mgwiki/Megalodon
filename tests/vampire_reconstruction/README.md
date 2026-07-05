@@ -68,7 +68,9 @@ LeanChecker mode is a reference/artifact mode for the existing Vampire
 reconstruction code; it is not the target checker for this port.
 
 Collect Megalodon reconstruction artifacts from a Vampire build with
-`--proof megalodon` support:
+`--proof megalodon` support.  This is the preferred fast path: Megalodon
+exports all THF obligations once, then the driver runs Vampire workers in
+parallel and records the successful outputs in a manifest.
 
 ```sh
 TMPDIR=/project/tmp \
@@ -80,6 +82,15 @@ python3 scripts/vampire_reconstruct_megalodon.py \
   --jobs 20 \
   --proof-mode megalodon \
   --collect-successes
+```
+
+The recorded artifacts can be revalidated without rerunning Vampire.  Use
+`--jobs` to hash and check payloads concurrently:
+
+```sh
+python3 scripts/vampire_reconstruct_megalodon.py \
+  --check-existing /project/tmp/megalodon_vampire_megalodon/manifest.jsonl \
+  --jobs 20
 ```
 
 Megalodon mode asks Vampire for the same replay information that LeanChecker
