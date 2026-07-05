@@ -97,6 +97,13 @@ class EqFact:
 
 
 @dataclass(frozen=True)
+class RuleStep:
+    kind: str
+    name: str | None = None
+    expr: Expr | None = None
+
+
+@dataclass(frozen=True)
 class DefinitionInfo:
     sort: str
     body_text: str
@@ -841,6 +848,10 @@ def proof_term_text(proof: str) -> str:
     return proof if proof.startswith("(") and proof.endswith(")") else f"({proof})"
 
 
+def proof_argument_text(proof: str) -> str:
+    return proof if re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", proof) else f"({proof})"
+
+
 def collect_foralls(expr: Expr) -> tuple[list[tuple[str, str]], Expr]:
     binders: list[tuple[str, str]] = []
     while expr.kind == "forall":
@@ -1417,12 +1428,84 @@ def rule_application_parts(
         )
         if premise_proof is None:
             return None
-        parts.append(premise_proof)
+        parts.append(proof_argument_text(premise_proof))
     return parts
 
 
 def rule_application_text(parts: list[str]) -> str:
     return parts[0] if len(parts) == 1 else f"({' '.join(parts)})"
+
+
+def sequential_rule_steps(expr: Expr) -> tuple[list[RuleStep], Expr]:
+    steps: list[RuleStep] = []
+    current = expr
+    while True:
+        if current.kind == "forall":
+            assert current.value is not None
+            steps.append(RuleStep("binder", name=current.value))
+            current = current.args[0]
+            continue
+        if current.kind == "arrow":
+            steps.append(RuleStep("premise", expr=current.args[0]))
+            current = current.args[1]
+            continue
+        return steps, current
+
+
+def sequential_rule_application_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 0:
+        return None
+    seen_names: set[str] = set()
+    for proposition, rule_name in reversed(list(known.items())):
+        if rule_name in seen_names:
+            continue
+        seen_names.add(rule_name)
+        rule_expr = parse_expr(proposition)
+        if rule_expr is None:
+            continue
+        steps, conclusion = sequential_rule_steps(rule_expr)
+        binders = tuple(step.name for step in steps if step.kind == "binder" and step.name is not None)
+        if not binders or not any(step.kind == "premise" for step in steps):
+            continue
+        subst: dict[str, Expr] = {}
+        if not match_expr(conclusion, expr, set(binders), subst):
+            continue
+        if any(binder not in subst for binder in binders):
+            continue
+        parts = [rule_name]
+        ok = True
+        for step in steps:
+            if step.kind == "binder":
+                assert step.name is not None
+                parts.append(proof_arg_text(subst[step.name]))
+                continue
+            assert step.expr is not None
+            premise = substitute_expr(step.expr, subst)
+            premise_proof = proof_for_expr(
+                premise,
+                known,
+                known_canonical,
+                rules,
+                eq_facts,
+                definitions,
+                allow_rule=True,
+                rule_depth=rule_depth - 1,
+            )
+            if premise_proof is None:
+                ok = False
+                break
+            parts.append(proof_argument_text(premise_proof))
+        if ok:
+            return rule_application_text(parts)
+    return None
 
 
 def equality_rule_chain_proof(
@@ -2486,6 +2569,19 @@ def proof_for_expr(
         if direct_rule_proof is not None:
             return direct_rule_proof
 
+    if allow_rule:
+        sequential_rule_proof = sequential_rule_application_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth,
+        )
+        if sequential_rule_proof is not None:
+            return sequential_rule_proof
+
     congruence_proof = equality_congruence_proof(expr, known, known_canonical, rules, eq_facts, definitions, rule_depth)
     if congruence_proof is not None:
         return congruence_proof
@@ -2544,7 +2640,7 @@ def proof_for_expr(
             if premise_proof is None:
                 ok = False
                 break
-            premise_proofs.append(premise_proof)
+            premise_proofs.append(proof_argument_text(premise_proof))
         if not ok:
             continue
         args = [proof_arg_text(subst[binder]) for binder in rule.binders]
@@ -3019,6 +3115,44 @@ def finish_vampire(
     return obligation, failure, proof_payload_ok
 
 
+def cached_vampire_result(
+    args: argparse.Namespace,
+    line: int,
+    char: int,
+    problem: Path,
+    proof_path: Path,
+) -> tuple[Obligation, str | None, bool]:
+    out = proof_path.read_text(encoding="utf-8", errors="replace")
+    status_match = PROVED_RE.search(out)
+    status = status_match.group(1) if status_match else None
+    obligation = Obligation(
+        line=line,
+        char=char,
+        problem=str(problem),
+        proof=str(proof_path),
+        problem_sha256=sha256(problem),
+        proof_sha256=sha256(proof_path),
+        status=status,
+        command=vampire_command(args, problem, proof_path),
+        **source_context(getattr(args, "resolved_source", None), line),
+    )
+    proof_payload_ok = proof_has_reconstruction_payload(out, args.proof_mode)
+    failure = None
+    if proof_has_fatal_output(out):
+        failure = f"{problem.name}: cached Vampire output contained a fatal error marker"
+    elif args.proof_mode == "leancheck":
+        if not proof_payload_ok:
+            failure = f"{problem.name}: cached Vampire LeanChecker output had no complete Lean proof payload"
+    elif args.proof_mode == "megalodon":
+        if not proof_payload_ok:
+            failure = f"{problem.name}: cached Vampire Megalodon output had no complete reconstruction payload"
+    elif not status:
+        failure = f"{problem.name}: cached Vampire output did not report a proved SZS status"
+    elif not proof_payload_ok:
+        failure = f"{problem.name}: cached Vampire output had status {status} but no proof payload"
+    return obligation, failure, proof_payload_ok
+
+
 def run_vampire_suite(
     repo: Path,
     args: argparse.Namespace,
@@ -3035,6 +3169,23 @@ def run_vampire_suite(
     next_index = 0
     completed = 0
 
+    def accept_finished_result(obligation: Obligation, failure: str | None, proof_payload_ok: bool) -> None:
+        nonlocal skipped
+        if args.collect_successes:
+            skeleton_ok = (
+                not args.require_claim_skeletons
+                or "megalodon_claim_skeleton_start."
+                in Path(obligation.proof).read_text(encoding="utf-8", errors="replace")
+            )
+            if failure is None and proof_payload_ok and skeleton_ok:
+                obligations.append(obligation)
+            else:
+                skipped += 1
+        else:
+            obligations.append(obligation)
+            if failure is not None:
+                failures.append(failure)
+
     def should_schedule() -> bool:
         if next_index >= len(selected_items):
             return False
@@ -3045,8 +3196,21 @@ def run_vampire_suite(
     try:
         while running or should_schedule():
             while len(running) < jobs and should_schedule():
-                running.append(start_vampire(repo, args, proof_dir, selected_items[next_index]))
+                line, char, problem = selected_items[next_index]
                 next_index += 1
+                proof_path = proof_dir / f"{problem.stem}.{args.proof_mode}.out"
+                if args.reuse_existing_proofs and proof_path.exists():
+                    obligation, failure, proof_payload_ok = cached_vampire_result(args, line, char, problem, proof_path)
+                    completed += 1
+                    accept_finished_result(obligation, failure, proof_payload_ok)
+                    if args.progress and (completed % args.progress == 0 or len(obligations) >= args.limit):
+                        print(
+                            f"completed {completed}; accepted {len(obligations)}; "
+                            f"running {len(running)}; queued {next_index}/{len(selected_items)}",
+                            flush=True,
+                        )
+                    continue
+                running.append(start_vampire(repo, args, proof_dir, (line, char, problem)))
 
             now = time.monotonic()
             made_progress = False
@@ -3058,19 +3222,7 @@ def run_vampire_suite(
                 obligation, failure, proof_payload_ok = finish_vampire(item, args, timed_out=timed_out)
                 completed += 1
                 made_progress = True
-                if args.collect_successes:
-                    skeleton_ok = (
-                        not args.require_claim_skeletons
-                        or "megalodon_claim_skeleton_start." in item.proof_path.read_text(encoding="utf-8", errors="replace")
-                    )
-                    if failure is None and proof_payload_ok and skeleton_ok:
-                        obligations.append(obligation)
-                    else:
-                        skipped += 1
-                else:
-                    obligations.append(obligation)
-                    if failure is not None:
-                        failures.append(failure)
+                accept_finished_result(obligation, failure, proof_payload_ok)
 
                 if args.progress and (completed % args.progress == 0 or len(obligations) >= args.limit):
                     print(
@@ -3286,6 +3438,7 @@ def main() -> int:
     parser.add_argument("--vampire", type=Path, default=Path(os.environ.get("VAMPIRE", "vampire")))
     parser.add_argument("--vampire-arg", action="append", nargs="+")
     parser.add_argument("--collect-successes", action="store_true")
+    parser.add_argument("--reuse-existing-proofs", action="store_true")
     parser.add_argument("--generate-only", action="store_true")
     parser.add_argument("--select-all-generated", action="store_true")
     parser.add_argument("--check-existing", type=Path)
