@@ -882,26 +882,32 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
        match try_intro () with
        | Some(d) -> d
        | None ->
-          match native_aby_if_correct depth cx hyps goal a b with
+          match native_aby_upair_elim depth cx hyps goal a b with
           | Some(d) -> d
           | None ->
-             match native_aby_nand_or depth cx hyps goal a b with
+             match native_aby_xm_or_cases depth cx hyps goal a b with
              | Some(d) -> d
              | None ->
-                if allow_imp then
-                  begin
-                    match find_or_elim_hyp depth cx hyps goal 0 with
-                    | Some(d) -> d
-                    | None ->
-                       match find_imp_elim_hyp allow_or depth cx hyps goal 0 with
-                       | Some(d) -> d
-                       | None ->
-                          match find_known_elim allow_or depth cx hyps goal with
+                match native_aby_if_correct depth cx hyps goal a b with
+                | Some(d) -> d
+                | None ->
+                   match native_aby_nand_or depth cx hyps goal a b with
+                   | Some(d) -> d
+                   | None ->
+                      if allow_imp then
+                        begin
+                          match find_or_elim_hyp depth cx hyps goal 0 with
                           | Some(d) -> d
-                          | None -> raise SearchBacktrack
-                  end
-                else
-                  raise SearchBacktrack
+                          | None ->
+                             match find_imp_elim_hyp allow_or depth cx hyps goal 0 with
+                             | Some(d) -> d
+                             | None ->
+                                match find_known_elim allow_or depth cx hyps goal with
+                                | Some(d) -> d
+                                | None -> raise SearchBacktrack
+                        end
+                      else
+                        raise SearchBacktrack
      end
   | _ ->
      begin
@@ -957,30 +963,39 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
                               | None ->
                                  match eq_func_ext_proof depth cx hyps a x z with
                                  | Some(d) -> d
-                                 | None -> try_remaining ()
+                                 | None ->
+                                    match eq_pred_rewrite_proof depth cx hyps goal with
+                                    | Some(d) -> d
+                                    | None -> try_remaining ()
                 end
              | None ->
-                match repl_ext_sub_proof depth cx hyps goal with
+                match native_aby_upair_intro depth cx hyps goal with
                 | Some(d) -> d
                 | None ->
-                   match eq_in_elem_rewrite_proof depth cx hyps goal with
+                   match repl_ext_sub_proof depth cx hyps goal with
                    | Some(d) -> d
                    | None ->
-                      match eq_pred_rewrite_proof depth cx hyps goal with
+                      match eq_in_elem_rewrite_proof depth cx hyps goal with
                       | Some(d) -> d
-                      | None -> try_remaining ()
+                      | None ->
+                         match eq_pred_rewrite_proof depth cx hyps goal with
+                         | Some(d) -> d
+                         | None -> try_remaining ()
        in
        match is_eq_tm goal with
        | Some(_) -> direct_fallback ()
        | None ->
-          match repl_ext_sub_proof depth cx hyps goal with
+          match native_aby_upair_intro depth cx hyps goal with
           | Some(d) -> d
           | None ->
-             let goal_hn = fst (headnorm goal sigdelta []) in
-             if goal_hn <> tm_beta_eta_norm goal then
-               native_aby_direct_depth allow_imp allow_or (depth-1) cx hyps goal_hn
-             else
-               direct_fallback ()
+             match repl_ext_sub_proof depth cx hyps goal with
+             | Some(d) -> d
+             | None ->
+                let goal_hn = fst (headnorm goal sigdelta []) in
+                if goal_hn <> tm_beta_eta_norm goal then
+                  native_aby_direct_depth allow_imp allow_or (depth-1) cx hyps goal_hn
+                else
+                  direct_fallback ()
      end
 and native_aby_classical_ex depth cx hyps goal =
   if depth <= 0 then None else
@@ -1070,6 +1085,197 @@ and native_aby_nand_or depth cx hyps goal a b =
        | Failure(_) -> None
      end
   | _ -> None
+and native_aby_or_intro_left a b da =
+  if Hashtbl.mem sigdelta egal_or_intro_left_id then
+    PPfAp(PTmAp(PTmAp(Known(egal_or_intro_left_id),a),b),da)
+  else
+    let da = pfshift 0 2 (pftmshift 0 1 da) in
+    TLam(Prop,PLam(Imp(tmshift 0 1 a,DB(0)),PLam(Imp(tmshift 0 1 b,DB(0)),PPfAp(Hyp(1),da))))
+and native_aby_or_intro_right a b db =
+  if Hashtbl.mem sigdelta egal_or_intro_right_id then
+    PPfAp(PTmAp(PTmAp(Known(egal_or_intro_right_id),a),b),db)
+  else
+    let db = pfshift 0 2 (pftmshift 0 1 db) in
+    TLam(Prop,PLam(Imp(tmshift 0 1 a,DB(0)),PLam(Imp(tmshift 0 1 b,DB(0)),PPfAp(Hyp(0),db))))
+and native_aby_xm_or_cases depth cx hyps goal a b =
+  if depth <= 0 then None else
+  let rec try_props props =
+    match props with
+    | p::r ->
+       begin
+         match native_aby_known_xm p with
+         | Some(dxm) ->
+            let notp = Imp(p,TmH(egal_false_id)) in
+            begin
+              try
+                let da = native_aby_direct_depth true true (depth-1) cx (p::hyps) a in
+                let db = native_aby_direct_depth true true (depth-1) cx (notp::hyps) b in
+                let dleft = native_aby_or_intro_left a b da in
+                let dright = native_aby_or_intro_right a b db in
+                Some(PPfAp(PPfAp(PTmAp(dxm,goal),PLam(p,dleft)),PLam(notp,dright)))
+              with
+              | SearchBacktrack -> try_props r
+              | Failure(_) -> try_props r
+            end
+         | None -> try_props r
+       end
+    | [] -> None
+  in
+  try_props (native_aby_inst_terms cx hyps goal Prop)
+and native_aby_upair_elim depth cx hyps goal a b =
+  if depth <= 0 then None else
+  try
+    let empty_h = Hashtbl.find sigtmh "Empty" in
+    let power_h = Hashtbl.find sigtmh "Power" in
+    let in_h = Hashtbl.find sigtmh "In" in
+    let if_h = Hashtbl.find sigtmh "If_i" in
+    let upair_h = Hashtbl.find sigtmh "UPair" in
+    let if_or_h = Hashtbl.find sigknh "If_i_or" in
+    let replE_impred_h = Hashtbl.find sigknh "ReplE_impred" in
+    let domain = Ap(TmH(power_h),Ap(TmH(power_h),TmH(empty_h))) in
+    let in_tm x y = Ap(Ap(TmH(in_h),x),y) in
+    let f y z =
+      Lam(Set,
+          Ap(Ap(Ap(TmH(if_h),in_tm (TmH(empty_h)) (DB(0))),
+                tmshift 0 1 y),
+             tmshift 0 1 z))
+    in
+    let rec scan scanhyps i =
+      match scanhyps with
+      | h::r ->
+         begin
+           match is_eq_tm a, is_eq_tm b, h with
+           | Some(Set,x,y), Some(Set,x2,z), Ap(Ap(TmH(ih),xh),Ap(Ap(TmH(uh),yh),zh))
+                when ih = in_h && uh = upair_h ->
+              begin
+                match conv x x2 sigdelta [], conv x xh sigdelta [], conv y yh sigdelta [], conv z zh sigdelta [] with
+                | Some(_), Some(_), Some(_), Some(_) ->
+                   let f_yz = f y z in
+                   let shifted_hyps = List.map (tmshift 0 1) hyps in
+                   let x1 = tmshift 0 1 x in
+                   let y1 = tmshift 0 1 y in
+                   let z1 = tmshift 0 1 z in
+                   let f1 = tmshift 0 1 f_yz in
+                   let w = DB(0) in
+                   let fw = Ap(f1,w) in
+                   let p = in_tm (TmH(empty_h)) w in
+                   let w_in_domain = in_tm w (tmshift 0 1 domain) in
+                   let x_eq_fw = eq_tm Set x1 fw in
+                   let branch_goal = tmshift 0 1 goal in
+                   let if_or_prop =
+                     Ap(Ap(TmH(egal_or_id),eq_tm Set fw y1),eq_tm Set fw z1)
+                   in
+                   let dif =
+                     PTmAp(PTmAp(PTmAp(Known(if_or_h),p),y1),z1)
+                   in
+                   begin
+                     match or_elim_proof
+                             (depth-1)
+                             (Set::cx)
+                             (x_eq_fw::w_in_domain::shifted_hyps)
+                             dif
+                             if_or_prop
+                             branch_goal with
+                     | Some(body) ->
+                        let branch = TLam(Set,PLam(w_in_domain,PLam(x_eq_fw,body))) in
+                        Some
+                          (PPfAp
+                             (PTmAp
+                                (PPfAp
+                                   (PTmAp(PTmAp(PTmAp(Known(replE_impred_h),domain),f_yz),x),
+                                    Hyp(i)),
+                                 goal),
+                              branch))
+                     | None -> scan r (i+1)
+                   end
+                | _ -> scan r (i+1)
+              end
+           | _ -> scan r (i+1)
+         end
+      | [] -> None
+    in
+    scan hyps 0
+  with
+  | Not_found -> None
+  | SearchBacktrack -> None
+  | Failure(_) -> None
+and native_aby_upair_intro depth cx hyps goal =
+  if depth <= 0 then None else
+  try
+    let empty_h = Hashtbl.find sigtmh "Empty" in
+    let power_h = Hashtbl.find sigtmh "Power" in
+    let in_h = Hashtbl.find sigtmh "In" in
+    let if_h = Hashtbl.find sigtmh "If_i" in
+    let upair_h = Hashtbl.find sigtmh "UPair" in
+    let empty_in_power_h = Hashtbl.find sigknh "Empty_In_Power" in
+    let emptyE_h = Hashtbl.find sigknh "EmptyE" in
+    let self_in_power_h = Hashtbl.find sigknh "Self_In_Power" in
+    let replI_h = Hashtbl.find sigknh "ReplI" in
+    let if_i_0_h = Hashtbl.find sigknh "If_i_0" in
+    let if_i_1_h = Hashtbl.find sigknh "If_i_1" in
+    let empty = TmH(empty_h) in
+    let power_empty = Ap(TmH(power_h),empty) in
+    let domain = Ap(TmH(power_h),power_empty) in
+    let in_tm x y = Ap(Ap(TmH(in_h),x),y) in
+    let f y z =
+      Lam(Set,
+          Ap(Ap(Ap(TmH(if_h),in_tm empty (DB(0))),
+                tmshift 0 1 y),
+             tmshift 0 1 z))
+    in
+    let rewrite_elem deq dsource target =
+      PPfAp
+        (PTmAp(deq,Lam(Set,Lam(Set,in_tm (DB(1)) (tmshift 0 2 target)))),
+         dsource)
+    in
+    match goal with
+    | Ap(Ap(TmH(ih),elem),Ap(Ap(TmH(uh),y),z)) when ih = in_h && uh = upair_h ->
+       let target = Ap(Ap(TmH(upair_h),y),z) in
+       let f_yz = f y z in
+       let build w dw_domain deq =
+         let dsource =
+           PPfAp
+             (PTmAp(PTmAp(PTmAp(Known(replI_h),domain),f_yz),w),
+              dw_domain)
+         in
+         rewrite_elem deq dsource target
+       in
+       let try_left () =
+         match conv elem y sigdelta [] with
+         | Some(_) ->
+            let w = power_empty in
+            let p = in_tm empty w in
+            let dw_domain = PTmAp(Known(self_in_power_h),w) in
+            let dp = PTmAp(Known(empty_in_power_h),empty) in
+            let deq =
+              PPfAp(PTmAp(PTmAp(PTmAp(Known(if_i_1_h),p),y),z),dp)
+            in
+            Some(build w dw_domain deq)
+         | None -> None
+       in
+       let try_right () =
+         match conv elem z sigdelta [] with
+         | Some(_) ->
+            let w = empty in
+            let p = in_tm empty w in
+            let dw_domain = PTmAp(Known(empty_in_power_h),power_empty) in
+            let dnotp = PTmAp(Known(emptyE_h),empty) in
+            let deq =
+              PPfAp(PTmAp(PTmAp(PTmAp(Known(if_i_0_h),p),y),z),dnotp)
+            in
+            Some(build w dw_domain deq)
+         | None -> None
+       in
+       begin
+         match try_left () with
+         | Some(d) -> Some(d)
+         | None -> try_right ()
+       end
+    | _ -> None
+  with
+  | Not_found -> None
+  | SearchBacktrack -> None
+  | Failure(_) -> None
 and native_aby_if_correct depth cx hyps goal a b =
   if depth <= 0 then None else
   try
