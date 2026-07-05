@@ -298,6 +298,25 @@ def extract_megalodon_source_candidates(text: str) -> list[list[str]]:
     )
 
 
+def source_candidate_claim_proofs(text: str) -> dict[str, list[str]]:
+    proofs: dict[str, list[str]] = {}
+    for candidate in extract_megalodon_source_candidates(text):
+        theorem_index = None
+        theorem_proposition = None
+        for index, line in enumerate(candidate):
+            theorem = proposition_after_colon(line, "Theorem ")
+            if theorem is not None:
+                theorem_index = index
+                theorem_proposition = theorem[1]
+                break
+        if theorem_index is None or theorem_proposition is None:
+            continue
+        proof_lines = [line for line in candidate[theorem_index + 1:] if line != "Qed."]
+        if proof_lines:
+            proofs.setdefault(theorem_proposition, proof_lines)
+    return proofs
+
+
 def extract_megalodon_claim_skeletons(text: str) -> list[list[str]]:
     return extract_marked_megalodon_blocks(
         text,
@@ -707,6 +726,36 @@ def add_function_definition_skeletons(lines: list[str], proof_text: str | None) 
     return result
 
 
+def fill_source_candidate_claims(lines: list[str], proof_text: str | None) -> list[str]:
+    if proof_text is None:
+        return list(lines)
+    source_proofs = source_candidate_claim_proofs(proof_text)
+    if not source_proofs:
+        return list(lines)
+    used: set[str] = set()
+    result: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        result.append(line)
+        claim = proposition_after_colon(line, "claim ")
+        if (
+            claim is not None
+            and claim[1] in source_proofs
+            and claim[1] not in used
+            and index + 1 < len(lines)
+            and lines[index + 1] == "{ admit. }"
+        ):
+            result.append("{")
+            result.extend(source_proofs[claim[1]])
+            result.append("}")
+            used.add(claim[1])
+            index += 2
+            continue
+        index += 1
+    return result
+
+
 IDENTIFIER_CHARS = "_'0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 FORALL_RE = re.compile(r"forall (?P<name>[_A-Za-z][_A-Za-z0-9']*):(?P<sort>[^,]+), ")
 
@@ -1055,6 +1104,7 @@ def check_megalodon_lines(
 ) -> list[str]:
     safe_kind = kind.replace(" ", "_")
     output_lines = add_function_definition_skeletons(lines, proof_text)
+    output_lines = fill_source_candidate_claims(output_lines, proof_text)
     output_lines = fill_repeated_claim_admits(output_lines) if fill_repeated_admits else output_lines
     if header:
         output_lines = header + output_lines
