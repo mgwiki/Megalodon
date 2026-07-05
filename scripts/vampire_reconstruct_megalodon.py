@@ -975,6 +975,50 @@ def equality_rule_chain_proof(
     return None
 
 
+def introduction_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+) -> str | None:
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if not binders and not premises:
+        return None
+
+    local_known = dict(known)
+    local_known_canonical = dict(known_canonical)
+    local_rules = list(rules)
+    local_eq_facts = list(eq_facts)
+    args = [name for name, _ in binders]
+    for index, premise in enumerate(premises):
+        name = "H" + str(index)
+        args.append(name)
+        remember_proposition(
+            local_known,
+            local_known_canonical,
+            local_rules,
+            local_eq_facts,
+            name,
+            expr_text(premise),
+        )
+
+    proof = proof_for_expr(
+        conclusion,
+        local_known,
+        local_known_canonical,
+        local_rules,
+        local_eq_facts,
+        definitions,
+        allow_rule=True,
+    )
+    if proof is None:
+        return None
+    return f"({' '.join(['fun'] + args + ['=>', proof])})"
+
+
 def app_context_text(head: Expr, args: tuple[Expr, ...], hole_index: int, hole_name: str) -> str:
     parts = [expr_text(head)]
     for index, arg in enumerate(args):
@@ -1104,6 +1148,11 @@ def proof_for_expr(
     direct = direct_proof_expr(expr)
     if direct is not None:
         return direct
+
+    if allow_rule:
+        introduced = introduction_proof(expr, known, known_canonical, rules, eq_facts, definitions)
+        if introduced is not None:
+            return introduced
 
     normalized = normalize_defined_expr(expr, definitions)
     if expr_key(normalized) != expr_key(expr):
