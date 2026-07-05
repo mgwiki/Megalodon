@@ -62,9 +62,11 @@ Church-encoded existential introduction from bound witnesses/elimination from
 local existential hypotheses, named `aby` dependencies instantiated over local
 variables, and
 definition-backed `iff` introduction/projection.  It also handles Leibniz
-equality symmetry/transitivity from matching local equality hypotheses and expands
-the local `neq` definition, plus transparent definitions that expose `forall` or
-`->`, before falling back to the certificate admit.  Use
+equality symmetry/transitivity from matching local equality hypotheses,
+direct elimination of named `iff` facts such as set constructors, the classical
+double-negation pattern used to prove existential De Morgan consequences, and
+expands the local `neq` definition, plus transparent definitions that expose
+`forall` or `->`, before falling back to the certificate admit.  Use
 `-vampireabynativestrict` to fail instead of falling back when the native
 fragment cannot reconstruct the certified proof.
 
@@ -75,7 +77,7 @@ VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_live_aby_smoke.sh
 ```
 
 Smoke-test the restricted native reconstruction path on the early hammer `aby`
-block through `Empty_Subq_eq`:
+block through `not_all_ex_demorgan_i`:
 
 ```sh
 VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_native_aby_smoke.sh

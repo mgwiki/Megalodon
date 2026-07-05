@@ -732,6 +732,26 @@ let native_aby_inst_terms cx hyps goal a =
        (add_vars cx 0 [])
        (goal::hyps))
 
+let native_aby_dneg_apply goal dnotnot =
+  let notnot_goal = Imp(Imp(goal,TmH(egal_false_id)),TmH(egal_false_id)) in
+  let rec native_aby_dneg_apply_rec knowns =
+    match knowns with
+    | (All(Prop,body),d)::r ->
+       begin
+         match tmsubst body 0 goal with
+         | Imp(a,b) ->
+            begin
+              match conv b goal sigdelta [], conv a notnot_goal sigdelta [] with
+              | Some(_), Some(_) -> Some(PPfAp(PTmAp(d,goal),dnotnot))
+              | _ -> native_aby_dneg_apply_rec r
+            end
+         | _ -> native_aby_dneg_apply_rec r
+       end
+    | _::r -> native_aby_dneg_apply_rec r
+    | [] -> None
+  in
+  native_aby_dneg_apply_rec !native_aby_knowns
+
 let rec and_elim_proof sgdelta d p goal =
   match conv p goal sgdelta [] with
   | Some(_) -> Some(d)
@@ -775,9 +795,25 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
   | All(a,q) -> TLam(a,native_aby_direct_depth allow_imp allow_or depth (a::cx) (List.map (tmshift 0 1) hyps) q)
   | Ap(TpAp(TmH(h),a),q) when h = egal_ex_id ->
      begin
-       match find_ex_intro depth cx hyps a q 0 with
+       let try_elim () =
+         if allow_imp then
+           begin
+             match find_imp_elim_hyp allow_or depth cx hyps goal 0 with
+             | Some(d) -> Some(d)
+             | None -> find_known_elim allow_or depth cx hyps goal
+           end
+         else
+           None
+       in
+       match try_elim () with
        | Some(d) -> d
-       | None -> raise SearchBacktrack
+       | None ->
+          match find_ex_intro depth cx hyps a q 0 with
+          | Some(d) -> d
+          | None ->
+             match native_aby_classical_ex depth cx hyps goal with
+             | Some(d) -> d
+             | None -> raise SearchBacktrack
      end
   | Ap(Ap(TmH(h),a),b) when h = egal_iff_id ->
      native_aby_direct_depth allow_imp allow_or (depth-1) cx hyps (Ap(Ap(TmH(egal_and_id),Imp(a,b)),Imp(b,a)))
@@ -864,6 +900,63 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
           else
             direct_fallback ()
      end
+and native_aby_classical_ex depth cx hyps goal =
+  if depth <= 0 then None else
+  match goal with
+  | Ap(TpAp(TmH(h),a),q) when h = egal_ex_id ->
+     let qx = tm_beta_eta_norm (Ap(tmshift 0 1 q,DB(0))) in
+     let px_opt =
+       match qx with
+       | Ap(TmH(h),p) when h = egal_not_id -> Some(p)
+       | Imp(p,TmH(h)) when h = egal_false_id -> Some(p)
+       | _ -> None
+     in
+     begin
+       match px_opt with
+       | Some(px) ->
+          let all_px = All(a,px) in
+          let not_all_px = Imp(all_px,TmH(egal_false_id)) in
+          let rec find_not_all scanhyps i =
+            match scanhyps with
+            | p::r ->
+               begin
+                 match conv p not_all_px sigdelta [] with
+                 | Some(_) -> Some(i)
+                 | None -> find_not_all r (i+1)
+               end
+            | [] -> None
+          in
+          begin
+            match find_not_all hyps 0 with
+            | Some(i) ->
+               let not_goal = Imp(goal,TmH(egal_false_id)) in
+               let shifted_goal = tmshift 0 1 goal in
+               let shifted_not_goal = tmshift 0 1 not_goal in
+               begin
+                 try
+                   let dex =
+                     native_aby_direct_depth
+                       false false (depth-1)
+                       (a::cx)
+                       (Imp(px,TmH(egal_false_id))::shifted_not_goal::List.map (tmshift 0 1) hyps)
+                       shifted_goal
+                   in
+                   let dfalse_px = PPfAp(Hyp(1),dex) in
+                   match native_aby_dneg_apply px (PLam(Imp(px,TmH(egal_false_id)),dfalse_px)) with
+                   | Some(dpx) ->
+                      let dall = TLam(a,dpx) in
+                      let dfalse_goal = PPfAp(Hyp(i+1),dall) in
+                      native_aby_dneg_apply goal (PLam(not_goal,dfalse_goal))
+                   | None -> None
+                 with
+                 | SearchBacktrack -> None
+                 | Failure(_) -> None
+               end
+            | None -> None
+          end
+       | None -> None
+     end
+  | _ -> None
 and eq_trans_proof depth cx hyps a x z =
   if depth <= 0 then None else
   let rec try_middle_terms scancx i =
@@ -1003,13 +1096,75 @@ and find_known_elim allow_or depth cx hyps goal =
     match knowns with
     | (p,d)::r ->
        begin
-         match apply_imp_chain allow_or (depth-1) cx hyps d p goal with
+         match known_iff_elim allow_or (depth-1) cx hyps d p goal with
          | Some(d) -> Some(d)
-         | None -> find_known_elim_rec r
+         | None ->
+            match apply_imp_chain allow_or (depth-1) cx hyps d p goal with
+            | Some(d) -> Some(d)
+            | None -> find_known_elim_rec r
        end
     | [] -> None
   in
   find_known_elim_rec !native_aby_knowns
+and known_iff_elim allow_or depth cx hyps d p goal =
+  if depth <= 0 then None else
+  match p with
+  | All(a,b) ->
+     let rec try_terms terms =
+       match terms with
+       | w::r ->
+          begin
+            match known_iff_elim allow_or (depth-1) cx hyps (PTmAp(d,w)) (tmsubst b 0 w) goal with
+            | Some(d) -> Some(d)
+            | None -> try_terms r
+          end
+       | [] -> None
+     in
+     try_terms (native_aby_inst_terms cx hyps goal a)
+  | Ap(Ap(TmH(h),a),b) when h = egal_iff_id ->
+     let p_as_and = Ap(Ap(TmH(egal_and_id),Imp(a,b)),Imp(b,a)) in
+     let try_forward () =
+       match conv b goal sigdelta [] with
+       | Some(_) ->
+          begin
+            match and_elim_proof sigdelta d p_as_and (Imp(a,b)) with
+            | Some(dab) ->
+               begin
+                 try
+                   let da = native_aby_direct_depth true allow_or (depth-1) cx hyps a in
+                   Some(PPfAp(dab,da))
+                 with
+                 | SearchBacktrack -> None
+                 | Failure(_) -> None
+               end
+            | None -> None
+          end
+       | None -> None
+     in
+     let try_backward () =
+       match conv a goal sigdelta [] with
+       | Some(_) ->
+          begin
+            match and_elim_proof sigdelta d p_as_and (Imp(b,a)) with
+            | Some(dba) ->
+               begin
+                 try
+                   let db = native_aby_direct_depth true allow_or (depth-1) cx hyps b in
+                   Some(PPfAp(dba,db))
+                 with
+                 | SearchBacktrack -> None
+                 | Failure(_) -> None
+               end
+            | None -> None
+          end
+       | None -> None
+     in
+     begin
+       match try_forward () with
+       | Some(d) -> Some(d)
+       | None -> try_backward ()
+     end
+  | _ -> None
 and apply_imp_chain allow_or depth cx hyps d p goal =
   if depth <= 0 then None else
   match p with
