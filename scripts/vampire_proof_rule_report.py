@@ -11,11 +11,20 @@ from pathlib import Path
 
 
 INFERENCE_RE = re.compile(r"\binference\((?P<rule>[A-Za-z0-9_]+),")
+MEGALODON_STEP_RE = re.compile(r"\bmegalodon_step\([0-9]+,\"(?P<rule>(?:\\.|[^\"])*)\",")
+LEAN_STEP_RE = re.compile(r"^-- step [0-9]+ (?P<rule>.+)$", re.MULTILINE)
+
+
+def unquote_rule(rule: str) -> str:
+    return bytes(rule, "utf-8").decode("unicode_escape")
 
 
 def proof_rules(path: Path) -> collections.Counter[str]:
     text = path.read_text(encoding="utf-8", errors="replace")
-    return collections.Counter(match.group("rule") for match in INFERENCE_RE.finditer(text))
+    rules = collections.Counter(match.group("rule") for match in INFERENCE_RE.finditer(text))
+    rules.update(unquote_rule(match.group("rule")) for match in MEGALODON_STEP_RE.finditer(text))
+    rules.update(match.group("rule") for match in LEAN_STEP_RE.finditer(text))
+    return rules
 
 
 def main() -> int:

@@ -139,11 +139,9 @@ def vampire_command(args: argparse.Namespace, problem: Path, proof_path: Path) -
                 args.proof_mode,
             ]
         )
-        if args.proof_mode == "leancheck":
+        if args.proof_mode in {"leancheck", "megalodon"}:
             cmd.extend(
                 [
-                    "--output_mode",
-                    "lean",
                     "--proof_extra",
                     "lean",
                     "--skolemization",
@@ -152,6 +150,8 @@ def vampire_command(args: argparse.Namespace, problem: Path, proof_path: Path) -
                     "off",
                 ]
             )
+            if args.proof_mode == "leancheck":
+                cmd.extend(["--output_mode", "lean"])
     cmd.append(str(problem))
     return cmd
 
@@ -159,6 +159,13 @@ def vampire_command(args: argparse.Namespace, problem: Path, proof_path: Path) -
 def proof_has_reconstruction_payload(text: str, proof_mode: str) -> bool:
     if proof_mode == "leancheck":
         return "end vamproof" in text and "theorem fullProof" in text
+    if proof_mode == "megalodon":
+        return (
+            "megalodon_reconstruction_start." in text
+            and "megalodon_step(" in text
+            and "megalodon_final_step(" in text
+            and "megalodon_reconstruction_end." in text
+        )
     return "inference(" in text or "SZS output start Proof" in text or "Refutation" in text
 
 
@@ -169,6 +176,8 @@ def proof_has_fatal_output(text: str) -> bool:
 def proof_mode_from_path(path: Path) -> str:
     if path.name.endswith(".leancheck.out"):
         return "leancheck"
+    if path.name.endswith(".megalodon.out"):
+        return "megalodon"
     return "tptp"
 
 
@@ -246,6 +255,9 @@ def finish_vampire(
     elif args.proof_mode == "leancheck":
         if not proof_payload_ok:
             failure = f"{running.problem.name}: Vampire LeanChecker output had no complete Lean proof payload"
+    elif args.proof_mode == "megalodon":
+        if not proof_payload_ok:
+            failure = f"{running.problem.name}: Vampire Megalodon output had no complete reconstruction payload"
     elif not status:
         failure = f"{running.problem.name}: Vampire did not report a proved SZS status"
     elif not proof_payload_ok:
@@ -364,6 +376,9 @@ def check_existing(manifest: Path) -> list[Obligation]:
         elif proof_mode == "leancheck":
             if not proof_has_reconstruction_payload(text, proof_mode):
                 failures.append(f"{proof}: no complete Lean proof payload")
+        elif proof_mode == "megalodon":
+            if not proof_has_reconstruction_payload(text, proof_mode):
+                failures.append(f"{proof}: no complete Megalodon reconstruction payload")
         elif not PROVED_RE.search(text):
             failures.append(f"{proof}: no proved SZS status")
         elif not proof_has_reconstruction_payload(text, proof_mode):
@@ -394,7 +409,7 @@ def main() -> int:
     parser.add_argument("--jobs", type=int, default=int(os.environ.get("MEGALODON_VAMPIRE_JOBS", "1")))
     parser.add_argument("--progress", type=int, default=10)
     parser.add_argument("--schedule", default="casc")
-    parser.add_argument("--proof-mode", choices=["tptp", "leancheck"], default="tptp")
+    parser.add_argument("--proof-mode", choices=["tptp", "leancheck", "megalodon"], default="tptp")
     parser.add_argument("--vampire", type=Path, default=Path(os.environ.get("VAMPIRE", "vampire")))
     parser.add_argument("--vampire-arg", action="append", nargs="+")
     parser.add_argument("--collect-successes", action="store_true")

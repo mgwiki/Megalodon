@@ -64,6 +64,30 @@ LeanChecker mode asks Vampire for Lean output with the required
 payload (`theorem fullProof` through `end vamproof`) and rejects fatal Vampire
 markers.  It does not run the Lean kernel by itself; that requires a local Lean
 toolchain and the `VampLean` module imported by Vampire's generated files.
+LeanChecker mode is a reference/artifact mode for the existing Vampire
+reconstruction code; it is not the target checker for this port.
+
+Collect Megalodon reconstruction artifacts from a Vampire build with
+`--proof megalodon` support:
+
+```sh
+TMPDIR=/project/tmp \
+VAMPIRE=/path/to/vampire \
+python3 scripts/vampire_reconstruct_megalodon.py \
+  --work-dir /project/tmp/megalodon_vampire_megalodon \
+  --limit 100 \
+  --timeout 10 \
+  --jobs 20 \
+  --proof-mode megalodon \
+  --collect-successes
+```
+
+Megalodon mode asks Vampire for the same replay information that LeanChecker
+uses (`--proof_extra lean --skolemization syntactic --shuffle_input off`) but
+emits a Megalodon reconstruction outline instead of Lean syntax.  The outline
+records each proof unit, its Vampire inference rule, parent unit ids, and
+whether replay/substitution information was recovered.  Later reconstruction
+passes should replace those outline entries by Megalodon `exact` proof terms.
 
 Summarize the Vampire inference rules appearing in a collected manifest:
 
