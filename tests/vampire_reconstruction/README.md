@@ -62,7 +62,7 @@ Church-encoded existential introduction from bound witnesses/elimination from
 local existential hypotheses, named `aby` dependencies instantiated over local
 variables, and
 definition-backed `iff` introduction/projection.  It also handles Leibniz
-equality symmetry/transitivity from matching local equality hypotheses,
+equality reflexivity plus symmetry/transitivity from matching local equality hypotheses,
 direct elimination of named `iff` facts such as set constructors, the classical
 double-negation pattern used to prove existential De Morgan consequences,
 function/proposition extensionality for pointwise proposition equality, and the
@@ -80,7 +80,7 @@ VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_live_aby_smoke.sh
 ```
 
 Smoke-test the restricted native reconstruction path on the early hammer `aby`
-block through `exactly1of2_or`:
+block through `ReplI`:
 
 ```sh
 VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_native_aby_smoke.sh

@@ -937,15 +937,18 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
                   match eq_prop_ext_proof depth cx hyps a x z with
                   | Some(d) -> d
                   | None ->
-                     match eq_sym_proof depth cx hyps a x z with
+                     match eq_refl_proof depth cx hyps a x z with
                      | Some(d) -> d
                      | None ->
-                        match eq_trans_proof depth cx hyps a x z with
+                        match eq_sym_proof depth cx hyps a x z with
                         | Some(d) -> d
                         | None ->
-                           match eq_func_ext_proof depth cx hyps a x z with
+                           match eq_trans_proof depth cx hyps a x z with
                            | Some(d) -> d
-                           | None -> try_remaining ()
+                           | None ->
+                              match eq_func_ext_proof depth cx hyps a x z with
+                              | Some(d) -> d
+                              | None -> try_remaining ()
                 end
              | None -> try_remaining ()
        in
@@ -1082,6 +1085,14 @@ and eq_sym_proof depth cx hyps a x z =
      let qxz = Ap(Ap(DB(0),x1),z1) in
      let q_swap = Lam(a,Lam(a,Ap(Ap(DB(2),DB(0)),DB(1)))) in
      Some(TLam(Ar(a,Ar(a,Prop)),PLam(qxz,PPfAp(PTmAp(dzx,q_swap),Hyp(0)))))
+  | None -> None
+and eq_refl_proof depth cx hyps a x z =
+  if depth <= 0 then None else
+  match conv x z sigdelta [] with
+  | Some(_) ->
+     let x1 = tmshift 0 1 x in
+     let qxx = Ap(Ap(DB(0),x1),x1) in
+     Some(TLam(Ar(a,Ar(a,Prop)),PLam(qxx,Hyp(0))))
   | None -> None
 and eq_prop_ext_proof depth cx hyps a p q =
   if depth <= 0 || a <> Prop then None else
