@@ -954,18 +954,24 @@ let rec native_aby_direct_depth allow_imp allow_or depth cx hyps goal =
                                  | None -> try_remaining ()
                 end
              | None ->
-                match eq_pred_rewrite_proof depth cx hyps goal with
+                match repl_ext_sub_proof depth cx hyps goal with
                 | Some(d) -> d
-                | None -> try_remaining ()
+                | None ->
+                   match eq_pred_rewrite_proof depth cx hyps goal with
+                   | Some(d) -> d
+                   | None -> try_remaining ()
        in
        match is_eq_tm goal with
        | Some(_) -> direct_fallback ()
        | None ->
-          let goal_hn = fst (headnorm goal sigdelta []) in
-          if goal_hn <> tm_beta_eta_norm goal then
-            native_aby_direct_depth allow_imp allow_or (depth-1) cx hyps goal_hn
-          else
-            direct_fallback ()
+          match repl_ext_sub_proof depth cx hyps goal with
+          | Some(d) -> d
+          | None ->
+             let goal_hn = fst (headnorm goal sigdelta []) in
+             if goal_hn <> tm_beta_eta_norm goal then
+               native_aby_direct_depth allow_imp allow_or (depth-1) cx hyps goal_hn
+             else
+               direct_fallback ()
      end
 and native_aby_classical_ex depth cx hyps goal =
   if depth <= 0 then None else
@@ -1185,6 +1191,136 @@ and eq_repl_empty_proof depth cx hyps a x z =
             Some(PPfAp(PTmAp(Known(empty_eq_h),repl_empty_f),notin_proof))
          | None -> None
        end
+    | _ -> None
+  with
+  | Not_found -> None
+  | SearchBacktrack -> None
+  | Failure(_) -> None
+and repl_ext_sub_proof depth cx hyps goal =
+  if depth <= 0 then None else
+  try
+    let repl_h = Hashtbl.find sigtmh "Repl" in
+    let in_h = Hashtbl.find sigtmh "In" in
+    let subq_h = Hashtbl.find sigtmh "Subq" in
+    let replI_h = Hashtbl.find sigknh "ReplI" in
+    let replE_impred_h = Hashtbl.find sigknh "ReplE_impred" in
+    let find_pointwise x f g =
+      let expected forward =
+        let x1 = tmshift 0 1 x in
+        let f1 = tmshift 0 1 f in
+        let g1 = tmshift 0 1 g in
+        let lhs, rhs =
+          if forward then
+            Ap(f1,DB(0)), Ap(g1,DB(0))
+          else
+            Ap(g1,DB(0)), Ap(f1,DB(0))
+        in
+        All(Set,Imp(Ap(Ap(TmH(in_h),DB(0)),x1),eq_tm Set lhs rhs))
+      in
+      let rec scan scanhyps i =
+        match scanhyps with
+        | p::r ->
+           begin
+             match conv p (expected true) sigdelta [] with
+             | Some(_) -> Some(i,true)
+             | None ->
+                begin
+                  match conv p (expected false) sigdelta [] with
+                  | Some(_) -> Some(i,false)
+                  | None -> scan r (i+1)
+                end
+           end
+        | [] -> None
+      in
+      scan hyps 0
+    in
+    let elem_rewrite_q target use_rhs =
+      let elem = if use_rhs then DB(0) else DB(1) in
+      Lam(Set,Lam(Set,Ap(Ap(TmH(in_h),elem),tmshift 0 2 target)))
+    in
+    match goal with
+    | Ap(Ap(TmH(sh),Ap(Ap(TmH(rh1),x1),f)),Ap(Ap(TmH(rh2),x2),g))
+         when sh = subq_h && rh1 = repl_h && rh2 = repl_h ->
+       begin
+         match conv x1 x2 sigdelta [] with
+         | Some(_) ->
+            let source = Ap(Ap(TmH(repl_h),x1),f) in
+            let target = Ap(Ap(TmH(repl_h),x2),g) in
+            let y_in_source = Ap(Ap(TmH(in_h),DB(0)),tmshift 0 1 source) in
+            let y_in_target = Ap(Ap(TmH(in_h),DB(0)),tmshift 0 1 target) in
+            begin
+              try
+                let body =
+                  repl_ext_sub_proof
+                    (depth-1)
+                    (Set::cx)
+                    (y_in_source::List.map (tmshift 0 1) hyps)
+                    y_in_target
+                in
+                begin
+                  match body with
+                  | Some(d) -> Some(TLam(Set,PLam(y_in_source,d)))
+                  | None -> None
+                end
+              with
+              | SearchBacktrack -> None
+              | Failure(_) -> None
+            end
+         | None -> None
+       end
+    | Ap(Ap(TmH(ih),y),Ap(Ap(TmH(rh),x),g)) when ih = in_h && rh = repl_h ->
+       let rec scan_source scanhyps source_i =
+         match scanhyps with
+         | Ap(Ap(TmH(ih2),y2),Ap(Ap(TmH(rh2),x2),f))::r when ih2 = in_h && rh2 = repl_h ->
+            begin
+              match conv y2 y sigdelta [], conv x2 x sigdelta [] with
+              | Some(_), Some(_) ->
+                 begin
+                   match find_pointwise x f g with
+                   | Some(point_i,point_forward) ->
+                      let target = Ap(Ap(TmH(repl_h),x),g) in
+                      let x1 = tmshift 0 1 x in
+                      let f1 = tmshift 0 1 f in
+                      let g1 = tmshift 0 1 g in
+                      let y1 = tmshift 0 1 y in
+                      let target1 = tmshift 0 1 target in
+                      let w = DB(0) in
+                      let winx = Ap(Ap(TmH(in_h),w),x1) in
+                      let y_eq_fw = eq_tm Set y1 (Ap(f1,w)) in
+                      let dpoint = PPfAp(PTmAp(Hyp(point_i+2),w),Hyp(1)) in
+                      let dgw =
+                        PPfAp
+                          (PTmAp(PTmAp(PTmAp(Known(replI_h),x1),g1),w),
+                           Hyp(1))
+                      in
+                      let dfw =
+                        PPfAp
+                          (PTmAp(dpoint,elem_rewrite_q target1 point_forward),
+                           dgw)
+                      in
+                      let dy =
+                        PPfAp
+                          (PTmAp(Hyp(0),elem_rewrite_q target1 true),
+                           dfw)
+                      in
+                      let branch = TLam(Set,PLam(winx,PLam(y_eq_fw,dy))) in
+                      Some
+                        (PPfAp
+                           (PTmAp
+                              (PPfAp
+                                 (PTmAp(PTmAp(PTmAp(Known(replE_impred_h),x),f),y),
+                                  Hyp(source_i)),
+                               goal),
+                            branch))
+                   | None ->
+                      scan_source r (source_i+1)
+                 end
+              | _ -> scan_source r (source_i+1)
+            end
+         | _::r -> scan_source r (source_i+1)
+         | [] -> None
+       in
+       scan_source hyps 0
     | _ -> None
   with
   | Not_found -> None

@@ -69,7 +69,9 @@ double-negation pattern used to prove existential De Morgan consequences,
 function/proposition extensionality for pointwise proposition equality, and the
 classical NAND-to-or pattern used with named excluded middle facts.  It can also
 reconstruct the replacement-over-empty argument through `Empty_eq` and
-`ReplE_impred`.  Transparent
+`ReplE_impred`, plus replacement extensionality subset arguments from
+`ReplI`, `ReplE_impred`, and pointwise equality hypotheses; combined with
+`set_ext`, this reconstructs replacement extensionality equalities.  Transparent
 definitions that expose Church-encoded disjunctions can be eliminated as local
 hypotheses.  It expands the local `neq` definition, plus transparent definitions
 that expose `forall` or `->`, before falling back to the certificate admit.  Use
@@ -83,7 +85,7 @@ VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_live_aby_smoke.sh
 ```
 
 Smoke-test the restricted native reconstruction path on the early hammer `aby`
-block through `Repl_Empty`:
+block through `ReplEq_ext`:
 
 ```sh
 VAMPIRE=/path/to/vampire tests/vampire_reconstruction/run_native_aby_smoke.sh
