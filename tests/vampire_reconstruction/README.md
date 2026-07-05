@@ -121,7 +121,9 @@ matches an earlier axiom or claim, up to `forall` binder renaming, are proved
 with `exact`; it also fills small proof-term patterns such as `A -> A`,
 Leibniz equality reflexivity/transitivity, and one-step applications of earlier
 universal implications when all premises are already known or directly
-provable.
+provable.  For Vampire `function definition` proof steps that introduce fresh
+nullary set symbols, it turns the fresh symbol into a Megalodon `Definition`
+and proves the matching claim by definitional reflexivity.
 
 ```sh
 python3 scripts/vampire_reconstruct_megalodon.py \

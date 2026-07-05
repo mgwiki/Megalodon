@@ -31,6 +31,8 @@ PROBLEM_RE = re.compile(r"^(?P<prefix>.*)\.(?P<line>[0-9]+)\.(?P<char>[0-9]+)\.t
 PROVED_RE = re.compile(r"SZS status (Theorem|Unsatisfiable|ContradictoryAxioms)\b")
 FATAL_OUTPUT_RE = re.compile(r"Aborted by signal|ASSERTION|User error|missing .* implementation", re.IGNORECASE)
 MEGALODON_SOURCE_LINE_RE = re.compile(r'^megalodon_source_line\("(?P<line>(?:\\.|[^"\\])*)"\)\.$')
+MEGALODON_STEP_RE = re.compile(r'^megalodon_step\((?P<id>[0-9]+),"(?P<rule>(?:\\.|[^"\\])*)"')
+FRESH_SET_RE = re.compile(r"^sF[0-9]+$")
 
 
 @dataclass
@@ -305,6 +307,15 @@ def proposition_after_colon(line: str, prefix: str) -> tuple[str, str] | None:
     return name.strip(), proposition[:-1].strip()
 
 
+def function_definition_step_ids(proof_text: str) -> set[str]:
+    ids: set[str] = set()
+    for line in proof_text.splitlines():
+        match = MEGALODON_STEP_RE.match(line.strip())
+        if match and json.loads(f'"{match.group("rule")}"') == "function definition":
+            ids.add("S" + match.group("id"))
+    return ids
+
+
 TOKEN_RE = re.compile(r"->|[A-Za-z_][A-Za-z0-9_']*|[0-9]+|[(),:=]")
 
 
@@ -499,6 +510,90 @@ def make_eq_fact(name: str, proposition: str) -> EqFact | None:
     if binders or premises or conclusion.kind != "eq":
         return None
     return EqFact(conclusion.args[0], conclusion.args[1], name)
+
+
+def fresh_set_definition(name: str, proposition: str, variable_sorts: dict[str, str]) -> tuple[str, str] | None:
+    expr = parse_expr(proposition)
+    if expr is None or expr.kind != "eq":
+        return None
+    left, right = expr.args
+    candidates: list[tuple[Expr, Expr]] = []
+    if right.kind == "var" and right.value is not None:
+        candidates.append((right, left))
+    if left.kind == "var" and left.value is not None:
+        candidates.append((left, right))
+    for target, body in candidates:
+        assert target.value is not None
+        if target.value != name and FRESH_SET_RE.match(target.value) and variable_sorts.get(target.value) == "set":
+            body_text = expr_text(body)
+            if target.value not in body_text.split():
+                return target.value, body_text
+    return None
+
+
+def add_function_definition_skeletons(lines: list[str], proof_text: str | None) -> list[str]:
+    if proof_text is None:
+        return list(lines)
+    definition_step_names = function_definition_step_ids(proof_text)
+    if not definition_step_names:
+        return list(lines)
+
+    variable_sorts: dict[str, str] = {}
+    variable_re = re.compile(r"^Variable (?P<name>[_A-Za-z][_A-Za-z0-9']*):(?P<sort>[^.]+)\.$")
+    for line in lines:
+        match = variable_re.match(line)
+        if match:
+            variable_sorts[match.group("name")] = match.group("sort").strip()
+
+    definitions: dict[str, str] = {}
+    definition_claims: set[str] = set()
+    for line in lines:
+        claim = proposition_after_colon(line, "claim ")
+        if claim is None:
+            continue
+        claim_name, proposition = claim
+        if claim_name not in definition_step_names:
+            continue
+        found = fresh_set_definition(claim_name, proposition, variable_sorts)
+        if found is None:
+            continue
+        target, body = found
+        definitions.setdefault(target, body)
+        definition_claims.add(claim_name)
+
+    if not definitions:
+        return list(lines)
+
+    result: list[str] = []
+    inserted_definitions = False
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        variable_match = variable_re.match(line)
+        if variable_match and variable_match.group("name") in definitions:
+            index += 1
+            continue
+        if not inserted_definitions and (line.startswith("Axiom ") or line.startswith("Theorem ")):
+            for name, body in definitions.items():
+                result.append(f"Definition {name} : set := {body}.")
+            inserted_definitions = True
+        result.append(line)
+        claim = proposition_after_colon(line, "claim ")
+        if (
+            claim is not None
+            and claim[0] in definition_claims
+            and index + 1 < len(lines)
+            and lines[index + 1] == "{ admit. }"
+        ):
+            result.append("{ exact (fun Q H => H). }")
+            index += 2
+            continue
+        index += 1
+
+    if not inserted_definitions:
+        for name, body in definitions.items():
+            result.append(f"Definition {name} : set := {body}.")
+    return result
 
 
 IDENTIFIER_CHARS = "_'0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -812,9 +907,11 @@ def check_megalodon_lines(
     output_dir: Path | None = None,
     header: list[str] | None = None,
     fill_repeated_admits: bool = False,
+    proof_text: str | None = None,
 ) -> list[str]:
     safe_kind = kind.replace(" ", "_")
-    output_lines = fill_repeated_claim_admits(lines) if fill_repeated_admits else list(lines)
+    output_lines = add_function_definition_skeletons(lines, proof_text)
+    output_lines = fill_repeated_claim_admits(output_lines) if fill_repeated_admits else output_lines
     if header:
         output_lines = header + output_lines
     if output_dir is None:
@@ -1150,6 +1247,7 @@ def check_obligation(
                         output_dir=claim_skeleton_dir,
                         header=header,
                         fill_repeated_admits=True,
+                        proof_text=text,
                     )
                 )
             elif claim_skeleton_dir is not None:
@@ -1164,6 +1262,7 @@ def check_obligation(
                     output_dir=claim_skeleton_dir,
                     header=header,
                     fill_repeated_admits=True,
+                    proof_text=text,
                 )
     return failures, checked_sources, checked_skeletons
 
