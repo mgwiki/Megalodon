@@ -1766,6 +1766,15 @@ def proof_for_proposition(
     proof = known.get(proposition) or known_canonical.get(canonical_proposition(proposition))
     if proof is not None:
         return proof
+    if proposition == "vampire_false":
+        suffix = " -> vampire_false"
+        for known_proposition, implication_proof in list(known.items()):
+            if not known_proposition.endswith(suffix):
+                continue
+            premise = strip_balanced_parens(known_proposition[: -len(suffix)].strip())
+            premise_proof = known.get(premise) or known_canonical.get(canonical_proposition(premise))
+            if premise_proof is not None:
+                return f"({implication_proof} {premise_proof})"
     expr = parse_expr(proposition)
     if expr is None:
         return None
