@@ -155,6 +155,22 @@ python3 scripts/vampire_reconstruct_megalodon.py \
   --claim-skeleton-dir /project/tmp/megalodon_vampire_claim_skeletons
 ```
 
+The current 100-skeleton regression was collected with Vampire
+`megalodon_10777` and checked with:
+
+```sh
+TMPDIR=/project/tmp python3 scripts/vampire_reconstruct_megalodon.py \
+  --check-existing /project/tmp/megalodon_vampire_collect_skeleton_100_10777/manifest.jsonl \
+  --jobs 20 \
+  --check-claim-skeletons \
+  --require-claim-skeletons \
+  --claim-skeleton-dir /project/tmp/megalodon_vampire_collect_skeleton_100_10777_mg
+```
+
+That check validates 100 recorded Vampire proof outputs and 100 generated
+Megalodon claim skeletons with `-allowincompleteqed`; in the current run the
+index reports no final theorem admits.
+
 For development iterations, avoid rediscovering solvable problems.  First keep
 one manifest of Vampire-solvable TH0 files, then rerun only those files with
 the current Vampire binary:
