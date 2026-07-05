@@ -622,6 +622,29 @@ def definition_reflexivity_proof(proposition: str, definitions: dict[str, Defini
     return f"({' '.join(['fun'] + args + ['=>', 'H'])})"
 
 
+def unary_application(expr: Expr) -> tuple[str, Expr] | None:
+    if expr.kind != "app" or len(expr.args) != 2 or expr.args[0].kind != "var" or expr.args[0].value is None:
+        return None
+    return expr.args[0].value, expr.args[1]
+
+
+def successor_depth(expr: Expr) -> int | None:
+    if expr.kind == "var" and expr.value == "Empty":
+        return 0
+    if expr.kind == "app" and len(expr.args) == 2 and expr.args[0].kind == "var" and expr.args[0].value == "ordsucc":
+        inner = successor_depth(expr.args[1])
+        if inner is not None:
+            return inner + 1
+    return None
+
+
+def successor_term_text(depth: int) -> str:
+    text = "Empty"
+    for _ in range(depth):
+        text = f"ordsucc ({text})" if text != "Empty" else "ordsucc Empty"
+    return text
+
+
 def add_function_definition_skeletons(lines: list[str], proof_text: str | None) -> list[str]:
     if proof_text is None:
         return list(lines)
@@ -812,6 +835,39 @@ def direct_proof_expr(expr: Expr) -> str | None:
     binders, body = collect_foralls(expr)
     premises, conclusion = split_arrows(body)
     binder_names = [name for name, _ in binders]
+
+    if len(binders) == 1 and binders[0][1] == "set->prop" and len(premises) == 2:
+        predicate = binders[0][0]
+        base = unary_application(premises[0])
+        conclusion_app = unary_application(conclusion)
+        if base is not None and conclusion_app is not None and base[0] == predicate and conclusion_app[0] == predicate:
+            step_binders, step_body = collect_foralls(premises[1])
+            step_premises, step_conclusion = split_arrows(step_body)
+            if len(step_binders) == 1 and step_binders[0][1] == "set" and len(step_premises) == 1:
+                step_var = step_binders[0][0]
+                step_left = unary_application(step_premises[0])
+                step_right = unary_application(step_conclusion)
+                if (
+                    step_left is not None
+                    and step_right is not None
+                    and step_left[0] == predicate
+                    and step_right[0] == predicate
+                    and step_left[1].kind == "var"
+                    and step_left[1].value == step_var
+                    and step_right[1].kind == "app"
+                    and len(step_right[1].args) == 2
+                    and step_right[1].args[0].kind == "var"
+                    and step_right[1].args[0].value == "ordsucc"
+                    and step_right[1].args[1].kind == "var"
+                    and step_right[1].args[1].value == step_var
+                    and successor_depth(base[1]) == 0
+                ):
+                    depth = successor_depth(conclusion_app[1])
+                    if depth is not None:
+                        proof = "H0"
+                        for step in range(depth):
+                            proof = f"H1 ({successor_term_text(step)}) ({proof})"
+                        return f"(fun {predicate} H0 H1 => {proof})"
 
     if len(premises) == 1 and expr_key(premises[0]) == expr_key(conclusion):
         args = binder_names + ["H0"]

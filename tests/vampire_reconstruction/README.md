@@ -125,7 +125,8 @@ provable.  For Vampire `function definition` proof steps that introduce fresh
 set symbols or rendered fresh function aliases, it turns the fresh symbol into
 a Megalodon `Definition`, proves the matching claim by definitional
 reflexivity, and uses those definitions to fill later definitionally reflexive
-equalities.
+equalities.  It also fills finite successor-induction applications of the form
+`P Empty -> (forall x, P x -> P (ordsucc x)) -> P (ordsucc ... Empty)`.
 
 ```sh
 python3 scripts/vampire_reconstruct_megalodon.py \
