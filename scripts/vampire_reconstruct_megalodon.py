@@ -195,15 +195,15 @@ def proof_mode_from_path(path: Path) -> str:
     return "tptp"
 
 
-def extract_megalodon_source_candidates(text: str) -> list[list[str]]:
+def extract_marked_megalodon_blocks(text: str, start_marker: str, end_marker: str) -> list[list[str]]:
     candidates: list[list[str]] = []
     current: list[str] | None = None
     for raw in text.splitlines():
         line = raw.strip()
-        if line == "megalodon_source_candidate_start.":
+        if line == start_marker:
             current = []
             continue
-        if line == "megalodon_source_candidate_end.":
+        if line == end_marker:
             if current is not None:
                 candidates.append(current)
             current = None
@@ -215,6 +215,67 @@ def extract_megalodon_source_candidates(text: str) -> list[list[str]]:
     return candidates
 
 
+def extract_megalodon_source_candidates(text: str) -> list[list[str]]:
+    return extract_marked_megalodon_blocks(
+        text,
+        "megalodon_source_candidate_start.",
+        "megalodon_source_candidate_end.",
+    )
+
+
+def extract_megalodon_claim_skeletons(text: str) -> list[list[str]]:
+    return extract_marked_megalodon_blocks(
+        text,
+        "megalodon_claim_skeleton_start.",
+        "megalodon_claim_skeleton_end.",
+    )
+
+
+def check_megalodon_lines(
+    megalodon: Path,
+    repo: Path,
+    proof: Path,
+    index: int,
+    lines: list[str],
+    kind: str,
+    allow_incomplete: bool = False,
+    output_dir: Path | None = None,
+) -> list[str]:
+    safe_kind = kind.replace(" ", "_")
+    if output_dir is None:
+        tmp_root = Path(os.environ.get("TMPDIR", "/project/tmp"))
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            suffix=".mg",
+            prefix=f"{proof.stem}.{safe_kind}{index}.",
+            dir=tmp_root,
+            delete=False,
+        ) as handle:
+            candidate = Path(handle.name)
+            handle.write("\n".join(lines))
+            handle.write("\n")
+        delete_after = True
+    else:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        candidate = output_dir / f"{proof.stem}.{safe_kind}{index}.mg"
+        candidate.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        delete_after = False
+    try:
+        cmd = [str(megalodon)]
+        if allow_incomplete:
+            cmd.append("-allowincompleteqed")
+        cmd.append(str(candidate))
+        proc = run(cmd, repo)
+        if proc.returncode != 0:
+            return [f"{proof}: Megalodon rejected {kind} {index}: {proc.stdout.strip()}"]
+    finally:
+        if delete_after:
+            candidate.unlink(missing_ok=True)
+    return []
+
+
 def check_megalodon_source_candidate(
     megalodon: Path,
     repo: Path,
@@ -222,26 +283,7 @@ def check_megalodon_source_candidate(
     index: int,
     lines: list[str],
 ) -> list[str]:
-    tmp_root = Path(os.environ.get("TMPDIR", "/project/tmp"))
-    tmp_root.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        "w",
-        encoding="utf-8",
-        suffix=".mg",
-        prefix=f"{proof.stem}.{index}.",
-        dir=tmp_root,
-        delete=False,
-    ) as handle:
-        candidate = Path(handle.name)
-        handle.write("\n".join(lines))
-        handle.write("\n")
-    try:
-        proc = run([str(megalodon), str(candidate)], repo)
-        if proc.returncode != 0:
-            return [f"{proof}: Megalodon rejected source candidate {index}: {proc.stdout.strip()}"]
-    finally:
-        candidate.unlink(missing_ok=True)
-    return []
+    return check_megalodon_lines(megalodon, repo, proof, index, lines, "source candidate")
 
 
 def start_vampire(repo: Path, args: argparse.Namespace, proof_dir: Path, item: tuple[int, int, Path]) -> RunningVampire:
@@ -368,7 +410,11 @@ def run_vampire_suite(
                 completed += 1
                 made_progress = True
                 if args.collect_successes:
-                    if failure is None and proof_payload_ok:
+                    skeleton_ok = (
+                        not args.require_claim_skeletons
+                        or "megalodon_claim_skeleton_start." in item.proof_path.read_text(encoding="utf-8", errors="replace")
+                    )
+                    if failure is None and proof_payload_ok and skeleton_ok:
                         obligations.append(obligation)
                     else:
                         skipped += 1
@@ -417,18 +463,22 @@ def check_obligation(
     megalodon: Path,
     check_megalodon_sources: bool = False,
     require_megalodon_sources: bool = False,
-) -> tuple[list[str], int]:
+    check_claim_skeletons: bool = False,
+    require_claim_skeletons: bool = False,
+    claim_skeleton_dir: Path | None = None,
+) -> tuple[list[str], int, int]:
     failures = []
     checked_sources = 0
+    checked_skeletons = 0
     problem = Path(obligation.problem)
     proof = Path(obligation.proof)
     if not problem.exists():
-        return [f"{problem}: missing problem file"], checked_sources
+        return [f"{problem}: missing problem file"], checked_sources, checked_skeletons
     if sha256(problem) != obligation.problem_sha256:
         failures.append(f"{problem}: problem hash changed")
     if not proof.exists():
         failures.append(f"{proof}: missing proof file")
-        return failures, checked_sources
+        return failures, checked_sources, checked_skeletons
     if obligation.proof_sha256 and sha256(proof) != obligation.proof_sha256:
         failures.append(f"{proof}: proof hash changed")
     text = proof.read_text(encoding="utf-8", errors="replace")
@@ -452,7 +502,37 @@ def check_obligation(
         for index, lines in enumerate(candidates):
             checked_sources += 1
             failures.extend(check_megalodon_source_candidate(megalodon, repo, proof, index, lines))
-    return failures, checked_sources
+    if proof_mode == "megalodon" and (check_claim_skeletons or require_claim_skeletons or claim_skeleton_dir is not None):
+        skeletons = extract_megalodon_claim_skeletons(text)
+        if require_claim_skeletons and not skeletons:
+            failures.append(f"{proof}: no Megalodon claim skeleton")
+        for index, lines in enumerate(skeletons):
+            checked_skeletons += 1
+            if check_claim_skeletons:
+                failures.extend(
+                    check_megalodon_lines(
+                        megalodon,
+                        repo,
+                        proof,
+                        index,
+                        lines,
+                        "claim skeleton",
+                        allow_incomplete=True,
+                        output_dir=claim_skeleton_dir,
+                    )
+                )
+            elif claim_skeleton_dir is not None:
+                check_megalodon_lines(
+                    megalodon,
+                    repo,
+                    proof,
+                    index,
+                    lines,
+                    "claim skeleton",
+                    allow_incomplete=False,
+                    output_dir=claim_skeleton_dir,
+                )
+    return failures, checked_sources, checked_skeletons
 
 
 def check_existing(
@@ -462,7 +542,10 @@ def check_existing(
     jobs: int = 1,
     check_megalodon_sources: bool = False,
     require_megalodon_sources: bool = False,
-) -> tuple[list[Obligation], int]:
+    check_claim_skeletons: bool = False,
+    require_claim_skeletons: bool = False,
+    claim_skeleton_dir: Path | None = None,
+) -> tuple[list[Obligation], int, int]:
     obligations = []
     for row in manifest.read_text(encoding="utf-8").splitlines():
         if row.strip():
@@ -470,18 +553,23 @@ def check_existing(
 
     failures = []
     checked_sources = 0
+    checked_skeletons = 0
     workers = max(1, jobs)
     if workers == 1:
         for obligation in obligations:
-            item_failures, item_sources = check_obligation(
+            item_failures, item_sources, item_skeletons = check_obligation(
                 obligation,
                 repo,
                 megalodon,
                 check_megalodon_sources=check_megalodon_sources,
                 require_megalodon_sources=require_megalodon_sources,
+                check_claim_skeletons=check_claim_skeletons,
+                require_claim_skeletons=require_claim_skeletons,
+                claim_skeleton_dir=claim_skeleton_dir,
             )
             failures.extend(item_failures)
             checked_sources += item_sources
+            checked_skeletons += item_skeletons
     else:
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             futures = [
@@ -492,19 +580,23 @@ def check_existing(
                     megalodon,
                     check_megalodon_sources,
                     require_megalodon_sources,
+                    check_claim_skeletons,
+                    require_claim_skeletons,
+                    claim_skeleton_dir,
                 )
                 for obligation in obligations
             ]
             for future in concurrent.futures.as_completed(futures):
-                item_failures, item_sources = future.result()
+                item_failures, item_sources, item_skeletons = future.result()
                 failures.extend(item_failures)
                 checked_sources += item_sources
+                checked_skeletons += item_skeletons
 
     if failures:
         for failure in failures:
             print(failure, file=sys.stderr)
         raise SystemExit(f"{len(failures)} manifest checks failed")
-    return obligations, checked_sources
+    return obligations, checked_sources, checked_skeletons
 
 
 def write_manifest(path: Path, obligations: Iterable[Obligation]) -> None:
@@ -535,6 +627,9 @@ def main() -> int:
     parser.add_argument("--from-manifest", type=Path)
     parser.add_argument("--check-megalodon-sources", action="store_true")
     parser.add_argument("--require-megalodon-sources", action="store_true")
+    parser.add_argument("--check-claim-skeletons", action="store_true")
+    parser.add_argument("--require-claim-skeletons", action="store_true")
+    parser.add_argument("--claim-skeleton-dir", type=Path)
     args = parser.parse_args()
 
     repo = args.repo.resolve()
@@ -542,19 +637,33 @@ def main() -> int:
     source = (repo / args.source).resolve() if not args.source.is_absolute() else args.source
     results = (repo / args.results).resolve() if not args.results.is_absolute() else args.results
     work_dir = (repo / args.work_dir).resolve() if not args.work_dir.is_absolute() else args.work_dir
+    claim_skeleton_dir = None
+    if args.claim_skeleton_dir:
+        claim_skeleton_dir = (
+            (repo / args.claim_skeleton_dir).resolve()
+            if not args.claim_skeleton_dir.is_absolute()
+            else args.claim_skeleton_dir
+        )
 
     if args.check_existing:
-        obligations, checked_sources = check_existing(
+        obligations, checked_sources, checked_skeletons = check_existing(
             args.check_existing,
             repo,
             megalodon,
             args.jobs,
             check_megalodon_sources=args.check_megalodon_sources,
             require_megalodon_sources=args.require_megalodon_sources,
+            check_claim_skeletons=args.check_claim_skeletons,
+            require_claim_skeletons=args.require_claim_skeletons,
+            claim_skeleton_dir=claim_skeleton_dir,
         )
         print(f"checked {len(obligations)} recorded Vampire proof outputs")
         if args.check_megalodon_sources or args.require_megalodon_sources:
             print(f"checked {checked_sources} Megalodon source candidates")
+        if args.check_claim_skeletons or args.require_claim_skeletons or args.claim_skeleton_dir:
+            print(f"checked {checked_skeletons} Megalodon claim skeletons")
+            if claim_skeleton_dir is not None:
+                print(f"claim skeleton dir: {claim_skeleton_dir}")
         return 0
 
     if not megalodon.exists():
@@ -566,7 +675,7 @@ def main() -> int:
         selected = obligations_from_manifest(args.from_manifest)
         if len(selected) < args.limit:
             raise SystemExit(f"Need {args.limit} known-solvable obligations, found {len(selected)} in {args.from_manifest}")
-        selected_for_run = selected[: args.limit]
+        selected_for_run = selected if args.collect_successes else selected[: args.limit]
     else:
         generate_problems(repo, megalodon, source, prefix)
         selected = select_obligations(prefix, parse_vampire_lines(results), args.limit)
@@ -589,18 +698,32 @@ def main() -> int:
     manifest = work_dir / "manifest.jsonl"
     write_manifest(manifest, obligations)
     checked_sources = 0
-    if args.check_megalodon_sources or args.require_megalodon_sources:
-        _, checked_sources = check_existing(
+    checked_skeletons = 0
+    if (
+        args.check_megalodon_sources
+        or args.require_megalodon_sources
+        or args.check_claim_skeletons
+        or args.require_claim_skeletons
+        or args.claim_skeleton_dir
+    ):
+        _, checked_sources, checked_skeletons = check_existing(
             manifest,
             repo,
             megalodon,
             args.jobs,
             check_megalodon_sources=args.check_megalodon_sources,
             require_megalodon_sources=args.require_megalodon_sources,
+            check_claim_skeletons=args.check_claim_skeletons,
+            require_claim_skeletons=args.require_claim_skeletons,
+            claim_skeleton_dir=claim_skeleton_dir,
         )
     print(f"checked {len(obligations)} Vampire proofs")
     if args.check_megalodon_sources or args.require_megalodon_sources:
         print(f"checked {checked_sources} Megalodon source candidates")
+    if args.check_claim_skeletons or args.require_claim_skeletons or args.claim_skeleton_dir:
+        print(f"checked {checked_skeletons} Megalodon claim skeletons")
+        if claim_skeleton_dir is not None:
+            print(f"claim skeleton dir: {claim_skeleton_dir}")
     print(f"manifest: {manifest}")
     return 0
 

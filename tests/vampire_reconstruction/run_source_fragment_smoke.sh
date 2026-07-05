@@ -32,7 +32,16 @@ run_case() {
     --shuffle_input off \
     "$problem" > "$output" 2>&1
 
-  sed -n 's/^megalodon_source_line("\(.*\)")./\1/p' "$output" > "$source"
+  awk '
+    /^megalodon_source_candidate_start\.$/ { inside = 1; next }
+    /^megalodon_source_candidate_end\.$/ { inside = 0; next }
+    inside {
+      line = $0
+      sub(/^megalodon_source_line[(]"/, "", line)
+      sub(/"[)]\.$/, "", line)
+      print line
+    }
+  ' "$output" > "$source"
   if [ ! -s "$source" ]; then
     sed -n '1,120p' "$output" >&2
     echo "missing Megalodon source candidate for $name" >&2

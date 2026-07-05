@@ -107,6 +107,21 @@ python3 scripts/vampire_reconstruct_megalodon.py \
 Add `--require-megalodon-sources` once the Vampire backend is expected to emit
 a checked Megalodon source candidate for every recorded proof.
 
+Vampire's Megalodon backend also emits an admitted claim skeleton when it can
+render the original formula-level proof steps as Megalodon propositions.  This
+is a development artifact, not a trusted certificate: each rendered Vampire step
+is written as a `claim S...` with `admit`, and the file is checked only with
+`-allowincompleteqed`.
+
+```sh
+python3 scripts/vampire_reconstruct_megalodon.py \
+  --check-existing /project/tmp/megalodon_vampire_megalodon/manifest.jsonl \
+  --jobs 20 \
+  --check-claim-skeletons \
+  --require-claim-skeletons \
+  --claim-skeleton-dir /project/tmp/megalodon_vampire_claim_skeletons
+```
+
 For development iterations, avoid rediscovering solvable problems.  First keep
 one manifest of Vampire-solvable TH0 files, then rerun only those files with
 the current Vampire binary:
