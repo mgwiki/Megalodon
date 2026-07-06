@@ -1912,6 +1912,132 @@ def fill_source_candidate_claims(lines: list[str], proof_text: str | None) -> li
     return result
 
 
+BOOLEAN_EXT_HELPERS = [
+    "Definition vampire_eq_prop : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y.",
+    "Definition vampire_eq_prop_fun : (prop->prop)->(prop->prop)->prop := fun x y:prop->prop => forall Q:(prop->prop)->prop, Q x -> Q y.",
+    "Axiom vampire_xm: forall P:prop, vampire_or P (P -> vampire_false).",
+    "Axiom vampire_prop_ext: forall P Q:prop, (P -> Q) -> (Q -> P) -> vampire_eq_prop P Q.",
+    "Axiom vampire_funext_prop: forall F G:prop->prop, (forall X:prop, vampire_eq_prop (F X) (G X)) -> vampire_eq_prop_fun F G.",
+    "Axiom vampire_funext_prop_prop: forall F G:prop->prop->prop, (forall X:prop, vampire_eq_prop_fun (F X) (G X)) -> F = G.",
+]
+
+
+def is_or_nand_binary_function_equality(expr: Expr) -> bool:
+    if expr.kind != "eq":
+        return False
+    left_binders, left_body = collect_lambdas(expr.args[0])
+    right_binders, right_body = collect_lambdas(expr.args[1])
+    if [sort for _, sort in left_binders] != ["prop", "prop"]:
+        return False
+    if [sort for _, sort in right_binders] != ["prop", "prop"]:
+        return False
+    left_names = [name for name, _ in left_binders]
+    right_names = [name for name, _ in right_binders]
+    expected_left = Expr(
+        "app",
+        args=(Expr("var", value="vampire_or"), Expr("var", value=left_names[0]), Expr("var", value=left_names[1])),
+    )
+    expected_right = Expr(
+        "arrow",
+        args=(
+            Expr(
+                "app",
+                args=(
+                    Expr("var", value="vampire_and"),
+                    Expr("arrow", args=(Expr("var", value=right_names[0]), Expr("var", value="vampire_false"))),
+                    Expr("arrow", args=(Expr("var", value=right_names[1]), Expr("var", value="vampire_false"))),
+                ),
+            ),
+            Expr("var", value="vampire_false"),
+        ),
+    )
+    return expr_key(left_body) == expr_key(expected_left) and expr_key(right_body) == expr_key(expected_right)
+
+
+def collect_lambdas(expr: Expr) -> tuple[list[tuple[str, str]], Expr]:
+    binders: list[tuple[str, str]] = []
+    while expr.kind == "lambda":
+        assert expr.value is not None and expr.sort is not None
+        binders.append((expr.value, expr.sort))
+        expr = expr.args[0]
+    return binders, expr
+
+
+def needs_boolean_ext_helpers(lines: list[str]) -> bool:
+    has_or = any(line.startswith("Definition vampire_or ") for line in lines)
+    has_and = any(line.startswith("Definition vampire_and ") for line in lines)
+    has_false = any(line.startswith("Definition vampire_false ") for line in lines)
+    if not (has_or and has_and and has_false):
+        return False
+    for line in lines:
+        parsed = proposition_after_colon(line, "Theorem ") or proposition_after_colon(line, "claim ")
+        if parsed is None:
+            continue
+        expr = parse_expr(parsed[1])
+        if expr is not None and is_or_nand_binary_function_equality(expr):
+            return True
+    return False
+
+
+def add_boolean_extensionality_helpers(lines: list[str]) -> list[str]:
+    if not needs_boolean_ext_helpers(lines):
+        return list(lines)
+    existing_names = {
+        item[0]
+        for line in lines
+        for item in [proposition_after_colon(line, "Axiom ") or proposition_after_colon(line, "Definition ")]
+        if item is not None
+    }
+    helpers = [
+        line
+        for line in BOOLEAN_EXT_HELPERS
+        if (proposition_after_colon(line, "Axiom ") or proposition_after_colon(line, "Definition "))[0] not in existing_names
+    ]
+    if not helpers:
+        return list(lines)
+    result: list[str] = []
+    inserted = False
+    for line in lines:
+        if not inserted and line.startswith("Theorem "):
+            result.extend(helpers)
+            inserted = True
+        result.append(line)
+    if not inserted:
+        result.extend(helpers)
+    return result
+
+
+def boolean_or_nand_extensionality_proof(expr: Expr, known: dict[str, str]) -> str | None:
+    if not is_or_nand_binary_function_equality(expr):
+        return None
+    required = {
+        "vampire_xm",
+        "vampire_prop_ext",
+        "vampire_funext_prop",
+        "vampire_funext_prop_prop",
+    }
+    if not required <= set(known.values()):
+        return None
+    return (
+        "(vampire_funext_prop_prop "
+        "(fun X0:prop => fun X1:prop => vampire_or X0 X1) "
+        "(fun X0:prop => fun X1:prop => (vampire_and (X0 -> vampire_false) (X1 -> vampire_false)) -> vampire_false) "
+        "(fun X0:prop => vampire_funext_prop "
+        "(fun X1:prop => vampire_or X0 X1) "
+        "(fun X1:prop => (vampire_and (X0 -> vampire_false) (X1 -> vampire_false)) -> vampire_false) "
+        "(fun X1:prop => vampire_prop_ext "
+        "(vampire_or X0 X1) "
+        "((vampire_and (X0 -> vampire_false) (X1 -> vampire_false)) -> vampire_false) "
+        "(fun Hor Hand => Hor vampire_false "
+        "(fun HX0 => Hand vampire_false (fun HnX0 HnX1 => HnX0 HX0)) "
+        "(fun HX1 => Hand vampire_false (fun HnX0 HnX1 => HnX1 HX1))) "
+        "(fun Hnot P Hleft Hright => "
+        "(vampire_xm X0) P Hleft "
+        "(fun HnX0 => (vampire_xm X1) P Hright "
+        "(fun HnX1 => (Hnot (fun R Hpair => Hpair HnX0 HnX1)) P))))))"
+    )
+
+
 IDENTIFIER_CHARS = "_'0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 FORALL_RE = re.compile(r"forall (?P<name>[_A-Za-z][_A-Za-z0-9']*):(?P<sort>[^,]+), ")
 
@@ -6064,6 +6190,9 @@ def proof_for_proposition(
     if expr is None:
         return None
     if expr.kind == "eq":
+        boolean_ext_proof = boolean_or_nand_extensionality_proof(expr, known)
+        if boolean_ext_proof is not None:
+            return boolean_ext_proof
         direct_rule_proof = equality_direct_rule_proof(
             expr,
             known,
@@ -6544,6 +6673,7 @@ def check_megalodon_lines(
     lines = add_problem_type_variables(lines, proof, proof_text)
     output_lines = add_function_definition_skeletons(lines, proof_text)
     output_lines = add_recovered_input_equalities(output_lines, proof_text)
+    output_lines = add_boolean_extensionality_helpers(output_lines)
     output_lines = fill_source_candidate_claims(output_lines, proof_text)
     output_lines = fill_repeated_claim_admits(output_lines) if fill_repeated_admits else output_lines
     output_lines = prune_unused_rectify_axiom_admits(output_lines, proof_text)
