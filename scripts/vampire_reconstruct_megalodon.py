@@ -966,10 +966,6 @@ def tptp_formula_to_megalodon_proposition(text: str, variable_sorts: dict[str, s
                 return None
         return body
 
-    if text.startswith("~"):
-        body = tptp_formula_to_megalodon_proposition(text[1:].strip(), variable_sorts)
-        return f"{proposition_argument_text(body)} -> vampire_false" if body is not None else None
-
     equivalence = split_top_level_operator(text, "<=>")
     if equivalence is not None:
         left = tptp_formula_to_megalodon_proposition(equivalence[0], variable_sorts)
@@ -1001,6 +997,10 @@ def tptp_formula_to_megalodon_proposition(text: str, variable_sorts: dict[str, s
         if left is None or right is None:
             return None
         return f"vampire_and {proposition_argument_text(left)} {proposition_argument_text(right)}"
+
+    if text.startswith("~"):
+        body = tptp_formula_to_megalodon_proposition(text[1:].strip(), variable_sorts)
+        return f"{proposition_argument_text(body)} -> vampire_false" if body is not None else None
 
     inequality = split_top_level_operator(text, "!=")
     if inequality is not None:
