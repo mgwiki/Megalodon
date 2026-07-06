@@ -11261,6 +11261,73 @@ def raw_or_intro_from_branch(
     return None
 
 
+def raw_forall_permutation_transform_proof(source: Expr, target: Expr, source_proof: str) -> str | None:
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if not source_binders or len(source_binders) != len(target_binders):
+        return None
+    source_sorts = {name: sort for name, sort in source_binders}
+    target_sorts = {name: sort for name, sort in target_binders}
+    if sorted(source_sorts.values()) != sorted(target_sorts.values()):
+        return None
+    subst: dict[str, Expr] = {}
+    if not match_expr(source_body, target_body, set(source_sorts), subst):
+        return None
+    used_targets: set[str] = set()
+    for source_name, source_sort in source_binders:
+        value = subst.get(source_name)
+        if value is None:
+            if source_name in target_sorts and target_sorts[source_name] == source_sort:
+                value = Expr("var", value=source_name)
+            else:
+                candidates = [
+                    Expr("var", value=target_name)
+                    for target_name, target_sort in target_binders
+                    if target_sort == source_sort and target_name not in used_targets
+                ]
+                if not candidates:
+                    return None
+                value = candidates[0]
+            subst[source_name] = value
+        if value.kind != "var" or value.value is None or target_sorts.get(value.value) != source_sort:
+            return None
+        used_targets.add(value.value)
+    proof = source_proof
+    for source_name, _ in source_binders:
+        proof = f"({proof_head(proof)} {proof_arg_text(subst[source_name])})"
+    for target_name, target_sort in reversed(target_binders):
+        proof = f"(fun {target_name}:{target_sort} => {proof})"
+    return proof
+
+
+def raw_forall_clause_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    depth: int,
+    rewrites: tuple[RawSplitRewrite, ...],
+) -> str | None:
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if not source_binders or len(source_binders) != len(target_binders):
+        return None
+    target_sorts = {name: sort for name, sort in target_binders}
+    for source_name, source_sort in source_binders:
+        if target_sorts.get(source_name) != source_sort:
+            return None
+    applied_proof = source_proof
+    subst = {name: Expr("var", value=name) for name, _ in source_binders}
+    for source_name, _ in source_binders:
+        applied_proof = f"({proof_head(applied_proof)} {source_name})"
+    transformed_body = substitute_expr(source_body, subst)
+    body_proof = raw_clause_transform_proof(transformed_body, target_body, applied_proof, depth + 1, rewrites)
+    if body_proof is None:
+        return None
+    for target_name, target_sort in reversed(target_binders):
+        body_proof = f"(fun {target_name}:{target_sort} => {body_proof})"
+    return body_proof
+
+
 def raw_clause_transform_proof(
     source: Expr,
     target: Expr,
@@ -11275,6 +11342,9 @@ def raw_clause_transform_proof(
     rewrite_proof = raw_split_rewrite_proof(source, target, source_proof, rewrites)
     if rewrite_proof is not None:
         return rewrite_proof
+    forall_permutation = raw_forall_permutation_transform_proof(source, target, source_proof)
+    if forall_permutation is not None:
+        return forall_permutation
     false_elim = raw_false_literal_elimination_proof(source, target, source_proof)
     if false_elim is not None:
         return false_elim
@@ -11865,6 +11935,8 @@ def raw_tptp_avatar_component_clause_proof(
             return None
         component_proof = raw_clause_transform_proof(component, target_left, "(Hforward Hsplit)")
         if component_proof is None:
+            component_proof = raw_forall_clause_transform_proof(component, target_left, "(Hforward Hsplit)", 0, ())
+        if component_proof is None:
             return None
         return (
             f"({parent_name} {target_text} "
@@ -11884,6 +11956,8 @@ def raw_tptp_avatar_component_clause_proof(
         if not raw_clause_replay_budget_ok(target_component, component):
             return None
         target_to_component = raw_clause_transform_proof(target_component, component, "Htargetcomponent")
+        if target_to_component is None:
+            target_to_component = raw_forall_clause_transform_proof(target_component, component, "Htargetcomponent", 0, ())
         if target_to_component is None:
             return None
         negative_component_proof = f"(fun Htargetcomponent => Hnotcomponent {proof_term_text(target_to_component)})"
