@@ -384,6 +384,16 @@ def annotate_remaining_admits(lines: list[str], proof_text: str | None) -> list[
             context = contexts.get(claim[0])
             if context is not None:
                 result.append(f"// vampire step {claim[0]}: {comment_text(context)}")
+                if claim[1].endswith("-> vampire_false") and "conjecture" in context:
+                    result.append(
+                        "// refutation boundary: Vampire proves this negated-conjecture edge; "
+                        "eliminating the admit needs a native theorem/classical bridge."
+                    )
+                elif "conjecture" in context:
+                    result.append(
+                        "// conjecture anchor: this is the original Megalodon obligation used "
+                        "as the theorem proof target."
+                    )
         result.append(line)
     return result
 
@@ -3529,9 +3539,20 @@ def summarize_claim_skeleton(path: Path) -> dict[str, object]:
             break
     claim_admits = 0
     refutation_implication_admits = 0
+    refutation_boundary_admits = 0
+    conjecture_anchor_admits = 0
     false_admits = 0
     constructive_admits = 0
     admitted_roles: dict[str, int] = {}
+
+    def preceding_vampire_role(index: int) -> str | None:
+        cursor = index - 2
+        while cursor >= 0 and lines[cursor].startswith("// "):
+            if lines[cursor].startswith("// vampire step "):
+                return lines[cursor].split(": ", 1)[1] if ": " in lines[cursor] else lines[cursor]
+            cursor -= 1
+        return None
+
     for index, line in enumerate(lines):
         if line != "{ admit. }" or index == 0:
             continue
@@ -3544,9 +3565,13 @@ def summarize_claim_skeleton(path: Path) -> dict[str, object]:
             refutation_implication_admits += 1
         else:
             constructive_admits += 1
-        if index >= 2 and lines[index - 2].startswith("// vampire step "):
-            role = lines[index - 2].split(": ", 1)[1] if ": " in lines[index - 2] else lines[index - 2]
+        role = preceding_vampire_role(index)
+        if role is not None:
             admitted_roles[role] = admitted_roles.get(role, 0) + 1
+            if proposition.endswith("-> vampire_false") and "conjecture" in role:
+                refutation_boundary_admits += 1
+            elif "conjecture" in role:
+                conjecture_anchor_admits += 1
     return {
         "file": str(path),
         "problem": header.get("problem"),
@@ -3560,6 +3585,8 @@ def summarize_claim_skeleton(path: Path) -> dict[str, object]:
         "claim_admits": claim_admits,
         "constructive_claim_admits": constructive_admits,
         "refutation_implication_admits": refutation_implication_admits,
+        "refutation_boundary_admits": refutation_boundary_admits,
+        "conjecture_anchor_admits": conjecture_anchor_admits,
         "false_claim_admits": false_admits,
         "admitted_vampire_roles": admitted_roles,
         "final_admits": sum(1 for line in lines if line == "admit."),
@@ -3575,6 +3602,8 @@ def write_claim_skeleton_summary(index: Path, rows: list[dict[str, object]]) -> 
         "claim_admits": sum(int(row["claim_admits"]) for row in rows),
         "constructive_claim_admits": sum(int(row["constructive_claim_admits"]) for row in rows),
         "refutation_implication_admits": sum(int(row["refutation_implication_admits"]) for row in rows),
+        "refutation_boundary_admits": sum(int(row.get("refutation_boundary_admits", 0)) for row in rows),
+        "conjecture_anchor_admits": sum(int(row.get("conjecture_anchor_admits", 0)) for row in rows),
         "false_claim_admits": sum(int(row["false_claim_admits"]) for row in rows),
         "final_admits": sum(int(row["final_admits"]) for row in rows),
         "filled_claims": sum(int(row["filled_claims"]) for row in rows),
@@ -3930,6 +3959,7 @@ def check_existing(
     repo: Path,
     megalodon: Path,
     jobs: int = 1,
+    progress: int = 0,
     source: Path | None = None,
     check_megalodon_sources: bool = False,
     require_megalodon_sources: bool = False,
@@ -3946,6 +3976,18 @@ def check_existing(
     checked_sources = 0
     checked_skeletons = 0
     workers = max(1, jobs)
+    completed = 0
+
+    def report_progress() -> None:
+        nonlocal completed
+        completed += 1
+        if progress and (completed % progress == 0 or completed == len(obligations)):
+            print(
+                f"checked {completed}/{len(obligations)} manifest entries",
+                file=sys.stderr,
+                flush=True,
+            )
+
     if workers == 1:
         for obligation in obligations:
             item_failures, item_sources, item_skeletons = check_obligation(
@@ -3962,6 +4004,7 @@ def check_existing(
             failures.extend(item_failures)
             checked_sources += item_sources
             checked_skeletons += item_skeletons
+            report_progress()
     else:
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             futures = [
@@ -3984,6 +4027,7 @@ def check_existing(
                 failures.extend(item_failures)
                 checked_sources += item_sources
                 checked_skeletons += item_skeletons
+                report_progress()
 
     if failures:
         for failure in failures:
@@ -4049,6 +4093,7 @@ def main() -> int:
             repo,
             megalodon,
             args.jobs,
+            args.progress,
             source,
             check_megalodon_sources=args.check_megalodon_sources,
             require_megalodon_sources=args.require_megalodon_sources,
@@ -4118,6 +4163,7 @@ def main() -> int:
             repo,
             megalodon,
             args.jobs,
+            args.progress,
             source,
             check_megalodon_sources=args.check_megalodon_sources,
             require_megalodon_sources=args.require_megalodon_sources,
