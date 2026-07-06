@@ -5764,6 +5764,134 @@ def vampire_or_intro_proof(
     return None
 
 
+def binary_irreflexive_contradiction_rules(rules: list[ProofRule]) -> list[tuple[str, str]]:
+    found: list[tuple[str, str]] = []
+    for rule in rules:
+        if len(rule.binders) != 1 or len(rule.premises) != 1 or not false_eliminator_expr(rule.conclusion):
+            continue
+        atom = binary_atom_parts(rule.premises[0])
+        if atom is None:
+            continue
+        head, left, right = atom
+        if left.kind == "var" and right.kind == "var" and left.value == rule.binders[0] and right.value == rule.binders[0]:
+            found.append((head, rule.name))
+    return found
+
+
+def contradiction_from_equality_branch_proof(
+    branch: Expr,
+    branch_proof: str,
+    target: Expr,
+    known: dict[str, str],
+    rules: list[ProofRule],
+) -> str | None:
+    sides = equality_like_sides(branch)
+    if sides is None:
+        return None
+    left, right = sides
+    irreflexive_rules = binary_irreflexive_contradiction_rules(rules)
+    if not irreflexive_rules:
+        return None
+    for proposition, atom_proof in list(known.items()):
+        atom_expr = parse_expr(proposition)
+        if atom_expr is None:
+            continue
+        atom = binary_atom_parts(atom_expr)
+        if atom is None:
+            continue
+        head, atom_left, atom_right = atom
+        for rule_head, rule_name in irreflexive_rules:
+            if head != rule_head:
+                continue
+            if expr_key(atom_left) == expr_key(left) and expr_key(atom_right) == expr_key(right):
+                hole_name = fresh_identifier("zz", expr_text(branch), expr_text(target), atom_proof)
+                context = make_binary_application(head, left, Expr("var", value=hole_name))
+                false_proof = (
+                    f"(({proof_head(branch_proof)} "
+                    f"(fun {hole_name}:set => {expr_text(context)} -> vampire_false) "
+                    f"({rule_name} {proof_arg_text(left)})) {proof_argument_text(atom_proof)})"
+                )
+                return f"({false_proof} {proof_arg_text(target)})"
+            if expr_key(atom_left) == expr_key(right) and expr_key(atom_right) == expr_key(left):
+                hole_name = fresh_identifier("zz", expr_text(branch), expr_text(target), atom_proof)
+                context = make_binary_application(head, Expr("var", value=hole_name), left)
+                false_proof = (
+                    f"(({proof_head(branch_proof)} "
+                    f"(fun {hole_name}:set => {expr_text(context)} -> vampire_false) "
+                    f"({rule_name} {proof_arg_text(left)})) {proof_argument_text(atom_proof)})"
+                )
+                return f"({false_proof} {proof_arg_text(target)})"
+    return None
+
+
+def vampire_or_elimination_to_target_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 0 or len(expr_text(expr)) > 700:
+        return None
+
+    def build(or_proof: str, left: Expr, right: Expr) -> str | None:
+        if expr_key(left) == expr_key(expr):
+            branch_name = fresh_identifier("Hor", expr_text(expr), expr_text(right), or_proof)
+            branch_target = contradiction_from_equality_branch_proof(right, branch_name, expr, known, rules)
+            if branch_target is None:
+                return None
+            return f"({proof_head(or_proof)} {proof_arg_text(expr)} (fun Htarget => Htarget) (fun {branch_name} => {branch_target}))"
+        if expr_key(right) == expr_key(expr):
+            branch_name = fresh_identifier("Hor", expr_text(expr), expr_text(left), or_proof)
+            branch_target = contradiction_from_equality_branch_proof(left, branch_name, expr, known, rules)
+            if branch_target is None:
+                return None
+            return f"({proof_head(or_proof)} {proof_arg_text(expr)} (fun {branch_name} => {branch_target}) (fun Htarget => Htarget))"
+        return None
+
+    for proposition, proof in list(known.items()):
+        parsed = parse_expr(proposition)
+        if parsed is None:
+            continue
+        parts = app_args(parsed, "vampire_or", 2)
+        if parts is None:
+            continue
+        result = build(proof, parts[0], parts[1])
+        if result is not None:
+            return result
+
+    for rule in reversed(rules):
+        conclusion = rule_application_conclusion(rule)
+        parts = app_args(conclusion, "vampire_or", 2)
+        if parts is None:
+            continue
+        binders = set(rule_application_binders(rule))
+        for side_index in (0, 1):
+            subst: dict[str, Expr] = {}
+            if not match_expr_with_alpha_instantiation(parts[side_index], expr, binders, subst):
+                continue
+            application_parts = rule_application_parts(
+                rule,
+                subst,
+                known,
+                known_canonical,
+                rules,
+                eq_facts,
+                definitions,
+                max(0, rule_depth - 1),
+            )
+            if application_parts is None:
+                continue
+            instantiated_left = substitute_expr(parts[0], subst)
+            instantiated_right = substitute_expr(parts[1], subst)
+            result = build(rule_application_text(application_parts), instantiated_left, instantiated_right)
+            if result is not None:
+                return result
+    return None
+
+
 def implication_intro_proof(
     expr: Expr,
     known: dict[str, str],
@@ -8918,6 +9046,18 @@ def _proof_for_expr_impl(
         if contradiction is not None:
             return contradiction
 
+    or_elimination = vampire_or_elimination_to_target_proof(
+        expr,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        rule_depth,
+    )
+    if or_elimination is not None:
+        return or_elimination
+
     or_intro = vampire_or_intro_proof(expr, known, known_canonical, rules, eq_facts, definitions, rule_depth)
     if or_intro is not None:
         return or_intro
@@ -9395,6 +9535,25 @@ def remember_proposition(
 ) -> None:
     expr = parse_expr(proposition)
     expr_proposition = expr_key(expr) if expr is not None else None
+    proposition_keys = {proposition, canonical_proposition(proposition)}
+    if expr_proposition is not None:
+        proposition_keys.add(expr_proposition)
+        proposition_keys.add(canonical_proposition(expr_proposition))
+
+    shadows_existing_name = any(
+        proof == name and key not in proposition_keys
+        for key, proof in list(known.items()) + list(known_canonical.items())
+    )
+    if shadows_existing_name:
+        for key, proof in list(known.items()):
+            if proof == name:
+                del known[key]
+        for key, proof in list(known_canonical.items()):
+            if proof == name:
+                del known_canonical[key]
+        rules[:] = [rule for rule in rules if rule.name != name]
+        eq_facts[:] = [fact for fact in eq_facts if fact.proof != name]
+
     already_known = proposition in known or canonical_proposition(proposition) in known_canonical
     if expr_proposition is not None:
         already_known = (
