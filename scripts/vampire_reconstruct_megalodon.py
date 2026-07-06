@@ -3549,6 +3549,8 @@ def rule_application_parts(
                     rule_depth=max(rule_depth, 2),
                 )
             if premise_proof is None:
+                premise_proof = known_vampire_and_projection_proof(premise, known)
+            if premise_proof is None:
                 ok = False
                 break
             candidate_parts.append(proof_argument_text(premise_proof))
@@ -6277,6 +6279,37 @@ def vampire_and_parts(expr: Expr) -> tuple[Expr, Expr] | None:
     return app_args(expr, "vampire_and", 2)
 
 
+def known_vampire_and_projection_proof(expr: Expr, known: dict[str, str]) -> str | None:
+    def project_from_conjunction(proof: str, node: Expr, target: Expr, depth: int = 0) -> str | None:
+        if expr_key(node) == expr_key(target):
+            return proof
+        parts = vampire_and_parts(node)
+        if parts is None:
+            return None
+        left_name = f"HL{depth}"
+        right_name = f"HR{depth}"
+        left_projection = project_from_conjunction(left_name, parts[0], target, depth + 1)
+        if left_projection is not None:
+            return f"({proof} {proof_arg_text(target)} (fun {left_name} {right_name} => {left_projection}))"
+        right_projection = project_from_conjunction(right_name, parts[1], target, depth + 1)
+        if right_projection is not None:
+            return f"({proof} {proof_arg_text(target)} (fun {left_name} {right_name} => {right_projection}))"
+        return None
+
+    seen_proofs: set[str] = set()
+    for proposition, proof in reversed(list(known.items())):
+        if proof in seen_proofs:
+            continue
+        seen_proofs.add(proof)
+        parsed = parse_expr(proposition)
+        if parsed is None or vampire_and_parts(parsed) is None:
+            continue
+        projection = project_from_conjunction(proof, parsed, expr)
+        if projection is not None:
+            return projection
+    return None
+
+
 def vampire_exists_body(expr: Expr) -> tuple[str, Expr] | None:
     args = app_args(expr, "vampire_exists_set", 1)
     if args is None:
@@ -6385,6 +6418,160 @@ def binary_reflexive_relation_transport_proof(
             reflexive = f"({rule.name} {proof_arg_text(right)})"
             context = expr_text(Expr("app", args=(head, Expr("var", value="zz"), right)))
             return f"({proof_term_text(reverse_eq_proof)} (fun zz:set => {context}) {reflexive})"
+    return None
+
+
+def atomic_rule_result_one_rewrite_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 0 or expr.kind != "app" or len(expr_text(expr)) > 500:
+        return None
+    target = normalize_defined_expr(expr, definitions)
+    if target.kind != "app" or len(target.args) < 2:
+        return None
+    target_subterms = expr_subterms(target, limit=40)
+
+    def mentions_variable(node: Expr, names: set[str]) -> bool:
+        if node.kind == "var" and node.value in names:
+            return True
+        return any(mentions_variable(arg, names) for arg in node.args)
+
+    for rule in rules:
+        if len(rule_application_binders(rule)) > 4 or len(rule.premises) > 4:
+            continue
+        conclusion = rule_application_conclusion(rule)
+        if conclusion.kind != "app" or len(conclusion.args) != len(target.args):
+            continue
+        if expr_key(conclusion.args[0]) != expr_key(target.args[0]):
+            continue
+        variables = set(rule_application_binders(rule))
+        for source_piece in expr_subterms(conclusion, limit=40):
+            if source_piece.kind == "var" and source_piece.value in variables:
+                continue
+            if expr_key(source_piece) == expr_key(conclusion):
+                continue
+            if not mentions_variable(source_piece, variables):
+                continue
+            for target_piece in target_subterms:
+                if expr_key(source_piece) == expr_key(target_piece):
+                    continue
+                bridged_pattern, changed = replace_expr(conclusion, source_piece, target_piece)
+                if not changed:
+                    continue
+                subst: dict[str, Expr] = {}
+                if not match_expr(bridged_pattern, target, variables, subst):
+                    continue
+                candidate_substs: list[dict[str, Expr]] = []
+                target_piece_inst = normalize_defined_expr(substitute_expr(target_piece, subst), definitions)
+                source_pattern = normalize_defined_expr(substitute_expr(source_piece, subst), definitions)
+
+                def add_equality_guided_candidate(left: Expr, right: Expr, binders: tuple[str, ...]) -> None:
+                    eq_subst: dict[str, Expr] = {}
+                    if not match_expr(right, target_piece_inst, set(binders), eq_subst):
+                        return
+                    if not all(binder in eq_subst for binder in binders):
+                        return
+                    source_inst = normalize_defined_expr(substitute_expr(left, eq_subst), definitions)
+                    candidate = dict(subst)
+                    if match_expr(source_pattern, source_inst, variables, candidate):
+                        candidate_substs.append(candidate)
+
+                for equality_rule in rules:
+                    equality_conclusion = rule_application_conclusion(equality_rule)
+                    if equality_conclusion.kind != "eq" or len(equality_rule.premises) > 4:
+                        continue
+                    equality_binders = rule_application_binders(equality_rule)
+                    if len(equality_binders) > 4:
+                        continue
+                    add_equality_guided_candidate(
+                        equality_conclusion.args[0],
+                        equality_conclusion.args[1],
+                        equality_binders,
+                    )
+                    add_equality_guided_candidate(
+                        equality_conclusion.args[1],
+                        equality_conclusion.args[0],
+                        equality_binders,
+                    )
+
+                for fact in eq_facts:
+                    for left, right in ((fact.left, fact.right), (fact.right, fact.left)):
+                        if expr_key(normalize_defined_expr(right, definitions)) != expr_key(target_piece_inst):
+                            continue
+                        candidate = dict(subst)
+                        source_inst = normalize_defined_expr(left, definitions)
+                        if match_expr(source_pattern, source_inst, variables, candidate):
+                            candidate_substs.append(candidate)
+
+                seen_candidate_substs: set[tuple[tuple[str, str], ...]] = set()
+                for candidate_subst in candidate_substs:
+                    candidate_key = tuple(sorted((name, expr_key(value)) for name, value in candidate_subst.items()))
+                    if candidate_key in seen_candidate_substs:
+                        continue
+                    seen_candidate_substs.add(candidate_key)
+                    if not all(binder in candidate_subst for binder in rule_application_binders(rule)):
+                        continue
+                    instantiated_source = normalize_defined_expr(substitute_expr(conclusion, candidate_subst), definitions)
+                    instantiated_piece = normalize_defined_expr(substitute_expr(source_piece, candidate_subst), definitions)
+                    instantiated_target_piece = normalize_defined_expr(substitute_expr(target_piece, candidate_subst), definitions)
+                    source_proof_parts = rule_application_parts(
+                        rule,
+                        candidate_subst,
+                        known,
+                        known_canonical,
+                        rules,
+                        eq_facts,
+                        definitions,
+                        max(0, rule_depth - 1),
+                    )
+                    if source_proof_parts is None:
+                        continue
+                    source_proof = rule_application_text(source_proof_parts)
+                    equality = Expr("eq", args=(instantiated_piece, instantiated_target_piece))
+                    equality_proof = proof_for_expr(
+                        equality,
+                        known,
+                        known_canonical,
+                        rules,
+                        eq_facts,
+                        definitions,
+                        allow_rule=True,
+                        rule_depth=max(0, rule_depth - 1),
+                    )
+                    if equality_proof is None:
+                        reverse_equality = Expr("eq", args=(instantiated_target_piece, instantiated_piece))
+                        reverse_proof = proof_for_expr(
+                            reverse_equality,
+                            known,
+                            known_canonical,
+                            rules,
+                            eq_facts,
+                            definitions,
+                            allow_rule=True,
+                            rule_depth=max(0, rule_depth - 1),
+                        )
+                        if reverse_proof is None:
+                            continue
+                        equality_proof = eq_symmetry_proof(reverse_proof, instantiated_target_piece)
+                    hole_name = fresh_identifier("zz", expr_text(instantiated_source), expr_text(target))
+                    context, context_changed = replace_expr(
+                        instantiated_source,
+                        instantiated_piece,
+                        Expr("var", value=hole_name),
+                    )
+                    if not context_changed:
+                        continue
+                    return (
+                        f"{proof_term_text(equality_proof)} "
+                        f"(fun {hole_name}:set => {expr_text(context)}) "
+                        f"{proof_argument_text(source_proof)}"
+                    )
     return None
 
 
@@ -8409,6 +8596,19 @@ def _proof_for_expr_impl(
     )
     if reflexive_relation_transport is not None:
         return reflexive_relation_transport
+
+    if allow_rule:
+        atomic_rule_rewrite = atomic_rule_result_one_rewrite_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth,
+        )
+        if atomic_rule_rewrite is not None:
+            return atomic_rule_rewrite
 
     exists_elim_rule = vampire_exists_elimination_rule_proof(
         expr,
