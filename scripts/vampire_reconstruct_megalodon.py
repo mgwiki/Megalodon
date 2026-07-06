@@ -1295,10 +1295,10 @@ def candidate_terms_from_state(
     seen: set[str] = set()
     excluded = exclude_names or set()
 
-    def add(term: Expr) -> None:
+    def add(term: Expr, blocked: set[str] | None = None) -> None:
         if len(terms) >= limit:
             return
-        if expr_mentions_any(term, excluded):
+        if expr_mentions_any(term, blocked if blocked is not None else excluded):
             return
         key = expr_key(term)
         if key in seen:
@@ -1313,8 +1313,10 @@ def candidate_terms_from_state(
         parsed = parse_expr(proposition)
         if parsed is None:
             continue
+        bound_names = {name for name, _ in collect_foralls(parsed)[0]}
+        proposition_excluded = excluded & bound_names
         for term in expr_argument_subterms(parsed, limit=24):
-            add(term)
+            add(term, proposition_excluded)
         if len(terms) >= limit:
             break
     for fact in eq_facts:
@@ -2619,6 +2621,38 @@ def rule_application_text(parts: list[str]) -> str:
     return parts[0] if len(parts) == 1 else f"({' '.join(parts)})"
 
 
+def completed_rule_substs(
+    rule: ProofRule,
+    subst: dict[str, Expr],
+    known: dict[str, str],
+    eq_facts: list[EqFact],
+    limit: int = 64,
+) -> list[dict[str, Expr]]:
+    binders = rule_application_binders(rule)
+    if all(binder in subst for binder in binders):
+        return [dict(subst)]
+
+    candidates = infer_rule_binder_candidates_from_known(
+        rule.steps,
+        binders,
+        subst,
+        known,
+        limit=limit,
+        require_premise_match=True,
+    )
+    if candidates:
+        return candidates[:limit]
+
+    terms = candidate_terms_from_state(
+        known,
+        eq_facts,
+        seed=list(subst.values()),
+        exclude_names=set(binders),
+        limit=80,
+    )
+    return fill_missing_binders_with_terms(binders, subst, terms, limit=limit)
+
+
 def rule_application_binders(rule: ProofRule) -> tuple[str, ...]:
     return tuple(
         step.name for step in rule.steps if step.kind == "binder" and step.name is not None
@@ -2754,16 +2788,27 @@ def equality_rule_chain_proof(
                 variables = set(rule_application_binders(rule))
                 direct_subst: dict[str, Expr] = {}
                 if match_expr(conclusion.args[0], arg, variables, direct_subst):
-                    parts = rule_application_parts(rule, direct_subst, known, known_canonical, rules, eq_facts, definitions, max(0, rule_depth - 1))
-                    if parts is not None:
-                        rewrites.append((normalize_defined_expr(substitute_expr(conclusion.args[1], direct_subst), definitions), rule_application_text(parts)))
+                    for candidate_subst in completed_rule_substs(rule, direct_subst, known, eq_facts):
+                        source = normalize_defined_expr(substitute_expr(conclusion.args[0], candidate_subst), definitions)
+                        if expr_key(source) != expr_key(arg):
+                            continue
+                        parts = rule_application_parts(rule, candidate_subst, known, known_canonical, rules, eq_facts, definitions, max(0, rule_depth - 1))
+                        if parts is not None:
+                            replacement = normalize_defined_expr(substitute_expr(conclusion.args[1], candidate_subst), definitions)
+                            if expr_key(replacement) != arg_key:
+                                rewrites.append((replacement, rule_application_text(parts)))
                 reverse_subst: dict[str, Expr] = {}
                 if match_expr(conclusion.args[1], arg, variables, reverse_subst):
-                    parts = rule_application_parts(rule, reverse_subst, known, known_canonical, rules, eq_facts, definitions, max(0, rule_depth - 1))
-                    if parts is not None:
-                        proof = rule_application_text(parts)
-                        replacement = substitute_expr(conclusion.args[0], reverse_subst)
-                        rewrites.append((normalize_defined_expr(replacement, definitions), eq_symmetry_proof(proof, replacement)))
+                    for candidate_subst in completed_rule_substs(rule, reverse_subst, known, eq_facts):
+                        source = normalize_defined_expr(substitute_expr(conclusion.args[1], candidate_subst), definitions)
+                        if expr_key(source) != expr_key(arg):
+                            continue
+                        parts = rule_application_parts(rule, candidate_subst, known, known_canonical, rules, eq_facts, definitions, max(0, rule_depth - 1))
+                        if parts is not None:
+                            proof = rule_application_text(parts)
+                            replacement = normalize_defined_expr(substitute_expr(conclusion.args[0], candidate_subst), definitions)
+                            if expr_key(replacement) != arg_key:
+                                rewrites.append((replacement, eq_symmetry_proof(proof, replacement)))
             for replacement, argument_proof in rewrites:
                 next_args = args.copy()
                 next_args[index] = replacement
@@ -2790,29 +2835,27 @@ def equality_rule_chain_proof(
             variables = set(rule_application_binders(rule))
             direct_subst: dict[str, Expr] = {}
             if match_expr(conclusion.args[0], node, variables, direct_subst):
-                parts = rule_application_parts(rule, direct_subst, known, known_canonical, rules, eq_facts, definitions, max(0, rule_depth - 1))
-                if parts is not None:
-                    found.append((normalize_defined_expr(substitute_expr(conclusion.args[1], direct_subst), definitions), rule_application_text(parts)))
-                else:
-                    target_subst = dict(direct_subst)
-                    if match_expr(conclusion.args[1], target, variables, target_subst):
-                        parts = rule_application_parts(rule, target_subst, known, known_canonical, rules, eq_facts, definitions, max(0, rule_depth - 1))
-                        if parts is not None:
-                            found.append((normalize_defined_expr(substitute_expr(conclusion.args[1], target_subst), definitions), rule_application_text(parts)))
+                for candidate_subst in completed_rule_substs(rule, direct_subst, known, eq_facts):
+                    source = normalize_defined_expr(substitute_expr(conclusion.args[0], candidate_subst), definitions)
+                    if expr_key(source) != expr_key(node):
+                        continue
+                    parts = rule_application_parts(rule, candidate_subst, known, known_canonical, rules, eq_facts, definitions, max(0, rule_depth - 1))
+                    if parts is not None:
+                        replacement = normalize_defined_expr(substitute_expr(conclusion.args[1], candidate_subst), definitions)
+                        if expr_key(replacement) != expr_key(node):
+                            found.append((replacement, rule_application_text(parts)))
             reverse_subst: dict[str, Expr] = {}
             if match_expr(conclusion.args[1], node, variables, reverse_subst):
-                parts = rule_application_parts(rule, reverse_subst, known, known_canonical, rules, eq_facts, definitions, max(0, rule_depth - 1))
-                if parts is not None:
-                    proof = rule_application_text(parts)
-                    found.append((normalize_defined_expr(substitute_expr(conclusion.args[0], reverse_subst), definitions), eq_symmetry_proof(proof, substitute_expr(conclusion.args[0], reverse_subst))))
-                else:
-                    target_subst = dict(reverse_subst)
-                    if match_expr(conclusion.args[0], target, variables, target_subst):
-                        parts = rule_application_parts(rule, target_subst, known, known_canonical, rules, eq_facts, definitions, max(0, rule_depth - 1))
-                        if parts is not None:
-                            proof = rule_application_text(parts)
-                            replacement = substitute_expr(conclusion.args[0], target_subst)
-                            found.append((normalize_defined_expr(replacement, definitions), eq_symmetry_proof(proof, replacement)))
+                for candidate_subst in completed_rule_substs(rule, reverse_subst, known, eq_facts):
+                    source = normalize_defined_expr(substitute_expr(conclusion.args[1], candidate_subst), definitions)
+                    if expr_key(source) != expr_key(node):
+                        continue
+                    parts = rule_application_parts(rule, candidate_subst, known, known_canonical, rules, eq_facts, definitions, max(0, rule_depth - 1))
+                    if parts is not None:
+                        proof = rule_application_text(parts)
+                        replacement = normalize_defined_expr(substitute_expr(conclusion.args[0], candidate_subst), definitions)
+                        if expr_key(replacement) != expr_key(node):
+                            found.append((replacement, eq_symmetry_proof(proof, replacement)))
         found.extend(congruence_edges(node))
         return found
 
@@ -3037,18 +3080,30 @@ def equality_multi_congruence_proof(
         current_arg = current_args[arg_index]
         target_arg = right.args[arg_index + 1]
         argument_equality = Expr("eq", args=(current_arg, target_arg))
-        argument_proof = equality_rewrite_join_proof(
+        argument_proof = proof_for_expr(
             argument_equality,
             known,
             known_canonical,
             rules,
             eq_facts,
             definitions,
-            max(0, rule_depth - 1),
+            allow_rule=rule_depth > 0,
+            rule_depth=max(0, rule_depth - 1),
         )
         if argument_proof is None:
-            argument_proof = proof_for_expr(
+            argument_proof = equality_rewrite_join_proof(
                 argument_equality,
+                known,
+                known_canonical,
+                rules,
+                eq_facts,
+                definitions,
+                max(0, rule_depth - 1),
+            )
+        if argument_proof is None:
+            reverse_equality = Expr("eq", args=(target_arg, current_arg))
+            reverse_proof = proof_for_expr(
+                reverse_equality,
                 known,
                 known_canonical,
                 rules,
@@ -3057,27 +3112,15 @@ def equality_multi_congruence_proof(
                 allow_rule=rule_depth > 0,
                 rule_depth=max(0, rule_depth - 1),
             )
-        if argument_proof is None:
-            reverse_equality = Expr("eq", args=(target_arg, current_arg))
-            reverse_proof = equality_rewrite_join_proof(
-                reverse_equality,
-                known,
-                known_canonical,
-                rules,
-                eq_facts,
-                definitions,
-                max(0, rule_depth - 1),
-            )
             if reverse_proof is None:
-                reverse_proof = proof_for_expr(
+                reverse_proof = equality_rewrite_join_proof(
                     reverse_equality,
                     known,
                     known_canonical,
                     rules,
                     eq_facts,
                     definitions,
-                    allow_rule=rule_depth > 0,
-                    rule_depth=max(0, rule_depth - 1),
+                    max(0, rule_depth - 1),
                 )
             if reverse_proof is not None:
                 argument_proof = eq_symmetry_proof(reverse_proof, target_arg)
@@ -3284,37 +3327,45 @@ def equality_rule_demodulation_proof(
             variables = set(rule_application_binders(rule))
             direct_subst: dict[str, Expr] = {}
             if match_expr_with_alpha_instantiation(conclusion.args[0], term, variables, direct_subst):
-                parts = rule_application_parts(
-                    rule,
-                    direct_subst,
-                    known,
-                    known_canonical,
-                    rules,
-                    eq_facts,
-                    definitions,
-                    max(0, rule_depth - 1),
-                )
-                if parts is not None:
-                    replacement = normalize_defined_expr(substitute_expr(conclusion.args[1], direct_subst), definitions)
-                    if expr_text(replacement) in target_text:
-                        found.append((replacement, rule_application_text(parts)))
+                for candidate_subst in completed_rule_substs(rule, direct_subst, known, eq_facts):
+                    source = normalize_defined_expr(substitute_expr(conclusion.args[0], candidate_subst), definitions)
+                    if expr_key(source) != expr_key(term):
+                        continue
+                    parts = rule_application_parts(
+                        rule,
+                        candidate_subst,
+                        known,
+                        known_canonical,
+                        rules,
+                        eq_facts,
+                        definitions,
+                        max(0, rule_depth - 1),
+                    )
+                    if parts is not None:
+                        replacement = normalize_defined_expr(substitute_expr(conclusion.args[1], candidate_subst), definitions)
+                        if expr_key(replacement) != expr_key(term) and expr_text(replacement) in target_text:
+                            found.append((replacement, rule_application_text(parts)))
             reverse_subst: dict[str, Expr] = {}
             if match_expr_with_alpha_instantiation(conclusion.args[1], term, variables, reverse_subst):
-                parts = rule_application_parts(
-                    rule,
-                    reverse_subst,
-                    known,
-                    known_canonical,
-                    rules,
-                    eq_facts,
-                    definitions,
-                    max(0, rule_depth - 1),
-                )
-                if parts is not None:
-                    replacement = normalize_defined_expr(substitute_expr(conclusion.args[0], reverse_subst), definitions)
-                    if expr_text(replacement) in target_text:
-                        proof = rule_application_text(parts)
-                        found.append((replacement, eq_symmetry_proof(proof, replacement)))
+                for candidate_subst in completed_rule_substs(rule, reverse_subst, known, eq_facts):
+                    source = normalize_defined_expr(substitute_expr(conclusion.args[1], candidate_subst), definitions)
+                    if expr_key(source) != expr_key(term):
+                        continue
+                    parts = rule_application_parts(
+                        rule,
+                        candidate_subst,
+                        known,
+                        known_canonical,
+                        rules,
+                        eq_facts,
+                        definitions,
+                        max(0, rule_depth - 1),
+                    )
+                    if parts is not None:
+                        replacement = normalize_defined_expr(substitute_expr(conclusion.args[0], candidate_subst), definitions)
+                        if expr_key(replacement) != expr_key(term) and expr_text(replacement) in target_text:
+                            proof = rule_application_text(parts)
+                            found.append((replacement, eq_symmetry_proof(proof, replacement)))
         return found[:8]
 
     queue: list[tuple[Expr, list[str]]] = [(start, [])]
@@ -3380,6 +3431,98 @@ def transport_atomic_argument_proof(
     return f"{proof_term_text(equality_proof)} (fun {hole_name}:set => {context}) ({proof})"
 
 
+def atomic_transport_context_with_arg_text(
+    head: Expr,
+    args: tuple[Expr, ...],
+    replace_index: int,
+    replacement_text: str,
+) -> str:
+    parts = [expr_text(head)]
+    for index, arg in enumerate(args):
+        parts.append(f"({replacement_text})" if index == replace_index else proof_arg_text(arg))
+    return " ".join(parts)
+
+
+def transport_atomic_nested_app_arguments_proof(
+    target: Expr,
+    current_args: list[Expr],
+    proof: str,
+    index: int,
+    source_arg: Expr,
+    target_arg: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    allow_rule: bool,
+    rule_depth: int,
+) -> tuple[str, Expr] | None:
+    source_app = normalize_defined_expr(source_arg, definitions)
+    target_app = normalize_defined_expr(target_arg, definitions)
+    if (
+        source_app.kind != "app"
+        or target_app.kind != "app"
+        or len(source_app.args) != len(target_app.args)
+        or len(source_app.args) < 2
+        or expr_key(source_app.args[0]) != expr_key(target_app.args[0])
+    ):
+        return None
+
+    current_inner_args = list(source_app.args[1:])
+    current_top_args = list(current_args)
+    current_top_args[index] = Expr("app", args=(source_app.args[0],) + tuple(current_inner_args))
+    nested_proof = proof
+    changed = False
+    for inner_index, (current_inner, target_inner) in enumerate(zip(current_inner_args, target_app.args[1:])):
+        if expr_key(current_inner) == expr_key(target_inner):
+            continue
+        equality = Expr("eq", args=(current_inner, target_inner))
+        equality_proof = proof_for_expr(
+            equality,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            allow_rule=allow_rule,
+            rule_depth=rule_depth,
+        )
+        if equality_proof is None:
+            reverse_equality = Expr("eq", args=(target_inner, current_inner))
+            reverse_proof = proof_for_expr(
+                reverse_equality,
+                known,
+                known_canonical,
+                rules,
+                eq_facts,
+                definitions,
+                allow_rule=allow_rule,
+                rule_depth=rule_depth,
+            )
+            if reverse_proof is not None:
+                equality_proof = eq_symmetry_proof(reverse_proof, target_inner)
+        if equality_proof is None:
+            return None
+
+        hole_name = fresh_identifier("zz", expr_text(target), expr_text(source_app), expr_text(target_app))
+        nested_context = app_context_text(source_app.args[0], tuple(current_inner_args), inner_index, hole_name)
+        context = atomic_transport_context_with_arg_text(
+            target.args[0],
+            tuple(current_top_args),
+            index,
+            nested_context,
+        )
+        nested_proof = f"{proof_term_text(equality_proof)} (fun {hole_name}:set => {context}) ({nested_proof})"
+        current_inner_args[inner_index] = target_inner
+        current_top_args[index] = Expr("app", args=(source_app.args[0],) + tuple(current_inner_args))
+        changed = True
+
+    if not changed:
+        return None
+    return nested_proof, current_top_args[index]
+
+
 def atomic_transport_proof(
     expr: Expr,
     known: dict[str, str],
@@ -3416,6 +3559,25 @@ def atomic_transport_proof(
         ok = True
         for index, (current_arg, target_arg) in enumerate(zip(current_args, target.args[1:])):
             if expr_key(current_arg) == expr_key(target_arg):
+                continue
+            nested = transport_atomic_nested_app_arguments_proof(
+                target,
+                current_args,
+                proof,
+                index,
+                current_arg,
+                target_arg,
+                known,
+                known_canonical,
+                rules,
+                eq_facts,
+                definitions,
+                allow_rule,
+                rule_depth,
+            )
+            if nested is not None:
+                proof, rewritten_arg = nested
+                current_args[index] = rewritten_arg
                 continue
             equality = Expr("eq", args=(current_arg, target_arg))
             equality_proof = proof_for_expr(
@@ -5020,7 +5182,7 @@ def contradiction_transport_proof(
     return None
 
 
-def proof_for_expr(
+def _proof_for_expr_impl(
     expr: Expr,
     known: dict[str, str],
     known_canonical: dict[str, str],
@@ -5087,6 +5249,19 @@ def proof_for_expr(
     normalized_eq_proof = equality_chain_proof(normalized, eq_facts)
     if normalized_eq_proof is not None:
         return normalized_eq_proof
+
+    if allow_rule:
+        direct_rule_proof = equality_direct_rule_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth,
+        )
+        if direct_rule_proof is not None:
+            return direct_rule_proof
 
     if (
         expr.kind == "eq"
@@ -5315,6 +5490,47 @@ def proof_for_expr(
         return rule_application_text(parts)
 
     return None
+
+
+def proof_for_expr(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    allow_rule: bool = True,
+    rule_depth: int = 2,
+) -> str | None:
+    key = expr_key(expr)
+    proof = known.get(key) or known_canonical.get(canonical_proposition(key))
+    if proof is not None:
+        return proof
+    direct = direct_proof_expr(expr)
+    if direct is not None:
+        return direct
+
+    active = getattr(PROOF_SEARCH_STATE, "active_goals", None)
+    if active is None:
+        active = set()
+        PROOF_SEARCH_STATE.active_goals = active
+    active_key = (key, allow_rule, rule_depth)
+    if active_key in active:
+        return None
+    active.add(active_key)
+    try:
+        return _proof_for_expr_impl(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            allow_rule=allow_rule,
+            rule_depth=rule_depth,
+        )
+    finally:
+        active.discard(active_key)
 
 
 def known_false_proof(known: dict[str, str], known_canonical: dict[str, str]) -> str | None:
