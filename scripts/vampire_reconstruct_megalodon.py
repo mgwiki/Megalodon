@@ -3083,6 +3083,24 @@ def proof_for_expr(
     return None
 
 
+def known_false_proof(known: dict[str, str], known_canonical: dict[str, str]) -> str | None:
+    proof = known.get("vampire_false") or known_canonical.get(canonical_proposition("vampire_false"))
+    if proof is not None:
+        return proof
+    suffix = " -> vampire_false"
+    for known_proposition, implication_proof in list(known.items()):
+        if not known_proposition.endswith(suffix):
+            continue
+        premise = strip_balanced_parens(known_proposition[: -len(suffix)].strip())
+        premise_proof = known.get(premise) or known_canonical.get(canonical_proposition(premise))
+        if premise_proof is None:
+            premise_expr = parse_expr(premise)
+            premise_proof = direct_proof_expr(premise_expr) if premise_expr is not None else None
+        if premise_proof is not None:
+            return f"({implication_proof} {premise_proof})"
+    return None
+
+
 def proof_for_proposition(
     proposition: str,
     known: dict[str, str],
@@ -3095,14 +3113,10 @@ def proof_for_proposition(
     if proof is not None:
         return proof
     if proposition == "vampire_false":
-        suffix = " -> vampire_false"
-        for known_proposition, implication_proof in list(known.items()):
-            if not known_proposition.endswith(suffix):
-                continue
-            premise = strip_balanced_parens(known_proposition[: -len(suffix)].strip())
-            premise_proof = known.get(premise) or known_canonical.get(canonical_proposition(premise))
-            if premise_proof is not None:
-                return f"({implication_proof} {premise_proof})"
+        return known_false_proof(known, known_canonical)
+    false_proof = known_false_proof(known, known_canonical)
+    if false_proof is not None:
+        return f"({proof_term_text(false_proof)} ({proposition}))"
     expr = parse_expr(proposition)
     if expr is None:
         return None
