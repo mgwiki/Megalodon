@@ -766,8 +766,53 @@ def tptp_sort_to_megalodon(sort: str) -> str:
     return strip_balanced_parens(text)
 
 
+def parse_tptp_lambda(text: str) -> tuple[list[tuple[str, str]], str] | None:
+    text = strip_balanced_parens(text)
+    match = re.match(r"^\^\s*\[", text)
+    if match is None:
+        return None
+    depth = 0
+    end = None
+    bracket_start = text.find("[", match.start())
+    for index, char in enumerate(text[bracket_start:], start=bracket_start):
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+            if depth == 0:
+                end = index
+                break
+    if end is None:
+        return None
+    rest = text[end + 1 :].strip()
+    if not rest.startswith(":"):
+        return None
+    variable_parts = split_top_level_commas(text[bracket_start + 1 : end])
+    if variable_parts is None:
+        return None
+    variables: list[tuple[str, str]] = []
+    for part in variable_parts:
+        names_text, separator, sort_text = part.partition(":")
+        sort = tptp_sort_to_megalodon(sort_text) if separator else "set"
+        for name in [piece.strip() for piece in names_text.split(",") if piece.strip()]:
+            decoded = decode_tptp_identifier(name)
+            if not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", decoded):
+                return None
+            variables.append((decoded, sort))
+    return variables, rest[1:].strip()
+
+
 def tptp_term_to_expr(text: str) -> Expr | None:
     text = strip_balanced_parens(text)
+    lambda_expr = parse_tptp_lambda(text)
+    if lambda_expr is not None:
+        variables, body_text = lambda_expr
+        body = tptp_term_to_expr(body_text)
+        if body is None:
+            return None
+        for name, sort in reversed(variables):
+            body = Expr("lambda", value=name, sort=sort, args=(body,))
+        return body
     parts = split_tptp_application(text)
     if parts is None:
         return None
@@ -779,7 +824,9 @@ def tptp_term_to_expr(text: str) -> Expr | None:
     args = [tptp_term_to_expr(part) for part in parts]
     if any(arg is None for arg in args):
         return None
-    return Expr("app", args=tuple(arg for arg in args if arg is not None))
+    head = args[0]
+    assert head is not None
+    return append_application_args(head, [arg for arg in args[1:] if arg is not None])
 
 
 def sort_argument_sorts(sort: str) -> list[str]:
@@ -841,12 +888,14 @@ def split_top_level_operator(text: str, operator: str) -> tuple[str, str] | None
 
 def parse_tptp_quantifier(text: str) -> tuple[str, list[tuple[str, str]], str] | None:
     text = strip_balanced_parens(text)
-    if not (text.startswith("![") or text.startswith("?[")):
+    match = re.match(r"^(?P<quantifier>[!?])\s*\[", text)
+    if match is None:
         return None
-    quantifier = text[0]
+    quantifier = match.group("quantifier")
     depth = 0
     end = None
-    for index, char in enumerate(text[1:], start=1):
+    bracket_start = text.find("[", match.start())
+    for index, char in enumerate(text[bracket_start:], start=bracket_start):
         if char == "[":
             depth += 1
         elif char == "]":
@@ -859,7 +908,7 @@ def parse_tptp_quantifier(text: str) -> tuple[str, list[tuple[str, str]], str] |
     rest = text[end + 1 :].strip()
     if not rest.startswith(":"):
         return None
-    variable_parts = split_top_level_commas(text[2:end])
+    variable_parts = split_top_level_commas(text[bracket_start + 1 : end])
     if variable_parts is None:
         return None
     variables: list[tuple[str, str]] = []
@@ -996,7 +1045,7 @@ def reconstruction_prelude_for(propositions: list[str]) -> list[str]:
     if "vampire_and " in joined:
         lines.append("Definition vampire_and : prop->prop->prop := fun A B:prop => forall P:prop, (A -> B -> P) -> P.")
     if "vampire_exists_set " in joined:
-        lines.append("Definition vampire_exists_set : (set->prop)->prop := fun P => exists X:set, P X.")
+        lines.append("Definition vampire_exists_set : (set->prop)->prop := fun P => forall Q:prop, (forall X:set, P X -> Q) -> Q.")
     if "vampire_eq_set " in joined:
         lines.append("Definition vampire_eq_set : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y.")
     if "vampire_eq_prop " in joined:
@@ -1285,12 +1334,100 @@ def add_recovered_input_axioms(lines: list[str], proof_text: str | None) -> list
 
 
 def problem_path_for_proof(proof: Path) -> Path | None:
-    suffix = ".megalodon.out"
-    if not proof.name.endswith(suffix):
+    if proof.parent.name != "proofs":
         return None
-    problem_name = proof.name[: -len(suffix)] + ".p"
-    candidate = proof.parent.parent / problem_name
-    return candidate if candidate.exists() else None
+    for suffix in (".megalodon.out", ".leancheck.out", ".out"):
+        if proof.name.endswith(suffix):
+            problem_name = proof.name[: -len(suffix)] + ".p"
+            candidate = proof.parent.parent / problem_name
+            return candidate if candidate.exists() else None
+    return None
+
+
+def problem_predicate_eliminator_axioms(problem: Path, lines: list[str]) -> list[tuple[str, str]]:
+    joined = "\n".join(lines)
+    if "Repl " not in joined:
+        return []
+    variable_sorts: dict[str, str] = {}
+    variable_re = re.compile(r"^Variable (?P<name>[_A-Za-z][_A-Za-z0-9']*):(?P<sort>[^.]+)\.$")
+    for line in lines:
+        match = variable_re.match(line)
+        if match:
+            variable_sorts[match.group("name")] = match.group("sort").strip()
+
+    recovered: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for raw in problem.read_text(encoding="utf-8", errors="replace").splitlines():
+        parsed = tptp_decl_parts(raw)
+        if parsed is None:
+            continue
+        name, role, body, _ = parsed
+        if role != "axiom":
+            continue
+        proposition = tptp_formula_to_megalodon_proposition(body, variable_sorts)
+        if proposition is None or proposition in seen:
+            continue
+        if "Repl " not in proposition or "set->prop" not in proposition:
+            continue
+        if "forall" not in proposition or "-> forall" not in proposition:
+            continue
+        seen.add(proposition)
+        recovered.append((decode_tptp_identifier(name), proposition))
+        if len(recovered) >= 4:
+            break
+    return recovered
+
+
+def add_problem_predicate_eliminator_axioms(lines: list[str], proof: Path | None) -> list[str]:
+    if proof is None:
+        return list(lines)
+    problem = problem_path_for_proof(proof)
+    if problem is None:
+        return list(lines)
+    existing_names = {
+        axiom[0]
+        for line in lines
+        for axiom in [proposition_after_colon(line, "Axiom ")]
+        if axiom is not None
+    }
+    existing_propositions = {
+        axiom[1]
+        for line in lines
+        for axiom in [proposition_after_colon(line, "Axiom ")]
+        if axiom is not None
+    }
+    candidates = [
+        (name, proposition)
+        for name, proposition in problem_predicate_eliminator_axioms(problem, lines)
+        if name not in existing_names and proposition not in existing_propositions
+    ]
+    if not candidates:
+        return list(lines)
+
+    result: list[str] = []
+    inserted = False
+    for line in lines:
+        if not inserted and line.startswith("Theorem "):
+            for name, proposition in candidates:
+                axiom_name = name
+                suffix = 0
+                while axiom_name in existing_names:
+                    suffix += 1
+                    axiom_name = f"{name}_{suffix}"
+                existing_names.add(axiom_name)
+                result.append(f"Axiom {axiom_name}:{proposition}.")
+            inserted = True
+        result.append(line)
+    if not inserted:
+        for name, proposition in candidates:
+            axiom_name = name
+            suffix = 0
+            while axiom_name in existing_names:
+                suffix += 1
+                axiom_name = f"{name}_{suffix}"
+            existing_names.add(axiom_name)
+            result.append(f"Axiom {axiom_name}:{proposition}.")
+    return result
 
 
 def add_problem_type_variables(lines: list[str], proof: Path | None, proof_text: str | None) -> list[str]:
@@ -2445,11 +2582,22 @@ def add_missing_basic_connective_definitions(lines: list[str]) -> list[str]:
         helpers.append("Definition vampire_or : prop->prop->prop := fun A B:prop => forall P:prop, (A -> P) -> (B -> P) -> P.")
     if "vampire_and " in text and not any(line.startswith("Definition vampire_and ") for line in lines):
         helpers.append("Definition vampire_and : prop->prop->prop := fun A B:prop => forall P:prop, (A -> B -> P) -> P.")
-    if not helpers:
+    needs_exists_definition = "vampire_exists_set " in text and not any(
+        line.startswith("Definition vampire_exists_set ") for line in lines
+    )
+    if needs_exists_definition:
+        helpers.append("Definition vampire_exists_set : (set->prop)->prop := fun P => forall Q:prop, (forall X:set, P X -> Q) -> Q.")
+    if "vampire_eq_set " in text and not any(line.startswith("Definition vampire_eq_set ") for line in lines):
+        helpers.append("Definition vampire_eq_set : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y.")
+    if "vampire_eq_prop " in text and not any(line.startswith("Definition vampire_eq_prop ") for line in lines):
+        helpers.append("Definition vampire_eq_prop : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y.")
+    if not helpers and not needs_exists_definition:
         return list(lines)
     result: list[str] = []
     inserted = False
     for line in lines:
+        if needs_exists_definition and line.startswith("Variable vampire_exists_set:"):
+            continue
         if not inserted and (line.startswith("Axiom ") or line.startswith("Theorem ")):
             result.extend(helpers)
             inserted = True
@@ -6029,6 +6177,87 @@ def app_args(expr: Expr, head: str, arity: int) -> tuple[Expr, ...] | None:
     return expr.args[1:]
 
 
+def vampire_and_parts(expr: Expr) -> tuple[Expr, Expr] | None:
+    return app_args(expr, "vampire_and", 2)
+
+
+def vampire_exists_body(expr: Expr) -> tuple[str, Expr] | None:
+    args = app_args(expr, "vampire_exists_set", 1)
+    if args is None:
+        return None
+    predicate = args[0]
+    if predicate.kind != "lambda" or predicate.value is None:
+        return None
+    return predicate.value, predicate.args[0]
+
+
+def compatible_repl_equality(left: Expr, right: Expr) -> bool:
+    left_sides = equality_like_sides(left)
+    right_sides = equality_like_sides(right)
+    if left_sides is None or right_sides is None:
+        return False
+    return expr_key(left_sides[0]) == expr_key(right_sides[0]) and expr_key(left_sides[1]) == expr_key(right_sides[1])
+
+
+def compatible_conj_component(source: Expr, target: Expr) -> bool:
+    return expr_key(source) == expr_key(target) or compatible_repl_equality(source, target)
+
+
+def conjunction_reorder_proof(source_name: str, source_left: Expr, source_right: Expr, target_left: Expr, target_right: Expr) -> str | None:
+    source_vars = [("HL", source_left), ("HR", source_right)]
+    target_proofs: list[str] = []
+    for target in (target_left, target_right):
+        matches = [name for name, source in source_vars if compatible_conj_component(source, target)]
+        if not matches:
+            return None
+        target_proofs.append(matches[0])
+    return f"({source_name} (vampire_and {proof_arg_text(target_left)} {proof_arg_text(target_right)}) (fun HL HR => fun P K => K {target_proofs[0]} {target_proofs[1]}))"
+
+
+def find_repl_equivalence_rule(rules: list[ProofRule]) -> tuple[ProofRule, int, str, Expr, Expr, Expr, Expr, Expr] | None:
+    for rule in rules:
+        if len(rule.binders) != 3 or rule.premises:
+            continue
+        components = vampire_and_parts(rule.conclusion)
+        if components is None:
+            continue
+        base = Expr("var", value=rule.binders[0])
+        function = Expr("var", value=rule.binders[1])
+        image = Expr("var", value=rule.binders[2])
+        def is_image_membership(candidate: Expr) -> bool:
+            membership = app_args(candidate, "In", 2)
+            if membership is None or expr_key(membership[0]) != expr_key(image):
+                return False
+            repl_args = app_args(membership[1], "Repl", 2)
+            if repl_args is None or expr_key(repl_args[0]) != expr_key(base):
+                return False
+            return expr_key(eta_reduce_unary_function(repl_args[1])) == expr_key(function)
+
+        forward_index: int | None = None
+        backward_index: int | None = None
+        exists_expr: Expr | None = None
+        exists_var: str | None = None
+        exists_body_expr: Expr | None = None
+        for index, component in enumerate(components):
+            premises, conclusion = split_arrows(component)
+            if len(premises) != 1:
+                continue
+            premise, = premises
+            conclusion_exists = vampire_exists_body(conclusion)
+            premise_exists = vampire_exists_body(premise)
+            if is_image_membership(premise) and conclusion_exists is not None:
+                forward_index = index
+                exists_expr = conclusion
+                exists_var, exists_body_expr = conclusion_exists
+            elif is_image_membership(conclusion) and premise_exists is not None:
+                backward_index = index
+                exists_expr = premise
+                exists_var, exists_body_expr = premise_exists
+        if forward_index is not None and backward_index is not None and exists_var is not None and exists_expr is not None and exists_body_expr is not None:
+            return rule, forward_index, exists_var, base, function, image, exists_expr, exists_body_expr
+    return None
+
+
 def find_repl_intro_elim_rules(rules: list[ProofRule]) -> tuple[str | None, str | None]:
     intro = None
     elim = None
@@ -6042,6 +6271,297 @@ def find_repl_intro_elim_rules(rules: list[ProofRule]) -> tuple[str | None, str 
             if atom2(rule.premises[0], "In", b[rule.binders[2]], repl):
                 elim = rule.name
     return intro, elim
+
+
+def eta_reduce_unary_function(expr: Expr) -> Expr:
+    if expr.kind != "lambda" or expr.sort != "set" or expr.value is None:
+        return expr
+    body = expr.args[0]
+    if body.kind != "app" or len(body.args) != 2:
+        return expr
+    argument = body.args[1]
+    if argument.kind != "var" or argument.value != expr.value:
+        return expr
+    function = body.args[0]
+    if expr.value in expr_variables(function):
+        return expr
+    return function
+
+
+def find_repl_predicate_elim_rule(rules: list[ProofRule]) -> ProofRule | None:
+    for rule in rules:
+        if len(rule.binders) != 3 or len(rule.premises) != 1:
+            continue
+        base_name, function_name, predicate_name = rule.binders
+        base = Expr("var", value=base_name)
+        function = Expr("var", value=function_name)
+        predicate = Expr("var", value=predicate_name)
+
+        premise_binders, premise_body = collect_foralls(rule.premises[0])
+        premise_premises, premise_conclusion = split_arrows(premise_body)
+        if len(premise_binders) != 1 or premise_binders[0][1] != "set" or len(premise_premises) != 1:
+            continue
+        source = Expr("var", value=premise_binders[0][0])
+        if not atom2(premise_premises[0], "In", source, base):
+            continue
+        if expr_key(premise_conclusion) != expr_key(Expr("app", args=(predicate, append_application_args(function, [source])))):
+            continue
+
+        target_binders, target_body = collect_foralls(rule.conclusion)
+        target_premises, target_conclusion = split_arrows(target_body)
+        if len(target_binders) != 1 or target_binders[0][1] != "set" or len(target_premises) != 1:
+            continue
+        image = Expr("var", value=target_binders[0][0])
+        repl_args = app_args(target_premises[0], "In", 2)
+        if repl_args is None or expr_key(repl_args[0]) != expr_key(image):
+            continue
+        image_set_args = app_args(repl_args[1], "Repl", 2)
+        if image_set_args is None or expr_key(image_set_args[0]) != expr_key(base):
+            continue
+        expected_eta = Expr(
+            "lambda",
+            value=target_binders[0][0],
+            sort="set",
+            args=(append_application_args(function, [image]),),
+        )
+        image_function = eta_reduce_unary_function(image_set_args[1])
+        if expr_key(image_function) != expr_key(function) and expr_key(image_set_args[1]) != expr_key(expected_eta):
+            continue
+        if expr_key(target_conclusion) != expr_key(Expr("app", args=(predicate, image))):
+            continue
+        return rule
+    return None
+
+
+def repl_projection_text(rule: ProofRule, component_index: int, base: Expr, function: Expr, image: Expr, target: Expr) -> str:
+    selected = "HL" if component_index == 0 else "HR"
+    return (
+        f"({rule.name} {proof_arg_text(base)} {proof_arg_text(function)} {proof_arg_text(image)} "
+        f"{proof_arg_text(target)} (fun HL HR => {selected}))"
+    )
+
+
+def repl_intro_from_equivalence_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
+    equivalence = find_repl_equivalence_rule(rules)
+    if equivalence is None:
+        return None
+    rule, forward_index, exists_var, _, _, _, exists_expr, exists_body = equivalence
+    backward_index = 1 - forward_index
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if len(binders) != 3 or len(premises) != 1:
+        return None
+    base_name, function_name, source_name = [name for name, _ in binders]
+    if [sort for _, sort in binders] != ["set", "set->set", "set"]:
+        return None
+    base = Expr("var", value=base_name)
+    function = Expr("var", value=function_name)
+    source = Expr("var", value=source_name)
+    membership = Expr("app", args=(Expr("var", value="In"), source, base))
+    if expr_key(premises[0]) != expr_key(membership):
+        return None
+    image = append_application_args(function, [source])
+    conclusion_membership = app_args(conclusion, "In", 2)
+    if conclusion_membership is None or expr_key(conclusion_membership[0]) != expr_key(image):
+        return None
+    repl_args = app_args(conclusion_membership[1], "Repl", 2)
+    if repl_args is None or expr_key(repl_args[0]) != expr_key(base):
+        return None
+    if expr_key(eta_reduce_unary_function(repl_args[1])) != expr_key(function):
+        return None
+
+    source_body = substitute_expr(
+        exists_body,
+        {
+            rule.binders[0]: base,
+            rule.binders[1]: function,
+            rule.binders[2]: image,
+            exists_var: source,
+        },
+    )
+    source_components = vampire_and_parts(source_body)
+    if source_components is None:
+        return None
+    component_proofs: list[str] = []
+    for component in source_components:
+        sides = equality_like_sides(component)
+        if sides is not None and expr_key(sides[0]) == expr_key(sides[1]):
+            component_proofs.append("(fun Q H => H)")
+        elif expr_key(component) == expr_key(membership):
+            component_proofs.append("H0")
+        else:
+            return None
+    exists_proof = f"(fun Q H => H {source_name} (fun P K => K {component_proofs[0]} {component_proofs[1]}))"
+    source_exists_expr = substitute_expr(
+        exists_expr,
+        {
+            rule.binders[0]: base,
+            rule.binders[1]: function,
+            rule.binders[2]: image,
+        },
+    )
+    selected_component = Expr("arrow", args=(source_exists_expr, conclusion))
+    projection = repl_projection_text(rule, backward_index, base, function, image, selected_component)
+    return f"(fun {base_name} {function_name} {source_name} H0 => ({projection} {exists_proof}))"
+
+
+def repl_exists_from_equivalence_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
+    equivalence = find_repl_equivalence_rule(rules)
+    if equivalence is None:
+        return None
+    rule, forward_index, exists_var, _, _, _, exists_expr, exists_body = equivalence
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if len(binders) != 3 or len(premises) != 1:
+        return None
+    base_name, function_name, image_name = [name for name, _ in binders]
+    if [sort for _, sort in binders] != ["set", "set->set", "set"]:
+        return None
+    base = Expr("var", value=base_name)
+    function = Expr("var", value=function_name)
+    image = Expr("var", value=image_name)
+    membership = app_args(premises[0], "In", 2)
+    if membership is None or expr_key(membership[0]) != expr_key(image):
+        return None
+    repl_args = app_args(membership[1], "Repl", 2)
+    if repl_args is None or expr_key(repl_args[0]) != expr_key(base):
+        return None
+    if expr_key(eta_reduce_unary_function(repl_args[1])) != expr_key(function):
+        return None
+    target_exists = vampire_exists_body(conclusion)
+    if target_exists is None:
+        return None
+    target_var, target_body = target_exists
+    target_predicate = app_args(conclusion, "vampire_exists_set", 1)
+    if target_predicate is None:
+        return None
+
+    source_exists_expr = substitute_expr(
+        exists_expr,
+        {
+            rule.binders[0]: base,
+            rule.binders[1]: function,
+            rule.binders[2]: image,
+        },
+    )
+    selected_component = Expr("arrow", args=(premises[0], source_exists_expr))
+    projection = repl_projection_text(rule, forward_index, base, function, image, selected_component)
+    witness_name = fresh_identifier("W", expr_text(expr), base_name, function_name, image_name)
+    witness = Expr("var", value=witness_name)
+    source_body = substitute_expr(
+        exists_body,
+        {
+            rule.binders[0]: base,
+            rule.binders[1]: function,
+            rule.binders[2]: image,
+            exists_var: witness,
+        },
+    )
+    target_body_at_witness = substitute_expr(target_body, {target_var: witness})
+    source_components = vampire_and_parts(source_body)
+    target_components = vampire_and_parts(target_body_at_witness)
+    if source_components is None or target_components is None:
+        return None
+    reordered = conjunction_reorder_proof("HW", source_components[0], source_components[1], target_components[0], target_components[1])
+    if reordered is None:
+        return None
+    target_exists_proof = f"(fun Q H => H {witness_name} {reordered})"
+    converted = (
+        f"(({projection} H0) (vampire_exists_set {proof_arg_text(target_predicate[0])}) "
+        f"(fun {witness_name} HW => {target_exists_proof}))"
+    )
+    return f"(fun {base_name} {function_name} {image_name} H0 => {converted})"
+
+
+def find_repl_exists_rule(rules: list[ProofRule]) -> tuple[ProofRule, str, Expr] | None:
+    for rule in rules:
+        if len(rule.binders) != 3 or len(rule.premises) != 1:
+            continue
+        base = Expr("var", value=rule.binders[0])
+        function = Expr("var", value=rule.binders[1])
+        image = Expr("var", value=rule.binders[2])
+        premise = app_args(rule.premises[0], "In", 2)
+        if premise is None or expr_key(premise[0]) != expr_key(image):
+            continue
+        repl_args = app_args(premise[1], "Repl", 2)
+        if repl_args is None or expr_key(repl_args[0]) != expr_key(base):
+            continue
+        if expr_key(eta_reduce_unary_function(repl_args[1])) != expr_key(function):
+            continue
+        exists = vampire_exists_body(rule.conclusion)
+        if exists is None:
+            continue
+        return rule, exists[0], exists[1]
+    return None
+
+
+def repl_predicate_from_exists_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
+    exists_rule = find_repl_exists_rule(rules)
+    if exists_rule is None:
+        return None
+    rule, exists_var, exists_body = exists_rule
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if len(binders) != 3 or len(premises) != 1:
+        return None
+    base_name, function_name, predicate_name = [name for name, _ in binders]
+    if [sort for _, sort in binders] != ["set", "set->set", "set->prop"]:
+        return None
+    target_binders, target_body = collect_foralls(conclusion)
+    target_premises, target_conclusion = split_arrows(target_body)
+    if len(target_binders) != 1 or len(target_premises) != 1:
+        return None
+    image_name = target_binders[0][0]
+    image = Expr("var", value=image_name)
+    base = Expr("var", value=base_name)
+    function = Expr("var", value=function_name)
+    predicate = Expr("var", value=predicate_name)
+    target_membership = app_args(target_premises[0], "In", 2)
+    if target_membership is None or expr_key(target_membership[0]) != expr_key(image):
+        return None
+    repl_args = app_args(target_membership[1], "Repl", 2)
+    if repl_args is None or expr_key(repl_args[0]) != expr_key(base):
+        return None
+    if expr_key(eta_reduce_unary_function(repl_args[1])) != expr_key(function):
+        return None
+    if expr_key(target_conclusion) != expr_key(append_application_args(predicate, [image])):
+        return None
+
+    witness_name = fresh_identifier("W", expr_text(expr), base_name, function_name, image_name)
+    witness = Expr("var", value=witness_name)
+    source_body = substitute_expr(
+        exists_body,
+        {
+            rule.binders[0]: base,
+            rule.binders[1]: function,
+            rule.binders[2]: image,
+            exists_var: witness,
+        },
+    )
+    source_components = vampire_and_parts(source_body)
+    if source_components is None:
+        return None
+    membership_name: str | None = None
+    equality_name: str | None = None
+    equality_component: Expr | None = None
+    for name, component in (("HL", source_components[0]), ("HR", source_components[1])):
+        if expr_key(component) == expr_key(Expr("app", args=(Expr("var", value="In"), witness, base))):
+            membership_name = name
+        sides = equality_like_sides(component)
+        if sides is not None:
+            expected_left = append_application_args(function, [witness])
+            if expr_key(sides[0]) == expr_key(expected_left) and expr_key(sides[1]) == expr_key(image):
+                equality_name = name
+                equality_component = component
+    if membership_name is None or equality_name is None or equality_component is None:
+        return None
+    exists_proof = f"({rule.name} {base_name} {function_name} {image_name} H1)"
+    transported = f"({equality_name} {predicate_name} (H0 {witness_name} {membership_name}))"
+    continuation = f"(fun {witness_name} HW => HW ({predicate_name} {image_name}) (fun HL HR => {transported}))"
+    return (
+        f"(fun {base_name} {function_name} {predicate_name} H0 {image_name} H1 => "
+        f"({exists_proof} ({predicate_name} {image_name}) {continuation}))"
+    )
 
 
 def repl_elimination_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
@@ -6162,9 +6682,129 @@ def repl_image_membership_elim_proof(
             f"({elim} {proof_arg_text(base)} {proof_arg_text(function)} {image_name} {membership_name} "
             f"(In {image_name} {proof_arg_text(target_set)}) "
             f"(fun {witness_name}:set => fun {witness_membership_name} => fun {equality_name} => "
-            f"{equality_name} (fun zz:set => In zz {proof_arg_text(target_set)}) {mapped_proof})))"
+                f"{equality_name} (fun zz:set => In zz {proof_arg_text(target_set)}) {mapped_proof})))"
         )
     return None
+
+
+def repl_image_property_elim_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 0:
+        return None
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if len(binders) != 1 or binders[0][1] != "set" or len(premises) != 1:
+        return None
+    image_name = binders[0][0]
+    image = Expr("var", value=image_name)
+    premise_args = app_args(premises[0], "In", 2)
+    if premise_args is None or expr_key(premise_args[0]) != expr_key(image):
+        return None
+    repl_args = app_args(premise_args[1], "Repl", 2)
+    if repl_args is None:
+        return None
+    base, function = repl_args
+    predicate_rule = find_repl_predicate_elim_rule(rules)
+    if predicate_rule is not None:
+        function_for_rule = eta_reduce_unary_function(function)
+        predicate_name = fresh_identifier("Y", expr_text(expr), image_name)
+        predicate_body, predicate_changed = replace_expr(conclusion, image, Expr("var", value=predicate_name))
+        if predicate_changed:
+            predicate = Expr("lambda", value=predicate_name, sort="set", args=(predicate_body,))
+            witness_name = fresh_identifier("W", expr_text(expr), image_name, predicate_name)
+            witness = Expr("var", value=witness_name)
+            witness_membership_name = fresh_identifier("HW", expr_text(expr), image_name, witness_name)
+            function_witness = append_application_args(function_for_rule, [witness])
+            target_at_witness, changed = replace_expr(conclusion, image, function_witness)
+            if changed:
+                local_known = dict(known)
+                local_known_canonical = dict(known_canonical)
+                local_rules = list(rules)
+                local_eq_facts = list(eq_facts)
+                remember_proposition(
+                    local_known,
+                    local_known_canonical,
+                    local_rules,
+                    local_eq_facts,
+                    witness_membership_name,
+                    expr_text(Expr("app", args=(Expr("var", value="In"), witness, base))),
+                )
+                witness_proof = proof_for_expr(
+                    target_at_witness,
+                    local_known,
+                    local_known_canonical,
+                    local_rules,
+                    local_eq_facts,
+                    definitions,
+                    allow_rule=True,
+                    rule_depth=max(0, rule_depth - 1),
+                )
+                if witness_proof is not None:
+                    image_membership_name = fresh_identifier("Himg", expr_text(expr), image_name, witness_name)
+                    premise_proof = f"(fun {witness_name} {witness_membership_name} => {proof_argument_text(witness_proof)})"
+                    return (
+                        f"(fun {image_name} {image_membership_name} => "
+                        f"({predicate_rule.name} {proof_arg_text(base)} {proof_arg_text(function_for_rule)} "
+                        f"{proof_arg_text(predicate)} {premise_proof} {image_name} {image_membership_name}))"
+                    )
+    _, elim = find_repl_intro_elim_rules(rules)
+    if elim is None:
+        return None
+
+    witness_name = fresh_identifier("W", expr_text(expr), image_name)
+    witness = Expr("var", value=witness_name)
+    witness_membership_name = fresh_identifier("HW", expr_text(expr), image_name, witness_name)
+    equality_name = fresh_identifier("Heq", expr_text(expr), image_name, witness_name, witness_membership_name)
+    function_witness = append_application_args(function, [witness])
+    target_at_witness, changed = replace_expr(conclusion, image, function_witness)
+    if not changed:
+        return None
+    hole_name = fresh_identifier("zz", expr_text(expr), image_name, witness_name)
+    context_expr, context_changed = replace_expr(conclusion, image, Expr("var", value=hole_name))
+    if not context_changed:
+        return None
+
+    local_known = dict(known)
+    local_known_canonical = dict(known_canonical)
+    local_rules = list(rules)
+    local_eq_facts = list(eq_facts)
+    remember_proposition(
+        local_known,
+        local_known_canonical,
+        local_rules,
+        local_eq_facts,
+        witness_membership_name,
+        expr_text(Expr("app", args=(Expr("var", value="In"), witness, base))),
+    )
+    witness_proof = proof_for_expr(
+        target_at_witness,
+        local_known,
+        local_known_canonical,
+        local_rules,
+        local_eq_facts,
+        definitions,
+        allow_rule=True,
+        rule_depth=max(0, rule_depth - 1),
+    )
+    if witness_proof is None:
+        return None
+
+    image_membership_name = fresh_identifier("Himg", expr_text(expr), image_name, witness_name)
+    return (
+        f"(fun {image_name} {image_membership_name} => "
+        f"({elim} {proof_arg_text(base)} {proof_arg_text(function)} {image_name} {image_membership_name} "
+        f"{proof_arg_text(conclusion)} "
+        f"(fun {witness_name}:set => fun {witness_membership_name} => fun {equality_name} => "
+        f"{equality_name} (fun {hole_name}:set => {expr_text(context_expr)}) "
+        f"{proof_argument_text(witness_proof)})))"
+    )
 
 
 def image_monotone_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
@@ -7092,8 +7732,12 @@ def _proof_for_expr_impl(
         return rule_conjunction_implication
 
     for derived in (
+        repl_intro_from_equivalence_proof(expr, rules),
+        repl_exists_from_equivalence_proof(expr, rules),
+        repl_predicate_from_exists_proof(expr, rules),
         repl_elimination_proof(expr, rules),
         repl_image_membership_elim_proof(expr, known, known_canonical, rules, eq_facts, definitions, rule_depth),
+        repl_image_property_elim_proof(expr, known, known_canonical, rules, eq_facts, definitions, rule_depth),
         image_monotone_proof(expr, rules),
         image_in_power_proof(expr, rules),
         algebraic_interchange_commutativity_proof(expr, rules),
@@ -7974,6 +8618,8 @@ def check_megalodon_lines(
     output_lines = add_function_definition_skeletons(lines, proof_text)
     output_lines = add_recovered_input_equalities(output_lines, proof_text)
     output_lines = add_recovered_input_axioms(output_lines, proof_text)
+    output_lines = add_problem_predicate_eliminator_axioms(output_lines, proof)
+    output_lines = add_problem_type_variables(output_lines, proof, proof_text)
     output_lines = normalize_vampire_boolean_literals(output_lines)
     output_lines = add_missing_basic_connective_definitions(output_lines)
     output_lines = add_boolean_extensionality_helpers(output_lines)
