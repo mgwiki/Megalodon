@@ -11946,6 +11946,72 @@ def raw_infer_forall_clause_substitution(
     return search(0, {})
 
 
+def raw_infer_forall_clause_substitution_candidates(
+    body: Expr,
+    target: Expr,
+    resolver: Expr,
+    binder_names: set[str],
+    *,
+    limit: int = 8,
+) -> list[dict[str, Expr]]:
+    pattern_literals = [
+        literal
+        for literal in raw_clause_literals(body)
+        if expr_variables(literal) & binder_names
+    ]
+    if not pattern_literals:
+        return []
+    target_literals = raw_clause_literals(target)
+    resolver_literals = raw_clause_literals(resolver)
+    if len(pattern_literals) > 8 or len(target_literals) > 12 or len(resolver_literals) > 12:
+        return []
+    pattern_literals.sort(key=lambda literal: -len(expr_variables(literal) & binder_names))
+    results: list[dict[str, Expr]] = []
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    attempts = 0
+
+    def remember(subst: dict[str, Expr]) -> None:
+        flatten_substitution(subst)
+        if not binder_names <= subst.keys():
+            return
+        if any(expr_variables(value) & binder_names for value in subst.values()):
+            return
+        key = tuple(sorted((name, expr_key(value)) for name, value in subst.items() if name in binder_names))
+        if key in seen:
+            return
+        seen.add(key)
+        results.append({name: subst[name] for name in binder_names})
+
+    def search(index: int, subst: dict[str, Expr]) -> None:
+        nonlocal attempts
+        if len(results) >= limit or proof_search_timed_out():
+            return
+        if binder_names <= subst.keys():
+            remember(dict(subst))
+            return
+        if index >= len(pattern_literals) or attempts > 256:
+            return
+        pattern = pattern_literals[index]
+        for literal in target_literals:
+            attempts += 1
+            trial = dict(subst)
+            if match_expr_with_alpha_instantiation(pattern, literal, binder_names, trial):
+                search(index + 1, trial)
+                if len(results) >= limit or attempts > 256:
+                    return
+        for literal in resolver_literals:
+            attempts += 1
+            trial = dict(subst)
+            if raw_match_complementary_literals(pattern, literal, binder_names, trial):
+                search(index + 1, trial)
+                if len(results) >= limit or attempts > 256:
+                    return
+        search(index + 1, subst)
+
+    search(0, {})
+    return results
+
+
 def raw_instantiated_forall_clause_options(
     expr: Expr,
     proof: str,
@@ -12359,6 +12425,17 @@ def raw_equality_rewrite_clause_proof(
     equality_proof: str,
     equality_sort: str,
 ) -> str | None:
+    quantified = raw_quantified_equality_rewrite_clause_proof(
+        source,
+        target,
+        source_proof,
+        equality_left,
+        equality_right,
+        equality_proof,
+        equality_sort,
+    )
+    if quantified is not None:
+        return quantified
     for replaced, transported in raw_equality_rewrite_clause_steps(
         source,
         source_proof,
@@ -12374,6 +12451,78 @@ def raw_equality_rewrite_clause_proof(
         transformed = raw_clause_transform_proof(replaced, target, transported)
         if transformed is not None:
             return transformed
+    return None
+
+
+def raw_quantified_equality_rewrite_clause_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality_left: Expr,
+    equality_right: Expr,
+    equality_proof: str,
+    equality_sort: str,
+) -> str | None:
+    if proof_search_timed_out():
+        return None
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if not source_binders or len(source_binders) > 5 or len(target_binders) > 5:
+        return None
+    if len(raw_clause_literals(source_body)) > 12 or len(raw_clause_literals(target_body)) > 12:
+        return None
+    binder_names = {name for name, _ in source_binders}
+    used_names = expr_variables(source_body) | expr_variables(equality_left) | expr_variables(equality_right) | binder_names
+    renamed_target_binders: list[tuple[str, str]] = []
+    target_rename: dict[str, str] = {}
+    for index, (name, sort) in enumerate(target_binders):
+        candidate = name
+        if candidate in used_names:
+            candidate = f"Q{index}"
+            suffix = 0
+            while candidate in used_names:
+                suffix += 1
+                candidate = f"Q{index}_{suffix}"
+        used_names.add(candidate)
+        renamed_target_binders.append((candidate, sort))
+        if candidate != name:
+            target_rename[name] = candidate
+    if target_rename:
+        target_body = rename_expr_variables(target_body, target_rename)
+    resolver = Expr("app", args=(Expr("var", value="vampire_eq_set"), equality_left, equality_right))
+    substitutions = raw_infer_forall_clause_substitution_candidates(source_body, target_body, resolver, binder_names)
+    if not substitutions:
+        return None
+    for subst in substitutions:
+        instantiated_source = substitute_expr(source_body, subst)
+        if not raw_clause_replay_budget_ok(instantiated_source, target_body, max_literals=12, max_literal_product=192):
+            continue
+        proof = source_proof
+        for name, _ in source_binders:
+            value = subst.get(name)
+            if value is None:
+                proof = ""
+                break
+            proof = f"({proof_head(proof)} {proof_arg_text(value)})"
+        if not proof:
+            continue
+        for replaced, transported in raw_equality_rewrite_clause_steps(
+            instantiated_source,
+            proof,
+            equality_left,
+            equality_right,
+            equality_proof,
+            equality_sort,
+        ):
+            if expr_same_mod_alpha(replaced, target_body):
+                body_proof: str | None = transported
+            else:
+                body_proof = raw_clause_transform_proof(replaced, target_body, transported)
+            if body_proof is None:
+                continue
+            for name, sort in reversed(renamed_target_binders):
+                body_proof = f"(fun {name}:{sort} => {body_proof})"
+            return body_proof
     return None
 
 
@@ -12593,6 +12742,9 @@ def raw_tptp_superposition_proof(
     propositions_by_name: dict[str, str],
     variable_sorts: dict[str, str],
 ) -> str | None:
+    proof = raw_tptp_parent_equality_rewrite_proof(proposition, parents, propositions_by_name, variable_sorts)
+    if proof is not None:
+        return proof
     for parent in parents:
         proof = raw_tptp_fast_parent_transform_proof(proposition, parent, propositions_by_name)
         if proof is not None:
@@ -12609,7 +12761,7 @@ def raw_tptp_superposition_proof(
         proof = raw_tptp_forward_demodulation_proof(proposition, parents, propositions_by_name, variable_sorts)
         if proof is not None:
             return proof
-    return raw_tptp_parent_equality_rewrite_proof(proposition, parents, propositions_by_name, variable_sorts)
+    return None
 
 
 def raw_tptp_forward_subsumption_resolution_proof(
