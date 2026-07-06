@@ -9488,6 +9488,26 @@ def proof_for_proposition(
         )
         if introduced_atomic_proof is not None:
             return introduced_atomic_proof
+    if expr.kind == "forall" and len(expr_text(expr)) <= 700:
+        steps, conclusion = sequential_rule_steps(expr)
+        binder_count = sum(1 for step in steps if step.kind == "binder")
+        premise_count = sum(1 for step in steps if step.kind == "premise")
+        if (
+            0 < binder_count <= 4
+            and premise_count <= 3
+            and vampire_exists_body(conclusion) is not None
+        ):
+            exists_intro_proof = proof_for_expr(
+                expr,
+                known,
+                known_canonical,
+                rules,
+                eq_facts,
+                definitions,
+                rule_depth=5,
+            )
+            if exists_intro_proof is not None:
+                return exists_intro_proof
     proof = proof_for_expr(expr, known, known_canonical, rules, eq_facts, definitions)
     if proof is not None:
         return proof
