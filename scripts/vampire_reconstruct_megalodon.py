@@ -12615,6 +12615,23 @@ def raw_tptp_one_parent_transform_proof(
     return raw_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
 
 
+def raw_tptp_deep_formula_transform_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> str | None:
+    if len(parents) != 1:
+        return None
+    parent_proposition = propositions_by_name.get(parents[0])
+    if parent_proposition is None:
+        return None
+    source = parse_expr(parent_proposition)
+    target = parse_expr(proposition)
+    if source is None or target is None:
+        return None
+    return raw_deep_formula_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
+
+
 def raw_eq_symmetry_proof(proof: str, left: Expr, sort: str) -> str:
     left_text = expr_text(left)
     name = fresh_identifier("zz", left_text, sort)
@@ -12625,6 +12642,69 @@ def raw_eq_symmetry_proof(proof: str, left: Expr, sort: str) -> str:
     else:
         predicate = f"{name} = {left_text}"
     return f"({proof_head(proof)} (fun {name}:{sort} => {predicate}) (fun R Hr => Hr))"
+
+
+def raw_deep_formula_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    depth: int = 0,
+) -> str | None:
+    if depth > 80 or proof_search_timed_out():
+        return None
+    if len(expr_text(source)) + len(expr_text(target)) > 9000:
+        return None
+    if expr_same_mod_alpha(source, target):
+        return source_proof
+
+    source_sides = equality_like_sides(source)
+    target_sides = equality_like_sides(target)
+    if (
+        source_sides is not None
+        and target_sides is not None
+        and expr_same_mod_alpha(source_sides[0], target_sides[1])
+        and expr_same_mod_alpha(source_sides[1], target_sides[0])
+    ):
+        sort = "set"
+        if source.kind == "app" and source.args[0].kind == "var" and source.args[0].value == "vampire_eq_prop":
+            sort = "prop"
+        return raw_eq_symmetry_proof(source_proof, source_sides[0], sort)
+
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
+        assert source.value is not None and target.value is not None and target.sort is not None
+        source_body = source.args[0]
+        if source.value != target.value:
+            source_body = rename_expr_variables(source_body, {source.value: target.value})
+        inner_source = f"({proof_head(source_proof)} {target.value})"
+        inner = raw_deep_formula_transform_proof(source_body, target.args[0], inner_source, depth + 1)
+        if inner is None:
+            return None
+        return f"(fun {target.value}:{target.sort} => {inner})"
+
+    if source.kind == "arrow" and target.kind == "arrow":
+        source_premise, source_conclusion = source.args
+        target_premise, target_conclusion = target.args
+        premise_name = fresh_identifier("Hprem", expr_text(source_premise), expr_text(target_premise), source_proof)
+        source_premise_proof = raw_deep_formula_transform_proof(
+            target_premise,
+            source_premise,
+            premise_name,
+            depth + 1,
+        )
+        if source_premise_proof is None:
+            return None
+        conclusion_source = f"({proof_head(source_proof)} {proof_term_text(source_premise_proof)})"
+        conclusion = raw_deep_formula_transform_proof(
+            source_conclusion,
+            target_conclusion,
+            conclusion_source,
+            depth + 1,
+        )
+        if conclusion is None:
+            return None
+        return f"(fun {premise_name} => {conclusion})"
+
+    return None
 
 
 def raw_equality_transport_sort(left: Expr, right: Expr, variable_sorts: dict[str, str]) -> str:
@@ -13949,6 +14029,8 @@ def raw_tptp_replay_proof(
         )
         if proof is not None:
             return proof
+        if rule == "fool_elimination":
+            return raw_tptp_deep_formula_transform_proof(proposition, parents, propositions_by_name)
         if rule == "cnf_transformation":
             return raw_tptp_small_forall_permutation_transform_proof(proposition, parents, propositions_by_name)
         return None
