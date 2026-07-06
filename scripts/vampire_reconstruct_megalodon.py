@@ -384,10 +384,21 @@ def annotate_remaining_admits(lines: list[str], proof_text: str | None) -> list[
             context = contexts.get(claim[0])
             if context is not None:
                 result.append(f"// vampire step {claim[0]}: {comment_text(context)}")
-                if claim[1].endswith("-> vampire_false") and "conjecture" in context:
+                if "negated_conjecture" in context and claim[1].endswith("-> vampire_false"):
                     result.append(
                         "// refutation boundary: Vampire proves this negated-conjecture edge; "
                         "eliminating the admit needs a native theorem/classical bridge."
+                    )
+                elif "negated_conjecture" in context:
+                    result.append(
+                        "// negated-conjecture fragment: this belongs to Vampire's refutation "
+                        "assumption, not to the forward source proof."
+                    )
+                elif claim[1].endswith("-> vampire_false") and "conjecture" in context:
+                    result.append(
+                        "// refutation boundary: Vampire proves this conjecture edge under "
+                        "the refutation view; eliminating the admit needs a native theorem/"
+                        "classical bridge."
                     )
                 elif "conjecture" in context:
                     result.append(
@@ -3540,6 +3551,7 @@ def summarize_claim_skeleton(path: Path) -> dict[str, object]:
     claim_admits = 0
     refutation_implication_admits = 0
     refutation_boundary_admits = 0
+    negated_conjecture_admits = 0
     conjecture_anchor_admits = 0
     false_admits = 0
     constructive_admits = 0
@@ -3559,19 +3571,22 @@ def summarize_claim_skeleton(path: Path) -> dict[str, object]:
         claim_admits += 1
         claim = proposition_after_colon(lines[index - 1], "claim ")
         proposition = claim[1] if claim is not None else ""
-        if proposition == "vampire_false":
-            false_admits += 1
-        elif proposition.endswith("-> vampire_false"):
-            refutation_implication_admits += 1
-        else:
-            constructive_admits += 1
         role = preceding_vampire_role(index)
+        is_negated_conjecture = role is not None and "negated_conjecture" in role
         if role is not None:
             admitted_roles[role] = admitted_roles.get(role, 0) + 1
             if proposition.endswith("-> vampire_false") and "conjecture" in role:
                 refutation_boundary_admits += 1
-            elif "conjecture" in role:
+            elif "conjecture" in role and not is_negated_conjecture:
                 conjecture_anchor_admits += 1
+        if proposition == "vampire_false":
+            false_admits += 1
+        elif proposition.endswith("-> vampire_false"):
+            refutation_implication_admits += 1
+        elif is_negated_conjecture:
+            negated_conjecture_admits += 1
+        else:
+            constructive_admits += 1
     return {
         "file": str(path),
         "problem": header.get("problem"),
@@ -3586,6 +3601,7 @@ def summarize_claim_skeleton(path: Path) -> dict[str, object]:
         "constructive_claim_admits": constructive_admits,
         "refutation_implication_admits": refutation_implication_admits,
         "refutation_boundary_admits": refutation_boundary_admits,
+        "negated_conjecture_admits": negated_conjecture_admits,
         "conjecture_anchor_admits": conjecture_anchor_admits,
         "false_claim_admits": false_admits,
         "admitted_vampire_roles": admitted_roles,
@@ -3603,6 +3619,7 @@ def write_claim_skeleton_summary(index: Path, rows: list[dict[str, object]]) -> 
         "constructive_claim_admits": sum(int(row["constructive_claim_admits"]) for row in rows),
         "refutation_implication_admits": sum(int(row["refutation_implication_admits"]) for row in rows),
         "refutation_boundary_admits": sum(int(row.get("refutation_boundary_admits", 0)) for row in rows),
+        "negated_conjecture_admits": sum(int(row.get("negated_conjecture_admits", 0)) for row in rows),
         "conjecture_anchor_admits": sum(int(row.get("conjecture_anchor_admits", 0)) for row in rows),
         "false_claim_admits": sum(int(row["false_claim_admits"]) for row in rows),
         "final_admits": sum(int(row["final_admits"]) for row in rows),
