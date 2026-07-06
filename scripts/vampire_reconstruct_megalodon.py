@@ -4838,17 +4838,41 @@ def equality_rewrites_to_target(
         variables = set(rule_application_binders(rule))
         direct_subst: dict[str, Expr] = {}
         if match_expr(conclusion.args[1], target, variables, direct_subst):
-            parts = rule_application_parts(rule, direct_subst, known, known_canonical, rules, eq_facts, definitions, rule_depth - 1)
-            if parts is not None:
-                source = normalize_defined_expr(substitute_expr(conclusion.args[0], direct_subst), definitions)
-                found.append((source, rule_application_text(parts)))
+            for candidate_subst in completed_rule_substs(rule, direct_subst, known, eq_facts, limit=8):
+                if not all(binder in candidate_subst for binder in rule_application_binders(rule)):
+                    continue
+                parts = rule_application_parts(
+                    rule,
+                    candidate_subst,
+                    known,
+                    known_canonical,
+                    rules,
+                    eq_facts,
+                    definitions,
+                    rule_depth - 1,
+                )
+                if parts is not None:
+                    source = normalize_defined_expr(substitute_expr(conclusion.args[0], candidate_subst), definitions)
+                    found.append((source, rule_application_text(parts)))
         reverse_subst: dict[str, Expr] = {}
         if match_expr(conclusion.args[0], target, variables, reverse_subst):
-            parts = rule_application_parts(rule, reverse_subst, known, known_canonical, rules, eq_facts, definitions, rule_depth - 1)
-            if parts is not None:
-                source = normalize_defined_expr(substitute_expr(conclusion.args[1], reverse_subst), definitions)
-                proof = rule_application_text(parts)
-                found.append((source, eq_symmetry_proof(proof, target)))
+            for candidate_subst in completed_rule_substs(rule, reverse_subst, known, eq_facts, limit=8):
+                if not all(binder in candidate_subst for binder in rule_application_binders(rule)):
+                    continue
+                parts = rule_application_parts(
+                    rule,
+                    candidate_subst,
+                    known,
+                    known_canonical,
+                    rules,
+                    eq_facts,
+                    definitions,
+                    rule_depth - 1,
+                )
+                if parts is not None:
+                    source = normalize_defined_expr(substitute_expr(conclusion.args[1], candidate_subst), definitions)
+                    proof = rule_application_text(parts)
+                    found.append((source, eq_symmetry_proof(proof, target)))
     return found
 
 
