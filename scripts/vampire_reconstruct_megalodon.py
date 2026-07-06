@@ -11816,7 +11816,13 @@ def raw_tptp_one_parent_transform_proof(
 def raw_eq_symmetry_proof(proof: str, left: Expr, sort: str) -> str:
     left_text = expr_text(left)
     name = fresh_identifier("zz", left_text, sort)
-    return f"({proof_head(proof)} (fun {name}:{sort} => {name} = {left_text}) (fun R Hr => Hr))"
+    if sort == "set":
+        predicate = f"vampire_eq_set {name} {proof_arg_text(left)}"
+    elif sort == "prop":
+        predicate = f"vampire_eq_prop {name} {proof_arg_text(left)}"
+    else:
+        predicate = f"{name} = {left_text}"
+    return f"({proof_head(proof)} (fun {name}:{sort} => {predicate}) (fun R Hr => Hr))"
 
 
 def raw_equality_transport_sort(left: Expr, right: Expr, variable_sorts: dict[str, str]) -> str:
@@ -11882,8 +11888,8 @@ def raw_tptp_forward_demodulation_proof(
     target = parse_expr(proposition)
     if first is None or second is None or target is None:
         return None
-    first_sides = (first.args[0], first.args[1]) if first.kind == "eq" else None
-    second_sides = (second.args[0], second.args[1]) if second.kind == "eq" else None
+    first_sides = equality_like_sides(first)
+    second_sides = equality_like_sides(second)
     first_name = raw_tptp_claim_name(parents[0])
     second_name = raw_tptp_claim_name(parents[1])
     if second_sides is not None:
@@ -11910,6 +11916,49 @@ def raw_tptp_forward_demodulation_proof(
             first_name,
             equality_sort,
         )
+    return None
+
+
+def raw_tptp_parent_equality_rewrite_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parents) < 2:
+        return None
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    parent_exprs: list[tuple[str, Expr, str]] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        if parent_proposition is None:
+            continue
+        parent_expr = parse_expr(parent_proposition)
+        if parent_expr is not None:
+            parent_exprs.append((parent, parent_expr, raw_tptp_claim_name(parent)))
+    for source_name, source, source_proof in parent_exprs:
+        if not raw_clause_replay_budget_ok(source, target, max_literals=16, max_literal_product=256):
+            continue
+        for equality_name, equality, equality_proof in parent_exprs:
+            if equality_name == source_name:
+                continue
+            equality_sides = equality_like_sides(equality)
+            if equality_sides is None:
+                continue
+            equality_sort = raw_equality_transport_sort(equality_sides[0], equality_sides[1], variable_sorts)
+            proof = raw_equality_rewrite_clause_proof(
+                source,
+                target,
+                source_proof,
+                equality_sides[0],
+                equality_sides[1],
+                equality_proof,
+                equality_sort,
+            )
+            if proof is not None:
+                return proof
     return None
 
 
@@ -12226,6 +12275,10 @@ def raw_tptp_replay_proof(
         return raw_tptp_trivial_inequality_removal_proof(proposition, parents, propositions_by_name)
     if rule == "avatar_sat_refutation":
         return raw_tptp_one_parent_transform_proof(proposition, parents, propositions_by_name)
+    if rule in {"definition_folding", "definition_unfolding"}:
+        proof = raw_tptp_parent_equality_rewrite_proof(proposition, parents, propositions_by_name, variable_sorts)
+        if proof is not None:
+            return proof
     if rule in {
         "rectify",
         "fool_elimination",
