@@ -10997,6 +10997,14 @@ def raw_tptp_claim_name(name: str) -> str:
     return f"R_{sanitized}"
 
 
+@dataclass(frozen=True)
+class RawSplitRewrite:
+    split: Expr
+    component: Expr
+    split_to_component: str
+    component_to_split: str
+
+
 def infer_missing_raw_tptp_sorts(expr: Expr, variables: dict[str, str], local_sorts: dict[str, str], expected: str | None = None) -> None:
     if expr.kind == "var" and expr.value is not None:
         if expr.value not in variables and expr.value not in local_sorts and expected in {"set", "prop"}:
@@ -11061,7 +11069,34 @@ def raw_false_literal_elimination_proof(branch: Expr, target: Expr, branch_proof
     return f"(({proof_head(branch_proof)} {proof_argument_text(premise_proof)}) {proof_arg_text(target)})"
 
 
-def raw_or_intro_from_branch(target: Expr, branch: Expr, branch_proof: str, depth: int = 0) -> str | None:
+def raw_split_rewrite_proof(source: Expr, target: Expr, source_proof: str, rewrites: tuple[RawSplitRewrite, ...]) -> str | None:
+    for rewrite in rewrites:
+        if expr_key(source) == expr_key(rewrite.component) and expr_key(target) == expr_key(rewrite.split):
+            return f"({proof_head(rewrite.component_to_split)} {proof_term_text(source_proof)})"
+
+        source_premises, source_conclusion = split_arrows(source)
+        target_premises, target_conclusion = split_arrows(target)
+        if (
+            len(source_premises) == 1
+            and len(target_premises) == 1
+            and false_eliminator_expr(source_conclusion)
+            and false_eliminator_expr(target_conclusion)
+            and expr_key(source_premises[0]) == expr_key(rewrite.component)
+            and expr_key(target_premises[0]) == expr_key(rewrite.split)
+        ):
+            split_name = fresh_identifier("Hsplit", expr_text(source), expr_text(target), source_proof)
+            component_proof = f"({proof_head(rewrite.split_to_component)} {split_name})"
+            return f"(fun {split_name} => {proof_head(source_proof)} {component_proof})"
+    return None
+
+
+def raw_or_intro_from_branch(
+    target: Expr,
+    branch: Expr,
+    branch_proof: str,
+    depth: int = 0,
+    rewrites: tuple[RawSplitRewrite, ...] = (),
+) -> str | None:
     if depth > 16:
         return None
     parts = app_args(target, "vampire_or", 2)
@@ -11072,30 +11107,39 @@ def raw_or_intro_from_branch(target: Expr, branch: Expr, branch_proof: str, dept
         return f"(fun P Hleft Hright => Hleft {proof_term_text(branch_proof)})"
     if expr_key(branch) == expr_key(right):
         return f"(fun P Hleft Hright => Hright {proof_term_text(branch_proof)})"
-    transformed_left = raw_clause_transform_proof(branch, left, branch_proof, depth + 1)
+    transformed_left = raw_clause_transform_proof(branch, left, branch_proof, depth + 1, rewrites)
     if transformed_left is not None:
         return f"(fun P Hleft Hright => Hleft {proof_term_text(transformed_left)})"
-    transformed_right = raw_clause_transform_proof(branch, right, branch_proof, depth + 1)
+    transformed_right = raw_clause_transform_proof(branch, right, branch_proof, depth + 1, rewrites)
     if transformed_right is not None:
         return f"(fun P Hleft Hright => Hright {proof_term_text(transformed_right)})"
-    nested_left = raw_or_intro_from_branch(left, branch, branch_proof, depth + 1)
+    nested_left = raw_or_intro_from_branch(left, branch, branch_proof, depth + 1, rewrites)
     if nested_left is not None:
         return f"(fun P Hleft Hright => Hleft {proof_term_text(nested_left)})"
-    nested_right = raw_or_intro_from_branch(right, branch, branch_proof, depth + 1)
+    nested_right = raw_or_intro_from_branch(right, branch, branch_proof, depth + 1, rewrites)
     if nested_right is not None:
         return f"(fun P Hleft Hright => Hright {proof_term_text(nested_right)})"
     return None
 
 
-def raw_clause_transform_proof(source: Expr, target: Expr, source_proof: str, depth: int = 0) -> str | None:
+def raw_clause_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    depth: int = 0,
+    rewrites: tuple[RawSplitRewrite, ...] = (),
+) -> str | None:
     if depth > 16:
         return None
     if expr_key(source) == expr_key(target):
         return source_proof
+    rewrite_proof = raw_split_rewrite_proof(source, target, source_proof, rewrites)
+    if rewrite_proof is not None:
+        return rewrite_proof
     false_elim = raw_false_literal_elimination_proof(source, target, source_proof)
     if false_elim is not None:
         return false_elim
-    intro = raw_or_intro_from_branch(target, source, source_proof, depth + 1)
+    intro = raw_or_intro_from_branch(target, source, source_proof, depth + 1, rewrites)
     if intro is not None:
         return intro
 
@@ -11104,7 +11148,7 @@ def raw_clause_transform_proof(source: Expr, target: Expr, source_proof: str, de
             return None
         assert source.value is not None
         inner_source_proof = f"({proof_head(source_proof)} {source.value})"
-        inner = raw_clause_transform_proof(source.args[0], target.args[0], inner_source_proof, depth + 1)
+        inner = raw_clause_transform_proof(source.args[0], target.args[0], inner_source_proof, depth + 1, rewrites)
         if inner is None:
             return None
         return f"(fun {source.value}:{source.sort} => {inner})"
@@ -11115,8 +11159,8 @@ def raw_clause_transform_proof(source: Expr, target: Expr, source_proof: str, de
     left, right = source_parts
     left_name = fresh_identifier("HL", expr_text(source), expr_text(target), source_proof)
     right_name = fresh_identifier("HR", expr_text(source), expr_text(target), left_name)
-    left_target = raw_clause_transform_proof(left, target, left_name, depth + 1)
-    right_target = raw_clause_transform_proof(right, target, right_name, depth + 1)
+    left_target = raw_clause_transform_proof(left, target, left_name, depth + 1, rewrites)
+    right_target = raw_clause_transform_proof(right, target, right_name, depth + 1, rewrites)
     if left_target is None or right_target is None:
         return None
     return f"({proof_head(source_proof)} {proof_arg_text(target)} (fun {left_name} => {left_target}) (fun {right_name} => {right_target}))"
@@ -11214,6 +11258,53 @@ def raw_tptp_avatar_component_clause_proof(
     return None
 
 
+def raw_tptp_split_rewrites(parents: list[str], propositions_by_name: dict[str, str]) -> tuple[RawSplitRewrite, ...]:
+    rewrites: list[RawSplitRewrite] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        if parent_proposition is None:
+            continue
+        parent_expr = parse_expr(parent_proposition)
+        if parent_expr is None:
+            continue
+        parts = app_args(parent_expr, "vampire_and", 2)
+        if parts is None:
+            continue
+        forward = implication_sides(parts[0])
+        backward = implication_sides(parts[1])
+        if forward is None or backward is None:
+            continue
+        split, component = forward
+        component2, split2 = backward
+        if expr_key(split) != expr_key(split2) or expr_key(component) != expr_key(component2):
+            continue
+        parent_name = raw_tptp_claim_name(parent)
+        split_to_component = f"({parent_name} {proof_arg_text(parts[0])} (fun Hforward Hback => Hforward))"
+        component_to_split = f"({parent_name} {proof_arg_text(parts[1])} (fun Hforward Hback => Hback))"
+        rewrites.append(RawSplitRewrite(split, component, split_to_component, component_to_split))
+    return tuple(rewrites)
+
+
+def raw_tptp_avatar_split_clause_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> str | None:
+    if len(parents) < 2:
+        return None
+    source_proposition = propositions_by_name.get(parents[0])
+    if source_proposition is None:
+        return None
+    source = parse_expr(source_proposition)
+    target = parse_expr(proposition)
+    if source is None or target is None:
+        return None
+    rewrites = raw_tptp_split_rewrites(parents[1:], propositions_by_name)
+    if not rewrites:
+        return None
+    return raw_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]), rewrites=rewrites)
+
+
 def raw_tptp_replay_proof(
     rule: str | None,
     proposition: str,
@@ -11224,6 +11315,8 @@ def raw_tptp_replay_proof(
         return raw_tptp_trivial_inequality_removal_proof(proposition, parents, propositions_by_name)
     if rule == "avatar_component_clause":
         return raw_tptp_avatar_component_clause_proof(proposition, parents, propositions_by_name)
+    if rule == "avatar_split_clause":
+        return raw_tptp_avatar_split_clause_proof(proposition, parents, propositions_by_name)
     return None
 
 
