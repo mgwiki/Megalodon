@@ -1063,6 +1063,8 @@ def tptp_formula_to_megalodon_proposition(text: str, variable_sorts: dict[str, s
                 body = f"vampire_exists_set (fun {name}:set => {body})"
             elif sort == "prop":
                 body = f"vampire_exists_prop (fun {name}:prop => {body})"
+            elif sort == "set->prop":
+                body = f"vampire_exists_set_prop (fun {name}:set->prop => {body})"
             else:
                 return None
         return body
@@ -1182,6 +1184,8 @@ def reconstruction_prelude_for(propositions: list[str]) -> list[str]:
         lines.append("Definition vampire_exists_set : (set->prop)->prop := fun P => forall Q:prop, (forall X:set, P X -> Q) -> Q.")
     if "vampire_exists_prop " in joined:
         lines.append("Definition vampire_exists_prop : (prop->prop)->prop := fun P => forall Q:prop, (forall X:prop, P X -> Q) -> Q.")
+    if "vampire_exists_set_prop " in joined:
+        lines.append("Definition vampire_exists_set_prop : ((set->prop)->prop)->prop := fun P => forall Q:prop, (forall X:set->prop, P X -> Q) -> Q.")
     if "vampire_eq_set " in joined:
         lines.append("Definition vampire_eq_set : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y.")
     if "vampire_eq_prop " in joined:
@@ -2795,11 +2799,16 @@ def add_missing_basic_connective_definitions(lines: list[str]) -> list[str]:
     )
     if needs_prop_exists_definition:
         helpers.append("Definition vampire_exists_prop : (prop->prop)->prop := fun P => forall Q:prop, (forall X:prop, P X -> Q) -> Q.")
+    needs_set_prop_exists_definition = "vampire_exists_set_prop " in text and not any(
+        line.startswith("Definition vampire_exists_set_prop ") for line in lines
+    )
+    if needs_set_prop_exists_definition:
+        helpers.append("Definition vampire_exists_set_prop : ((set->prop)->prop)->prop := fun P => forall Q:prop, (forall X:set->prop, P X -> Q) -> Q.")
     if "vampire_eq_set " in text and not any(line.startswith("Definition vampire_eq_set ") for line in lines):
         helpers.append("Definition vampire_eq_set : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y.")
     if "vampire_eq_prop " in text and not any(line.startswith("Definition vampire_eq_prop ") for line in lines):
         helpers.append("Definition vampire_eq_prop : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y.")
-    if not helpers and not needs_exists_definition and not needs_prop_exists_definition:
+    if not helpers and not needs_exists_definition and not needs_prop_exists_definition and not needs_set_prop_exists_definition:
         return list(lines)
     result: list[str] = []
     inserted = False
@@ -2807,6 +2816,8 @@ def add_missing_basic_connective_definitions(lines: list[str]) -> list[str]:
         if needs_exists_definition and line.startswith("Variable vampire_exists_set:"):
             continue
         if needs_prop_exists_definition and line.startswith("Variable vampire_exists_prop:"):
+            continue
+        if needs_set_prop_exists_definition and line.startswith("Variable vampire_exists_set_prop:"):
             continue
         if not inserted and (line.startswith("Axiom ") or line.startswith("Theorem ")):
             result.extend(helpers)
@@ -11167,6 +11178,7 @@ def infer_missing_raw_tptp_sorts(expr: Expr, variables: dict[str, str], local_so
                 "vampire_and": "prop->prop->prop",
                 "vampire_exists_set": "(set->prop)->prop",
                 "vampire_exists_prop": "(prop->prop)->prop",
+                "vampire_exists_set_prop": "((set->prop)->prop)->prop",
             }
             head_sort = local_sorts.get(head.value) or variables.get(head.value) or helper_sorts.get(head.value)
             if head_sort is None and expected in {"set", "prop"} and head.value not in local_sorts:
