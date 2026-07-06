@@ -893,6 +893,9 @@ def tptp_term_to_expr(text: str, variable_sorts: dict[str, str] | None = None) -
         inner_sorts.update(variables)
         body = tptp_term_to_expr(body_text, inner_sorts)
         if body is None:
+            body_proposition = tptp_formula_to_megalodon_proposition(body_text, inner_sorts)
+            body = parse_expr(body_proposition) if body_proposition is not None else None
+        if body is None:
             return None
         for name, sort in reversed(variables):
             body = Expr("lambda", value=name, sort=sort, args=(body,))
@@ -1266,12 +1269,29 @@ def sort_after_arguments(sort: str, argument_count: int) -> str | None:
 def expr_sort(expr: Expr, variable_sorts: dict[str, str]) -> str | None:
     if expr.kind == "var":
         assert expr.value is not None
-        return variable_sorts.get(expr.value)
+        helper_sorts = {
+            "vampire_true": "prop",
+            "vampire_false": "prop",
+            "vampire_eq_set": "set->set->prop",
+            "vampire_eq_prop": "prop->prop->prop",
+            "vampire_or": "prop->prop->prop",
+            "vampire_and": "prop->prop->prop",
+            "vampire_exists_set": "(set->prop)->prop",
+            "vampire_exists_prop": "(prop->prop)->prop",
+            "vampire_exists_set_prop": "((set->prop)->prop)->prop",
+        }
+        return variable_sorts.get(expr.value) or helper_sorts.get(expr.value)
     if expr.kind == "app" and expr.args:
         head_sort = expr_sort(expr.args[0], variable_sorts)
         if head_sort is None:
             return None
         return sort_after_arguments(head_sort, len(expr.args) - 1)
+    if expr.kind in {"arrow", "forall", "eq"}:
+        return "prop"
+    if expr.kind == "lambda":
+        assert expr.value is not None and expr.sort is not None
+        body_sort = expr_sort(expr.args[0], {**variable_sorts, expr.value: expr.sort})
+        return join_sort_arrows([expr.sort, body_sort]) if body_sort is not None else None
     return None
 
 
@@ -1279,18 +1299,28 @@ def is_function_value(expr: Expr, sort: str | None) -> bool:
     return expr.kind == "lambda" or (sort is not None and "->" in sort)
 
 
-def pointwise_set_equality_proposition(left: Expr, right: Expr, sort: str) -> str | None:
+def pointwise_equality_proposition(left: Expr, right: Expr, sort: str) -> str | None:
     pieces = split_sort_arrows(sort)
-    if len(pieces) < 2 or pieces[-1] != "set" or any(piece != "set" for piece in pieces[:-1]):
+    if len(pieces) < 2 or pieces[-1] not in {"set", "prop"} or any(piece not in {"set", "prop"} for piece in pieces[:-1]):
         return None
     binders = [Expr("var", value=f"X{index}") for index in range(len(pieces) - 1)]
     left_app = append_application_args(left, binders)
     right_app = append_application_args(right, binders)
-    proposition = f"vampire_eq_set {proof_arg_text(left_app)} {proof_arg_text(right_app)}"
-    for binder in reversed(binders):
+    if pieces[-1] == "set":
+        proposition = f"vampire_eq_set {proof_arg_text(left_app)} {proof_arg_text(right_app)}"
+    else:
+        proposition = f"vampire_eq_prop {proof_arg_text(left_app)} {proof_arg_text(right_app)}"
+    for binder, sort in reversed(list(zip(binders, pieces[:-1]))):
         assert binder.value is not None
-        proposition = f"forall {binder.value}:set, {proposition}"
+        proposition = f"forall {binder.value}:{sort}, {proposition}"
     return proposition
+
+
+def pointwise_set_equality_proposition(left: Expr, right: Expr, sort: str) -> str | None:
+    pieces = split_sort_arrows(sort)
+    if not pieces or pieces[-1] != "set":
+        return None
+    return pointwise_equality_proposition(left, right, sort)
 
 
 def tptp_function_equality_proposition(
@@ -1303,7 +1333,7 @@ def tptp_function_equality_proposition(
 ) -> str | None:
     if left_sort is None or right_sort is None or left_sort != right_sort:
         return None
-    proposition = pointwise_set_equality_proposition(left, right, left_sort)
+    proposition = pointwise_equality_proposition(left, right, left_sort)
     if proposition is None:
         return None
     return f"{proposition_argument_text(proposition)} -> vampire_false" if negated else proposition
