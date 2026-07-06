@@ -7871,6 +7871,163 @@ def binary_transitivity_proof(
                 if ok:
                     args = [proof_arg_text(subst[binder]) for binder in rule.binders]
                     return rule_application_text([rule.name] + args + premise_proofs)
+
+        transported_leg = binary_transitivity_transported_rule_leg_proof(
+            expr,
+            target_head,
+            target_left,
+            target_right,
+            rule,
+            known_atoms,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth,
+        )
+        if transported_leg is not None:
+            return transported_leg
+    return None
+
+
+def binary_transitivity_transported_rule_leg_proof(
+    expr: Expr,
+    target_head: str,
+    target_left: Expr,
+    target_right: Expr,
+    transitivity_rule: ProofRule,
+    known_atoms: list[tuple[str, Expr, Expr, str]],
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 1:
+        return None
+    seen_middles: set[str] = set()
+    for _, left, middle, left_proof in known_atoms:
+        if expr_key(left) != expr_key(target_left):
+            continue
+        middle_key = expr_key(middle)
+        if middle_key in {expr_key(target_left), expr_key(target_right)} or middle_key in seen_middles:
+            continue
+        seen_middles.add(middle_key)
+        if len(seen_middles) > 16:
+            break
+
+        right_relation = Expr("app", args=(Expr("var", value=target_head), middle, target_right))
+        right_relation_key = expr_key(right_relation)
+        if right_relation_key == expr_key(expr):
+            continue
+        right_proof = binary_relation_transported_rule_proof(
+            right_relation,
+            target_head,
+            middle,
+            target_right,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth - 1,
+        )
+        if right_proof is None:
+            continue
+
+        subst = {
+            transitivity_rule.binders[0]: target_left,
+            transitivity_rule.binders[1]: middle,
+            transitivity_rule.binders[2]: target_right,
+        }
+        premise_proofs: list[str] = []
+        ok = True
+        left_relation_key = expr_key(Expr("app", args=(Expr("var", value=target_head), target_left, middle)))
+        for premise in transitivity_rule.premises:
+            instantiated = substitute_expr(premise, subst)
+            instantiated_key = expr_key(instantiated)
+            if instantiated_key == left_relation_key:
+                premise_proofs.append(proof_argument_text(left_proof))
+                continue
+            if instantiated_key == right_relation_key:
+                premise_proofs.append(proof_argument_text(right_proof))
+                continue
+            premise_proof = proof_for_expr(
+                instantiated,
+                known,
+                known_canonical,
+                rules,
+                eq_facts,
+                definitions,
+                allow_rule=True,
+                rule_depth=rule_depth - 1,
+            )
+            if premise_proof is None:
+                ok = False
+                break
+            premise_proofs.append(proof_argument_text(premise_proof))
+        if ok:
+            args = [proof_arg_text(subst[binder]) for binder in transitivity_rule.binders]
+            return rule_application_text([transitivity_rule.name] + args + premise_proofs)
+    return None
+
+
+def binary_relation_transported_rule_proof(
+    target: Expr,
+    target_head: str,
+    target_left: Expr,
+    target_right: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 0:
+        return None
+    rewrite_sources = equality_rewrites_to_target(
+        target_left,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        rule_depth,
+    )
+    for source_left, equality_proof in rewrite_sources[:16]:
+        if expr_key(source_left) == expr_key(target_left):
+            continue
+        for rule_index, original_rule in enumerate(reversed(rules)):
+            rule = rename_rule_binders(original_rule, f"BT{rule_index}_")
+            conclusion = binary_atom_parts(rule_application_conclusion(rule))
+            if conclusion is None or conclusion[0] != target_head:
+                continue
+            variables = set(rule_application_binders(rule))
+            subst: dict[str, Expr] = {}
+            if not match_expr(conclusion[2], target_right, variables, subst):
+                continue
+            if not match_expr(conclusion[1], source_left, variables, subst):
+                continue
+            if not all(binder in subst for binder in rule_application_binders(rule)):
+                continue
+            parts = rule_application_parts(
+                rule,
+                subst,
+                known,
+                known_canonical,
+                rules,
+                eq_facts,
+                definitions,
+                max(0, rule_depth - 1),
+            )
+            if parts is None:
+                continue
+            source_proof = rule_application_text(parts)
+            current_args = [source_left, target_right]
+            return transport_atomic_argument_proof(target, current_args, source_proof, 0, equality_proof)
     return None
 
 
@@ -11389,6 +11546,18 @@ def proof_for_proposition(
             )
             if exists_intro_proof is not None:
                 return exists_intro_proof
+    if expr.kind == "app" and binary_atom_parts(expr) is not None and len(expr_text(expr)) <= 700:
+        transitivity_proof = binary_transitivity_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth=3,
+        )
+        if transitivity_proof is not None:
+            return transitivity_proof
     proof = proof_for_expr(expr, known, known_canonical, rules, eq_facts, definitions)
     if proof is not None:
         return proof
