@@ -11060,6 +11060,8 @@ def add_missing_raw_tptp_variables(propositions: list[str], variables: dict[str,
 
 
 def raw_false_literal_elimination_proof(branch: Expr, target: Expr, branch_proof: str) -> str | None:
+    if false_eliminator_expr(branch):
+        return f"({proof_head(branch_proof)} {proof_arg_text(target)})"
     premises, conclusion = split_arrows(branch)
     if len(premises) != 1 or not false_eliminator_expr(conclusion):
         return None
@@ -11166,6 +11168,88 @@ def raw_clause_transform_proof(
     return f"({proof_head(source_proof)} {proof_arg_text(target)} (fun {left_name} => {left_target}) (fun {right_name} => {right_target}))"
 
 
+def raw_complement_resolution_proof(
+    left: Expr,
+    left_proof: str,
+    right: Expr,
+    right_proof: str,
+    target: Expr,
+) -> str | None:
+    left_premises, left_conclusion = split_arrows(left)
+    right_premises, right_conclusion = split_arrows(right)
+    if (
+        len(left_premises) == 1
+        and false_eliminator_expr(left_conclusion)
+        and expr_key(left_premises[0]) == expr_key(right)
+    ):
+        return f"(({proof_head(left_proof)} {proof_term_text(right_proof)}) {proof_arg_text(target)})"
+    if (
+        len(right_premises) == 1
+        and false_eliminator_expr(right_conclusion)
+        and expr_key(right_premises[0]) == expr_key(left)
+    ):
+        return f"(({proof_head(right_proof)} {proof_term_text(left_proof)}) {proof_arg_text(target)})"
+    return None
+
+
+def raw_resolver_clause_to_target(
+    resolver: Expr,
+    target: Expr,
+    resolver_proof: str,
+    source_literal: Expr,
+    source_literal_proof: str,
+    depth: int = 0,
+) -> str | None:
+    if depth > 16:
+        return None
+    direct = raw_clause_transform_proof(resolver, target, resolver_proof, depth + 1)
+    if direct is not None:
+        return direct
+    complement = raw_complement_resolution_proof(source_literal, source_literal_proof, resolver, resolver_proof, target)
+    if complement is not None:
+        return complement
+    resolver_parts = app_args(resolver, "vampire_or", 2)
+    if resolver_parts is None:
+        return None
+    left, right = resolver_parts
+    left_name = fresh_identifier("HL", expr_text(resolver), expr_text(target), resolver_proof, source_literal_proof)
+    right_name = fresh_identifier("HR", expr_text(resolver), expr_text(target), left_name)
+    left_target = raw_resolver_clause_to_target(left, target, left_name, source_literal, source_literal_proof, depth + 1)
+    right_target = raw_resolver_clause_to_target(right, target, right_name, source_literal, source_literal_proof, depth + 1)
+    if left_target is None or right_target is None:
+        return None
+    return f"({proof_head(resolver_proof)} {proof_arg_text(target)} (fun {left_name} => {left_target}) (fun {right_name} => {right_target}))"
+
+
+def raw_clause_resolution_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    resolver: Expr,
+    resolver_proof: str,
+    depth: int = 0,
+) -> str | None:
+    if depth > 16:
+        return None
+    direct = raw_clause_transform_proof(source, target, source_proof, depth + 1)
+    if direct is not None:
+        return direct
+    resolved = raw_resolver_clause_to_target(resolver, target, resolver_proof, source, source_proof, depth + 1)
+    if resolved is not None:
+        return resolved
+    source_parts = app_args(source, "vampire_or", 2)
+    if source_parts is None:
+        return None
+    left, right = source_parts
+    left_name = fresh_identifier("HL", expr_text(source), expr_text(target), source_proof, resolver_proof)
+    right_name = fresh_identifier("HR", expr_text(source), expr_text(target), left_name)
+    left_target = raw_clause_resolution_proof(left, target, left_name, resolver, resolver_proof, depth + 1)
+    right_target = raw_clause_resolution_proof(right, target, right_name, resolver, resolver_proof, depth + 1)
+    if left_target is None or right_target is None:
+        return None
+    return f"({proof_head(source_proof)} {proof_arg_text(target)} (fun {left_name} => {left_target}) (fun {right_name} => {right_target}))"
+
+
 def raw_tptp_trivial_inequality_removal_proof(
     proposition: str,
     parents: list[str],
@@ -11181,6 +11265,30 @@ def raw_tptp_trivial_inequality_removal_proof(
     if source is None or target is None:
         return None
     return raw_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
+
+
+def raw_tptp_forward_subsumption_resolution_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> str | None:
+    if len(parents) != 2:
+        return None
+    first_proposition = propositions_by_name.get(parents[0])
+    second_proposition = propositions_by_name.get(parents[1])
+    if first_proposition is None or second_proposition is None:
+        return None
+    first = parse_expr(first_proposition)
+    second = parse_expr(second_proposition)
+    target = parse_expr(proposition)
+    if first is None or second is None or target is None:
+        return None
+    first_name = raw_tptp_claim_name(parents[0])
+    second_name = raw_tptp_claim_name(parents[1])
+    proof = raw_clause_resolution_proof(first, target, first_name, second, second_name)
+    if proof is not None:
+        return proof
+    return raw_clause_resolution_proof(second, target, second_name, first, first_name)
 
 
 def implication_sides(expr: Expr) -> tuple[Expr, Expr] | None:
@@ -11320,8 +11428,10 @@ def raw_tptp_replay_proof(
     parents: list[str],
     propositions_by_name: dict[str, str],
 ) -> str | None:
-    if rule in {"trivial_inequality_removal", "duplicate_literal_removal"}:
+    if rule in {"trivial_inequality_removal", "duplicate_literal_removal", "avatar_contradiction_clause"}:
         return raw_tptp_trivial_inequality_removal_proof(proposition, parents, propositions_by_name)
+    if rule == "forward_subsumption_resolution":
+        return raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name)
     if rule == "avatar_component_clause":
         return raw_tptp_avatar_component_clause_proof(proposition, parents, propositions_by_name)
     if rule == "avatar_split_clause":
