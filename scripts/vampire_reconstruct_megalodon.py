@@ -10974,6 +10974,14 @@ def tptp_inference_rule(annotations: list[str]) -> str | None:
     return match.group(1) if match else None
 
 
+def tptp_inference_parents(annotations: list[str]) -> list[str]:
+    text = ",".join(annotations)
+    match = re.search(r"\binference\([^,]+,\[[^\]]*\],\[(?P<parents>[^\]]*)\]", text)
+    if match is None:
+        return []
+    return re.findall(r"[_A-Za-z][_A-Za-z0-9']*", match.group("parents"))
+
+
 def tptp_formula_source_name(annotations: list[str]) -> str | None:
     text = ",".join(annotations)
     match = re.search(r"\bfile\([^,]+,\s*([^)]+)\)", text)
@@ -11046,7 +11054,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     text = proof.read_text(encoding="utf-8", errors="replace")
     declarations = collect_tptp_declarations(text)
     variable_sorts = raw_tptp_type_variables(declarations)
-    entries: list[tuple[str, str, str, str | None, str | None, str | None]] = []
+    entries: list[tuple[str, str, str, str | None, str | None, str | None, list[str]]] = []
     propositions: list[str] = []
     for declaration in declarations:
         parsed = tptp_decl_formula_parts(declaration)
@@ -11057,30 +11065,31 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             continue
         proposition = tptp_formula_to_megalodon_proposition(formula, variable_sorts)
         rule = tptp_inference_rule(annotations)
+        parents = tptp_inference_parents(annotations)
         source_name = tptp_formula_source_name(annotations)
         if proposition is None:
-            entries.append((name, role, formula, None, rule, source_name))
+            entries.append((name, role, formula, None, rule, source_name, parents))
             continue
-        entries.append((name, role, formula, proposition, rule, source_name))
+        entries.append((name, role, formula, proposition, rule, source_name, parents))
         propositions.append(proposition)
     add_missing_raw_tptp_variables(propositions, variable_sorts)
 
-    decoded_entries: list[tuple[str, str, str, str | None, str | None]] = []
+    decoded_entries: list[tuple[str, str, str, str | None, str | None, list[str]]] = []
     decoded_propositions: list[str] = []
     unsupported = 0
-    for name, role, formula, _, rule, source_name in entries:
+    for name, role, formula, _, rule, source_name, parents in entries:
         proposition = tptp_formula_to_megalodon_proposition(formula, variable_sorts)
         if proposition is None:
             unsupported += 1
         else:
             decoded_propositions.append(proposition)
-        decoded_entries.append((name, role, proposition or "", rule, source_name))
+        decoded_entries.append((name, role, proposition or "", rule, source_name, parents))
     entries = decoded_entries
     propositions = decoded_propositions
 
     final_name = None
     final_proposition = "vampire_false"
-    for name, _, proposition, _, _ in reversed(entries):
+    for name, _, proposition, _, _, _ in reversed(entries):
         if proposition:
             final_name = raw_tptp_claim_name(name)
             final_proposition = proposition
@@ -11104,7 +11113,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         lines.append(f"Variable {name}:{sort}.")
 
     seen_claims: set[str] = set()
-    for name, role, proposition, rule, source_name in entries:
+    for name, role, proposition, rule, source_name, parents in entries:
         claim_name = raw_tptp_claim_name(name)
         if claim_name in seen_claims:
             continue
@@ -11112,10 +11121,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if role not in {"axiom", "definition"}:
             continue
         rule_text = rule or "input"
+        parent_text = f", parents {' '.join(parents)}" if parents else ""
         if source_name:
-            lines.append(f"// raw vampire node {name}: {role}, {rule_text}, source {source_name}")
+            lines.append(f"// raw vampire node {name}: {role}, {rule_text}{parent_text}, source {source_name}")
         else:
-            lines.append(f"// raw vampire node {name}: {role}, {rule_text}")
+            lines.append(f"// raw vampire node {name}: {role}, {rule_text}{parent_text}")
         if not proposition:
             lines.append(f"// unsupported raw vampire formula {name}.")
             continue
@@ -11125,7 +11135,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     lines.append(f"Theorem {theorem_name}: {final_proposition}.")
 
     seen_theorem_claims: set[str] = set()
-    for name, role, proposition, rule, source_name in entries:
+    for name, role, proposition, rule, source_name, parents in entries:
         claim_name = raw_tptp_claim_name(name)
         if claim_name in seen_theorem_claims:
             continue
@@ -11133,10 +11143,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if role in {"axiom", "definition"}:
             continue
         rule_text = rule or "input"
+        parent_text = f", parents {' '.join(parents)}" if parents else ""
         if source_name:
-            lines.append(f"// raw vampire node {name}: {role}, {rule_text}, source {source_name}")
+            lines.append(f"// raw vampire node {name}: {role}, {rule_text}{parent_text}, source {source_name}")
         else:
-            lines.append(f"// raw vampire node {name}: {role}, {rule_text}")
+            lines.append(f"// raw vampire node {name}: {role}, {rule_text}{parent_text}")
         if not proposition:
             lines.append(f"// unsupported raw vampire formula {name}.")
             continue
