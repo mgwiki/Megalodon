@@ -11338,6 +11338,77 @@ def raw_tptp_forward_subsumption_resolution_proof(
     return raw_clause_resolution_proof(second, target, second_name, first, first_name)
 
 
+def raw_negative_equality_instantiations(body: Expr, binder_names: set[str]) -> list[tuple[str, Expr]]:
+    instantiations: list[tuple[str, Expr]] = []
+    for literal in raw_clause_literals(body):
+        premises, conclusion = split_arrows(literal)
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
+            continue
+        sides = equality_like_sides(premises[0])
+        if sides is None:
+            continue
+        left, right = sides
+        if left.kind == "var" and left.value in binder_names:
+            instantiations.append((left.value, right))
+        if right.kind == "var" and right.value in binder_names:
+            instantiations.append((right.value, left))
+    return instantiations
+
+
+def raw_tptp_equality_resolution_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> str | None:
+    if len(parents) != 1:
+        return None
+    parent_proposition = propositions_by_name.get(parents[0])
+    if parent_proposition is None:
+        return None
+    parent = parse_expr(parent_proposition)
+    target = parse_expr(proposition)
+    if parent is None or target is None:
+        return None
+    parent_binders, parent_body = collect_foralls(parent)
+    target_binders, target_body = collect_foralls(target)
+    if len(target_binders) + 1 != len(parent_binders):
+        return None
+    parent_binder_names = {name for name, _ in parent_binders}
+    for eliminated, replacement in raw_negative_equality_instantiations(parent_body, parent_binder_names):
+        remaining = [(name, sort) for name, sort in parent_binders if name != eliminated]
+        if len(remaining) != len(target_binders):
+            continue
+        if any(parent_sort != target_sort for (_, parent_sort), (_, target_sort) in zip(remaining, target_binders)):
+            continue
+        binder_subst = {
+            parent_name: Expr("var", value=target_name)
+            for (parent_name, _), (target_name, _) in zip(remaining, target_binders)
+        }
+        instantiated_replacement = substitute_expr(replacement, binder_subst)
+        subst = dict(binder_subst)
+        subst[eliminated] = instantiated_replacement
+        instantiated_parent_body = substitute_expr(parent_body, subst)
+        if not raw_clause_replay_budget_ok(instantiated_parent_body, target_body, max_literals=12, max_literal_product=96):
+            continue
+        parent_args: list[str] = []
+        for parent_name, _ in parent_binders:
+            if parent_name == eliminated:
+                parent_args.append(proof_arg_text(instantiated_replacement))
+            else:
+                mapped = subst.get(parent_name)
+                parent_args.append(proof_arg_text(mapped) if mapped is not None else parent_name)
+        source_proof = raw_tptp_claim_name(parents[0])
+        for arg in parent_args:
+            source_proof = f"({proof_head(source_proof)} {arg})"
+        body_proof = raw_clause_transform_proof(instantiated_parent_body, target_body, source_proof)
+        if body_proof is None:
+            continue
+        for name, sort in reversed(target_binders):
+            body_proof = f"(fun {name}:{sort} => {body_proof})"
+        return body_proof
+    return None
+
+
 def implication_sides(expr: Expr) -> tuple[Expr, Expr] | None:
     premises, conclusion = split_arrows(expr)
     if len(premises) != 1:
@@ -11491,6 +11562,8 @@ def raw_tptp_replay_proof(
         return raw_tptp_trivial_inequality_removal_proof(proposition, parents, propositions_by_name)
     if rule == "forward_subsumption_resolution":
         return raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name)
+    if rule == "equality_resolution":
+        return raw_tptp_equality_resolution_proof(proposition, parents, propositions_by_name)
     if rule == "avatar_component_clause":
         return raw_tptp_avatar_component_clause_proof(proposition, parents, propositions_by_name)
     if rule == "avatar_split_clause":
