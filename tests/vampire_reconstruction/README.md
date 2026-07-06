@@ -163,7 +163,10 @@ arguments.  For atomic propositions, it can transport a known atom across
 proved argument equalities, and it can rewrite one target argument across an
 equality before applying a bounded nested rule chain.  For quantified or
 implicational claims, it can introduce the binders/premises and then run the
-same proof search on the resulting body.
+same proof search on the resulting body.  Once the skeleton has derived
+`vampire_false`, later bookkeeping claims are filled by ex-falso; this keeps
+the human-facing outline focused on the first unproved contradiction edge
+rather than on every downstream Vampire cleanup step.
 
 The Vampire backend can render claim skeletons containing THF lambda terms,
 formula-valued function arguments, negation, disjunction, conjunction, and
@@ -195,6 +198,43 @@ TMPDIR=/project/tmp python3 scripts/vampire_reconstruct_megalodon.py \
 That check validates 100 recorded Vampire proof outputs and 100 generated
 Megalodon claim skeletons with `-allowincompleteqed`; in the current run the
 index reports no final theorem admits.
+
+The larger current regression corpus for `examples/hammer/100thms_12_h.mg`
+was collected in bulk from generated TH0 problems with a 10-second Vampire
+timeout and 20 workers:
+
+```sh
+TMPDIR=/project/tmp python3 scripts/vampire_reconstruct_megalodon.py \
+  --source examples/hammer/100thms_12_h.mg \
+  --work-dir /project/tmp/megalodon_large_hammer_150 \
+  --select-all-generated \
+  --collect-successes \
+  --reuse-existing-proofs \
+  --limit 800 \
+  --timeout 10 \
+  --jobs 20 \
+  --progress 200 \
+  --proof-mode megalodon \
+  --vampire /path/to/vampire-with-megalodon-proof-output \
+  --require-claim-skeletons
+```
+
+The corresponding cached regression, which does not rerun Vampire, is:
+
+```sh
+TMPDIR=/project/tmp python3 scripts/vampire_reconstruct_megalodon.py \
+  --check-existing /project/tmp/megalodon_large_hammer_150/manifest.jsonl \
+  --jobs 20 \
+  --check-claim-skeletons \
+  --require-claim-skeletons \
+  --claim-skeleton-dir /project/tmp/megalodon_large_hammer_800_exfalso_reflexive_mg
+```
+
+At the time this note was written it checked 800 recorded Vampire proof
+outputs and 800 Megalodon claim skeletons.  The generated skeleton index
+reported 8,222 claims, 6,774 filled claims, 860 remaining claim admits, zero
+final theorem admits, and zero admitted `vampire_false` claims.  All 800
+skeletons had at most four remaining claim admits, and 799 had at most two.
 
 For development iterations, avoid rediscovering solvable problems.  First keep
 one manifest of Vampire-solvable TH0 files, then rerun only those files with
