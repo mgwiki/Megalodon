@@ -11534,6 +11534,76 @@ def raw_forall_clause_transform_proof(
     return body_proof
 
 
+def raw_small_forall_permutation_clause_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rewrites: tuple[RawSplitRewrite, ...] = (),
+) -> str | None:
+    if proof_search_timed_out() or len(expr_text(source)) + len(expr_text(target)) > 1600:
+        return None
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if not source_binders or len(source_binders) != len(target_binders) or len(source_binders) > 4:
+        return None
+    source_literals = raw_clause_literals(source_body)
+    target_literals = raw_clause_literals(target_body)
+    if len(source_literals) > 4 or len(target_literals) > 4:
+        return None
+    target_by_sort: dict[str, list[str]] = {}
+    for target_name, target_sort in target_binders:
+        target_by_sort.setdefault(target_sort, []).append(target_name)
+
+    def candidates(source_name: str, source_sort: str) -> list[str]:
+        names = list(target_by_sort.get(source_sort, ()))
+        names.sort(key=lambda name: (0 if name == source_name else 1, name))
+        return names
+
+    def search(index: int, used: set[str], subst: dict[str, Expr]) -> str | None:
+        if proof_search_timed_out():
+            return None
+        if index >= len(source_binders):
+            proof = source_proof
+            for source_name, _ in source_binders:
+                proof = f"({proof_head(proof)} {proof_arg_text(subst[source_name])})"
+            instantiated = substitute_expr(source_body, subst)
+            body_proof = raw_clause_transform_proof(instantiated, target_body, proof, rewrites=rewrites)
+            if body_proof is None:
+                return None
+            for target_name, target_sort in reversed(target_binders):
+                body_proof = f"(fun {target_name}:{target_sort} => {body_proof})"
+            return body_proof
+        source_name, source_sort = source_binders[index]
+        for target_name in candidates(source_name, source_sort):
+            if target_name in used:
+                continue
+            subst[source_name] = Expr("var", value=target_name)
+            found = search(index + 1, used | {target_name}, subst)
+            if found is not None:
+                return found
+            del subst[source_name]
+        return None
+
+    return search(0, set(), {})
+
+
+def raw_tptp_small_forall_permutation_transform_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> str | None:
+    if len(parents) != 1:
+        return None
+    parent_proposition = propositions_by_name.get(parents[0])
+    if parent_proposition is None:
+        return None
+    source = parse_expr(parent_proposition)
+    target = parse_expr(proposition)
+    if source is None or target is None:
+        return None
+    return raw_small_forall_permutation_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
+
+
 def raw_clause_transform_proof(
     source: Expr,
     target: Expr,
@@ -12790,13 +12860,18 @@ def raw_tptp_replay_proof(
         "cnf_transformation",
         "skolemisation",
     }:
-        return raw_tptp_one_parent_transform_proof(
+        proof = raw_tptp_one_parent_transform_proof(
             proposition,
             parents,
             propositions_by_name,
             max_literals=12,
             max_literal_product=96,
         )
+        if proof is not None:
+            return proof
+        if rule == "cnf_transformation":
+            return raw_tptp_small_forall_permutation_transform_proof(proposition, parents, propositions_by_name)
+        return None
     if rule in {"forward_subsumption_resolution", "unit_resulting_resolution"}:
         return raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name)
     if rule == "forward_demodulation":
