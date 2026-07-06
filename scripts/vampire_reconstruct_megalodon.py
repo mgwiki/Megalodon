@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import functools
 import hashlib
 import json
 import os
@@ -45,6 +46,7 @@ DEFINITION_RE = re.compile(r"^Definition (?P<name>[_A-Za-z][_A-Za-z0-9']*) : (?P
 THF_TYPE_RE = re.compile(r"^thf\([^,]+,\s*type,\s*\((?P<name>[^:\s]+)\s*:\s*(?P<sort>.*?)\)\)\.", re.DOTALL)
 PROOF_SEARCH_STATE = threading.local()
 PROOF_SEARCH_SECONDS = float(os.environ.get("MEGALODON_PROOF_SEARCH_SECONDS", "45"))
+RAW_TPTP_REPLAY_SECONDS = float(os.environ.get("MEGALODON_RAW_TPTP_REPLAY_SECONDS", "0.30"))
 PROOF_SEARCH_CLOCK = getattr(time, "thread_time", time.monotonic)
 
 
@@ -1681,6 +1683,7 @@ class ExprParser:
         return Expr("lambda", value=name, sort="".join(sort_tokens), args=(self.parse_arrow(),))
 
 
+@functools.lru_cache(maxsize=100_000)
 def parse_expr(text: str) -> Expr | None:
     try:
         return ExprParser(text).parse()
@@ -1773,8 +1776,17 @@ def match_expr(pattern: Expr, target: Expr, variables: set[str], subst: dict[str
     return all(match_expr(left, right, variables, subst) for left, right in zip(pattern.args, target.args))
 
 
+@functools.lru_cache(maxsize=200_000)
+def alpha_expr_key(expr: Expr) -> str:
+    return canonical_expr_text(expr, {}, [0])
+
+
 def alpha_equivalent(left: Expr, right: Expr) -> bool:
-    return canonical_expr_text(left, {}, [0]) == canonical_expr_text(right, {}, [0])
+    return alpha_expr_key(left) == alpha_expr_key(right)
+
+
+def expr_same_mod_alpha(left: Expr, right: Expr) -> bool:
+    return expr_key(left) == expr_key(right) or alpha_equivalent(left, right)
 
 
 def equality_like_sides(expr: Expr) -> tuple[Expr, Expr] | None:
@@ -11115,7 +11127,7 @@ def raw_or_intro_from_branch(
     depth: int = 0,
     rewrites: tuple[RawSplitRewrite, ...] = (),
 ) -> str | None:
-    if depth > 16:
+    if depth > 16 or proof_search_timed_out():
         return None
     parts = app_args(target, "vampire_or", 2)
     if parts is None:
@@ -11147,7 +11159,7 @@ def raw_clause_transform_proof(
     depth: int = 0,
     rewrites: tuple[RawSplitRewrite, ...] = (),
 ) -> str | None:
-    if depth > 16:
+    if depth > 16 or proof_search_timed_out():
         return None
     if expr_key(source) == expr_key(target):
         return source_proof
@@ -11253,7 +11265,7 @@ def raw_resolver_clause_to_target(
     source_literal_proof: str,
     depth: int = 0,
 ) -> str | None:
-    if depth > 16:
+    if depth > 16 or proof_search_timed_out():
         return None
     direct = raw_clause_transform_proof(resolver, target, resolver_proof, depth + 1)
     if direct is not None:
@@ -11282,7 +11294,7 @@ def raw_clause_resolution_proof(
     resolver_proof: str,
     depth: int = 0,
 ) -> str | None:
-    if depth > 16:
+    if depth > 16 or proof_search_timed_out():
         return None
     direct = raw_clause_transform_proof(source, target, source_proof, depth + 1)
     if direct is not None:
@@ -11318,6 +11330,30 @@ def raw_tptp_trivial_inequality_removal_proof(
     if source is None or target is None:
         return None
     if not raw_clause_replay_budget_ok(source, target):
+        return None
+    return raw_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
+
+
+def raw_tptp_one_parent_transform_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    *,
+    max_literals: int = 10,
+    max_literal_product: int = 64,
+) -> str | None:
+    if len(parents) != 1:
+        return None
+    parent_proposition = propositions_by_name.get(parents[0])
+    if parent_proposition is None:
+        return None
+    source = parse_expr(parent_proposition)
+    target = parse_expr(proposition)
+    if source is None or target is None:
+        return None
+    if expr_same_mod_alpha(source, target):
+        return raw_tptp_claim_name(parents[0])
+    if not raw_clause_replay_budget_ok(source, target, max_literals=max_literals, max_literal_product=max_literal_product):
         return None
     return raw_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
 
@@ -11572,6 +11608,22 @@ def raw_tptp_replay_proof(
         "rat",
     }:
         return raw_tptp_trivial_inequality_removal_proof(proposition, parents, propositions_by_name)
+    if rule in {
+        "rectify",
+        "fool_elimination",
+        "flattening",
+        "ennf_transformation",
+        "nnf_transformation",
+        "cnf_transformation",
+        "skolemisation",
+    }:
+        return raw_tptp_one_parent_transform_proof(
+            proposition,
+            parents,
+            propositions_by_name,
+            max_literals=12,
+            max_literal_product=96,
+        )
     if rule == "forward_subsumption_resolution":
         return raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name)
     if rule == "equality_resolution":
@@ -11685,7 +11737,16 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if not proposition:
             lines.append(f"// unsupported raw vampire formula {name}.")
             continue
-        replay_proof = raw_tptp_replay_proof(rule, proposition, parents, propositions_by_name)
+        previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+        PROOF_SEARCH_STATE.deadline = proof_search_now() + RAW_TPTP_REPLAY_SECONDS
+        try:
+            replay_proof = raw_tptp_replay_proof(rule, proposition, parents, propositions_by_name)
+        finally:
+            if previous_deadline is None:
+                if hasattr(PROOF_SEARCH_STATE, "deadline"):
+                    delattr(PROOF_SEARCH_STATE, "deadline")
+            else:
+                PROOF_SEARCH_STATE.deadline = previous_deadline
         lines.append(f"claim {claim_name}: {proposition}.")
         if replay_proof is None:
             lines.append("{ admit. }")
