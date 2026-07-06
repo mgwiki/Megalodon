@@ -11457,9 +11457,44 @@ def raw_clause_replay_budget_ok(*exprs: Expr, max_literals: int = 10, max_litera
     return product <= max_literal_product
 
 
-def raw_simple_clause_transform_proof(source: Expr, target: Expr, source_proof: str) -> str | None:
+def raw_simple_or_intro_from_branch(
+    target: Expr,
+    branch: Expr,
+    branch_proof: str,
+    depth: int,
+) -> str | None:
+    if depth > 16:
+        return None
+    parts = app_args(target, "vampire_or", 2)
+    if parts is None:
+        return raw_simple_clause_transform_proof(branch, target, branch_proof, depth + 1)
+    left, right = parts
+    left_proof = raw_simple_clause_transform_proof(branch, left, branch_proof, depth + 1)
+    if left_proof is not None:
+        return f"(fun P Hleft Hright => Hleft {proof_term_text(left_proof)})"
+    right_proof = raw_simple_clause_transform_proof(branch, right, branch_proof, depth + 1)
+    if right_proof is not None:
+        return f"(fun P Hleft Hright => Hright {proof_term_text(right_proof)})"
+    return None
+
+
+def raw_simple_clause_transform_proof(source: Expr, target: Expr, source_proof: str, depth: int = 0) -> str | None:
+    if depth > 16:
+        return None
     if expr_same_mod_alpha(source, target):
         return source_proof
+    if false_eliminator_expr(source):
+        return f"({proof_head(source_proof)} {proof_arg_text(target)})"
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
+        assert source.value is not None and target.value is not None and source.sort is not None
+        target_body = target.args[0]
+        if source.value != target.value:
+            target_body = rename_expr_variables(target_body, {target.value: source.value})
+        inner_source_proof = f"({proof_head(source_proof)} {source.value})"
+        inner = raw_simple_clause_transform_proof(source.args[0], target_body, inner_source_proof, depth + 1)
+        if inner is None:
+            return None
+        return f"(fun {source.value}:{source.sort} => {inner})"
     parts = app_args(source, "vampire_or", 2)
     if parts is None:
         return None
@@ -11469,7 +11504,13 @@ def raw_simple_clause_transform_proof(source: Expr, target: Expr, source_proof: 
         return f"({proof_head(source_proof)} {target_text} (fun HL => HL {target_text}) (fun HR => HR))"
     if false_eliminator_expr(right) and expr_same_mod_alpha(left, target):
         return f"({proof_head(source_proof)} {target_text} (fun HL => HL) (fun HR => HR {target_text}))"
-    return None
+    left_name = fresh_identifier("HL", expr_text(source), expr_text(target), source_proof)
+    right_name = fresh_identifier("HR", expr_text(source), expr_text(target), source_proof, left_name)
+    left_target = raw_simple_or_intro_from_branch(target, left, left_name, depth + 1)
+    right_target = raw_simple_or_intro_from_branch(target, right, right_name, depth + 1)
+    if left_target is None or right_target is None:
+        return None
+    return f"({proof_head(source_proof)} {target_text} (fun {left_name} => {left_target}) (fun {right_name} => {right_target}))"
 
 
 def raw_complementary_literals(left: Expr, right: Expr) -> bool:
