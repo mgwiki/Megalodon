@@ -1007,6 +1007,43 @@ def parse_tptp_quantifier(text: str) -> tuple[str, list[tuple[str, str]], str] |
     return quantifier, variables, rest[1:].strip()
 
 
+def tptp_bool_constant(text: str) -> bool | None:
+    stripped = strip_balanced_parens(text)
+    if stripped == "$true":
+        return True
+    if stripped == "$false":
+        return False
+    return None
+
+
+def tptp_boolean_equality_proposition(
+    left_text: str,
+    right_text: str,
+    variable_sorts: dict[str, str],
+    *,
+    negated: bool,
+) -> str | None:
+    left_const = tptp_bool_constant(left_text)
+    right_const = tptp_bool_constant(right_text)
+    if left_const is None and right_const is None:
+        return None
+    if left_const is not None and right_const is not None:
+        truth = (left_const == right_const)
+        if negated:
+            truth = not truth
+        return "vampire_true" if truth else "vampire_false"
+
+    proposition_text = right_text if left_const is not None else left_text
+    const_value = left_const if left_const is not None else right_const
+    proposition = tptp_formula_to_megalodon_proposition(proposition_text, variable_sorts)
+    if proposition is None or const_value is None:
+        return None
+    proposition_arg = proposition_argument_text(proposition)
+    if negated:
+        return f"{proposition_arg} -> vampire_false" if const_value else proposition
+    return proposition if const_value else f"{proposition_arg} -> vampire_false"
+
+
 def tptp_formula_to_megalodon_proposition(text: str, variable_sorts: dict[str, str] | None = None) -> str | None:
     if variable_sorts is None:
         variable_sorts = {}
@@ -1066,6 +1103,9 @@ def tptp_formula_to_megalodon_proposition(text: str, variable_sorts: dict[str, s
 
     inequality = split_top_level_operator(text, "!=")
     if inequality is not None:
+        boolean = tptp_boolean_equality_proposition(inequality[0], inequality[1], variable_sorts, negated=True)
+        if boolean is not None:
+            return boolean
         left_expr = tptp_term_to_expr(inequality[0], variable_sorts)
         right_expr = tptp_term_to_expr(inequality[1], variable_sorts)
         if left_expr is None or right_expr is None:
@@ -1084,6 +1124,9 @@ def tptp_formula_to_megalodon_proposition(text: str, variable_sorts: dict[str, s
 
     equality = split_top_level_equality(text)
     if equality is not None:
+        boolean = tptp_boolean_equality_proposition(equality[0], equality[1], variable_sorts, negated=False)
+        if boolean is not None:
+            return boolean
         left_expr = tptp_term_to_expr(equality[0], variable_sorts)
         right_expr = tptp_term_to_expr(equality[1], variable_sorts)
         if left_expr is None or right_expr is None:
