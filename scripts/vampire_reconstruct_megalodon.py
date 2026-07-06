@@ -11661,6 +11661,12 @@ def raw_complement_resolution_proof(
     right_proof: str,
     target: Expr,
 ) -> str | None:
+    quantified = raw_quantified_complement_resolution_proof(left, left_proof, right, right_proof, target)
+    if quantified is not None:
+        return quantified
+    quantified = raw_quantified_complement_resolution_proof(right, right_proof, left, left_proof, target)
+    if quantified is not None:
+        return quantified
     left_premises, left_conclusion = split_arrows(left)
     right_premises, right_conclusion = split_arrows(right)
     if (
@@ -11680,6 +11686,51 @@ def raw_complement_resolution_proof(
     if false_eliminator_expr(right) and len(left_premises) == 1 and false_eliminator_expr(left_conclusion):
         return f"(({proof_head(left_proof)} ({proof_head(right_proof)} {proof_arg_text(left_premises[0])})) {proof_arg_text(target)})"
     return None
+
+
+def raw_quantified_negative_literal_instance_proof(
+    negative_literal: Expr,
+    negative_proof: str,
+    positive_literal: Expr,
+) -> str | None:
+    binders, body = collect_foralls(negative_literal)
+    if not binders:
+        return None
+    premises, conclusion = split_arrows(body)
+    if len(premises) != 1 or not false_eliminator_expr(conclusion):
+        return None
+    binder_names = {name for name, _ in binders}
+    subst: dict[str, Expr] = {}
+    if not match_expr_with_alpha_instantiation(premises[0], positive_literal, binder_names, subst):
+        return None
+    flatten_substitution(subst)
+    if not binder_names <= subst.keys() or any(expr_variables(value) & binder_names for value in subst.values()):
+        return None
+    instantiated_premise = substitute_expr(premises[0], subst)
+    if not expr_same_mod_alpha(instantiated_premise, positive_literal):
+        return None
+    proof = negative_proof
+    for name, _ in binders:
+        proof = f"({proof_head(proof)} {proof_arg_text(subst[name])})"
+    return proof
+
+
+def raw_quantified_complement_resolution_proof(
+    positive_literal: Expr,
+    positive_proof: str,
+    negative_literal: Expr,
+    negative_proof: str,
+    target: Expr,
+) -> str | None:
+    instantiated_negative = raw_quantified_negative_literal_instance_proof(
+        negative_literal,
+        negative_proof,
+        positive_literal,
+    )
+    if instantiated_negative is None:
+        return None
+    false_proof = f"({proof_head(instantiated_negative)} {proof_term_text(positive_proof)})"
+    return raw_false_literal_elimination_proof(Expr("var", value="vampire_false"), target, false_proof)
 
 
 def raw_clause_literals(expr: Expr, depth: int = 0) -> list[Expr]:
@@ -11758,6 +11809,10 @@ def raw_simple_clause_transform_proof(source: Expr, target: Expr, source_proof: 
 
 
 def raw_complementary_literals(left: Expr, right: Expr) -> bool:
+    if raw_quantified_negative_literal_instance_proof(left, "Hleft", right) is not None:
+        return True
+    if raw_quantified_negative_literal_instance_proof(right, "Hright", left) is not None:
+        return True
     left_premises, left_conclusion = split_arrows(left)
     if len(left_premises) == 1 and false_eliminator_expr(left_conclusion) and expr_key(left_premises[0]) == expr_key(right):
         return True
