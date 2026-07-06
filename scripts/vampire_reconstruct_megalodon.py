@@ -3156,6 +3156,145 @@ def atomic_multi_rewrite_proof(
     return search(0, [], [], 0)
 
 
+def atomic_rule_premise_transport_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 0:
+        return None
+    target = normalize_defined_expr(expr, definitions)
+    if target.kind != "app" or len(target.args) < 2:
+        return None
+    if target.args[0].kind != "var" or target.args[0].value != "In":
+        return None
+
+    known_atoms: list[Expr] = []
+    seen_known: set[str] = set()
+    for proposition in known:
+        parsed = parse_expr(proposition)
+        if parsed is None:
+            continue
+        parsed = normalize_defined_expr(parsed, definitions)
+        key = expr_key(parsed)
+        if key in seen_known:
+            continue
+        seen_known.add(key)
+        if parsed.kind == "app" and len(parsed.args) == len(target.args):
+            known_atoms.append(parsed)
+
+    seed_terms: list[Expr] = []
+    seen_terms: set[str] = set()
+
+    def add_terms(expr: Expr, limit: int = 32) -> None:
+        for term in expr_subterms(expr, limit=limit):
+            key = expr_key(term)
+            if key in seen_terms:
+                continue
+            seen_terms.add(key)
+            seed_terms.append(term)
+
+    for proposition in known:
+        parsed = parse_expr(proposition)
+        if parsed is not None:
+            parsed = normalize_defined_expr(parsed, definitions)
+        if parsed is not None and parsed.kind == "app" and len(parsed.args) >= 2:
+            for arg in parsed.args[1:]:
+                add_terms(arg, limit=16)
+        if len(seed_terms) >= 48:
+            break
+    for atom in known_atoms:
+        for arg in atom.args[1:]:
+            add_terms(arg, limit=24)
+    for fact in eq_facts:
+        add_terms(fact.left, limit=16)
+        add_terms(fact.right, limit=16)
+    for arg in target.args[1:]:
+        add_terms(arg, limit=24)
+
+    for rule_index, original_rule in enumerate(reversed(rules)):
+        if len(original_rule.premises) > 4:
+            continue
+        rule = rename_rule_binders(original_rule, f"PT{rule_index}_")
+        conclusion = rule_application_conclusion(rule)
+        if conclusion.kind != "app" or len(conclusion.args) != len(target.args):
+            continue
+        binders = rule_application_binders(rule)
+        variables = set(binders)
+        initial_subst: dict[str, Expr] = {}
+        if not match_expr(conclusion.args[0], target.args[0], variables, initial_subst):
+            continue
+        steps = rule.steps
+        if not steps:
+            steps = tuple(RuleStep("binder", name=binder) for binder in binders) + tuple(
+                RuleStep("premise", expr=premise) for premise in rule.premises
+            )
+        premise_steps = [step for step in steps if step.kind == "premise" and step.expr is not None]
+        if not premise_steps:
+            continue
+        tried: set[tuple[tuple[str, str], ...]] = set()
+        for step in premise_steps:
+            assert step.expr is not None
+            for atom in known_atoms:
+                trial = dict(initial_subst)
+                if not match_expr(step.expr, atom, variables, trial):
+                    continue
+                for subst in fill_missing_binders_with_terms(binders, trial, seed_terms, limit=64):
+                    key = tuple(sorted((name, expr_key(value)) for name, value in subst.items()))
+                    if key in tried:
+                        continue
+                    tried.add(key)
+                    source = normalize_defined_expr(substitute_expr(conclusion, subst), definitions)
+                    if source.kind != "app" or len(source.args) != len(target.args):
+                        continue
+                    if expr_key(source.args[0]) != expr_key(target.args[0]):
+                        continue
+                    changed = [
+                        index
+                        for index, (source_arg, target_arg) in enumerate(zip(source.args[1:], target.args[1:]))
+                        if expr_key(source_arg) != expr_key(target_arg)
+                    ]
+                    if len(changed) != 1:
+                        continue
+                    parts = rule_application_parts(
+                        rule,
+                        subst,
+                        known,
+                        known_canonical,
+                        rules,
+                        eq_facts,
+                        definitions,
+                        max(0, rule_depth - 1),
+                    )
+                    if parts is None:
+                        continue
+                    index = changed[0]
+                    equality_proof = equality_transport_side_proof(
+                        source.args[index + 1],
+                        target.args[index + 1],
+                        known,
+                        known_canonical,
+                        rules,
+                        eq_facts,
+                        definitions,
+                        rule_depth + 1,
+                    )
+                    if equality_proof is None:
+                        continue
+                    return transport_atomic_argument_proof(
+                        target,
+                        list(source.args[1:]),
+                        rule_application_text(parts),
+                        index,
+                        equality_proof,
+                    )
+    return None
+
+
 def atomic_rule_transport_proof(
     expr: Expr,
     known: dict[str, str],
@@ -4463,6 +4602,19 @@ def proof_for_expr(
     deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
     if deadline is not None and proof_search_now() > deadline:
         return None
+
+    if allow_rule:
+        premise_transport_proof = atomic_rule_premise_transport_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth=rule_depth,
+        )
+        if premise_transport_proof is not None:
+            return premise_transport_proof
 
     if allow_rule:
         introduced = introduction_proof(expr, known, known_canonical, rules, eq_facts, definitions, rule_depth)
