@@ -11624,7 +11624,7 @@ def raw_tptp_replay_proof(
             max_literals=12,
             max_literal_product=96,
         )
-    if rule == "forward_subsumption_resolution":
+    if rule in {"forward_subsumption_resolution", "unit_resulting_resolution"}:
         return raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name)
     if rule == "equality_resolution":
         return raw_tptp_equality_resolution_proof(proposition, parents, propositions_by_name)
