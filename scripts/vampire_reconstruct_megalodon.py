@@ -11457,6 +11457,21 @@ def raw_clause_replay_budget_ok(*exprs: Expr, max_literals: int = 10, max_litera
     return product <= max_literal_product
 
 
+def raw_simple_clause_transform_proof(source: Expr, target: Expr, source_proof: str) -> str | None:
+    if expr_same_mod_alpha(source, target):
+        return source_proof
+    parts = app_args(source, "vampire_or", 2)
+    if parts is None:
+        return None
+    left, right = parts
+    target_text = proof_arg_text(target)
+    if false_eliminator_expr(left) and expr_same_mod_alpha(right, target):
+        return f"({proof_head(source_proof)} {target_text} (fun HL => HL {target_text}) (fun HR => HR))"
+    if false_eliminator_expr(right) and expr_same_mod_alpha(left, target):
+        return f"({proof_head(source_proof)} {target_text} (fun HL => HL) (fun HR => HR {target_text}))"
+    return None
+
+
 def raw_complementary_literals(left: Expr, right: Expr) -> bool:
     left_premises, left_conclusion = split_arrows(left)
     if len(left_premises) == 1 and false_eliminator_expr(left_conclusion) and expr_key(left_premises[0]) == expr_key(right):
@@ -11646,6 +11661,9 @@ def raw_tptp_trivial_inequality_removal_proof(
     target = parse_expr(proposition)
     if source is None or target is None:
         return None
+    simple = raw_simple_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
+    if simple is not None:
+        return simple
     if not raw_clause_replay_budget_ok(source, target, max_literals=max_literals, max_literal_product=max_literal_product):
         return None
     return raw_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
