@@ -2076,7 +2076,7 @@ def equality_rule_chain_proof(
     rules: list[ProofRule],
     eq_facts: list[EqFact],
     definitions: dict[str, DefinitionInfo],
-    max_depth: int = 3,
+    max_depth: int = 4,
     rule_depth: int = 2,
 ) -> str | None:
     if expr.kind != "eq":
