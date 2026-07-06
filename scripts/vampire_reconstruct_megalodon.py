@@ -5740,6 +5740,17 @@ def proof_for_proposition(
     if expr is None:
         return None
     if expr.kind == "eq":
+        direct_rule_proof = equality_direct_rule_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth=2,
+        )
+        if direct_rule_proof is not None:
+            return direct_rule_proof
         transported_rule_proof = equality_rule_transport_proof(
             expr,
             known,
