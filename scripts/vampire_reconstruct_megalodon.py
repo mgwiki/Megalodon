@@ -12917,17 +12917,21 @@ def raw_tptp_rat_proof(
             parent_exprs.append((parent, parent_expr, raw_tptp_claim_name(parent)))
     if len(parent_exprs) < 2:
         return None
-    for _, source, source_proof in parent_exprs[:1]:
-        if 2 < len(parent_exprs) <= 16 and len(raw_clause_literals(source)) <= 24:
+    if 2 < len(parent_exprs) <= 16:
+        for source_index, (_, source, source_proof) in enumerate(parent_exprs[:8]):
+            if len(raw_clause_literals(source)) > 24:
+                continue
             resolvers = [
                 (resolver, resolver_proof)
-                for _, resolver, resolver_proof in parent_exprs[1:]
+                for index, (_, resolver, resolver_proof) in enumerate(parent_exprs)
+                if index != source_index
                 if len(raw_clause_literals(resolver)) <= 12
             ]
             if len(resolvers) == len(parent_exprs) - 1:
                 proof = raw_clause_multi_resolution_proof(source, target, source_proof, resolvers)
                 if proof is not None:
                     return proof
+    for _, source, source_proof in parent_exprs[:1]:
         for _, resolver, resolver_proof in parent_exprs[1:]:
             if not raw_clause_replay_budget_ok(source, resolver, target, max_literals=16, max_literal_product=512):
                 continue
