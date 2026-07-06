@@ -11122,6 +11122,10 @@ def tptp_formula_source_name(annotations: list[str]) -> str | None:
     return decode_tptp_identifier(match.group(1).strip()) if match else None
 
 
+def tptp_introduced_definition(annotations: list[str]) -> bool:
+    return "introduced(definition" in ",".join(annotations)
+
+
 def raw_tptp_claim_name(name: str) -> str:
     decoded = decode_tptp_identifier(name)
     sanitized = re.sub(r"[^_A-Za-z0-9']", "_", decoded)
@@ -12115,7 +12119,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     text = proof.read_text(encoding="utf-8", errors="replace")
     declarations = collect_tptp_declarations(text)
     variable_sorts = raw_tptp_type_variables(declarations)
-    entries: list[tuple[str, str, str, str | None, str | None, str | None, list[str]]] = []
+    entries: list[tuple[str, str, str, str | None, str | None, str | None, list[str], bool]] = []
     propositions: list[str] = []
     for declaration in declarations:
         parsed = tptp_decl_formula_parts(declaration)
@@ -12128,30 +12132,31 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         rule = tptp_inference_rule(annotations)
         parents = tptp_inference_parents(annotations)
         source_name = tptp_formula_source_name(annotations)
+        trusted_definition = role == "plain" and not parents and tptp_introduced_definition(annotations)
         if proposition is None:
-            entries.append((name, role, formula, None, rule, source_name, parents))
+            entries.append((name, role, formula, None, rule, source_name, parents, trusted_definition))
             continue
-        entries.append((name, role, formula, proposition, rule, source_name, parents))
+        entries.append((name, role, formula, proposition, rule, source_name, parents, trusted_definition))
         propositions.append(proposition)
     add_missing_raw_tptp_variables(propositions, variable_sorts)
 
-    decoded_entries: list[tuple[str, str, str, str | None, str | None, list[str]]] = []
+    decoded_entries: list[tuple[str, str, str, str | None, str | None, list[str], bool]] = []
     decoded_propositions: list[str] = []
     unsupported = 0
-    for name, role, formula, _, rule, source_name, parents in entries:
+    for name, role, formula, _, rule, source_name, parents, trusted_definition in entries:
         proposition = tptp_formula_to_megalodon_proposition(formula, variable_sorts)
         if proposition is None:
             unsupported += 1
         else:
             decoded_propositions.append(proposition)
-        decoded_entries.append((name, role, proposition or "", rule, source_name, parents))
+        decoded_entries.append((name, role, proposition or "", rule, source_name, parents, trusted_definition))
     entries = decoded_entries
     propositions = decoded_propositions
-    propositions_by_name = {name: proposition for name, _, proposition, _, _, _ in entries if proposition}
+    propositions_by_name = {name: proposition for name, _, proposition, _, _, _, _ in entries if proposition}
 
     final_name = None
     final_proposition = "vampire_false"
-    for name, _, proposition, _, _, _ in reversed(entries):
+    for name, _, proposition, _, _, _, _ in reversed(entries):
         if proposition:
             final_name = raw_tptp_claim_name(name)
             final_proposition = proposition
@@ -12175,12 +12180,12 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         lines.append(f"Variable {name}:{sort}.")
 
     seen_claims: set[str] = set()
-    for name, role, proposition, rule, source_name, parents in entries:
+    for name, role, proposition, rule, source_name, parents, trusted_definition in entries:
         claim_name = raw_tptp_claim_name(name)
         if claim_name in seen_claims:
             continue
         seen_claims.add(claim_name)
-        if role not in {"axiom", "definition"}:
+        if role not in {"axiom", "definition"} and not trusted_definition:
             continue
         rule_text = rule or "input"
         parent_text = f", parents {' '.join(parents)}" if parents else ""
@@ -12197,12 +12202,12 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     lines.append(f"Theorem {theorem_name}: {final_proposition}.")
 
     seen_theorem_claims: set[str] = set()
-    for name, role, proposition, rule, source_name, parents in entries:
+    for name, role, proposition, rule, source_name, parents, trusted_definition in entries:
         claim_name = raw_tptp_claim_name(name)
         if claim_name in seen_theorem_claims:
             continue
         seen_theorem_claims.add(claim_name)
-        if role in {"axiom", "definition"}:
+        if role in {"axiom", "definition"} or trusted_definition:
             continue
         rule_text = rule or "input"
         parent_text = f", parents {' '.join(parents)}" if parents else ""
