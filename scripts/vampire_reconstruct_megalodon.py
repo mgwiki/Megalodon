@@ -12874,6 +12874,206 @@ def raw_tptp_avatar_split_forall_instantiation_proof(
     return raw_clause_transform_proof(instantiated, target, proof, rewrites=rewrites)
 
 
+def raw_split_atom_name(expr: Expr) -> str | None:
+    if expr.kind == "var" and expr.value is not None and expr.value.startswith("spl"):
+        return expr.value
+    return None
+
+
+def raw_literal_refutation_from_split_assumption(
+    literal: Expr,
+    literal_proof: str,
+    target: Expr,
+    rewrite: RawSplitRewrite,
+    not_split_name: str,
+) -> str | None:
+    component_proof = raw_literal_direct_transform_proof(literal, rewrite.component, literal_proof, ())
+    if component_proof is None:
+        return None
+    split_proof = f"({proof_head(rewrite.component_to_split)} {proof_term_text(component_proof)})"
+    false_proof = f"({not_split_name} {proof_term_text(split_proof)})"
+    return f"({proof_head(false_proof)} {proof_arg_text(target)})"
+
+
+def raw_literal_to_clause_with_split_refutations(
+    literal: Expr,
+    target: Expr,
+    literal_proof: str,
+    target_literals: list[Expr],
+    rewrites: tuple[RawSplitRewrite, ...],
+    refutations: list[tuple[RawSplitRewrite, str]],
+) -> str | None:
+    proof = raw_literal_to_clause_proof(literal, target, literal_proof, target_literals, rewrites)
+    if proof is not None:
+        return proof
+    for rewrite, not_split_name in refutations:
+        proof = raw_literal_refutation_from_split_assumption(literal, literal_proof, target, rewrite, not_split_name)
+        if proof is not None:
+            return proof
+    return None
+
+
+def raw_clause_cases_with_split_refutations(
+    source: Expr,
+    target: Expr,
+    target_literals: list[Expr],
+    rewrites: tuple[RawSplitRewrite, ...],
+    refutations: list[tuple[RawSplitRewrite, str]],
+    source_proof: str,
+) -> str | None:
+    parts = app_args(source, "vampire_or", 2)
+    if parts is None:
+        return raw_literal_to_clause_with_split_refutations(
+            source,
+            target,
+            source_proof,
+            target_literals,
+            rewrites,
+            refutations,
+        )
+    left, right = parts
+    left_name = fresh_identifier("HL", expr_text(source), expr_text(target), source_proof)
+    right_name = fresh_identifier("HR", expr_text(source), expr_text(target), source_proof, left_name)
+    left_target = raw_clause_cases_with_split_refutations(
+        left,
+        target,
+        target_literals,
+        rewrites,
+        refutations,
+        left_name,
+    )
+    right_target = raw_clause_cases_with_split_refutations(
+        right,
+        target,
+        target_literals,
+        rewrites,
+        refutations,
+        right_name,
+    )
+    if left_target is None or right_target is None:
+        return None
+    return f"({proof_head(source_proof)} {proof_arg_text(target)} (fun {left_name} => {left_target}) (fun {right_name} => {right_target}))"
+
+
+def raw_avatar_split_component_from_source_proof(
+    source: Expr,
+    source_proof: str,
+    component: Expr,
+    refutations: list[tuple[RawSplitRewrite, str]],
+    rewrites: tuple[RawSplitRewrite, ...],
+) -> str | None:
+    if proof_search_timed_out() or len(expr_text(source)) + len(expr_text(component)) > 6000:
+        return None
+    source_binders, source_body = collect_foralls(source)
+    component_binders, component_body = collect_foralls(component)
+    if len(source_binders) > 8 or len(component_binders) > 8:
+        return None
+    if len(raw_clause_literals(source_body)) > 24 or len(raw_clause_literals(component_body)) > 24:
+        return None
+    component_sorts = {name: sort for name, sort in component_binders}
+    refutable_components = [rewrite.component for rewrite, _ in refutations]
+    source_options: list[tuple[dict[str, Expr], str]] = [({}, source_proof)]
+    for source_name, source_sort in source_binders:
+        next_options: list[tuple[dict[str, Expr], str]] = []
+        candidates: list[Expr] = []
+        if component_sorts.get(source_name) == source_sort:
+            candidates.append(Expr("var", value=source_name))
+        if source_sort == "prop":
+            candidates.extend(refutable_components)
+        for subst, proof in source_options:
+            for candidate in candidates:
+                if candidate.kind == "var" and candidate.value is not None and component_sorts.get(candidate.value) != source_sort:
+                    continue
+                trial = dict(subst)
+                trial[source_name] = candidate
+                next_options.append((trial, f"({proof_head(proof)} {proof_arg_text(candidate)})"))
+                if len(next_options) >= 4:
+                    break
+            if len(next_options) >= 4:
+                break
+        if not next_options:
+            return None
+        source_options = next_options
+
+    for subst, applied_source_proof in source_options:
+        instantiated_source_body = substitute_expr(source_body, subst)
+        if not raw_clause_replay_budget_ok(instantiated_source_body, component_body, max_literals=24, max_literal_product=384):
+            continue
+        target_literals = raw_clause_literals(component_body)
+        body_proof = raw_clause_cases_with_split_refutations(
+            instantiated_source_body,
+            component_body,
+            target_literals,
+            rewrites,
+            refutations,
+            applied_source_proof,
+        )
+        if body_proof is None:
+            continue
+        for name, sort in reversed(component_binders):
+            body_proof = f"(fun {name}:{sort} => {body_proof})"
+        return body_proof
+    return None
+
+
+def raw_tptp_avatar_split_direct_component_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rewrites: tuple[RawSplitRewrite, ...],
+) -> str | None:
+    if proof_search_timed_out() or len(expr_text(source)) + len(expr_text(target)) > 7000:
+        return None
+    target_literals = raw_clause_literals(target)
+    if len(target_literals) < 2 or len(target_literals) > 4:
+        return None
+    rewrite_by_split = {raw_split_atom_name(rewrite.split): rewrite for rewrite in rewrites}
+    if any(raw_split_atom_name(literal) not in rewrite_by_split for literal in target_literals):
+        return None
+
+    for main_index, main_literal in enumerate(target_literals):
+        main_name = raw_split_atom_name(main_literal)
+        if main_name is None:
+            continue
+        main_rewrite = rewrite_by_split[main_name]
+        other_literals = [
+            (index, literal, rewrite_by_split[raw_split_atom_name(literal)])
+            for index, literal in enumerate(target_literals)
+            if index != main_index and raw_split_atom_name(literal) is not None
+        ]
+        not_names = [
+            fresh_identifier("Hnot", expr_text(target), expr_text(literal), source_proof, str(index))
+            for index, literal, _ in other_literals
+        ]
+        refutations = [(rewrite, not_name) for (_, _, rewrite), not_name in zip(other_literals, not_names)]
+        component_proof = raw_avatar_split_component_from_source_proof(
+            source,
+            source_proof,
+            main_rewrite.component,
+            refutations,
+            rewrites,
+        )
+        if component_proof is None:
+            continue
+        main_split_proof = f"({proof_head(main_rewrite.component_to_split)} {proof_term_text(component_proof)})"
+        result = raw_or_intro_literal_at(target, main_index, main_split_proof)
+        if result is None:
+            continue
+        for (index, literal, _), not_name in reversed(list(zip(other_literals, not_names))):
+            true_branch = raw_or_intro_literal_at(target, index, f"Hsplit{index}")
+            if true_branch is None:
+                result = None
+                break
+            result = (
+                f"(vampire_xm {proof_arg_text(literal)} {proof_arg_text(target)} "
+                f"(fun Hsplit{index} => {proof_term_text(true_branch)}) "
+                f"(fun {not_name} => {proof_term_text(result)}))"
+            )
+        if result is not None:
+            return result
+    return None
+
+
 def raw_tptp_avatar_split_clause_proof(
     proposition: str,
     parents: list[str],
@@ -12901,6 +13101,15 @@ def raw_tptp_avatar_split_clause_proof(
     )
     if instantiated is not None:
         return instantiated
+    if len(parents) <= 3:
+        direct = raw_tptp_avatar_split_direct_component_proof(
+            source,
+            target,
+            raw_tptp_claim_name(parents[0]),
+            rewrites,
+        )
+        if direct is not None:
+            return direct
     subsumption = raw_clause_subsumption_transform_proof(source, target, raw_tptp_claim_name(parents[0]), rewrites=rewrites)
     if subsumption is not None:
         return subsumption
