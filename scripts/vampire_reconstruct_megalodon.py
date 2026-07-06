@@ -12063,6 +12063,47 @@ def raw_tptp_parent_equality_rewrite_proof(
     return None
 
 
+def raw_tptp_fast_parent_transform_proof(
+    proposition: str,
+    parent: str,
+    propositions_by_name: dict[str, str],
+) -> str | None:
+    parent_proposition = propositions_by_name.get(parent)
+    if parent_proposition is None:
+        return None
+    source = parse_expr(parent_proposition)
+    target = parse_expr(proposition)
+    if source is None or target is None:
+        return None
+    parent_proof = raw_tptp_claim_name(parent)
+    if expr_same_mod_alpha(source, target):
+        return parent_proof
+    simple = raw_simple_clause_transform_proof(source, target, parent_proof)
+    if simple is not None:
+        return simple
+    return raw_clause_subsumption_transform_proof(source, target, parent_proof)
+
+
+def raw_tptp_superposition_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    for parent in parents:
+        proof = raw_tptp_fast_parent_transform_proof(proposition, parent, propositions_by_name)
+        if proof is not None:
+            return proof
+    if len(parents) == 2:
+        proof = raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name)
+        if proof is not None:
+            return proof
+        proof = raw_tptp_forward_demodulation_proof(proposition, parents, propositions_by_name, variable_sorts)
+        if proof is not None:
+            return proof
+    return raw_tptp_parent_equality_rewrite_proof(proposition, parents, propositions_by_name, variable_sorts)
+
+
 def raw_tptp_forward_subsumption_resolution_proof(
     proposition: str,
     parents: list[str],
@@ -12365,6 +12406,8 @@ def raw_tptp_replay_proof(
 ) -> str | None:
     if rule == "rat":
         return raw_tptp_rat_proof(proposition, parents, propositions_by_name)
+    if rule == "superposition":
+        return raw_tptp_superposition_proof(proposition, parents, propositions_by_name, variable_sorts)
     if rule == "sat_conversion":
         return raw_tptp_trivial_inequality_removal_proof(
             proposition,
