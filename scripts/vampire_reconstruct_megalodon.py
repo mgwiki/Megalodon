@@ -7440,6 +7440,130 @@ def global_or_exists_from_pointwise_split_proof(
     return None
 
 
+def disjunction_from_case_and_antisymmetry_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if proof_search_timed_out() or rule_depth <= 0 or len(expr_text(expr)) > 900:
+        return None
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if len(premises) > 6:
+        return None
+    target_disjuncts = app_args(conclusion, "vampire_or", 2)
+    if target_disjuncts is None:
+        return None
+
+    candidates: list[tuple[int, int, Expr, Expr, Expr]] = []
+    for success_index, equality_index in ((0, 1), (1, 0)):
+        success_expr = target_disjuncts[success_index]
+        equality_expr = target_disjuncts[equality_index]
+        equality_sides = equality_like_sides(equality_expr)
+        if equality_sides is None:
+            continue
+        atom = binary_atom_parts(success_expr)
+        if atom is None:
+            continue
+        _, atom_left, atom_right = atom
+        if (
+            (expr_key(atom_left) == expr_key(equality_sides[0]) and expr_key(atom_right) == expr_key(equality_sides[1]))
+            or (expr_key(atom_left) == expr_key(equality_sides[1]) and expr_key(atom_right) == expr_key(equality_sides[0]))
+        ):
+            candidates.append((success_index, equality_index, success_expr, equality_expr, equality_sides[0]))
+    if not candidates:
+        return None
+
+    local_known = dict(known)
+    local_known_canonical = dict(known_canonical)
+    local_rules = list(rules)
+    local_eq_facts = list(eq_facts)
+    premise_names = [f"H{index}" for index, _ in enumerate(premises)]
+    for premise, premise_name in zip(premises, premise_names):
+        remember_proposition(
+            local_known,
+            local_known_canonical,
+            local_rules,
+            local_eq_facts,
+            premise_name,
+            expr_text(premise),
+        )
+
+    def or_intro(index: int, proof: str) -> str:
+        if index == 0:
+            return f"(fun P Hleft Hright => Hleft {proof_term_text(proof)})"
+        return f"(fun P Hleft Hright => Hright {proof_term_text(proof)})"
+
+    target_text = proof_arg_text(conclusion)
+    for target_success_index, target_equality_index, target_success, target_equality, _ in candidates:
+        for rule in reversed(local_rules):
+            source_disjuncts = app_args(rule_application_conclusion(rule), "vampire_or", 2)
+            if source_disjuncts is None:
+                continue
+            for source_success_index, source_other_index in ((0, 1), (1, 0)):
+                source_success = source_disjuncts[source_success_index]
+                variables = set(rule_application_binders(rule))
+                subst: dict[str, Expr] = {}
+                if not match_expr(source_success, target_success, variables, subst):
+                    continue
+                case_parts = rule_application_parts(
+                    rule,
+                    subst,
+                    local_known,
+                    local_known_canonical,
+                    local_rules,
+                    local_eq_facts,
+                    definitions,
+                    max(2, rule_depth - 1),
+                )
+                if case_parts is None:
+                    continue
+                source_other = substitute_expr(source_disjuncts[source_other_index], subst)
+                branch_known = dict(local_known)
+                branch_known_canonical = dict(local_known_canonical)
+                branch_rules = list(local_rules)
+                branch_eq_facts = list(local_eq_facts)
+                other_name = fresh_identifier("Hcase", expr_text(source_other), expr_text(target_equality), rule.name)
+                remember_proposition(
+                    branch_known,
+                    branch_known_canonical,
+                    branch_rules,
+                    branch_eq_facts,
+                    other_name,
+                    expr_text(source_other),
+                )
+                equality_proof = proof_for_expr(
+                    target_equality,
+                    branch_known,
+                    branch_known_canonical,
+                    branch_rules,
+                    branch_eq_facts,
+                    definitions,
+                    allow_rule=True,
+                    rule_depth=max(2, rule_depth - 1),
+                )
+                if equality_proof is None:
+                    continue
+                success_name = fresh_identifier("Hsucc", expr_text(target_success), expr_text(conclusion), other_name)
+                success_branch = or_intro(target_success_index, success_name)
+                equality_branch = or_intro(target_equality_index, equality_proof)
+                branches = {
+                    source_success_index: f"(fun {success_name} => {success_branch})",
+                    source_other_index: f"(fun {other_name} => {equality_branch})",
+                }
+                proof = (
+                    f"{proof_term_text(rule_application_text(case_parts))} {target_text} "
+                    f"{branches[0]} {branches[1]}"
+                )
+                args = [name for name, _ in binders] + premise_names
+                return f"({' '.join(['fun'] + args + ['=>', proof])})"
+    return None
+
+
 def implication_from_false_proof(
     expr: Expr,
     known: dict[str, str],
@@ -10596,6 +10720,18 @@ def _proof_for_expr_impl(
     if global_split is not None:
         return global_split
 
+    case_antisymmetry = disjunction_from_case_and_antisymmetry_proof(
+        expr,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        rule_depth,
+    )
+    if case_antisymmetry is not None:
+        return case_antisymmetry
+
     implication_intro = implication_intro_proof(
         expr,
         known,
@@ -11138,6 +11274,17 @@ def proof_for_proposition(
     expr = parse_expr(proposition)
     if expr is None:
         return None
+    case_antisymmetry = disjunction_from_case_and_antisymmetry_proof(
+        expr,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        rule_depth=2,
+    )
+    if case_antisymmetry is not None:
+        return case_antisymmetry
     if expr.kind == "eq":
         boolean_ext_proof = boolean_or_nand_extensionality_proof(expr, known)
         if boolean_ext_proof is not None:
