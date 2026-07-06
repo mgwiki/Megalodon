@@ -1186,6 +1186,87 @@ def fill_missing_binders_with_terms(
     return candidates
 
 
+def expr_mentions_any(expr: Expr, names: set[str]) -> bool:
+    if expr.kind == "var" and expr.value in names:
+        return True
+    return any(expr_mentions_any(arg, names) for arg in expr.args)
+
+
+def expr_argument_subterms(expr: Expr, limit: int = 128) -> list[Expr]:
+    found: list[Expr] = []
+    seen: set[str] = set()
+
+    def add(node: Expr) -> None:
+        if len(found) >= limit:
+            return
+        key = expr_key(node)
+        if key in seen:
+            return
+        seen.add(key)
+        found.append(node)
+
+    def visit(node: Expr) -> None:
+        if len(found) >= limit:
+            return
+        if node.kind == "app":
+            for arg in node.args[1:]:
+                add(arg)
+                visit(arg)
+            return
+        if node.kind == "eq":
+            for arg in node.args:
+                add(arg)
+                visit(arg)
+            return
+        for arg in node.args:
+            visit(arg)
+
+    visit(expr)
+    return found
+
+
+def candidate_terms_from_state(
+    known: dict[str, str],
+    eq_facts: list[EqFact],
+    seed: Iterable[Expr] = (),
+    exclude_names: set[str] | None = None,
+    limit: int = 96,
+) -> list[Expr]:
+    terms: list[Expr] = []
+    seen: set[str] = set()
+    excluded = exclude_names or set()
+
+    def add(term: Expr) -> None:
+        if len(terms) >= limit:
+            return
+        if expr_mentions_any(term, excluded):
+            return
+        key = expr_key(term)
+        if key in seen:
+            return
+        seen.add(key)
+        terms.append(term)
+
+    for expr in seed:
+        for term in expr_argument_subterms(expr, limit=24):
+            add(term)
+    for proposition in known:
+        parsed = parse_expr(proposition)
+        if parsed is None:
+            continue
+        for term in expr_argument_subterms(parsed, limit=24):
+            add(term)
+        if len(terms) >= limit:
+            break
+    for fact in eq_facts:
+        for term in expr_subterms(fact.left, limit=16):
+            add(term)
+        for term in expr_subterms(fact.right, limit=16):
+            add(term)
+    terms.sort(key=lambda term: (0 if term.kind == "var" else 1, len(expr_text(term)), expr_text(term)))
+    return terms
+
+
 def substitute_expr(expr: Expr, subst: dict[str, Expr]) -> Expr:
     if expr.kind == "var" and expr.value in subst:
         return subst[expr.value]
@@ -2365,27 +2446,39 @@ def rule_application_parts(
             RuleStep("premise", expr=premise) for premise in rule.premises
         )
     inferred_subst = infer_rule_binders_from_known(steps, application_binders, subst, known)
-    if inferred_subst is None:
-        return None
-    subst = inferred_subst
-    for step in steps:
-        if step.kind == "binder":
-            assert step.name is not None
-            parts.append(proof_arg_text(subst[step.name]))
-            continue
-        assert step.expr is not None
-        premise = substitute_expr(step.expr, subst)
-        premise_proof = proof_for_expr(
-            premise,
+    candidate_substs: list[dict[str, Expr]] = []
+    if inferred_subst is not None:
+        candidate_substs.append(inferred_subst)
+    missing = [binder for binder in application_binders if binder not in subst]
+    if 0 < len(missing) <= 2 and rule_depth > 0:
+        seed_terms = candidate_terms_from_state(
             known,
-            known_canonical,
-            rules,
             eq_facts,
-            definitions,
-            allow_rule=rule_depth > 0,
-            rule_depth=max(0, rule_depth - 1),
+            seed=list(subst.values()),
+            exclude_names=set(application_binders),
+            limit=80,
         )
-        if premise_proof is None and premise.kind == "forall" and rule_depth > 0:
+        candidate_substs.extend(
+            fill_missing_binders_with_terms(application_binders, subst, seed_terms, limit=160)
+        )
+
+    seen_substs: set[tuple[tuple[str, str], ...]] = set()
+    for candidate_subst in candidate_substs:
+        if not all(binder in candidate_subst for binder in application_binders):
+            continue
+        key = tuple(sorted((name, expr_key(value)) for name, value in candidate_subst.items()))
+        if key in seen_substs:
+            continue
+        seen_substs.add(key)
+        candidate_parts = list(parts)
+        ok = True
+        for step in steps:
+            if step.kind == "binder":
+                assert step.name is not None
+                candidate_parts.append(proof_arg_text(candidate_subst[step.name]))
+                continue
+            assert step.expr is not None
+            premise = substitute_expr(step.expr, candidate_subst)
             premise_proof = proof_for_expr(
                 premise,
                 known,
@@ -2393,13 +2486,28 @@ def rule_application_parts(
                 rules,
                 eq_facts,
                 definitions,
-                allow_rule=True,
-                rule_depth=max(rule_depth, 2),
+                allow_rule=rule_depth > 0,
+                rule_depth=max(0, rule_depth - 1),
             )
-        if premise_proof is None:
-            return None
-        parts.append(proof_argument_text(premise_proof))
-    return parts
+            if premise_proof is None and premise.kind == "forall" and rule_depth > 0:
+                premise_proof = proof_for_expr(
+                    premise,
+                    known,
+                    known_canonical,
+                    rules,
+                    eq_facts,
+                    definitions,
+                    allow_rule=True,
+                    rule_depth=max(rule_depth, 2),
+                )
+            if premise_proof is None:
+                ok = False
+                break
+            candidate_parts.append(proof_argument_text(premise_proof))
+        if not ok:
+            continue
+        return candidate_parts
+    return None
 
 
 def rule_application_text(parts: list[str]) -> str:
