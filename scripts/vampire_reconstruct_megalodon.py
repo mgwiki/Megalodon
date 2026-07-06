@@ -43,6 +43,11 @@ DEFINITION_RE = re.compile(r"^Definition (?P<name>[_A-Za-z][_A-Za-z0-9']*) : (?P
 THF_TYPE_RE = re.compile(r"^thf\([^,]+,\s*type,\s*\((?P<name>[^:\s]+)\s*:\s*(?P<sort>.*?)\)\)\.", re.DOTALL)
 PROOF_SEARCH_STATE = threading.local()
 PROOF_SEARCH_SECONDS = float(os.environ.get("MEGALODON_PROOF_SEARCH_SECONDS", "8"))
+PROOF_SEARCH_CLOCK = getattr(time, "thread_time", time.monotonic)
+
+
+def proof_search_now() -> float:
+    return PROOF_SEARCH_CLOCK()
 
 
 @dataclass
@@ -2930,7 +2935,7 @@ def proof_for_expr(
         return or_intro
 
     deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
-    if deadline is not None and time.monotonic() > deadline:
+    if deadline is not None and proof_search_now() > deadline:
         return None
 
     if allow_rule:
@@ -3099,7 +3104,7 @@ def proof_for_proposition(
             if premise_proof is not None:
                 return f"({implication_proof} {premise_proof})"
     deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
-    if deadline is not None and time.monotonic() > deadline:
+    if deadline is not None and proof_search_now() > deadline:
         return None
     expr = parse_expr(proposition)
     if expr is None:
@@ -3131,7 +3136,7 @@ def remember_proposition(
 
 def fill_repeated_claim_admits(lines: list[str]) -> list[str]:
     previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
-    PROOF_SEARCH_STATE.deadline = time.monotonic() + PROOF_SEARCH_SECONDS
+    PROOF_SEARCH_STATE.deadline = proof_search_now() + PROOF_SEARCH_SECONDS
     known: dict[str, str] = {}
     known_canonical: dict[str, str] = {}
     rules: list[ProofRule] = []
