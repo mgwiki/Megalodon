@@ -1669,6 +1669,27 @@ def merge_substitutions(left: dict[str, Expr], right: dict[str, Expr]) -> dict[s
     return merged
 
 
+def resolve_substitution_value(expr: Expr, subst: dict[str, Expr], seen: set[str] | None = None) -> Expr:
+    if seen is None:
+        seen = set()
+    if expr.kind == "var" and expr.value in subst and expr.value not in seen:
+        seen.add(expr.value)
+        return resolve_substitution_value(subst[expr.value], subst, seen)
+    if not expr.args:
+        return expr
+    return Expr(
+        expr.kind,
+        value=expr.value,
+        args=tuple(resolve_substitution_value(arg, subst, set(seen)) for arg in expr.args),
+        sort=expr.sort,
+    )
+
+
+def flatten_substitution(subst: dict[str, Expr]) -> None:
+    for name in list(subst):
+        subst[name] = resolve_substitution_value(subst[name], subst, {name})
+
+
 def rename_expr_variables(expr: Expr, renames: dict[str, str]) -> Expr:
     if expr.kind == "var" and expr.value in renames:
         return Expr("var", value=renames[expr.value], sort=expr.sort)
@@ -1708,6 +1729,128 @@ def rename_rule_binders(rule: ProofRule, prefix: str) -> ProofRule:
     )
 
 
+def bind_match_variable(name: str, value: Expr, subst: dict[str, Expr]) -> bool:
+    if value.kind == "var" and value.value == name:
+        return True
+    previous = subst.get(name)
+    if previous is not None and previous.kind == "var" and previous.value == name:
+        subst[name] = value
+        return True
+    if previous is None:
+        subst[name] = value
+        return True
+    return expr_key(previous) == expr_key(value)
+
+
+def exact_match_with_variables(left: Expr, right: Expr, variables: set[str], subst: dict[str, Expr]) -> bool:
+    left = substitute_expr(left, subst)
+    right = substitute_expr(right, subst)
+    if left.kind == "var" and left.value in variables:
+        return bind_match_variable(left.value, right, subst)
+    if right.kind == "var" and right.value in variables:
+        return bind_match_variable(right.value, left, subst)
+    if left.kind != right.kind or left.value != right.value or left.sort != right.sort:
+        return False
+    if len(left.args) != len(right.args):
+        return False
+    return all(exact_match_with_variables(larg, rarg, variables, subst) for larg, rarg in zip(left.args, right.args))
+
+
+def known_equality_match_proof(
+    expr: Expr,
+    variables: set[str],
+    subst: dict[str, Expr],
+    known: dict[str, str],
+) -> str | None:
+    if expr.kind != "eq":
+        return None
+    for proposition, proof in known.items():
+        parsed = parse_expr(proposition)
+        if parsed is None or parsed.kind != "eq":
+            continue
+        direct_subst = dict(subst)
+        if exact_match_with_variables(expr.args[0], parsed.args[0], variables, direct_subst) and exact_match_with_variables(
+            expr.args[1], parsed.args[1], variables, direct_subst
+        ):
+            subst.clear()
+            subst.update(direct_subst)
+            return proof
+        reverse_subst = dict(subst)
+        if exact_match_with_variables(expr.args[0], parsed.args[1], variables, reverse_subst) and exact_match_with_variables(
+            expr.args[1], parsed.args[0], variables, reverse_subst
+        ):
+            subst.clear()
+            subst.update(reverse_subst)
+            return eq_symmetry_proof(proof, parsed.args[0])
+    return None
+
+
+def contextual_equality_proof(
+    left: Expr,
+    right: Expr,
+    variables: set[str],
+    subst: dict[str, Expr],
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if exact_match_with_variables(left, right, variables, subst):
+        return "(fun Q H => H)"
+
+    left = substitute_expr(left, subst)
+    right = substitute_expr(right, subst)
+    if left.kind != "app" or right.kind != "app" or len(left.args) != len(right.args) or len(left.args) < 2:
+        return None
+    trial = dict(subst)
+    if not exact_match_with_variables(left.args[0], right.args[0], variables, trial):
+        return None
+
+    matches: list[tuple[int, str, dict[str, Expr]]] = []
+    for candidate_index in range(1, len(left.args)):
+        candidate_subst = dict(trial)
+        ok = True
+        for index, (left_arg, right_arg) in enumerate(zip(left.args[1:], right.args[1:]), start=1):
+            if index == candidate_index:
+                continue
+            if not exact_match_with_variables(left_arg, right_arg, variables, candidate_subst):
+                ok = False
+                break
+        if not ok:
+            continue
+        left_arg = substitute_expr(left.args[candidate_index], candidate_subst)
+        right_arg = substitute_expr(right.args[candidate_index], candidate_subst)
+        argument_equality = Expr("eq", args=(left_arg, right_arg))
+        argument_key = expr_key(argument_equality)
+        argument_proof = known.get(argument_key) or known_canonical.get(canonical_proposition(argument_key))
+        if argument_proof is None:
+            reverse_equality = Expr("eq", args=(right_arg, left_arg))
+            reverse_key = expr_key(reverse_equality)
+            reverse_proof = known.get(reverse_key) or known_canonical.get(canonical_proposition(reverse_key))
+            if reverse_proof is not None:
+                argument_proof = eq_symmetry_proof(reverse_proof, right_arg)
+        if argument_proof is None:
+            argument_proof = known_equality_match_proof(argument_equality, variables, candidate_subst, known)
+        if argument_proof is None:
+            continue
+        matches.append((candidate_index, argument_proof, candidate_subst))
+    if len(matches) != 1:
+        return None
+
+    candidate_index, argument_proof, final_subst = matches[0]
+    subst.clear()
+    subst.update(final_subst)
+    instantiated_left = substitute_expr(left, subst)
+    instantiated_args = tuple(substitute_expr(arg, subst) for arg in left.args[1:])
+    context = app_context_text(substitute_expr(left.args[0], subst), instantiated_args, candidate_index - 1, "z")
+    return (
+        f"(fun Q:set->prop => fun H:Q ({expr_text(instantiated_left)}) => "
+        f"{proof_term_text(argument_proof)} (fun z:set => Q ({context})) H)"
+    )
+
+
 def oriented_rule_proof(rewrite: OrientedRuleRewrite, subst: dict[str, Expr], proof: str) -> str:
     if not rewrite.reverse:
         return proof
@@ -1739,8 +1882,27 @@ def equality_two_rule_join_proof(
                 continue
             variables = set(rule_application_binders(left_rewrite.rule)) | set(rule_application_binders(right_rewrite.rule))
             right_middle = substitute_expr(right_rewrite.middle, subst)
-            if not match_expr(left_rewrite.middle, right_middle, variables, subst):
-                continue
+            middle_proof = None
+            if match_expr(left_rewrite.middle, right_middle, variables, subst):
+                flatten_substitution(subst)
+            else:
+                middle_subst = dict(subst)
+                middle_proof = contextual_equality_proof(
+                    left_rewrite.middle,
+                    right_rewrite.middle,
+                    variables,
+                    middle_subst,
+                    known,
+                    known_canonical,
+                    rules,
+                    eq_facts,
+                    definitions,
+                    rule_depth,
+                )
+                if middle_proof is None:
+                    continue
+                subst = middle_subst
+                flatten_substitution(subst)
             left_parts = rule_application_parts(
                 left_rewrite.rule,
                 subst,
@@ -1767,8 +1929,12 @@ def equality_two_rule_join_proof(
                 continue
             left_proof = oriented_rule_proof(left_rewrite, subst, rule_application_text(left_parts))
             right_proof = oriented_rule_proof(right_rewrite, subst, rule_application_text(right_parts))
+            proofs = [left_proof]
+            if middle_proof is not None:
+                proofs.append(middle_proof)
+            proofs.append(eq_symmetry_proof(right_proof, expr.args[1]))
             return eq_transitivity_proof(
-                [left_proof, eq_symmetry_proof(right_proof, expr.args[1])],
+                proofs,
                 expr_text(expr.args[0]),
             )
     return None
