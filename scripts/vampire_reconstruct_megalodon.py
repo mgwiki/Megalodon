@@ -448,12 +448,29 @@ def vampire_step_contexts(proof_text: str | None) -> dict[str, str]:
 
 def annotate_remaining_admits(lines: list[str], proof_text: str | None) -> list[str]:
     contexts = vampire_step_contexts(proof_text)
-    if not contexts:
-        return list(lines)
+    theorem = None
+    for line in lines:
+        theorem_match = proposition_after_colon(line, "Theorem ")
+        if theorem_match is not None:
+            theorem = theorem_match[1]
+            break
     result: list[str] = []
     for index, line in enumerate(lines):
         claim = proposition_after_colon(line, "claim ")
         if claim is not None and index + 1 < len(lines) and lines[index + 1] == "{ admit. }":
+            already_annotated = any(
+                cursor >= 0
+                and lines[cursor].startswith("// ")
+                and (
+                    "conjecture anchor" in lines[cursor]
+                    or "refutation boundary" in lines[cursor]
+                    or lines[cursor].startswith("// vampire step ")
+                )
+                for cursor in range(index - 1, max(-1, index - 8), -1)
+            )
+            if already_annotated:
+                result.append(line)
+                continue
             context = contexts.get(claim[0])
             if context is not None:
                 result.append(f"// vampire step {claim[0]}: {comment_text(context)}")
@@ -478,6 +495,11 @@ def annotate_remaining_admits(lines: list[str], proof_text: str | None) -> list[
                         "// conjecture anchor: this is the original Megalodon obligation used "
                         "as the theorem proof target."
                     )
+            elif theorem is not None and canonical_proposition(claim[1]) == canonical_proposition(theorem):
+                result.append(
+                    "// conjecture anchor: this is the original Megalodon obligation used "
+                    "as the theorem proof target."
+                )
         result.append(line)
     return result
 
@@ -7619,6 +7641,105 @@ def rule_conjunction_projection_proof(expr: Expr, rules: list[ProofRule]) -> str
     return None
 
 
+def rule_conjunction_component_application_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 0:
+        return None
+    binders, body = collect_foralls(expr)
+    target_premises, target_conclusion = split_arrows(body)
+    target_binder_names = [name for name, _ in binders]
+    premise_names = [f"H{index}" for index, _ in enumerate(target_premises)]
+    local_known = dict(known)
+    local_known_canonical = dict(known_canonical)
+    local_rules = list(rules)
+    local_eq_facts = list(eq_facts)
+    for premise, name in zip(target_premises, premise_names):
+        remember_proposition(local_known, local_known_canonical, local_rules, local_eq_facts, name, expr_text(premise))
+
+    def flatten_vampire_and(node: Expr) -> list[Expr]:
+        parts = vampire_and_parts(node)
+        if parts is None:
+            return [node]
+        return flatten_vampire_and(parts[0]) + flatten_vampire_and(parts[1])
+
+    def project_from_conjunction(proof: str, node: Expr, target: Expr, depth: int = 0) -> str | None:
+        if expr_key(node) == expr_key(target):
+            return proof
+        parts = vampire_and_parts(node)
+        if parts is None:
+            return None
+        left_name = f"HL{depth}"
+        right_name = f"HR{depth}"
+        left_projection = project_from_conjunction(left_name, parts[0], target, depth + 1)
+        if left_projection is not None:
+            return f"({proof} {proof_arg_text(target)} (fun {left_name} {right_name} => {left_projection}))"
+        right_projection = project_from_conjunction(right_name, parts[1], target, depth + 1)
+        if right_projection is not None:
+            return f"({proof} {proof_arg_text(target)} (fun {left_name} {right_name} => {right_projection}))"
+        return None
+
+    for rule in rules:
+        if vampire_and_parts(rule.conclusion) is None:
+            continue
+        variables = set(rule_application_binders(rule))
+        for component in flatten_vampire_and(rule.conclusion):
+            component_premises, component_conclusion = split_arrows(component)
+            if len(component_premises) > len(target_premises):
+                continue
+            residual = target_premises[len(target_premises) - len(component_premises) :] if component_premises else []
+            subst: dict[str, Expr] = {}
+            if not match_expr(component_conclusion, target_conclusion, variables, subst):
+                continue
+            ok = True
+            for component_premise, target_premise in zip(component_premises, residual):
+                if not match_expr(component_premise, target_premise, variables, subst):
+                    ok = False
+                    break
+            if not ok:
+                continue
+            for candidate in completed_rule_substs(rule, subst, local_known, local_eq_facts, limit=16):
+                if not all(binder in candidate for binder in rule_application_binders(rule)):
+                    continue
+                rule_parts = [rule.name]
+                for binder in rule_application_binders(rule):
+                    rule_parts.append(proof_arg_text(candidate[binder]))
+                candidate_ok = True
+                for premise in rule.premises:
+                    premise_proof = proof_for_expr(
+                        substitute_expr(premise, candidate),
+                        local_known,
+                        local_known_canonical,
+                        local_rules,
+                        local_eq_facts,
+                        definitions,
+                        allow_rule=True,
+                        rule_depth=max(0, rule_depth - 1),
+                    )
+                    if premise_proof is None:
+                        candidate_ok = False
+                        break
+                    rule_parts.append(proof_argument_text(premise_proof))
+                if not candidate_ok:
+                    continue
+                instantiated_conclusion = substitute_expr(rule.conclusion, candidate)
+                instantiated_component = substitute_expr(component, candidate)
+                projection = project_from_conjunction(rule_application_text(rule_parts), instantiated_conclusion, instantiated_component)
+                if projection is None:
+                    continue
+                for premise_name in premise_names[len(target_premises) - len(component_premises) :] if component_premises else []:
+                    projection = f"({projection} {premise_name})"
+                args = target_binder_names + premise_names
+                return f"({' '.join(['fun'] + args + ['=>', projection])})" if args else projection
+    return None
+
+
 def rule_conjunction_implication_proof(
     expr: Expr,
     known: dict[str, str],
@@ -7958,6 +8079,18 @@ def _proof_for_expr_impl(
     rule_conjunction = rule_conjunction_projection_proof(expr, rules)
     if rule_conjunction is not None:
         return rule_conjunction
+
+    rule_conjunction_component = rule_conjunction_component_application_proof(
+        expr,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        rule_depth,
+    )
+    if rule_conjunction_component is not None:
+        return rule_conjunction_component
 
     rule_conjunction_implication = rule_conjunction_implication_proof(
         expr,
@@ -8909,7 +9042,9 @@ def check_megalodon_lines(
     if contains_executable_aby(output_lines):
         candidate.unlink(missing_ok=True)
         return [f"{proof}: generated {kind} {index} uses aby"]
+    demoted_exact = False
     def demote_failed_exact(stdout: str) -> bool:
+        nonlocal demoted_exact
         if not allow_incomplete or kind != "claim skeleton":
             return False
         match = re.search(r"Failure at line (?P<line>[0-9]+) char [0-9]+:", stdout)
@@ -8943,6 +9078,7 @@ def check_megalodon_lines(
             ):
                 output_lines[candidate_index] = replacement_for_claim(candidate_index - 1, candidate_index)
                 candidate.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
+                demoted_exact = True
                 return True
 
         nearest_claim = line_index
@@ -8953,6 +9089,7 @@ def check_megalodon_lines(
             if output_lines[proof_index].startswith("{ exact "):
                 output_lines[proof_index] = replacement_for_claim(nearest_claim, proof_index)
                 candidate.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
+                demoted_exact = True
                 return True
             if output_lines[proof_index] == "{":
                 block_end = proof_index + 1
@@ -8961,6 +9098,7 @@ def check_megalodon_lines(
                 if block_end < len(output_lines):
                     output_lines[proof_index : block_end + 1] = [replacement_for_claim(nearest_claim)]
                     candidate.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
+                    demoted_exact = True
                     return True
 
         block_start = line_index
@@ -8978,6 +9116,7 @@ def check_megalodon_lines(
             if block_end < len(output_lines):
                 output_lines[block_start : block_end + 1] = [replacement_for_claim(block_start - 1)]
                 candidate.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
+                demoted_exact = True
                 return True
         return False
 
@@ -8989,6 +9128,9 @@ def check_megalodon_lines(
         for _ in range(8):
             proc = run(cmd, repo)
             if proc.returncode == 0:
+                if demoted_exact and output_dir is not None:
+                    output_lines = annotate_remaining_admits(output_lines, proof_text)
+                    candidate.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
                 return []
             if not demote_failed_exact(proc.stdout):
                 return [f"{proof}: Megalodon rejected {kind} {index}: {proc.stdout.strip()}"]
