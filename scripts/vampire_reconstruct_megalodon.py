@@ -3097,17 +3097,8 @@ def fill_replay_substitution_claims(
             continue
 
         replay_propositions = {local_id: prop for local_id, prop in zip(local_ids, step.substitutions)}
-        rule_key = step.rule.replace(" ", "_")
-        if step.replay_kind == "normal_form" and rule_key not in {
-            "flattening",
-            "ennf_transformation",
-            "nnf_transformation",
-            "boolean_simplification",
-            "true_and_false_elimination",
-        }:
-            rule_key = "true_and_false_elimination"
-        replay_proof = raw_tptp_replay_proof(
-            rule_key,
+        replay_proof = raw_tptp_replay_proof_from_step(
+            step,
             claim[1],
             local_ids,
             replay_propositions,
@@ -3115,8 +3106,8 @@ def fill_replay_substitution_claims(
         )
         if replay_proof is None and surface_replay_proposition(step.proposition) != claim[1]:
             intermediate_id = f"{claim[0]}_replay_conclusion"
-            replay_proof = raw_tptp_replay_proof(
-                rule_key,
+            replay_proof = raw_tptp_replay_proof_from_step(
+                step,
                 step.proposition,
                 local_ids,
                 replay_propositions,
@@ -15120,6 +15111,43 @@ def raw_tptp_avatar_split_clause_proof(
     return raw_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]), rewrites=rewrites)
 
 
+def raw_tptp_replay_rule_candidates(step: MegalodonStep) -> list[str]:
+    rule_key = step.rule.replace(" ", "_")
+    replay_kind = step.replay_kind
+    if replay_kind == "normal_form" and rule_key not in {
+        "flattening",
+        "ennf_transformation",
+        "nnf_transformation",
+        "boolean_simplification",
+        "true_and_false_elimination",
+    }:
+        replay_kind = "true_and_false_elimination"
+    candidates = [rule_key]
+    if replay_kind and replay_kind not in candidates:
+        candidates.append(replay_kind)
+    return candidates
+
+
+def raw_tptp_replay_proof_from_step(
+    step: MegalodonStep,
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    for rule in raw_tptp_replay_rule_candidates(step):
+        proof = raw_tptp_replay_proof(
+            rule,
+            proposition,
+            parents,
+            propositions_by_name,
+            variable_sorts,
+        )
+        if proof is not None:
+            return proof
+    return None
+
+
 def raw_tptp_replay_proof(
     rule: str | None,
     proposition: str,
@@ -15131,6 +15159,8 @@ def raw_tptp_replay_proof(
         return raw_tptp_rat_proof(proposition, parents, propositions_by_name)
     if rule == "superposition":
         return raw_tptp_superposition_proof(proposition, parents, propositions_by_name, variable_sorts)
+    if rule in {"resolution", "factoring"}:
+        return raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name)
     if rule == "sat_conversion":
         return raw_tptp_trivial_inequality_removal_proof(
             proposition,
@@ -15186,7 +15216,7 @@ def raw_tptp_replay_proof(
         return raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name)
     if rule == "forward_subsumption_resolution":
         return raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name)
-    if rule == "forward_demodulation":
+    if rule in {"forward_demodulation", "backward_demodulation"}:
         return raw_tptp_forward_demodulation_proof(proposition, parents, propositions_by_name, variable_sorts)
     if rule == "equality_resolution":
         return raw_tptp_equality_resolution_proof(proposition, parents, propositions_by_name)
