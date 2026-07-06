@@ -3278,6 +3278,184 @@ def direct_proof_expr(expr: Expr) -> str | None:
     premises, conclusion = split_arrows(body)
     binder_names = [name for name, _ in binders]
 
+    def branch_continuation_parts(branch: Expr, element: Expr, result_name: str) -> tuple[str, Expr, str, Expr, Expr, bool] | None:
+        branch_binders, branch_body = collect_foralls(branch)
+        branch_premises, branch_conclusion = split_arrows(branch_body)
+        if len(branch_binders) != 1 or branch_binders[0][1] != "set" or len(branch_premises) != 1:
+            return None
+        first_name = branch_binders[0][0]
+        first_membership = binary_atom_parts(branch_premises[0])
+        if (
+            first_membership is None
+            or first_membership[0] != "In"
+            or first_membership[1].kind != "var"
+            or first_membership[1].value != first_name
+        ):
+            return None
+        second_binders, second_body = collect_foralls(branch_conclusion)
+        second_premises, second_conclusion = split_arrows(second_body)
+        if len(second_binders) != 1 or second_binders[0][1] != "set" or len(second_premises) != 2:
+            return None
+        if second_conclusion.kind != "var" or second_conclusion.value != result_name:
+            return None
+        second_name = second_binders[0][0]
+        second_membership = binary_atom_parts(second_premises[0])
+        if (
+            second_membership is None
+            or second_membership[0] != "In"
+            or second_membership[1].kind != "var"
+            or second_membership[1].value != second_name
+        ):
+            return None
+        equality = second_premises[1]
+        if equality.kind != "eq":
+            return None
+        if expr_key(equality.args[1]) == expr_key(element):
+            return first_name, first_membership[2], second_name, second_membership[2], equality.args[0], False
+        if expr_key(equality.args[0]) == expr_key(element):
+            return first_name, first_membership[2], second_name, second_membership[2], equality.args[1], True
+        return None
+
+    def branch_membership_matches(
+        branch: Expr,
+        first_name: str,
+        first_base: Expr,
+        second_name: str,
+        second_base: Expr,
+        image: Expr,
+        target_set: Expr,
+    ) -> bool:
+        first_binders, first_body = collect_foralls(branch)
+        first_premises, first_conclusion = split_arrows(first_body)
+        if len(first_binders) != 1 or first_binders[0][1] != "set" or len(first_premises) != 1:
+            return False
+        original_first = first_binders[0][0]
+        first_membership = binary_atom_parts(first_premises[0])
+        renames = {original_first: first_name}
+        renamed_first_base = rename_expr_variables(first_membership[2], renames) if first_membership is not None else None
+        if (
+            first_membership is None
+            or first_membership[0] != "In"
+            or first_membership[1].kind != "var"
+            or first_membership[1].value != original_first
+            or renamed_first_base is None
+            or expr_key(renamed_first_base) != expr_key(first_base)
+        ):
+            return False
+        second_binders, second_body = collect_foralls(first_conclusion)
+        second_premises, second_conclusion = split_arrows(second_body)
+        if len(second_binders) != 1 or second_binders[0][1] != "set" or len(second_premises) != 1:
+            return False
+        original_second = second_binders[0][0]
+        renames[original_second] = second_name
+        second_membership = binary_atom_parts(second_premises[0])
+        renamed_second_base = rename_expr_variables(second_membership[2], renames) if second_membership is not None else None
+        if (
+            second_membership is None
+            or second_membership[0] != "In"
+            or second_membership[1].kind != "var"
+            or second_membership[1].value != original_second
+            or renamed_second_base is None
+            or expr_key(renamed_second_base) != expr_key(second_base)
+        ):
+            return False
+        conclusion_atom = binary_atom_parts(second_conclusion)
+        if conclusion_atom is None or conclusion_atom[0] != "In":
+            return False
+        return (
+            expr_key(rename_expr_variables(conclusion_atom[1], renames)) == expr_key(image)
+            and expr_key(rename_expr_variables(conclusion_atom[2], renames)) == expr_key(target_set)
+        )
+
+    if len(premises) == 3 and conclusion.kind == "forall":
+        target_binders, target_body = collect_foralls(conclusion)
+        target_premises, target_conclusion = split_arrows(target_body)
+        target_atom = binary_atom_parts(target_conclusion)
+        if len(target_binders) == 1 and target_binders[0][1] == "set" and len(target_premises) == 1 and target_atom is not None and target_atom[0] == "In":
+            target_name = target_binders[0][0]
+            target_element = target_atom[1]
+            target_set = target_atom[2]
+            target_membership = binary_atom_parts(target_premises[0])
+            if (
+                target_element.kind == "var"
+                and target_element.value == target_name
+                and target_membership is not None
+                and target_membership[0] == "In"
+                and target_membership[1].kind == "var"
+                and target_membership[1].value == target_name
+            ):
+                chooser_binders, chooser_body = collect_foralls(premises[0])
+                chooser_premises, chooser_conclusion = split_arrows(chooser_body)
+                if len(chooser_binders) == 1 and chooser_binders[0][1] == "set" and len(chooser_premises) == 1:
+                    chooser_name = chooser_binders[0][0]
+                    chooser_membership = binary_atom_parts(chooser_premises[0])
+                    result_binders, result_body = collect_foralls(chooser_conclusion)
+                    result_premises, result_conclusion = split_arrows(result_body)
+                    if (
+                        chooser_membership is not None
+                        and chooser_membership[0] == "In"
+                        and chooser_membership[1].kind == "var"
+                        and chooser_membership[1].value == chooser_name
+                        and expr_key(chooser_membership[2]) == expr_key(target_membership[2])
+                        and len(result_binders) == 1
+                        and result_binders[0][1] == "prop"
+                        and len(result_premises) == 2
+                        and result_conclusion.kind == "var"
+                        and result_conclusion.value == result_binders[0][0]
+                    ):
+                        left = branch_continuation_parts(result_premises[0], Expr("var", value=chooser_name), result_binders[0][0])
+                        right = branch_continuation_parts(result_premises[1], Expr("var", value=chooser_name), result_binders[0][0])
+                        if left is not None and right is not None:
+                            left_first, left_first_base, left_second, left_second_base, left_image, left_reversed = left
+                            right_first, right_first_base, right_second, right_second_base, right_image, right_reversed = right
+                            if branch_membership_matches(
+                                premises[1],
+                                left_first,
+                                left_first_base,
+                                left_second,
+                                left_second_base,
+                                left_image,
+                                target_set,
+                            ) and branch_membership_matches(
+                                premises[2],
+                                right_first,
+                                right_first_base,
+                                right_second,
+                                right_second_base,
+                                right_image,
+                                target_set,
+                            ):
+                                target_set_text = proof_arg_text(target_set)
+                                target_element_expr = Expr("var", value=target_name)
+
+                                def branch_lambda(
+                                    first_name: str,
+                                    second_name: str,
+                                    premise_name: str,
+                                    reversed_equality: bool,
+                                ) -> str:
+                                    proof = f"({premise_name} {first_name} H{first_name} {second_name} H{second_name})"
+                                    if reversed_equality:
+                                        equality = eq_symmetry_proof("Heq", target_element_expr)
+                                        return (
+                                            f"(fun {first_name}:set => fun H{first_name} => "
+                                            f"fun {second_name}:set => fun H{second_name} => fun Heq => "
+                                            f"{equality} (fun zz:set => In zz {target_set_text}) {proof})"
+                                        )
+                                    return (
+                                        f"(fun {first_name}:set => fun H{first_name} => "
+                                        f"fun {second_name}:set => fun H{second_name} => fun Heq => "
+                                        f"Heq (fun zz:set => In zz {target_set_text}) {proof})"
+                                    )
+
+                                args = binder_names + ["H0", "H1", "H2", target_name, "H3"]
+                                return (
+                                    f"({' '.join(['fun'] + args + ['=>'])} "
+                                    f"H0 {target_name} H3 (In {target_name} {target_set_text}) "
+                                    f"{branch_lambda(left_first, left_second, 'H1', left_reversed)} "
+                                    f"{branch_lambda(right_first, right_second, 'H2', right_reversed)})"
+                                )
+
     if len(binders) == 1 and binders[0][1] == "set->prop" and len(premises) == 2:
         predicate = binders[0][0]
         base = unary_application(premises[0])
