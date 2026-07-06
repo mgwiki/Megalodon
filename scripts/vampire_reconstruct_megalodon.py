@@ -730,7 +730,11 @@ def decode_tptp_identifier(name: str) -> str:
     name = name.strip()
     if name.startswith("c_"):
         name = name[2:]
-    return re.sub(r"_([0-9A-Fa-f]{2})(?![0-9A-Fa-f])", lambda match: chr(int(match.group(1), 16)), name)
+    # Megalodon's TPTP printer hex-escapes non-alphanumeric source-name
+    # characters.  Vampire also invents names with ordinary numeric suffixes
+    # such as spl10_16, so only decode escapes that remain valid Megalodon
+    # identifier characters here.
+    return re.sub(r"_(5[Ff]|27)", lambda match: "_" if match.group(1).lower() == "5f" else "'", name)
 
 
 def split_top_level_commas(text: str) -> list[str] | None:
@@ -11192,6 +11196,43 @@ def raw_complement_resolution_proof(
     return None
 
 
+def raw_clause_literals(expr: Expr, depth: int = 0) -> list[Expr]:
+    if depth > 64:
+        return [expr]
+    parts = app_args(expr, "vampire_or", 2)
+    if parts is None:
+        return [expr]
+    return raw_clause_literals(parts[0], depth + 1) + raw_clause_literals(parts[1], depth + 1)
+
+
+def raw_clause_replay_budget_ok(*exprs: Expr, max_literals: int = 10, max_literal_product: int = 64) -> bool:
+    counts = [len(raw_clause_literals(expr)) for expr in exprs]
+    if any(count > max_literals for count in counts):
+        return False
+    product = 1
+    for count in counts:
+        product *= max(1, count)
+    return product <= max_literal_product
+
+
+def raw_complementary_literals(left: Expr, right: Expr) -> bool:
+    left_premises, left_conclusion = split_arrows(left)
+    if len(left_premises) == 1 and false_eliminator_expr(left_conclusion) and expr_key(left_premises[0]) == expr_key(right):
+        return True
+    right_premises, right_conclusion = split_arrows(right)
+    return (
+        len(right_premises) == 1
+        and false_eliminator_expr(right_conclusion)
+        and expr_key(right_premises[0]) == expr_key(left)
+    )
+
+
+def raw_clauses_have_complement(source: Expr, resolver: Expr) -> bool:
+    source_literals = raw_clause_literals(source)
+    resolver_literals = raw_clause_literals(resolver)
+    return any(raw_complementary_literals(left, right) for left in source_literals for right in resolver_literals)
+
+
 def raw_resolver_clause_to_target(
     resolver: Expr,
     target: Expr,
@@ -11264,6 +11305,8 @@ def raw_tptp_trivial_inequality_removal_proof(
     target = parse_expr(proposition)
     if source is None or target is None:
         return None
+    if not raw_clause_replay_budget_ok(source, target):
+        return None
     return raw_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
 
 
@@ -11282,6 +11325,10 @@ def raw_tptp_forward_subsumption_resolution_proof(
     second = parse_expr(second_proposition)
     target = parse_expr(proposition)
     if first is None or second is None or target is None:
+        return None
+    if not raw_clause_replay_budget_ok(first, second, target, max_literals=8, max_literal_product=128):
+        return None
+    if not raw_clauses_have_complement(first, second):
         return None
     first_name = raw_tptp_claim_name(parents[0])
     second_name = raw_tptp_claim_name(parents[1])
@@ -11343,6 +11390,8 @@ def raw_tptp_avatar_component_clause_proof(
     target_text = proof_arg_text(target)
 
     if expr_key(target_right) == expr_key(Expr("arrow", args=(split_atom, Expr("var", value="vampire_false")))):
+        if not raw_clause_replay_budget_ok(component, target_left):
+            return None
         component_proof = raw_clause_transform_proof(component, target_left, "(Hforward Hsplit)")
         if component_proof is None:
             return None
@@ -11361,6 +11410,8 @@ def raw_tptp_avatar_component_clause_proof(
         and expr_key(target_right) == expr_key(split_atom)
     ):
         target_component, _ = target_left_implication
+        if not raw_clause_replay_budget_ok(target_component, component):
+            return None
         target_to_component = raw_clause_transform_proof(target_component, component, "Htargetcomponent")
         if target_to_component is None:
             return None
@@ -11415,6 +11466,8 @@ def raw_tptp_avatar_split_clause_proof(
     source = parse_expr(source_proposition)
     target = parse_expr(proposition)
     if source is None or target is None:
+        return None
+    if not raw_clause_replay_budget_ok(source, target):
         return None
     rewrites = raw_tptp_split_rewrites(parents[1:], propositions_by_name)
     if not rewrites:
