@@ -12077,6 +12077,96 @@ def raw_clause_resolution_proof(
     return f"({proof_head(source_proof)} {proof_arg_text(target)} (fun {left_name} => {left_target}) (fun {right_name} => {right_target}))"
 
 
+def raw_clause_multi_resolution_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    resolvers: list[tuple[Expr, str]],
+    depth: int = 0,
+) -> str | None:
+    if depth > 16 or proof_search_timed_out():
+        return None
+    direct = raw_clause_transform_proof(source, target, source_proof, depth + 1)
+    if direct is not None:
+        return direct
+    source_parts = app_args(source, "vampire_or", 2)
+    if source_parts is None:
+        for resolver, resolver_proof in resolvers:
+            resolved = raw_resolver_clause_to_target(resolver, target, resolver_proof, source, source_proof, depth + 1)
+            if resolved is not None:
+                return resolved
+        return None
+    left, right = source_parts
+    left_name = fresh_identifier("HL", expr_text(source), expr_text(target), source_proof)
+    right_name = fresh_identifier("HR", expr_text(source), expr_text(target), source_proof, left_name)
+    left_target = raw_clause_multi_resolution_proof(left, target, left_name, resolvers, depth + 1)
+    right_target = raw_clause_multi_resolution_proof(right, target, right_name, resolvers, depth + 1)
+    if left_target is None or right_target is None:
+        return None
+    return f"({proof_head(source_proof)} {proof_arg_text(target)} (fun {left_name} => {left_target}) (fun {right_name} => {right_target}))"
+
+
+def raw_tptp_unit_resulting_resolution_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> str | None:
+    if len(parents) < 2 or len(parents) > 10:
+        return None
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    parsed: list[tuple[str, Expr, str]] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        if parent_proposition is None:
+            return None
+        parent_expr = parse_expr(parent_proposition)
+        if parent_expr is None:
+            return None
+        parsed.append((parent, parent_expr, raw_tptp_claim_name(parent)))
+
+    _, source, source_proof = parsed[0]
+    resolver_entries = parsed[1:]
+    if not raw_clause_replay_budget_ok(source, target, max_literals=16, max_literal_product=256):
+        return None
+
+    resolver_options: list[list[tuple[Expr, str]]] = []
+    for _, resolver, resolver_proof in resolver_entries:
+        if len(raw_clause_literals(resolver)) > 12:
+            return None
+        resolver_options.append(raw_instantiated_forall_clause_options(resolver, resolver_proof, target, source)[:2])
+
+    source_options: list[tuple[Expr, str]] = [(source, source_proof)]
+    for _, resolver, _ in resolver_entries[:3]:
+        for option in raw_instantiated_forall_clause_options(source, source_proof, target, resolver):
+            if all(expr_key(option[0]) != expr_key(existing[0]) for existing in source_options):
+                source_options.append(option)
+            if len(source_options) >= 4:
+                break
+        if len(source_options) >= 4:
+            break
+
+    def search_resolvers(index: int, current: list[tuple[Expr, str]]) -> str | None:
+        if proof_search_timed_out():
+            return None
+        if index >= len(resolver_options):
+            for source_clause, source_clause_proof in source_options:
+                if len(raw_clause_literals(source_clause)) > 16:
+                    continue
+                proof = raw_clause_multi_resolution_proof(source_clause, target, source_clause_proof, current)
+                if proof is not None:
+                    return proof
+            return None
+        for option in resolver_options[index]:
+            found = search_resolvers(index + 1, current + [option])
+            if found is not None:
+                return found
+        return None
+
+    return search_resolvers(0, [])
+
+
 def raw_tptp_trivial_inequality_removal_proof(
     proposition: str,
     parents: list[str],
@@ -12872,7 +12962,12 @@ def raw_tptp_replay_proof(
         if rule == "cnf_transformation":
             return raw_tptp_small_forall_permutation_transform_proof(proposition, parents, propositions_by_name)
         return None
-    if rule in {"forward_subsumption_resolution", "unit_resulting_resolution"}:
+    if rule == "unit_resulting_resolution":
+        proof = raw_tptp_unit_resulting_resolution_proof(proposition, parents, propositions_by_name)
+        if proof is not None:
+            return proof
+        return raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name)
+    if rule == "forward_subsumption_resolution":
         return raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name)
     if rule == "forward_demodulation":
         return raw_tptp_forward_demodulation_proof(proposition, parents, propositions_by_name, variable_sorts)
