@@ -1844,6 +1844,28 @@ def rename_expr_variables(expr: Expr, renames: dict[str, str]) -> Expr:
     )
 
 
+def replace_expr_occurrences(expr: Expr, needle: Expr, replacement: Expr) -> tuple[Expr, bool]:
+    if expr_key(expr) == expr_key(needle):
+        return replacement, True
+    if not expr.args:
+        return expr, False
+    if (
+        expr.kind in {"forall", "lambda"}
+        and needle.kind == "var"
+        and expr.value == needle.value
+    ):
+        return expr, False
+    changed = False
+    replaced_args: list[Expr] = []
+    for arg in expr.args:
+        replaced_arg, arg_changed = replace_expr_occurrences(arg, needle, replacement)
+        changed = changed or arg_changed
+        replaced_args.append(replaced_arg)
+    if not changed:
+        return expr, False
+    return Expr(expr.kind, value=expr.value, args=tuple(replaced_args), sort=expr.sort), True
+
+
 def rename_rule_binders(rule: ProofRule, prefix: str) -> ProofRule:
     renames = {name: f"{prefix}{name}" for name in rule_application_binders(rule)}
     steps: list[RuleStep] = []
@@ -4242,6 +4264,87 @@ def ap1_sigma_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
     )
 
 
+def forall_prop_identity(expr: Expr) -> bool:
+    binders, body = collect_foralls(expr)
+    return (
+        len(binders) == 1
+        and binders[0][1] == "prop"
+        and body.kind == "var"
+        and body.value == binders[0][0]
+    )
+
+
+def contradiction_transport_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 0:
+        return None
+    if expr.kind == "var" or forall_prop_identity(expr):
+        return None
+    for proposition, contradiction_name in reversed(list(known.items())):
+        parsed = parse_expr(proposition)
+        if parsed is None:
+            continue
+        premises, conclusion = split_arrows(parsed)
+        if len(premises) != 1 or not forall_prop_identity(conclusion):
+            continue
+        premise = premises[0]
+        premise_proof = proof_for_expr(
+            premise,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            allow_rule=True,
+            rule_depth=rule_depth - 1,
+        )
+        if premise_proof is not None:
+            return f"({contradiction_name} {proof_argument_text(premise_proof)} ({expr_text(expr)}))"
+        for fact in reversed(eq_facts):
+            replacements = (
+                (fact.left, fact.right, fact.proof),
+                (fact.right, fact.left, eq_symmetry_proof(fact.proof, fact.left)),
+            )
+            for source, target, equality_proof in replacements:
+                source_premise, changed = replace_expr_occurrences(premise, target, source)
+                if not changed:
+                    continue
+                source_proof = proof_for_expr(
+                    source_premise,
+                    known,
+                    known_canonical,
+                    rules,
+                    eq_facts,
+                    definitions,
+                    allow_rule=True,
+                    rule_depth=rule_depth - 1,
+                )
+                if source_proof is None:
+                    continue
+                hole_name = fresh_identifier("zz", expr_text(premise), expr_text(source), expr_text(target))
+                context_expr, context_changed = replace_expr_occurrences(
+                    premise,
+                    target,
+                    Expr("var", value=hole_name),
+                )
+                if not context_changed:
+                    continue
+                transported = (
+                    f"{proof_term_text(equality_proof)} "
+                    f"(fun {hole_name}:set => {expr_text(context_expr)}) "
+                    f"{proof_argument_text(source_proof)}"
+                )
+                return f"({contradiction_name} ({transported}) ({expr_text(expr)}))"
+    return None
+
+
 def proof_for_expr(
     expr: Expr,
     known: dict[str, str],
@@ -4276,6 +4379,19 @@ def proof_for_expr(
     ):
         if derived is not None:
             return derived
+
+    if allow_rule:
+        contradiction = contradiction_transport_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth,
+        )
+        if contradiction is not None:
+            return contradiction
 
     or_intro = vampire_or_intro_proof(expr, known, known_canonical, rules, eq_facts, definitions, rule_depth)
     if or_intro is not None:
