@@ -7025,6 +7025,271 @@ def implication_intro_proof(
     return f"({' '.join(['fun'] + args + ['=>', conclusion_proof])})"
 
 
+def binary_relation_instance(expr: Expr, left: Expr, right: Expr) -> str | None:
+    if (
+        expr.kind == "app"
+        and len(expr.args) == 3
+        and expr.args[0].kind == "var"
+        and expr_key(expr.args[1]) == expr_key(left)
+        and expr_key(expr.args[2]) == expr_key(right)
+    ):
+        return expr.args[0].value
+    return None
+
+
+def equality_proof_to_target(proof: str, equality_expr: Expr, target_left: Expr, target_right: Expr) -> str | None:
+    sides = equality_like_sides(equality_expr)
+    if sides is None:
+        return None
+    left, right = sides
+    if expr_key(left) == expr_key(target_left) and expr_key(right) == expr_key(target_right):
+        return f"(fun Q H => {proof_head(proof)} Q H)"
+    if expr_key(left) == expr_key(target_right) and expr_key(right) == expr_key(target_left):
+        if equality_expr.kind == "app" and equality_expr.args[0].kind == "var" and equality_expr.args[0].value == "vampire_eq_set":
+            return set_eq_symmetry_proof(proof, target_right)
+        return eq_symmetry_proof(proof, target_right)
+    return None
+
+
+@dataclass(frozen=True)
+class AntisymmetryCaseRule:
+    rule: ProofRule
+    equality_first: bool
+    strict_head: str
+
+
+def antisymmetry_case_rule_for(rule: ProofRule, first: Expr, second: Expr) -> AntisymmetryCaseRule | None:
+    disjuncts = app_args(rule_application_conclusion(rule), "vampire_or", 2)
+    if disjuncts is None:
+        return None
+    for equality_index, strict_index in ((0, 1), (1, 0)):
+        equality_expr = disjuncts[equality_index]
+        strict_expr = disjuncts[strict_index]
+        sides = equality_like_sides(equality_expr)
+        if sides is None:
+            continue
+        strict_head = binary_relation_instance(strict_expr, sides[0], sides[1])
+        if strict_head is None:
+            continue
+        variables = set(rule_application_binders(rule))
+        subst: dict[str, Expr] = {}
+        if not (
+            match_expr(sides[0], first, variables, subst)
+            and match_expr(sides[1], second, variables, subst)
+        ):
+            continue
+        return AntisymmetryCaseRule(rule, equality_index == 0, strict_head)
+    return None
+
+
+def antisymmetry_rule_parts(
+    case_rule: AntisymmetryCaseRule,
+    first: Expr,
+    second: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> tuple[str, Expr, Expr] | None:
+    disjuncts = app_args(rule_application_conclusion(case_rule.rule), "vampire_or", 2)
+    if disjuncts is None:
+        return None
+    equality_expr = disjuncts[0] if case_rule.equality_first else disjuncts[1]
+    strict_expr = disjuncts[1] if case_rule.equality_first else disjuncts[0]
+    sides = equality_like_sides(equality_expr)
+    if sides is None:
+        return None
+    variables = set(rule_application_binders(case_rule.rule))
+    subst: dict[str, Expr] = {}
+    if not (
+        match_expr(sides[0], first, variables, subst)
+        and match_expr(sides[1], second, variables, subst)
+    ):
+        return None
+    parts = rule_application_parts(
+        case_rule.rule,
+        subst,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        max(0, rule_depth - 1),
+    )
+    if parts is None:
+        return None
+    return rule_application_text(parts), substitute_expr(equality_expr, subst), substitute_expr(strict_expr, subst)
+
+
+def direct_rule_parts_for(
+    target: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    for rule in reversed(rules):
+        conclusion = rule_application_conclusion(rule)
+        variables = set(rule_application_binders(rule))
+        subst: dict[str, Expr] = {}
+        if not match_expr(conclusion, target, variables, subst):
+            continue
+        parts = rule_application_parts(
+            rule,
+            subst,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            max(0, rule_depth - 1),
+        )
+        if parts is not None:
+            return rule_application_text(parts)
+    return None
+
+
+def antisymmetry_from_order_cases_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if proof_search_timed_out() or rule_depth <= 0 or len(expr_text(expr)) > 800:
+        return None
+    binders, body = collect_foralls(expr)
+    if len(binders) < 2:
+        return None
+    premises, conclusion = split_arrows(body)
+    if conclusion.kind != "eq" or len(premises) > 6:
+        return None
+    left, right = conclusion.args
+    if left.kind != "var" or right.kind != "var":
+        return None
+    binder_names = [name for name, _ in binders]
+    if left.value not in binder_names or right.value not in binder_names:
+        return None
+
+    relation_pairs = {
+        binary_relation_instance(premise, left, right)
+        for premise in premises
+    } & {
+        binary_relation_instance(premise, right, left)
+        for premise in premises
+    }
+    relation_pairs.discard(None)
+    if not relation_pairs:
+        return None
+
+    local_known = dict(known)
+    local_known_canonical = dict(known_canonical)
+    local_rules = list(rules)
+    local_eq_facts = list(eq_facts)
+    premise_names = [f"H{index}" for index, _ in enumerate(premises)]
+    for premise, premise_name in zip(premises, premise_names):
+        remember_proposition(
+            local_known,
+            local_known_canonical,
+            local_rules,
+            local_eq_facts,
+            premise_name,
+            expr_text(premise),
+        )
+
+    for case_rule in reversed(local_rules):
+        direct_case = antisymmetry_case_rule_for(case_rule, left, right)
+        if direct_case is None:
+            continue
+        reverse_case = antisymmetry_case_rule_for(case_rule, right, left)
+        if reverse_case is None or reverse_case.strict_head != direct_case.strict_head:
+            continue
+        direct_parts = antisymmetry_rule_parts(
+            direct_case,
+            left,
+            right,
+            local_known,
+            local_known_canonical,
+            local_rules,
+            local_eq_facts,
+            definitions,
+            rule_depth,
+        )
+        reverse_parts = antisymmetry_rule_parts(
+            reverse_case,
+            right,
+            left,
+            local_known,
+            local_known_canonical,
+            local_rules,
+            local_eq_facts,
+            definitions,
+            rule_depth,
+        )
+        if direct_parts is None or reverse_parts is None:
+            continue
+        direct_or, direct_equality, direct_strict = direct_parts
+        reverse_or, reverse_equality, reverse_strict = reverse_parts
+        direct_eq_branch = equality_proof_to_target("Heq0", direct_equality, left, right)
+        reverse_eq_branch = equality_proof_to_target("Heq1", reverse_equality, left, right)
+        if direct_eq_branch is None or reverse_eq_branch is None:
+            continue
+
+        strict_known = dict(local_known)
+        strict_known_canonical = dict(local_known_canonical)
+        strict_rules = list(local_rules)
+        strict_eq_facts = list(local_eq_facts)
+        remember_proposition(strict_known, strict_known_canonical, strict_rules, strict_eq_facts, "Hlt0", expr_text(direct_strict))
+        remember_proposition(strict_known, strict_known_canonical, strict_rules, strict_eq_facts, "Hlt1", expr_text(reverse_strict))
+        cycle = Expr(
+            "app",
+            args=(Expr("var", value=direct_case.strict_head), left, left),
+        )
+        cycle_proof = direct_rule_parts_for(
+            cycle,
+            strict_known,
+            strict_known_canonical,
+            strict_rules,
+            strict_eq_facts,
+            definitions,
+            rule_depth,
+        )
+        if cycle_proof is None:
+            continue
+        false_proof = direct_rule_parts_for(
+            Expr("var", value="vampire_false"),
+            strict_known,
+            strict_known_canonical,
+            strict_rules,
+            strict_eq_facts,
+            definitions,
+            rule_depth,
+        )
+        if false_proof is None:
+            continue
+        target_text = proof_arg_text(conclusion)
+        contradiction_branch = f"({false_proof} {target_text})"
+        reverse_elim = (
+            f"{proof_term_text(reverse_or)} {target_text} "
+            f"(fun Heq1 => {reverse_eq_branch}) "
+            f"(fun Hlt1 => {contradiction_branch})"
+        )
+        proof = (
+            f"{proof_term_text(direct_or)} {target_text} "
+            f"(fun Heq0 => {direct_eq_branch}) "
+            f"(fun Hlt0 => {reverse_elim})"
+        )
+        args = [name for name, _ in binders] + premise_names
+        return f"({' '.join(['fun'] + args + ['=>', proof])})"
+    return None
+
+
 def implication_from_false_proof(
     expr: Expr,
     known: dict[str, str],
@@ -10156,6 +10421,18 @@ def _proof_for_expr_impl(
     direct = direct_proof_expr(expr)
     if direct is not None:
         return direct
+
+    antisymmetry = antisymmetry_from_order_cases_proof(
+        expr,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        rule_depth,
+    )
+    if antisymmetry is not None:
+        return antisymmetry
 
     implication_intro = implication_intro_proof(
         expr,
