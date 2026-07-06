@@ -563,7 +563,7 @@ def prune_unreachable_claims(lines: list[str]) -> list[str]:
         for name in claims
         if re.search(rf"\b{re.escape(name)}\b", final_text)
     }
-    if not needed:
+    if not needed and not final_text.strip():
         return list(lines)
 
     pending = list(needed)
