@@ -12105,8 +12105,6 @@ def raw_quantified_literal_body_resolution_intro(
             continue
         if not raw_clauses_have_complement(source_body, resolver_clause):
             continue
-        if not raw_clause_replay_budget_ok(source_body, resolver_clause, target_body, max_literals=12, max_literal_product=192):
-            continue
         body_proof = raw_flat_clause_resolution_proof(
             source_body,
             target_body,
@@ -12125,6 +12123,8 @@ def raw_quantified_literal_body_resolution_intro(
                 avoid_text=source_body_proof,
             )
         if body_proof is None:
+            if not raw_clause_replay_budget_ok(source_body, resolver_clause, target_body, max_literals=12, max_literal_product=192):
+                continue
             body_proof = raw_clause_resolution_proof(source_body, target_body, source_body_proof, resolver_clause, resolver_clause_proof)
         if body_proof is None:
             body_proof = raw_clause_resolution_proof(resolver_clause, target_body, resolver_clause_proof, source_body, source_body_proof)
