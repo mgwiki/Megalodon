@@ -11968,23 +11968,30 @@ def write_raw_tptp_skeletons(
     output_dir: Path,
     repo: Path,
     source: Path | None = None,
+    jobs: int = 1,
 ) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    written: list[Path] = []
-    for proof in proofs:
-        proof_path = proof if proof.is_absolute() else (repo / proof)
-        if not proof_path.exists():
-            raise SystemExit(f"raw TPTP proof not found: {proof_path}")
-        problem = repo / "examples/hammer" / proof_path.name
-        if not problem.exists():
-            problem = None
-        output = output_dir / f"{proof_path.stem}.raw_tptp_skeleton.mg"
-        output.write_text(
-            "\n".join(raw_tptp_skeleton_lines(proof_path, problem, source)) + "\n",
-            encoding="utf-8",
-        )
-        written.append(output)
-    return written
+    tasks = [(proof, output_dir, repo, source) for proof in proofs]
+    if jobs <= 1 or len(tasks) <= 1:
+        return [write_raw_tptp_skeleton(task) for task in tasks]
+    with concurrent.futures.ProcessPoolExecutor(max_workers=min(jobs, len(tasks))) as executor:
+        return list(executor.map(write_raw_tptp_skeleton, tasks))
+
+
+def write_raw_tptp_skeleton(task: tuple[Path, Path, Path, Path | None]) -> Path:
+    proof, output_dir, repo, source = task
+    proof_path = proof if proof.is_absolute() else (repo / proof)
+    if not proof_path.exists():
+        raise SystemExit(f"raw TPTP proof not found: {proof_path}")
+    problem = repo / "examples/hammer" / proof_path.name
+    if not problem.exists():
+        problem = None
+    output = output_dir / f"{proof_path.stem}.raw_tptp_skeleton.mg"
+    output.write_text(
+        "\n".join(raw_tptp_skeleton_lines(proof_path, problem, source)) + "\n",
+        encoding="utf-8",
+    )
+    return output
 
 
 def main() -> int:
@@ -12043,7 +12050,7 @@ def main() -> int:
             if not args.raw_tptp_skeleton_dir.is_absolute()
             else args.raw_tptp_skeleton_dir
         )
-        written = write_raw_tptp_skeletons(args.raw_tptp_proof, raw_tptp_skeleton_dir, repo, source)
+        written = write_raw_tptp_skeletons(args.raw_tptp_proof, raw_tptp_skeleton_dir, repo, source, args.jobs)
         for path in written:
             print(f"raw TPTP skeleton: {path}")
         return 0
