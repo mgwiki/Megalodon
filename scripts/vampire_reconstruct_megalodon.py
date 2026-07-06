@@ -5032,12 +5032,16 @@ def proof_for_proposition(
             rule_depth=4,
         )
     if expr.kind == "forall" and len(expr_text(expr)) <= 500:
-        binders, body = collect_foralls(expr)
-        premises, conclusion = split_arrows(body)
+        steps, conclusion = sequential_rule_steps(expr)
+        binder_count = sum(1 for step in steps if step.kind == "binder")
+        premise_count = sum(1 for step in steps if step.kind == "premise")
         if (
-            0 < len(binders) <= 2
-            and len(premises) <= 2
-            and conclusion.kind == "app"
+            0 < binder_count <= 4
+            and premise_count <= 3
+            and (
+                conclusion.kind == "app"
+                or (conclusion.kind == "eq" and "set->" in expr_text(expr))
+            )
         ):
             return proof_for_expr(
                 expr,
