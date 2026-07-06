@@ -12628,6 +12628,77 @@ def raw_equality_rewrite_clause_proof(
     return None
 
 
+def raw_equality_clause_resolution_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    resolver: Expr,
+    resolver_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_literals = raw_clause_literals(source)
+    resolver_literals = raw_clause_literals(resolver)
+    target_literals = raw_clause_literals(target)
+    if len(source_literals) > 12 or len(resolver_literals) > 8 or len(target_literals) > 14:
+        return None
+    target_text = proof_arg_text(target)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+
+    def rewrite_literal_to_target(
+        literal: Expr,
+        literal_proof: str,
+        equality_literal: Expr,
+        equality_proof: str,
+    ) -> str | None:
+        sides = equality_like_sides(equality_literal)
+        if sides is None:
+            return None
+        equality_sort = raw_equality_transport_sort(sides[0], sides[1], variable_sorts)
+        for replaced, transported in raw_equality_rewrite_clause_steps(
+            literal,
+            literal_proof,
+            sides[0],
+            sides[1],
+            equality_proof,
+            equality_sort,
+        ):
+            proof = raw_literal_to_clause_proof(replaced, target, transported, target_literals, ())
+            if proof is not None:
+                return proof
+        return None
+
+    def source_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
+        direct = raw_literal_to_clause_proof(source_literal, target, source_literal_proof, target_literals, ())
+        if direct is not None:
+            return direct
+
+        def resolver_handler(resolver_literal: Expr, resolver_literal_proof: str) -> str | None:
+            direct_resolver = raw_literal_to_clause_proof(resolver_literal, target, resolver_literal_proof, target_literals, ())
+            if direct_resolver is not None:
+                return direct_resolver
+            proof = rewrite_literal_to_target(source_literal, source_literal_proof, resolver_literal, resolver_literal_proof)
+            if proof is not None:
+                return proof
+            return rewrite_literal_to_target(resolver_literal, resolver_literal_proof, source_literal, source_literal_proof)
+
+        return raw_clause_cases_with_handler(
+            resolver,
+            resolver_proof,
+            resolver_handler,
+            avoid_text=source_literal_proof,
+        )
+
+    try:
+        return raw_clause_cases_with_handler(source, source_proof, source_handler)
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_quantified_equality_rewrite_clause_proof(
     source: Expr,
     target: Expr,
@@ -12902,6 +12973,12 @@ def raw_tptp_forward_demodulation_proof(
         )
         if proof is not None:
             return proof
+    proof = raw_equality_clause_resolution_proof(first, target, first_name, second, second_name, variable_sorts)
+    if proof is not None:
+        return proof
+    proof = raw_equality_clause_resolution_proof(second, target, second_name, first, first_name, variable_sorts)
+    if proof is not None:
+        return proof
     proof = raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name)
     if proof is not None:
         return proof
