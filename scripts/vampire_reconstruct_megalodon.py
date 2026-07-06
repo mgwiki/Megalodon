@@ -6053,6 +6053,7 @@ def summarize_claim_skeleton(path: Path) -> dict[str, object]:
     conjecture_anchor_admits = 0
     false_admits = 0
     constructive_admits = 0
+    constructive_non_anchor_admits = 0
     admitted_roles: dict[str, int] = {}
 
     def preceding_vampire_role(index: int) -> str | None:
@@ -6085,6 +6086,8 @@ def summarize_claim_skeleton(path: Path) -> dict[str, object]:
             negated_conjecture_admits += 1
         else:
             constructive_admits += 1
+            if not (role is not None and "conjecture" in role):
+                constructive_non_anchor_admits += 1
     return {
         "file": str(path),
         "problem": header.get("problem"),
@@ -6097,6 +6100,7 @@ def summarize_claim_skeleton(path: Path) -> dict[str, object]:
         "claims": sum(1 for line in lines if line.startswith("claim ")),
         "claim_admits": claim_admits,
         "constructive_claim_admits": constructive_admits,
+        "constructive_non_anchor_admits": constructive_non_anchor_admits,
         "refutation_implication_admits": refutation_implication_admits,
         "refutation_boundary_admits": refutation_boundary_admits,
         "negated_conjecture_admits": negated_conjecture_admits,
@@ -6115,6 +6119,7 @@ def write_claim_skeleton_summary(index: Path, rows: list[dict[str, object]]) -> 
         "claims": sum(int(row["claims"]) for row in rows),
         "claim_admits": sum(int(row["claim_admits"]) for row in rows),
         "constructive_claim_admits": sum(int(row["constructive_claim_admits"]) for row in rows),
+        "constructive_non_anchor_admits": sum(int(row.get("constructive_non_anchor_admits", 0)) for row in rows),
         "refutation_implication_admits": sum(int(row["refutation_implication_admits"]) for row in rows),
         "refutation_boundary_admits": sum(int(row.get("refutation_boundary_admits", 0)) for row in rows),
         "negated_conjecture_admits": sum(int(row.get("negated_conjecture_admits", 0)) for row in rows),
@@ -6287,6 +6292,7 @@ def run_vampire_suite(
     running: list[RunningVampire] = []
     next_index = 0
     completed = 0
+    accepted_label = "accepted" if args.collect_successes else "recorded"
 
     def accept_finished_result(obligation: Obligation, failure: str | None, proof_payload_ok: bool) -> None:
         nonlocal skipped
@@ -6324,7 +6330,7 @@ def run_vampire_suite(
                     accept_finished_result(obligation, failure, proof_payload_ok)
                     if args.progress and (completed % args.progress == 0 or len(obligations) >= args.limit):
                         print(
-                            f"completed {completed}; accepted {len(obligations)}; "
+                            f"completed {completed}; {accepted_label} {len(obligations)}; "
                             f"running {len(running)}; queued {next_index}/{len(selected_items)}",
                             flush=True,
                         )
@@ -6345,7 +6351,7 @@ def run_vampire_suite(
 
                 if args.progress and (completed % args.progress == 0 or len(obligations) >= args.limit):
                     print(
-                        f"completed {completed}; accepted {len(obligations)}; "
+                        f"completed {completed}; {accepted_label} {len(obligations)}; "
                         f"running {len(running)}; queued {next_index}/{len(selected_items)}",
                         flush=True,
                     )
