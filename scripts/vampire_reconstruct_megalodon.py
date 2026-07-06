@@ -1790,6 +1790,59 @@ def match_expr_with_alpha_instantiation(
     return True
 
 
+def match_expr_preserving_target_binder_variables(
+    pattern: Expr,
+    target: Expr,
+    variables: set[str],
+    subst: dict[str, Expr],
+) -> bool:
+    if pattern.kind == "var" and pattern.value in variables:
+        previous = subst.get(pattern.value)
+        if previous is None:
+            subst[pattern.value] = target
+            return True
+        return expr_key(previous) == expr_key(target)
+    if pattern.kind in {"forall", "lambda"}:
+        if pattern.kind != target.kind or pattern.sort != target.sort or len(pattern.args) != len(target.args):
+            return False
+        assert pattern.value is not None and target.value is not None
+        local_variables = set(variables)
+        local_variables.discard(pattern.value)
+        target_body = target.args[0]
+        if pattern.value != target.value:
+            target_body = rename_expr_variables(target_body, {target.value: pattern.value})
+        return match_expr_preserving_target_binder_variables(pattern.args[0], target_body, local_variables, subst)
+    if pattern.kind != target.kind or pattern.value != target.value or pattern.sort != target.sort:
+        return False
+    if len(pattern.args) != len(target.args):
+        return False
+    return all(
+        match_expr_preserving_target_binder_variables(left, right, variables, subst)
+        for left, right in zip(pattern.args, target.args)
+    )
+
+
+def match_expr_with_target_binder_instantiation(
+    pattern: Expr,
+    target: Expr,
+    variables: set[str],
+    subst: dict[str, Expr],
+) -> bool:
+    trial = dict(subst)
+    if match_expr_preserving_target_binder_variables(pattern, target, variables, trial):
+        subst.clear()
+        subst.update(trial)
+        return True
+    instantiated = substitute_expr(pattern, trial)
+    if expr_variables(instantiated) & variables:
+        return False
+    if not alpha_equivalent(instantiated, target):
+        return False
+    subst.clear()
+    subst.update(trial)
+    return True
+
+
 def infer_rule_binders_from_known(
     steps: tuple[RuleStep, ...],
     binders: tuple[str, ...],
@@ -8894,6 +8947,68 @@ def ap1_sigma_exists_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
     )
 
 
+def sigma_pair_projection_transport_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
+    if expr.kind != "eq":
+        return None
+    left, right = expr.args
+    if left.kind != "app" or len(left.args) != 3:
+        return None
+    if left.args[0].kind != "var" or left.args[0].value != "ap":
+        return None
+    target_set, index = left.args[1], left.args[2]
+    if target_set.kind != "app" or len(target_set.args) != 3:
+        return None
+    if target_set.args[0].kind != "var" or target_set.args[0].value != "Sigma":
+        return None
+
+    for equality_rule in rules:
+        if equality_rule.premises or rule_application_conclusion(equality_rule).kind != "eq":
+            continue
+        equality_binders = set(rule_application_binders(equality_rule))
+        equality_left, equality_right = rule_application_conclusion(equality_rule).args
+        for source_set, equality_target, forward in (
+            (equality_left, equality_right, True),
+            (equality_right, equality_left, False),
+        ):
+            subst: dict[str, Expr] = {}
+            if not match_expr_with_target_binder_instantiation(equality_target, target_set, equality_binders, subst):
+                continue
+            if not all(binder in subst for binder in rule_application_binders(equality_rule)):
+                continue
+            instantiated_source = substitute_expr(source_set, subst)
+            equality_parts = rule_application_parts(equality_rule, subst, {}, {}, rules, [], {}, 0)
+            if equality_parts is None:
+                continue
+            equality_proof = rule_application_text(equality_parts)
+            if not forward:
+                equality_proof = eq_symmetry_proof(equality_proof, target_set)
+
+            source_goal = Expr("eq", args=(Expr("app", args=(left.args[0], instantiated_source, index)), right))
+            for projection_rule in rules:
+                if projection_rule.premises or rule_application_conclusion(projection_rule).kind != "eq":
+                    continue
+                projection_subst = dict(subst)
+                if not match_expr_with_target_binder_instantiation(
+                    rule_application_conclusion(projection_rule),
+                    source_goal,
+                    set(rule_application_binders(projection_rule)),
+                    projection_subst,
+                ):
+                    continue
+                if not all(binder in projection_subst for binder in rule_application_binders(projection_rule)):
+                    continue
+                projection_parts = rule_application_parts(projection_rule, projection_subst, {}, {}, rules, [], {}, 0)
+                if projection_parts is None:
+                    continue
+                projection_proof = rule_application_text(projection_parts)
+                return (
+                    f"{proof_term_text(equality_proof)} "
+                    f"(fun zz:set => ap zz {proof_arg_text(index)} = {expr_text(right)}) "
+                    f"{proof_argument_text(projection_proof)}"
+                )
+    return None
+
+
 def forall_prop_identity(expr: Expr) -> bool:
     binders, body = collect_foralls(expr)
     return (
@@ -9163,6 +9278,7 @@ def _proof_for_expr_impl(
         ap1_sigma_proof(expr, rules),
         ap0_sigma_exists_proof(expr, rules),
         ap1_sigma_exists_proof(expr, rules),
+        sigma_pair_projection_transport_proof(expr, rules),
     ):
         if derived is not None:
             return derived
