@@ -11050,6 +11050,97 @@ def add_missing_raw_tptp_variables(propositions: list[str], variables: dict[str,
                 variables[name] = "prop"
 
 
+def raw_false_literal_elimination_proof(branch: Expr, target: Expr, branch_proof: str) -> str | None:
+    premises, conclusion = split_arrows(branch)
+    if len(premises) != 1 or not false_eliminator_expr(conclusion):
+        return None
+    premise_proof = direct_proof_expr(premises[0])
+    if premise_proof is None:
+        return None
+    return f"(({proof_head(branch_proof)} {proof_argument_text(premise_proof)}) {proof_arg_text(target)})"
+
+
+def raw_or_intro_from_branch(target: Expr, branch: Expr, branch_proof: str) -> str | None:
+    parts = app_args(target, "vampire_or", 2)
+    if parts is None:
+        return None
+    left, right = parts
+    if expr_key(branch) == expr_key(left):
+        return f"(fun P Hleft Hright => Hleft {proof_term_text(branch_proof)})"
+    if expr_key(branch) == expr_key(right):
+        return f"(fun P Hleft Hright => Hright {proof_term_text(branch_proof)})"
+    nested_left = raw_or_intro_from_branch(left, branch, branch_proof)
+    if nested_left is not None:
+        return f"(fun P Hleft Hright => Hleft {proof_term_text(nested_left)})"
+    nested_right = raw_or_intro_from_branch(right, branch, branch_proof)
+    if nested_right is not None:
+        return f"(fun P Hleft Hright => Hright {proof_term_text(nested_right)})"
+    return None
+
+
+def raw_clause_transform_proof(source: Expr, target: Expr, source_proof: str, depth: int = 0) -> str | None:
+    if depth > 16:
+        return None
+    if expr_key(source) == expr_key(target):
+        return source_proof
+    false_elim = raw_false_literal_elimination_proof(source, target, source_proof)
+    if false_elim is not None:
+        return false_elim
+    intro = raw_or_intro_from_branch(target, source, source_proof)
+    if intro is not None:
+        return intro
+
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
+        if source.value != target.value:
+            return None
+        assert source.value is not None
+        inner_source_proof = f"({proof_head(source_proof)} {source.value})"
+        inner = raw_clause_transform_proof(source.args[0], target.args[0], inner_source_proof, depth + 1)
+        if inner is None:
+            return None
+        return f"(fun {source.value}:{source.sort} => {inner})"
+
+    source_parts = app_args(source, "vampire_or", 2)
+    if source_parts is None:
+        return None
+    left, right = source_parts
+    left_name = fresh_identifier("HL", expr_text(source), expr_text(target), source_proof)
+    right_name = fresh_identifier("HR", expr_text(source), expr_text(target), left_name)
+    left_target = raw_clause_transform_proof(left, target, left_name, depth + 1)
+    right_target = raw_clause_transform_proof(right, target, right_name, depth + 1)
+    if left_target is None or right_target is None:
+        return None
+    return f"({proof_head(source_proof)} {proof_arg_text(target)} (fun {left_name} => {left_target}) (fun {right_name} => {right_target}))"
+
+
+def raw_tptp_trivial_inequality_removal_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> str | None:
+    if len(parents) != 1:
+        return None
+    parent_proposition = propositions_by_name.get(parents[0])
+    if parent_proposition is None:
+        return None
+    source = parse_expr(parent_proposition)
+    target = parse_expr(proposition)
+    if source is None or target is None:
+        return None
+    return raw_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
+
+
+def raw_tptp_replay_proof(
+    rule: str | None,
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> str | None:
+    if rule == "trivial_inequality_removal":
+        return raw_tptp_trivial_inequality_removal_proof(proposition, parents, propositions_by_name)
+    return None
+
+
 def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | None = None) -> list[str]:
     text = proof.read_text(encoding="utf-8", errors="replace")
     declarations = collect_tptp_declarations(text)
@@ -11086,6 +11177,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         decoded_entries.append((name, role, proposition or "", rule, source_name, parents))
     entries = decoded_entries
     propositions = decoded_propositions
+    propositions_by_name = {name: proposition for name, _, proposition, _, _, _ in entries if proposition}
 
     final_name = None
     final_proposition = "vampire_false"
@@ -11151,8 +11243,12 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if not proposition:
             lines.append(f"// unsupported raw vampire formula {name}.")
             continue
+        replay_proof = raw_tptp_replay_proof(rule, proposition, parents, propositions_by_name)
         lines.append(f"claim {claim_name}: {proposition}.")
-        lines.append("{ admit. }")
+        if replay_proof is None:
+            lines.append("{ admit. }")
+        else:
+            lines.append(f"{{ exact {proof_argument_text(replay_proof)}. }}")
 
     if final_name is None:
         lines.append("admit.")
