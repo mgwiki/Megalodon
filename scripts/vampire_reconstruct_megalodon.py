@@ -11295,6 +11295,8 @@ def add_missing_raw_tptp_variables(propositions: list[str], variables: dict[str,
 def raw_false_literal_elimination_proof(branch: Expr, target: Expr, branch_proof: str) -> str | None:
     if false_eliminator_expr(branch):
         return f"({proof_head(branch_proof)} {proof_arg_text(target)})"
+    if branch.kind == "var" and branch.value == "vampire_true":
+        return None
     sides = equality_like_sides(branch)
     if sides is not None:
         left, right = sides
@@ -11310,7 +11312,10 @@ def raw_false_literal_elimination_proof(branch: Expr, target: Expr, branch_proof
     premises, conclusion = split_arrows(branch)
     if len(premises) != 1 or not false_eliminator_expr(conclusion):
         return None
-    premise_proof = direct_proof_expr(premises[0])
+    if premises[0].kind == "var" and premises[0].value == "vampire_true":
+        premise_proof = "(fun P H => H)"
+    else:
+        premise_proof = direct_proof_expr(premises[0])
     if premise_proof is None:
         return None
     return f"(({proof_head(branch_proof)} {proof_argument_text(premise_proof)}) {proof_arg_text(target)})"
@@ -12663,6 +12668,62 @@ def raw_negative_equality_instantiations(body: Expr, binder_names: set[str]) -> 
     return instantiations
 
 
+def raw_negative_prop_instantiations(body: Expr, binder_sorts: dict[str, str]) -> list[tuple[str, Expr]]:
+    instantiations: list[tuple[str, Expr]] = []
+    for literal in raw_clause_literals(body):
+        premises, conclusion = split_arrows(literal)
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
+            continue
+        premise = premises[0]
+        if premise.kind == "var" and premise.value is not None and binder_sorts.get(premise.value) == "prop":
+            instantiations.append((premise.value, Expr("var", value="vampire_true")))
+    return instantiations
+
+
+def raw_tptp_equality_resolution_with_instantiations_proof(
+    target: Expr,
+    parent_binders: list[tuple[str, str]],
+    parent_body: Expr,
+    target_binders: list[tuple[str, str]],
+    target_body: Expr,
+    parent_proof: str,
+    instantiations: list[tuple[str, Expr]],
+) -> str | None:
+    for eliminated, replacement in instantiations:
+        remaining = [(name, sort) for name, sort in parent_binders if name != eliminated]
+        if len(remaining) != len(target_binders):
+            continue
+        if any(parent_sort != target_sort for (_, parent_sort), (_, target_sort) in zip(remaining, target_binders)):
+            continue
+        binder_subst = {
+            parent_name: Expr("var", value=target_name)
+            for (parent_name, _), (target_name, _) in zip(remaining, target_binders)
+        }
+        instantiated_replacement = substitute_expr(replacement, binder_subst)
+        subst = dict(binder_subst)
+        subst[eliminated] = instantiated_replacement
+        instantiated_parent_body = substitute_expr(parent_body, subst)
+        if not raw_clause_replay_budget_ok(instantiated_parent_body, target_body, max_literals=12, max_literal_product=96):
+            continue
+        source_proof = parent_proof
+        for parent_name, _ in parent_binders:
+            if parent_name == eliminated:
+                arg = proof_arg_text(instantiated_replacement)
+            else:
+                mapped = subst.get(parent_name)
+                arg = proof_arg_text(mapped) if mapped is not None else parent_name
+            source_proof = f"({proof_head(source_proof)} {arg})"
+        body_proof = raw_clause_subsumption_transform_proof(instantiated_parent_body, target_body, source_proof)
+        if body_proof is None:
+            body_proof = raw_clause_transform_proof(instantiated_parent_body, target_body, source_proof)
+        if body_proof is None:
+            continue
+        for name, sort in reversed(target_binders):
+            body_proof = f"(fun {name}:{sort} => {body_proof})"
+        return body_proof
+    return None
+
+
 def raw_tptp_equality_resolution_proof(
     proposition: str,
     parents: list[str],
@@ -12681,42 +12742,29 @@ def raw_tptp_equality_resolution_proof(
     target_binders, target_body = collect_foralls(target)
     if len(target_binders) + 1 != len(parent_binders):
         return None
-    parent_binder_names = {name for name, _ in parent_binders}
-    for eliminated, replacement in raw_negative_equality_instantiations(parent_body, parent_binder_names):
-        remaining = [(name, sort) for name, sort in parent_binders if name != eliminated]
-        if len(remaining) != len(target_binders):
-            continue
-        if any(parent_sort != target_sort for (_, parent_sort), (_, target_sort) in zip(remaining, target_binders)):
-            continue
-        binder_subst = {
-            parent_name: Expr("var", value=target_name)
-            for (parent_name, _), (target_name, _) in zip(remaining, target_binders)
-        }
-        instantiated_replacement = substitute_expr(replacement, binder_subst)
-        subst = dict(binder_subst)
-        subst[eliminated] = instantiated_replacement
-        instantiated_parent_body = substitute_expr(parent_body, subst)
-        if not raw_clause_replay_budget_ok(instantiated_parent_body, target_body, max_literals=12, max_literal_product=96):
-            continue
-        parent_args: list[str] = []
-        for parent_name, _ in parent_binders:
-            if parent_name == eliminated:
-                parent_args.append(proof_arg_text(instantiated_replacement))
-            else:
-                mapped = subst.get(parent_name)
-                parent_args.append(proof_arg_text(mapped) if mapped is not None else parent_name)
-        source_proof = raw_tptp_claim_name(parents[0])
-        for arg in parent_args:
-            source_proof = f"({proof_head(source_proof)} {arg})"
-        body_proof = raw_clause_subsumption_transform_proof(instantiated_parent_body, target_body, source_proof)
-        if body_proof is None:
-            body_proof = raw_clause_transform_proof(instantiated_parent_body, target_body, source_proof)
-        if body_proof is None:
-            continue
-        for name, sort in reversed(target_binders):
-            body_proof = f"(fun {name}:{sort} => {body_proof})"
-        return body_proof
-    return None
+    parent_binder_sorts = {name: sort for name, sort in parent_binders}
+    parent_binder_names = set(parent_binder_sorts)
+    parent_proof = raw_tptp_claim_name(parents[0])
+    proof = raw_tptp_equality_resolution_with_instantiations_proof(
+        target,
+        parent_binders,
+        parent_body,
+        target_binders,
+        target_body,
+        parent_proof,
+        raw_negative_equality_instantiations(parent_body, parent_binder_names),
+    )
+    if proof is not None:
+        return proof
+    return raw_tptp_equality_resolution_with_instantiations_proof(
+        target,
+        parent_binders,
+        parent_body,
+        target_binders,
+        target_body,
+        parent_proof,
+        raw_negative_prop_instantiations(parent_body, parent_binder_sorts),
+    )
 
 
 def implication_sides(expr: Expr) -> tuple[Expr, Expr] | None:
