@@ -3258,20 +3258,27 @@ def atomic_rule_premise_transport_proof(
                         for index, (source_arg, target_arg) in enumerate(zip(source.args[1:], target.args[1:]))
                         if expr_key(source_arg) != expr_key(target_arg)
                     ]
-                    if len(changed) != 1:
+                    if len(changed) > 1:
                         continue
-                    parts = rule_application_parts(
-                        rule,
-                        subst,
-                        known,
-                        known_canonical,
-                        rules,
-                        eq_facts,
-                        definitions,
-                        max(0, rule_depth - 1),
-                    )
+                    previous_premise_transport = getattr(PROOF_SEARCH_STATE, "in_premise_transport", False)
+                    PROOF_SEARCH_STATE.in_premise_transport = True
+                    try:
+                        parts = rule_application_parts(
+                            rule,
+                            subst,
+                            known,
+                            known_canonical,
+                            rules,
+                            eq_facts,
+                            definitions,
+                            rule_depth + 1,
+                        )
+                    finally:
+                        PROOF_SEARCH_STATE.in_premise_transport = previous_premise_transport
                     if parts is None:
                         continue
+                    if not changed:
+                        return rule_application_text(parts)
                     index = changed[0]
                     equality_proof = equality_transport_side_proof(
                         source.args[index + 1],
@@ -4603,7 +4610,7 @@ def proof_for_expr(
     if deadline is not None and proof_search_now() > deadline:
         return None
 
-    if allow_rule:
+    if allow_rule and not getattr(PROOF_SEARCH_STATE, "in_premise_transport", False):
         premise_transport_proof = atomic_rule_premise_transport_proof(
             expr,
             known,
