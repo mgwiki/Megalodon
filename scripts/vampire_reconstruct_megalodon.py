@@ -12623,6 +12623,97 @@ def raw_tptp_split_rewrites(parents: list[str], propositions_by_name: dict[str, 
     return tuple(rewrites)
 
 
+def raw_avatar_split_match_literal(
+    source_literal: Expr,
+    target_literal: Expr,
+    binder_names: set[str],
+    rewrites: tuple[RawSplitRewrite, ...],
+    subst: dict[str, Expr],
+) -> bool:
+    trial = dict(subst)
+    if match_expr_with_alpha_instantiation(source_literal, target_literal, binder_names, trial):
+        subst.clear()
+        subst.update(trial)
+        return True
+    for rewrite in rewrites:
+        for component, split in (
+            (rewrite.component, rewrite.split),
+            (
+                Expr("arrow", args=(rewrite.component, Expr("var", value="vampire_false"))),
+                Expr("arrow", args=(rewrite.split, Expr("var", value="vampire_false"))),
+            ),
+        ):
+            if expr_key(target_literal) != expr_key(split):
+                continue
+            trial = dict(subst)
+            if match_expr_with_alpha_instantiation(source_literal, component, binder_names, trial):
+                subst.clear()
+                subst.update(trial)
+                return True
+    return False
+
+
+def raw_avatar_split_infer_forall_substitution(
+    source_body: Expr,
+    target: Expr,
+    binder_names: set[str],
+    rewrites: tuple[RawSplitRewrite, ...],
+) -> dict[str, Expr] | None:
+    source_literals = raw_clause_literals(source_body)
+    target_literals = raw_clause_literals(target)
+    if len(source_literals) > 16 or len(target_literals) > 16:
+        return None
+    source_literals.sort(key=lambda literal: -len(expr_variables(literal) & binder_names))
+
+    def search(index: int, subst: dict[str, Expr]) -> dict[str, Expr] | None:
+        if proof_search_timed_out():
+            return None
+        if binder_names <= subst.keys():
+            flatten_substitution(subst)
+            if any(expr_variables(value) & binder_names for value in subst.values()):
+                return None
+            return subst
+        if index >= len(source_literals):
+            return None
+        source_literal = source_literals[index]
+        for target_literal in target_literals:
+            trial = dict(subst)
+            if raw_avatar_split_match_literal(source_literal, target_literal, binder_names, rewrites, trial):
+                found = search(index + 1, trial)
+                if found is not None:
+                    return found
+        return search(index + 1, subst)
+
+    return search(0, {})
+
+
+def raw_tptp_avatar_split_forall_instantiation_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rewrites: tuple[RawSplitRewrite, ...],
+) -> str | None:
+    binders, body = collect_foralls(source)
+    if not binders:
+        return None
+    if any(sort != "prop" for _, sort in binders):
+        return None
+    binder_names = {name for name, _ in binders}
+    subst = raw_avatar_split_infer_forall_substitution(body, target, binder_names, rewrites)
+    if subst is None or not binder_names <= subst.keys():
+        return None
+    instantiated = substitute_expr(body, subst)
+    if not raw_clause_replay_budget_ok(instantiated, target, max_literals=16, max_literal_product=256):
+        return None
+    proof = source_proof
+    for name, _ in binders:
+        proof = f"({proof_head(proof)} {proof_arg_text(subst[name])})"
+    transformed = raw_clause_subsumption_transform_proof(instantiated, target, proof, rewrites=rewrites)
+    if transformed is not None:
+        return transformed
+    return raw_clause_transform_proof(instantiated, target, proof, rewrites=rewrites)
+
+
 def raw_tptp_avatar_split_clause_proof(
     proposition: str,
     parents: list[str],
@@ -12642,6 +12733,14 @@ def raw_tptp_avatar_split_clause_proof(
     rewrites = raw_tptp_split_rewrites(parents[1:], propositions_by_name)
     if not rewrites:
         return None
+    instantiated = raw_tptp_avatar_split_forall_instantiation_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+        rewrites,
+    )
+    if instantiated is not None:
+        return instantiated
     subsumption = raw_clause_subsumption_transform_proof(source, target, raw_tptp_claim_name(parents[0]), rewrites=rewrites)
     if subsumption is not None:
         return subsumption
