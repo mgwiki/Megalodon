@@ -3,9 +3,9 @@
 
 This is the reproducible test driver for the Vampire-to-Megalodon proof
 reconstruction work.  It intentionally uses Megalodon's own TH0 generator as
-the source of truth.  It can export either `aby` obligations or ordinary
-admitted proof states, then run Vampire and Megalodon reconstruction checks in
-parallel.
+the source of truth.  The default development path exports ordinary admitted
+proof states, then runs Vampire and Megalodon reconstruction checks in
+parallel.  Generated Megalodon reconstruction scripts must not use `aby`.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ MEGALODON_STEP_RE = re.compile(r'^megalodon_step\((?P<id>[0-9]+),"(?P<rule>(?:\\
 MEGALODON_STEP_FORMULA_RE = re.compile(
     r'^megalodon_step\((?P<id>[0-9]+),"(?P<rule>(?:\\.|[^"\\])*)","[^"]*",\[[^]]*\],(?:true|false),[0-9]+,"(?P<formula>(?:\\.|[^"\\])*)"\)\.$'
 )
+MEGALODON_FINAL_STEP_RE = re.compile(r"^megalodon_final_step\((?P<id>[0-9]+)\)\.$")
 FRESH_SET_RE = re.compile(r"^sF[0-9]+$")
 VAMPIRE_DEPENDENCY_RE = re.compile(r"^(s[FK]|db)[0-9]+$")
 INFERRED_DEPENDENCY_RE = re.compile(r"^[_A-Za-z][_A-Za-z0-9']*$")
@@ -414,11 +415,12 @@ def source_candidate_rewrite_chain_proof(
 
 
 def extract_megalodon_claim_skeletons(text: str) -> list[list[str]]:
-    return extract_marked_megalodon_blocks(
+    marked = extract_marked_megalodon_blocks(
         text,
         "megalodon_claim_skeleton_start.",
         "megalodon_claim_skeleton_end.",
     )
+    return marked or synthesize_megalodon_claim_skeletons(text)
 
 
 def vampire_step_contexts(proof_text: str | None) -> dict[str, str]:
@@ -799,6 +801,10 @@ def split_top_level_equality(text: str) -> tuple[str, str] | None:
             if depth < 0:
                 return None
         elif char == "=" and depth == 0:
+            if index > 0 and text[index - 1] in "!<>":
+                continue
+            if index + 1 < len(text) and text[index + 1] == ">":
+                continue
             return text[:index].strip(), text[index + 1 :].strip()
     return None
 
@@ -884,13 +890,49 @@ def tptp_formula_to_megalodon_proposition(text: str, variable_sorts: dict[str, s
                 return None
         return body
 
+    if text.startswith("~"):
+        body = tptp_formula_to_megalodon_proposition(text[1:].strip(), variable_sorts)
+        return f"{proposition_argument_text(body)} -> vampire_false" if body is not None else None
+
+    equivalence = split_top_level_operator(text, "<=>")
+    if equivalence is not None:
+        left = tptp_formula_to_megalodon_proposition(equivalence[0], variable_sorts)
+        right = tptp_formula_to_megalodon_proposition(equivalence[1], variable_sorts)
+        if left is None or right is None:
+            return None
+        return f"vampire_and ({left} -> {right}) ({right} -> {left})"
+
     implication = split_top_level_operator(text, "=>")
     if implication is not None:
         left = tptp_formula_to_megalodon_proposition(implication[0], variable_sorts)
         right = tptp_formula_to_megalodon_proposition(implication[1], variable_sorts)
         if left is None or right is None:
             return None
-        return f"{left} -> {right}"
+        return f"{proposition_argument_text(left)} -> {right}"
+
+    disjunction = split_top_level_operator(text, "|")
+    if disjunction is not None:
+        left = tptp_formula_to_megalodon_proposition(disjunction[0], variable_sorts)
+        right = tptp_formula_to_megalodon_proposition(disjunction[1], variable_sorts)
+        if left is None or right is None:
+            return None
+        return f"vampire_or {proposition_argument_text(left)} {proposition_argument_text(right)}"
+
+    conjunction = split_top_level_operator(text, "&")
+    if conjunction is not None:
+        left = tptp_formula_to_megalodon_proposition(conjunction[0], variable_sorts)
+        right = tptp_formula_to_megalodon_proposition(conjunction[1], variable_sorts)
+        if left is None or right is None:
+            return None
+        return f"vampire_and {proposition_argument_text(left)} {proposition_argument_text(right)}"
+
+    inequality = split_top_level_operator(text, "!=")
+    if inequality is not None:
+        left = tptp_formula_to_megalodon_proposition(inequality[0], variable_sorts)
+        right = tptp_formula_to_megalodon_proposition(inequality[1], variable_sorts)
+        if left is None or right is None:
+            return None
+        return f"({left} = {right}) -> vampire_false"
 
     equality = split_top_level_equality(text)
     if equality is not None:
@@ -907,6 +949,13 @@ def tptp_formula_to_megalodon_proposition(text: str, variable_sorts: dict[str, s
             and expr_sort(right_expr, variable_sorts) == "set"
         ):
             return f"vampire_eq_set {proof_arg_text(left_expr)} {proof_arg_text(right_expr)}"
+        if (
+            left_expr is not None
+            and right_expr is not None
+            and expr_sort(left_expr, variable_sorts) == "prop"
+            and expr_sort(right_expr, variable_sorts) == "prop"
+        ):
+            return f"vampire_eq_prop {proof_arg_text(left_expr)} {proof_arg_text(right_expr)}"
         return f"{left} = {right}"
 
     if text == "$true":
@@ -915,6 +964,84 @@ def tptp_formula_to_megalodon_proposition(text: str, variable_sorts: dict[str, s
         return "vampire_false"
     term = tptp_term_to_expr(text)
     return expr_text(term) if term is not None else None
+
+
+def proposition_argument_text(proposition: str) -> str:
+    expr = parse_expr(proposition)
+    return proof_arg_text(expr) if expr is not None else f"({proposition})"
+
+
+def strip_tptp_negation(text: str) -> str | None:
+    text = strip_balanced_parens(text)
+    if not text.startswith("~"):
+        return None
+    return strip_balanced_parens(text[1:].strip())
+
+
+def reconstruction_prelude_for(propositions: list[str]) -> list[str]:
+    joined = "\n".join(propositions)
+    lines = [
+        "Definition vampire_false : prop := forall P:prop, P.",
+        "Definition vampire_eq : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y.",
+        "Infix = 502 := vampire_eq.",
+        "Definition vampire_true : prop := forall P:prop, P -> P.",
+    ]
+    if "vampire_or " in joined:
+        lines.append("Definition vampire_or : prop->prop->prop := fun A B:prop => forall P:prop, (A -> P) -> (B -> P) -> P.")
+    if "vampire_and " in joined:
+        lines.append("Definition vampire_and : prop->prop->prop := fun A B:prop => forall P:prop, (A -> B -> P) -> P.")
+    if "vampire_exists_set " in joined:
+        lines.append("Definition vampire_exists_set : (set->prop)->prop := fun P => exists X:set, P X.")
+    if "vampire_eq_set " in joined:
+        lines.append("Definition vampire_eq_set : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y.")
+    if "vampire_eq_prop " in joined:
+        lines.append("Definition vampire_eq_prop : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y.")
+    return lines
+
+
+def synthesize_megalodon_claim_skeletons(text: str) -> list[list[str]]:
+    input_claim: tuple[str, str] | None = None
+    final_step = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        final_match = MEGALODON_FINAL_STEP_RE.match(line)
+        if final_match is not None:
+            final_step = "S" + final_match.group("id")
+            continue
+        match = MEGALODON_STEP_FORMULA_RE.match(line)
+        if match is None:
+            continue
+        rule = json.loads(f'"{match.group("rule")}"')
+        if rule != "input":
+            continue
+        formula = json.loads(f'"{match.group("formula")}"')
+        parsed = tptp_decl_parts(formula)
+        if parsed is None:
+            continue
+        _, role, body, _ = parsed
+        if role != "conjecture":
+            continue
+        target_body = strip_tptp_negation(body) or body
+        proposition = tptp_formula_to_megalodon_proposition(target_body)
+        if proposition is None:
+            continue
+        input_claim = ("S" + match.group("id"), proposition)
+        break
+    if input_claim is None:
+        return []
+    claim_name, proposition = input_claim
+    lines = reconstruction_prelude_for([proposition])
+    lines.extend(
+        [
+            f"Theorem vampire_reconstruction_skeleton: {proposition}.",
+            f"// synthesized claim skeleton from Vampire steps; final refutation step: {comment_text(final_step)}",
+            f"claim {claim_name}: {proposition}.",
+            "{ admit. }",
+            f"exact {claim_name}.",
+            "Qed.",
+        ]
+    )
+    return [lines]
 
 
 def tptp_input_equality(formula: str) -> tuple[Expr, Expr] | None:
@@ -1118,12 +1245,18 @@ def add_recovered_input_axioms(lines: list[str], proof_text: str | None) -> list
     result: list[str] = []
     inserted = False
     needs_set_equality = any("vampire_eq_set " in proposition for _, proposition in additions)
+    needs_prop_equality = any("vampire_eq_prop " in proposition for _, proposition in additions)
     has_set_equality = any(line.startswith("Definition vampire_eq_set ") for line in lines)
+    has_prop_equality = any(line.startswith("Definition vampire_eq_prop ") for line in lines)
     for line in lines:
         if not inserted and line.startswith("Theorem "):
             if needs_set_equality and not has_set_equality:
                 result.append(
                     "Definition vampire_eq_set : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y."
+                )
+            if needs_prop_equality and not has_prop_equality:
+                result.append(
+                    "Definition vampire_eq_prop : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y."
                 )
             for name, proposition in additions:
                 result.append(f"Axiom {name}:{proposition}.")
@@ -1132,6 +1265,8 @@ def add_recovered_input_axioms(lines: list[str], proof_text: str | None) -> list
     if not inserted:
         if needs_set_equality and not has_set_equality:
             result.append("Definition vampire_eq_set : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y.")
+        if needs_prop_equality and not has_prop_equality:
+            result.append("Definition vampire_eq_prop : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y.")
         for name, proposition in additions:
             result.append(f"Axiom {name}:{proposition}.")
     return result
@@ -4932,6 +5067,128 @@ def direct_proof_expr(expr: Expr) -> str | None:
         args = binder_names + ["Q", "H"]
         return f"({' '.join(['fun'] + args + ['=>', 'H'])})"
 
+    def vampire_and_parts(node: Expr) -> tuple[Expr, Expr] | None:
+        if (
+            node.kind == "app"
+            and len(node.args) == 3
+            and node.args[0].kind == "var"
+            and node.args[0].value == "vampire_and"
+        ):
+            return node.args[1], node.args[2]
+        return None
+
+    def flatten_vampire_and(node: Expr) -> list[Expr]:
+        parts = vampire_and_parts(node)
+        if parts is None:
+            return [node]
+        return flatten_vampire_and(parts[0]) + flatten_vampire_and(parts[1])
+
+    def local_proof(
+        target: Expr,
+        local_premises: list[tuple[Expr, str]],
+        seen: set[str],
+    ) -> str | None:
+        target_key = expr_key(target)
+        if target_key in seen:
+            return None
+        seen = set(seen)
+        seen.add(target_key)
+        for premise, name in reversed(local_premises):
+            if expr_key(premise) == target_key:
+                return name
+        if target.kind == "forall" and target.sort == "prop" and target.value is not None:
+            for premise, name in reversed(local_premises):
+                if premise.kind == "var" and premise.value == "vampire_false":
+                    return f"(fun {target.value} => {name} {target.value})"
+        target_and = vampire_and_parts(target)
+        if target_and is not None:
+            left_proof = local_proof(target_and[0], local_premises, seen)
+            right_proof = local_proof(target_and[1], local_premises, seen)
+            if left_proof is not None and right_proof is not None:
+                return f"(fun P K => K {proof_argument_text(left_proof)} {proof_argument_text(right_proof)})"
+        if target.kind == "arrow":
+            arg_name = f"H{len(local_premises)}"
+            body_proof = local_proof(target.args[1], local_premises + [(target.args[0], arg_name)], seen)
+            if body_proof is not None:
+                return f"(fun {arg_name} => {body_proof})"
+        for premise, name in reversed(local_premises):
+            parts = vampire_and_parts(premise)
+            if parts is None:
+                continue
+            for index, component in enumerate(parts):
+                if expr_key(component) == target_key:
+                    left_name = f"H{len(local_premises)}L"
+                    right_name = f"H{len(local_premises)}R"
+                    selected = left_name if index == 0 else right_name
+                    return f"({name} {proof_arg_text(target)} (fun {left_name} {right_name} => {selected}))"
+                if component.kind == "arrow" and expr_key(component.args[1]) == target_key:
+                    source_proof = local_proof(component.args[0], local_premises, seen)
+                    if source_proof is not None:
+                        left_name = f"H{len(local_premises)}L"
+                        right_name = f"H{len(local_premises)}R"
+                        selected = left_name if index == 0 else right_name
+                        return (
+                            f"({name} {proof_arg_text(target)} "
+                            f"(fun {left_name} {right_name} => {selected} {proof_argument_text(source_proof)}))"
+                        )
+        return None
+
+    def nested_and_eliminator(
+        proof: str,
+        node: Expr,
+        result: Expr,
+        continuation: str,
+        accumulated: list[str],
+        depth: int = 0,
+    ) -> str:
+        parts = vampire_and_parts(node)
+        if parts is None:
+            return f"({continuation} {' '.join(accumulated + [proof])})"
+        left_name = f"HA{depth}"
+        right_name = f"HB{depth}"
+        body = nested_and_eliminator(right_name, parts[1], result, continuation, accumulated + [left_name], depth + 1)
+        return f"({proof} {proof_arg_text(result)} (fun {left_name} {right_name} => {body}))"
+
+    if premises:
+        local_premises = [(premise, f"H{index}") for index, premise in enumerate(premises)]
+        proof = local_proof(conclusion, local_premises, set())
+        if proof is not None:
+            args = binder_names + [name for _, name in local_premises]
+            return f"({' '.join(['fun'] + args + ['=>', proof])})"
+
+        target_binders, target_body = collect_foralls(conclusion)
+        target_premises, target_conclusion = split_arrows(target_body)
+        if (
+            len(target_binders) == 1
+            and target_binders[0][1] == "prop"
+            and target_conclusion.kind == "var"
+            and target_conclusion.value == target_binders[0][0]
+        ):
+            continuation_shape = None
+            if len(target_premises) == 1:
+                continuation_premises, continuation_conclusion = split_arrows(target_premises[0])
+                if expr_key(continuation_conclusion) == expr_key(target_conclusion):
+                    continuation_shape = [expr_key(item) for item in continuation_premises]
+            flattened_target = continuation_shape or [expr_key(item) for item in target_premises]
+            for premise_index, premise in enumerate(premises):
+                flattened_premise = [expr_key(item) for item in flatten_vampire_and(premise)]
+                if flattened_premise == flattened_target:
+                    premise_names = [f"H{index}" for index, _ in enumerate(premises)]
+                    continuation = "K"
+                    proof = nested_and_eliminator(
+                        premise_names[premise_index],
+                        premise,
+                        Expr("var", value=target_binders[0][0]),
+                        continuation,
+                        [],
+                    )
+                    args = binder_names + premise_names + [target_binders[0][0], continuation]
+                    return f"({' '.join(['fun'] + args + ['=>', proof])})"
+    else:
+        proof = local_proof(conclusion, [], set())
+        if proof is not None:
+            return f"({' '.join(['fun'] + binder_names + ['=>', proof])})"
+
     def branch_continuation_parts(branch: Expr, element: Expr, result_name: str) -> tuple[str, Expr, str, Expr, Expr, bool] | None:
         branch_binders, branch_body = collect_foralls(branch)
         branch_premises, branch_conclusion = split_arrows(branch_body)
@@ -6736,6 +6993,7 @@ SOURCE_IDENTIFIER_RE = re.compile(r"[_A-Za-z][_A-Za-z0-9']*")
 SOURCE_DECL_RE = re.compile(
     r"^\s*(?:Theorem|Lemma|Example|Fact|Remark|Corollary|Proposition|Property|Definition|Axiom)\s+(?P<name>[_A-Za-z][_A-Za-z0-9']*)\b"
 )
+ABY_COMMAND_RE = re.compile(r"^\s*aby(?:[\s.]|$)")
 SOURCE_DEPENDENCY_KEYWORDS = {
     "aby",
     "admit",
@@ -6750,6 +7008,22 @@ SOURCE_DEPENDENCY_KEYWORDS = {
     "rewrite",
     "set",
 }
+
+
+def contains_executable_aby(lines: list[str]) -> bool:
+    return any(ABY_COMMAND_RE.match(line) for line in lines if not line.lstrip().startswith("//"))
+
+
+def normalize_vampire_boolean_literals(lines: list[str]) -> list[str]:
+    result: list[str] = []
+    for line in lines:
+        if line.lstrip().startswith("//"):
+            result.append(line)
+            continue
+        line = replace_identifier(line, "false", "vampire_false")
+        line = replace_identifier(line, "true", "vampire_true")
+        result.append(line)
+    return result
 
 
 def source_dependency_names(line_text: str | None) -> list[str]:
@@ -6935,6 +7209,7 @@ def check_megalodon_lines(
     output_lines = add_function_definition_skeletons(lines, proof_text)
     output_lines = add_recovered_input_equalities(output_lines, proof_text)
     output_lines = add_recovered_input_axioms(output_lines, proof_text)
+    output_lines = normalize_vampire_boolean_literals(output_lines)
     output_lines = add_boolean_extensionality_helpers(output_lines)
     output_lines = fill_source_candidate_claims(output_lines, proof_text)
     output_lines = fill_repeated_claim_admits(output_lines) if fill_repeated_admits else output_lines
@@ -6964,6 +7239,9 @@ def check_megalodon_lines(
         candidate = output_dir / f"{proof.stem}.{safe_kind}{index}.mg"
         candidate.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
         delete_after = False
+    if contains_executable_aby(output_lines):
+        candidate.unlink(missing_ok=True)
+        return [f"{proof}: generated {kind} {index} uses aby"]
     def demote_failed_exact(stdout: str) -> bool:
         if not allow_incomplete or kind != "claim skeleton":
             return False
@@ -7122,6 +7400,7 @@ def summarize_claim_skeleton(path: Path) -> dict[str, object]:
         "false_claim_admits": false_admits,
         "admitted_vampire_roles": admitted_roles,
         "final_admits": sum(1 for line in lines if line == "admit."),
+        "aby_commands": sum(1 for line in lines if ABY_COMMAND_RE.match(line) and not line.lstrip().startswith("//")),
         "filled_claims": sum(1 for line in lines if line.startswith("{ exact ")),
         "first_remaining": first_remaining,
     }
@@ -7140,6 +7419,7 @@ def write_claim_skeleton_summary(index: Path, rows: list[dict[str, object]]) -> 
         "conjecture_anchor_admits": sum(int(row.get("conjecture_anchor_admits", 0)) for row in rows),
         "false_claim_admits": sum(int(row["false_claim_admits"]) for row in rows),
         "final_admits": sum(int(row["final_admits"]) for row in rows),
+        "aby_commands": sum(int(row.get("aby_commands", 0)) for row in rows),
         "filled_claims": sum(int(row["filled_claims"]) for row in rows),
     }
     role_counts: dict[str, int] = {}
