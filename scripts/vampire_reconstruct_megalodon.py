@@ -13723,10 +13723,13 @@ def raw_tptp_avatar_split_clause_proof(
     target = parse_expr(proposition)
     if source is None or target is None:
         return None
-    if not raw_clause_replay_budget_ok(source, target):
-        return None
     rewrites = raw_tptp_split_rewrites(parents[1:], propositions_by_name)
     if not rewrites:
+        return None
+    subsumption = raw_clause_subsumption_transform_proof(source, target, raw_tptp_claim_name(parents[0]), rewrites=rewrites)
+    if subsumption is not None:
+        return subsumption
+    if not raw_clause_replay_budget_ok(source, target):
         return None
     instantiated = raw_tptp_avatar_split_forall_instantiation_proof(
         source,
@@ -13745,9 +13748,6 @@ def raw_tptp_avatar_split_clause_proof(
         )
         if direct is not None:
             return direct
-    subsumption = raw_clause_subsumption_transform_proof(source, target, raw_tptp_claim_name(parents[0]), rewrites=rewrites)
-    if subsumption is not None:
-        return subsumption
     if len(parents) <= 8 and len(raw_clause_literals(target)) <= 4:
         direct = raw_tptp_avatar_split_direct_component_proof(
             source,
