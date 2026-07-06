@@ -3396,6 +3396,76 @@ def boolean_or_nand_extensionality_proof(expr: Expr, known: dict[str, str]) -> s
     )
 
 
+def beta_contract_full_application(expr: Expr) -> Expr:
+    if expr.kind != "app" or not expr.args:
+        return expr
+    head = expr.args[0]
+    if head.kind != "lambda":
+        return expr
+    binders, body = collect_lambdas(head)
+    args = expr.args[1:]
+    if len(binders) != len(args):
+        return expr
+    subst = {name: arg for (name, _), arg in zip(binders, args)}
+    return substitute_expr(body, subst)
+
+
+def is_or_nand_pointwise_prop_equality(expr: Expr) -> tuple[str, str] | None:
+    binders, body = collect_foralls(expr)
+    if [sort for _, sort in binders] != ["prop", "prop"]:
+        return None
+    if (
+        body.kind != "app"
+        or len(body.args) != 3
+        or body.args[0].kind != "var"
+        or body.args[0].value != "vampire_eq_prop"
+    ):
+        return None
+    left_name, right_name = [name for name, _ in binders]
+    left = beta_contract_full_application(body.args[1])
+    right = beta_contract_full_application(body.args[2])
+    expected_left = Expr(
+        "app",
+        args=(Expr("var", value="vampire_or"), Expr("var", value=left_name), Expr("var", value=right_name)),
+    )
+    expected_right = Expr(
+        "arrow",
+        args=(
+            Expr(
+                "app",
+                args=(
+                    Expr("var", value="vampire_and"),
+                    Expr("arrow", args=(Expr("var", value=left_name), Expr("var", value="vampire_false"))),
+                    Expr("arrow", args=(Expr("var", value=right_name), Expr("var", value="vampire_false"))),
+                ),
+            ),
+            Expr("var", value="vampire_false"),
+        ),
+    )
+    if expr_key(left) != expr_key(expected_left) or expr_key(right) != expr_key(expected_right):
+        return None
+    return left_name, right_name
+
+
+def boolean_or_nand_pointwise_proof(expr: Expr, known: dict[str, str]) -> str | None:
+    names = is_or_nand_pointwise_prop_equality(expr)
+    if names is None or not {"vampire_xm", "vampire_prop_ext"} <= set(known.values()):
+        return None
+    left_name, right_name = names
+    return (
+        f"(fun {left_name}:prop => fun {right_name}:prop => vampire_prop_ext "
+        f"(vampire_or {left_name} {right_name}) "
+        f"((vampire_and ({left_name} -> vampire_false) ({right_name} -> vampire_false)) -> vampire_false) "
+        f"(fun Hor Hand => Hor vampire_false "
+        f"(fun H{left_name} => Hand vampire_false (fun Hn{left_name} Hn{right_name} => Hn{left_name} H{left_name})) "
+        f"(fun H{right_name} => Hand vampire_false (fun Hn{left_name} Hn{right_name} => Hn{right_name} H{right_name}))) "
+        f"(fun Hnot P Hleft Hright => "
+        f"(vampire_xm {left_name}) P Hleft "
+        f"(fun Hn{left_name} => (vampire_xm {right_name}) P Hright "
+        f"(fun Hn{right_name} => (Hnot (fun R Hpair => Hpair Hn{left_name} Hn{right_name})) P))))"
+    )
+
+
 IDENTIFIER_CHARS = "_'0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 FORALL_RE = re.compile(r"forall (?P<name>[_A-Za-z][_A-Za-z0-9']*):(?P<sort>[^,]+), ")
 
@@ -11492,6 +11562,9 @@ def proof_for_proposition(
         if multi_congruence_proof is not None:
             return multi_congruence_proof
     if expr.kind == "forall" and len(expr_text(expr)) <= 500:
+        boolean_pointwise_proof = boolean_or_nand_pointwise_proof(expr, known)
+        if boolean_pointwise_proof is not None:
+            return boolean_pointwise_proof
         introduced_bridge_proof = introduced_unary_equality_bridge_proof(
             expr,
             known,
