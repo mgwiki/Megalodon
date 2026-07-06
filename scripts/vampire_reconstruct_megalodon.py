@@ -6086,6 +6086,28 @@ def proof_for_proposition(
         )
         if transported_rule_proof is not None:
             return transported_rule_proof
+        congruence_proof = equality_congruence_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth=3,
+        )
+        if congruence_proof is not None:
+            return congruence_proof
+        multi_congruence_proof = equality_multi_congruence_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth=3,
+        )
+        if multi_congruence_proof is not None:
+            return multi_congruence_proof
     if expr.kind == "forall" and len(expr_text(expr)) <= 500:
         introduced_bridge_proof = introduced_unary_equality_bridge_proof(
             expr,
