@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -40,6 +41,8 @@ VAMPIRE_DEPENDENCY_RE = re.compile(r"^(s[FK]|db)[0-9]+$")
 INFERRED_DEPENDENCY_RE = re.compile(r"^[_A-Za-z][_A-Za-z0-9']*$")
 DEFINITION_RE = re.compile(r"^Definition (?P<name>[_A-Za-z][_A-Za-z0-9']*) : (?P<sort>[^:]+?) := (?P<body>.*)\.$")
 THF_TYPE_RE = re.compile(r"^thf\([^,]+,\s*type,\s*\((?P<name>[^:\s]+)\s*:\s*(?P<sort>.*?)\)\)\.", re.DOTALL)
+PROOF_SEARCH_STATE = threading.local()
+PROOF_SEARCH_SECONDS = float(os.environ.get("MEGALODON_PROOF_SEARCH_SECONDS", "8"))
 
 
 @dataclass
@@ -2840,6 +2843,9 @@ def proof_for_expr(
     allow_rule: bool = True,
     rule_depth: int = 2,
 ) -> str | None:
+    deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+    if deadline is not None and time.monotonic() > deadline:
+        return None
     key = expr_key(expr)
     if key == "vampire_true":
         return "(fun P H => H)"
@@ -3022,6 +3028,9 @@ def proof_for_proposition(
     eq_facts: list[EqFact],
     definitions: dict[str, DefinitionInfo],
 ) -> str | None:
+    deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+    if deadline is not None and time.monotonic() > deadline:
+        return None
     proof = known.get(proposition) or known_canonical.get(canonical_proposition(proposition))
     if proof is not None:
         return proof
@@ -3063,6 +3072,8 @@ def remember_proposition(
 
 
 def fill_repeated_claim_admits(lines: list[str]) -> list[str]:
+    previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+    PROOF_SEARCH_STATE.deadline = time.monotonic() + PROOF_SEARCH_SECONDS
     known: dict[str, str] = {}
     known_canonical: dict[str, str] = {}
     rules: list[ProofRule] = []
@@ -3072,59 +3083,66 @@ def fill_repeated_claim_admits(lines: list[str]) -> list[str]:
     result = list(lines)
     index = 0
     block_depth = 0
-    while index < len(result):
-        line = result[index]
-        if block_depth > 0:
+    try:
+        while index < len(result):
+            line = result[index]
+            if block_depth > 0:
+                if line == "{":
+                    block_depth += 1
+                elif line == "}":
+                    block_depth -= 1
+                index += 1
+                continue
             if line == "{":
-                block_depth += 1
-            elif line == "}":
-                block_depth -= 1
+                block_depth = 1
+                index += 1
+                continue
+            definition_match = DEFINITION_RE.match(line)
+            if definition_match:
+                parsed_definition = parse_definition_body(definition_match.group("body").strip())
+                if parsed_definition is not None:
+                    binders, body = parsed_definition
+                    definitions[definition_match.group("name")] = DefinitionInfo(
+                        definition_match.group("sort").strip(),
+                        definition_match.group("body").strip(),
+                        "(fun Q H => H)",
+                        binders,
+                        body,
+                    )
+                index += 1
+                continue
+            axiom = proposition_after_colon(line, "Axiom ")
+            if axiom is not None:
+                name, proposition = axiom
+                remember_proposition(known, known_canonical, rules, eq_facts, name, proposition)
+                index += 1
+                continue
+            theorem_match = proposition_after_colon(line, "Theorem ")
+            if theorem_match is not None:
+                _, theorem = theorem_match
+                index += 1
+                continue
+            claim = proposition_after_colon(line, "claim ")
+            if claim is not None:
+                name, proposition = claim
+                proof_name = proof_for_proposition(proposition, known, known_canonical, rules, eq_facts, definitions)
+                if proof_name is not None and index + 1 < len(result) and result[index + 1] == "{ admit. }":
+                    result[index + 1] = "{ exact " + proof_argument_text(proof_name) + ". }"
+                remember_proposition(known, known_canonical, rules, eq_facts, name, proposition)
+                index += 2 if index + 1 < len(result) and result[index + 1].startswith("{ ") else 1
+                continue
+            if line == "admit." and theorem is not None:
+                proof_name = proof_for_proposition(theorem, known, known_canonical, rules, eq_facts, definitions)
+                if proof_name is not None:
+                    result[index] = "exact " + proof_argument_text(proof_name) + "."
             index += 1
-            continue
-        if line == "{":
-            block_depth = 1
-            index += 1
-            continue
-        definition_match = DEFINITION_RE.match(line)
-        if definition_match:
-            parsed_definition = parse_definition_body(definition_match.group("body").strip())
-            if parsed_definition is not None:
-                binders, body = parsed_definition
-                definitions[definition_match.group("name")] = DefinitionInfo(
-                    definition_match.group("sort").strip(),
-                    definition_match.group("body").strip(),
-                    "(fun Q H => H)",
-                    binders,
-                    body,
-                )
-            index += 1
-            continue
-        axiom = proposition_after_colon(line, "Axiom ")
-        if axiom is not None:
-            name, proposition = axiom
-            remember_proposition(known, known_canonical, rules, eq_facts, name, proposition)
-            index += 1
-            continue
-        theorem_match = proposition_after_colon(line, "Theorem ")
-        if theorem_match is not None:
-            _, theorem = theorem_match
-            index += 1
-            continue
-        claim = proposition_after_colon(line, "claim ")
-        if claim is not None:
-            name, proposition = claim
-            proof_name = proof_for_proposition(proposition, known, known_canonical, rules, eq_facts, definitions)
-            if proof_name is not None and index + 1 < len(result) and result[index + 1] == "{ admit. }":
-                result[index + 1] = "{ exact " + proof_argument_text(proof_name) + ". }"
-            remember_proposition(known, known_canonical, rules, eq_facts, name, proposition)
-            index += 2 if index + 1 < len(result) and result[index + 1].startswith("{ ") else 1
-            continue
-        if line == "admit." and theorem is not None:
-            proof_name = proof_for_proposition(theorem, known, known_canonical, rules, eq_facts, definitions)
-            if proof_name is not None:
-                result[index] = "exact " + proof_argument_text(proof_name) + "."
-        index += 1
-    return result
+        return result
+    finally:
+        if previous_deadline is None:
+            if hasattr(PROOF_SEARCH_STATE, "deadline"):
+                delattr(PROOF_SEARCH_STATE, "deadline")
+        else:
+            PROOF_SEARCH_STATE.deadline = previous_deadline
 
 
 def comment_text(value: object) -> str:
