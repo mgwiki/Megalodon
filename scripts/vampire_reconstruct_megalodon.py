@@ -13310,8 +13310,6 @@ def raw_tptp_equality_resolution_with_instantiations_proof(
         subst = dict(binder_subst)
         subst[eliminated] = instantiated_replacement
         instantiated_parent_body = substitute_expr(parent_body, subst)
-        if not raw_clause_replay_budget_ok(instantiated_parent_body, target_body, max_literals=12, max_literal_product=96):
-            continue
         source_proof = parent_proof
         for parent_name, _ in parent_binders:
             if parent_name == eliminated:
@@ -13321,7 +13319,7 @@ def raw_tptp_equality_resolution_with_instantiations_proof(
                 arg = proof_arg_text(mapped) if mapped is not None else parent_name
             source_proof = f"({proof_head(source_proof)} {arg})"
         body_proof = raw_clause_subsumption_transform_proof(instantiated_parent_body, target_body, source_proof)
-        if body_proof is None:
+        if body_proof is None and raw_clause_replay_budget_ok(instantiated_parent_body, target_body, max_literals=12, max_literal_product=96):
             body_proof = raw_clause_transform_proof(instantiated_parent_body, target_body, source_proof)
         if body_proof is None:
             continue
