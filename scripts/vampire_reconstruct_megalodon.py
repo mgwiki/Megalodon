@@ -1080,6 +1080,7 @@ def reconstruction_prelude_for(propositions: list[str]) -> list[str]:
     ]
     if "vampire_or " in joined:
         lines.append("Definition vampire_or : prop->prop->prop := fun A B:prop => forall P:prop, (A -> P) -> (B -> P) -> P.")
+        lines.append("Axiom vampire_xm: forall P:prop, vampire_or P (P -> vampire_false).")
     if "vampire_and " in joined:
         lines.append("Definition vampire_and : prop->prop->prop := fun A B:prop => forall P:prop, (A -> B -> P) -> P.")
     if "vampire_exists_set " in joined:
@@ -11138,6 +11139,81 @@ def raw_tptp_trivial_inequality_removal_proof(
     return raw_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
 
 
+def implication_sides(expr: Expr) -> tuple[Expr, Expr] | None:
+    premises, conclusion = split_arrows(expr)
+    if len(premises) != 1:
+        return None
+    return premises[0], conclusion
+
+
+def raw_or_left_intro(target: Expr, proof: str) -> str | None:
+    parts = app_args(target, "vampire_or", 2)
+    if parts is None:
+        return None
+    return f"(fun P Hleft Hright => Hleft {proof_term_text(proof)})"
+
+
+def raw_or_right_intro(target: Expr, proof: str) -> str | None:
+    parts = app_args(target, "vampire_or", 2)
+    if parts is None:
+        return None
+    return f"(fun P Hleft Hright => Hright {proof_term_text(proof)})"
+
+
+def raw_tptp_avatar_component_clause_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> str | None:
+    if len(parents) != 1:
+        return None
+    parent_proposition = propositions_by_name.get(parents[0])
+    if parent_proposition is None:
+        return None
+    parent_expr = parse_expr(parent_proposition)
+    target = parse_expr(proposition)
+    if parent_expr is None or target is None:
+        return None
+    parent_parts = app_args(parent_expr, "vampire_and", 2)
+    target_parts = app_args(target, "vampire_or", 2)
+    if parent_parts is None or target_parts is None:
+        return None
+    forward = implication_sides(parent_parts[0])
+    backward = implication_sides(parent_parts[1])
+    if forward is None or backward is None:
+        return None
+    split_atom, component = forward
+    component2, split_atom2 = backward
+    if expr_key(split_atom) != expr_key(split_atom2) or expr_key(component) != expr_key(component2):
+        return None
+    target_left, target_right = target_parts
+    parent_name = raw_tptp_claim_name(parents[0])
+    target_text = proof_arg_text(target)
+
+    if expr_key(target_left) == expr_key(component) and expr_key(target_right) == expr_key(
+        Expr("arrow", args=(split_atom, Expr("var", value="vampire_false")))
+    ):
+        return (
+            f"({parent_name} {target_text} "
+            f"(fun Hforward Hback => "
+            f"(vampire_xm {proof_arg_text(split_atom)} {target_text} "
+            f"(fun Hsplit => {proof_term_text(raw_or_left_intro(target, '(Hforward Hsplit)') or '')}) "
+            f"(fun Hnotsplit => {proof_term_text(raw_or_right_intro(target, 'Hnotsplit') or '')}))))"
+        )
+
+    if expr_key(target_left) == expr_key(Expr("arrow", args=(component, Expr("var", value="vampire_false")))) and expr_key(
+        target_right
+    ) == expr_key(split_atom):
+        return (
+            f"({parent_name} {target_text} "
+            f"(fun Hforward Hback => "
+            f"(vampire_xm {proof_arg_text(component)} {target_text} "
+            f"(fun Hcomponent => {proof_term_text(raw_or_right_intro(target, '(Hback Hcomponent)') or '')}) "
+            f"(fun Hnotcomponent => {proof_term_text(raw_or_left_intro(target, 'Hnotcomponent') or '')}))))"
+        )
+    return None
+
+
 def raw_tptp_replay_proof(
     rule: str | None,
     proposition: str,
@@ -11146,6 +11222,8 @@ def raw_tptp_replay_proof(
 ) -> str | None:
     if rule in {"trivial_inequality_removal", "duplicate_literal_removal"}:
         return raw_tptp_trivial_inequality_removal_proof(proposition, parents, propositions_by_name)
+    if rule == "avatar_component_clause":
+        return raw_tptp_avatar_component_clause_proof(proposition, parents, propositions_by_name)
     return None
 
 
