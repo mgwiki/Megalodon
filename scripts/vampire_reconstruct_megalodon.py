@@ -2900,9 +2900,6 @@ def proof_for_expr(
     allow_rule: bool = True,
     rule_depth: int = 2,
 ) -> str | None:
-    deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
-    if deadline is not None and time.monotonic() > deadline:
-        return None
     key = expr_key(expr)
     if key == "vampire_true":
         return "(fun P H => H)"
@@ -2931,6 +2928,10 @@ def proof_for_expr(
     or_intro = vampire_or_intro_proof(expr, known, known_canonical, rules, eq_facts, definitions, rule_depth)
     if or_intro is not None:
         return or_intro
+
+    deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+    if deadline is not None and time.monotonic() > deadline:
+        return None
 
     if allow_rule:
         introduced = introduction_proof(expr, known, known_canonical, rules, eq_facts, definitions, rule_depth)
