@@ -44,7 +44,7 @@ INFERRED_DEPENDENCY_RE = re.compile(r"^[_A-Za-z][_A-Za-z0-9']*$")
 DEFINITION_RE = re.compile(r"^Definition (?P<name>[_A-Za-z][_A-Za-z0-9']*) : (?P<sort>[^:]+?) := (?P<body>.*)\.$")
 THF_TYPE_RE = re.compile(r"^thf\([^,]+,\s*type,\s*\((?P<name>[^:\s]+)\s*:\s*(?P<sort>.*?)\)\)\.", re.DOTALL)
 PROOF_SEARCH_STATE = threading.local()
-PROOF_SEARCH_SECONDS = float(os.environ.get("MEGALODON_PROOF_SEARCH_SECONDS", "30"))
+PROOF_SEARCH_SECONDS = float(os.environ.get("MEGALODON_PROOF_SEARCH_SECONDS", "45"))
 PROOF_SEARCH_CLOCK = getattr(time, "thread_time", time.monotonic)
 
 
@@ -6282,6 +6282,229 @@ def if_correct_branch_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
     return None
 
 
+def binary_application(node: Expr) -> tuple[str, Expr, Expr] | None:
+    if (
+        node.kind == "app"
+        and len(node.args) == 3
+        and node.args[0].kind == "var"
+        and node.args[0].value is not None
+    ):
+        return node.args[0].value, node.args[1], node.args[2]
+    return None
+
+
+def unary_predicate_application(node: Expr) -> tuple[str, Expr] | None:
+    if (
+        node.kind == "app"
+        and len(node.args) == 2
+        and node.args[0].kind == "var"
+        and node.args[0].value is not None
+    ):
+        return node.args[0].value, node.args[1]
+    return None
+
+
+def make_binary_application(name: str, left: Expr, right: Expr) -> Expr:
+    return Expr("app", args=(Expr("var", value=name), left, right))
+
+
+def algebraic_interchange_commutativity_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    sides = equality_like_sides(conclusion)
+    if sides is None or len(binders) != 5 or len(premises) != 5:
+        return None
+    binder_exprs = [Expr("var", value=name) for name, _ in binders]
+    binder_names = [name for name, _ in binders]
+
+    def premise_predicate_terms() -> tuple[str, dict[str, str]] | None:
+        pred_name: str | None = None
+        proof_by_term: dict[str, str] = {}
+        for index, (premise, binder) in enumerate(zip(premises, binder_exprs)):
+            pred = unary_predicate_application(premise)
+            if pred is None or expr_key(pred[1]) != expr_key(binder):
+                return None
+            if pred_name is None:
+                pred_name = pred[0]
+            elif pred_name != pred[0]:
+                return None
+            proof_by_term[expr_key(binder)] = f"H{index}"
+        return (pred_name, proof_by_term) if pred_name is not None else None
+
+    pred_info = premise_predicate_terms()
+    if pred_info is None:
+        return None
+    predicate, premise_proofs = pred_info
+
+    left = sides[0]
+    right = sides[1]
+    left_top = binary_application(left)
+    right_top = binary_application(right)
+    if left_top is None or right_top is None or left_top[0] != right_top[0]:
+        return None
+    op = left_top[0]
+    left_outer_left = binary_application(left_top[1])
+    left_outer_right = binary_application(left_top[2])
+    right_outer_left = binary_application(right_top[1])
+    right_outer_right = binary_application(right_top[2])
+    if left_outer_left is None or left_outer_right is None or right_outer_left is None or right_outer_right is None:
+        return None
+    if any(part[0] != op for part in (left_outer_left, left_outer_right, right_outer_left, right_outer_right)):
+        return None
+    nested = binary_application(left_outer_left[2])
+    if nested is None or nested[0] != op:
+        return None
+    a, b, c, d, e = binder_exprs
+    bc = make_binary_application(op, b, c)
+    if (
+        expr_key(left_outer_left[1]) != expr_key(a)
+        or expr_key(left_outer_left[2]) != expr_key(bc)
+        or expr_key(left_outer_right[1]) != expr_key(d)
+        or expr_key(left_outer_right[2]) != expr_key(e)
+        or expr_key(right_outer_left[1]) != expr_key(e)
+        or expr_key(right_outer_left[2]) != expr_key(bc)
+        or expr_key(right_outer_right[1]) != expr_key(d)
+        or expr_key(right_outer_right[2]) != expr_key(a)
+    ):
+        return None
+
+    def apply_rule(rule: ProofRule, subst: dict[str, Expr], premise_proofs_by_key: dict[str, str]) -> str | None:
+        parts = [rule.name]
+        for binder_name in rule.binders:
+            if binder_name not in subst:
+                return None
+            parts.append(proof_arg_text(subst[binder_name]))
+        for premise in rule.premises:
+            instantiated = substitute_expr(premise, subst)
+            proof = premise_proofs_by_key.get(expr_key(instantiated))
+            if proof is None:
+                return None
+            parts.append(proof_argument_text(proof))
+        return rule_application_text(parts)
+
+    closure_rule: ProofRule | None = None
+    comm_rule: ProofRule | None = None
+    interchange_rule: ProofRule | None = None
+    for rule in rules:
+        if len(rule.binders) == 2:
+            x = Expr("var", value=rule.binders[0])
+            y = Expr("var", value=rule.binders[1])
+            conclusion_pred = unary_predicate_application(rule.conclusion)
+            if (
+                conclusion_pred is not None
+                and conclusion_pred[0] == predicate
+                and expr_key(conclusion_pred[1]) == expr_key(make_binary_application(op, x, y))
+            ):
+                premise_keys = {expr_key(premise) for premise in rule.premises}
+                expected = {
+                    expr_key(Expr("app", args=(Expr("var", value=predicate), x))),
+                    expr_key(Expr("app", args=(Expr("var", value=predicate), y))),
+                }
+                if premise_keys == expected:
+                    closure_rule = rule
+            rule_sides = equality_like_sides(rule.conclusion)
+            if rule_sides is not None:
+                if (
+                    expr_key(rule_sides[0]) == expr_key(make_binary_application(op, x, y))
+                    and expr_key(rule_sides[1]) == expr_key(make_binary_application(op, y, x))
+                ):
+                    premise_keys = {expr_key(premise) for premise in rule.premises}
+                    expected = {
+                        expr_key(Expr("app", args=(Expr("var", value=predicate), x))),
+                        expr_key(Expr("app", args=(Expr("var", value=predicate), y))),
+                    }
+                    if premise_keys == expected:
+                        comm_rule = rule
+        if len(rule.binders) == 4:
+            w = Expr("var", value=rule.binders[0])
+            x = Expr("var", value=rule.binders[1])
+            y = Expr("var", value=rule.binders[2])
+            z = Expr("var", value=rule.binders[3])
+            rule_sides = equality_like_sides(rule.conclusion)
+            if rule_sides is None:
+                continue
+            expected_left = make_binary_application(op, make_binary_application(op, w, x), make_binary_application(op, y, z))
+            expected_right = make_binary_application(op, make_binary_application(op, w, y), make_binary_application(op, x, z))
+            if expr_key(rule_sides[0]) == expr_key(expected_left) and expr_key(rule_sides[1]) == expr_key(expected_right):
+                premise_keys = {expr_key(premise) for premise in rule.premises}
+                expected = {
+                    expr_key(Expr("app", args=(Expr("var", value=predicate), item)))
+                    for item in (w, x, y, z)
+                }
+                if premise_keys == expected:
+                    interchange_rule = rule
+
+    if closure_rule is None or comm_rule is None or interchange_rule is None:
+        return None
+
+    def predicate_expr(term: Expr) -> Expr:
+        return Expr("app", args=(Expr("var", value=predicate), term))
+
+    def closure(left_term: Expr, left_proof: str, right_term: Expr, right_proof: str) -> str | None:
+        subst = {closure_rule.binders[0]: left_term, closure_rule.binders[1]: right_term}
+        return apply_rule(
+            closure_rule,
+            subst,
+            {expr_key(predicate_expr(left_term)): left_proof, expr_key(predicate_expr(right_term)): right_proof},
+        )
+
+    def comm(left_term: Expr, left_proof: str, right_term: Expr, right_proof: str) -> str | None:
+        subst = {comm_rule.binders[0]: left_term, comm_rule.binders[1]: right_term}
+        return apply_rule(
+            comm_rule,
+            subst,
+            {expr_key(predicate_expr(left_term)): left_proof, expr_key(predicate_expr(right_term)): right_proof},
+        )
+
+    def interchange(w_term: Expr, w_proof: str, x_term: Expr, x_proof: str, y_term: Expr, y_proof: str, z_term: Expr, z_proof: str) -> str | None:
+        subst = {
+            interchange_rule.binders[0]: w_term,
+            interchange_rule.binders[1]: x_term,
+            interchange_rule.binders[2]: y_term,
+            interchange_rule.binders[3]: z_term,
+        }
+        return apply_rule(
+            interchange_rule,
+            subst,
+            {
+                expr_key(predicate_expr(w_term)): w_proof,
+                expr_key(predicate_expr(x_term)): x_proof,
+                expr_key(predicate_expr(y_term)): y_proof,
+                expr_key(predicate_expr(z_term)): z_proof,
+            },
+        )
+
+    ha, hb, hc, hd, he = [premise_proofs[expr_key(term)] for term in (a, b, c, d, e)]
+    p_bc = closure(b, hb, c, hc)
+    if p_bc is None:
+        return None
+    ad = make_binary_application(op, a, d)
+    da = make_binary_application(op, d, a)
+    bce = make_binary_application(op, bc, e)
+    ebc = make_binary_application(op, e, bc)
+    p_da = closure(d, hd, a, ha)
+    p_ebc = closure(e, he, bc, p_bc)
+    p1 = interchange(a, ha, bc, p_bc, d, hd, e, he)
+    p_ad = comm(a, ha, d, hd)
+    p_bce = comm(bc, p_bc, e, he)
+    if p_da is None or p_ebc is None or p1 is None or p_ad is None or p_bce is None:
+        return None
+    middle = make_binary_application(op, ad, bce)
+    p2 = (
+        f"(fun Q:set->prop => fun H:Q ({expr_text(middle)}) => "
+        f"{proof_term_text(p_bce)} (fun zz:set => Q ({expr_text(make_binary_application(op, da, Expr('var', value='zz')))})) "
+        f"({proof_term_text(p_ad)} (fun zz:set => Q ({expr_text(make_binary_application(op, Expr('var', value='zz'), bce))})) H))"
+    )
+    p3 = comm(da, p_da, ebc, p_ebc)
+    if p3 is None:
+        return None
+    proof = eq_transitivity_proof([p1, p2, p3], expr_text(left))
+    if proof is None:
+        return None
+    args = binder_names + [f"H{index}" for index, _ in enumerate(premises)]
+    return f"({' '.join(['fun'] + args + ['=>', proof])})"
+
+
 def rule_conjunction_projection_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
     binders, body = collect_foralls(expr)
     target_premises, target_conclusion = split_arrows(body)
@@ -6674,6 +6897,7 @@ def _proof_for_expr_impl(
         repl_image_membership_elim_proof(expr, known, known_canonical, rules, eq_facts, definitions, rule_depth),
         image_monotone_proof(expr, rules),
         image_in_power_proof(expr, rules),
+        algebraic_interchange_commutativity_proof(expr, rules),
         pair_sigma_e1_proof(expr, rules),
         ap1_sigma_proof(expr, rules),
     ):
@@ -7186,6 +7410,14 @@ def remember_proposition(
         eq_facts.append(eq_fact)
 
 
+def known_proof_for_proposition(
+    proposition: str,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+) -> str | None:
+    return known.get(proposition) or known_canonical.get(canonical_proposition(proposition))
+
+
 def fill_repeated_claim_admits(lines: list[str]) -> list[str]:
     previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
     PROOF_SEARCH_STATE.deadline = proof_search_now() + PROOF_SEARCH_SECONDS
@@ -7200,9 +7432,7 @@ def fill_repeated_claim_admits(lines: list[str]) -> list[str]:
     block_depth = 0
     try:
         while index < len(result):
-            deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
-            if deadline is not None and proof_search_now() > deadline:
-                break
+            timed_out = proof_search_timed_out()
             line = result[index]
             if block_depth > 0:
                 if line == "{":
@@ -7243,14 +7473,20 @@ def fill_repeated_claim_admits(lines: list[str]) -> list[str]:
             claim = proposition_after_colon(line, "claim ")
             if claim is not None:
                 name, proposition = claim
-                proof_name = proof_for_proposition(proposition, known, known_canonical, rules, eq_facts, definitions)
+                if timed_out:
+                    proof_name = known_proof_for_proposition(proposition, known, known_canonical)
+                else:
+                    proof_name = proof_for_proposition(proposition, known, known_canonical, rules, eq_facts, definitions)
                 if proof_name is not None and index + 1 < len(result) and result[index + 1] == "{ admit. }":
                     result[index + 1] = "{ exact " + proof_argument_text(proof_name) + ". }"
                 remember_proposition(known, known_canonical, rules, eq_facts, name, proposition)
                 index += 2 if index + 1 < len(result) and result[index + 1].startswith("{ ") else 1
                 continue
             if line == "admit." and theorem is not None:
-                proof_name = proof_for_proposition(theorem, known, known_canonical, rules, eq_facts, definitions)
+                if timed_out:
+                    proof_name = known_proof_for_proposition(theorem, known, known_canonical)
+                else:
+                    proof_name = proof_for_proposition(theorem, known, known_canonical, rules, eq_facts, definitions)
                 if proof_name is not None:
                     result[index] = "exact " + proof_argument_text(proof_name) + "."
             index += 1
