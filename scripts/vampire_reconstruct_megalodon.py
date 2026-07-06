@@ -74,6 +74,14 @@ class RunningVampire:
 
 
 @dataclass(frozen=True)
+class TptpSourceInfo:
+    name: str
+    decoded_name: str
+    role: str
+    hash: str | None = None
+
+
+@dataclass(frozen=True)
 class Token:
     value: str
 
@@ -475,6 +483,55 @@ def decode_tptp_identifier(name: str) -> str:
     if name.startswith("c_"):
         name = name[2:]
     return re.sub(r"_([0-9A-Fa-f]{2})", lambda match: chr(int(match.group(1), 16)), name)
+
+
+def split_top_level_commas(text: str) -> list[str] | None:
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    bracket_depth = 0
+    for index, char in enumerate(text):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth < 0:
+                return None
+        elif char == "[":
+            bracket_depth += 1
+        elif char == "]":
+            bracket_depth -= 1
+            if bracket_depth < 0:
+                return None
+        elif char == "," and depth == 0 and bracket_depth == 0:
+            parts.append(text[start:index].strip())
+            start = index + 1
+    if depth != 0 or bracket_depth != 0:
+        return None
+    parts.append(text[start:].strip())
+    return parts
+
+
+def tptp_decl_parts(text: str) -> tuple[str, str, str, str | None] | None:
+    stripped = text.strip()
+    hash_match = re.search(r"%\s*(?P<hash>[0-9a-fA-F]{64})\s*$", stripped)
+    source_hash = hash_match.group("hash").lower() if hash_match else None
+    if hash_match:
+        stripped = stripped[: hash_match.start()].rstrip()
+    match = re.match(r"^(?:thf|tff|cnf)\((?P<body>.*)\)\.\s*$", stripped, re.DOTALL)
+    if match is None:
+        return None
+    parts = split_top_level_commas(match.group("body"))
+    if parts is None or len(parts) < 3:
+        return None
+    return parts[0].strip(), parts[1].strip(), ",".join(parts[2:]).strip(), source_hash
+
+
+def normalize_tptp_formula_body(text: str) -> str:
+    compact = re.sub(r"\s+", "", strip_balanced_parens(text))
+    compact = re.sub(r":[^,\]]+(?=[,\]])", "", compact)
+    compact = compact.replace("(", "").replace(")", "")
+    return compact
 
 
 def tptp_sort_to_megalodon(sort: str) -> str:
@@ -3228,6 +3285,90 @@ def source_local_dependency_locations(source: str | None, theorem_line: int | No
     return [f"{name}@{found[name][0]}({found[name][1]})" for name in names if name in found]
 
 
+def problem_formula_sources(problem: Path | None) -> dict[str, TptpSourceInfo]:
+    if problem is None or not problem.exists():
+        return {}
+    sources: dict[str, TptpSourceInfo] = {}
+    for line in problem.read_text(encoding="utf-8", errors="replace").splitlines():
+        parsed = tptp_decl_parts(line)
+        if parsed is None:
+            continue
+        name, role, body, source_hash = parsed
+        if role not in {"axiom", "conjecture", "definition"}:
+            continue
+        normalized = normalize_tptp_formula_body(body)
+        if not normalized:
+            continue
+        sources.setdefault(
+            normalized,
+            TptpSourceInfo(name=name, decoded_name=decode_tptp_identifier(name), role=role, hash=source_hash),
+        )
+    return sources
+
+
+def vampire_input_step_sources(proof_text: str | None, problem: Path | None) -> dict[str, TptpSourceInfo]:
+    if proof_text is None:
+        return {}
+    by_formula = problem_formula_sources(problem)
+    if not by_formula:
+        return {}
+    sources: dict[str, TptpSourceInfo] = {}
+    for line in proof_text.splitlines():
+        match = MEGALODON_STEP_FORMULA_RE.match(line.strip())
+        if match is None or json.loads(f'"{match.group("rule")}"') != "input":
+            continue
+        formula = json.loads(f'"{match.group("formula")}"')
+        parsed = tptp_decl_parts(formula)
+        if parsed is None:
+            continue
+        _, role, body, _ = parsed
+        if role not in {"axiom", "conjecture"}:
+            continue
+        source = by_formula.get(normalize_tptp_formula_body(body))
+        if source is not None:
+            sources["S" + match.group("id")] = source
+    return sources
+
+
+def source_info_comment(prefix: str, info: TptpSourceInfo, source: str | None) -> list[str]:
+    label = f"{prefix}: {comment_text(info.decoded_name)}"
+    details: list[str] = []
+    if info.name != info.decoded_name:
+        details.append(f"tptp {comment_text(info.name)}")
+    if info.hash is not None:
+        details.append(f"hash {info.hash}")
+    comments = [f"// {label}" + (f" ({', '.join(details)})" if details else "")]
+    locations = source_dependency_locations(source, [info.decoded_name])
+    if locations:
+        comments.append(f"// source location: {', '.join(comment_text(location) for location in locations)}")
+    return comments
+
+
+def annotate_source_links(lines: list[str], proof: Path | None, proof_text: str | None, source: str | None) -> list[str]:
+    problem = problem_path_for_proof(proof) if proof is not None else None
+    step_sources = vampire_input_step_sources(proof_text, problem)
+    if not step_sources:
+        return list(lines)
+
+    proposition_sources: dict[str, TptpSourceInfo] = {}
+    for line in lines:
+        claim = proposition_after_colon(line, "claim ")
+        if claim is not None and claim[0] in step_sources:
+            proposition_sources.setdefault(claim[1], step_sources[claim[0]])
+
+    result: list[str] = []
+    for line in lines:
+        axiom = proposition_after_colon(line, "Axiom ")
+        if axiom is not None and axiom[1] in proposition_sources:
+            result.extend(source_info_comment("source axiom", proposition_sources[axiom[1]], source))
+        claim = proposition_after_colon(line, "claim ")
+        if claim is not None and claim[0] in step_sources:
+            info = step_sources[claim[0]]
+            result.extend(source_info_comment(f"source {info.role}", info, source))
+        result.append(line)
+    return result
+
+
 def skeleton_header(obligation: Obligation) -> list[str]:
     header = [
         "// Vampire/Megalodon reconstruction skeleton.",
@@ -3263,6 +3404,7 @@ def check_megalodon_lines(
     header: list[str] | None = None,
     fill_repeated_admits: bool = False,
     proof_text: str | None = None,
+    source: str | None = None,
 ) -> list[str]:
     safe_kind = kind.replace(" ", "_")
     lines = add_problem_type_variables(lines, proof, proof_text)
@@ -3271,6 +3413,7 @@ def check_megalodon_lines(
     output_lines = fill_source_candidate_claims(output_lines, proof_text)
     output_lines = fill_repeated_claim_admits(output_lines) if fill_repeated_admits else output_lines
     output_lines = annotate_remaining_admits(output_lines, proof_text)
+    output_lines = annotate_source_links(output_lines, proof, proof_text, source)
     if header:
         output_lines = header + output_lines
     if output_dir is None:
@@ -3744,6 +3887,7 @@ def check_obligation(
                         header=header,
                         fill_repeated_admits=True,
                         proof_text=text,
+                        source=obligation.source,
                     )
                 )
             elif claim_skeleton_dir is not None:
@@ -3759,6 +3903,7 @@ def check_obligation(
                     header=header,
                     fill_repeated_admits=True,
                     proof_text=text,
+                    source=obligation.source,
                 )
     return failures, checked_sources, checked_skeletons
 
