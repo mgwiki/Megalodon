@@ -3511,6 +3511,12 @@ def eq_symmetry_proof(proof: str, left: Expr) -> str:
     return f"({proof_head(proof)} (fun {name}:set => {name} = {left_text}) (fun R Hr => Hr))"
 
 
+def set_eq_symmetry_proof(proof: str, left: Expr) -> str:
+    left_text = expr_text(left)
+    name = fresh_identifier("zz", left_text)
+    return f"({proof_head(proof)} (fun {name}:set => vampire_eq_set {name} {proof_arg_text(left)}) (fun Q H => H))"
+
+
 def eq_transitivity_proof(proofs: list[str], start_text: str | None = None) -> str | None:
     if not proofs:
         return None
@@ -7178,6 +7184,11 @@ def equality_direct_rule_proof(
             conclusion_sides = equality_like_sides(conclusion)
             if conclusion_sides is None:
                 continue
+            conclusion_relation = (
+                conclusion.args[0].value
+                if conclusion.kind == "app" and conclusion.args and conclusion.args[0].kind == "var"
+                else None
+            )
             conclusion_left, conclusion_right = conclusion_sides
             variables = set(rule_application_binders(rule))
 
@@ -7216,6 +7227,8 @@ def equality_direct_rule_proof(
                 )
                 if parts is not None:
                     proof = rule_application_text(parts)
+                    if conclusion_relation == "vampire_eq_set":
+                        return set_eq_symmetry_proof(proof, target_right)
                     return eq_symmetry_proof(proof, target_right)
     return None
 
