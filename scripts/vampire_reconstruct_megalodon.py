@@ -411,6 +411,29 @@ def annotate_remaining_admits(lines: list[str], proof_text: str | None) -> list[
     return result
 
 
+def prune_unused_rectify_axiom_admits(lines: list[str], proof_text: str | None) -> list[str]:
+    contexts = vampire_step_contexts(proof_text)
+    if not contexts:
+        return list(lines)
+    result: list[str] = []
+    index = 0
+    while index < len(lines):
+        claim = proposition_after_colon(lines[index], "claim ")
+        if (
+            claim is not None
+            and index + 1 < len(lines)
+            and lines[index + 1] == "{ admit. }"
+            and contexts.get(claim[0]) == "rectify, axiom"
+        ):
+            later_text = "\n".join(lines[index + 2:])
+            if not re.search(rf"\b{re.escape(claim[0])}\b", later_text):
+                index += 2
+                continue
+        result.append(lines[index])
+        index += 1
+    return result
+
+
 def proposition_after_colon(line: str, prefix: str) -> tuple[str, str] | None:
     if not line.startswith(prefix):
         return None
@@ -5708,6 +5731,7 @@ def check_megalodon_lines(
     output_lines = add_recovered_input_equalities(output_lines, proof_text)
     output_lines = fill_source_candidate_claims(output_lines, proof_text)
     output_lines = fill_repeated_claim_admits(output_lines) if fill_repeated_admits else output_lines
+    output_lines = prune_unused_rectify_axiom_admits(output_lines, proof_text)
     output_lines = annotate_remaining_admits(output_lines, proof_text)
     output_lines = annotate_source_links(output_lines, proof, proof_text, source)
     if header:
