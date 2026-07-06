@@ -1232,7 +1232,7 @@ def reconstruction_prelude_for(propositions: list[str]) -> list[str]:
     ]
     if "vampire_or " in joined:
         lines.append("Definition vampire_or : prop->prop->prop := fun A B:prop => forall P:prop, (A -> P) -> (B -> P) -> P.")
-        lines.append("Axiom vampire_xm: forall P:prop, vampire_or P (P -> vampire_false).")
+        lines.append("Axiom vampire_xm: forall VampireXmP:prop, vampire_or VampireXmP (VampireXmP -> vampire_false).")
     if "vampire_and " in joined:
         lines.append("Definition vampire_and : prop->prop->prop := fun A B:prop => forall P:prop, (A -> B -> P) -> P.")
     if "vampire_exists_set " in joined:
@@ -3136,7 +3136,7 @@ def fill_replay_substitution_claims(
 BOOLEAN_EXT_HELPERS = [
     "Definition vampire_eq_prop : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y.",
     "Definition vampire_eq_prop_fun : (prop->prop)->(prop->prop)->prop := fun x y:prop->prop => forall Q:(prop->prop)->prop, Q x -> Q y.",
-    "Axiom vampire_xm: forall P:prop, vampire_or P (P -> vampire_false).",
+    "Axiom vampire_xm: forall VampireXmP:prop, vampire_or VampireXmP (VampireXmP -> vampire_false).",
     "Axiom vampire_prop_ext: forall P Q:prop, (P -> Q) -> (Q -> P) -> vampire_eq_prop P Q.",
     "Axiom vampire_funext_prop: forall F G:prop->prop, (forall X:prop, vampire_eq_prop (F X) (G X)) -> vampire_eq_prop_fun F G.",
     "Axiom vampire_funext_prop_prop: forall F G:prop->prop->prop, (forall X:prop, vampire_eq_prop_fun (F X) (G X)) -> F = G.",
@@ -3282,6 +3282,27 @@ def add_missing_basic_connective_definitions(lines: list[str]) -> list[str]:
         result.append(line)
     if not inserted:
         result.extend(helpers)
+    return result
+
+
+def add_vampire_xm_axiom_if_used(lines: list[str]) -> list[str]:
+    if any(line.startswith("Axiom vampire_xm:") for line in lines):
+        return list(lines)
+    if not any(line.startswith("Definition vampire_or : prop->prop->prop") for line in lines):
+        return list(lines)
+    used = any("vampire_xm" in line for line in lines)
+    if not used:
+        return list(lines)
+    axiom = "Axiom vampire_xm: forall VampireXmP:prop, vampire_or VampireXmP (VampireXmP -> vampire_false)."
+    result: list[str] = []
+    inserted = False
+    for line in lines:
+        if not inserted and (line.startswith("Axiom ") or line.startswith("Theorem ")):
+            result.append(axiom)
+            inserted = True
+        result.append(line)
+    if not inserted:
+        result.append(axiom)
     return result
 
 
@@ -7281,6 +7302,144 @@ def antisymmetry_from_order_cases_proof(
     return None
 
 
+def global_or_exists_from_pointwise_split_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if proof_search_timed_out() or rule_depth <= 0:
+        return None
+    if len(expr_text(expr)) > 900:
+        return None
+    binders, body = collect_foralls(expr)
+    if not binders:
+        return None
+    premises, conclusion = split_arrows(body)
+    if len(premises) > 4:
+        return None
+    target_parts = app_args(conclusion, "vampire_or", 2)
+    if target_parts is None:
+        return None
+    global_case, exists_case = target_parts
+    global_binders, global_body = collect_foralls(global_case)
+    if len(global_binders) != 1:
+        return None
+    global_premises, global_conclusion = split_arrows(global_body)
+    if len(global_premises) != 1:
+        return None
+    witness_name, exists_body = vampire_exists_body(exists_case) or (None, None)
+    if witness_name is None or exists_body is None:
+        return None
+    exists_parts = vampire_and_parts(exists_body)
+    if exists_parts is None:
+        return None
+    exists_premise, exists_equality = exists_parts
+    if equality_like_sides(exists_equality) is None:
+        return None
+    if not expr_same_mod_alpha(global_premises[0], exists_premise):
+        return None
+
+    local_known = dict(known)
+    local_known_canonical = dict(known_canonical)
+    local_rules = list(rules)
+    local_eq_facts = list(eq_facts)
+    premise_names = [f"H{index}" for index, _ in enumerate(premises)]
+    for premise, premise_name in zip(premises, premise_names):
+        remember_proposition(
+            local_known,
+            local_known_canonical,
+            local_rules,
+            local_eq_facts,
+            premise_name,
+            expr_text(premise),
+        )
+
+    target_text = proof_arg_text(conclusion)
+    global_text = proof_arg_text(global_case)
+    exists_text = proof_arg_text(exists_case)
+    witness_var = Expr("var", value=global_binders[0][0])
+    premise_proof_name = "Hin"
+    branch_known = dict(local_known)
+    branch_known_canonical = dict(local_known_canonical)
+    branch_rules = list(local_rules)
+    branch_eq_facts = list(local_eq_facts)
+    remember_proposition(
+        branch_known,
+        branch_known_canonical,
+        branch_rules,
+        branch_eq_facts,
+        premise_proof_name,
+        expr_text(global_premises[0]),
+    )
+
+    for rule in reversed(local_rules):
+        rule_conclusion = rule_application_conclusion(rule)
+        rule_disjuncts = app_args(rule_conclusion, "vampire_or", 2)
+        if rule_disjuncts is None:
+            continue
+        for success_index, equality_index in ((0, 1), (1, 0)):
+            rule_success = rule_disjuncts[success_index]
+            rule_equality = rule_disjuncts[equality_index]
+            if equality_like_sides(rule_equality) is None:
+                continue
+            variables = set(rule_application_binders(rule))
+            subst: dict[str, Expr] = {}
+            if not match_expr(rule_success, global_conclusion, variables, subst):
+                continue
+            instantiated_equality = substitute_expr(rule_equality, subst)
+            target_sides = equality_like_sides(exists_equality)
+            if target_sides is None:
+                continue
+            equality_branch = equality_proof_to_target(
+                "Heq",
+                instantiated_equality,
+                target_sides[0],
+                target_sides[1],
+            )
+            if equality_branch is None:
+                continue
+            parts = rule_application_parts(
+                rule,
+                subst,
+                branch_known,
+                branch_known_canonical,
+                branch_rules,
+                branch_eq_facts,
+                definitions,
+                max(0, rule_depth - 1),
+            )
+            if parts is None:
+                continue
+            rule_proof = rule_application_text(parts)
+            and_proof = f"(fun P C => C {premise_proof_name} {proof_term_text(equality_branch)})"
+            exists_proof = f"(fun Q K => K {proof_arg_text(witness_var)} {and_proof})"
+            false_to_success = (
+                f"(Hnex {proof_term_text(exists_proof)} {proof_arg_text(global_conclusion)})"
+            )
+            pointwise_proof = (
+                f"(fun {global_binders[0][0]}:{global_binders[0][1]} => "
+                f"fun {premise_proof_name} => "
+                f"{proof_term_text(rule_proof)} {proof_arg_text(global_conclusion)} "
+                f"(fun Hsucc => Hsucc) "
+                f"(fun Heq => {false_to_success}))"
+            )
+            proof = (
+                f"(vampire_xm {global_text} {target_text} "
+                f"(fun Hlim => (fun P L R => L Hlim)) "
+                f"(fun Hnlim => "
+                f"(vampire_xm {exists_text} {target_text} "
+                f"(fun Hex => (fun P L R => R Hex)) "
+                f"(fun Hnex => (Hnlim {proof_term_text(pointwise_proof)} {target_text})))))"
+            )
+            args = [name for name, _ in binders] + premise_names
+            return f"({' '.join(['fun'] + args + ['=>', proof])})"
+    return None
+
+
 def implication_from_false_proof(
     expr: Expr,
     known: dict[str, str],
@@ -10425,6 +10584,18 @@ def _proof_for_expr_impl(
     if antisymmetry is not None:
         return antisymmetry
 
+    global_split = global_or_exists_from_pointwise_split_proof(
+        expr,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        rule_depth,
+    )
+    if global_split is not None:
+        return global_split
+
     implication_intro = implication_intro_proof(
         expr,
         known,
@@ -11544,6 +11715,7 @@ def check_megalodon_lines(
     output_lines = add_boolean_extensionality_helpers(output_lines)
     output_lines = fill_source_candidate_claims(output_lines, proof_text)
     output_lines = fill_repeated_claim_admits(output_lines) if fill_repeated_admits else output_lines
+    output_lines = add_vampire_xm_axiom_if_used(output_lines)
     output_lines = prune_unused_rectify_axiom_admits(output_lines, proof_text)
     if fill_repeated_admits:
         output_lines = prune_unreachable_claims(output_lines)
