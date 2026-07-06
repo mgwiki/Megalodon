@@ -1669,6 +1669,45 @@ def merge_substitutions(left: dict[str, Expr], right: dict[str, Expr]) -> dict[s
     return merged
 
 
+def rename_expr_variables(expr: Expr, renames: dict[str, str]) -> Expr:
+    if expr.kind == "var" and expr.value in renames:
+        return Expr("var", value=renames[expr.value], sort=expr.sort)
+    if not expr.args:
+        return expr
+    if expr.kind in {"forall", "lambda"} and expr.value in renames:
+        renames = {name: replacement for name, replacement in renames.items() if name != expr.value}
+    return Expr(
+        expr.kind,
+        value=expr.value,
+        args=tuple(rename_expr_variables(arg, renames) for arg in expr.args),
+        sort=expr.sort,
+    )
+
+
+def rename_rule_binders(rule: ProofRule, prefix: str) -> ProofRule:
+    renames = {name: f"{prefix}{name}" for name in rule_application_binders(rule)}
+    steps: list[RuleStep] = []
+    for step in rule.steps:
+        if step.kind == "binder":
+            assert step.name is not None
+            steps.append(RuleStep("binder", name=renames.get(step.name, step.name)))
+        else:
+            assert step.expr is not None
+            steps.append(RuleStep("premise", expr=rename_expr_variables(step.expr, renames)))
+    return ProofRule(
+        name=rule.name,
+        binders=tuple(renames.get(name, name) for name in rule.binders),
+        premises=tuple(rename_expr_variables(premise, renames) for premise in rule.premises),
+        conclusion=rename_expr_variables(rule.conclusion, renames),
+        steps=tuple(steps),
+        application_conclusion=(
+            rename_expr_variables(rule.application_conclusion, renames)
+            if rule.application_conclusion is not None
+            else None
+        ),
+    )
+
+
 def oriented_rule_proof(rewrite: OrientedRuleRewrite, subst: dict[str, Expr], proof: str) -> str:
     if not rewrite.reverse:
         return proof
@@ -1690,9 +1729,9 @@ def equality_two_rule_join_proof(
         return None
     left_rewrites: list[OrientedRuleRewrite] = []
     right_rewrites: list[OrientedRuleRewrite] = []
-    for rule in rules:
-        left_rewrites.extend(oriented_rule_rewrites_from(expr.args[0], rule))
-        right_rewrites.extend(oriented_rule_rewrites_from(expr.args[1], rule))
+    for index, rule in enumerate(rules):
+        left_rewrites.extend(oriented_rule_rewrites_from(expr.args[0], rename_rule_binders(rule, f"L{index}_")))
+        right_rewrites.extend(oriented_rule_rewrites_from(expr.args[1], rename_rule_binders(rule, f"R{index}_")))
     for left_rewrite in left_rewrites:
         for right_rewrite in right_rewrites:
             subst = merge_substitutions(left_rewrite.subst, right_rewrite.subst)
