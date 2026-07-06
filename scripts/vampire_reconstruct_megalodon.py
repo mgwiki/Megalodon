@@ -6264,6 +6264,56 @@ def fill_repeated_claim_admits(lines: list[str]) -> list[str]:
             PROOF_SEARCH_STATE.deadline = previous_deadline
 
 
+def proof_for_claim_at(lines: list[str], claim_index: int) -> str | None:
+    claim = proposition_after_colon(lines[claim_index], "claim ") if 0 <= claim_index < len(lines) else None
+    if claim is None:
+        return None
+    known: dict[str, str] = {}
+    known_canonical: dict[str, str] = {}
+    rules: list[ProofRule] = []
+    eq_facts: list[EqFact] = []
+    definitions: dict[str, DefinitionInfo] = {}
+    index = 0
+    block_depth = 0
+    while index < claim_index:
+        line = lines[index]
+        if block_depth > 0:
+            if line == "{":
+                block_depth += 1
+            elif line == "}":
+                block_depth -= 1
+            index += 1
+            continue
+        if line == "{":
+            block_depth = 1
+            index += 1
+            continue
+        definition_match = DEFINITION_RE.match(line)
+        if definition_match:
+            parsed_definition = parse_definition_body(definition_match.group("body").strip())
+            if parsed_definition is not None:
+                binders, body = parsed_definition
+                definitions[definition_match.group("name")] = DefinitionInfo(
+                    definition_match.group("sort").strip(),
+                    definition_match.group("body").strip(),
+                    "(fun Q H => H)",
+                    binders,
+                    body,
+                )
+        axiom = proposition_after_colon(line, "Axiom ")
+        if axiom is not None:
+            remember_proposition(known, known_canonical, rules, eq_facts, axiom[0], axiom[1])
+            index += 1
+            continue
+        previous_claim = proposition_after_colon(line, "claim ")
+        if previous_claim is not None:
+            remember_proposition(known, known_canonical, rules, eq_facts, previous_claim[0], previous_claim[1])
+            index += 1
+            continue
+        index += 1
+    return proof_for_proposition(claim[1], known, known_canonical, rules, eq_facts, definitions)
+
+
 def comment_text(value: object) -> str:
     text = "" if value is None else str(value)
     return text.replace("\r", " ").replace("\n", " ")
@@ -6509,19 +6559,41 @@ def check_megalodon_lines(
         line_index = int(match.group("line")) - 1
         if not (0 <= line_index < len(output_lines)):
             return False
-        candidates = [line_index]
-        if output_lines[line_index].startswith("{ exact ") and line_index > 0:
-            candidates.append(line_index)
+
+        def replacement_for_claim(claim_index: int) -> str:
+            proof_name = proof_for_claim_at(output_lines, claim_index)
+            if proof_name is None:
+                return "{ admit. }"
+            return "{ exact " + proof_argument_text(proof_name) + ". }"
+
+        inline_candidates = [line_index]
         if line_index + 1 < len(output_lines):
-            candidates.append(line_index + 1)
-        for candidate_index in candidates:
+            inline_candidates.append(line_index + 1)
+        for candidate_index in inline_candidates:
             if (
                 0 <= candidate_index < len(output_lines)
                 and output_lines[candidate_index].startswith("{ exact ")
                 and candidate_index > 0
                 and output_lines[candidate_index - 1].startswith("claim ")
             ):
-                output_lines[candidate_index] = "{ admit. }"
+                output_lines[candidate_index] = replacement_for_claim(candidate_index - 1)
+                candidate.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
+                return True
+
+        block_start = line_index
+        while block_start >= 0 and output_lines[block_start] != "{":
+            block_start -= 1
+        if (
+            block_start > 0
+            and output_lines[block_start - 1].startswith("claim ")
+            and line_index + 1 < len(output_lines)
+            and output_lines[line_index].lstrip().startswith("exact ")
+        ):
+            block_end = line_index + 1
+            while block_end < len(output_lines) and output_lines[block_end] != "}":
+                block_end += 1
+            if block_end < len(output_lines):
+                output_lines[block_start : block_end + 1] = [replacement_for_claim(block_start - 1)]
                 candidate.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
                 return True
         return False
