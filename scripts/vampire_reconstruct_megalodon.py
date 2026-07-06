@@ -4967,6 +4967,89 @@ def repl_elimination_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
     )
 
 
+def repl_image_membership_elim_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 0:
+        return None
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if len(binders) != 1 or binders[0][1] != "set" or len(premises) != 1:
+        return None
+    image = Expr("var", value=binders[0][0])
+    premise_args = app_args(premises[0], "In", 2)
+    conclusion_args = app_args(conclusion, "In", 2)
+    if premise_args is None or conclusion_args is None:
+        return None
+    if expr_key(premise_args[0]) != expr_key(image) or expr_key(conclusion_args[0]) != expr_key(image):
+        return None
+    repl_args = app_args(premise_args[1], "Repl", 2)
+    if repl_args is None:
+        return None
+    base, function = repl_args
+    target_set = conclusion_args[1]
+    _, elim = find_repl_intro_elim_rules(rules)
+    if elim is None:
+        return None
+
+    image_name = binders[0][0]
+    membership_name = fresh_identifier("Himg", expr_text(expr))
+    witness_name = fresh_identifier("W", expr_text(expr), membership_name)
+    witness = Expr("var", value=witness_name)
+    witness_membership_name = fresh_identifier("HW", expr_text(expr), membership_name, witness_name)
+    equality_name = fresh_identifier("Heq", expr_text(expr), membership_name, witness_name, witness_membership_name)
+
+    local_known = dict(known)
+    local_known_canonical = dict(known_canonical)
+    local_rules = list(rules)
+    local_eq_facts = list(eq_facts)
+    remember_proposition(
+        local_known,
+        local_known_canonical,
+        local_rules,
+        local_eq_facts,
+        witness_membership_name,
+        expr_text(Expr("app", args=(Expr("var", value="In"), witness, base))),
+    )
+
+    for rule in reversed(rules):
+        if len(rule.binders) != 1 or len(rule.premises) != 1:
+            continue
+        rule_var = Expr("var", value=rule.binders[0])
+        expected_image = Expr("app", args=(function, rule_var))
+        if not atom2(rule.conclusion, "In", expected_image, target_set):
+            continue
+        subst = {rule.binders[0]: witness}
+        domain_premise = substitute_expr(rule.premises[0], subst)
+        domain_proof = proof_for_expr(
+            domain_premise,
+            local_known,
+            local_known_canonical,
+            local_rules,
+            local_eq_facts,
+            definitions,
+            allow_rule=True,
+            rule_depth=max(0, rule_depth - 1),
+        )
+        if domain_proof is None:
+            continue
+        mapped_proof = f"({rule.name} {witness_name} {proof_argument_text(domain_proof)})"
+        return (
+            f"(fun {image_name} {membership_name} => "
+            f"({elim} {proof_arg_text(base)} {proof_arg_text(function)} {image_name} {membership_name} "
+            f"(In {image_name} {proof_arg_text(target_set)}) "
+            f"(fun {witness_name}:set => fun {witness_membership_name} => fun {equality_name} => "
+            f"{equality_name} (fun zz:set => In zz {proof_arg_text(target_set)}) {mapped_proof})))"
+        )
+    return None
+
+
 def image_monotone_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
     binders, body = collect_foralls(expr)
     premises, conclusion = split_arrows(body)
@@ -5378,6 +5461,7 @@ def _proof_for_expr_impl(
 
     for derived in (
         repl_elimination_proof(expr, rules),
+        repl_image_membership_elim_proof(expr, known, known_canonical, rules, eq_facts, definitions, rule_depth),
         image_monotone_proof(expr, rules),
         image_in_power_proof(expr, rules),
         pair_sigma_e1_proof(expr, rules),
