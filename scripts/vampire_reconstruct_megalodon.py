@@ -11339,6 +11339,9 @@ def raw_clause_transform_proof(
         return None
     if expr_key(source) == expr_key(target):
         return source_proof
+    conjunction_projection = vampire_and_projection_from_proof(source_proof, source, target)
+    if conjunction_projection is not None:
+        return conjunction_projection
     rewrite_proof = raw_split_rewrite_proof(source, target, source_proof, rewrites)
     if rewrite_proof is not None:
         return rewrite_proof
