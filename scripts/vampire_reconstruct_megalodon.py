@@ -11251,6 +11251,98 @@ def raw_complementary_literals(left: Expr, right: Expr) -> bool:
     )
 
 
+def raw_match_complementary_literals(
+    pattern: Expr,
+    concrete: Expr,
+    variables: set[str],
+    subst: dict[str, Expr],
+) -> bool:
+    pattern_premises, pattern_conclusion = split_arrows(pattern)
+    if len(pattern_premises) == 1 and false_eliminator_expr(pattern_conclusion):
+        return match_expr_with_alpha_instantiation(pattern_premises[0], concrete, variables, subst)
+    concrete_premises, concrete_conclusion = split_arrows(concrete)
+    if len(concrete_premises) == 1 and false_eliminator_expr(concrete_conclusion):
+        return match_expr_with_alpha_instantiation(pattern, concrete_premises[0], variables, subst)
+    return False
+
+
+def raw_infer_forall_clause_substitution(
+    body: Expr,
+    target: Expr,
+    resolver: Expr,
+    binder_names: set[str],
+) -> dict[str, Expr] | None:
+    pattern_literals = [
+        literal
+        for literal in raw_clause_literals(body)
+        if expr_variables(literal) & binder_names
+    ]
+    if not pattern_literals:
+        return None
+    target_literals = raw_clause_literals(target)
+    resolver_literals = raw_clause_literals(resolver)
+    if len(pattern_literals) > 8 or len(target_literals) > 12 or len(resolver_literals) > 12:
+        return None
+    pattern_literals.sort(key=lambda literal: -len(expr_variables(literal) & binder_names))
+    attempts = 0
+
+    def search(index: int, subst: dict[str, Expr]) -> dict[str, Expr] | None:
+        nonlocal attempts
+        if proof_search_timed_out():
+            return None
+        if binder_names <= subst.keys():
+            flatten_substitution(subst)
+            if any(expr_variables(value) & binder_names for value in subst.values()):
+                return None
+            return subst
+        if index >= len(pattern_literals) or attempts > 128:
+            return None
+        pattern = pattern_literals[index]
+        for literal in target_literals:
+            attempts += 1
+            trial = dict(subst)
+            if match_expr_with_alpha_instantiation(pattern, literal, binder_names, trial):
+                found = search(index + 1, trial)
+                if found is not None:
+                    return found
+        for literal in resolver_literals:
+            attempts += 1
+            trial = dict(subst)
+            if raw_match_complementary_literals(pattern, literal, binder_names, trial):
+                found = search(index + 1, trial)
+                if found is not None:
+                    return found
+        return search(index + 1, subst)
+
+    return search(0, {})
+
+
+def raw_instantiated_forall_clause_options(
+    expr: Expr,
+    proof: str,
+    target: Expr,
+    resolver: Expr,
+) -> list[tuple[Expr, str]]:
+    options = [(expr, proof)]
+    binders, body = collect_foralls(expr)
+    if not binders:
+        return options
+    binder_names = {name for name, _ in binders}
+    subst = raw_infer_forall_clause_substitution(body, target, resolver, binder_names)
+    if subst is None or not binder_names <= subst.keys():
+        return options
+    instantiated = substitute_expr(body, subst)
+    instantiated_proof = proof
+    for name, _ in binders:
+        value = subst.get(name)
+        if value is None:
+            return options
+        instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(value)})"
+    if expr_key(instantiated) != expr_key(expr):
+        options.append((instantiated, instantiated_proof))
+    return options
+
+
 def raw_clauses_have_complement(source: Expr, resolver: Expr) -> bool:
     source_literals = raw_clause_literals(source)
     resolver_literals = raw_clause_literals(resolver)
@@ -11374,16 +11466,23 @@ def raw_tptp_forward_subsumption_resolution_proof(
     target = parse_expr(proposition)
     if first is None or second is None or target is None:
         return None
-    if not raw_clause_replay_budget_ok(first, second, target, max_literals=8, max_literal_product=128):
-        return None
-    if not raw_clauses_have_complement(first, second):
-        return None
     first_name = raw_tptp_claim_name(parents[0])
     second_name = raw_tptp_claim_name(parents[1])
-    proof = raw_clause_resolution_proof(first, target, first_name, second, second_name)
-    if proof is not None:
-        return proof
-    return raw_clause_resolution_proof(second, target, second_name, first, first_name)
+    first_options = raw_instantiated_forall_clause_options(first, first_name, target, second)
+    second_options = raw_instantiated_forall_clause_options(second, second_name, target, first)
+    for first_clause, first_proof in first_options:
+        for second_clause, second_proof in second_options:
+            if not raw_clause_replay_budget_ok(first_clause, second_clause, target, max_literals=8, max_literal_product=128):
+                continue
+            if not raw_clauses_have_complement(first_clause, second_clause):
+                continue
+            proof = raw_clause_resolution_proof(first_clause, target, first_proof, second_clause, second_proof)
+            if proof is not None:
+                return proof
+            proof = raw_clause_resolution_proof(second_clause, target, second_proof, first_clause, first_proof)
+            if proof is not None:
+                return proof
+    return None
 
 
 def raw_negative_equality_instantiations(body: Expr, binder_names: set[str]) -> list[tuple[str, Expr]]:
