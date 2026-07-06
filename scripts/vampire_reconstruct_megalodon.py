@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Generate and check Megalodon TH0 hammer obligations with Vampire proofs.
+"""Generate and check Megalodon TH0 obligations with Vampire proofs.
 
 This is the reproducible test driver for the Vampire-to-Megalodon proof
 reconstruction work.  It intentionally uses Megalodon's own TH0 generator as
-the source of truth, then selects obligations whose source lines are recorded
-as HO-Vampire-solvable in examples/hammer/ATPresults2025.
+the source of truth.  It can export either `aby` obligations or ordinary
+admitted proof states, then run Vampire and Megalodon reconstruction checks in
+parallel.
 """
 
 from __future__ import annotations
@@ -27,8 +28,8 @@ from pathlib import Path
 from typing import Iterable
 
 
-RESULT_RE = re.compile(r"^hammer\.(?P<line>[0-9]+)\.(?P<char>[0-9]+)\.\*\.p:")
-PROBLEM_RE = re.compile(r"^(?P<prefix>.*)\.(?P<line>[0-9]+)\.(?P<char>[0-9]+)\.th0\.p$")
+RESULT_RE = re.compile(r"^.*\.(?P<line>[0-9]+)\.(?P<char>[0-9]+)\.\*\.p:")
+PROBLEM_RE = re.compile(r"^(?P<prefix>.*)\.(?P<line>[0-9]+)(?:\.(?P<char>[0-9]+))?\.th0\.p$")
 PROVED_RE = re.compile(r"SZS status (Theorem|Unsatisfiable|ContradictoryAxioms)\b")
 FATAL_OUTPUT_RE = re.compile(r"Aborted by signal|ASSERTION|User error|missing .* implementation", re.IGNORECASE)
 MEGALODON_SOURCE_LINE_RE = re.compile(r'^megalodon_source_line\("(?P<line>(?:\\.|[^"\\])*)"\)\.$')
@@ -166,23 +167,28 @@ def generated_th0(prefix: Path) -> list[tuple[int, int, Path]]:
     parent = prefix.parent
     stem = prefix.name
     found: list[tuple[int, int, Path]] = []
-    for path in parent.glob(f"{stem}.*.*.th0.p"):
+    for path in parent.glob(f"{stem}.*.th0.p"):
         m = PROBLEM_RE.match(str(path))
         if not m:
             continue
-        found.append((int(m.group("line")), int(m.group("char")), path))
+        found.append((int(m.group("line")), int(m.group("char") or "0"), path))
     found.sort()
     return found
 
 
-def generate_problems(repo: Path, megalodon: Path, source: Path, prefix: Path) -> None:
+def generate_problems(repo: Path, megalodon: Path, source: Path, prefix: Path, export_mode: str) -> None:
     for old in prefix.parent.glob(f"{prefix.name}.*.p"):
         old.unlink()
+    if export_mode == "aby":
+        export_args = ["-createabyprobs", prefix.name]
+    elif export_mode == "admit":
+        export_args = ["-th0", prefix.name]
+    else:
+        raise SystemExit(f"unsupported export mode: {export_mode}")
     cmd = [
         str(megalodon),
         "-allowincompleteqed",
-        "-createabyprobs",
-        prefix.name,
+        *export_args,
         str(source),
     ]
     proc = run(cmd, prefix.parent)
@@ -7323,6 +7329,7 @@ def main() -> int:
     parser.add_argument("--source", type=Path, default=Path("examples/hammer/100thms_12_h.mg"))
     parser.add_argument("--results", type=Path, default=Path("examples/hammer/ATPresults2025"))
     parser.add_argument("--work-dir", type=Path, default=Path("tests/vampire_reconstruction/work"))
+    parser.add_argument("--export-mode", choices=["aby", "admit"], default="aby")
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--timeout", type=int, default=10)
     parser.add_argument("--jobs", type=int, default=int(os.environ.get("MEGALODON_VAMPIRE_JOBS", "1")))
@@ -7404,14 +7411,14 @@ def main() -> int:
         raise SystemExit(f"Megalodon executable not found: {megalodon}")
 
     work_dir.mkdir(parents=True, exist_ok=True)
-    prefix = work_dir / "hammer"
+    prefix = work_dir / args.export_mode
     if args.from_manifest:
         selected = obligations_from_manifest(args.from_manifest)
         if len(selected) < args.limit:
             raise SystemExit(f"Need {args.limit} known-solvable obligations, found {len(selected)} in {args.from_manifest}")
         selected_for_run = selected if args.collect_successes else selected[: args.limit]
     else:
-        generate_problems(repo, megalodon, source, prefix)
+        generate_problems(repo, megalodon, source, prefix, args.export_mode)
         if args.select_all_generated:
             selected = generated_th0(prefix)
             if len(selected) < args.limit:

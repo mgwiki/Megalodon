@@ -8,6 +8,7 @@ export TMPDIR
 MEGALODON=${MEGALODON:-"$ROOT/bin/megalodon"}
 VAMPIRE=${VAMPIRE:-/project/vampire-leancheck/vampire_rel_vampire/megalodon_10780}
 SOURCE=${SOURCE:-examples/hammer/100thms_12_h.mg}
+EXPORT_MODE=${EXPORT_MODE:-aby}
 LIMIT=${LIMIT:-1000}
 JOBS=${JOBS:-10}
 TIMEOUT=${TIMEOUT:-10}
@@ -23,6 +24,7 @@ else
     --repo "$ROOT" \
     --megalodon "$MEGALODON" \
     --source "$SOURCE" \
+    --export-mode "$EXPORT_MODE" \
     --work-dir "$WORK_DIR" \
     --limit "$LIMIT" \
     --timeout "$TIMEOUT" \
