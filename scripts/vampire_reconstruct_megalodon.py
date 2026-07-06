@@ -3466,6 +3466,108 @@ def boolean_or_nand_pointwise_proof(expr: Expr, known: dict[str, str]) -> str | 
     )
 
 
+def quantified_atomic_rule_transport_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 0 or len(expr_text(expr)) > 800:
+        return None
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if not binders or len(binders) > 4 or len(premises) != 1:
+        return None
+    target = normalize_defined_expr(conclusion, definitions)
+    if target.kind != "app" or len(target.args) < 2:
+        return None
+
+    local_known = dict(known)
+    local_known_canonical = dict(known_canonical)
+    local_rules = list(rules)
+    local_eq_facts = list(eq_facts)
+    premise_names: list[str] = []
+    for index, premise in enumerate(premises):
+        name = f"H{index}"
+        premise_names.append(name)
+        remember_proposition(
+            local_known,
+            local_known_canonical,
+            local_rules,
+            local_eq_facts,
+            name,
+            expr_text(premise),
+        )
+
+    for rule_index, original_rule in enumerate(reversed(rules)):
+        if len(original_rule.premises) != 1:
+            continue
+        rule = rename_rule_binders(original_rule, f"QT{rule_index}_")
+        rule_conclusion = normalize_defined_expr(rule_application_conclusion(rule), definitions)
+        if (
+            rule_conclusion.kind != "app"
+            or len(rule_conclusion.args) != len(target.args)
+            or expr_key(rule_conclusion.args[0]) != expr_key(target.args[0])
+        ):
+            continue
+        variables = set(rule_application_binders(rule))
+        subst: dict[str, Expr] = {}
+        if not match_expr(rule.premises[0], premises[0], variables, subst):
+            continue
+        if not all(binder in subst for binder in rule_application_binders(rule)):
+            continue
+        source = normalize_defined_expr(substitute_expr(rule_conclusion, subst), definitions)
+        if source.kind != "app" or len(source.args) != len(target.args):
+            continue
+        changed = [
+            index
+            for index, (source_arg, target_arg) in enumerate(zip(source.args[1:], target.args[1:]))
+            if expr_key(source_arg) != expr_key(target_arg)
+        ]
+        if not changed or len(changed) > 2:
+            continue
+        parts = rule_application_parts(
+            rule,
+            subst,
+            local_known,
+            local_known_canonical,
+            local_rules,
+            local_eq_facts,
+            definitions,
+            max(0, rule_depth - 1),
+        )
+        if parts is None:
+            continue
+        proof = rule_application_text(parts)
+        current_args = list(source.args[1:])
+        ok = True
+        for index in changed:
+            equality_proof = equality_transport_side_proof(
+                current_args[index],
+                target.args[index + 1],
+                local_known,
+                local_known_canonical,
+                local_rules,
+                local_eq_facts,
+                definitions,
+                rule_depth,
+            )
+            if equality_proof is None:
+                ok = False
+                break
+            proof = transport_atomic_argument_proof(target, current_args, proof, index, equality_proof)
+            current_args[index] = target.args[index + 1]
+        if not ok:
+            continue
+        prefix = "".join(f"fun {name}:{sort} => " for name, sort in binders)
+        prefix += "".join(f"fun {name} => " for name in premise_names)
+        return f"({prefix}{proof})"
+    return None
+
+
 IDENTIFIER_CHARS = "_'0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 FORALL_RE = re.compile(r"forall (?P<name>[_A-Za-z][_A-Za-z0-9']*):(?P<sort>[^,]+), ")
 
@@ -11565,6 +11667,17 @@ def proof_for_proposition(
         boolean_pointwise_proof = boolean_or_nand_pointwise_proof(expr, known)
         if boolean_pointwise_proof is not None:
             return boolean_pointwise_proof
+        quantified_transport_proof = quantified_atomic_rule_transport_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth=2,
+        )
+        if quantified_transport_proof is not None:
+            return quantified_transport_proof
         introduced_bridge_proof = introduced_unary_equality_bridge_proof(
             expr,
             known,
