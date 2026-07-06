@@ -5096,6 +5096,8 @@ def direct_proof_expr(expr: Expr) -> str | None:
         for premise, name in reversed(local_premises):
             if expr_key(premise) == target_key:
                 return name
+            if premise.kind == "var" and premise.value == "vampire_false":
+                return f"{name} {proof_arg_text(target)}"
         if target.kind == "forall" and target.sort == "prop" and target.value is not None:
             for premise, name in reversed(local_premises):
                 if premise.kind == "var" and premise.value == "vampire_false":
@@ -6124,6 +6126,86 @@ def if_union_successor_proof(
     )
 
 
+def if_correct_branch_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if conclusion.kind != "eq":
+        return None
+    left = conclusion.args[0]
+    if left.kind != "app" or len(left.args) != 4 or expr_key(left.args[0]) != "If_i":
+        return None
+    condition, then_branch, else_branch = left.args[1:]
+    if expr_key(conclusion.args[1]) == expr_key(then_branch):
+        target_branch = "then"
+    elif expr_key(conclusion.args[1]) == expr_key(else_branch):
+        target_branch = "else"
+    else:
+        return None
+    premise_names = [f"H{index}" for index, _ in enumerate(premises)]
+    condition_proof = None
+    neg_condition_proof = None
+    neg_condition = Expr("arrow", args=(condition, Expr("var", value="vampire_false")))
+    for premise, name in zip(premises, premise_names):
+        if expr_key(premise) == expr_key(condition):
+            condition_proof = name
+        elif expr_key(premise) == expr_key(neg_condition):
+            neg_condition_proof = name
+    if target_branch == "then" and condition_proof is None:
+        return None
+    if target_branch == "else" and neg_condition_proof is None:
+        return None
+
+    def vampire_and_parts(node: Expr) -> tuple[Expr, Expr] | None:
+        if node.kind == "app" and len(node.args) == 3 and expr_key(node.args[0]) == "vampire_and":
+            return node.args[1], node.args[2]
+        return None
+
+    def vampire_or_parts(node: Expr) -> tuple[Expr, Expr] | None:
+        if node.kind == "app" and len(node.args) == 3 and expr_key(node.args[0]) == "vampire_or":
+            return node.args[1], node.args[2]
+        return None
+
+    def component_handler(component: Expr, name: str) -> str | None:
+        parts = vampire_and_parts(component)
+        if parts is None:
+            return None
+        for component_expr, component_name in ((parts[0], "HA"), (parts[1], "HB")):
+            if expr_key(component_expr) == expr_key(conclusion):
+                return f"(fun {name} => {name} {proof_arg_text(conclusion)} (fun HA HB => {component_name}))"
+            if target_branch == "then" and condition_proof is not None and expr_key(component_expr) == expr_key(neg_condition):
+                return (
+                    f"(fun {name} => {name} {proof_arg_text(conclusion)} "
+                    f"(fun HA HB => {component_name} {condition_proof} {proof_arg_text(conclusion)}))"
+                )
+            if target_branch == "else" and neg_condition_proof is not None and expr_key(component_expr) == expr_key(condition):
+                return (
+                    f"(fun {name} => {name} {proof_arg_text(conclusion)} "
+                    f"(fun HA HB => {neg_condition_proof} {component_name} {proof_arg_text(conclusion)}))"
+                )
+        return None
+
+    for rule in rules:
+        if len(rule.binders) != 3 or rule.premises:
+            continue
+        subst = {
+            rule.binders[0]: condition,
+            rule.binders[1]: then_branch,
+            rule.binders[2]: else_branch,
+        }
+        disjuncts = vampire_or_parts(substitute_expr(rule.conclusion, subst))
+        if disjuncts is None:
+            continue
+        left_handler = component_handler(disjuncts[0], "HL")
+        right_handler = component_handler(disjuncts[1], "HR")
+        if left_handler is None or right_handler is None:
+            continue
+        rule_args = [proof_arg_text(condition), proof_arg_text(then_branch), proof_arg_text(else_branch)]
+        body_proof = f"({rule.name} {' '.join(rule_args)} {proof_arg_text(conclusion)} {left_handler} {right_handler})"
+        proof_args = [name for name, _ in binders] + premise_names
+        return f"({' '.join(['fun'] + proof_args + ['=>', body_proof])})"
+    return None
+
+
 def find_pair_sigma_rules(rules: list[ProofRule]) -> tuple[str | None, str | None, str | None]:
     proj0_pair = None
     proj1_pair = None
@@ -6341,6 +6423,10 @@ def _proof_for_expr_impl(
     if_union = if_union_successor_proof(expr, known, known_canonical, rules)
     if if_union is not None:
         return if_union
+
+    if_branch = if_correct_branch_proof(expr, rules)
+    if if_branch is not None:
+        return if_branch
 
     for derived in (
         repl_elimination_proof(expr, rules),
