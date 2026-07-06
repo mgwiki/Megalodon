@@ -11944,6 +11944,33 @@ def raw_equality_rewrite_clause_proof(
     equality_proof: str,
     equality_sort: str,
 ) -> str | None:
+    for replaced, transported in raw_equality_rewrite_clause_steps(
+        source,
+        source_proof,
+        equality_left,
+        equality_right,
+        equality_proof,
+        equality_sort,
+    ):
+        if expr_key(replaced) == expr_key(target):
+            return transported
+        if not raw_clause_replay_budget_ok(replaced, target, max_literals=12, max_literal_product=96):
+            continue
+        transformed = raw_clause_transform_proof(replaced, target, transported)
+        if transformed is not None:
+            return transformed
+    return None
+
+
+def raw_equality_rewrite_clause_steps(
+    source: Expr,
+    source_proof: str,
+    equality_left: Expr,
+    equality_right: Expr,
+    equality_proof: str,
+    equality_sort: str,
+) -> list[tuple[Expr, str]]:
+    steps: list[tuple[Expr, str]] = []
     for old, new, proof in (
         (equality_left, equality_right, equality_proof),
         (equality_right, equality_left, raw_eq_symmetry_proof(equality_proof, equality_left, equality_sort)),
@@ -11953,7 +11980,7 @@ def raw_equality_rewrite_clause_proof(
         replaced, changed = replace_expr(source, old, new)
         if not changed:
             continue
-        hole_name = fresh_identifier("zz", expr_text(source), expr_text(target), expr_text(old), expr_text(new))
+        hole_name = fresh_identifier("zz", expr_text(source), expr_text(old), expr_text(new))
         context, context_changed = replace_expr(source, old, Expr("var", value=hole_name))
         if not context_changed:
             continue
@@ -11962,14 +11989,8 @@ def raw_equality_rewrite_clause_proof(
             f"(fun {hole_name}:{equality_sort} => {expr_text(context)}) "
             f"{proof_term_text(source_proof)}"
         )
-        if expr_key(replaced) == expr_key(target):
-            return transported
-        if not raw_clause_replay_budget_ok(replaced, target, max_literals=12, max_literal_product=96):
-            continue
-        transformed = raw_clause_transform_proof(replaced, target, transported)
-        if transformed is not None:
-            return transformed
-    return None
+        steps.append((replaced, transported))
+    return steps
 
 
 def raw_tptp_forward_demodulation_proof(
@@ -12060,6 +12081,73 @@ def raw_tptp_parent_equality_rewrite_proof(
             )
             if proof is not None:
                 return proof
+    return None
+
+
+def raw_tptp_parent_equality_chain_rewrite_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parents) < 3:
+        return None
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    parent_exprs: list[tuple[str, Expr, str]] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        if parent_proposition is None:
+            continue
+        parent_expr = parse_expr(parent_proposition)
+        if parent_expr is not None:
+            parent_exprs.append((parent, parent_expr, raw_tptp_claim_name(parent)))
+    equality_parents = [
+        (name, expr, proof, equality_like_sides(expr))
+        for name, expr, proof in parent_exprs
+        if equality_like_sides(expr) is not None
+    ]
+    if len(equality_parents) < 2:
+        return None
+    for source_name, source, source_proof in parent_exprs:
+        states: list[tuple[Expr, str, frozenset[str]]] = [(source, source_proof, frozenset())]
+        seen = {expr_key(source)}
+        for _ in range(min(4, len(equality_parents))):
+            next_states: list[tuple[Expr, str, frozenset[str]]] = []
+            for current, current_proof, used in states:
+                if expr_key(current) == expr_key(target):
+                    return current_proof
+                if raw_clause_replay_budget_ok(current, target, max_literals=16, max_literal_product=256):
+                    transformed = raw_clause_transform_proof(current, target, current_proof)
+                    if transformed is not None:
+                        return transformed
+                for equality_name, _, equality_proof, sides in equality_parents:
+                    if equality_name == source_name or equality_name in used or sides is None:
+                        continue
+                    equality_sort = raw_equality_transport_sort(sides[0], sides[1], variable_sorts)
+                    for replaced, proof in raw_equality_rewrite_clause_steps(
+                        current,
+                        current_proof,
+                        sides[0],
+                        sides[1],
+                        equality_proof,
+                        equality_sort,
+                    ):
+                        key = expr_key(replaced)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        if key == expr_key(target):
+                            return proof
+                        next_states.append((replaced, proof, frozenset((*used, equality_name))))
+                        if len(next_states) >= 32:
+                            break
+                    if len(next_states) >= 32:
+                        break
+            states = next_states
+            if not states:
+                break
     return None
 
 
@@ -12425,6 +12513,9 @@ def raw_tptp_replay_proof(
     if rule == "avatar_sat_refutation":
         return raw_tptp_one_parent_transform_proof(proposition, parents, propositions_by_name)
     if rule in {"definition_folding", "definition_unfolding"}:
+        proof = raw_tptp_parent_equality_chain_rewrite_proof(proposition, parents, propositions_by_name, variable_sorts)
+        if proof is not None:
+            return proof
         proof = raw_tptp_parent_equality_rewrite_proof(proposition, parents, propositions_by_name, variable_sorts)
         if proof is not None:
             return proof
