@@ -11066,6 +11066,18 @@ def add_missing_raw_tptp_variables(propositions: list[str], variables: dict[str,
 def raw_false_literal_elimination_proof(branch: Expr, target: Expr, branch_proof: str) -> str | None:
     if false_eliminator_expr(branch):
         return f"({proof_head(branch_proof)} {proof_arg_text(target)})"
+    sides = equality_like_sides(branch)
+    if sides is not None:
+        left, right = sides
+        true_expr = Expr("var", value="vampire_true")
+        false_expr = Expr("var", value="vampire_false")
+        true_proof = "(fun Q H => H)"
+        if expr_key(left) == expr_key(true_expr) and expr_key(right) == expr_key(false_expr):
+            false_proof = f"({proof_head(branch_proof)} (fun R:prop => R) {true_proof})"
+            return f"({false_proof} {proof_arg_text(target)})"
+        if expr_key(left) == expr_key(false_expr) and expr_key(right) == expr_key(true_expr):
+            false_proof = f"(({proof_head(branch_proof)} (fun R:prop => R -> vampire_false) (fun H => H)) {true_proof})"
+            return f"({false_proof} {proof_arg_text(target)})"
     premises, conclusion = split_arrows(branch)
     if len(premises) != 1 or not false_eliminator_expr(conclusion):
         return None
