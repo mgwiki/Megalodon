@@ -1047,6 +1047,51 @@ def match_expr(pattern: Expr, target: Expr, variables: set[str], subst: dict[str
     return all(match_expr(left, right, variables, subst) for left, right in zip(pattern.args, target.args))
 
 
+def infer_rule_binders_from_known(
+    steps: tuple[RuleStep, ...],
+    binders: tuple[str, ...],
+    subst: dict[str, Expr],
+    known: dict[str, str],
+) -> dict[str, Expr] | None:
+    missing = {binder for binder in binders if binder not in subst}
+    if not missing:
+        return subst
+
+    variables = set(binders)
+    known_exprs: list[Expr] = []
+    seen: set[str] = set()
+    for proposition in known:
+        if proposition in seen:
+            continue
+        seen.add(proposition)
+        parsed = parse_expr(proposition)
+        if parsed is not None:
+            known_exprs.append(parsed)
+
+    candidates = [dict(subst)]
+    for step in steps:
+        if step.kind != "premise" or step.expr is None:
+            continue
+        next_candidates = list(candidates)
+        for candidate in candidates:
+            if all(binder in candidate for binder in binders):
+                continue
+            premise = substitute_expr(step.expr, candidate)
+            for known_expr in known_exprs:
+                trial = dict(candidate)
+                if match_expr(premise, known_expr, variables, trial):
+                    next_candidates.append(trial)
+        candidates = next_candidates
+        for candidate in candidates:
+            if all(binder in candidate for binder in binders):
+                return candidate
+
+    for candidate in candidates:
+        if all(binder in candidate for binder in binders):
+            return candidate
+    return None
+
+
 def substitute_expr(expr: Expr, subst: dict[str, Expr]) -> Expr:
     if expr.kind == "var" and expr.value in subst:
         return subst[expr.value]
@@ -1954,14 +1999,16 @@ def rule_application_parts(
     application_binders = tuple(
         step.name for step in rule.steps if step.kind == "binder" and step.name is not None
     ) or rule.binders
-    if any(binder not in subst for binder in application_binders):
-        return None
     parts = [rule.name]
     steps: tuple[RuleStep, ...] = rule.steps
     if not steps:
         steps = tuple(RuleStep("binder", name=binder) for binder in application_binders) + tuple(
             RuleStep("premise", expr=premise) for premise in rule.premises
         )
+    inferred_subst = infer_rule_binders_from_known(steps, application_binders, subst, known)
+    if inferred_subst is None:
+        return None
+    subst = inferred_subst
     for step in steps:
         if step.kind == "binder":
             assert step.name is not None
@@ -2052,8 +2099,10 @@ def sequential_rule_application_proof(
         subst: dict[str, Expr] = {}
         if not match_expr(conclusion, expr, set(binders), subst):
             continue
-        if any(binder not in subst for binder in binders):
+        inferred_subst = infer_rule_binders_from_known(tuple(steps), binders, subst, known)
+        if inferred_subst is None:
             continue
+        subst = inferred_subst
         parts = [rule_name]
         ok = True
         for step in steps:
