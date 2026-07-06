@@ -1040,11 +1040,47 @@ def match_expr(pattern: Expr, target: Expr, variables: set[str], subst: dict[str
             subst[pattern.value] = target
             return True
         return expr_key(previous) == expr_key(target)
+    if pattern.kind in {"forall", "lambda"}:
+        if pattern.kind != target.kind or pattern.sort != target.sort or len(pattern.args) != len(target.args):
+            return False
+        assert pattern.value is not None and target.value is not None
+        local_variables = set(variables)
+        local_variables.discard(pattern.value)
+        local_variables.discard(target.value)
+        target_body = target.args[0]
+        if pattern.value != target.value:
+            target_body = rename_expr_variables(target_body, {target.value: pattern.value})
+        return match_expr(pattern.args[0], target_body, local_variables, subst)
     if pattern.kind != target.kind or pattern.value != target.value or pattern.sort != target.sort:
         return False
     if len(pattern.args) != len(target.args):
         return False
     return all(match_expr(left, right, variables, subst) for left, right in zip(pattern.args, target.args))
+
+
+def alpha_equivalent(left: Expr, right: Expr) -> bool:
+    return canonical_expr_text(left, {}, [0]) == canonical_expr_text(right, {}, [0])
+
+
+def match_expr_with_alpha_instantiation(
+    pattern: Expr,
+    target: Expr,
+    variables: set[str],
+    subst: dict[str, Expr],
+) -> bool:
+    trial = dict(subst)
+    if match_expr(pattern, target, variables, trial):
+        subst.clear()
+        subst.update(trial)
+        return True
+    instantiated = substitute_expr(pattern, trial)
+    if expr_variables(instantiated) & variables:
+        return False
+    if not alpha_equivalent(instantiated, target):
+        return False
+    subst.clear()
+    subst.update(trial)
+    return True
 
 
 def infer_rule_binders_from_known(
@@ -4950,7 +4986,12 @@ def proof_for_expr(
 
     for rule in reversed(rules):
         subst: dict[str, Expr] = {}
-        if not match_expr(rule_application_conclusion(rule), expr, set(rule_application_binders(rule)), subst):
+        if not match_expr_with_alpha_instantiation(
+            rule_application_conclusion(rule),
+            expr,
+            set(rule_application_binders(rule)),
+            subst,
+        ):
             continue
         parts = rule_application_parts(
             rule,
