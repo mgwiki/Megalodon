@@ -12891,7 +12891,7 @@ def raw_tptp_forward_demodulation_proof(
             return proof
     if first_sides is not None:
         equality_sort = raw_equality_transport_sort(first_sides[0], first_sides[1], variable_sorts)
-        return raw_equality_rewrite_clause_proof(
+        proof = raw_equality_rewrite_clause_proof(
             second,
             target,
             second_name,
@@ -12900,6 +12900,11 @@ def raw_tptp_forward_demodulation_proof(
             first_name,
             equality_sort,
         )
+        if proof is not None:
+            return proof
+    proof = raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name)
+    if proof is not None:
+        return proof
     return None
 
 
