@@ -3907,6 +3907,134 @@ def no_cycle_successor_injectivity_proof(expr: Expr, rules: list[ProofRule]) -> 
     )
 
 
+def disjoint_constructor_membership_contradiction_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
+    if len(expr_text(expr)) > 400:
+        return None
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if len(binders) != 2 or len(premises) != 1 or premises[0].kind != "eq" or expr_key(conclusion) != "vampire_false":
+        return None
+    if any(sort != "set" for _, sort in binders):
+        return None
+    left_arg = Expr("var", value=binders[0][0])
+    right_arg = Expr("var", value=binders[1][0])
+    left_constructor = premises[0].args[1]
+    right_constructor = premises[0].args[0]
+    if (
+        left_constructor.kind != "app"
+        or right_constructor.kind != "app"
+        or len(left_constructor.args) != 2
+        or len(right_constructor.args) != 2
+        or expr_key(left_constructor.args[1]) != expr_key(left_arg)
+        or expr_key(right_constructor.args[1]) != expr_key(right_arg)
+    ):
+        return None
+
+    relation_head: Expr | None = None
+    distinguished: Expr | None = None
+    right_intro: ProofRule | None = None
+    right_empty_contradiction: ProofRule | None = None
+    left_elim: ProofRule | None = None
+    elim_eq_first = False
+
+    for rule in rules:
+        rule_binders = rule_application_binders(rule)
+        conclusion_expr = rule_application_conclusion(rule)
+        if len(rule_binders) == 1 and not rule.premises:
+            atom = binary_atom_parts(conclusion_expr)
+            if (
+                atom is not None
+                and conclusion_expr.args[2].kind == "app"
+                and len(conclusion_expr.args[2].args) == 2
+                and expr_key(conclusion_expr.args[2].args[0]) == expr_key(right_constructor.args[0])
+                and expr_key(conclusion_expr.args[2].args[1]) == rule_binders[0]
+            ):
+                relation_head = conclusion_expr.args[0]
+                distinguished = conclusion_expr.args[1]
+                right_intro = rule
+        if len(rule_binders) == 1 and len(rule.premises) == 1 and expr_key(conclusion_expr) == "vampire_false":
+            equality_sides = equality_like_sides(rule.premises[0])
+            if equality_sides is None:
+                continue
+            for empty_side, constructor_side in ((0, 1), (1, 0)):
+                constructor = equality_sides[constructor_side]
+                if (
+                    constructor.kind == "app"
+                    and len(constructor.args) == 2
+                    and expr_key(constructor.args[0]) == expr_key(right_constructor.args[0])
+                    and expr_key(constructor.args[1]) == rule_binders[0]
+                    and distinguished is not None
+                    and expr_key(equality_sides[empty_side]) == expr_key(distinguished)
+                ):
+                    right_empty_contradiction = rule
+        if len(rule_binders) == 2 and len(rule.premises) == 1:
+            premise_atom = binary_atom_parts(rule.premises[0])
+            exists_body = vampire_exists_body(conclusion_expr)
+            if premise_atom is None or exists_body is None:
+                continue
+            if (
+                rule.premises[0].args[2].kind != "app"
+                or len(rule.premises[0].args[2].args) != 2
+                or expr_key(rule.premises[0].args[2].args[0]) != expr_key(left_constructor.args[0])
+                or expr_key(rule.premises[0].args[2].args[1]) != rule_binders[0]
+                or distinguished is None
+                or expr_key(rule.premises[0].args[1]) != rule_binders[1]
+            ):
+                continue
+            witness_name, exists_prop = exists_body
+            parts = vampire_and_parts(exists_prop)
+            if parts is None:
+                continue
+            eq_part_index = None
+            for index, part in enumerate(parts):
+                equality_sides = equality_like_sides(part)
+                if equality_sides is None:
+                    continue
+                for constructor_side, member_side in ((0, 1), (1, 0)):
+                    constructor = equality_sides[constructor_side]
+                    if (
+                        constructor.kind == "app"
+                        and len(constructor.args) == 2
+                        and expr_key(constructor.args[0]) == expr_key(right_constructor.args[0])
+                        and expr_key(constructor.args[1]) == witness_name
+                        and expr_key(equality_sides[member_side]) == rule_binders[1]
+                    ):
+                        eq_part_index = index
+            if eq_part_index is not None:
+                left_elim = rule
+                elim_eq_first = eq_part_index == 0
+
+    if (
+        relation_head is None
+        or distinguished is None
+        or right_intro is None
+        or right_empty_contradiction is None
+        or left_elim is None
+    ):
+        return None
+
+    equality_name = "Heq"
+    transported_member = (
+        f"({equality_name} (fun zz:set => "
+        f"{expr_text(Expr('app', args=(relation_head, distinguished, Expr('var', value='zz'))))}) "
+        f"({right_intro.name} {proof_arg_text(right_arg)}))"
+    )
+    witness = "W"
+    pair = "Hpair"
+    first = "Hp0"
+    second = "Hp1"
+    eq_proof = first if elim_eq_first else second
+    eq_to_empty = eq_symmetry_proof(eq_proof, Expr("app", args=(right_constructor.args[0], Expr("var", value=witness))))
+    contradiction = f"({right_empty_contradiction.name} {witness} {eq_to_empty})"
+    return (
+        f"(fun {binders[0][0]}:set => fun {binders[1][0]}:set => fun {equality_name} => "
+        f"({left_elim.name} {proof_arg_text(left_arg)} {proof_arg_text(distinguished)} {transported_member}) "
+        f"vampire_false "
+        f"(fun {witness}:set => fun {pair} => "
+        f"{pair} vampire_false (fun {first} {second} => {contradiction})))"
+    )
+
+
 IDENTIFIER_CHARS = "_'0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 FORALL_RE = re.compile(r"forall (?P<name>[_A-Za-z][_A-Za-z0-9']*):(?P<sort>[^,]+), ")
 
@@ -12009,6 +12137,9 @@ def proof_for_proposition(
         no_cycle_injectivity = no_cycle_successor_injectivity_proof(expr, rules)
         if no_cycle_injectivity is not None:
             return no_cycle_injectivity
+        disjoint_constructor = disjoint_constructor_membership_contradiction_proof(expr, rules)
+        if disjoint_constructor is not None:
+            return disjoint_constructor
         quantified_transport_proof = quantified_atomic_rule_transport_proof(
             expr,
             known,
