@@ -11393,12 +11393,16 @@ def raw_complement_resolution_proof(
         and expr_key(left_premises[0]) == expr_key(right)
     ):
         return f"(({proof_head(left_proof)} {proof_term_text(right_proof)}) {proof_arg_text(target)})"
+    if false_eliminator_expr(left) and len(right_premises) == 1 and false_eliminator_expr(right_conclusion):
+        return f"(({proof_head(right_proof)} ({proof_head(left_proof)} {proof_arg_text(right_premises[0])})) {proof_arg_text(target)})"
     if (
         len(right_premises) == 1
         and false_eliminator_expr(right_conclusion)
         and expr_key(right_premises[0]) == expr_key(left)
     ):
         return f"(({proof_head(right_proof)} {proof_term_text(left_proof)}) {proof_arg_text(target)})"
+    if false_eliminator_expr(right) and len(left_premises) == 1 and false_eliminator_expr(left_conclusion):
+        return f"(({proof_head(left_proof)} ({proof_head(right_proof)} {proof_arg_text(left_premises[0])})) {proof_arg_text(target)})"
     return None
 
 
@@ -11425,12 +11429,16 @@ def raw_complementary_literals(left: Expr, right: Expr) -> bool:
     left_premises, left_conclusion = split_arrows(left)
     if len(left_premises) == 1 and false_eliminator_expr(left_conclusion) and expr_key(left_premises[0]) == expr_key(right):
         return True
+    if false_eliminator_expr(left):
+        right_premises, right_conclusion = split_arrows(right)
+        if len(right_premises) == 1 and false_eliminator_expr(right_conclusion):
+            return True
     right_premises, right_conclusion = split_arrows(right)
     return (
         len(right_premises) == 1
         and false_eliminator_expr(right_conclusion)
         and expr_key(right_premises[0]) == expr_key(left)
-    )
+    ) or (false_eliminator_expr(right) and len(left_premises) == 1 and false_eliminator_expr(left_conclusion))
 
 
 def raw_match_complementary_literals(
