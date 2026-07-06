@@ -33,6 +33,7 @@ else
     --proof-mode megalodon \
     --vampire "$VAMPIRE" \
     --collect-successes \
+    --require-claim-skeletons \
     --reuse-existing-proofs \
     --select-all-generated
   manifest="$WORK_DIR/manifest.jsonl"

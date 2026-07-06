@@ -2439,6 +2439,8 @@ def add_boolean_extensionality_helpers(lines: list[str]) -> list[str]:
 def add_missing_basic_connective_definitions(lines: list[str]) -> list[str]:
     text = "\n".join(lines)
     helpers: list[str] = []
+    if "vampire_true" in text and not any(line.startswith("Definition vampire_true ") for line in lines):
+        helpers.append("Definition vampire_true : prop := forall P:prop, P -> P.")
     if "vampire_or " in text and not any(line.startswith("Definition vampire_or ") for line in lines):
         helpers.append("Definition vampire_or : prop->prop->prop := fun A B:prop => forall P:prop, (A -> P) -> (B -> P) -> P.")
     if "vampire_and " in text and not any(line.startswith("Definition vampire_and ") for line in lines):
@@ -2454,6 +2456,26 @@ def add_missing_basic_connective_definitions(lines: list[str]) -> list[str]:
         result.append(line)
     if not inserted:
         result.extend(helpers)
+    return result
+
+
+def parenthesize_atomic_axiom_propositions(lines: list[str]) -> list[str]:
+    result: list[str] = []
+    for line in lines:
+        axiom = proposition_after_colon(line, "Axiom ")
+        if axiom is None:
+            result.append(line)
+            continue
+        name, proposition = axiom
+        stripped = proposition.strip()
+        if stripped.startswith("(") and stripped.endswith(")"):
+            result.append(line)
+            continue
+        expr = parse_expr(stripped)
+        if expr is not None and expr.kind == "app" and len(expr.args) >= 3:
+            result.append(f"Axiom {name}:({stripped}).")
+        else:
+            result.append(line)
     return result
 
 
@@ -7778,6 +7800,7 @@ def check_megalodon_lines(
     output_lines = normalize_vampire_boolean_literals(output_lines)
     output_lines = add_missing_basic_connective_definitions(output_lines)
     output_lines = add_boolean_extensionality_helpers(output_lines)
+    output_lines = parenthesize_atomic_axiom_propositions(output_lines)
     output_lines = fill_source_candidate_claims(output_lines, proof_text)
     output_lines = fill_repeated_claim_admits(output_lines) if fill_repeated_admits else output_lines
     output_lines = prune_unused_rectify_axiom_admits(output_lines, proof_text)
@@ -7819,11 +7842,14 @@ def check_megalodon_lines(
         if not (0 <= line_index < len(output_lines)):
             return False
 
-        def replacement_for_claim(claim_index: int) -> str:
+        def replacement_for_claim(claim_index: int, proof_index: int | None = None) -> str:
             proof_name = proof_for_claim_at(output_lines, claim_index)
             if proof_name is None:
                 return "{ admit. }"
-            return "{ exact " + proof_argument_text(proof_name) + ". }"
+            replacement = "{ exact " + proof_argument_text(proof_name) + ". }"
+            if proof_index is not None and 0 <= proof_index < len(output_lines) and output_lines[proof_index] == replacement:
+                return "{ admit. }"
+            return replacement
 
         inline_candidates = [line_index]
         if line_index + 1 < len(output_lines):
@@ -7831,13 +7857,34 @@ def check_megalodon_lines(
         for candidate_index in inline_candidates:
             if (
                 0 <= candidate_index < len(output_lines)
-                and output_lines[candidate_index].startswith("{ exact ")
+                and (
+                    output_lines[candidate_index].startswith("{ exact ")
+                    or output_lines[candidate_index].lstrip().startswith("exact ")
+                )
                 and candidate_index > 0
                 and output_lines[candidate_index - 1].startswith("claim ")
             ):
-                output_lines[candidate_index] = replacement_for_claim(candidate_index - 1)
+                output_lines[candidate_index] = replacement_for_claim(candidate_index - 1, candidate_index)
                 candidate.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
                 return True
+
+        nearest_claim = line_index
+        while nearest_claim >= 0 and not output_lines[nearest_claim].startswith("claim "):
+            nearest_claim -= 1
+        if nearest_claim >= 0 and nearest_claim + 1 < len(output_lines):
+            proof_index = nearest_claim + 1
+            if output_lines[proof_index].startswith("{ exact "):
+                output_lines[proof_index] = replacement_for_claim(nearest_claim, proof_index)
+                candidate.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
+                return True
+            if output_lines[proof_index] == "{":
+                block_end = proof_index + 1
+                while block_end < len(output_lines) and output_lines[block_end] != "}":
+                    block_end += 1
+                if block_end < len(output_lines):
+                    output_lines[proof_index : block_end + 1] = [replacement_for_claim(nearest_claim)]
+                    candidate.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
+                    return True
 
         block_start = line_index
         while block_start >= 0 and output_lines[block_start] != "{":
