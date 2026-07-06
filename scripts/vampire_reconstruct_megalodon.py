@@ -1347,7 +1347,12 @@ def pointwise_equality_proposition(left: Expr, right: Expr, sort: str) -> str | 
     pieces = split_sort_arrows(sort)
     if len(pieces) < 2 or pieces[-1] not in {"set", "prop"} or any(piece not in {"set", "prop"} for piece in pieces[:-1]):
         return None
-    binders = [Expr("var", value=f"X{index}") for index in range(len(pieces) - 1)]
+    used_texts = [expr_text(left), expr_text(right)]
+    binders: list[Expr] = []
+    for index in range(len(pieces) - 1):
+        name = fresh_identifier(f"Y{index}", *used_texts)
+        used_texts.append(name)
+        binders.append(Expr("var", value=name))
     left_app = append_application_args(left, binders)
     right_app = append_application_args(right, binders)
     if pieces[-1] == "set":
@@ -3156,22 +3161,61 @@ def add_missing_basic_connective_definitions(lines: list[str]) -> list[str]:
     return result
 
 
+def lower_function_equality_proposition(expr: Expr, variable_sorts: dict[str, str]) -> str:
+    if expr.kind == "forall":
+        assert expr.value is not None and expr.sort is not None
+        body = lower_function_equality_proposition(expr.args[0], {**variable_sorts, expr.value: expr.sort})
+        return f"forall {expr.value}:{expr.sort}, {body}"
+    if expr.kind == "arrow":
+        left = lower_function_equality_proposition(expr.args[0], variable_sorts)
+        right = lower_function_equality_proposition(expr.args[1], variable_sorts)
+        return f"{proposition_argument_text(left)} -> {right}"
+    if expr.kind == "eq":
+        left_sort = expr_sort(expr.args[0], variable_sorts)
+        right_sort = expr_sort(expr.args[1], variable_sorts)
+        if left_sort is not None and left_sort == right_sort and is_function_value(expr.args[0], left_sort):
+            pointwise = pointwise_equality_proposition(expr.args[0], expr.args[1], left_sort)
+            if pointwise is not None:
+                return pointwise
+    return expr_text(expr)
+
+
 def parenthesize_atomic_axiom_propositions(lines: list[str]) -> list[str]:
+    variable_sorts: dict[str, str] = {}
+    variable_re = re.compile(r"^Variable (?P<name>[_A-Za-z][_A-Za-z0-9']*):(?P<sort>[^.]+)\.$")
+    for line in lines:
+        match = variable_re.match(line)
+        if match:
+            variable_sorts[match.group("name")] = match.group("sort").strip()
+
     result: list[str] = []
     for line in lines:
-        axiom = proposition_after_colon(line, "Axiom ")
-        if axiom is None:
-            result.append(line)
-            continue
-        name, proposition = axiom
-        stripped = proposition.strip()
-        if stripped.startswith("(") and stripped.endswith(")"):
-            result.append(line)
-            continue
-        expr = parse_expr(stripped)
-        if expr is not None and expr.kind == "app" and len(expr.args) >= 3:
-            result.append(f"Axiom {name}:({stripped}).")
-        else:
+        rewritten = False
+        for prefix in ("Axiom ", "Theorem ", "claim "):
+            parsed = proposition_after_colon(line, prefix)
+            if parsed is None:
+                continue
+            name, proposition = parsed
+            stripped = proposition.strip()
+            expr = parse_expr(stripped)
+            if expr is None:
+                if prefix == "Axiom " and not (stripped.startswith("(") and stripped.endswith(")")):
+                    result.append(f"Axiom {name}:({stripped}).")
+                else:
+                    result.append(line)
+                rewritten = True
+                break
+            rendered = lower_function_equality_proposition(expr, variable_sorts)
+            if prefix != "Axiom " and rendered == expr_text(expr):
+                result.append(line)
+                rewritten = True
+                break
+            if prefix == "Axiom " and expr.kind == "app" and len(expr.args) >= 3:
+                rendered = f"({rendered})"
+            result.append(f"{prefix}{name}:{rendered}.")
+            rewritten = True
+            break
+        if not rewritten:
             result.append(line)
     return result
 
@@ -6351,6 +6395,198 @@ def contradiction_from_equality_branch_proof(
     return None
 
 
+def false_proof_from_branch(
+    branch: Expr,
+    branch_proof: str,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    local_known = dict(known)
+    local_known_canonical = dict(known_canonical)
+    local_rules = list(rules)
+    local_eq_facts = list(eq_facts)
+    remember_proposition(
+        local_known,
+        local_known_canonical,
+        local_rules,
+        local_eq_facts,
+        branch_proof,
+        expr_text(branch),
+    )
+    branch_sides = equality_like_sides(branch)
+    if branch_sides is not None:
+        reverse_proof = eq_symmetry_proof(branch_proof, branch_sides[0])
+        reverse_eq = Expr("eq", args=(branch_sides[1], branch_sides[0]))
+        remember_proposition(
+            local_known,
+            local_known_canonical,
+            local_rules,
+            local_eq_facts,
+            reverse_proof,
+            expr_text(reverse_eq),
+        )
+        if branch.kind == "app" and branch.args and branch.args[0].kind == "var" and branch.args[0].value is not None:
+            reverse_like = Expr("app", args=(branch.args[0], branch_sides[1], branch_sides[0]))
+            remember_proposition(
+                local_known,
+                local_known_canonical,
+                local_rules,
+                local_eq_facts,
+                reverse_proof,
+                expr_text(reverse_like),
+            )
+
+    false_expr = Expr("var", value="vampire_false")
+    direct = proof_for_expr(
+        false_expr,
+        local_known,
+        local_known_canonical,
+        local_rules,
+        local_eq_facts,
+        definitions,
+        allow_rule=True,
+        rule_depth=max(0, rule_depth - 1),
+    )
+    if direct is not None:
+        return direct
+
+    for rule_index, original_rule in enumerate(reversed(rules)):
+        rule = rename_rule_binders(original_rule, f"FB{rule_index}_")
+        if not false_eliminator_expr(rule_application_conclusion(rule)):
+            continue
+        if len(rule.premises) > 3:
+            continue
+        binders = set(rule_application_binders(rule))
+        seeds: list[dict[str, Expr]] = []
+        for premise in rule.premises:
+            subst: dict[str, Expr] = {}
+            if match_expr_with_alpha_instantiation(premise, branch, binders, subst):
+                seeds.append(subst)
+        if not seeds and len(rule.premises) == 1 and vampire_exists_body(rule.premises[0]) is not None:
+            seeds.append({})
+        for seed in seeds:
+            parts = rule_application_parts(
+                rule,
+                seed,
+                local_known,
+                local_known_canonical,
+                local_rules,
+                local_eq_facts,
+                definitions,
+                max(0, rule_depth - 1),
+            )
+            if parts is not None:
+                return rule_application_text(parts)
+    return None
+
+
+def branch_to_target_proof(
+    branch: Expr,
+    branch_proof: str,
+    target: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if expr_key(branch) == expr_key(target):
+        return branch_proof
+    if rule_depth <= 0:
+        return None
+
+    target_disjuncts = app_args(target, "vampire_or", 2)
+    if target_disjuncts is not None:
+        if expr_key(branch) == expr_key(target_disjuncts[0]):
+            return f"(fun P Hleft Hright => Hleft {proof_term_text(branch_proof)})"
+        if expr_key(branch) == expr_key(target_disjuncts[1]):
+            return f"(fun P Hleft Hright => Hright {proof_term_text(branch_proof)})"
+
+    disjuncts = app_args(branch, "vampire_or", 2)
+    if disjuncts is not None:
+        left_name = fresh_identifier("HorL", expr_text(branch), expr_text(target), branch_proof)
+        right_name = fresh_identifier("HorR", expr_text(branch), expr_text(target), branch_proof, left_name)
+        left_target = branch_to_target_proof(
+            disjuncts[0],
+            left_name,
+            target,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth - 1,
+        )
+        if left_target is None:
+            return None
+        right_target = branch_to_target_proof(
+            disjuncts[1],
+            right_name,
+            target,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth - 1,
+        )
+        if right_target is None:
+            return None
+        return (
+            f"({proof_head(branch_proof)} {proof_arg_text(target)} "
+            f"(fun {left_name} => {left_target}) "
+            f"(fun {right_name} => {right_target}))"
+        )
+
+    local_known = dict(known)
+    local_known_canonical = dict(known_canonical)
+    local_rules = list(rules)
+    local_eq_facts = list(eq_facts)
+    remember_proposition(
+        local_known,
+        local_known_canonical,
+        local_rules,
+        local_eq_facts,
+        branch_proof,
+        expr_text(branch),
+    )
+    assumed_target = proof_for_expr(
+        target,
+        local_known,
+        local_known_canonical,
+        local_rules,
+        local_eq_facts,
+        definitions,
+        allow_rule=True,
+        rule_depth=rule_depth - 1,
+    )
+    if assumed_target is not None:
+        return assumed_target
+
+    false_proof = false_proof_from_branch(
+        branch,
+        branch_proof,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        rule_depth,
+    )
+    if false_proof is not None:
+        return f"({proof_head(false_proof)} {proof_arg_text(target)})"
+
+    equality_contradiction = contradiction_from_equality_branch_proof(branch, branch_proof, target, known, rules)
+    if equality_contradiction is not None:
+        return equality_contradiction
+    return None
+
+
 def vampire_or_elimination_to_target_proof(
     expr: Expr,
     known: dict[str, str],
@@ -6364,19 +6600,39 @@ def vampire_or_elimination_to_target_proof(
         return None
 
     def build(or_proof: str, left: Expr, right: Expr) -> str | None:
-        if expr_key(left) == expr_key(expr):
-            branch_name = fresh_identifier("Hor", expr_text(expr), expr_text(right), or_proof)
-            branch_target = contradiction_from_equality_branch_proof(right, branch_name, expr, known, rules)
-            if branch_target is None:
-                return None
-            return f"({proof_head(or_proof)} {proof_arg_text(expr)} (fun Htarget => Htarget) (fun {branch_name} => {branch_target}))"
-        if expr_key(right) == expr_key(expr):
-            branch_name = fresh_identifier("Hor", expr_text(expr), expr_text(left), or_proof)
-            branch_target = contradiction_from_equality_branch_proof(left, branch_name, expr, known, rules)
-            if branch_target is None:
-                return None
-            return f"({proof_head(or_proof)} {proof_arg_text(expr)} (fun {branch_name} => {branch_target}) (fun Htarget => Htarget))"
-        return None
+        left_name = fresh_identifier("HorL", expr_text(expr), expr_text(left), expr_text(right), or_proof)
+        right_name = fresh_identifier("HorR", expr_text(expr), expr_text(left), expr_text(right), or_proof, left_name)
+        left_target = branch_to_target_proof(
+            left,
+            left_name,
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth,
+        )
+        if left_target is None:
+            return None
+        right_target = branch_to_target_proof(
+            right,
+            right_name,
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth,
+        )
+        if right_target is None:
+            return None
+        return (
+            f"({proof_head(or_proof)} {proof_arg_text(expr)} "
+            f"(fun {left_name} => {left_target}) "
+            f"(fun {right_name} => {right_target}))"
+        )
 
     for proposition, proof in list(known.items()):
         parsed = parse_expr(proposition)
@@ -6389,16 +6645,30 @@ def vampire_or_elimination_to_target_proof(
         if result is not None:
             return result
 
-    for rule in reversed(rules):
+    ordered_rules = [rule for rule in reversed(rules) if not re.fullmatch(r"S[0-9]+", rule.name)]
+    ordered_rules.extend(rule for rule in reversed(rules) if re.fullmatch(r"S[0-9]+", rule.name))
+    for rule in ordered_rules:
         conclusion = rule_application_conclusion(rule)
         parts = app_args(conclusion, "vampire_or", 2)
         if parts is None:
             continue
         binders = set(rule_application_binders(rule))
-        for side_index in (0, 1):
-            subst: dict[str, Expr] = {}
-            if not match_expr_with_alpha_instantiation(parts[side_index], expr, binders, subst):
+        seed_substs: list[dict[str, Expr]] = []
+        target_parts = app_args(expr, "vampire_or", 2)
+        match_targets = [expr]
+        if target_parts is not None:
+            match_targets.extend(target_parts)
+        for source_part in parts:
+            for match_target in match_targets:
+                subst: dict[str, Expr] = {}
+                if match_expr_with_alpha_instantiation(source_part, match_target, binders, subst):
+                    seed_substs.append(subst)
+        seen_seed_substs: set[tuple[tuple[str, str], ...]] = set()
+        for subst in seed_substs:
+            seed_key = tuple(sorted((name, expr_key(value)) for name, value in subst.items()))
+            if seed_key in seen_seed_substs:
                 continue
+            seen_seed_substs.add(seed_key)
             application_parts = rule_application_parts(
                 rule,
                 subst,
@@ -10804,6 +11074,27 @@ def check_megalodon_lines(
                 candidate.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
                 demoted_exact = True
                 return True
+
+        for claim_index in range(len(output_lines) - 1):
+            if not output_lines[claim_index].startswith("claim "):
+                continue
+            proof_index = claim_index + 1
+            if output_lines[proof_index].startswith("{ exact "):
+                output_lines[proof_index] = "{ admit. }"
+                candidate.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
+                demoted_exact = True
+                return True
+            if output_lines[proof_index] == "{" and proof_index + 1 < len(output_lines):
+                block_end = proof_index + 1
+                while block_end < len(output_lines) and output_lines[block_end] != "}":
+                    block_end += 1
+                if block_end < len(output_lines):
+                    has_exact = any(row.lstrip().startswith("exact ") for row in output_lines[proof_index + 1 : block_end])
+                    if has_exact:
+                        output_lines[proof_index : block_end + 1] = ["{ admit. }"]
+                        candidate.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
+                        demoted_exact = True
+                        return True
         return False
 
     try:
