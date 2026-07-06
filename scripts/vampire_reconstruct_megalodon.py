@@ -11369,6 +11369,95 @@ def raw_or_intro_from_branch(
     return None
 
 
+def raw_or_intro_literal_at(target: Expr, index: int, literal_proof: str) -> str | None:
+    if index < 0:
+        return None
+    parts = app_args(target, "vampire_or", 2)
+    if parts is None:
+        return literal_proof if index == 0 else None
+    left, right = parts
+    left_count = len(raw_clause_literals(left))
+    if index < left_count:
+        left_proof = raw_or_intro_literal_at(left, index, literal_proof)
+        if left_proof is None:
+            return None
+        return f"(fun P Hleft Hright => Hleft {proof_term_text(left_proof)})"
+    right_proof = raw_or_intro_literal_at(right, index - left_count, literal_proof)
+    if right_proof is None:
+        return None
+    return f"(fun P Hleft Hright => Hright {proof_term_text(right_proof)})"
+
+
+def raw_literal_direct_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rewrites: tuple[RawSplitRewrite, ...],
+) -> str | None:
+    if expr_same_mod_alpha(source, target):
+        return source_proof
+    rewrite_proof = raw_split_rewrite_proof(source, target, source_proof, rewrites)
+    if rewrite_proof is not None:
+        return rewrite_proof
+    return None
+
+
+def raw_literal_to_clause_proof(
+    literal: Expr,
+    target: Expr,
+    literal_proof: str,
+    target_literals: list[Expr],
+    rewrites: tuple[RawSplitRewrite, ...],
+) -> str | None:
+    false_elim = raw_false_literal_elimination_proof(literal, target, literal_proof)
+    if false_elim is not None:
+        return false_elim
+    for index, target_literal in enumerate(target_literals):
+        target_literal_proof = raw_literal_direct_transform_proof(literal, target_literal, literal_proof, rewrites)
+        if target_literal_proof is None:
+            continue
+        proof = raw_or_intro_literal_at(target, index, target_literal_proof)
+        if proof is not None:
+            return proof
+    return None
+
+
+def raw_clause_cases_proof(
+    source: Expr,
+    target: Expr,
+    target_literals: list[Expr],
+    rewrites: tuple[RawSplitRewrite, ...],
+    source_proof: str,
+) -> str | None:
+    parts = app_args(source, "vampire_or", 2)
+    if parts is None:
+        return raw_literal_to_clause_proof(source, target, source_proof, target_literals, rewrites)
+    left, right = parts
+    left_name = fresh_identifier("HL", expr_text(source), expr_text(target), source_proof)
+    right_name = fresh_identifier("HR", expr_text(source), expr_text(target), source_proof, left_name)
+    left_target = raw_clause_cases_proof(left, target, target_literals, rewrites, left_name)
+    right_target = raw_clause_cases_proof(right, target, target_literals, rewrites, right_name)
+    if left_target is None or right_target is None:
+        return None
+    return f"({proof_head(source_proof)} {proof_arg_text(target)} (fun {left_name} => {left_target}) (fun {right_name} => {right_target}))"
+
+
+def raw_clause_subsumption_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rewrites: tuple[RawSplitRewrite, ...] = (),
+) -> str | None:
+    source_literals = raw_clause_literals(source)
+    target_literals = raw_clause_literals(target)
+    if len(source_literals) > 24 or len(target_literals) > 24:
+        return None
+    for literal in source_literals:
+        if raw_literal_to_clause_proof(literal, target, "HLit", target_literals, rewrites) is None:
+            return None
+    return raw_clause_cases_proof(source, target, target_literals, rewrites, source_proof)
+
+
 def raw_forall_permutation_transform_proof(source: Expr, target: Expr, source_proof: str) -> str | None:
     source_binders, source_body = collect_foralls(source)
     target_binders, target_body = collect_foralls(target)
@@ -11781,6 +11870,9 @@ def raw_tptp_trivial_inequality_removal_proof(
     simple = raw_simple_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
     if simple is not None:
         return simple
+    subsumption = raw_clause_subsumption_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
+    if subsumption is not None:
+        return subsumption
     if not raw_clause_replay_budget_ok(source, target, max_literals=max_literals, max_literal_product=max_literal_product):
         return None
     return raw_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
@@ -12100,7 +12192,9 @@ def raw_tptp_equality_resolution_proof(
         source_proof = raw_tptp_claim_name(parents[0])
         for arg in parent_args:
             source_proof = f"({proof_head(source_proof)} {arg})"
-        body_proof = raw_clause_transform_proof(instantiated_parent_body, target_body, source_proof)
+        body_proof = raw_clause_subsumption_transform_proof(instantiated_parent_body, target_body, source_proof)
+        if body_proof is None:
+            body_proof = raw_clause_transform_proof(instantiated_parent_body, target_body, source_proof)
         if body_proof is None:
             continue
         for name, sort in reversed(target_binders):
@@ -12247,6 +12341,9 @@ def raw_tptp_avatar_split_clause_proof(
     rewrites = raw_tptp_split_rewrites(parents[1:], propositions_by_name)
     if not rewrites:
         return None
+    subsumption = raw_clause_subsumption_transform_proof(source, target, raw_tptp_claim_name(parents[0]), rewrites=rewrites)
+    if subsumption is not None:
+        return subsumption
     return raw_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]), rewrites=rewrites)
 
 
