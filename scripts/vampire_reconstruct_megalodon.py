@@ -11401,6 +11401,9 @@ def raw_literal_direct_transform_proof(
 ) -> str | None:
     if expr_same_mod_alpha(source, target):
         return source_proof
+    factored_forall = raw_factored_forall_literal_transform_proof(source, target, source_proof, rewrites)
+    if factored_forall is not None:
+        return factored_forall
     if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
         assert source.value is not None and target.value is not None and source.sort is not None
         source_body = source.args[0]
@@ -11413,6 +11416,50 @@ def raw_literal_direct_transform_proof(
     rewrite_proof = raw_split_rewrite_proof(source, target, source_proof, rewrites)
     if rewrite_proof is not None:
         return rewrite_proof
+    return None
+
+
+def raw_factored_forall_literal_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rewrites: tuple[RawSplitRewrite, ...],
+) -> str | None:
+    if proof_search_timed_out() or len(expr_text(source)) + len(expr_text(target)) > 3000:
+        return None
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if len(source_binders) != len(target_binders) + 1 or len(source_binders) > 4:
+        return None
+    if len(raw_clause_literals(source_body)) > 16 or len(raw_clause_literals(target_body)) > 16:
+        return None
+    for removed_index, (removed_name, removed_sort) in enumerate(source_binders):
+        remaining = [binder for index, binder in enumerate(source_binders) if index != removed_index]
+        if [sort for _, sort in remaining] != [sort for _, sort in target_binders]:
+            continue
+        base_subst = {
+            source_name: Expr("var", value=target_name)
+            for (source_name, _), (target_name, _) in zip(remaining, target_binders)
+        }
+        for target_name, target_sort in target_binders:
+            if target_sort != removed_sort:
+                continue
+            subst = dict(base_subst)
+            subst[removed_name] = Expr("var", value=target_name)
+            instantiated_source_body = substitute_expr(source_body, subst)
+            if not raw_clause_replay_budget_ok(instantiated_source_body, target_body, max_literals=16, max_literal_product=256):
+                continue
+            proof = source_proof
+            for source_name, _ in source_binders:
+                proof = f"({proof_head(proof)} {proof_arg_text(subst[source_name])})"
+            body_proof = raw_clause_subsumption_transform_proof(instantiated_source_body, target_body, proof, rewrites=rewrites)
+            if body_proof is None:
+                body_proof = raw_clause_transform_proof(instantiated_source_body, target_body, proof, rewrites=rewrites)
+            if body_proof is None:
+                continue
+            for name, sort in reversed(target_binders):
+                body_proof = f"(fun {name}:{sort} => {body_proof})"
+            return body_proof
     return None
 
 
@@ -13285,6 +13332,14 @@ def raw_tptp_replay_proof(
         return raw_tptp_forward_demodulation_proof(proposition, parents, propositions_by_name, variable_sorts)
     if rule == "equality_resolution":
         return raw_tptp_equality_resolution_proof(proposition, parents, propositions_by_name)
+    if rule == "equality_factoring":
+        return raw_tptp_trivial_inequality_removal_proof(
+            proposition,
+            parents,
+            propositions_by_name,
+            max_literals=16,
+            max_literal_product=256,
+        )
     if rule == "avatar_component_clause":
         return raw_tptp_avatar_component_clause_proof(proposition, parents, propositions_by_name)
     if rule == "avatar_split_clause":
