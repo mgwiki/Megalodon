@@ -26,7 +26,7 @@ import threading
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 
 RESULT_RE = re.compile(r"^.*\.(?P<line>[0-9]+)\.(?P<char>[0-9]+)\.\*\.p:")
@@ -12250,6 +12250,80 @@ def raw_clause_resolution_proof(
     return f"({proof_head(source_proof)} {proof_arg_text(target)} (fun {left_name} => {left_target}) (fun {right_name} => {right_target}))"
 
 
+def raw_clause_cases_with_handler(
+    source: Expr,
+    source_proof: str,
+    handler: Callable[[Expr, str], str | None],
+    depth: int = 0,
+    avoid_text: str = "",
+) -> str | None:
+    if depth > 16 or proof_search_timed_out():
+        return None
+    parts = app_args(source, "vampire_or", 2)
+    if parts is None:
+        return handler(source, source_proof)
+    left, right = parts
+    left_name = fresh_identifier("HL", expr_text(source), source_proof, avoid_text, str(depth))
+    right_name = fresh_identifier("HR", expr_text(source), source_proof, avoid_text, left_name, str(depth))
+    next_avoid = f"{avoid_text} {left_name} {right_name}"
+    left_target = raw_clause_cases_with_handler(left, left_name, handler, depth + 1, next_avoid)
+    right_target = raw_clause_cases_with_handler(right, right_name, handler, depth + 1, next_avoid)
+    if left_target is None or right_target is None:
+        return None
+    # The handler fixes the target proposition for every branch.
+    target_text = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    if not isinstance(target_text, str):
+        return None
+    return f"({proof_head(source_proof)} {target_text} (fun {left_name} => {left_target}) (fun {right_name} => {right_target}))"
+
+
+def raw_flat_clause_resolution_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    resolver: Expr,
+    resolver_proof: str,
+) -> str | None:
+    source_literals = raw_clause_literals(source)
+    resolver_literals = raw_clause_literals(resolver)
+    target_literals = raw_clause_literals(target)
+    if len(source_literals) > 12 or len(resolver_literals) > 8 or len(target_literals) > 14:
+        return None
+    if not any(raw_complementary_literals(left, right) for left in source_literals for right in resolver_literals):
+        return None
+    target_text = proof_arg_text(target)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+
+    def source_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
+        direct = raw_literal_to_clause_proof(source_literal, target, source_literal_proof, target_literals, ())
+        if direct is not None:
+            return direct
+
+        def resolver_handler(resolver_literal: Expr, resolver_literal_proof: str) -> str | None:
+            complement = raw_complement_resolution_proof(
+                source_literal,
+                source_literal_proof,
+                resolver_literal,
+                resolver_literal_proof,
+                target,
+            )
+            if complement is not None:
+                return complement
+            return raw_literal_to_clause_proof(resolver_literal, target, resolver_literal_proof, target_literals, ())
+
+        return raw_clause_cases_with_handler(resolver, resolver_proof, resolver_handler, avoid_text=source_literal_proof)
+
+    try:
+        return raw_clause_cases_with_handler(source, source_proof, source_handler)
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_clause_multi_resolution_proof(
     source: Expr,
     target: Expr,
@@ -12745,10 +12819,6 @@ def raw_tptp_superposition_proof(
     proof = raw_tptp_parent_equality_rewrite_proof(proposition, parents, propositions_by_name, variable_sorts)
     if proof is not None:
         return proof
-    for parent in parents:
-        proof = raw_tptp_fast_parent_transform_proof(proposition, parent, propositions_by_name)
-        if proof is not None:
-            return proof
     if len(parents) == 2:
         proof = raw_tptp_forward_subsumption_resolution_proof(
             proposition,
@@ -12758,6 +12828,11 @@ def raw_tptp_superposition_proof(
         )
         if proof is not None:
             return proof
+    for parent in parents:
+        proof = raw_tptp_fast_parent_transform_proof(proposition, parent, propositions_by_name)
+        if proof is not None:
+            return proof
+    if len(parents) == 2:
         proof = raw_tptp_forward_demodulation_proof(proposition, parents, propositions_by_name, variable_sorts)
         if proof is not None:
             return proof
@@ -12784,6 +12859,13 @@ def raw_tptp_forward_subsumption_resolution_proof(
         return None
     first_name = raw_tptp_claim_name(parents[0])
     second_name = raw_tptp_claim_name(parents[1])
+    if raw_clause_replay_budget_ok(first, second, target, max_literals=12, max_literal_product=512):
+        proof = raw_flat_clause_resolution_proof(first, target, first_name, second, second_name)
+        if proof is not None:
+            return proof
+        proof = raw_flat_clause_resolution_proof(second, target, second_name, first, first_name)
+        if proof is not None:
+            return proof
     first_options = raw_instantiated_forall_clause_options(first, first_name, target, second)
     second_options = raw_instantiated_forall_clause_options(second, second_name, target, first)
     for first_clause, first_proof in first_options:
@@ -13343,10 +13425,17 @@ def raw_tptp_avatar_split_direct_component_proof(
             for index, literal in enumerate(target_literals)
             if index != main_index and raw_split_atom_name(literal) is not None
         ]
-        not_names = [
-            fresh_identifier("Hnot", expr_text(target), expr_text(literal), source_proof, str(index))
-            for index, literal, _ in other_literals
-        ]
+        not_names: list[str] = []
+        for index, literal, _ in other_literals:
+            not_name = fresh_identifier(
+                "Hnot",
+                expr_text(target),
+                expr_text(literal),
+                source_proof,
+                str(index),
+                " ".join(not_names),
+            )
+            not_names.append(not_name)
         refutations = [(rewrite, not_name) for (_, _, rewrite), not_name in zip(other_literals, not_names)]
         component_proof = raw_avatar_split_component_from_source_proof(
             source,
@@ -13415,6 +13504,15 @@ def raw_tptp_avatar_split_clause_proof(
     subsumption = raw_clause_subsumption_transform_proof(source, target, raw_tptp_claim_name(parents[0]), rewrites=rewrites)
     if subsumption is not None:
         return subsumption
+    if len(parents) <= 8 and len(raw_clause_literals(target)) <= 4:
+        direct = raw_tptp_avatar_split_direct_component_proof(
+            source,
+            target,
+            raw_tptp_claim_name(parents[0]),
+            rewrites,
+        )
+        if direct is not None:
+            return direct
     return raw_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]), rewrites=rewrites)
 
 
