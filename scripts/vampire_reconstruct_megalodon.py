@@ -2636,8 +2636,17 @@ def introduction_proof(
             expr_text(premise),
         )
 
-    proof = None
-    if conclusion.kind == "eq":
+    proof = proof_for_expr(
+        conclusion,
+        local_known,
+        local_known_canonical,
+        local_rules,
+        local_eq_facts,
+        definitions,
+        allow_rule=True,
+        rule_depth=rule_depth,
+    )
+    if proof is None and conclusion.kind == "eq":
         proof = equality_rule_transport_proof(
             conclusion,
             local_known,
@@ -2646,17 +2655,6 @@ def introduction_proof(
             local_eq_facts,
             definitions,
             rule_depth,
-        )
-    if proof is None:
-        proof = proof_for_expr(
-            conclusion,
-            local_known,
-            local_known_canonical,
-            local_rules,
-            local_eq_facts,
-            definitions,
-            allow_rule=True,
-            rule_depth=rule_depth,
         )
     if proof is None:
         return None
