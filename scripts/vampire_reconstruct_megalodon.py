@@ -1582,14 +1582,31 @@ def problem_path_for_proof(proof: Path) -> Path | None:
     return None
 
 
-def problem_type_variable_sorts(proof: Path | None) -> dict[str, str]:
-    if proof is None:
-        return {}
-    problem = problem_path_for_proof(proof)
+def problem_file_type_variable_sorts(problem: Path | None) -> dict[str, str]:
     if problem is None:
         return {}
     variables: dict[str, str] = {}
     for line in problem.read_text(encoding="utf-8", errors="replace").splitlines():
+        match = THF_TYPE_RE.match(line.split("%", 1)[0].strip())
+        if match is None:
+            continue
+        name = decode_tptp_identifier(match.group("name"))
+        if re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", name):
+            variables[name] = tptp_sort_to_megalodon(match.group("sort"))
+    return variables
+
+
+def problem_type_variable_sorts(proof: Path | None, problem: Path | None = None) -> dict[str, str]:
+    if problem is None and proof is not None:
+        problem = problem_path_for_proof(proof)
+    return problem_file_type_variable_sorts(problem)
+
+
+def proof_text_type_variable_sorts(proof_text: str | None) -> dict[str, str]:
+    if proof_text is None:
+        return {}
+    variables: dict[str, str] = {}
+    for line in proof_text.splitlines():
         match = THF_TYPE_RE.match(line.split("%", 1)[0].strip())
         if match is None:
             continue
@@ -1610,10 +1627,14 @@ def megalodon_step_proposition(formula: str, variable_sorts: dict[str, str]) -> 
     return surface_replay_proposition(proposition) if proposition is not None else None
 
 
-def megalodon_replay_steps(proof_text: str | None, proof: Path | None) -> dict[str, MegalodonReplayStep]:
+def megalodon_replay_steps(
+    proof_text: str | None,
+    proof: Path | None,
+    problem: Path | None = None,
+) -> dict[str, MegalodonReplayStep]:
     if proof_text is None:
         return {}
-    variable_sorts = problem_type_variable_sorts(proof)
+    variable_sorts = {**proof_text_type_variable_sorts(proof_text), **problem_type_variable_sorts(proof, problem)}
     steps: dict[str, MegalodonReplayStep] = {}
     substitutions: dict[str, tuple[str, ...]] = {}
     for raw in proof_text.splitlines():
@@ -1749,12 +1770,16 @@ def add_problem_predicate_eliminator_axioms(lines: list[str], proof: Path | None
     return result
 
 
-def add_problem_type_variables(lines: list[str], proof: Path | None, proof_text: str | None) -> list[str]:
+def add_problem_type_variables(
+    lines: list[str],
+    proof: Path | None,
+    proof_text: str | None,
+    problem: Path | None = None,
+) -> list[str]:
     if proof is None:
         return list(lines)
-    problem = problem_path_for_proof(proof)
     if problem is None:
-        return list(lines)
+        problem = problem_path_for_proof(proof)
     existing = {
         item[0]
         for line in lines
@@ -1771,18 +1796,32 @@ def add_problem_type_variables(lines: list[str], proof: Path | None, proof_text:
     if proof_text is not None:
         used_text += "\n" + proof_text
     additions: list[str] = []
-    for line in problem.read_text(encoding="utf-8", errors="replace").splitlines():
-        match = THF_TYPE_RE.match(line.split("%", 1)[0].strip())
-        if match is None:
-            continue
-        raw_name = match.group("name")
+    type_variables = proof_text_type_variable_sorts(proof_text)
+    if problem is not None:
+        type_variables.update(problem_file_type_variable_sorts(problem))
+    if not type_variables:
+        return list(lines)
+    for raw_name, sort in sorted(type_variables.items()):
         name = decode_tptp_identifier(raw_name)
         if name in existing or not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", name):
             continue
         if name not in used_text and raw_name not in used_text:
             continue
         existing.add(name)
-        additions.append(f"Variable {name}:{tptp_sort_to_megalodon(match.group('sort'))}.")
+        additions.append(f"Variable {name}:{sort}.")
+    if problem is not None:
+        for line in problem.read_text(encoding="utf-8", errors="replace").splitlines():
+            match = THF_TYPE_RE.match(line.split("%", 1)[0].strip())
+            if match is None:
+                continue
+            raw_name = match.group("name")
+            name = decode_tptp_identifier(raw_name)
+            if name in existing or not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", name):
+                continue
+            if name not in used_text and raw_name not in used_text:
+                continue
+            existing.add(name)
+            additions.append(f"Variable {name}:{tptp_sort_to_megalodon(match.group('sort'))}.")
     if not additions:
         return list(lines)
     result: list[str] = []
@@ -2876,11 +2915,16 @@ def surface_replay_proposition(proposition: str) -> str:
     return expr_text(surface_replay_expr(parsed)) if parsed is not None else proposition
 
 
-def fill_replay_substitution_claims(lines: list[str], proof: Path | None, proof_text: str | None) -> list[str]:
-    replay_steps = megalodon_replay_steps(proof_text, proof)
+def fill_replay_substitution_claims(
+    lines: list[str],
+    proof: Path | None,
+    proof_text: str | None,
+    problem: Path | None = None,
+) -> list[str]:
+    replay_steps = megalodon_replay_steps(proof_text, proof, problem)
     if not replay_steps:
         return list(lines)
-    variable_sorts = problem_type_variable_sorts(proof)
+    variable_sorts = problem_type_variable_sorts(proof, problem)
     known_propositions: dict[str, str] = {}
     for line in lines:
         for prefix in ("claim ", "Axiom "):
@@ -3056,38 +3100,47 @@ def add_boolean_extensionality_helpers(lines: list[str]) -> list[str]:
 
 
 def add_missing_basic_connective_definitions(lines: list[str]) -> list[str]:
-    text = "\n".join(lines)
+    helper_definitions = {
+        "vampire_true": "Definition vampire_true : prop := forall P:prop, P -> P.",
+        "vampire_or": "Definition vampire_or : prop->prop->prop := fun A B:prop => forall P:prop, (A -> P) -> (B -> P) -> P.",
+        "vampire_and": "Definition vampire_and : prop->prop->prop := fun A B:prop => forall P:prop, (A -> B -> P) -> P.",
+        "vampire_exists_set": "Definition vampire_exists_set : (set->prop)->prop := fun P => forall Q:prop, (forall X:set, P X -> Q) -> Q.",
+        "vampire_exists_prop": "Definition vampire_exists_prop : (prop->prop)->prop := fun P => forall Q:prop, (forall X:prop, P X -> Q) -> Q.",
+        "vampire_exists_set_prop": "Definition vampire_exists_set_prop : ((set->prop)->prop)->prop := fun P => forall Q:prop, (forall X:set->prop, P X -> Q) -> Q.",
+        "vampire_eq_set": "Definition vampire_eq_set : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y.",
+        "vampire_eq_prop": "Definition vampire_eq_prop : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y.",
+    }
+    helper_names = set(helper_definitions)
+    non_definition_text = "\n".join(
+        line for line in lines if not any(line.startswith(f"Definition {name} ") for name in helper_names)
+    )
     helpers: list[str] = []
-    if "vampire_true" in text and not any(line.startswith("Definition vampire_true ") for line in lines):
-        helpers.append("Definition vampire_true : prop := forall P:prop, P -> P.")
-    if "vampire_or " in text and not any(line.startswith("Definition vampire_or ") for line in lines):
-        helpers.append("Definition vampire_or : prop->prop->prop := fun A B:prop => forall P:prop, (A -> P) -> (B -> P) -> P.")
-    if "vampire_and " in text and not any(line.startswith("Definition vampire_and ") for line in lines):
-        helpers.append("Definition vampire_and : prop->prop->prop := fun A B:prop => forall P:prop, (A -> B -> P) -> P.")
-    needs_exists_definition = "vampire_exists_set " in text and not any(
-        line.startswith("Definition vampire_exists_set ") for line in lines
-    )
+    if "vampire_true" in non_definition_text:
+        helpers.append(helper_definitions["vampire_true"])
+    if "vampire_or " in non_definition_text:
+        helpers.append(helper_definitions["vampire_or"])
+    if "vampire_and " in non_definition_text:
+        helpers.append(helper_definitions["vampire_and"])
+    needs_exists_definition = "vampire_exists_set " in non_definition_text
     if needs_exists_definition:
-        helpers.append("Definition vampire_exists_set : (set->prop)->prop := fun P => forall Q:prop, (forall X:set, P X -> Q) -> Q.")
-    needs_prop_exists_definition = "vampire_exists_prop " in text and not any(
-        line.startswith("Definition vampire_exists_prop ") for line in lines
-    )
+        helpers.append(helper_definitions["vampire_exists_set"])
+    needs_prop_exists_definition = "vampire_exists_prop " in non_definition_text
     if needs_prop_exists_definition:
-        helpers.append("Definition vampire_exists_prop : (prop->prop)->prop := fun P => forall Q:prop, (forall X:prop, P X -> Q) -> Q.")
-    needs_set_prop_exists_definition = "vampire_exists_set_prop " in text and not any(
-        line.startswith("Definition vampire_exists_set_prop ") for line in lines
-    )
+        helpers.append(helper_definitions["vampire_exists_prop"])
+    needs_set_prop_exists_definition = "vampire_exists_set_prop " in non_definition_text
     if needs_set_prop_exists_definition:
-        helpers.append("Definition vampire_exists_set_prop : ((set->prop)->prop)->prop := fun P => forall Q:prop, (forall X:set->prop, P X -> Q) -> Q.")
-    if "vampire_eq_set " in text and not any(line.startswith("Definition vampire_eq_set ") for line in lines):
-        helpers.append("Definition vampire_eq_set : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y.")
-    if "vampire_eq_prop " in text and not any(line.startswith("Definition vampire_eq_prop ") for line in lines):
-        helpers.append("Definition vampire_eq_prop : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y.")
+        helpers.append(helper_definitions["vampire_exists_set_prop"])
+    if "vampire_eq_set " in non_definition_text:
+        helpers.append(helper_definitions["vampire_eq_set"])
+    if "vampire_eq_prop " in non_definition_text:
+        helpers.append(helper_definitions["vampire_eq_prop"])
     if not helpers and not needs_exists_definition and not needs_prop_exists_definition and not needs_set_prop_exists_definition:
         return list(lines)
     result: list[str] = []
     inserted = False
     for line in lines:
+        if any(line == definition for definition in helper_definitions.values()):
+            continue
         if needs_exists_definition and line.startswith("Variable vampire_exists_set:"):
             continue
         if needs_prop_exists_definition and line.startswith("Variable vampire_exists_prop:"):
@@ -10626,19 +10679,20 @@ def check_megalodon_lines(
     fill_repeated_admits: bool = False,
     proof_text: str | None = None,
     source: str | None = None,
+    problem: Path | None = None,
 ) -> list[str]:
     safe_kind = kind.replace(" ", "_")
-    lines = add_problem_type_variables(lines, proof, proof_text)
+    lines = add_problem_type_variables(lines, proof, proof_text, problem)
     output_lines = add_function_definition_skeletons(lines, proof_text)
     output_lines = add_recovered_input_equalities(output_lines, proof_text)
     output_lines = add_recovered_input_axioms(output_lines, proof_text)
     output_lines = add_problem_predicate_eliminator_axioms(output_lines, proof)
-    output_lines = add_problem_type_variables(output_lines, proof, proof_text)
+    output_lines = add_problem_type_variables(output_lines, proof, proof_text, problem)
     output_lines = normalize_vampire_boolean_literals(output_lines)
     output_lines = add_missing_basic_connective_definitions(output_lines)
     output_lines = add_boolean_extensionality_helpers(output_lines)
     output_lines = parenthesize_atomic_axiom_propositions(output_lines)
-    output_lines = fill_replay_substitution_claims(output_lines, proof, proof_text)
+    output_lines = fill_replay_substitution_claims(output_lines, proof, proof_text, problem)
     output_lines = add_missing_basic_connective_definitions(output_lines)
     output_lines = add_boolean_extensionality_helpers(output_lines)
     output_lines = fill_source_candidate_claims(output_lines, proof_text)
@@ -10780,8 +10834,9 @@ def check_megalodon_source_candidate(
     index: int,
     lines: list[str],
     header: list[str] | None = None,
+    problem: Path | None = None,
 ) -> list[str]:
-    return check_megalodon_lines(megalodon, repo, proof, index, lines, "source candidate", header=header)
+    return check_megalodon_lines(megalodon, repo, proof, index, lines, "source candidate", header=header, problem=problem)
 
 
 def summarize_claim_skeleton(path: Path) -> dict[str, object]:
@@ -11189,7 +11244,7 @@ def check_obligation(
             failures.append(f"{proof}: no Megalodon source candidate")
         for index, lines in enumerate(candidates):
             checked_sources += 1
-            failures.extend(check_megalodon_source_candidate(megalodon, repo, proof, index, lines, header=header))
+            failures.extend(check_megalodon_source_candidate(megalodon, repo, proof, index, lines, header=header, problem=problem))
     if proof_mode == "megalodon" and (check_claim_skeletons or require_claim_skeletons or claim_skeleton_dir is not None):
         header = skeleton_header(obligation)
         skeletons = extract_megalodon_claim_skeletons(text)
@@ -11212,6 +11267,7 @@ def check_obligation(
                         fill_repeated_admits=True,
                         proof_text=text,
                         source=obligation.source,
+                        problem=problem,
                     )
                 )
             elif claim_skeleton_dir is not None:
@@ -11228,6 +11284,7 @@ def check_obligation(
                     fill_repeated_admits=True,
                     proof_text=text,
                     source=obligation.source,
+                    problem=problem,
                 )
     return failures, checked_sources, checked_skeletons
 
