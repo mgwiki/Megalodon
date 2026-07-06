@@ -6424,6 +6424,100 @@ def vampire_exists_intro_proof(
     return None
 
 
+def vampire_exists_elimination_rule_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 0:
+        return None
+    binders, body = collect_foralls(expr)
+    target_premises, target_conclusion = split_arrows(body)
+    if not target_premises:
+        return None
+    binder_names = [name for name, _ in binders]
+    premise_names = [f"H{index}" for index, _ in enumerate(target_premises)]
+    local_known = dict(known)
+    local_known_canonical = dict(known_canonical)
+    local_rules = list(rules)
+    local_eq_facts = list(eq_facts)
+    for premise, name in zip(target_premises, premise_names):
+        remember_proposition(
+            local_known,
+            local_known_canonical,
+            local_rules,
+            local_eq_facts,
+            name,
+            expr_text(premise),
+        )
+
+    for premise, premise_name in zip(target_premises, premise_names):
+        exists = vampire_exists_body(premise)
+        if exists is None:
+            continue
+        witness_name, exists_body = exists
+        for rule in rules:
+            if not rule.premises:
+                continue
+            rule_binders = rule_application_binders(rule)
+            variables = set(rule_binders)
+            subst: dict[str, Expr] = {}
+            if not match_expr(rule_application_conclusion(rule), target_conclusion, variables, subst):
+                continue
+            matched_premise_index = None
+            for index, rule_premise in enumerate(rule.premises):
+                trial = dict(subst)
+                if match_expr(rule_premise, exists_body, variables, trial):
+                    matched_premise_index = index
+                    subst = trial
+                    break
+            if matched_premise_index is None:
+                continue
+            if not all(binder in subst for binder in rule_binders):
+                continue
+            witness_expr = Expr("var", value=witness_name)
+            if not any(expr_key(value) == expr_key(witness_expr) for value in subst.values()):
+                continue
+            parts = [rule.name]
+            for binder in rule_binders:
+                parts.append(proof_arg_text(subst[binder]))
+            ok = True
+            witness_proof_name = "HW"
+            for index, rule_premise in enumerate(rule.premises):
+                instantiated = substitute_expr(rule_premise, subst)
+                if index == matched_premise_index:
+                    if expr_key(instantiated) != expr_key(exists_body):
+                        ok = False
+                        break
+                    parts.append(witness_proof_name)
+                    continue
+                proof = proof_for_expr(
+                    instantiated,
+                    local_known,
+                    local_known_canonical,
+                    local_rules,
+                    local_eq_facts,
+                    definitions,
+                    allow_rule=True,
+                    rule_depth=max(0, rule_depth - 1),
+                )
+                if proof is None:
+                    ok = False
+                    break
+                parts.append(proof_argument_text(proof))
+            if not ok:
+                continue
+            continuation = f"(fun {witness_name} {witness_proof_name} => {rule_application_text(parts)})"
+            proof = f"({premise_name} {proof_arg_text(target_conclusion)} {continuation})"
+            args = binder_names + premise_names
+            return f"({' '.join(['fun'] + args + ['=>', proof])})" if args else proof
+    return None
+
+
 def empty_equality_contradiction_proof(
     expr: Expr,
     known: dict[str, str],
@@ -8291,6 +8385,18 @@ def _proof_for_expr_impl(
     )
     if reflexive_relation_transport is not None:
         return reflexive_relation_transport
+
+    exists_elim_rule = vampire_exists_elimination_rule_proof(
+        expr,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        rule_depth,
+    )
+    if exists_elim_rule is not None:
+        return exists_elim_rule
 
     exists_intro = vampire_exists_intro_proof(
         expr,
