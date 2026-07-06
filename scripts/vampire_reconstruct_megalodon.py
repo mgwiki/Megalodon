@@ -349,6 +349,51 @@ def source_candidate_claim_proofs(text: str) -> dict[str, list[str]]:
     return proofs
 
 
+def source_candidate_direct_transport_proof(
+    proof_lines: list[str],
+    target_proposition: str,
+    axiom_propositions: dict[str, str],
+) -> str | None:
+    if len(proof_lines) != 4:
+        return None
+    local_claim = proposition_after_colon(proof_lines[0], "claim ")
+    if local_claim is None:
+        return None
+    equality = parse_expr(local_claim[1])
+    if equality is None or equality.kind != "eq":
+        return None
+    equality_exact = re.fullmatch(r"\{ exact (?P<proof>ax[0-9]+)\. \}", proof_lines[1])
+    rewrite = re.fullmatch(r"rewrite(?: <-)? (?P<name>[_A-Za-z][_A-Za-z0-9']*)\.", proof_lines[2])
+    source_exact = re.fullmatch(r"exact (?P<proof>ax[0-9]+)\.", proof_lines[3])
+    if equality_exact is None or rewrite is None or source_exact is None:
+        return None
+    if rewrite.group("name") != local_claim[0]:
+        return None
+    source_proposition = axiom_propositions.get(source_exact.group("proof"))
+    if source_proposition is None:
+        return None
+    source = parse_expr(source_proposition)
+    target = parse_expr(target_proposition)
+    if source is None or target is None:
+        return None
+
+    equality_proof = equality_exact.group("proof")
+    transports = [
+        (equality.args[0], equality.args[1], equality_proof),
+        (equality.args[1], equality.args[0], eq_symmetry_proof(equality_proof, equality.args[0])),
+    ]
+    for old, new, proof in transports:
+        rewritten, changed = replace_expr(source, old, new)
+        if not changed or expr_key(rewritten) != expr_key(target):
+            continue
+        hole_name = fresh_identifier("zz", expr_text(source), expr_text(target))
+        context, context_changed = replace_expr(source, old, Expr("var", value=hole_name))
+        if not context_changed:
+            continue
+        return f"{proof_head(proof)} (fun {hole_name}:set => {expr_text(context)}) {source_exact.group('proof')}"
+    return None
+
+
 def extract_megalodon_claim_skeletons(text: str) -> list[list[str]]:
     return extract_marked_megalodon_blocks(
         text,
@@ -1707,8 +1752,8 @@ def fill_source_candidate_claims(lines: list[str], proof_text: str | None) -> li
     source_proofs = source_candidate_claim_proofs(proof_text)
     if not source_proofs:
         return list(lines)
-    available_axioms = {
-        claim[0]
+    axiom_propositions = {
+        claim[0]: claim[1]
         for line in lines
         for claim in [proposition_after_colon(line, "Axiom ")]
         if claim is not None
@@ -1716,7 +1761,7 @@ def fill_source_candidate_claims(lines: list[str], proof_text: str | None) -> li
 
     def references_available(lines: list[str]) -> bool:
         referenced = set(re.findall(r"\bax[0-9]+\b", "\n".join(lines)))
-        return referenced <= available_axioms
+        return referenced <= set(axiom_propositions)
 
     used: set[str] = set()
     result: list[str] = []
@@ -1733,9 +1778,17 @@ def fill_source_candidate_claims(lines: list[str], proof_text: str | None) -> li
             and lines[index + 1] == "{ admit. }"
             and references_available(source_proofs[claim[1]])
         ):
-            result.append("{")
-            result.extend(source_proofs[claim[1]])
-            result.append("}")
+            direct_proof = source_candidate_direct_transport_proof(
+                source_proofs[claim[1]],
+                claim[1],
+                axiom_propositions,
+            )
+            if direct_proof is None:
+                result.append("{")
+                result.extend(source_proofs[claim[1]])
+                result.append("}")
+            else:
+                result.append("{ exact " + direct_proof + ". }")
             used.add(claim[1])
             index += 2
             continue
