@@ -2934,15 +2934,6 @@ def proof_for_expr(
     if or_intro is not None:
         return or_intro
 
-    deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
-    if deadline is not None and proof_search_now() > deadline:
-        return None
-
-    if allow_rule:
-        introduced = introduction_proof(expr, known, known_canonical, rules, eq_facts, definitions, rule_depth)
-        if introduced is not None:
-            return introduced
-
     normalized = normalize_defined_expr(expr, definitions)
     if expr_key(normalized) != expr_key(expr):
         normalized_direct = direct_proof_expr(normalized)
@@ -2975,6 +2966,15 @@ def proof_for_expr(
         )
         if direct_rule_proof is not None:
             return direct_rule_proof
+
+    deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+    if deadline is not None and proof_search_now() > deadline:
+        return None
+
+    if allow_rule:
+        introduced = introduction_proof(expr, known, known_canonical, rules, eq_facts, definitions, rule_depth)
+        if introduced is not None:
+            return introduced
 
     if allow_rule:
         sequential_rule_proof = sequential_rule_application_proof(
@@ -3103,9 +3103,6 @@ def proof_for_proposition(
             premise_proof = known.get(premise) or known_canonical.get(canonical_proposition(premise))
             if premise_proof is not None:
                 return f"({implication_proof} {premise_proof})"
-    deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
-    if deadline is not None and proof_search_now() > deadline:
-        return None
     expr = parse_expr(proposition)
     if expr is None:
         return None
