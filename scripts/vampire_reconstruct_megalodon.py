@@ -5783,6 +5783,56 @@ def implication_intro_proof(
     return f"({' '.join(['fun'] + args + ['=>', conclusion_proof])})"
 
 
+def implication_from_false_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    allow_rule: bool,
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 0:
+        return None
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if not premises:
+        return None
+    local_known = dict(known)
+    local_known_canonical = dict(known_canonical)
+    local_rules = list(rules)
+    local_eq_facts = list(eq_facts)
+    premise_names = [f"H{index}" for index, _ in enumerate(premises)]
+    for premise, name in zip(premises, premise_names):
+        remember_proposition(
+            local_known,
+            local_known_canonical,
+            local_rules,
+            local_eq_facts,
+            name,
+            expr_text(premise),
+        )
+    false_expr = parse_expr("vampire_false")
+    if false_expr is None:
+        return None
+    false_proof = proof_for_expr(
+        false_expr,
+        local_known,
+        local_known_canonical,
+        local_rules,
+        local_eq_facts,
+        definitions,
+        allow_rule=allow_rule,
+        rule_depth=max(0, rule_depth - 1),
+    )
+    if false_proof is None:
+        return None
+    args = [name for name, _ in binders] + premise_names
+    conclusion_from_false = f"({proof_term_text(false_proof)} {proof_arg_text(conclusion)})"
+    return f"({' '.join(['fun'] + args + ['=>', conclusion_from_false])})"
+
+
 def build_quantified_implication(
     binders: list[tuple[str, str]],
     premises: list[Expr],
@@ -8064,6 +8114,19 @@ def _proof_for_expr_impl(
     if implication_intro is not None:
         return implication_intro
 
+    implication_false = implication_from_false_proof(
+        expr,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        allow_rule,
+        rule_depth,
+    )
+    if implication_false is not None:
+        return implication_false
+
     prop_eliminator = prop_eliminator_projection_proof(expr, known, known_canonical, rules)
     if prop_eliminator is not None:
         return prop_eliminator
@@ -8481,7 +8544,13 @@ def proof_for_proposition(
     if proof is not None:
         return proof
     if proposition == "vampire_false":
-        return known_false_proof(known, known_canonical)
+        false_proof = known_false_proof(known, known_canonical)
+        if false_proof is not None:
+            return false_proof
+        false_expr = parse_expr("vampire_false")
+        if false_expr is None:
+            return None
+        return proof_for_expr(false_expr, known, known_canonical, rules, eq_facts, definitions, rule_depth=4)
     false_proof = known_false_proof(known, known_canonical)
     if false_proof is not None:
         return f"({proof_term_text(false_proof)} ({proposition}))"
