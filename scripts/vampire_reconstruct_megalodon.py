@@ -1143,6 +1143,49 @@ def infer_rule_binder_candidates_from_known(
     ][:limit]
 
 
+def expr_subterms(expr: Expr, limit: int = 128) -> list[Expr]:
+    found: list[Expr] = []
+    seen: set[str] = set()
+
+    def visit(node: Expr) -> None:
+        if len(found) >= limit:
+            return
+        key = expr_key(node)
+        if key not in seen:
+            seen.add(key)
+            found.append(node)
+        for arg in node.args:
+            visit(arg)
+
+    visit(expr)
+    return found
+
+
+def fill_missing_binders_with_terms(
+    binders: tuple[str, ...],
+    subst: dict[str, Expr],
+    terms: list[Expr],
+    limit: int = 256,
+) -> list[dict[str, Expr]]:
+    missing = [binder for binder in binders if binder not in subst]
+    if not missing:
+        return [dict(subst)]
+    candidates = [dict(subst)]
+    for binder in missing:
+        next_candidates: list[dict[str, Expr]] = []
+        for candidate in candidates:
+            for term in terms:
+                trial = dict(candidate)
+                trial[binder] = term
+                next_candidates.append(trial)
+                if len(next_candidates) >= limit:
+                    break
+            if len(next_candidates) >= limit:
+                break
+        candidates = next_candidates
+    return candidates
+
+
 def substitute_expr(expr: Expr, subst: dict[str, Expr]) -> Expr:
     if expr.kind == "var" and expr.value in subst:
         return subst[expr.value]
@@ -2037,6 +2080,249 @@ def equality_two_rule_join_proof(
     return None
 
 
+def equality_transport_side_proof(
+    source: Expr,
+    target: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if expr_key(source) == expr_key(target):
+        return f"(fun Q:set->prop => fun H:Q ({expr_text(source)}) => H)"
+    equality = Expr("eq", args=(source, target))
+    proof = equality_rewrite_join_proof(equality, known, known_canonical, rules, eq_facts, definitions, rule_depth)
+    if proof is not None:
+        return proof
+    proof = equality_congruence_proof(equality, known, known_canonical, rules, eq_facts, definitions, rule_depth)
+    if proof is not None:
+        return proof
+    proof = equality_multi_congruence_proof(equality, known, known_canonical, rules, eq_facts, definitions, rule_depth)
+    if proof is not None:
+        return proof
+    proof = equality_rule_chain_proof(
+        equality,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        max_depth=4,
+        rule_depth=rule_depth,
+    )
+    if proof is not None:
+        return proof
+    proof = proof_for_expr(
+        equality,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        allow_rule=False,
+        rule_depth=max(0, rule_depth - 1),
+    )
+    if proof is not None:
+        return proof
+    reverse = Expr("eq", args=(target, source))
+    reverse_proof = proof_for_expr(
+        reverse,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        allow_rule=False,
+        rule_depth=max(0, rule_depth - 1),
+    )
+    if reverse_proof is None:
+        return None
+    return eq_symmetry_proof(reverse_proof, target)
+
+
+def equality_rule_transport_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if expr.kind != "eq" or rule_depth <= 0:
+        return None
+    target_left = normalize_defined_expr(expr.args[0], definitions)
+    target_right = normalize_defined_expr(expr.args[1], definitions)
+
+    for rule_index, original_rule in enumerate(reversed(rules)):
+        rule = rename_rule_binders(original_rule, f"ET{rule_index}_")
+        conclusion = rule_application_conclusion(rule)
+        if conclusion.kind != "eq":
+            continue
+        binders = rule_application_binders(rule)
+        steps = rule.steps
+        if not steps:
+            steps = tuple(RuleStep("binder", name=binder) for binder in binders) + tuple(
+                RuleStep("premise", expr=premise) for premise in rule.premises
+            )
+        if not any(step.kind == "premise" for step in steps):
+            continue
+        variables = set(binders)
+        seed_substs: list[tuple[dict[str, Expr], list[Expr]]] = []
+        for source_side, target_side, other_target_side in (
+            (conclusion.args[0], target_left, target_right),
+            (conclusion.args[1], target_right, target_left),
+            (conclusion.args[0], target_right, target_left),
+            (conclusion.args[1], target_left, target_right),
+        ):
+            trial: dict[str, Expr] = {}
+            matched = match_expr(source_side, target_side, variables, trial)
+            if matched or trial:
+                terms = expr_subterms(other_target_side) + expr_subterms(target_side)
+                terms.sort(key=lambda term: (len(expr_text(term)), expr_text(term)))
+                seed_substs.append((trial, terms))
+        deduped_seeds: list[dict[str, Expr]] = []
+        seen_seed_keys: set[tuple[tuple[str, str], ...]] = set()
+        for seed, terms in seed_substs:
+            for filled_seed in fill_missing_binders_with_terms(binders, seed, terms, limit=64):
+                key = tuple(sorted((name, expr_key(value)) for name, value in filled_seed.items()))
+                if key in seen_seed_keys:
+                    continue
+                seen_seed_keys.add(key)
+                deduped_seeds.append(filled_seed)
+                if len(deduped_seeds) >= 128:
+                    break
+            if len(deduped_seeds) >= 128:
+                break
+        for seed in deduped_seeds:
+            if all(binder in seed for binder in binders):
+                candidates = [seed]
+            else:
+                candidates = infer_rule_binder_candidates_from_known(
+                    steps,
+                    binders,
+                    seed,
+                    known,
+                    limit=8,
+                    require_premise_match=True,
+                )
+            for subst in candidates:
+                parts = rule_application_parts(
+                    rule,
+                    subst,
+                    known,
+                    known_canonical,
+                    rules,
+                    eq_facts,
+                    definitions,
+                    max(0, rule_depth - 1),
+                )
+                if parts is None:
+                    continue
+                source_left = normalize_defined_expr(substitute_expr(conclusion.args[0], subst), definitions)
+                source_right = normalize_defined_expr(substitute_expr(conclusion.args[1], subst), definitions)
+                source_proof = rule_application_text(parts)
+                for left, right, equality_proof in (
+                    (source_left, source_right, source_proof),
+                    (source_right, source_left, eq_symmetry_proof(source_proof, source_left)),
+                ):
+                    left_transport = equality_transport_side_proof(
+                        left,
+                        target_left,
+                        known,
+                        known_canonical,
+                        rules,
+                        eq_facts,
+                        definitions,
+                        max(0, rule_depth - 1),
+                    )
+                    if left_transport is None:
+                        continue
+                    right_transport = equality_transport_side_proof(
+                        right,
+                        target_right,
+                        known,
+                        known_canonical,
+                        rules,
+                        eq_facts,
+                        definitions,
+                        max(0, rule_depth - 1),
+                    )
+                    if right_transport is None:
+                        continue
+                    return eq_transitivity_proof(
+                        [
+                            eq_symmetry_proof(left_transport, left),
+                            equality_proof,
+                            right_transport,
+                        ],
+                        expr_text(target_left),
+                    )
+
+        for subst in infer_rule_binder_candidates_from_known(
+            steps,
+            binders,
+            {},
+            known,
+            limit=128,
+            require_premise_match=True,
+        ):
+            parts = rule_application_parts(
+                rule,
+                subst,
+                known,
+                known_canonical,
+                rules,
+                eq_facts,
+                definitions,
+                max(0, rule_depth - 1),
+            )
+            if parts is None:
+                continue
+            source_left = normalize_defined_expr(substitute_expr(conclusion.args[0], subst), definitions)
+            source_right = normalize_defined_expr(substitute_expr(conclusion.args[1], subst), definitions)
+            source_proof = rule_application_text(parts)
+            for left, right, equality_proof in (
+                (source_left, source_right, source_proof),
+                (source_right, source_left, eq_symmetry_proof(source_proof, source_left)),
+            ):
+                left_transport = equality_transport_side_proof(
+                    left,
+                    target_left,
+                    known,
+                    known_canonical,
+                    rules,
+                    eq_facts,
+                    definitions,
+                    max(0, rule_depth - 1),
+                )
+                if left_transport is None:
+                    continue
+                right_transport = equality_transport_side_proof(
+                    right,
+                    target_right,
+                    known,
+                    known_canonical,
+                    rules,
+                    eq_facts,
+                    definitions,
+                    max(0, rule_depth - 1),
+                )
+                if right_transport is None:
+                    continue
+                return eq_transitivity_proof(
+                    [
+                        eq_symmetry_proof(left_transport, left),
+                        equality_proof,
+                        right_transport,
+                    ],
+                    expr_text(target_left),
+                )
+    return None
+
+
 def rule_application_parts(
     rule: ProofRule,
     subst: dict[str, Expr],
@@ -2350,16 +2636,28 @@ def introduction_proof(
             expr_text(premise),
         )
 
-    proof = proof_for_expr(
-        conclusion,
-        local_known,
-        local_known_canonical,
-        local_rules,
-        local_eq_facts,
-        definitions,
-        allow_rule=True,
-        rule_depth=rule_depth,
-    )
+    proof = None
+    if conclusion.kind == "eq":
+        proof = equality_rule_transport_proof(
+            conclusion,
+            local_known,
+            local_known_canonical,
+            local_rules,
+            local_eq_facts,
+            definitions,
+            rule_depth,
+        )
+    if proof is None:
+        proof = proof_for_expr(
+            conclusion,
+            local_known,
+            local_known_canonical,
+            local_rules,
+            local_eq_facts,
+            definitions,
+            allow_rule=True,
+            rule_depth=rule_depth,
+        )
     if proof is None:
         return None
     return f"({' '.join(['fun'] + args + ['=>', proof])})"
@@ -4041,6 +4339,18 @@ def proof_for_proposition(
     expr = parse_expr(proposition)
     if expr is None:
         return None
+    if expr.kind == "eq":
+        transported_rule_proof = equality_rule_transport_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth=2,
+        )
+        if transported_rule_proof is not None:
+            return transported_rule_proof
     return proof_for_expr(expr, known, known_canonical, rules, eq_facts, definitions)
 
 
