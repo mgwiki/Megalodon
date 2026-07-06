@@ -11401,6 +11401,16 @@ def raw_literal_direct_transform_proof(
 ) -> str | None:
     if expr_same_mod_alpha(source, target):
         return source_proof
+    source_sides = equality_like_sides(source)
+    target_sides = equality_like_sides(target)
+    if (
+        source_sides is not None
+        and target_sides is not None
+        and expr_same_mod_alpha(source_sides[0], target_sides[1])
+        and expr_same_mod_alpha(source_sides[1], target_sides[0])
+    ):
+        sort = "prop" if source.args[0].value == "vampire_eq_prop" else "set"
+        return raw_eq_symmetry_proof(source_proof, source_sides[0], sort)
     factored_forall = raw_factored_forall_literal_transform_proof(source, target, source_proof, rewrites)
     if factored_forall is not None:
         return factored_forall
@@ -12038,6 +12048,47 @@ def raw_instantiated_forall_clause_options(
     return options
 
 
+def raw_prop_false_forall_clause_options(
+    expr: Expr,
+    proof: str,
+    target: Expr,
+    resolver: Expr,
+) -> list[tuple[Expr, str]]:
+    binders, body = collect_foralls(expr)
+    if not binders or len(binders) > 4:
+        return []
+    binder_sorts = {name: sort for name, sort in binders}
+    bare_prop_names = [
+        literal.value
+        for literal in raw_clause_literals(body)
+        if literal.kind == "var"
+        and literal.value is not None
+        and binder_sorts.get(literal.value) == "prop"
+    ]
+    if not bare_prop_names:
+        return []
+    options: list[tuple[Expr, str]] = []
+    for prop_name in bare_prop_names[:2]:
+        fixed_subst = {prop_name: Expr("var", value="vampire_false")}
+        partial_body = substitute_expr(body, fixed_subst)
+        remaining = {name for name, _ in binders if name != prop_name}
+        inferred = raw_infer_forall_clause_substitution(partial_body, target, resolver, remaining) if remaining else {}
+        if inferred is None or not remaining <= inferred.keys():
+            continue
+        subst = {**fixed_subst, **inferred}
+        instantiated = substitute_expr(body, subst)
+        instantiated_proof = proof
+        for name, _ in binders:
+            value = subst.get(name)
+            if value is None:
+                instantiated_proof = ""
+                break
+            instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(value)})"
+        if instantiated_proof and expr_key(instantiated) != expr_key(expr):
+            options.append((instantiated, instantiated_proof))
+    return options
+
+
 def raw_forall_with_renamed_binders(expr: Expr, avoid: set[str]) -> Expr:
     binders, body = collect_foralls(expr)
     if not binders:
@@ -12427,6 +12478,9 @@ def raw_clause_multi_resolution_proof(
         return direct
     source_parts = app_args(source, "vampire_or", 2)
     if source_parts is None:
+        literal_target = raw_literal_to_clause_proof(source, target, source_proof, raw_clause_literals(target), ())
+        if literal_target is not None:
+            return literal_target
         for resolver, resolver_proof in resolvers:
             resolved = raw_resolver_clause_to_target(resolver, target, resolver_proof, source, source_proof, depth + 1)
             if resolved is not None:
@@ -12475,7 +12529,10 @@ def raw_tptp_unit_resulting_resolution_proof(
 
     source_options: list[tuple[Expr, str]] = [(source, source_proof)]
     for _, resolver, _ in resolver_entries[:3]:
-        for option in raw_instantiated_forall_clause_options(source, source_proof, target, resolver):
+        for option in [
+            *raw_instantiated_forall_clause_options(source, source_proof, target, resolver),
+            *raw_prop_false_forall_clause_options(source, source_proof, target, resolver),
+        ]:
             if all(expr_key(option[0]) != expr_key(existing[0]) for existing in source_options):
                 source_options.append(option)
             if len(source_options) >= 4:
