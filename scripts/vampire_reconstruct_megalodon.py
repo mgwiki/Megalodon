@@ -44,12 +44,17 @@ INFERRED_DEPENDENCY_RE = re.compile(r"^[_A-Za-z][_A-Za-z0-9']*$")
 DEFINITION_RE = re.compile(r"^Definition (?P<name>[_A-Za-z][_A-Za-z0-9']*) : (?P<sort>[^:]+?) := (?P<body>.*)\.$")
 THF_TYPE_RE = re.compile(r"^thf\([^,]+,\s*type,\s*\((?P<name>[^:\s]+)\s*:\s*(?P<sort>.*?)\)\)\.", re.DOTALL)
 PROOF_SEARCH_STATE = threading.local()
-PROOF_SEARCH_SECONDS = float(os.environ.get("MEGALODON_PROOF_SEARCH_SECONDS", "8"))
+PROOF_SEARCH_SECONDS = float(os.environ.get("MEGALODON_PROOF_SEARCH_SECONDS", "30"))
 PROOF_SEARCH_CLOCK = getattr(time, "thread_time", time.monotonic)
 
 
 def proof_search_now() -> float:
     return PROOF_SEARCH_CLOCK()
+
+
+def proof_search_timed_out() -> bool:
+    deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+    return deadline is not None and proof_search_now() > deadline
 
 
 @dataclass
@@ -1206,8 +1211,7 @@ def recovered_input_axiom_propositions(proof_text: str, variable_sorts: dict[str
 def add_recovered_input_axioms(lines: list[str], proof_text: str | None) -> list[str]:
     if proof_text is None:
         return list(lines)
-    if any(proposition_after_colon(line, "Axiom ") is not None for line in lines):
-        return list(lines)
+    has_existing_axioms = any(proposition_after_colon(line, "Axiom ") is not None for line in lines)
     variable_sorts: dict[str, str] = {}
     variable_re = re.compile(r"^Variable (?P<name>[_A-Za-z][_A-Za-z0-9']*):(?P<sort>[^.]+)\.$")
     for line in lines:
@@ -1240,6 +1244,14 @@ def add_recovered_input_axioms(lines: list[str], proof_text: str | None) -> list
         for name, proposition in recovered
         if name not in existing_names and proposition not in existing_propositions
     ]
+    if has_existing_axioms:
+        additions = [
+            (name, proposition)
+            for name, proposition in additions
+            if any(token in proposition for token in ("vampire_and ", "vampire_or ", "vampire_exists_", "vampire_eq_"))
+        ]
+    if has_existing_axioms and len(additions) > 3:
+        return list(lines)
     if not additions:
         return list(lines)
     result: list[str] = []
@@ -1706,15 +1718,20 @@ def infer_rule_binder_candidates_from_known(
     require_premise_match: bool = False,
 ) -> list[dict[str, Expr]]:
     variables = set(binders)
-    known_exprs: list[Expr] = []
-    seen_props: set[str] = set()
-    for proposition in known:
-        if proposition in seen_props:
-            continue
-        seen_props.add(proposition)
-        parsed = parse_expr(proposition)
-        if parsed is not None:
-            known_exprs.append(parsed)
+    known_exprs_cache = getattr(PROOF_SEARCH_STATE, "known_exprs_cache", None)
+    if known_exprs_cache is None:
+        known_exprs_cache = {}
+        PROOF_SEARCH_STATE.known_exprs_cache = known_exprs_cache
+    known_key = tuple(sorted(known))
+    known_exprs = known_exprs_cache.get(known_key)
+    if known_exprs is None:
+        parsed_exprs: list[Expr] = []
+        for proposition in known_key:
+            parsed = parse_expr(proposition)
+            if parsed is not None:
+                parsed_exprs.append(parsed)
+        known_exprs = parsed_exprs
+        known_exprs_cache[known_key] = known_exprs
 
     candidates = [dict(subst)]
     for step in steps:
@@ -1837,14 +1854,35 @@ def candidate_terms_from_state(
     exclude_names: set[str] | None = None,
     limit: int = 96,
 ) -> list[Expr]:
+    if proof_search_timed_out():
+        return []
+    seed_tuple = tuple(seed)
+    excluded = frozenset(exclude_names or set())
+    cache = getattr(PROOF_SEARCH_STATE, "candidate_terms_cache", None)
+    if cache is None:
+        cache = {}
+        PROOF_SEARCH_STATE.candidate_terms_cache = cache
+    cache_key = (
+        tuple(sorted(known)),
+        tuple((expr_key(fact.left), expr_key(fact.right)) for fact in eq_facts),
+        tuple(expr_key(expr) for expr in seed_tuple),
+        tuple(sorted(excluded)),
+        limit,
+    )
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return list(cached)
+
     terms: list[Expr] = []
     seen: set[str] = set()
-    excluded = exclude_names or set()
+    excluded_set = set(excluded)
 
     def add(term: Expr, blocked: set[str] | None = None) -> None:
+        if proof_search_timed_out():
+            return
         if len(terms) >= limit:
             return
-        if expr_mentions_any(term, blocked if blocked is not None else excluded):
+        if expr_mentions_any(term, blocked if blocked is not None else excluded_set):
             return
         key = expr_key(term)
         if key in seen:
@@ -1852,25 +1890,32 @@ def candidate_terms_from_state(
         seen.add(key)
         terms.append(term)
 
-    for expr in seed:
+    for expr in seed_tuple:
+        if proof_search_timed_out():
+            break
         for term in expr_argument_subterms(expr, limit=24):
             add(term)
     for proposition in known:
+        if proof_search_timed_out():
+            break
         parsed = parse_expr(proposition)
         if parsed is None:
             continue
         bound_names = {name for name, _ in collect_foralls(parsed)[0]}
-        proposition_excluded = excluded & bound_names
+        proposition_excluded = excluded_set & bound_names
         for term in expr_argument_subterms(parsed, limit=24):
             add(term, proposition_excluded)
         if len(terms) >= limit:
             break
     for fact in eq_facts:
+        if proof_search_timed_out():
+            break
         for term in expr_subterms(fact.left, limit=16):
             add(term)
         for term in expr_subterms(fact.right, limit=16):
             add(term)
     terms.sort(key=lambda term: (0 if term.kind == "var" else 1, len(expr_text(term)), expr_text(term)))
+    cache[cache_key] = tuple(terms)
     return terms
 
 
@@ -2382,7 +2427,28 @@ def add_boolean_extensionality_helpers(lines: list[str]) -> list[str]:
     result: list[str] = []
     inserted = False
     for line in lines:
-        if not inserted and line.startswith("Theorem "):
+        if not inserted and (line.startswith("Axiom ") or line.startswith("Theorem ")):
+            result.extend(helpers)
+            inserted = True
+        result.append(line)
+    if not inserted:
+        result.extend(helpers)
+    return result
+
+
+def add_missing_basic_connective_definitions(lines: list[str]) -> list[str]:
+    text = "\n".join(lines)
+    helpers: list[str] = []
+    if "vampire_or " in text and not any(line.startswith("Definition vampire_or ") for line in lines):
+        helpers.append("Definition vampire_or : prop->prop->prop := fun A B:prop => forall P:prop, (A -> P) -> (B -> P) -> P.")
+    if "vampire_and " in text and not any(line.startswith("Definition vampire_and ") for line in lines):
+        helpers.append("Definition vampire_and : prop->prop->prop := fun A B:prop => forall P:prop, (A -> B -> P) -> P.")
+    if not helpers:
+        return list(lines)
+    result: list[str] = []
+    inserted = False
+    for line in lines:
+        if not inserted and (line.startswith("Axiom ") or line.startswith("Theorem ")):
             result.extend(helpers)
             inserted = True
         result.append(line)
@@ -3310,6 +3376,8 @@ def completed_rule_substs(
     eq_facts: list[EqFact],
     limit: int = 64,
 ) -> list[dict[str, Expr]]:
+    if proof_search_timed_out():
+        return []
     binders = rule_application_binders(rule)
     if all(binder in subst for binder in binders):
         return [dict(subst)]
@@ -3508,13 +3576,19 @@ def equality_rule_chain_proof(
         return found
 
     def edges(node: Expr) -> list[tuple[Expr, str]]:
+        if proof_search_timed_out():
+            return []
         found: list[tuple[Expr, str]] = []
         for fact in eq_facts:
+            if proof_search_timed_out():
+                return found
             if expr_key(normalize_defined_expr(fact.left, definitions)) == expr_key(node):
                 found.append((normalize_defined_expr(fact.right, definitions), fact.proof))
             if expr_key(normalize_defined_expr(fact.right, definitions)) == expr_key(node):
                 found.append((normalize_defined_expr(fact.left, definitions), eq_symmetry_proof(fact.proof, fact.left)))
         for rule in rules:
+            if proof_search_timed_out():
+                return found
             conclusion = rule_application_conclusion(rule)
             if conclusion.kind != "eq":
                 continue
@@ -3548,6 +3622,8 @@ def equality_rule_chain_proof(
     queue: list[tuple[Expr, list[str]]] = [(start, [])]
     seen = {expr_key(start)}
     while queue:
+        if proof_search_timed_out():
+            return None
         node, proofs = queue.pop(0)
         if len(proofs) >= max_depth:
             continue
@@ -6206,6 +6282,155 @@ def if_correct_branch_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
     return None
 
 
+def rule_conjunction_projection_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
+    binders, body = collect_foralls(expr)
+    target_premises, target_conclusion = split_arrows(body)
+    target_binder_names = [name for name, _ in binders]
+
+    def vampire_and_parts(node: Expr) -> tuple[Expr, Expr] | None:
+        if node.kind == "app" and len(node.args) == 3 and expr_key(node.args[0]) == "vampire_and":
+            return node.args[1], node.args[2]
+        return None
+
+    def premise_prefix_matches(prefix: list[Expr]) -> bool:
+        if len(prefix) > len(target_premises):
+            return False
+        return all(expr_key(left) == expr_key(right) for left, right in zip(prefix, target_premises))
+
+    for rule in rules:
+        if len(rule.binders) != len(binders):
+            continue
+        subst = {
+            rule_binder: Expr("var", value=target_binder)
+            for rule_binder, target_binder in zip(rule.binders, target_binder_names)
+        }
+        instantiated_premises = [substitute_expr(premise, subst) for premise in rule.premises]
+        if not premise_prefix_matches(instantiated_premises):
+            continue
+        conjunction = vampire_and_parts(substitute_expr(rule.conclusion, subst))
+        if conjunction is None:
+            continue
+        for component_index, component in enumerate(conjunction):
+            component_premises, component_conclusion = split_arrows(component)
+            if len(instantiated_premises) + len(component_premises) != len(target_premises):
+                continue
+            residual = target_premises[len(instantiated_premises) :]
+            if not all(expr_key(left) == expr_key(right) for left, right in zip(component_premises, residual)):
+                continue
+            if expr_key(component_conclusion) != expr_key(target_conclusion):
+                continue
+            premise_names = [f"H{index}" for index, _ in enumerate(target_premises)]
+            rule_args = [proof_arg_text(subst[name]) for name in rule.binders]
+            rule_args.extend(premise_names[: len(instantiated_premises)])
+            left_name = "HL"
+            right_name = "HR"
+            selected = left_name if component_index == 0 else right_name
+            projection = (
+                f"({rule.name} {' '.join(rule_args)} {proof_arg_text(component)} "
+                f"(fun {left_name} {right_name} => {selected}))"
+            )
+            for premise_name in premise_names[len(instantiated_premises) :]:
+                projection = f"({projection} {premise_name})"
+            args = target_binder_names + premise_names
+            return f"({' '.join(['fun'] + args + ['=>', projection])})"
+    return None
+
+
+def rule_conjunction_implication_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 0:
+        return None
+    binders, body = collect_foralls(expr)
+    target_premises, target_conclusion = split_arrows(body)
+    premise_names = [f"H{index}" for index, _ in enumerate(target_premises)]
+    local_known = dict(known)
+    local_known_canonical = dict(known_canonical)
+    for premise, name in zip(target_premises, premise_names):
+        key = expr_key(premise)
+        local_known[key] = name
+        local_known_canonical[canonical_proposition(key)] = name
+
+    def vampire_and_parts(node: Expr) -> tuple[Expr, Expr] | None:
+        if node.kind == "app" and len(node.args) == 3 and expr_key(node.args[0]) == "vampire_and":
+            return node.args[1], node.args[2]
+        return None
+
+    for rule in rules:
+        conjunction = vampire_and_parts(rule.conclusion)
+        if conjunction is None:
+            continue
+        variables = set(rule.binders)
+        for component_index, component in enumerate(conjunction):
+            component_premises, component_conclusion = split_arrows(component)
+            if not component_premises:
+                continue
+            subst: dict[str, Expr] = {}
+            if not match_expr(component_conclusion, target_conclusion, variables, subst):
+                continue
+            if not all(name in subst for name in rule.binders):
+                continue
+            rule_premise_proofs: list[str] = []
+            ok = True
+            for premise in rule.premises:
+                instantiated = substitute_expr(premise, subst)
+                premise_proof = proof_for_expr(
+                    instantiated,
+                    local_known,
+                    local_known_canonical,
+                    rules,
+                    eq_facts,
+                    definitions,
+                    allow_rule=True,
+                    rule_depth=rule_depth - 1,
+                )
+                if premise_proof is None:
+                    ok = False
+                    break
+                rule_premise_proofs.append(proof_argument_text(premise_proof))
+            if not ok:
+                continue
+            component_premise_proofs: list[str] = []
+            for premise in component_premises:
+                instantiated = substitute_expr(premise, subst)
+                premise_proof = proof_for_expr(
+                    instantiated,
+                    local_known,
+                    local_known_canonical,
+                    rules,
+                    eq_facts,
+                    definitions,
+                    allow_rule=True,
+                    rule_depth=rule_depth - 1,
+                )
+                if premise_proof is None:
+                    ok = False
+                    break
+                component_premise_proofs.append(proof_argument_text(premise_proof))
+            if not ok:
+                continue
+            rule_args = [proof_arg_text(subst[name]) for name in rule.binders] + rule_premise_proofs
+            instantiated_component = substitute_expr(component, subst)
+            left_name = "HL"
+            right_name = "HR"
+            selected = left_name if component_index == 0 else right_name
+            proof = (
+                f"({rule.name} {' '.join(rule_args)} {proof_arg_text(instantiated_component)} "
+                f"(fun {left_name} {right_name} => {selected}))"
+            )
+            for premise_proof in component_premise_proofs:
+                proof = f"({proof} {premise_proof})"
+            proof_args = [name for name, _ in binders] + premise_names
+            return f"({' '.join(['fun'] + proof_args + ['=>', proof])})"
+    return None
+
+
 def find_pair_sigma_rules(rules: list[ProofRule]) -> tuple[str | None, str | None, str | None]:
     proj0_pair = None
     proj1_pair = None
@@ -6427,6 +6652,22 @@ def _proof_for_expr_impl(
     if_branch = if_correct_branch_proof(expr, rules)
     if if_branch is not None:
         return if_branch
+
+    rule_conjunction = rule_conjunction_projection_proof(expr, rules)
+    if rule_conjunction is not None:
+        return rule_conjunction
+
+    rule_conjunction_implication = rule_conjunction_implication_proof(
+        expr,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        rule_depth,
+    )
+    if rule_conjunction_implication is not None:
+        return rule_conjunction_implication
 
     for derived in (
         repl_elimination_proof(expr, rules),
@@ -6959,6 +7200,9 @@ def fill_repeated_claim_admits(lines: list[str]) -> list[str]:
     block_depth = 0
     try:
         while index < len(result):
+            deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+            if deadline is not None and proof_search_now() > deadline:
+                break
             line = result[index]
             if block_depth > 0:
                 if line == "{":
@@ -7296,6 +7540,7 @@ def check_megalodon_lines(
     output_lines = add_recovered_input_equalities(output_lines, proof_text)
     output_lines = add_recovered_input_axioms(output_lines, proof_text)
     output_lines = normalize_vampire_boolean_literals(output_lines)
+    output_lines = add_missing_basic_connective_definitions(output_lines)
     output_lines = add_boolean_extensionality_helpers(output_lines)
     output_lines = fill_source_candidate_claims(output_lines, proof_text)
     output_lines = fill_repeated_claim_admits(output_lines) if fill_repeated_admits else output_lines
