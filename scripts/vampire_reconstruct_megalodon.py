@@ -46,7 +46,7 @@ DEFINITION_RE = re.compile(r"^Definition (?P<name>[_A-Za-z][_A-Za-z0-9']*) : (?P
 THF_TYPE_RE = re.compile(r"^thf\([^,]+,\s*type,\s*\((?P<name>[^:\s]+)\s*:\s*(?P<sort>.*?)\)\)\.", re.DOTALL)
 PROOF_SEARCH_STATE = threading.local()
 PROOF_SEARCH_SECONDS = float(os.environ.get("MEGALODON_PROOF_SEARCH_SECONDS", "45"))
-RAW_TPTP_REPLAY_SECONDS = float(os.environ.get("MEGALODON_RAW_TPTP_REPLAY_SECONDS", "0.30"))
+RAW_TPTP_REPLAY_SECONDS = float(os.environ.get("MEGALODON_RAW_TPTP_REPLAY_SECONDS", "0.35"))
 PROOF_SEARCH_CLOCK = getattr(time, "thread_time", time.monotonic)
 
 
@@ -11795,6 +11795,154 @@ def raw_instantiated_forall_clause_options(
     return options
 
 
+def raw_forall_with_renamed_binders(expr: Expr, avoid: set[str]) -> Expr:
+    binders, body = collect_foralls(expr)
+    if not binders:
+        return expr
+    used = set(avoid) | (expr_variables(body) - {name for name, _ in binders})
+    rename: dict[str, str] = {}
+    renamed_binders: list[tuple[str, str]] = []
+    for index, (name, sort) in enumerate(binders):
+        candidate = name
+        if candidate in used:
+            base = f"Q{index}"
+            suffix = 0
+            candidate = base
+            while candidate in used:
+                suffix += 1
+                candidate = f"{base}_{suffix}"
+        used.add(candidate)
+        renamed_binders.append((candidate, sort))
+        if candidate != name:
+            rename[name] = candidate
+    if rename:
+        body = rename_expr_variables(body, rename)
+    for name, sort in reversed(renamed_binders):
+        body = Expr("forall", value=name, sort=sort, args=(body,))
+    return body
+
+
+def raw_quantified_literal_body_resolution_intro(
+    source_literal: Expr,
+    target_literal: Expr,
+    target_clause: Expr,
+    target_literal_index: int,
+    source_proof: str,
+    resolver_literal: Expr,
+    resolver_proof: str,
+) -> str | None:
+    source_binders, source_body = collect_foralls(source_literal)
+    target_binders, target_body = collect_foralls(target_literal)
+    if not source_binders or len(source_binders) != len(target_binders):
+        return None
+    if any(source_sort != target_sort for (_, source_sort), (_, target_sort) in zip(source_binders, target_binders)):
+        return None
+
+    rename = {
+        source_name: target_name
+        for (source_name, _), (target_name, _) in zip(source_binders, target_binders)
+        if source_name != target_name
+    }
+    if rename:
+        source_body = rename_expr_variables(source_body, rename)
+
+    source_body_proof = source_proof
+    for target_name, _ in target_binders:
+        source_body_proof = f"({proof_head(source_body_proof)} {target_name})"
+
+    avoid = expr_variables(source_body) | expr_variables(target_body) | {name for name, _ in target_binders}
+    renamed_resolver_literal = raw_forall_with_renamed_binders(resolver_literal, avoid)
+    for resolver_clause, resolver_clause_proof in raw_instantiated_forall_clause_options(
+        renamed_resolver_literal,
+        resolver_proof,
+        target_body,
+        source_body,
+    ):
+        if any(len(raw_clause_literals(expr)) > 12 for expr in (source_body, resolver_clause, target_body)):
+            continue
+        if not raw_clauses_have_complement(source_body, resolver_clause):
+            continue
+        if not raw_clause_replay_budget_ok(source_body, resolver_clause, target_body, max_literals=12, max_literal_product=192):
+            continue
+        body_proof = raw_clause_resolution_proof(source_body, target_body, source_body_proof, resolver_clause, resolver_clause_proof)
+        if body_proof is None:
+            body_proof = raw_clause_resolution_proof(resolver_clause, target_body, resolver_clause_proof, source_body, source_body_proof)
+        if body_proof is None:
+            continue
+        target_literal_proof = body_proof
+        for target_name, target_sort in reversed(target_binders):
+            target_literal_proof = f"(fun {target_name}:{target_sort} => {target_literal_proof})"
+        return raw_or_intro_literal_at(target_clause, target_literal_index, target_literal_proof)
+    return None
+
+
+def raw_quantified_source_literal_to_target(
+    source_literal: Expr,
+    target: Expr,
+    source_proof: str,
+    resolver: Expr,
+    resolver_proof: str,
+    depth: int = 0,
+) -> str | None:
+    if depth > 16 or proof_search_timed_out():
+        return None
+    direct = raw_clause_transform_proof(source_literal, target, source_proof, depth + 1)
+    if direct is not None:
+        return direct
+    resolver_direct = raw_clause_transform_proof(resolver, target, resolver_proof, depth + 1)
+    if resolver_direct is not None:
+        return resolver_direct
+
+    resolver_parts = app_args(resolver, "vampire_or", 2)
+    if resolver_parts is not None:
+        left, right = resolver_parts
+        left_name = fresh_identifier("HL", expr_text(source_literal), expr_text(target), resolver_proof, source_proof)
+        right_name = fresh_identifier("HR", expr_text(source_literal), expr_text(target), resolver_proof, source_proof, left_name)
+        left_target = raw_quantified_source_literal_to_target(source_literal, target, source_proof, left, left_name, depth + 1)
+        right_target = raw_quantified_source_literal_to_target(source_literal, target, source_proof, right, right_name, depth + 1)
+        if left_target is None or right_target is None:
+            return None
+        return f"({proof_head(resolver_proof)} {proof_arg_text(target)} (fun {left_name} => {left_target}) (fun {right_name} => {right_target}))"
+
+    target_literals = raw_clause_literals(target)
+    for index, target_literal in enumerate(target_literals):
+        proof = raw_quantified_literal_body_resolution_intro(
+            source_literal,
+            target_literal,
+            target,
+            index,
+            source_proof,
+            resolver,
+            resolver_proof,
+        )
+        if proof is not None:
+            return proof
+    return None
+
+
+def raw_quantified_literal_resolution_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    resolver: Expr,
+    resolver_proof: str,
+    depth: int = 0,
+) -> str | None:
+    if depth > 16 or proof_search_timed_out():
+        return None
+    source_parts = app_args(source, "vampire_or", 2)
+    if source_parts is None:
+        return raw_quantified_source_literal_to_target(source, target, source_proof, resolver, resolver_proof, depth + 1)
+    left, right = source_parts
+    left_name = fresh_identifier("HL", expr_text(source), expr_text(target), source_proof, resolver_proof)
+    right_name = fresh_identifier("HR", expr_text(source), expr_text(target), source_proof, resolver_proof, left_name)
+    left_target = raw_quantified_literal_resolution_proof(left, target, left_name, resolver, resolver_proof, depth + 1)
+    right_target = raw_quantified_literal_resolution_proof(right, target, right_name, resolver, resolver_proof, depth + 1)
+    if left_target is None or right_target is None:
+        return None
+    return f"({proof_head(source_proof)} {proof_arg_text(target)} (fun {left_name} => {left_target}) (fun {right_name} => {right_target}))"
+
+
 def raw_clauses_have_complement(source: Expr, resolver: Expr) -> bool:
     source_literals = raw_clause_literals(source)
     resolver_literals = raw_clause_literals(resolver)
@@ -12183,7 +12331,12 @@ def raw_tptp_superposition_proof(
         if proof is not None:
             return proof
     if len(parents) == 2:
-        proof = raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name)
+        proof = raw_tptp_forward_subsumption_resolution_proof(
+            proposition,
+            parents,
+            propositions_by_name,
+            allow_quantified_literal=False,
+        )
         if proof is not None:
             return proof
         proof = raw_tptp_forward_demodulation_proof(proposition, parents, propositions_by_name, variable_sorts)
@@ -12196,6 +12349,8 @@ def raw_tptp_forward_subsumption_resolution_proof(
     proposition: str,
     parents: list[str],
     propositions_by_name: dict[str, str],
+    *,
+    allow_quantified_literal: bool = True,
 ) -> str | None:
     if len(parents) != 2:
         return None
@@ -12222,6 +12377,14 @@ def raw_tptp_forward_subsumption_resolution_proof(
             if proof is not None:
                 return proof
             proof = raw_clause_resolution_proof(second_clause, target, second_proof, first_clause, first_proof)
+            if proof is not None:
+                return proof
+    if allow_quantified_literal:
+        if raw_clause_replay_budget_ok(first, second, target, max_literals=16, max_literal_product=384):
+            proof = raw_quantified_literal_resolution_proof(first, target, first_name, second, second_name)
+            if proof is not None:
+                return proof
+            proof = raw_quantified_literal_resolution_proof(second, target, second_name, first, first_name)
             if proof is not None:
                 return proof
     return None
