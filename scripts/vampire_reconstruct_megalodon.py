@@ -3568,6 +3568,68 @@ def quantified_atomic_rule_transport_proof(
     return None
 
 
+def quantified_equality_rule_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 0 or len(expr_text(expr)) > 800:
+        return None
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if not binders or len(binders) > 4 or len(premises) > 3 or conclusion.kind != "eq":
+        return None
+
+    local_known = dict(known)
+    local_known_canonical = dict(known_canonical)
+    local_rules = list(rules)
+    local_eq_facts = list(eq_facts)
+    premise_names: list[str] = []
+    for index, premise in enumerate(premises):
+        name = f"H{index}"
+        premise_names.append(name)
+        remember_proposition(
+            local_known,
+            local_known_canonical,
+            local_rules,
+            local_eq_facts,
+            name,
+            expr_text(premise),
+        )
+
+    proof = equality_direct_rule_proof(
+        conclusion,
+        local_known,
+        local_known_canonical,
+        local_rules,
+        local_eq_facts,
+        definitions,
+        rule_depth,
+    )
+    if proof is None:
+        reverse = Expr("eq", args=(conclusion.args[1], conclusion.args[0]))
+        reverse_proof = equality_direct_rule_proof(
+            reverse,
+            local_known,
+            local_known_canonical,
+            local_rules,
+            local_eq_facts,
+            definitions,
+            rule_depth,
+        )
+        if reverse_proof is not None:
+            proof = eq_symmetry_proof(reverse_proof, conclusion.args[1])
+    if proof is None:
+        return None
+    prefix = "".join(f"fun {name}:{sort} => " for name, sort in binders)
+    prefix += "".join(f"fun {name} => " for name in premise_names)
+    return f"({prefix}{proof})"
+
+
 IDENTIFIER_CHARS = "_'0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 FORALL_RE = re.compile(r"forall (?P<name>[_A-Za-z][_A-Za-z0-9']*):(?P<sort>[^,]+), ")
 
@@ -11626,7 +11688,7 @@ def proof_for_proposition(
             rules,
             eq_facts,
             definitions,
-            rule_depth=2,
+            rule_depth=4,
         )
         if direct_rule_proof is not None:
             return direct_rule_proof
@@ -11678,6 +11740,17 @@ def proof_for_proposition(
         )
         if quantified_transport_proof is not None:
             return quantified_transport_proof
+        quantified_equality_proof = quantified_equality_rule_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth=4,
+        )
+        if quantified_equality_proof is not None:
+            return quantified_equality_proof
         introduced_bridge_proof = introduced_unary_equality_bridge_proof(
             expr,
             known,
