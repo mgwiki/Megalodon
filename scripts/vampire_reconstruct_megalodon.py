@@ -3785,6 +3785,128 @@ def quantified_equality_transported_rule_proof(
     return None
 
 
+def no_cycle_successor_injectivity_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
+    if len(expr_text(expr)) > 300:
+        return None
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if len(binders) != 2 or len(premises) != 1 or premises[0].kind != "eq" or conclusion.kind != "eq":
+        return None
+    if any(sort != "set" for _, sort in binders):
+        return None
+    left_var = Expr("var", value=binders[0][0])
+    right_var = Expr("var", value=binders[1][0])
+    premise_left, premise_right = premises[0].args
+    if (
+        premise_left.kind != "app"
+        or premise_right.kind != "app"
+        or len(premise_left.args) != 2
+        or len(premise_right.args) != 2
+        or expr_key(premise_left.args[0]) != expr_key(premise_right.args[0])
+        or expr_key(premise_left.args[1]) != expr_key(left_var)
+        or expr_key(premise_right.args[1]) != expr_key(right_var)
+        or expr_key(conclusion.args[0]) != expr_key(left_var)
+        or expr_key(conclusion.args[1]) != expr_key(right_var)
+    ):
+        return None
+    function_head = premise_left.args[0]
+
+    no_cycle: ProofRule | None = None
+    intro: ProofRule | None = None
+    case_rule: ProofRule | None = None
+    relation_head: Expr | None = None
+
+    for rule in rules:
+        rule_binders = rule_application_binders(rule)
+        rule_conclusion = rule_application_conclusion(rule)
+        if len(rule_binders) == 2 and len(rule.premises) == 2 and expr_key(rule_conclusion) == "vampire_false":
+            first = binary_atom_parts(rule.premises[0])
+            second = binary_atom_parts(rule.premises[1])
+            if (
+                first is not None
+                and second is not None
+                and first[0] == second[0]
+                and expr_key(first[1]) == rule_binders[0]
+                and expr_key(first[2]) == rule_binders[1]
+                and expr_key(second[1]) == rule_binders[1]
+                and expr_key(second[2]) == rule_binders[0]
+            ):
+                no_cycle = rule
+                relation_head = rule.premises[0].args[0]
+        if len(rule_binders) == 1 and not rule.premises:
+            atom = binary_atom_parts(rule_conclusion)
+            if (
+                atom is not None
+                and rule_conclusion.args[2].kind == "app"
+                and len(rule_conclusion.args[2].args) == 2
+                and expr_key(rule_conclusion.args[2].args[0]) == expr_key(function_head)
+                and expr_key(atom[1]) == rule_binders[0]
+                and expr_key(rule_conclusion.args[2].args[1]) == rule_binders[0]
+            ):
+                intro = rule
+                relation_head = rule_conclusion.args[0]
+        if len(rule_binders) == 2 and len(rule.premises) == 1:
+            premise_atom = binary_atom_parts(rule.premises[0])
+            disjuncts = app_args(rule_conclusion, "vampire_or", 2)
+            if premise_atom is None or disjuncts is None:
+                continue
+            if rule.premises[0].args[2].kind != "app" or len(rule.premises[0].args[2].args) != 2:
+                continue
+            if (
+                expr_key(rule.premises[0].args[2].args[0]) == expr_key(function_head)
+                and expr_key(rule.premises[0].args[2].args[1]) == rule_binders[0]
+                and expr_key(premise_atom[1]) == rule_binders[1]
+            ):
+                left_disjunct, right_disjunct = disjuncts
+                relation_disjunct = binary_atom_parts(left_disjunct)
+                equality_sides = equality_like_sides(right_disjunct)
+                if relation_disjunct is None or equality_sides is None:
+                    relation_disjunct = binary_atom_parts(right_disjunct)
+                    equality_sides = equality_like_sides(left_disjunct)
+                if (
+                    relation_disjunct is not None
+                    and equality_sides is not None
+                    and relation_disjunct[0] == premise_atom[0]
+                    and expr_key(relation_disjunct[1]) == rule_binders[1]
+                    and expr_key(relation_disjunct[2]) == rule_binders[0]
+                    and {
+                        expr_key(equality_sides[0]),
+                        expr_key(equality_sides[1]),
+                    }
+                    == {rule_binders[0], rule_binders[1]}
+                ):
+                    case_rule = rule
+                    relation_head = rule.premises[0].args[0]
+
+    if no_cycle is None or intro is None or case_rule is None or relation_head is None:
+        return None
+    target_left = proof_arg_text(left_var)
+    target_right = proof_arg_text(right_var)
+    equality_name = "Heq"
+    first_member = f"({equality_name} (fun zz:set => {expr_text(Expr('app', args=(relation_head, left_var, Expr('var', value='zz'))))}) ({intro.name} {target_left}))"
+    equality_sym = eq_symmetry_proof(equality_name, premise_left)
+    second_member = f"({equality_sym} (fun zz:set => {expr_text(Expr('app', args=(relation_head, right_var, Expr('var', value='zz'))))}) ({intro.name} {target_right}))"
+    left_branch = "Hleft"
+    right_branch = "Hright"
+    nested_left = "Hcycle"
+    nested_right = "Hdirect"
+    false_target = f"(({no_cycle.name} {target_left} {target_right} {left_branch} {nested_left}) ({expr_text(conclusion)}))"
+    nested_case = (
+        f"({case_rule.name} {target_left} {target_right} {second_member}) "
+        f"{proof_arg_text(conclusion)} "
+        f"(fun {nested_left} => {false_target}) "
+        f"(fun {nested_right} => {nested_right})"
+    )
+    outer_right = eq_symmetry_proof(right_branch, right_var)
+    return (
+        f"(fun {binders[0][0]}:set => fun {binders[1][0]}:set => fun {equality_name} => "
+        f"({case_rule.name} {target_right} {target_left} {first_member}) "
+        f"{proof_arg_text(conclusion)} "
+        f"(fun {left_branch} => {nested_case}) "
+        f"(fun {right_branch} => {outer_right}))"
+    )
+
+
 IDENTIFIER_CHARS = "_'0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 FORALL_RE = re.compile(r"forall (?P<name>[_A-Za-z][_A-Za-z0-9']*):(?P<sort>[^,]+), ")
 
@@ -11884,6 +12006,9 @@ def proof_for_proposition(
         boolean_pointwise_proof = boolean_or_nand_pointwise_proof(expr, known)
         if boolean_pointwise_proof is not None:
             return boolean_pointwise_proof
+        no_cycle_injectivity = no_cycle_successor_injectivity_proof(expr, rules)
+        if no_cycle_injectivity is not None:
+            return no_cycle_injectivity
         quantified_transport_proof = quantified_atomic_rule_transport_proof(
             expr,
             known,
