@@ -4923,6 +4923,23 @@ def proof_for_proposition(
             definitions,
             rule_depth=4,
         )
+    if expr.kind == "forall" and len(expr_text(expr)) <= 500:
+        binders, body = collect_foralls(expr)
+        premises, conclusion = split_arrows(body)
+        if (
+            0 < len(binders) <= 2
+            and len(premises) <= 2
+            and conclusion.kind == "app"
+        ):
+            return proof_for_expr(
+                expr,
+                known,
+                known_canonical,
+                rules,
+                eq_facts,
+                definitions,
+                rule_depth=3,
+            )
     return None
 
 
