@@ -4910,7 +4910,20 @@ def proof_for_proposition(
         )
         if transported_rule_proof is not None:
             return transported_rule_proof
-    return proof_for_expr(expr, known, known_canonical, rules, eq_facts, definitions)
+    proof = proof_for_expr(expr, known, known_canonical, rules, eq_facts, definitions)
+    if proof is not None:
+        return proof
+    if expr.kind == "app" and len(expr_text(expr)) <= 500:
+        return proof_for_expr(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth=4,
+        )
+    return None
 
 
 def remember_proposition(
