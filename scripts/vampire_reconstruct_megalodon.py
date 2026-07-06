@@ -1051,10 +1051,40 @@ def tptp_boolean_equality_proposition(
     return proposition if const_value else f"{proposition_arg} -> vampire_false"
 
 
+def tptp_applied_quantifier_proposition(text: str, variable_sorts: dict[str, str]) -> str | None:
+    parts = split_tptp_application(text)
+    if parts is None or len(parts) != 3 or parts[0] not in {"!!", "??"}:
+        return None
+    lambda_expr = parse_tptp_lambda(parts[2])
+    if lambda_expr is None:
+        return None
+    variables, body_text = lambda_expr
+    inner_sorts = dict(variable_sorts)
+    inner_sorts.update(variables)
+    body = tptp_formula_to_megalodon_proposition(body_text, inner_sorts)
+    if body is None:
+        return None
+    for name, sort in reversed(variables):
+        if parts[0] == "!!":
+            body = f"forall {name}:{sort}, {body}"
+        elif sort == "set":
+            body = f"vampire_exists_set (fun {name}:set => {body})"
+        elif sort == "prop":
+            body = f"vampire_exists_prop (fun {name}:prop => {body})"
+        elif sort == "set->prop":
+            body = f"vampire_exists_set_prop (fun {name}:set->prop => {body})"
+        else:
+            return None
+    return body
+
+
 def tptp_formula_to_megalodon_proposition(text: str, variable_sorts: dict[str, str] | None = None) -> str | None:
     if variable_sorts is None:
         variable_sorts = {}
     text = strip_balanced_parens(text)
+    applied_quantifier = tptp_applied_quantifier_proposition(text, variable_sorts)
+    if applied_quantifier is not None:
+        return applied_quantifier
     quantified = parse_tptp_quantifier(text)
     if quantified is not None:
         quantifier, variables, body_text = quantified
