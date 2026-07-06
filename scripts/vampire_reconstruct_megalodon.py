@@ -2276,6 +2276,17 @@ def equality_transport_side_proof(
     proof = equality_multi_congruence_proof(equality, known, known_canonical, rules, eq_facts, definitions, rule_depth)
     if proof is not None:
         return proof
+    proof = equality_rule_demodulation_proof(
+        equality,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        rule_depth,
+    )
+    if proof is not None:
+        return proof
     proof = equality_rule_chain_proof(
         equality,
         known,
@@ -3073,6 +3084,125 @@ def equality_direct_demodulation_proof(
                     return eq_transitivity_proof(next_proofs, expr_text(start))
                 seen.add(next_key)
                 queue.append((normalize_defined_expr(next_node, definitions), next_proofs))
+                if len(seen) > max_nodes:
+                    break
+            if len(seen) > max_nodes:
+                break
+    return None
+
+
+def equality_rule_demodulation_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+    max_steps: int = 4,
+    max_nodes: int = 48,
+) -> str | None:
+    if expr.kind != "eq" or rule_depth <= 0:
+        return None
+    start = normalize_defined_expr(expr.args[0], definitions)
+    target = normalize_defined_expr(expr.args[1], definitions)
+    if expr_key(start) == expr_key(target):
+        return "(fun Q H => H)"
+    if start.kind == "lambda" or target.kind == "lambda":
+        return None
+    target_text = expr_text(target)
+    if len(expr_text(start)) > 3000 or len(target_text) > 3000 or len(rules) > 24:
+        return None
+
+    equality_rules = [
+        rule
+        for rule in rules
+        if rule_application_conclusion(rule).kind == "eq"
+        and len(rule_application_binders(rule)) <= 6
+        and len(rule.premises) <= 8
+    ]
+    if not equality_rules:
+        return None
+
+    def rewrites_for_term(term: Expr) -> list[tuple[Expr, str]]:
+        if term.kind in {"forall", "arrow", "lambda"}:
+            return []
+        found: list[tuple[Expr, str]] = []
+        for rule in equality_rules:
+            conclusion = rule_application_conclusion(rule)
+            variables = set(rule_application_binders(rule))
+            direct_subst: dict[str, Expr] = {}
+            if match_expr_with_alpha_instantiation(conclusion.args[0], term, variables, direct_subst):
+                parts = rule_application_parts(
+                    rule,
+                    direct_subst,
+                    known,
+                    known_canonical,
+                    rules,
+                    eq_facts,
+                    definitions,
+                    max(0, rule_depth - 1),
+                )
+                if parts is not None:
+                    replacement = normalize_defined_expr(substitute_expr(conclusion.args[1], direct_subst), definitions)
+                    if expr_text(replacement) in target_text:
+                        found.append((replacement, rule_application_text(parts)))
+            reverse_subst: dict[str, Expr] = {}
+            if match_expr_with_alpha_instantiation(conclusion.args[1], term, variables, reverse_subst):
+                parts = rule_application_parts(
+                    rule,
+                    reverse_subst,
+                    known,
+                    known_canonical,
+                    rules,
+                    eq_facts,
+                    definitions,
+                    max(0, rule_depth - 1),
+                )
+                if parts is not None:
+                    replacement = normalize_defined_expr(substitute_expr(conclusion.args[0], reverse_subst), definitions)
+                    if expr_text(replacement) in target_text:
+                        proof = rule_application_text(parts)
+                        found.append((replacement, eq_symmetry_proof(proof, replacement)))
+        return found[:8]
+
+    queue: list[tuple[Expr, list[str]]] = [(start, [])]
+    seen = {expr_key(start)}
+    while queue and len(seen) <= max_nodes:
+        node, proofs = queue.pop(0)
+        if len(proofs) >= max_steps:
+            continue
+        subterms = [
+            term for term in expr_argument_subterms(node, limit=80)
+            if expr_key(term) != expr_key(node) and expr_text(term) not in target_text
+        ]
+        subterms.sort(key=lambda term: (-len(expr_text(term)), expr_text(term)))
+        for subterm in subterms[:48]:
+            for replacement, equality_proof in rewrites_for_term(subterm):
+                hole_name = fresh_identifier("zz", expr_text(node), expr_text(subterm), expr_text(replacement))
+                hole = Expr("var", value=hole_name)
+                for next_node, context in single_replacement_contexts(
+                    node,
+                    subterm,
+                    replacement,
+                    hole,
+                    limit=2,
+                ):
+                    next_node = normalize_defined_expr(next_node, definitions)
+                    next_key = expr_key(next_node)
+                    if next_key in seen:
+                        continue
+                    proof = (
+                        f"(fun Q:set->prop => fun H:Q ({expr_text(node)}) => "
+                        f"{proof_head(equality_proof)} (fun {hole_name}:set => Q ({expr_text(context)})) H)"
+                    )
+                    next_proofs = proofs + [proof]
+                    if next_key == expr_key(target):
+                        return eq_transitivity_proof(next_proofs, expr_text(start))
+                    seen.add(next_key)
+                    queue.append((next_node, next_proofs))
+                    if len(seen) > max_nodes:
+                        break
                 if len(seen) > max_nodes:
                     break
             if len(seen) > max_nodes:
@@ -4939,6 +5069,19 @@ def proof_for_expr(
     direct_demodulation_proof = equality_direct_demodulation_proof(expr, eq_facts, definitions)
     if direct_demodulation_proof is not None:
         return direct_demodulation_proof
+
+    if allow_rule:
+        rule_demodulation_proof = equality_rule_demodulation_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth,
+        )
+        if rule_demodulation_proof is not None:
+            return rule_demodulation_proof
 
     transport_proof = atomic_transport_proof(
         expr,
