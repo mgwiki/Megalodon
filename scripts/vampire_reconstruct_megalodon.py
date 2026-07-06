@@ -11450,6 +11450,106 @@ def raw_tptp_one_parent_transform_proof(
     return raw_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
 
 
+def raw_eq_symmetry_proof(proof: str, left: Expr, sort: str) -> str:
+    left_text = expr_text(left)
+    name = fresh_identifier("zz", left_text, sort)
+    return f"({proof_head(proof)} (fun {name}:{sort} => {name} = {left_text}) (fun R Hr => Hr))"
+
+
+def raw_equality_transport_sort(left: Expr, right: Expr, variable_sorts: dict[str, str]) -> str:
+    known_sorts = {
+        **variable_sorts,
+        "vampire_true": "prop",
+        "vampire_false": "prop",
+    }
+    return expr_sort(left, known_sorts) or expr_sort(right, known_sorts) or "set"
+
+
+def raw_equality_rewrite_clause_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality_left: Expr,
+    equality_right: Expr,
+    equality_proof: str,
+    equality_sort: str,
+) -> str | None:
+    for old, new, proof in (
+        (equality_left, equality_right, equality_proof),
+        (equality_right, equality_left, raw_eq_symmetry_proof(equality_proof, equality_left, equality_sort)),
+    ):
+        if expr_text(old) not in expr_text(source):
+            continue
+        replaced, changed = replace_expr(source, old, new)
+        if not changed:
+            continue
+        hole_name = fresh_identifier("zz", expr_text(source), expr_text(target), expr_text(old), expr_text(new))
+        context, context_changed = replace_expr(source, old, Expr("var", value=hole_name))
+        if not context_changed:
+            continue
+        transported = (
+            f"{proof_term_text(proof)} "
+            f"(fun {hole_name}:{equality_sort} => {expr_text(context)}) "
+            f"{proof_term_text(source_proof)}"
+        )
+        if expr_key(replaced) == expr_key(target):
+            return transported
+        if not raw_clause_replay_budget_ok(replaced, target, max_literals=12, max_literal_product=96):
+            continue
+        transformed = raw_clause_transform_proof(replaced, target, transported)
+        if transformed is not None:
+            return transformed
+    return None
+
+
+def raw_tptp_forward_demodulation_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parents) != 2:
+        return None
+    first_proposition = propositions_by_name.get(parents[0])
+    second_proposition = propositions_by_name.get(parents[1])
+    if first_proposition is None or second_proposition is None:
+        return None
+    first = parse_expr(first_proposition)
+    second = parse_expr(second_proposition)
+    target = parse_expr(proposition)
+    if first is None or second is None or target is None:
+        return None
+    first_sides = (first.args[0], first.args[1]) if first.kind == "eq" else None
+    second_sides = (second.args[0], second.args[1]) if second.kind == "eq" else None
+    first_name = raw_tptp_claim_name(parents[0])
+    second_name = raw_tptp_claim_name(parents[1])
+    if second_sides is not None:
+        equality_sort = raw_equality_transport_sort(second_sides[0], second_sides[1], variable_sorts)
+        proof = raw_equality_rewrite_clause_proof(
+            first,
+            target,
+            first_name,
+            second_sides[0],
+            second_sides[1],
+            second_name,
+            equality_sort,
+        )
+        if proof is not None:
+            return proof
+    if first_sides is not None:
+        equality_sort = raw_equality_transport_sort(first_sides[0], first_sides[1], variable_sorts)
+        return raw_equality_rewrite_clause_proof(
+            second,
+            target,
+            second_name,
+            first_sides[0],
+            first_sides[1],
+            first_name,
+            equality_sort,
+        )
+    return None
+
+
 def raw_tptp_forward_subsumption_resolution_proof(
     proposition: str,
     parents: list[str],
@@ -11698,6 +11798,7 @@ def raw_tptp_replay_proof(
     proposition: str,
     parents: list[str],
     propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
 ) -> str | None:
     if rule in {
         "trivial_inequality_removal",
@@ -11725,6 +11826,8 @@ def raw_tptp_replay_proof(
         )
     if rule in {"forward_subsumption_resolution", "unit_resulting_resolution"}:
         return raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name)
+    if rule == "forward_demodulation":
+        return raw_tptp_forward_demodulation_proof(proposition, parents, propositions_by_name, variable_sorts)
     if rule == "equality_resolution":
         return raw_tptp_equality_resolution_proof(proposition, parents, propositions_by_name)
     if rule == "avatar_component_clause":
@@ -11839,7 +11942,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
         PROOF_SEARCH_STATE.deadline = proof_search_now() + RAW_TPTP_REPLAY_SECONDS
         try:
-            replay_proof = raw_tptp_replay_proof(rule, proposition, parents, propositions_by_name)
+            replay_proof = raw_tptp_replay_proof(rule, proposition, parents, propositions_by_name, variable_sorts)
         finally:
             if previous_deadline is None:
                 if hasattr(PROOF_SEARCH_STATE, "deadline"):
