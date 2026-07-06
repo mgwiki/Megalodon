@@ -4647,7 +4647,7 @@ def introduced_atomic_rule_transport_proof(
         or not binders
         or len(binders) > 4
         or len(premises) > 6
-        or not (5 <= len(rules) <= 8)
+        or len(rules) > 256
         or len(expr_text(expr)) > 700
     ):
         return None
@@ -6620,14 +6620,16 @@ def equality_direct_rule_proof(
     for target_left, target_right in target_pairs:
         for rule in reversed(rules):
             conclusion = rule_application_conclusion(rule)
-            if conclusion.kind != "eq":
+            conclusion_sides = equality_like_sides(conclusion)
+            if conclusion_sides is None:
                 continue
+            conclusion_left, conclusion_right = conclusion_sides
             variables = set(rule_application_binders(rule))
 
             direct_subst: dict[str, Expr] = {}
             if (
-                match_expr(conclusion.args[0], target_left, variables, direct_subst)
-                and match_expr(conclusion.args[1], target_right, variables, direct_subst)
+                match_expr(conclusion_left, target_left, variables, direct_subst)
+                and match_expr(conclusion_right, target_right, variables, direct_subst)
             ):
                 parts = rule_application_parts(
                     rule,
@@ -6644,8 +6646,8 @@ def equality_direct_rule_proof(
 
             reverse_subst: dict[str, Expr] = {}
             if (
-                match_expr(conclusion.args[0], target_right, variables, reverse_subst)
-                and match_expr(conclusion.args[1], target_left, variables, reverse_subst)
+                match_expr(conclusion_left, target_right, variables, reverse_subst)
+                and match_expr(conclusion_right, target_left, variables, reverse_subst)
             ):
                 parts = rule_application_parts(
                     rule,
