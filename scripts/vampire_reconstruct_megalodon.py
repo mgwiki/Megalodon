@@ -6263,6 +6263,47 @@ def vampire_exists_body(expr: Expr) -> tuple[str, Expr] | None:
     return predicate.value, predicate.args[0]
 
 
+def vampire_and_intro_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 0:
+        return None
+    parts = vampire_and_parts(expr)
+    if parts is None:
+        return None
+    left_proof = proof_for_expr(
+        parts[0],
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        allow_rule=True,
+        rule_depth=max(0, rule_depth - 1),
+    )
+    if left_proof is None:
+        return None
+    right_proof = proof_for_expr(
+        parts[1],
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        allow_rule=True,
+        rule_depth=max(0, rule_depth - 1),
+    )
+    if right_proof is None:
+        return None
+    return f"(fun P K => K {proof_argument_text(left_proof)} {proof_argument_text(right_proof)})"
+
+
 def vampire_exists_intro_proof(
     expr: Expr,
     known: dict[str, str],
@@ -8166,6 +8207,18 @@ def _proof_for_expr_impl(
     )
     if rule_conjunction_implication is not None:
         return rule_conjunction_implication
+
+    and_intro = vampire_and_intro_proof(
+        expr,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        rule_depth,
+    )
+    if and_intro is not None:
+        return and_intro
 
     exists_intro = vampire_exists_intro_proof(
         expr,
