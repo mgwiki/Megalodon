@@ -11060,7 +11060,9 @@ def raw_false_literal_elimination_proof(branch: Expr, target: Expr, branch_proof
     return f"(({proof_head(branch_proof)} {proof_argument_text(premise_proof)}) {proof_arg_text(target)})"
 
 
-def raw_or_intro_from_branch(target: Expr, branch: Expr, branch_proof: str) -> str | None:
+def raw_or_intro_from_branch(target: Expr, branch: Expr, branch_proof: str, depth: int = 0) -> str | None:
+    if depth > 16:
+        return None
     parts = app_args(target, "vampire_or", 2)
     if parts is None:
         return None
@@ -11069,10 +11071,16 @@ def raw_or_intro_from_branch(target: Expr, branch: Expr, branch_proof: str) -> s
         return f"(fun P Hleft Hright => Hleft {proof_term_text(branch_proof)})"
     if expr_key(branch) == expr_key(right):
         return f"(fun P Hleft Hright => Hright {proof_term_text(branch_proof)})"
-    nested_left = raw_or_intro_from_branch(left, branch, branch_proof)
+    transformed_left = raw_clause_transform_proof(branch, left, branch_proof, depth + 1)
+    if transformed_left is not None:
+        return f"(fun P Hleft Hright => Hleft {proof_term_text(transformed_left)})"
+    transformed_right = raw_clause_transform_proof(branch, right, branch_proof, depth + 1)
+    if transformed_right is not None:
+        return f"(fun P Hleft Hright => Hright {proof_term_text(transformed_right)})"
+    nested_left = raw_or_intro_from_branch(left, branch, branch_proof, depth + 1)
     if nested_left is not None:
         return f"(fun P Hleft Hright => Hleft {proof_term_text(nested_left)})"
-    nested_right = raw_or_intro_from_branch(right, branch, branch_proof)
+    nested_right = raw_or_intro_from_branch(right, branch, branch_proof, depth + 1)
     if nested_right is not None:
         return f"(fun P Hleft Hright => Hright {proof_term_text(nested_right)})"
     return None
@@ -11086,7 +11094,7 @@ def raw_clause_transform_proof(source: Expr, target: Expr, source_proof: str, de
     false_elim = raw_false_literal_elimination_proof(source, target, source_proof)
     if false_elim is not None:
         return false_elim
-    intro = raw_or_intro_from_branch(target, source, source_proof)
+    intro = raw_or_intro_from_branch(target, source, source_proof, depth + 1)
     if intro is not None:
         return intro
 
@@ -11136,7 +11144,7 @@ def raw_tptp_replay_proof(
     parents: list[str],
     propositions_by_name: dict[str, str],
 ) -> str | None:
-    if rule == "trivial_inequality_removal":
+    if rule in {"trivial_inequality_removal", "duplicate_literal_removal"}:
         return raw_tptp_trivial_inequality_removal_proof(proposition, parents, propositions_by_name)
     return None
 
