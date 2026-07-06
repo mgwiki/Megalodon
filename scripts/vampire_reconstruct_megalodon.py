@@ -3319,6 +3319,24 @@ def proof_for_expr(
     if normalized_eq_proof is not None:
         return normalized_eq_proof
 
+    if (
+        expr.kind == "eq"
+        and rule_depth >= 2
+        and len({expr_key(rule_application_conclusion(rule)) for rule in rules}) <= 8
+    ):
+        deep_rule_chain_proof = equality_rule_chain_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            max_depth=5,
+            rule_depth=rule_depth,
+        )
+        if deep_rule_chain_proof is not None:
+            return deep_rule_chain_proof
+
     two_rule_join = equality_two_rule_join_proof(
         expr,
         known,
