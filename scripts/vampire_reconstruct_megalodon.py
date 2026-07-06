@@ -7597,6 +7597,7 @@ def implication_from_false_proof(
     false_expr = parse_expr("vampire_false")
     if false_expr is None:
         return None
+    false_depth = max(0, rule_depth - 1) if false_eliminator_expr(conclusion) else max(2, rule_depth - 1)
     false_proof = proof_for_expr(
         false_expr,
         local_known,
@@ -7605,7 +7606,7 @@ def implication_from_false_proof(
         local_eq_facts,
         definitions,
         allow_rule=allow_rule,
-        rule_depth=max(0, rule_depth - 1),
+        rule_depth=false_depth,
     )
     if false_proof is None:
         return None
