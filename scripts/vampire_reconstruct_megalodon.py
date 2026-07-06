@@ -11234,26 +11234,35 @@ def raw_tptp_avatar_component_clause_proof(
     parent_name = raw_tptp_claim_name(parents[0])
     target_text = proof_arg_text(target)
 
-    if expr_key(target_left) == expr_key(component) and expr_key(target_right) == expr_key(
-        Expr("arrow", args=(split_atom, Expr("var", value="vampire_false")))
-    ):
+    if expr_key(target_right) == expr_key(Expr("arrow", args=(split_atom, Expr("var", value="vampire_false")))):
+        component_proof = raw_clause_transform_proof(component, target_left, "(Hforward Hsplit)")
+        if component_proof is None:
+            return None
         return (
             f"({parent_name} {target_text} "
             f"(fun Hforward Hback => "
             f"(vampire_xm {proof_arg_text(split_atom)} {target_text} "
-            f"(fun Hsplit => {proof_term_text(raw_or_left_intro(target, '(Hforward Hsplit)') or '')}) "
+            f"(fun Hsplit => {proof_term_text(raw_or_left_intro(target, component_proof) or '')}) "
             f"(fun Hnotsplit => {proof_term_text(raw_or_right_intro(target, 'Hnotsplit') or '')}))))"
         )
 
-    if expr_key(target_left) == expr_key(Expr("arrow", args=(component, Expr("var", value="vampire_false")))) and expr_key(
-        target_right
-    ) == expr_key(split_atom):
+    target_left_implication = implication_sides(target_left)
+    if (
+        target_left_implication is not None
+        and false_eliminator_expr(target_left_implication[1])
+        and expr_key(target_right) == expr_key(split_atom)
+    ):
+        target_component, _ = target_left_implication
+        target_to_component = raw_clause_transform_proof(target_component, component, "Htargetcomponent")
+        if target_to_component is None:
+            return None
+        negative_component_proof = f"(fun Htargetcomponent => Hnotcomponent {proof_term_text(target_to_component)})"
         return (
             f"({parent_name} {target_text} "
             f"(fun Hforward Hback => "
             f"(vampire_xm {proof_arg_text(component)} {target_text} "
             f"(fun Hcomponent => {proof_term_text(raw_or_right_intro(target, '(Hback Hcomponent)') or '')}) "
-            f"(fun Hnotcomponent => {proof_term_text(raw_or_left_intro(target, 'Hnotcomponent') or '')}))))"
+            f"(fun Hnotcomponent => {proof_term_text(raw_or_left_intro(target, negative_component_proof) or '')}))))"
         )
     return None
 
