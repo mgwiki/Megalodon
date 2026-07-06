@@ -6191,6 +6191,244 @@ def vampire_exists_body(expr: Expr) -> tuple[str, Expr] | None:
     return predicate.value, predicate.args[0]
 
 
+def vampire_exists_intro_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    exists = vampire_exists_body(expr)
+    if exists is None:
+        return None
+    witness_var, body = exists
+    for proposition, proof in reversed(list(known.items())):
+        known_expr = parse_expr(proposition)
+        if known_expr is None:
+            continue
+        subst: dict[str, Expr] = {}
+        if not match_expr(body, known_expr, {witness_var}, subst):
+            continue
+        witness = subst.get(witness_var)
+        if witness is None:
+            continue
+        return f"(fun Q H => H {proof_arg_text(witness)} {proof_argument_text(proof)})"
+    if rule_depth <= 0:
+        return None
+    candidates = candidate_terms_from_state(
+        known,
+        eq_facts,
+        seed=expr_subterms(body, limit=16),
+        exclude_names={witness_var},
+        limit=64,
+    )
+    contradiction_names = {
+        proof
+        for proposition, proof in known.items()
+        if proposition.endswith("-> vampire_false")
+        or proposition.endswith("-> (forall P:prop, P)")
+    }
+    for witness in candidates:
+        instantiated = substitute_expr(body, {witness_var: witness})
+        if expr_key(instantiated) == expr_key(expr):
+            continue
+        proof = proof_for_expr(
+            instantiated,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            allow_rule=True,
+            rule_depth=rule_depth - 1,
+        )
+        if proof is not None:
+            if any(re.search(rf"\\b{re.escape(name)}\\b", proof) for name in contradiction_names):
+                continue
+            return f"(fun Q H => H {proof_arg_text(witness)} {proof_argument_text(proof)})"
+    return None
+
+
+def empty_equality_contradiction_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if not binders or not premises or not false_eliminator_expr(conclusion):
+        return None
+    empty = Expr("var", value="Empty")
+    contradiction_name = None
+    for proposition, proof in known.items():
+        parsed = parse_expr(proposition)
+        if parsed is None:
+            continue
+        rule_premises, rule_conclusion = split_arrows(parsed)
+        if len(rule_premises) != 1 or not false_eliminator_expr(rule_conclusion):
+            continue
+        exists = vampire_exists_body(rule_premises[0])
+        if exists is None:
+            continue
+        witness_var, exists_body = exists
+        witness = Expr("var", value=witness_var)
+        if atom2(exists_body, "In", witness, empty):
+            contradiction_name = proof
+            break
+    if contradiction_name is None:
+        return None
+
+    args = [name for name, _ in binders]
+    used_names = set(args)
+    used_names.update(known.values())
+    premise_names: list[str] = []
+    for index, _ in enumerate(premises):
+        name = "H" + str(index)
+        while name in used_names:
+            index += 1
+            name = "H" + str(index)
+        used_names.add(name)
+        premise_names.append(name)
+        args.append(name)
+
+    local_known = dict(known)
+    local_known_canonical = dict(known_canonical)
+    local_rules = list(rules)
+    local_eq_facts = list(eq_facts)
+    for name, premise in zip(premise_names, premises):
+        remember_proposition(
+            local_known,
+            local_known_canonical,
+            local_rules,
+            local_eq_facts,
+            name,
+            expr_text(premise),
+        )
+
+    for premise_name, premise in zip(premise_names, premises):
+        sides = equality_like_sides(premise)
+        if sides is None:
+            continue
+        if expr_key(sides[0]) == "Empty":
+            target_set = sides[1]
+            target_eq_empty = eq_symmetry_proof(premise_name, empty)
+        elif expr_key(sides[1]) == "Empty":
+            target_set = sides[0]
+            target_eq_empty = premise_name
+        else:
+            continue
+        for rule in reversed(rules):
+            membership = app_args(rule.conclusion, "In", 2)
+            if membership is None:
+                continue
+            member_pattern, set_pattern = membership
+            subst: dict[str, Expr] = {}
+            if not match_expr(set_pattern, target_set, set(rule.binders), subst):
+                continue
+            if not all(binder in subst for binder in rule.binders):
+                continue
+            parts = rule_application_parts(
+                rule,
+                subst,
+                local_known,
+                local_known_canonical,
+                local_rules,
+                local_eq_facts,
+                definitions,
+                max(0, rule_depth - 1),
+            )
+            if parts is None:
+                continue
+            member = substitute_expr(member_pattern, subst)
+            membership_proof = rule_application_text(parts)
+            transported = (
+                f"{proof_term_text(target_eq_empty)} "
+                f"(fun zz:set => In {proof_arg_text(member)} zz) "
+                f"{proof_argument_text(membership_proof)}"
+            )
+            exists_proof = f"(fun Q H => H {proof_arg_text(member)} ({transported}))"
+            false_proof = f"({contradiction_name} {exists_proof})"
+            return f"({' '.join(['fun'] + args + ['=>', false_proof])})"
+    return None
+
+
+def ordsucc_empty_cases_proof(expr: Expr, known: dict[str, str], rules: list[ProofRule]) -> str | None:
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if len(binders) != 1 or binders[0][1] != "set" or len(premises) != 1:
+        return None
+    target_binders, target_body = collect_foralls(conclusion)
+    target_premises, target_conclusion = split_arrows(target_body)
+    if len(target_binders) != 1 or target_binders[0][1] != "set->prop" or len(target_premises) != 1:
+        return None
+    element_name = binders[0][0]
+    predicate_name = target_binders[0][0]
+    element = Expr("var", value=element_name)
+    predicate = Expr("var", value=predicate_name)
+    empty = Expr("var", value="Empty")
+    ordsucc_empty = Expr("app", args=(Expr("var", value="ordsucc"), empty))
+    if not atom2(premises[0], "In", element, ordsucc_empty):
+        return None
+    if expr_key(target_premises[0]) != expr_key(append_application_args(predicate, [empty])):
+        return None
+    if expr_key(target_conclusion) != expr_key(append_application_args(predicate, [element])):
+        return None
+
+    contradiction_name = None
+    for proposition, proof in known.items():
+        parsed = parse_expr(proposition)
+        if parsed is None:
+            continue
+        rule_premises, rule_conclusion = split_arrows(parsed)
+        if len(rule_premises) != 1 or not false_eliminator_expr(rule_conclusion):
+            continue
+        exists = vampire_exists_body(rule_premises[0])
+        if exists is None:
+            continue
+        witness_var, exists_body = exists
+        if atom2(exists_body, "In", Expr("var", value=witness_var), empty):
+            contradiction_name = proof
+            break
+    if contradiction_name is None:
+        return None
+
+    for rule in rules:
+        if len(rule.binders) != 2 or len(rule.premises) != 1:
+            continue
+        b0 = Expr("var", value=rule.binders[0])
+        b1 = Expr("var", value=rule.binders[1])
+        if not atom2(rule.premises[0], "In", b1, Expr("app", args=(Expr("var", value="ordsucc"), b0))):
+            continue
+        disjuncts = app_args(rule.conclusion, "vampire_or", 2)
+        if disjuncts is None:
+            continue
+        branches: list[str] = []
+        for disjunct in disjuncts:
+            if atom2(disjunct, "In", b1, b0):
+                branches.append(
+                    f"(fun HinEmpty => ({contradiction_name} (fun Q K => K {element_name} HinEmpty) "
+                    f"({predicate_name} {element_name})))"
+                )
+            elif disjunct.kind == "eq" and expr_key(disjunct.args[0]) == expr_key(b0) and expr_key(disjunct.args[1]) == expr_key(b1):
+                branches.append(f"(fun Heq => Heq {predicate_name} H1)")
+            elif disjunct.kind == "eq" and expr_key(disjunct.args[0]) == expr_key(b1) and expr_key(disjunct.args[1]) == expr_key(b0):
+                branches.append(f"(fun Heq => ({eq_symmetry_proof('Heq', element)}) {predicate_name} H1)")
+        if len(branches) != 2:
+            continue
+        return (
+            f"(fun {element_name} H0 {predicate_name} H1 => "
+            f"({rule.name} Empty {element_name} H0 ({predicate_name} {element_name}) "
+            f"{branches[0]} {branches[1]}))"
+        )
+    return None
+
+
 def compatible_repl_equality(left: Expr, right: Expr) -> bool:
     left_sides = equality_like_sides(left)
     right_sides = equality_like_sides(right)
@@ -7598,6 +7836,10 @@ def forall_prop_identity(expr: Expr) -> bool:
     )
 
 
+def false_eliminator_expr(expr: Expr) -> bool:
+    return (expr.kind == "var" and expr.value == "vampire_false") or forall_prop_identity(expr)
+
+
 def contradiction_transport_proof(
     expr: Expr,
     known: dict[str, str],
@@ -7609,14 +7851,12 @@ def contradiction_transport_proof(
 ) -> str | None:
     if rule_depth <= 0:
         return None
-    if expr.kind == "var" or forall_prop_identity(expr):
-        return None
     for proposition, contradiction_name in reversed(list(known.items())):
         parsed = parse_expr(proposition)
         if parsed is None:
             continue
         premises, conclusion = split_arrows(parsed)
-        if len(premises) != 1 or not forall_prop_identity(conclusion):
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
             continue
         premise = premises[0]
         premise_proof = proof_for_expr(
@@ -7731,7 +7971,21 @@ def _proof_for_expr_impl(
     if rule_conjunction_implication is not None:
         return rule_conjunction_implication
 
+    exists_intro = vampire_exists_intro_proof(
+        expr,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        rule_depth,
+    )
+    if exists_intro is not None:
+        return exists_intro
+
     for derived in (
+        empty_equality_contradiction_proof(expr, known, known_canonical, rules, eq_facts, definitions, rule_depth),
+        ordsucc_empty_cases_proof(expr, known, rules),
         repl_intro_from_equivalence_proof(expr, rules),
         repl_exists_from_equivalence_proof(expr, rules),
         repl_predicate_from_exists_proof(expr, rules),
