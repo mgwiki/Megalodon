@@ -693,6 +693,8 @@ def split_sort_arrows(sort: str) -> list[str]:
     if depth != 0:
         return [sort.strip()]
     pieces.append(strip_balanced_parens(text[start:].strip()))
+    if len(pieces) > 1 and "->" in pieces[-1]:
+        return pieces[:-1] + split_sort_arrows(pieces[-1])
     return [piece for piece in pieces if piece]
 
 
@@ -830,12 +832,66 @@ def parse_tptp_lambda(text: str) -> tuple[list[tuple[str, str]], str] | None:
     return variables, rest[1:].strip()
 
 
-def tptp_term_to_expr(text: str) -> Expr | None:
+def application_arg_compatible(expected_sort: str | None, actual_sort: str | None) -> bool:
+    return expected_sort is None or actual_sort is None or expected_sort == actual_sort
+
+
+def grouped_application_arg(
+    expected_sort: str,
+    candidate: Expr,
+    following: list[Expr],
+    variable_sorts: dict[str, str],
+) -> tuple[Expr, int] | None:
+    candidate_sort = expr_sort(candidate, variable_sorts)
+    if candidate_sort is None or candidate_sort == expected_sort:
+        return None
+    pieces = split_sort_arrows(candidate_sort)
+    if len(pieces) < 2:
+        return None
+    max_consumed = min(len(pieces) - 1, len(following))
+    for consumed in range(1, max_consumed + 1):
+        result_sort = sort_after_arguments(candidate_sort, consumed)
+        if result_sort != expected_sort:
+            continue
+        consumed_args = following[:consumed]
+        if all(application_arg_compatible(arg_sort, expr_sort(arg, variable_sorts)) for arg_sort, arg in zip(pieces, consumed_args)):
+            return append_application_args(candidate, consumed_args), consumed
+    return None
+
+
+def append_tptp_application_args(expr: Expr, args: list[Expr], variable_sorts: dict[str, str]) -> Expr:
+    head_sort = expr_sort(expr, variable_sorts)
+    if head_sort is None:
+        return append_application_args(expr, args)
+    expected_sorts = split_sort_arrows(head_sort)[:-1]
+    grouped_args: list[Expr] = []
+    index = 0
+    for expected_sort in expected_sorts:
+        if index >= len(args):
+            break
+        candidate = args[index]
+        grouped = grouped_application_arg(expected_sort, candidate, args[index + 1 :], variable_sorts)
+        if grouped is not None:
+            grouped_arg, consumed = grouped
+            grouped_args.append(grouped_arg)
+            index += consumed + 1
+        else:
+            grouped_args.append(candidate)
+            index += 1
+    grouped_args.extend(args[index:])
+    return append_application_args(expr, grouped_args)
+
+
+def tptp_term_to_expr(text: str, variable_sorts: dict[str, str] | None = None) -> Expr | None:
+    if variable_sorts is None:
+        variable_sorts = {}
     text = strip_balanced_parens(text)
     lambda_expr = parse_tptp_lambda(text)
     if lambda_expr is not None:
         variables, body_text = lambda_expr
-        body = tptp_term_to_expr(body_text)
+        inner_sorts = dict(variable_sorts)
+        inner_sorts.update(variables)
+        body = tptp_term_to_expr(body_text, inner_sorts)
         if body is None:
             return None
         for name, sort in reversed(variables):
@@ -849,12 +905,12 @@ def tptp_term_to_expr(text: str) -> Expr | None:
         if not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", name):
             return None
         return Expr("var", value=name)
-    args = [tptp_term_to_expr(part) for part in parts]
+    args = [tptp_term_to_expr(part, variable_sorts) for part in parts]
     if any(arg is None for arg in args):
         return None
     head = args[0]
     assert head is not None
-    return append_application_args(head, [arg for arg in args[1:] if arg is not None])
+    return append_tptp_application_args(head, [arg for arg in args[1:] if arg is not None], variable_sorts)
 
 
 def sort_argument_sorts(sort: str) -> list[str]:
@@ -1010,57 +1066,45 @@ def tptp_formula_to_megalodon_proposition(text: str, variable_sorts: dict[str, s
 
     inequality = split_top_level_operator(text, "!=")
     if inequality is not None:
-        left_expr = tptp_term_to_expr(inequality[0])
-        right_expr = tptp_term_to_expr(inequality[1])
-        left = tptp_formula_to_megalodon_proposition(inequality[0], variable_sorts)
-        right = tptp_formula_to_megalodon_proposition(inequality[1], variable_sorts)
-        if left is None or right is None:
+        left_expr = tptp_term_to_expr(inequality[0], variable_sorts)
+        right_expr = tptp_term_to_expr(inequality[1], variable_sorts)
+        if left_expr is None or right_expr is None:
             return None
-        if (
-            left_expr is not None
-            and right_expr is not None
-            and expr_sort(left_expr, variable_sorts) == "set"
-            and expr_sort(right_expr, variable_sorts) == "set"
-        ):
-            return f"vampire_eq_set {proof_arg_text(left_expr)} {proof_arg_text(right_expr)} -> vampire_false"
-        if (
-            left_expr is not None
-            and right_expr is not None
-            and expr_sort(left_expr, variable_sorts) == "prop"
-            and expr_sort(right_expr, variable_sorts) == "prop"
-        ):
+        left_sort = expr_sort(left_expr, variable_sorts)
+        right_sort = expr_sort(right_expr, variable_sorts)
+        if left_sort == "prop" or right_sort == "prop":
+            if left_sort not in {None, "prop"} or right_sort not in {None, "prop"}:
+                return None
             return f"vampire_eq_prop {proof_arg_text(left_expr)} {proof_arg_text(right_expr)} -> vampire_false"
-        return f"({proposition_argument_text(left)} = {proposition_argument_text(right)}) -> vampire_false"
+        if is_function_value(left_expr, left_sort) or is_function_value(right_expr, right_sort):
+            return None
+        if left_sort in {None, "set"} and right_sort in {None, "set"}:
+            return f"vampire_eq_set {proof_arg_text(left_expr)} {proof_arg_text(right_expr)} -> vampire_false"
+        return None
 
     equality = split_top_level_equality(text)
     if equality is not None:
-        left_expr = tptp_term_to_expr(equality[0])
-        right_expr = tptp_term_to_expr(equality[1])
-        left = tptp_formula_to_megalodon_proposition(equality[0], variable_sorts)
-        right = tptp_formula_to_megalodon_proposition(equality[1], variable_sorts)
-        if left is None or right is None:
+        left_expr = tptp_term_to_expr(equality[0], variable_sorts)
+        right_expr = tptp_term_to_expr(equality[1], variable_sorts)
+        if left_expr is None or right_expr is None:
             return None
-        if (
-            left_expr is not None
-            and right_expr is not None
-            and expr_sort(left_expr, variable_sorts) == "set"
-            and expr_sort(right_expr, variable_sorts) == "set"
-        ):
-            return f"vampire_eq_set {proof_arg_text(left_expr)} {proof_arg_text(right_expr)}"
-        if (
-            left_expr is not None
-            and right_expr is not None
-            and expr_sort(left_expr, variable_sorts) == "prop"
-            and expr_sort(right_expr, variable_sorts) == "prop"
-        ):
+        left_sort = expr_sort(left_expr, variable_sorts)
+        right_sort = expr_sort(right_expr, variable_sorts)
+        if left_sort == "prop" or right_sort == "prop":
+            if left_sort not in {None, "prop"} or right_sort not in {None, "prop"}:
+                return None
             return f"vampire_eq_prop {proof_arg_text(left_expr)} {proof_arg_text(right_expr)}"
-        return f"{proposition_argument_text(left)} = {proposition_argument_text(right)}"
+        if is_function_value(left_expr, left_sort) or is_function_value(right_expr, right_sort):
+            return None
+        if left_sort in {None, "set"} and right_sort in {None, "set"}:
+            return f"vampire_eq_set {proof_arg_text(left_expr)} {proof_arg_text(right_expr)}"
+        return None
 
     if text == "$true":
         return "vampire_true"
     if text == "$false":
         return "vampire_false"
-    term = tptp_term_to_expr(text)
+    term = tptp_term_to_expr(text, variable_sorts)
     return expr_text(term) if term is not None else None
 
 
@@ -1174,6 +1218,10 @@ def expr_sort(expr: Expr, variable_sorts: dict[str, str]) -> str | None:
             return None
         return sort_after_arguments(head_sort, len(expr.args) - 1)
     return None
+
+
+def is_function_value(expr: Expr, sort: str | None) -> bool:
+    return expr.kind == "lambda" or (sort is not None and "->" in sort)
 
 
 def pointwise_set_equality_proposition(left: Expr, right: Expr, sort: str) -> str | None:
@@ -1543,10 +1591,10 @@ def tptp_function_definition_infos(
             target = decode_tptp_identifier(strip_balanced_parens(target_text))
             if not FRESH_SET_RE.match(target):
                 continue
-            body = tptp_term_to_expr(body_text)
+            definition_sorts = {name: info.sort for name, info in definitions.items()}
+            body = tptp_term_to_expr(body_text, {**variable_sorts, **definition_sorts})
             if body is None:
                 continue
-            definition_sorts = {name: info.sort for name, info in definitions.items()}
             body_sort = expr_sort(body, {**variable_sorts, **definition_sorts})
             target_sort = variable_sorts.get(target) or body_sort
             if target_sort is None:
@@ -11051,8 +11099,26 @@ def infer_missing_raw_tptp_sorts(expr: Expr, variables: dict[str, str], local_so
     if expr.kind == "app" and expr.args:
         head = expr.args[0]
         head_sort = None
+        known_sorts = {
+            **variables,
+            **local_sorts,
+            "vampire_true": "prop",
+            "vampire_false": "prop",
+        }
         if head.kind == "var" and head.value is not None:
-            head_sort = local_sorts.get(head.value) or variables.get(head.value)
+            helper_sorts = {
+                "vampire_eq_set": "set->set->prop",
+                "vampire_eq_prop": "prop->prop->prop",
+                "vampire_or": "prop->prop->prop",
+                "vampire_and": "prop->prop->prop",
+                "vampire_exists_set": "(set->prop)->prop",
+            }
+            head_sort = local_sorts.get(head.value) or variables.get(head.value) or helper_sorts.get(head.value)
+            if head_sort is None and expected in {"set", "prop"} and head.value not in local_sorts:
+                arg_sorts = [expr_sort(arg, known_sorts) for arg in expr.args[1:]]
+                if arg_sorts and all(sort is not None for sort in arg_sorts):
+                    variables[head.value] = join_sort_arrows([*(sort for sort in arg_sorts if sort is not None), expected])
+                    head_sort = variables[head.value]
         if head_sort is not None:
             pieces = split_sort_arrows(head_sort)
             for arg, arg_sort in zip(expr.args[1:], pieces[:-1]):
