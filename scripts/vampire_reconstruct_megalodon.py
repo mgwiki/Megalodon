@@ -1844,10 +1844,11 @@ def contextual_equality_proof(
     subst.update(final_subst)
     instantiated_left = substitute_expr(left, subst)
     instantiated_args = tuple(substitute_expr(arg, subst) for arg in left.args[1:])
-    context = app_context_text(substitute_expr(left.args[0], subst), instantiated_args, candidate_index - 1, "z")
+    hole_name = fresh_identifier("zz", expr_text(instantiated_left), expr_text(right))
+    context = app_context_text(substitute_expr(left.args[0], subst), instantiated_args, candidate_index - 1, hole_name)
     return (
         f"(fun Q:set->prop => fun H:Q ({expr_text(instantiated_left)}) => "
-        f"{proof_term_text(argument_proof)} (fun z:set => Q ({context})) H)"
+        f"{proof_term_text(argument_proof)} (fun {hole_name}:set => Q ({context})) H)"
     )
 
 
@@ -2122,8 +2123,12 @@ def equality_rule_chain_proof(
             for replacement, argument_proof in rewrites:
                 next_args = args.copy()
                 next_args[index] = replacement
-                context = app_context_text(node.args[0], tuple(node.args[1:]), index - 1, "z")
-                proof = f"(fun Q:set->prop => fun H:Q ({expr_text(node)}) => {proof_term_text(argument_proof)} (fun z:set => Q ({context})) H)"
+                hole_name = fresh_identifier("zz", expr_text(node), expr_text(replacement))
+                context = app_context_text(node.args[0], tuple(node.args[1:]), index - 1, hole_name)
+                proof = (
+                    f"(fun Q:set->prop => fun H:Q ({expr_text(node)}) => "
+                    f"{proof_term_text(argument_proof)} (fun {hole_name}:set => Q ({context})) H)"
+                )
                 found.append((Expr("app", args=tuple(next_args)), proof))
         return found
 
@@ -2287,8 +2292,12 @@ def equality_congruence_proof(
     if argument_proof is None:
         return None
 
-    context = app_context_text(left.args[0], left.args[1:], arg_index, "z")
-    return f"(fun Q:set->prop => fun H:Q ({expr_text(left)}) => {proof_term_text(argument_proof)} (fun z:set => Q ({context})) H)"
+    hole_name = fresh_identifier("zz", expr_text(left), expr_text(right))
+    context = app_context_text(left.args[0], left.args[1:], arg_index, hole_name)
+    return (
+        f"(fun Q:set->prop => fun H:Q ({expr_text(left)}) => "
+        f"{proof_term_text(argument_proof)} (fun {hole_name}:set => Q ({context})) H)"
+    )
 
 
 def atomic_transport_context(head: Expr, args: tuple[Expr, ...], hole_index: int, hole_name: str) -> str:
@@ -2363,8 +2372,9 @@ def atomic_transport_proof(
             if equality_proof is None:
                 ok = False
                 break
-            context = atomic_transport_context(target.args[0], tuple(current_args), index, "z")
-            proof = f"{proof_term_text(equality_proof)} (fun z:set => {context}) ({proof})"
+            hole_name = fresh_identifier("zz", expr_text(target), expr_text(source))
+            context = atomic_transport_context(target.args[0], tuple(current_args), index, hole_name)
+            proof = f"{proof_term_text(equality_proof)} (fun {hole_name}:set => {context}) ({proof})"
             current_args[index] = target_arg
         if ok:
             return proof
@@ -2457,8 +2467,9 @@ def atomic_rewrite_proof(
             )
             if source_proof is None:
                 continue
-            context = atomic_transport_context(target.args[0], tuple(source_args), index, "z")
-            return f"{proof_term_text(equality_proof)} (fun z:set => {context}) ({source_proof})"
+            hole_name = fresh_identifier("zz", expr_text(target), expr_text(source))
+            context = atomic_transport_context(target.args[0], tuple(source_args), index, hole_name)
+            return f"{proof_term_text(equality_proof)} (fun {hole_name}:set => {context}) ({source_proof})"
     return None
 
 
@@ -2807,7 +2818,8 @@ def repl_elimination_goal_proof(
         target_at_preimage, changed = replace_expr(expr, image, function_preimage)
         if not changed:
             continue
-        context_expr, context_changed = replace_expr(expr, image, Expr("var", value="z"))
+        hole_name = fresh_identifier("zz", expr_text(expr), expr_text(image), expr_text(function_preimage))
+        context_expr, context_changed = replace_expr(expr, image, Expr("var", value=hole_name))
         if not context_changed:
             continue
 
@@ -2833,7 +2845,7 @@ def repl_elimination_goal_proof(
             f"({eliminator} {proof_arg_text(base)} {proof_arg_text(function)} {proof_arg_text(image)} "
             f"{proof_argument_text(image_proof)} {proof_arg_text(expr)} "
             f"(fun {preimage_name}:set => fun Hw => fun Heq => "
-            f"Heq (fun z:set => {expr_text(context_expr)}) {proof_argument_text(preimage_proof)}))"
+            f"Heq (fun {hole_name}:set => {expr_text(context_expr)}) {proof_argument_text(preimage_proof)}))"
         )
     return None
 
