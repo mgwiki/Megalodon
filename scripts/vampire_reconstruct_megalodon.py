@@ -11428,7 +11428,13 @@ def raw_tptp_replay_proof(
     parents: list[str],
     propositions_by_name: dict[str, str],
 ) -> str | None:
-    if rule in {"trivial_inequality_removal", "duplicate_literal_removal", "avatar_contradiction_clause"}:
+    if rule in {
+        "trivial_inequality_removal",
+        "duplicate_literal_removal",
+        "avatar_contradiction_clause",
+        "sat_conversion",
+        "rat",
+    }:
         return raw_tptp_trivial_inequality_removal_proof(proposition, parents, propositions_by_name)
     if rule == "forward_subsumption_resolution":
         return raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name)
