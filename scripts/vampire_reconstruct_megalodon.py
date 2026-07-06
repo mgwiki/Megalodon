@@ -1636,6 +1636,105 @@ def equality_chain_proof(expr: Expr, eq_facts: list[EqFact], max_depth: int = 3)
     return None
 
 
+@dataclass(frozen=True)
+class OrientedRuleRewrite:
+    rule: ProofRule
+    subst: dict[str, Expr]
+    middle: Expr
+    reverse: bool
+
+
+def oriented_rule_rewrites_from(side: Expr, rule: ProofRule) -> list[OrientedRuleRewrite]:
+    conclusion = rule_application_conclusion(rule)
+    if conclusion.kind != "eq":
+        return []
+    variables = set(rule_application_binders(rule))
+    rewrites: list[OrientedRuleRewrite] = []
+    direct_subst: dict[str, Expr] = {}
+    if match_expr(conclusion.args[0], side, variables, direct_subst):
+        rewrites.append(OrientedRuleRewrite(rule, direct_subst, conclusion.args[1], False))
+    reverse_subst: dict[str, Expr] = {}
+    if match_expr(conclusion.args[1], side, variables, reverse_subst):
+        rewrites.append(OrientedRuleRewrite(rule, reverse_subst, conclusion.args[0], True))
+    return rewrites
+
+
+def merge_substitutions(left: dict[str, Expr], right: dict[str, Expr]) -> dict[str, Expr] | None:
+    merged = dict(left)
+    for name, value in right.items():
+        previous = merged.get(name)
+        if previous is not None and expr_key(previous) != expr_key(value):
+            return None
+        merged[name] = value
+    return merged
+
+
+def oriented_rule_proof(rewrite: OrientedRuleRewrite, subst: dict[str, Expr], proof: str) -> str:
+    if not rewrite.reverse:
+        return proof
+    conclusion = rule_application_conclusion(rewrite.rule)
+    original_left = substitute_expr(conclusion.args[0], subst)
+    return eq_symmetry_proof(proof, original_left)
+
+
+def equality_two_rule_join_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if expr.kind != "eq" or rule_depth <= 0:
+        return None
+    left_rewrites: list[OrientedRuleRewrite] = []
+    right_rewrites: list[OrientedRuleRewrite] = []
+    for rule in rules:
+        left_rewrites.extend(oriented_rule_rewrites_from(expr.args[0], rule))
+        right_rewrites.extend(oriented_rule_rewrites_from(expr.args[1], rule))
+    for left_rewrite in left_rewrites:
+        for right_rewrite in right_rewrites:
+            subst = merge_substitutions(left_rewrite.subst, right_rewrite.subst)
+            if subst is None:
+                continue
+            variables = set(rule_application_binders(left_rewrite.rule)) | set(rule_application_binders(right_rewrite.rule))
+            right_middle = substitute_expr(right_rewrite.middle, subst)
+            if not match_expr(left_rewrite.middle, right_middle, variables, subst):
+                continue
+            left_parts = rule_application_parts(
+                left_rewrite.rule,
+                subst,
+                known,
+                known_canonical,
+                rules,
+                eq_facts,
+                definitions,
+                max(0, rule_depth - 1),
+            )
+            if left_parts is None:
+                continue
+            right_parts = rule_application_parts(
+                right_rewrite.rule,
+                subst,
+                known,
+                known_canonical,
+                rules,
+                eq_facts,
+                definitions,
+                max(0, rule_depth - 1),
+            )
+            if right_parts is None:
+                continue
+            left_proof = oriented_rule_proof(left_rewrite, subst, rule_application_text(left_parts))
+            right_proof = oriented_rule_proof(right_rewrite, subst, rule_application_text(right_parts))
+            return eq_transitivity_proof(
+                [left_proof, eq_symmetry_proof(right_proof, expr.args[1])],
+                expr_text(expr.args[0]),
+            )
+    return None
+
+
 def rule_application_parts(
     rule: ProofRule,
     subst: dict[str, Expr],
@@ -3002,6 +3101,18 @@ def proof_for_expr(
     normalized_eq_proof = equality_chain_proof(normalized, eq_facts)
     if normalized_eq_proof is not None:
         return normalized_eq_proof
+
+    two_rule_join = equality_two_rule_join_proof(
+        expr,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        rule_depth,
+    )
+    if two_rule_join is not None:
+        return two_rule_join
 
     empty_power = empty_power_singleton_proof(expr, rules)
     if empty_power is not None:
