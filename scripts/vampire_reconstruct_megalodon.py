@@ -44,6 +44,9 @@ MEGALODON_STEP_DETAIL_RE = re.compile(
 MEGALODON_STEP_SUBSTITUTIONS_RE = re.compile(
     r'^megalodon_step_substitutions\((?P<id>[0-9]+),\[(?P<formulas>.*)\]\)\.$'
 )
+MEGALODON_STEP_REPLAY_KIND_RE = re.compile(
+    r'^megalodon_step_replay_kind\((?P<id>[0-9]+),"(?P<kind>(?:\\.|[^"\\])*)"\)\.$'
+)
 MEGALODON_FINAL_STEP_RE = re.compile(r"^megalodon_final_step\((?P<id>[0-9]+)\)\.$")
 FRESH_SET_RE = re.compile(r"^sF[0-9]+$")
 VAMPIRE_DEPENDENCY_RE = re.compile(r"^(s[FK]|db)[0-9]+$")
@@ -153,6 +156,7 @@ class MegalodonReplayStep:
     parents: tuple[str, ...]
     proposition: str
     substitutions: tuple[str, ...] = ()
+    replay_kind: str = ""
 
 
 def sha256(path: Path) -> str:
@@ -1642,6 +1646,7 @@ def megalodon_replay_steps(
     variable_sorts = {**proof_text_type_variable_sorts(proof_text), **problem_type_variable_sorts(proof, problem)}
     steps: dict[str, MegalodonReplayStep] = {}
     substitutions: dict[str, tuple[str, ...]] = {}
+    replay_kinds: dict[str, str] = {}
     for raw in proof_text.splitlines():
         line = raw.strip()
         step_match = MEGALODON_STEP_DETAIL_RE.match(line)
@@ -1659,6 +1664,12 @@ def megalodon_replay_steps(
                 rule=json.loads(f'"{step_match.group("rule")}"'),
                 parents=parents,
                 proposition=proposition,
+            )
+            continue
+        replay_kind_match = MEGALODON_STEP_REPLAY_KIND_RE.match(line)
+        if replay_kind_match is not None:
+            replay_kinds[f"S{replay_kind_match.group('id')}"] = json.loads(
+                f'"{replay_kind_match.group("kind")}"'
             )
             continue
         substitution_match = MEGALODON_STEP_SUBSTITUTIONS_RE.match(line)
@@ -1685,6 +1696,17 @@ def megalodon_replay_steps(
                 parents=info.parents,
                 proposition=info.proposition,
                 substitutions=replay_substitutions,
+                replay_kind=replay_kinds.get(step, info.replay_kind),
+            )
+    for step, replay_kind in replay_kinds.items():
+        info = steps.get(step)
+        if info is not None and info.replay_kind != replay_kind:
+            steps[step] = MegalodonReplayStep(
+                rule=info.rule,
+                parents=info.parents,
+                proposition=info.proposition,
+                substitutions=info.substitutions,
+                replay_kind=replay_kind,
             )
     return steps
 
@@ -3075,8 +3097,17 @@ def fill_replay_substitution_claims(
             continue
 
         replay_propositions = {local_id: prop for local_id, prop in zip(local_ids, step.substitutions)}
+        rule_key = step.rule.replace(" ", "_")
+        if step.replay_kind == "normal_form" and rule_key not in {
+            "flattening",
+            "ennf_transformation",
+            "nnf_transformation",
+            "boolean_simplification",
+            "true_and_false_elimination",
+        }:
+            rule_key = "true_and_false_elimination"
         replay_proof = raw_tptp_replay_proof(
-            step.rule.replace(" ", "_"),
+            rule_key,
             claim[1],
             local_ids,
             replay_propositions,
@@ -3085,7 +3116,7 @@ def fill_replay_substitution_claims(
         if replay_proof is None and surface_replay_proposition(step.proposition) != claim[1]:
             intermediate_id = f"{claim[0]}_replay_conclusion"
             replay_proof = raw_tptp_replay_proof(
-                step.rule.replace(" ", "_"),
+                rule_key,
                 step.proposition,
                 local_ids,
                 replay_propositions,
@@ -14841,6 +14872,8 @@ def raw_tptp_replay_proof(
         "nnf_transformation",
         "cnf_transformation",
         "skolemisation",
+        "boolean_simplification",
+        "true_and_false_elimination",
     }:
         proof = raw_tptp_one_parent_transform_proof(
             proposition,
