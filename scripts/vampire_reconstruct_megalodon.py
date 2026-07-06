@@ -1125,7 +1125,7 @@ def tptp_formula_to_megalodon_proposition(text: str, variable_sorts: dict[str, s
                 return None
             return f"vampire_eq_prop {proof_arg_text(left_expr)} {proof_arg_text(right_expr)} -> vampire_false"
         if is_function_value(left_expr, left_sort) or is_function_value(right_expr, right_sort):
-            return None
+            return tptp_function_equality_proposition(left_expr, right_expr, left_sort, right_sort, negated=True)
         if left_sort in {None, "set"} and right_sort in {None, "set"}:
             return f"vampire_eq_set {proof_arg_text(left_expr)} {proof_arg_text(right_expr)} -> vampire_false"
         return None
@@ -1146,7 +1146,7 @@ def tptp_formula_to_megalodon_proposition(text: str, variable_sorts: dict[str, s
                 return None
             return f"vampire_eq_prop {proof_arg_text(left_expr)} {proof_arg_text(right_expr)}"
         if is_function_value(left_expr, left_sort) or is_function_value(right_expr, right_sort):
-            return None
+            return tptp_function_equality_proposition(left_expr, right_expr, left_sort, right_sort, negated=False)
         if left_sort in {None, "set"} and right_sort in {None, "set"}:
             return f"vampire_eq_set {proof_arg_text(left_expr)} {proof_arg_text(right_expr)}"
         return None
@@ -1284,13 +1284,29 @@ def pointwise_set_equality_proposition(left: Expr, right: Expr, sort: str) -> st
     if len(pieces) < 2 or pieces[-1] != "set" or any(piece != "set" for piece in pieces[:-1]):
         return None
     binders = [Expr("var", value=f"X{index}") for index in range(len(pieces) - 1)]
-    left_text = expr_text(append_application_args(left, binders))
-    right_text = expr_text(append_application_args(right, binders))
-    proposition = f"{left_text} = {right_text}"
+    left_app = append_application_args(left, binders)
+    right_app = append_application_args(right, binders)
+    proposition = f"vampire_eq_set {proof_arg_text(left_app)} {proof_arg_text(right_app)}"
     for binder in reversed(binders):
         assert binder.value is not None
         proposition = f"forall {binder.value}:set, {proposition}"
     return proposition
+
+
+def tptp_function_equality_proposition(
+    left: Expr,
+    right: Expr,
+    left_sort: str | None,
+    right_sort: str | None,
+    *,
+    negated: bool,
+) -> str | None:
+    if left_sort is None or right_sort is None or left_sort != right_sort:
+        return None
+    proposition = pointwise_set_equality_proposition(left, right, left_sort)
+    if proposition is None:
+        return None
+    return f"{proposition_argument_text(proposition)} -> vampire_false" if negated else proposition
 
 
 def recovered_input_equalities(proof_text: str, variable_sorts: dict[str, str]) -> list[str]:
