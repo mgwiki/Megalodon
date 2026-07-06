@@ -2423,6 +2423,97 @@ def equality_congruence_proof(
     )
 
 
+def equality_multi_congruence_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if expr.kind != "eq":
+        return None
+    left = normalize_defined_expr(expr.args[0], definitions)
+    right = normalize_defined_expr(expr.args[1], definitions)
+    if left.kind != "app" or right.kind != "app" or len(left.args) != len(right.args) or len(left.args) < 2:
+        return None
+    if expr_key(left.args[0]) != expr_key(right.args[0]):
+        return None
+
+    different = [
+        index
+        for index, (left_arg, right_arg) in enumerate(zip(left.args[1:], right.args[1:]))
+        if expr_key(left_arg) != expr_key(right_arg)
+    ]
+    if len(different) < 2 or len(different) > 4:
+        return None
+
+    current_args = list(left.args[1:])
+    proofs: list[str] = []
+    for arg_index in different:
+        current_arg = current_args[arg_index]
+        target_arg = right.args[arg_index + 1]
+        argument_equality = Expr("eq", args=(current_arg, target_arg))
+        argument_proof = equality_rewrite_join_proof(
+            argument_equality,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            max(0, rule_depth - 1),
+        )
+        if argument_proof is None:
+            argument_proof = proof_for_expr(
+                argument_equality,
+                known,
+                known_canonical,
+                rules,
+                eq_facts,
+                definitions,
+                allow_rule=rule_depth > 0,
+                rule_depth=max(0, rule_depth - 1),
+            )
+        if argument_proof is None:
+            reverse_equality = Expr("eq", args=(target_arg, current_arg))
+            reverse_proof = equality_rewrite_join_proof(
+                reverse_equality,
+                known,
+                known_canonical,
+                rules,
+                eq_facts,
+                definitions,
+                max(0, rule_depth - 1),
+            )
+            if reverse_proof is None:
+                reverse_proof = proof_for_expr(
+                    reverse_equality,
+                    known,
+                    known_canonical,
+                    rules,
+                    eq_facts,
+                    definitions,
+                    allow_rule=rule_depth > 0,
+                    rule_depth=max(0, rule_depth - 1),
+                )
+            if reverse_proof is not None:
+                argument_proof = eq_symmetry_proof(reverse_proof, target_arg)
+        if argument_proof is None:
+            return None
+
+        current = Expr("app", args=(left.args[0],) + tuple(current_args))
+        hole_name = fresh_identifier("zz", expr_text(current), expr_text(right))
+        context = app_context_text(left.args[0], tuple(current_args), arg_index, hole_name)
+        proofs.append(
+            f"(fun Q:set->prop => fun H:Q ({expr_text(current)}) => "
+            f"{proof_term_text(argument_proof)} (fun {hole_name}:set => Q ({context})) H)"
+        )
+        current_args[arg_index] = target_arg
+
+    return eq_transitivity_proof(proofs, expr_text(left))
+
+
 def atomic_transport_context(head: Expr, args: tuple[Expr, ...], hole_index: int, hole_name: str) -> str:
     parts = [expr_text(head)]
     for index, arg in enumerate(args):
@@ -2592,6 +2683,16 @@ def equality_rewrite_join_proof(
             definitions,
             max(0, rule_depth - 1),
         )
+        if left_to_middle is None:
+            left_to_middle = equality_multi_congruence_proof(
+                Expr("eq", args=(left, middle)),
+                known,
+                known_canonical,
+                rules,
+                eq_facts,
+                definitions,
+                max(0, rule_depth - 1),
+            )
         if left_to_middle is None:
             continue
         return eq_transitivity_proof([left_to_middle, middle_to_target], expr_text(left))
@@ -3834,6 +3935,10 @@ def proof_for_expr(
     if congruence_proof is not None:
         return congruence_proof
 
+    multi_congruence_proof = equality_multi_congruence_proof(expr, known, known_canonical, rules, eq_facts, definitions, rule_depth)
+    if multi_congruence_proof is not None:
+        return multi_congruence_proof
+
     transport_proof = atomic_transport_proof(
         expr,
         known,
@@ -4828,7 +4933,7 @@ def check_existing(
             checked_skeletons += item_skeletons
             report_progress()
     else:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
             futures = [
                 executor.submit(
                     check_obligation,
