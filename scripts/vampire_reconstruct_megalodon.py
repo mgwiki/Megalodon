@@ -6304,6 +6304,66 @@ def vampire_and_intro_proof(
     return f"(fun P K => K {proof_argument_text(left_proof)} {proof_argument_text(right_proof)})"
 
 
+def binary_reflexive_relation_transport_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 0 or expr.kind != "app" or len(expr.args) != 3:
+        return None
+    head, left, right = expr.args
+    if expr_key(left) == expr_key(right):
+        return None
+    for rule in rules:
+        conclusion = rule_application_conclusion(rule)
+        binders = rule_application_binders(rule)
+        if (
+            len(binders) != 1
+            or rule.premises
+            or conclusion.kind != "app"
+            or len(conclusion.args) != 3
+            or expr_key(conclusion.args[0]) != expr_key(head)
+            or expr_key(conclusion.args[1]) != binders[0]
+            or expr_key(conclusion.args[2]) != binders[0]
+        ):
+            continue
+        direct_eq = Expr("eq", args=(left, right))
+        direct_eq_proof = proof_for_expr(
+            direct_eq,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            allow_rule=True,
+            rule_depth=max(0, rule_depth - 1),
+        )
+        if direct_eq_proof is not None:
+            reflexive = f"({rule.name} {proof_arg_text(left)})"
+            context = expr_text(Expr("app", args=(head, left, Expr("var", value="zz"))))
+            return f"({proof_term_text(direct_eq_proof)} (fun zz:set => {context}) {reflexive})"
+        reverse_eq = Expr("eq", args=(right, left))
+        reverse_eq_proof = proof_for_expr(
+            reverse_eq,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            allow_rule=True,
+            rule_depth=max(0, rule_depth - 1),
+        )
+        if reverse_eq_proof is not None:
+            reflexive = f"({rule.name} {proof_arg_text(right)})"
+            context = expr_text(Expr("app", args=(head, Expr("var", value="zz"), right)))
+            return f"({proof_term_text(reverse_eq_proof)} (fun zz:set => {context}) {reflexive})"
+    return None
+
+
 def vampire_exists_intro_proof(
     expr: Expr,
     known: dict[str, str],
@@ -8219,6 +8279,18 @@ def _proof_for_expr_impl(
     )
     if and_intro is not None:
         return and_intro
+
+    reflexive_relation_transport = binary_reflexive_relation_transport_proof(
+        expr,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        rule_depth,
+    )
+    if reflexive_relation_transport is not None:
+        return reflexive_relation_transport
 
     exists_intro = vampire_exists_intro_proof(
         expr,
