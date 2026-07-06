@@ -1528,7 +1528,7 @@ def expr_text(expr: Expr, context: str = "top") -> str:
         raise ValueError(f"unknown expression kind {expr.kind}")
     if context in {"app_arg", "eq_side"} and expr.kind in {"app", "eq", "arrow", "forall", "lambda"}:
         return f"({text})"
-    if context == "arrow_left" and expr.kind == "arrow":
+    if context == "arrow_left" and expr.kind in {"arrow", "forall", "lambda"}:
         return f"({text})"
     return text
 
@@ -1544,7 +1544,7 @@ def proof_arg_text(expr: Expr) -> str:
 
 
 def proof_term_text(proof: str) -> str:
-    return proof if proof.startswith("(") and proof.endswith(")") else f"({proof})"
+    return proof if re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", proof) else f"({proof})"
 
 
 def proof_argument_text(proof: str) -> str:
@@ -2616,8 +2616,6 @@ def canonical_proposition(proposition: str) -> str:
 def proof_head(proof: str) -> str:
     if re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", proof):
         return proof
-    if proof.startswith("(") and proof.endswith(")"):
-        return proof
     return f"({proof})"
 
 
@@ -3059,6 +3057,9 @@ def equality_transport_side_proof(
     if expr_key(source) == expr_key(target):
         return f"(fun Q:set->prop => fun H:Q ({expr_text(source)}) => H)"
     equality = Expr("eq", args=(source, target))
+    proof = equality_direct_rule_proof(equality, known, known_canonical, rules, eq_facts, definitions, rule_depth)
+    if proof is not None:
+        return proof
     proof = equality_rewrite_join_proof(equality, known, known_canonical, rules, eq_facts, definitions, rule_depth)
     if proof is not None:
         return proof
@@ -4885,7 +4886,7 @@ def atomic_rule_premise_transport_proof(
     target = normalize_defined_expr(expr, definitions)
     if target.kind != "app" or len(target.args) < 2:
         return None
-    if target.args[0].kind != "var" or target.args[0].value != "In":
+    if target.args[0].kind != "var" or str(target.args[0].value or "").startswith("vampire_"):
         return None
 
     known_atoms: list[Expr] = []
@@ -4932,7 +4933,7 @@ def atomic_rule_premise_transport_proof(
         add_terms(arg, limit=24)
 
     for rule_index, original_rule in enumerate(reversed(rules)):
-        if len(original_rule.premises) > 4:
+        if len(original_rule.premises) > 5:
             continue
         rule = rename_rule_binders(original_rule, f"PT{rule_index}_")
         conclusion = rule_application_conclusion(rule)
@@ -4973,7 +4974,7 @@ def atomic_rule_premise_transport_proof(
                         for index, (source_arg, target_arg) in enumerate(zip(source.args[1:], target.args[1:]))
                         if expr_key(source_arg) != expr_key(target_arg)
                     ]
-                    if len(changed) > 1:
+                    if len(changed) > 2:
                         continue
                     previous_premise_transport = getattr(PROOF_SEARCH_STATE, "in_premise_transport", False)
                     PROOF_SEARCH_STATE.in_premise_transport = True
@@ -4992,28 +4993,29 @@ def atomic_rule_premise_transport_proof(
                         PROOF_SEARCH_STATE.in_premise_transport = previous_premise_transport
                     if parts is None:
                         continue
+                    proof = rule_application_text(parts)
                     if not changed:
-                        return rule_application_text(parts)
-                    index = changed[0]
-                    equality_proof = equality_transport_side_proof(
-                        source.args[index + 1],
-                        target.args[index + 1],
-                        known,
-                        known_canonical,
-                        rules,
-                        eq_facts,
-                        definitions,
-                        rule_depth + 1,
-                    )
-                    if equality_proof is None:
-                        continue
-                    return transport_atomic_argument_proof(
-                        target,
-                        list(source.args[1:]),
-                        rule_application_text(parts),
-                        index,
-                        equality_proof,
-                    )
+                        return proof
+                    current_args = list(source.args[1:])
+                    ok = True
+                    for index in changed:
+                        equality_proof = equality_transport_side_proof(
+                            current_args[index],
+                            target.args[index + 1],
+                            known,
+                            known_canonical,
+                            rules,
+                            eq_facts,
+                            definitions,
+                            rule_depth + 1,
+                        )
+                        if equality_proof is None:
+                            ok = False
+                            break
+                        proof = transport_atomic_argument_proof(target, current_args, proof, index, equality_proof)
+                        current_args[index] = target.args[index + 1]
+                    if ok:
+                        return proof
     return None
 
 
@@ -5563,6 +5565,138 @@ def vampire_or_intro_proof(
     )
     if right_proof is not None:
         return f"(fun P Hleft Hright => Hright {proof_term_text(right_proof)})"
+    return None
+
+
+def implication_intro_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    allow_rule: bool,
+    rule_depth: int,
+) -> str | None:
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if not premises:
+        return None
+    if len(premises) > 2:
+        return None
+    if (
+        conclusion.kind != "app"
+        or len(conclusion.args) != 3
+        or expr_key(conclusion.args[0]) != "vampire_or"
+    ):
+        return None
+    local_known = dict(known)
+    local_known_canonical = dict(known_canonical)
+    premise_names = [f"H{index}" for index, _ in enumerate(premises)]
+    for premise, name in zip(premises, premise_names):
+        key = expr_key(premise)
+        local_known[key] = name
+        local_known_canonical[canonical_proposition(key)] = name
+    conclusion_proof = proof_for_expr(
+        conclusion,
+        local_known,
+        local_known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        allow_rule=allow_rule,
+        rule_depth=rule_depth,
+    )
+    if conclusion_proof is None:
+        return None
+    args = [name for name, _ in binders] + premise_names
+    return f"({' '.join(['fun'] + args + ['=>', conclusion_proof])})"
+
+
+def build_quantified_implication(
+    binders: list[tuple[str, str]],
+    premises: list[Expr],
+    conclusion: Expr,
+) -> Expr:
+    result = conclusion
+    for premise in reversed(premises):
+        result = Expr("arrow", args=(premise, result))
+    for name, sort in reversed(binders):
+        result = Expr("forall", value=name, sort=sort, args=(result,))
+    return result
+
+
+def prop_eliminator_projection_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+) -> str | None:
+    binders, body = collect_foralls(expr)
+    target_premises, target_conclusion = split_arrows(body)
+    if not binders or not target_premises:
+        return None
+    target_binder_names = [name for name, _ in binders]
+    target_premise_names = [f"H{index}" for index, _ in enumerate(target_premises)]
+
+    for rule in rules:
+        if len(rule.binders) > len(binders):
+            continue
+        subst = {
+            rule_binder: Expr("var", value=target_binder)
+            for rule_binder, target_binder in zip(rule.binders, target_binder_names)
+        }
+        instantiated_premises = [substitute_expr(premise, subst) for premise in rule.premises]
+        if len(instantiated_premises) > len(target_premises):
+            continue
+        if not all(expr_key(left) == expr_key(right) for left, right in zip(instantiated_premises, target_premises)):
+            continue
+
+        instantiated_conclusion = substitute_expr(rule.conclusion, subst)
+        elim_binders, elim_body = collect_foralls(instantiated_conclusion)
+        if len(elim_binders) != 1 or elim_binders[0][1] != "prop":
+            continue
+        result_name = elim_binders[0][0]
+        elim_premises, elim_result = split_arrows(elim_body)
+        if (
+            len(elim_premises) != 1
+            or elim_result.kind != "var"
+            or elim_result.value != result_name
+        ):
+            continue
+
+        remaining_binders = binders[len(rule.binders) :]
+        remaining_premises = target_premises[len(instantiated_premises) :]
+        remainder = build_quantified_implication(remaining_binders, remaining_premises, target_conclusion)
+        continuation = substitute_expr(elim_premises[0], {result_name: remainder})
+        continuation_premises, continuation_result = split_arrows(continuation)
+        if expr_key(continuation_result) != expr_key(remainder):
+            continue
+
+        local_known = dict(known)
+        local_known_canonical = dict(known_canonical)
+        continuation_names = [f"K{index}" for index, _ in enumerate(continuation_premises)]
+        for premise, name in zip(continuation_premises, continuation_names):
+            key = expr_key(premise)
+            local_known[key] = name
+            local_known_canonical[canonical_proposition(key)] = name
+        remainder_proof = (
+            local_known.get(expr_key(remainder))
+            or local_known_canonical.get(canonical_proposition(expr_key(remainder)))
+        )
+        if remainder_proof is None:
+            continue
+
+        rule_args = [proof_arg_text(subst[name]) for name in rule.binders]
+        rule_args.extend(target_premise_names[: len(instantiated_premises)])
+        continuation_proof = f"({' '.join(['fun'] + continuation_names + ['=>', remainder_proof])})"
+        application = rule_application_text(
+            [rule.name]
+            + rule_args
+            + [proof_arg_text(remainder), proof_argument_text(continuation_proof)]
+        )
+        args = target_binder_names + target_premise_names
+        return f"({' '.join(['fun'] + args + ['=>', application])})"
     return None
 
 
@@ -6542,6 +6676,34 @@ def rule_conjunction_projection_proof(expr: Expr, rules: list[ProofRule]) -> str
             return False
         return all(expr_key(left) == expr_key(right) for left, right in zip(prefix, target_premises))
 
+    def project_from_conjunction(proof: str, node: Expr, target: Expr, depth: int = 0) -> str | None:
+        if expr_key(node) == expr_key(target):
+            return proof
+        parts = vampire_and_parts(node)
+        if parts is None:
+            return None
+        left_name = f"HL{depth}"
+        right_name = f"HR{depth}"
+        left_projection = project_from_conjunction(left_name, parts[0], target, depth + 1)
+        if left_projection is not None:
+            return (
+                f"({proof} {proof_arg_text(target)} "
+                f"(fun {left_name} {right_name} => {left_projection}))"
+            )
+        right_projection = project_from_conjunction(right_name, parts[1], target, depth + 1)
+        if right_projection is not None:
+            return (
+                f"({proof} {proof_arg_text(target)} "
+                f"(fun {left_name} {right_name} => {right_projection}))"
+            )
+        return None
+
+    def flattened_components(node: Expr) -> list[Expr]:
+        parts = vampire_and_parts(node)
+        if parts is None:
+            return [node]
+        return flattened_components(parts[0]) + flattened_components(parts[1])
+
     for rule in rules:
         if len(rule.binders) != len(binders):
             continue
@@ -6555,7 +6717,8 @@ def rule_conjunction_projection_proof(expr: Expr, rules: list[ProofRule]) -> str
         conjunction = vampire_and_parts(substitute_expr(rule.conclusion, subst))
         if conjunction is None:
             continue
-        for component_index, component in enumerate(conjunction):
+        instantiated_conclusion = substitute_expr(rule.conclusion, subst)
+        for component in flattened_components(instantiated_conclusion):
             component_premises, component_conclusion = split_arrows(component)
             if len(instantiated_premises) + len(component_premises) != len(target_premises):
                 continue
@@ -6567,13 +6730,10 @@ def rule_conjunction_projection_proof(expr: Expr, rules: list[ProofRule]) -> str
             premise_names = [f"H{index}" for index, _ in enumerate(target_premises)]
             rule_args = [proof_arg_text(subst[name]) for name in rule.binders]
             rule_args.extend(premise_names[: len(instantiated_premises)])
-            left_name = "HL"
-            right_name = "HR"
-            selected = left_name if component_index == 0 else right_name
-            projection = (
-                f"({rule.name} {' '.join(rule_args)} {proof_arg_text(component)} "
-                f"(fun {left_name} {right_name} => {selected}))"
-            )
+            rule_proof = rule_application_text([rule.name] + rule_args)
+            projection = project_from_conjunction(rule_proof, instantiated_conclusion, component)
+            if projection is None:
+                continue
             for premise_name in premise_names[len(instantiated_premises) :]:
                 projection = f"({projection} {premise_name})"
             args = target_binder_names + premise_names
@@ -6889,6 +7049,23 @@ def _proof_for_expr_impl(
     direct = direct_proof_expr(expr)
     if direct is not None:
         return direct
+
+    implication_intro = implication_intro_proof(
+        expr,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        allow_rule,
+        rule_depth,
+    )
+    if implication_intro is not None:
+        return implication_intro
+
+    prop_eliminator = prop_eliminator_projection_proof(expr, known, known_canonical, rules)
+    if prop_eliminator is not None:
+        return prop_eliminator
 
     if_union = if_union_successor_proof(expr, known, known_canonical, rules)
     if if_union is not None:
