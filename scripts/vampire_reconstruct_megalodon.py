@@ -492,6 +492,110 @@ def prune_unused_rectify_axiom_admits(lines: list[str], proof_text: str | None) 
     return result
 
 
+def proof_block_after_claim(lines: list[str], claim_index: int) -> tuple[int, str] | None:
+    if claim_index + 1 >= len(lines):
+        return None
+    next_line = lines[claim_index + 1]
+    if next_line.startswith("{ ") and next_line.endswith(" }"):
+        return claim_index + 1, next_line
+    if next_line != "{":
+        return None
+    block: list[str] = []
+    depth = 0
+    for index in range(claim_index + 1, len(lines)):
+        line = lines[index]
+        if line == "{":
+            depth += 1
+        elif line == "}":
+            depth -= 1
+            if depth == 0:
+                block.append(line)
+                return index, "\n".join(block)
+        block.append(line)
+    return None
+
+
+def top_level_claim_blocks(lines: list[str]) -> dict[str, tuple[int, int, str]]:
+    claims: dict[str, tuple[int, int, str]] = {}
+    index = 0
+    block_depth = 0
+    while index < len(lines):
+        line = lines[index]
+        if block_depth > 0:
+            if line == "{":
+                block_depth += 1
+            elif line == "}":
+                block_depth -= 1
+            index += 1
+            continue
+        claim = proposition_after_colon(line, "claim ")
+        if claim is None:
+            index += 1
+            continue
+        block = proof_block_after_claim(lines, index)
+        if block is None:
+            index += 1
+            continue
+        end_index, proof_text = block
+        claims[claim[0]] = (index, end_index, proof_text)
+        index = end_index + 1
+    return claims
+
+
+def prune_unreachable_claims(lines: list[str]) -> list[str]:
+    claims = top_level_claim_blocks(lines)
+    if not claims:
+        return list(lines)
+
+    claim_body_indices = {
+        body_index
+        for start, end, _ in claims.values()
+        for body_index in range(start, end + 1)
+    }
+    final_text = "\n".join(
+        line
+        for line_index, line in enumerate(lines)
+        if line_index not in claim_body_indices
+        and (line.startswith("exact ") or line.startswith("apply "))
+    )
+    needed = {
+        name
+        for name in claims
+        if re.search(rf"\b{re.escape(name)}\b", final_text)
+    }
+    if not needed:
+        return list(lines)
+
+    pending = list(needed)
+    while pending:
+        name = pending.pop()
+        claim = claims.get(name)
+        if claim is None:
+            continue
+        proof_text = claim[2]
+        for dependency in claims:
+            if dependency in needed:
+                continue
+            if re.search(rf"\b{re.escape(dependency)}\b", proof_text):
+                needed.add(dependency)
+                pending.append(dependency)
+
+    result: list[str] = []
+    index = 0
+    while index < len(lines):
+        claim = proposition_after_colon(lines[index], "claim ")
+        if claim is None or claim[0] in needed or claim[0] not in claims:
+            result.append(lines[index])
+            index += 1
+            continue
+
+        _, end, _ = claims[claim[0]]
+        while result and result[-1].startswith("// "):
+            result.pop()
+        index = end + 1
+    return result
+
+
 def proposition_after_colon(line: str, prefix: str) -> tuple[str, str] | None:
     if not line.startswith(prefix):
         return None
@@ -6013,6 +6117,7 @@ def check_megalodon_lines(
     output_lines = fill_source_candidate_claims(output_lines, proof_text)
     output_lines = fill_repeated_claim_admits(output_lines) if fill_repeated_admits else output_lines
     output_lines = prune_unused_rectify_axiom_admits(output_lines, proof_text)
+    output_lines = prune_unreachable_claims(output_lines) if fill_repeated_admits else output_lines
     output_lines = annotate_remaining_admits(output_lines, proof_text)
     output_lines = annotate_source_links(output_lines, proof, proof_text, source)
     if header:
