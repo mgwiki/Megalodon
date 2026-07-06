@@ -803,6 +803,120 @@ def split_top_level_equality(text: str) -> tuple[str, str] | None:
     return None
 
 
+def split_top_level_operator(text: str, operator: str) -> tuple[str, str] | None:
+    text = strip_balanced_parens(text)
+    depth = 0
+    bracket_depth = 0
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth < 0:
+                return None
+        elif char == "[":
+            bracket_depth += 1
+        elif char == "]":
+            bracket_depth -= 1
+            if bracket_depth < 0:
+                return None
+        elif depth == 0 and bracket_depth == 0 and text.startswith(operator, index):
+            return text[:index].strip(), text[index + len(operator) :].strip()
+        index += 1
+    return None
+
+
+def parse_tptp_quantifier(text: str) -> tuple[str, list[tuple[str, str]], str] | None:
+    text = strip_balanced_parens(text)
+    if not (text.startswith("![") or text.startswith("?[")):
+        return None
+    quantifier = text[0]
+    depth = 0
+    end = None
+    for index, char in enumerate(text[1:], start=1):
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+            if depth == 0:
+                end = index
+                break
+    if end is None:
+        return None
+    rest = text[end + 1 :].strip()
+    if not rest.startswith(":"):
+        return None
+    variable_parts = split_top_level_commas(text[2:end])
+    if variable_parts is None:
+        return None
+    variables: list[tuple[str, str]] = []
+    for part in variable_parts:
+        names_text, separator, sort_text = part.partition(":")
+        sort = tptp_sort_to_megalodon(sort_text) if separator else "set"
+        for name in [piece.strip() for piece in names_text.split(",") if piece.strip()]:
+            decoded = decode_tptp_identifier(name)
+            if not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", decoded):
+                return None
+            variables.append((decoded, sort))
+    return quantifier, variables, rest[1:].strip()
+
+
+def tptp_formula_to_megalodon_proposition(text: str, variable_sorts: dict[str, str] | None = None) -> str | None:
+    if variable_sorts is None:
+        variable_sorts = {}
+    text = strip_balanced_parens(text)
+    quantified = parse_tptp_quantifier(text)
+    if quantified is not None:
+        quantifier, variables, body_text = quantified
+        inner_sorts = dict(variable_sorts)
+        inner_sorts.update(variables)
+        body = tptp_formula_to_megalodon_proposition(body_text, inner_sorts)
+        if body is None:
+            return None
+        for name, sort in reversed(variables):
+            if quantifier == "!":
+                body = f"forall {name}:{sort}, {body}"
+            elif sort == "set":
+                body = f"vampire_exists_set (fun {name}:set => {body})"
+            else:
+                return None
+        return body
+
+    implication = split_top_level_operator(text, "=>")
+    if implication is not None:
+        left = tptp_formula_to_megalodon_proposition(implication[0], variable_sorts)
+        right = tptp_formula_to_megalodon_proposition(implication[1], variable_sorts)
+        if left is None or right is None:
+            return None
+        return f"{left} -> {right}"
+
+    equality = split_top_level_equality(text)
+    if equality is not None:
+        left_expr = tptp_term_to_expr(equality[0])
+        right_expr = tptp_term_to_expr(equality[1])
+        left = tptp_formula_to_megalodon_proposition(equality[0], variable_sorts)
+        right = tptp_formula_to_megalodon_proposition(equality[1], variable_sorts)
+        if left is None or right is None:
+            return None
+        if (
+            left_expr is not None
+            and right_expr is not None
+            and expr_sort(left_expr, variable_sorts) == "set"
+            and expr_sort(right_expr, variable_sorts) == "set"
+        ):
+            return f"vampire_eq_set {proof_arg_text(left_expr)} {proof_arg_text(right_expr)}"
+        return f"{left} = {right}"
+
+    if text == "$true":
+        return "vampire_true"
+    if text == "$false":
+        return "vampire_false"
+    term = tptp_term_to_expr(text)
+    return expr_text(term) if term is not None else None
+
+
 def tptp_input_equality(formula: str) -> tuple[Expr, Expr] | None:
     match = re.match(r"\s*tff\([^,]+,\s*axiom,\s*(?P<body>.*)\)\.\s*$", formula, re.DOTALL)
     if match is None:
@@ -937,6 +1051,89 @@ def add_recovered_input_equalities(lines: list[str], proof_text: str | None) -> 
             used_axiom_names.add(name)
             result.append(f"Axiom {name}:{proposition}.")
             axiom_index += 1
+    return result
+
+
+def recovered_input_axiom_propositions(proof_text: str, variable_sorts: dict[str, str]) -> list[tuple[str, str]]:
+    recovered: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for line in proof_text.splitlines():
+        match = MEGALODON_STEP_FORMULA_RE.match(line.strip())
+        if match is None or json.loads(f'"{match.group("rule")}"') != "input":
+            continue
+        formula = json.loads(f'"{match.group("formula")}"')
+        parsed = tptp_decl_parts(formula)
+        if parsed is None:
+            continue
+        _, role, body, _ = parsed
+        if role != "axiom":
+            continue
+        proposition = tptp_formula_to_megalodon_proposition(body, variable_sorts)
+        if proposition is None or proposition in seen:
+            continue
+        seen.add(proposition)
+        recovered.append(("S" + match.group("id"), proposition))
+    return recovered
+
+
+def add_recovered_input_axioms(lines: list[str], proof_text: str | None) -> list[str]:
+    if proof_text is None:
+        return list(lines)
+    if any(proposition_after_colon(line, "Axiom ") is not None for line in lines):
+        return list(lines)
+    variable_sorts: dict[str, str] = {}
+    variable_re = re.compile(r"^Variable (?P<name>[_A-Za-z][_A-Za-z0-9']*):(?P<sort>[^.]+)\.$")
+    for line in lines:
+        match = variable_re.match(line)
+        if match:
+            variable_sorts[match.group("name")] = match.group("sort").strip()
+    recovered = recovered_input_axiom_propositions(proof_text, variable_sorts)
+    if not recovered:
+        return list(lines)
+    existing_names = {
+        axiom[0]
+        for line in lines
+        for axiom in [proposition_after_colon(line, "Axiom ")]
+        if axiom is not None
+    }
+    existing_propositions = {
+        axiom[1]
+        for line in lines
+        for axiom in [proposition_after_colon(line, "Axiom ")]
+        if axiom is not None
+    }
+    existing_propositions.update(
+        claim[1]
+        for line in lines
+        for claim in [proposition_after_colon(line, "claim ")]
+        if claim is not None
+    )
+    additions = [
+        (name, proposition)
+        for name, proposition in recovered
+        if name not in existing_names and proposition not in existing_propositions
+    ]
+    if not additions:
+        return list(lines)
+    result: list[str] = []
+    inserted = False
+    needs_set_equality = any("vampire_eq_set " in proposition for _, proposition in additions)
+    has_set_equality = any(line.startswith("Definition vampire_eq_set ") for line in lines)
+    for line in lines:
+        if not inserted and line.startswith("Theorem "):
+            if needs_set_equality and not has_set_equality:
+                result.append(
+                    "Definition vampire_eq_set : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y."
+                )
+            for name, proposition in additions:
+                result.append(f"Axiom {name}:{proposition}.")
+            inserted = True
+        result.append(line)
+    if not inserted:
+        if needs_set_equality and not has_set_equality:
+            result.append("Definition vampire_eq_set : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y.")
+        for name, proposition in additions:
+            result.append(f"Axiom {name}:{proposition}.")
     return result
 
 
@@ -1253,6 +1450,19 @@ def alpha_equivalent(left: Expr, right: Expr) -> bool:
     return canonical_expr_text(left, {}, [0]) == canonical_expr_text(right, {}, [0])
 
 
+def equality_like_sides(expr: Expr) -> tuple[Expr, Expr] | None:
+    if expr.kind == "eq":
+        return expr.args[0], expr.args[1]
+    if (
+        expr.kind == "app"
+        and len(expr.args) == 3
+        and expr.args[0].kind == "var"
+        and expr.args[0].value in {"vampire_eq_set", "vampire_eq_prop"}
+    ):
+        return expr.args[1], expr.args[2]
+    return None
+
+
 def match_expr_with_alpha_instantiation(
     pattern: Expr,
     target: Expr,
@@ -1317,6 +1527,39 @@ def infer_rule_binders_from_known(
         if all(binder in candidate for binder in binders):
             return candidate
     return None
+
+
+def infer_rule_binders_from_reflexive_premises(
+    steps: tuple[RuleStep, ...],
+    binders: tuple[str, ...],
+    subst: dict[str, Expr],
+    limit: int = 16,
+) -> list[dict[str, Expr]]:
+    candidates = [dict(subst)]
+    for step in steps:
+        if step.kind != "premise" or step.expr is None or equality_like_sides(step.expr) is None:
+            continue
+        next_candidates = list(candidates)
+        for candidate in candidates:
+            missing = {binder for binder in binders if binder not in candidate}
+            if not missing:
+                continue
+            premise = substitute_expr(step.expr, candidate)
+            sides = equality_like_sides(premise)
+            if sides is None:
+                continue
+            for left, right in (sides, (sides[1], sides[0])):
+                trial = dict(candidate)
+                if match_expr(left, right, missing, trial):
+                    key = tuple(sorted((name, expr_key(value)) for name, value in trial.items()))
+                    if all(tuple(sorted((name, expr_key(value)) for name, value in existing.items())) != key for existing in next_candidates):
+                        next_candidates.append(trial)
+                        if len(next_candidates) >= limit:
+                            break
+            if len(next_candidates) >= limit:
+                break
+        candidates = next_candidates[:limit]
+    return [candidate for candidate in candidates if all(binder in candidate for binder in binders)]
 
 
 def infer_rule_binder_candidates_from_known(
@@ -2853,8 +3096,9 @@ def rule_application_parts(
         steps = tuple(RuleStep("binder", name=binder) for binder in application_binders) + tuple(
             RuleStep("premise", expr=premise) for premise in rule.premises
         )
-    inferred_subst = infer_rule_binders_from_known(steps, application_binders, subst, known)
     candidate_substs: list[dict[str, Expr]] = []
+    candidate_substs.extend(infer_rule_binders_from_reflexive_premises(steps, application_binders, subst, limit=32))
+    inferred_subst = infer_rule_binders_from_known(steps, application_binders, subst, known)
     if inferred_subst is not None:
         candidate_substs.append(inferred_subst)
     missing = [binder for binder in application_binders if binder not in subst]
@@ -2897,6 +3141,8 @@ def rule_application_parts(
                 allow_rule=rule_depth > 0,
                 rule_depth=max(0, rule_depth - 1),
             )
+            if premise_proof is None:
+                premise_proof = direct_proof_expr(premise)
             if premise_proof is None and premise.kind == "forall" and rule_depth > 0:
                 premise_proof = proof_for_expr(
                     premise,
@@ -2932,6 +3178,10 @@ def completed_rule_substs(
     binders = rule_application_binders(rule)
     if all(binder in subst for binder in binders):
         return [dict(subst)]
+
+    reflexive_candidates = infer_rule_binders_from_reflexive_premises(rule.steps, binders, subst, limit=limit)
+    if reflexive_candidates:
+        return reflexive_candidates[:limit]
 
     candidates = infer_rule_binder_candidates_from_known(
         rule.steps,
@@ -4677,6 +4927,10 @@ def direct_proof_expr(expr: Expr) -> str | None:
     binders, body = collect_foralls(expr)
     premises, conclusion = split_arrows(body)
     binder_names = [name for name, _ in binders]
+    equality_sides = equality_like_sides(conclusion)
+    if not premises and equality_sides is not None and expr_key(equality_sides[0]) == expr_key(equality_sides[1]):
+        args = binder_names + ["Q", "H"]
+        return f"({' '.join(['fun'] + args + ['=>', 'H'])})"
 
     def branch_continuation_parts(branch: Expr, element: Expr, result_name: str) -> tuple[str, Expr, str, Expr, Expr, bool] | None:
         branch_binders, branch_body = collect_foralls(branch)
@@ -6091,7 +6345,8 @@ def _proof_for_expr_impl(
     if rule_chain_proof is not None:
         return rule_chain_proof
 
-    for rule in reversed(rules):
+    for rule_index, original_rule in enumerate(reversed(rules)):
+        rule = rename_rule_binders(original_rule, f"FR{rule_index}_")
         subst: dict[str, Expr] = {}
         if not match_expr_with_alpha_instantiation(
             rule_application_conclusion(rule),
@@ -6679,6 +6934,7 @@ def check_megalodon_lines(
     lines = add_problem_type_variables(lines, proof, proof_text)
     output_lines = add_function_definition_skeletons(lines, proof_text)
     output_lines = add_recovered_input_equalities(output_lines, proof_text)
+    output_lines = add_recovered_input_axioms(output_lines, proof_text)
     output_lines = add_boolean_extensionality_helpers(output_lines)
     output_lines = fill_source_candidate_claims(output_lines, proof_text)
     output_lines = fill_repeated_claim_admits(output_lines) if fill_repeated_admits else output_lines
