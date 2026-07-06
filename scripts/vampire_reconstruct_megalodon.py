@@ -3028,9 +3028,6 @@ def proof_for_proposition(
     eq_facts: list[EqFact],
     definitions: dict[str, DefinitionInfo],
 ) -> str | None:
-    deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
-    if deadline is not None and time.monotonic() > deadline:
-        return None
     proof = known.get(proposition) or known_canonical.get(canonical_proposition(proposition))
     if proof is not None:
         return proof
@@ -3043,6 +3040,9 @@ def proof_for_proposition(
             premise_proof = known.get(premise) or known_canonical.get(canonical_proposition(premise))
             if premise_proof is not None:
                 return f"({implication_proof} {premise_proof})"
+    deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+    if deadline is not None and time.monotonic() > deadline:
+        return None
     expr = parse_expr(proposition)
     if expr is None:
         return None
