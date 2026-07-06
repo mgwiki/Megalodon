@@ -38,6 +38,12 @@ MEGALODON_STEP_RE = re.compile(r'^megalodon_step\((?P<id>[0-9]+),"(?P<rule>(?:\\
 MEGALODON_STEP_FORMULA_RE = re.compile(
     r'^megalodon_step\((?P<id>[0-9]+),"(?P<rule>(?:\\.|[^"\\])*)","[^"]*",\[[^]]*\],(?:true|false),[0-9]+,"(?P<formula>(?:\\.|[^"\\])*)"\)\.$'
 )
+MEGALODON_STEP_DETAIL_RE = re.compile(
+    r'^megalodon_step\((?P<id>[0-9]+),"(?P<rule>(?:\\.|[^"\\])*)","[^"]*",\[(?P<parents>[0-9,]*)\],(?:true|false),[0-9]+,"(?P<formula>(?:\\.|[^"\\])*)"\)\.$'
+)
+MEGALODON_STEP_SUBSTITUTIONS_RE = re.compile(
+    r'^megalodon_step_substitutions\((?P<id>[0-9]+),\[(?P<formulas>.*)\]\)\.$'
+)
 MEGALODON_FINAL_STEP_RE = re.compile(r"^megalodon_final_step\((?P<id>[0-9]+)\)\.$")
 FRESH_SET_RE = re.compile(r"^sF[0-9]+$")
 VAMPIRE_DEPENDENCY_RE = re.compile(r"^(s[FK]|db)[0-9]+$")
@@ -139,6 +145,14 @@ class DefinitionInfo:
     proof: str
     binders: tuple[str, ...]
     body: Expr
+
+
+@dataclass(frozen=True)
+class MegalodonReplayStep:
+    rule: str
+    parents: tuple[str, ...]
+    proposition: str
+    substitutions: tuple[str, ...] = ()
 
 
 def sha256(path: Path) -> str:
@@ -1568,6 +1582,87 @@ def problem_path_for_proof(proof: Path) -> Path | None:
     return None
 
 
+def problem_type_variable_sorts(proof: Path | None) -> dict[str, str]:
+    if proof is None:
+        return {}
+    problem = problem_path_for_proof(proof)
+    if problem is None:
+        return {}
+    variables: dict[str, str] = {}
+    for line in problem.read_text(encoding="utf-8", errors="replace").splitlines():
+        match = THF_TYPE_RE.match(line.split("%", 1)[0].strip())
+        if match is None:
+            continue
+        name = decode_tptp_identifier(match.group("name"))
+        if re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", name):
+            variables[name] = tptp_sort_to_megalodon(match.group("sort"))
+    return variables
+
+
+def megalodon_step_proposition(formula: str, variable_sorts: dict[str, str]) -> str | None:
+    parsed = tptp_decl_formula_parts(formula)
+    if parsed is None:
+        return None
+    _, role, body, _ = parsed
+    if role == "type":
+        return None
+    proposition = tptp_formula_to_megalodon_proposition(body, variable_sorts)
+    return surface_replay_proposition(proposition) if proposition is not None else None
+
+
+def megalodon_replay_steps(proof_text: str | None, proof: Path | None) -> dict[str, MegalodonReplayStep]:
+    if proof_text is None:
+        return {}
+    variable_sorts = problem_type_variable_sorts(proof)
+    steps: dict[str, MegalodonReplayStep] = {}
+    substitutions: dict[str, tuple[str, ...]] = {}
+    for raw in proof_text.splitlines():
+        line = raw.strip()
+        step_match = MEGALODON_STEP_DETAIL_RE.match(line)
+        if step_match is not None:
+            formula = json.loads(f'"{step_match.group("formula")}"')
+            proposition = megalodon_step_proposition(formula, variable_sorts)
+            if proposition is None:
+                continue
+            parents = tuple(
+                f"S{parent}"
+                for parent in step_match.group("parents").split(",")
+                if parent
+            )
+            steps[f"S{step_match.group('id')}"] = MegalodonReplayStep(
+                rule=json.loads(f'"{step_match.group("rule")}"'),
+                parents=parents,
+                proposition=proposition,
+            )
+            continue
+        substitution_match = MEGALODON_STEP_SUBSTITUTIONS_RE.match(line)
+        if substitution_match is None:
+            continue
+        try:
+            formulas = json.loads(f'[{substitution_match.group("formulas")}]')
+        except json.JSONDecodeError:
+            continue
+        propositions = []
+        for formula in formulas:
+            proposition = megalodon_step_proposition(formula, variable_sorts)
+            if proposition is None:
+                propositions = []
+                break
+            propositions.append(proposition)
+        if propositions:
+            substitutions[f"S{substitution_match.group('id')}"] = tuple(propositions)
+    for step, replay_substitutions in substitutions.items():
+        info = steps.get(step)
+        if info is not None:
+            steps[step] = MegalodonReplayStep(
+                rule=info.rule,
+                parents=info.parents,
+                proposition=info.proposition,
+                substitutions=replay_substitutions,
+            )
+    return steps
+
+
 def problem_predicate_eliminator_axioms(problem: Path, lines: list[str]) -> list[tuple[str, str]]:
     joined = "\n".join(lines)
     if "Repl " not in joined:
@@ -2762,6 +2857,106 @@ def fill_source_candidate_claims(lines: list[str], proof_text: str | None) -> li
             index += 2
             continue
         index += 1
+    return result
+
+
+def surface_replay_expr(expr: Expr) -> Expr:
+    set_equality = app_args(expr, "vampire_eq_set", 2)
+    if set_equality is not None:
+        return Expr("eq", args=(surface_replay_expr(set_equality[0]), surface_replay_expr(set_equality[1])))
+    if expr.kind in {"app", "arrow", "eq"}:
+        return Expr(expr.kind, value=expr.value, args=tuple(surface_replay_expr(arg) for arg in expr.args), sort=expr.sort)
+    if expr.kind in {"forall", "lambda"}:
+        return Expr(expr.kind, value=expr.value, args=tuple(surface_replay_expr(arg) for arg in expr.args), sort=expr.sort)
+    return expr
+
+
+def surface_replay_proposition(proposition: str) -> str:
+    parsed = parse_expr(proposition)
+    return expr_text(surface_replay_expr(parsed)) if parsed is not None else proposition
+
+
+def fill_replay_substitution_claims(lines: list[str], proof: Path | None, proof_text: str | None) -> list[str]:
+    replay_steps = megalodon_replay_steps(proof_text, proof)
+    if not replay_steps:
+        return list(lines)
+    variable_sorts = problem_type_variable_sorts(proof)
+    known_propositions: dict[str, str] = {}
+    for line in lines:
+        for prefix in ("claim ", "Axiom "):
+            item = proposition_after_colon(line, prefix)
+            if item is not None:
+                known_propositions[item[0]] = item[1]
+
+    result: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        result.append(line)
+        claim = proposition_after_colon(line, "claim ")
+        if claim is None or index + 1 >= len(lines) or lines[index + 1] != "{ admit. }":
+            index += 1
+            continue
+        step = replay_steps.get(claim[0])
+        if step is None or not step.substitutions or len(step.parents) != len(step.substitutions):
+            index += 1
+            continue
+
+        local_ids: list[str] = []
+        block: list[str] = ["{"]
+        all_parent_proofs = True
+        for parent_index, (parent, substituted) in enumerate(zip(step.parents, step.substitutions)):
+            parent_proposition = known_propositions.get(parent)
+            if parent_proposition is None:
+                all_parent_proofs = False
+                break
+            parent_proof = raw_parent_transform_proof(parent_proposition, substituted, parent)
+            if parent_proof is None:
+                all_parent_proofs = False
+                break
+            local_id = f"{claim[0]}_replay{parent_index}"
+            local_claim = raw_tptp_claim_name(local_id)
+            local_ids.append(local_id)
+            block.append(f" claim {local_claim}: {substituted}.")
+            block.append(f" {{ exact {proof_argument_text(parent_proof)}. }}")
+        if not all_parent_proofs:
+            index += 1
+            continue
+
+        replay_propositions = {local_id: prop for local_id, prop in zip(local_ids, step.substitutions)}
+        replay_proof = raw_tptp_replay_proof(
+            step.rule.replace(" ", "_"),
+            claim[1],
+            local_ids,
+            replay_propositions,
+            variable_sorts,
+        )
+        if replay_proof is None and surface_replay_proposition(step.proposition) != claim[1]:
+            intermediate_id = f"{claim[0]}_replay_conclusion"
+            replay_proof = raw_tptp_replay_proof(
+                step.rule.replace(" ", "_"),
+                step.proposition,
+                local_ids,
+                replay_propositions,
+                variable_sorts,
+            )
+            if replay_proof is not None:
+                intermediate_claim = raw_tptp_claim_name(intermediate_id)
+                bridge = raw_parent_transform_proof(step.proposition, claim[1], intermediate_claim)
+                if bridge is not None:
+                    block.append(f" claim {intermediate_claim}: {step.proposition}.")
+                    block.append(f" {{ exact {proof_argument_text(replay_proof)}. }}")
+                    replay_proof = bridge
+                else:
+                    replay_proof = None
+        if replay_proof is None:
+            index += 1
+            continue
+        block.append(f" exact {proof_argument_text(replay_proof)}.")
+        block.append("}")
+        result.extend(block)
+        known_propositions[claim[0]] = claim[1]
+        index += 2
     return result
 
 
@@ -10443,6 +10638,9 @@ def check_megalodon_lines(
     output_lines = add_missing_basic_connective_definitions(output_lines)
     output_lines = add_boolean_extensionality_helpers(output_lines)
     output_lines = parenthesize_atomic_axiom_propositions(output_lines)
+    output_lines = fill_replay_substitution_claims(output_lines, proof, proof_text)
+    output_lines = add_missing_basic_connective_definitions(output_lines)
+    output_lines = add_boolean_extensionality_helpers(output_lines)
     output_lines = fill_source_candidate_claims(output_lines, proof_text)
     output_lines = fill_repeated_claim_admits(output_lines) if fill_repeated_admits else output_lines
     output_lines = prune_unused_rectify_axiom_admits(output_lines, proof_text)
@@ -13240,11 +13438,19 @@ def raw_tptp_fast_parent_transform_proof(
     parent_proposition = propositions_by_name.get(parent)
     if parent_proposition is None:
         return None
+    parent_proof = raw_tptp_claim_name(parent)
+    return raw_parent_transform_proof(parent_proposition, proposition, parent_proof)
+
+
+def raw_parent_transform_proof(
+    parent_proposition: str,
+    proposition: str,
+    parent_proof: str,
+) -> str | None:
     source = parse_expr(parent_proposition)
     target = parse_expr(proposition)
     if source is None or target is None:
         return None
-    parent_proof = raw_tptp_claim_name(parent)
     if expr_same_mod_alpha(source, target):
         return parent_proof
     simple = raw_simple_clause_transform_proof(source, target, parent_proof)
