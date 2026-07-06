@@ -901,6 +901,10 @@ def tptp_term_to_expr(text: str, variable_sorts: dict[str, str] | None = None) -
     if parts is None:
         return None
     if len(parts) == 1:
+        if parts[0] == "$true":
+            return Expr("var", value="vampire_true")
+        if parts[0] == "$false":
+            return Expr("var", value="vampire_false")
         name = decode_tptp_identifier(parts[0])
         if not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", name):
             return None
