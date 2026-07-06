@@ -11396,6 +11396,15 @@ def raw_literal_direct_transform_proof(
 ) -> str | None:
     if expr_same_mod_alpha(source, target):
         return source_proof
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
+        assert source.value is not None and target.value is not None and source.sort is not None
+        source_body = source.args[0]
+        if source.value != target.value:
+            source_body = rename_expr_variables(source_body, {source.value: target.value})
+        inner_source_proof = f"({proof_head(source_proof)} {target.value})"
+        inner = raw_clause_subsumption_transform_proof(source_body, target.args[0], inner_source_proof, rewrites)
+        if inner is not None:
+            return f"(fun {target.value}:{target.sort} => {inner})"
     rewrite_proof = raw_split_rewrite_proof(source, target, source_proof, rewrites)
     if rewrite_proof is not None:
         return rewrite_proof
