@@ -6281,7 +6281,7 @@ def vampire_and_parts(expr: Expr) -> tuple[Expr, Expr] | None:
 
 def known_vampire_and_projection_proof(expr: Expr, known: dict[str, str]) -> str | None:
     seen_proofs: set[str] = set()
-    for proposition, proof in reversed(list(known.items())):
+    for proposition, proof in list(known.items()):
         if proof in seen_proofs:
             continue
         seen_proofs.add(proof)
@@ -6291,6 +6291,72 @@ def known_vampire_and_projection_proof(expr: Expr, known: dict[str, str]) -> str
         projection = vampire_and_projection_from_proof(proof, parsed, expr)
         if projection is not None:
             return projection
+    return None
+
+
+def known_vampire_and_component_application_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 0 or len(expr_text(expr)) > 600:
+        return None
+    if vampire_and_parts(expr) is not None:
+        return None
+
+    def flattened_components(node: Expr) -> list[Expr]:
+        parts = vampire_and_parts(node)
+        if parts is None:
+            return [node]
+        return flattened_components(parts[0]) + flattened_components(parts[1])
+
+    seen_proofs: set[str] = set()
+    for proposition, proof in list(known.items()):
+        if proof in seen_proofs:
+            continue
+        seen_proofs.add(proof)
+        parsed = parse_expr(proposition)
+        if parsed is None or vampire_and_parts(parsed) is None:
+            continue
+        for component in flattened_components(parsed):
+            binders, body = collect_foralls(component)
+            premises, conclusion = split_arrows(body)
+            if len(binders) > 4 or len(premises) > 4:
+                continue
+            variables = {name for name, _ in binders}
+            subst: dict[str, Expr] = {}
+            if not match_expr(conclusion, expr, variables, subst):
+                continue
+            if not all(name in subst for name, _ in binders):
+                continue
+            component_proof = vampire_and_projection_from_proof(proof, parsed, component)
+            if component_proof is None:
+                continue
+            application_parts = [component_proof]
+            for name, _ in binders:
+                application_parts.append(proof_arg_text(subst[name]))
+            local_ok = True
+            for premise in premises:
+                premise_proof = proof_for_expr(
+                    substitute_expr(premise, subst),
+                    known,
+                    known_canonical,
+                    rules,
+                    eq_facts,
+                    definitions,
+                    allow_rule=True,
+                    rule_depth=max(0, rule_depth - 1),
+                )
+                if premise_proof is None:
+                    local_ok = False
+                    break
+                application_parts.append(proof_argument_text(premise_proof))
+            if local_ok:
+                return rule_application_text(application_parts)
     return None
 
 
@@ -8694,6 +8760,18 @@ def _proof_for_expr_impl(
         )
         if introduced_binary_closure is not None:
             return introduced_binary_closure
+
+        known_conjunction_component = known_vampire_and_component_application_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth,
+        )
+        if known_conjunction_component is not None:
+            return known_conjunction_component
 
     implication_false = implication_from_false_proof(
         expr,
