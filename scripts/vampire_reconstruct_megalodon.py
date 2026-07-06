@@ -12918,6 +12918,16 @@ def raw_tptp_rat_proof(
     if len(parent_exprs) < 2:
         return None
     for _, source, source_proof in parent_exprs[:1]:
+        if 2 < len(parent_exprs) <= 16 and len(raw_clause_literals(source)) <= 24:
+            resolvers = [
+                (resolver, resolver_proof)
+                for _, resolver, resolver_proof in parent_exprs[1:]
+                if len(raw_clause_literals(resolver)) <= 12
+            ]
+            if len(resolvers) == len(parent_exprs) - 1:
+                proof = raw_clause_multi_resolution_proof(source, target, source_proof, resolvers)
+                if proof is not None:
+                    return proof
         for _, resolver, resolver_proof in parent_exprs[1:]:
             if not raw_clause_replay_budget_ok(source, resolver, target, max_literals=16, max_literal_product=512):
                 continue
