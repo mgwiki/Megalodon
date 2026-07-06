@@ -12599,6 +12599,17 @@ def raw_equality_rewrite_clause_proof(
     )
     if quantified is not None:
         return quantified
+    quantified_branch = raw_clause_quantified_equality_rewrite_proof(
+        source,
+        target,
+        source_proof,
+        equality_left,
+        equality_right,
+        equality_proof,
+        equality_sort,
+    )
+    if quantified_branch is not None:
+        return quantified_branch
     for replaced, transported in raw_equality_rewrite_clause_steps(
         source,
         source_proof,
@@ -12687,6 +12698,130 @@ def raw_quantified_equality_rewrite_clause_proof(
                 body_proof = f"(fun {name}:{sort} => {body_proof})"
             return body_proof
     return None
+
+
+def raw_quantified_equality_literal_clause_proof(
+    source_literal: Expr,
+    target: Expr,
+    target_literals: list[Expr],
+    source_literal_proof: str,
+    equality_left: Expr,
+    equality_right: Expr,
+    equality_proof: str,
+    equality_sort: str,
+) -> str | None:
+    source_binders, source_body = collect_foralls(source_literal)
+    if not source_binders or len(source_binders) > 5:
+        return None
+    if len(raw_clause_literals(source_body)) > 12 or len(target_literals) > 16:
+        return None
+    binder_names = {name for name, _ in source_binders}
+    resolver = Expr("app", args=(Expr("var", value="vampire_eq_set"), equality_left, equality_right))
+    substitutions: list[dict[str, Expr]] = []
+    seen_substitutions: set[tuple[tuple[str, str], ...]] = set()
+
+    def add_substitution(subst: dict[str, Expr]) -> None:
+        flatten_substitution(subst)
+        if not binder_names <= subst.keys():
+            return
+        if any(expr_variables(value) & binder_names for value in subst.values()):
+            return
+        key = tuple(sorted((name, expr_key(value)) for name, value in subst.items() if name in binder_names))
+        if key in seen_substitutions:
+            return
+        seen_substitutions.add(key)
+        substitutions.append({name: subst[name] for name in binder_names})
+
+    for source_body_literal in raw_clause_literals(source_body):
+        if not (expr_variables(source_body_literal) & binder_names):
+            continue
+        for target_literal in target_literals:
+            trial: dict[str, Expr] = {}
+            if match_expr_with_alpha_instantiation(source_body_literal, target_literal, binder_names, trial):
+                add_substitution(trial)
+                if len(substitutions) >= 8:
+                    break
+        if len(substitutions) >= 8:
+            break
+    for subst in raw_infer_forall_clause_substitution_candidates(source_body, target, resolver, binder_names, limit=8):
+        add_substitution(subst)
+        if len(substitutions) >= 8:
+            break
+    for subst in substitutions:
+        if proof_search_timed_out():
+            return None
+        instantiated_source = substitute_expr(source_body, subst)
+        if not raw_clause_replay_budget_ok(instantiated_source, target, max_literals=16, max_literal_product=256):
+            continue
+        proof = source_literal_proof
+        for name, _ in source_binders:
+            value = subst.get(name)
+            if value is None:
+                proof = ""
+                break
+            proof = f"({proof_head(proof)} {proof_arg_text(value)})"
+        if not proof:
+            continue
+        for replaced, transported in raw_equality_rewrite_clause_steps(
+            instantiated_source,
+            proof,
+            equality_left,
+            equality_right,
+            equality_proof,
+            equality_sort,
+        ):
+            if expr_same_mod_alpha(replaced, target):
+                return transported
+            transformed = raw_clause_subsumption_transform_proof(replaced, target, transported)
+            if transformed is not None:
+                return transformed
+            if raw_clause_replay_budget_ok(replaced, target, max_literals=16, max_literal_product=256):
+                transformed = raw_clause_transform_proof(replaced, target, transported)
+                if transformed is not None:
+                    return transformed
+    return None
+
+
+def raw_clause_quantified_equality_rewrite_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality_left: Expr,
+    equality_right: Expr,
+    equality_proof: str,
+    equality_sort: str,
+) -> str | None:
+    source_literals = raw_clause_literals(source)
+    target_literals = raw_clause_literals(target)
+    if len(source_literals) > 12 or len(target_literals) > 16:
+        return None
+    target_text = proof_arg_text(target)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+
+    def source_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
+        direct = raw_literal_to_clause_proof(source_literal, target, source_literal_proof, target_literals, ())
+        if direct is not None:
+            return direct
+        return raw_quantified_equality_literal_clause_proof(
+            source_literal,
+            target,
+            target_literals,
+            source_literal_proof,
+            equality_left,
+            equality_right,
+            equality_proof,
+            equality_sort,
+        )
+
+    try:
+        return raw_clause_cases_with_handler(source, source_proof, source_handler)
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
 
 
 def raw_equality_rewrite_clause_steps(
