@@ -6280,22 +6280,6 @@ def vampire_and_parts(expr: Expr) -> tuple[Expr, Expr] | None:
 
 
 def known_vampire_and_projection_proof(expr: Expr, known: dict[str, str]) -> str | None:
-    def project_from_conjunction(proof: str, node: Expr, target: Expr, depth: int = 0) -> str | None:
-        if expr_key(node) == expr_key(target):
-            return proof
-        parts = vampire_and_parts(node)
-        if parts is None:
-            return None
-        left_name = f"HL{depth}"
-        right_name = f"HR{depth}"
-        left_projection = project_from_conjunction(left_name, parts[0], target, depth + 1)
-        if left_projection is not None:
-            return f"({proof} {proof_arg_text(target)} (fun {left_name} {right_name} => {left_projection}))"
-        right_projection = project_from_conjunction(right_name, parts[1], target, depth + 1)
-        if right_projection is not None:
-            return f"({proof} {proof_arg_text(target)} (fun {left_name} {right_name} => {right_projection}))"
-        return None
-
     seen_proofs: set[str] = set()
     for proposition, proof in reversed(list(known.items())):
         if proof in seen_proofs:
@@ -6304,9 +6288,26 @@ def known_vampire_and_projection_proof(expr: Expr, known: dict[str, str]) -> str
         parsed = parse_expr(proposition)
         if parsed is None or vampire_and_parts(parsed) is None:
             continue
-        projection = project_from_conjunction(proof, parsed, expr)
+        projection = vampire_and_projection_from_proof(proof, parsed, expr)
         if projection is not None:
             return projection
+    return None
+
+
+def vampire_and_projection_from_proof(proof: str, node: Expr, target: Expr, depth: int = 0) -> str | None:
+    if expr_key(node) == expr_key(target):
+        return proof
+    parts = vampire_and_parts(node)
+    if parts is None:
+        return None
+    left_name = f"HL{depth}"
+    right_name = f"HR{depth}"
+    left_projection = vampire_and_projection_from_proof(left_name, parts[0], target, depth + 1)
+    if left_projection is not None:
+        return f"({proof} {proof_arg_text(target)} (fun {left_name} {right_name} => {left_projection}))"
+    right_projection = vampire_and_projection_from_proof(right_name, parts[1], target, depth + 1)
+    if right_projection is not None:
+        return f"({proof} {proof_arg_text(target)} (fun {left_name} {right_name} => {right_projection}))"
     return None
 
 
@@ -6419,6 +6420,170 @@ def binary_reflexive_relation_transport_proof(
             context = expr_text(Expr("app", args=(head, Expr("var", value="zz"), right)))
             return f"({proof_term_text(reverse_eq_proof)} (fun zz:set => {context}) {reflexive})"
     return None
+
+
+def unary_binary_closure_rule_proof(
+    target: Expr,
+    predicate: Expr,
+    operator: Expr,
+    left: Expr,
+    right: Expr,
+    left_proof: str,
+    right_proof: str,
+    rules: list[ProofRule],
+) -> str | None:
+    left_expr = Expr("app", args=(predicate, left))
+    right_expr = Expr("app", args=(predicate, right))
+    for rule in rules:
+        binders = rule_application_binders(rule)
+        if len(binders) != 2 or len(rule.premises) != 2:
+            continue
+        variables = set(binders)
+        conclusion = rule_application_conclusion(rule)
+
+        components: list[Expr] = []
+
+        def collect_components(node: Expr) -> None:
+            parts = vampire_and_parts(node)
+            if parts is None:
+                components.append(node)
+                return
+            collect_components(parts[0])
+            collect_components(parts[1])
+
+        collect_components(conclusion)
+        for component in components:
+            subst: dict[str, Expr] = {}
+            if not match_expr(component, target, variables, subst):
+                continue
+            if not all(binder in subst for binder in binders):
+                continue
+            premise_proofs: dict[str, str] = {}
+            for premise in rule.premises:
+                instantiated = substitute_expr(premise, subst)
+                key = expr_key(instantiated)
+                if key == expr_key(left_expr):
+                    premise_proofs[key] = left_proof
+                elif key == expr_key(right_expr):
+                    premise_proofs[key] = right_proof
+                else:
+                    break
+            else:
+                parts = [rule.name]
+                steps = rule.steps or tuple(RuleStep("binder", name=binder) for binder in binders) + tuple(
+                    RuleStep("premise", expr=premise) for premise in rule.premises
+                )
+                ok = True
+                for step in steps:
+                    if step.kind == "binder":
+                        assert step.name is not None
+                        parts.append(proof_arg_text(subst[step.name]))
+                        continue
+                    assert step.expr is not None
+                    proof = premise_proofs.get(expr_key(substitute_expr(step.expr, subst)))
+                    if proof is None:
+                        ok = False
+                        break
+                    parts.append(proof_argument_text(proof))
+                if not ok:
+                    continue
+                rule_proof = rule_application_text(parts)
+                instantiated_conclusion = substitute_expr(conclusion, subst)
+                return vampire_and_projection_from_proof(rule_proof, instantiated_conclusion, target)
+    return None
+
+
+def unary_binary_closure_term_proof(
+    predicate: Expr,
+    operator: Expr,
+    term: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    depth: int,
+) -> str | None:
+    target = Expr("app", args=(predicate, term))
+    proof = known.get(expr_key(target)) or known_canonical.get(canonical_proposition(expr_key(target)))
+    if proof is not None:
+        return proof
+    if depth <= 0 or term.kind != "app" or len(term.args) != 3 or expr_key(term.args[0]) != expr_key(operator):
+        return None
+    left, right = term.args[1], term.args[2]
+    left_proof = unary_binary_closure_term_proof(
+        predicate,
+        operator,
+        left,
+        known,
+        known_canonical,
+        rules,
+        depth - 1,
+    )
+    if left_proof is None:
+        return None
+    right_proof = unary_binary_closure_term_proof(
+        predicate,
+        operator,
+        right,
+        known,
+        known_canonical,
+        rules,
+        depth - 1,
+    )
+    if right_proof is None:
+        return None
+    return unary_binary_closure_rule_proof(
+        target,
+        predicate,
+        operator,
+        left,
+        right,
+        left_proof,
+        right_proof,
+        rules,
+    )
+
+
+def introduced_unary_binary_closure_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+) -> str | None:
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if not binders or not premises or conclusion.kind != "app" or len(conclusion.args) != 2:
+        return None
+    predicate, term = conclusion.args
+    if term.kind != "app" or len(term.args) != 3:
+        return None
+    operator = term.args[0]
+    local_known = dict(known)
+    local_known_canonical = dict(known_canonical)
+    args = [name for name, _ in binders]
+    used_names = set(args)
+    used_names.update(known.values())
+    for index, premise in enumerate(premises):
+        name = f"H{index}"
+        while name in used_names:
+            index += 1
+            name = f"H{index}"
+        used_names.add(name)
+        args.append(name)
+        key = expr_key(premise)
+        local_known[key] = name
+        local_known_canonical[canonical_proposition(key)] = name
+    proof = unary_binary_closure_term_proof(
+        predicate,
+        operator,
+        term,
+        local_known,
+        local_known_canonical,
+        rules,
+        depth=6,
+    )
+    if proof is None:
+        return None
+    return f"({' '.join(['fun'] + args + ['=>', proof])})"
 
 
 def atomic_rule_result_one_rewrite_proof(
@@ -8519,6 +8684,16 @@ def _proof_for_expr_impl(
     )
     if implication_intro is not None:
         return implication_intro
+
+    if allow_rule:
+        introduced_binary_closure = introduced_unary_binary_closure_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+        )
+        if introduced_binary_closure is not None:
+            return introduced_binary_closure
 
     implication_false = implication_from_false_proof(
         expr,
