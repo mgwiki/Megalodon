@@ -1947,6 +1947,41 @@ def replace_expr_occurrences(expr: Expr, needle: Expr, replacement: Expr) -> tup
     return Expr(expr.kind, value=expr.value, args=tuple(replaced_args), sort=expr.sort), True
 
 
+def single_replacement_contexts(
+    expr: Expr,
+    needle: Expr,
+    replacement: Expr,
+    hole: Expr,
+    limit: int = 8,
+) -> list[tuple[Expr, Expr]]:
+    if expr_key(expr) == expr_key(needle):
+        return [(replacement, hole)]
+    if not expr.args:
+        return []
+    if (
+        expr.kind in {"forall", "lambda"}
+        and needle.kind == "var"
+        and expr.value == needle.value
+    ):
+        return []
+    found: list[tuple[Expr, Expr]] = []
+    for index, arg in enumerate(expr.args):
+        for replaced_arg, context_arg in single_replacement_contexts(arg, needle, replacement, hole, limit):
+            replaced_args = list(expr.args)
+            replaced_args[index] = replaced_arg
+            context_args = list(expr.args)
+            context_args[index] = context_arg
+            found.append(
+                (
+                    Expr(expr.kind, value=expr.value, args=tuple(replaced_args), sort=expr.sort),
+                    Expr(expr.kind, value=expr.value, args=tuple(context_args), sort=expr.sort),
+                )
+            )
+            if len(found) >= limit:
+                return found
+    return found
+
+
 def rename_rule_binders(rule: ProofRule, prefix: str) -> ProofRule:
     renames = {name: f"{prefix}{name}" for name in rule_application_binders(rule)}
     steps: list[RuleStep] = []
@@ -2938,6 +2973,75 @@ def equality_multi_congruence_proof(
         current_args[arg_index] = target_arg
 
     return eq_transitivity_proof(proofs, expr_text(left))
+
+
+def equality_direct_demodulation_proof(
+    expr: Expr,
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    max_steps: int = 4,
+    max_nodes: int = 64,
+) -> str | None:
+    if expr.kind != "eq" or not eq_facts:
+        return None
+    start = normalize_defined_expr(expr.args[0], definitions)
+    target = normalize_defined_expr(expr.args[1], definitions)
+    if expr_key(start) == expr_key(target):
+        return "(fun Q H => H)"
+    if start.kind == "lambda" or target.kind == "lambda":
+        return None
+    if len(expr_text(start)) > 5000 or len(expr_text(target)) > 5000 or len(eq_facts) > 12:
+        return None
+
+    rewrites: list[tuple[Expr, Expr, str]] = []
+    for fact in eq_facts:
+        for source, replacement, proof in (
+            (fact.left, fact.right, fact.proof),
+            (fact.right, fact.left, eq_symmetry_proof(fact.proof, fact.left)),
+        ):
+            source = normalize_defined_expr(source, definitions)
+            replacement = normalize_defined_expr(replacement, definitions)
+            if expr_key(source) == expr_key(replacement):
+                continue
+            if source.kind in {"forall", "arrow", "lambda"}:
+                continue
+            rewrites.append((source, replacement, proof))
+
+    queue: list[tuple[Expr, list[str]]] = [(start, [])]
+    seen = {expr_key(start)}
+    while queue and len(seen) <= max_nodes:
+        node, proofs = queue.pop(0)
+        if len(proofs) >= max_steps:
+            continue
+        for source, replacement, equality_proof in rewrites:
+            if expr_text(source) not in expr_text(node):
+                continue
+            hole_name = fresh_identifier("zz", expr_text(node), expr_text(source), expr_text(replacement))
+            hole = Expr("var", value=hole_name)
+            for next_node, context in single_replacement_contexts(
+                node,
+                source,
+                replacement,
+                hole,
+                limit=4,
+            ):
+                next_key = expr_key(normalize_defined_expr(next_node, definitions))
+                if next_key in seen:
+                    continue
+                proof = (
+                    f"(fun Q:set->prop => fun H:Q ({expr_text(node)}) => "
+                    f"{proof_head(equality_proof)} (fun {hole_name}:set => Q ({expr_text(context)})) H)"
+                )
+                next_proofs = proofs + [proof]
+                if next_key == expr_key(target):
+                    return eq_transitivity_proof(next_proofs, expr_text(start))
+                seen.add(next_key)
+                queue.append((normalize_defined_expr(next_node, definitions), next_proofs))
+                if len(seen) > max_nodes:
+                    break
+            if len(seen) > max_nodes:
+                break
+    return None
 
 
 def atomic_transport_context(head: Expr, args: tuple[Expr, ...], hole_index: int, hole_name: str) -> str:
@@ -4795,6 +4899,10 @@ def proof_for_expr(
     multi_congruence_proof = equality_multi_congruence_proof(expr, known, known_canonical, rules, eq_facts, definitions, rule_depth)
     if multi_congruence_proof is not None:
         return multi_congruence_proof
+
+    direct_demodulation_proof = equality_direct_demodulation_proof(expr, eq_facts, definitions)
+    if direct_demodulation_proof is not None:
+        return direct_demodulation_proof
 
     transport_proof = atomic_transport_proof(
         expr,
