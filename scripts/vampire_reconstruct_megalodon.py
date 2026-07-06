@@ -2873,6 +2873,57 @@ def introduction_proof(
     return f"({' '.join(['fun'] + args + ['=>', proof])})"
 
 
+def introduced_unary_equality_bridge_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if not binders or conclusion.kind != "eq" or len(premises) > 4:
+        return None
+
+    local_known = dict(known)
+    local_known_canonical = dict(known_canonical)
+    local_rules = list(rules)
+    local_eq_facts = list(eq_facts)
+    args = [name for name, _ in binders]
+    used_names = set(args)
+    used_names.update(known.values())
+    for index, premise in enumerate(premises):
+        name = "H" + str(index)
+        while name in used_names:
+            index += 1
+            name = "H" + str(index)
+        used_names.add(name)
+        args.append(name)
+        remember_proposition(
+            local_known,
+            local_known_canonical,
+            local_rules,
+            local_eq_facts,
+            name,
+            expr_text(premise),
+        )
+
+    proof = unary_equality_rule_bridge_proof(
+        conclusion,
+        local_known,
+        local_known_canonical,
+        local_rules,
+        local_eq_facts,
+        definitions,
+        rule_depth,
+    )
+    if proof is None:
+        return None
+    return f"({' '.join(['fun'] + args + ['=>', proof])})"
+
+
 def app_context_text(head: Expr, args: tuple[Expr, ...], hole_index: int, hole_name: str) -> str:
     parts = [expr_text(head)]
     for index, arg in enumerate(args):
@@ -3020,6 +3071,83 @@ def equality_multi_congruence_proof(
         current_args[arg_index] = target_arg
 
     return eq_transitivity_proof(proofs, expr_text(left))
+
+
+def unary_equality_rule_bridge_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if expr.kind != "eq" or rule_depth <= 0:
+        return None
+    left = normalize_defined_expr(expr.args[0], definitions)
+    right = normalize_defined_expr(expr.args[1], definitions)
+    left_app = unary_application(left)
+    right_app = unary_application(right)
+    if left_app is None or right_app is None or left_app[0] != right_app[0]:
+        return None
+    target_arg = right_app[1]
+
+    for rule in rules:
+        conclusion = rule_application_conclusion(rule)
+        if conclusion.kind != "eq":
+            continue
+        sides = (conclusion.args[0], conclusion.args[1])
+        for match_index, other_index in ((0, 1), (1, 0)):
+            subst: dict[str, Expr] = {}
+            if not match_expr_with_alpha_instantiation(
+                sides[match_index],
+                left,
+                set(rule_application_binders(rule)),
+                subst,
+            ):
+                continue
+            other_side = normalize_defined_expr(substitute_expr(sides[other_index], subst), definitions)
+            other_app = unary_application(other_side)
+            if other_app is None or other_app[0] != left_app[0]:
+                continue
+            parts = rule_application_parts(
+                rule,
+                subst,
+                known,
+                known_canonical,
+                rules,
+                eq_facts,
+                definitions,
+                max(0, rule_depth - 1),
+            )
+            if parts is None:
+                continue
+            rule_proof = rule_application_text(parts)
+            if match_index == 0:
+                left_to_other = rule_proof
+            else:
+                original_left = normalize_defined_expr(substitute_expr(sides[0], subst), definitions)
+                left_to_other = eq_symmetry_proof(rule_proof, original_left)
+            other_to_target_arg = equality_transport_side_proof(
+                other_app[1],
+                target_arg,
+                known,
+                known_canonical,
+                rules,
+                eq_facts,
+                definitions,
+                max(0, rule_depth - 1),
+            )
+            if other_to_target_arg is None:
+                continue
+            hole_name = fresh_identifier("zz", expr_text(other_side), expr_text(right))
+            other_to_target = (
+                f"(fun Q:set->prop => fun H:Q ({expr_text(other_side)}) => "
+                f"{proof_head(other_to_target_arg)} "
+                f"(fun {hole_name}:set => Q ({left_app[0]} {hole_name})) H)"
+            )
+            return eq_transitivity_proof([left_to_other, other_to_target], expr_text(left))
+    return None
 
 
 def equality_direct_demodulation_proof(
@@ -5066,6 +5194,19 @@ def proof_for_expr(
     if multi_congruence_proof is not None:
         return multi_congruence_proof
 
+    if allow_rule:
+        unary_bridge_proof = unary_equality_rule_bridge_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth,
+        )
+        if unary_bridge_proof is not None:
+            return unary_bridge_proof
+
     direct_demodulation_proof = equality_direct_demodulation_proof(expr, eq_facts, definitions)
     if direct_demodulation_proof is not None:
         return direct_demodulation_proof
@@ -5202,6 +5343,18 @@ def proof_for_proposition(
         )
         if transported_rule_proof is not None:
             return transported_rule_proof
+    if expr.kind == "forall" and len(expr_text(expr)) <= 500:
+        introduced_bridge_proof = introduced_unary_equality_bridge_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth=3,
+        )
+        if introduced_bridge_proof is not None:
+            return introduced_bridge_proof
     proof = proof_for_expr(expr, known, known_canonical, rules, eq_facts, definitions)
     if proof is not None:
         return proof
