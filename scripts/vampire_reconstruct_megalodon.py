@@ -12348,6 +12348,71 @@ def raw_flat_clause_resolution_proof(
             PROOF_SEARCH_STATE.flat_resolution_target = previous_target
 
 
+def raw_quantified_flat_clause_resolution_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    resolver: Expr,
+    resolver_proof: str,
+) -> str | None:
+    source_literals = raw_clause_literals(source)
+    resolver_literals = raw_clause_literals(resolver)
+    target_literals = raw_clause_literals(target)
+    if len(source_literals) > 12 or len(resolver_literals) > 8 or len(target_literals) > 14:
+        return None
+    target_text = proof_arg_text(target)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+
+    def source_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
+        direct = raw_literal_to_clause_proof(source_literal, target, source_literal_proof, target_literals, ())
+        if direct is not None:
+            return direct
+
+        def resolver_handler(resolver_literal: Expr, resolver_literal_proof: str) -> str | None:
+            direct_resolver = raw_literal_to_clause_proof(resolver_literal, target, resolver_literal_proof, target_literals, ())
+            if direct_resolver is not None:
+                return direct_resolver
+            complement = raw_complement_resolution_proof(
+                source_literal,
+                source_literal_proof,
+                resolver_literal,
+                resolver_literal_proof,
+                target,
+            )
+            if complement is not None:
+                return complement
+            for index, target_literal in enumerate(target_literals):
+                proof = raw_quantified_literal_body_resolution_intro(
+                    source_literal,
+                    target_literal,
+                    target,
+                    index,
+                    source_literal_proof,
+                    resolver_literal,
+                    resolver_literal_proof,
+                )
+                if proof is not None:
+                    return proof
+            return None
+
+        return raw_clause_cases_with_handler(
+            resolver,
+            resolver_proof,
+            resolver_handler,
+            avoid_text=source_literal_proof,
+        )
+
+    try:
+        return raw_clause_cases_with_handler(source, source_proof, source_handler)
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_clause_multi_resolution_proof(
     source: Expr,
     target: Expr,
@@ -12888,6 +12953,12 @@ def raw_tptp_forward_subsumption_resolution_proof(
         if proof is not None:
             return proof
         proof = raw_flat_clause_resolution_proof(second, target, second_name, first, first_name)
+        if proof is not None:
+            return proof
+        proof = raw_quantified_flat_clause_resolution_proof(first, target, first_name, second, second_name)
+        if proof is not None:
+            return proof
+        proof = raw_quantified_flat_clause_resolution_proof(second, target, second_name, first, first_name)
         if proof is not None:
             return proof
     first_options = raw_instantiated_forall_clause_options(first, first_name, target, second)
