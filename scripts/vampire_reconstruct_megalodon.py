@@ -51,7 +51,7 @@ INFERRED_DEPENDENCY_RE = re.compile(r"^[_A-Za-z][_A-Za-z0-9']*$")
 DEFINITION_RE = re.compile(r"^Definition (?P<name>[_A-Za-z][_A-Za-z0-9']*) : (?P<sort>[^:]+?) := (?P<body>.*)\.$")
 THF_TYPE_RE = re.compile(r"^thf\([^,]+,\s*type,\s*\((?P<name>[^:\s]+)\s*:\s*(?P<sort>.*?)\)\)\.", re.DOTALL)
 PROOF_SEARCH_STATE = threading.local()
-PROOF_SEARCH_SECONDS = float(os.environ.get("MEGALODON_PROOF_SEARCH_SECONDS", "45"))
+PROOF_SEARCH_SECONDS = float(os.environ.get("MEGALODON_PROOF_SEARCH_SECONDS", "8"))
 RAW_TPTP_REPLAY_SECONDS = float(os.environ.get("MEGALODON_RAW_TPTP_REPLAY_SECONDS", "0.35"))
 PROOF_SEARCH_CLOCK = getattr(time, "thread_time", time.monotonic)
 
@@ -2328,6 +2328,108 @@ def infer_rule_binder_candidates_from_known(
     ][:limit]
 
 
+def unify_expr_variables(left: Expr, right: Expr, variables: set[str], subst: dict[str, Expr]) -> bool:
+    def dereference(expr: Expr, seen: set[str] | None = None) -> Expr | None:
+        if seen is None:
+            seen = set()
+        if expr.kind == "var" and expr.value in subst:
+            if expr.value in seen:
+                return None
+            seen.add(expr.value)
+            return dereference(subst[expr.value], seen)
+        return expr
+
+    left = dereference(left)
+    right = dereference(right)
+    if left is None or right is None:
+        return False
+    if left.kind == "var" and left.value in variables:
+        if expr_key(left) == expr_key(right):
+            return True
+        if expr_mentions_any(right, {left.value}):
+            return False
+        subst[left.value] = right
+        return True
+    if right.kind == "var" and right.value in variables:
+        if expr_key(left) == expr_key(right):
+            return True
+        if expr_mentions_any(left, {right.value}):
+            return False
+        subst[right.value] = left
+        return True
+    if left.kind != right.kind or left.value != right.value or len(left.args) != len(right.args):
+        return False
+    return all(unify_expr_variables(larg, rarg, variables, subst) for larg, rarg in zip(left.args, right.args))
+
+
+def expand_unified_expr(expr: Expr, subst: dict[str, Expr], seen: set[str] | None = None) -> Expr:
+    if seen is None:
+        seen = set()
+    if expr.kind == "var" and expr.value in subst:
+        if expr.value in seen:
+            return expr
+        seen.add(expr.value)
+        return expand_unified_expr(subst[expr.value], subst, seen)
+    if not expr.args:
+        return expr
+    return Expr(expr.kind, value=expr.value, args=tuple(expand_unified_expr(arg, subst, set(seen)) for arg in expr.args), sort=expr.sort)
+
+
+def infer_rule_binder_candidates_from_rule_conclusions(
+    steps: tuple[RuleStep, ...],
+    binders: tuple[str, ...],
+    subst: dict[str, Expr],
+    rules: list[ProofRule],
+    limit: int = 32,
+) -> list[dict[str, Expr]]:
+    candidates = [dict(subst)]
+    seen_candidates: set[tuple[tuple[str, str], ...]] = {
+        tuple(sorted((name, expr_key(value)) for name, value in subst.items()))
+    }
+    helper_rules = [
+        rename_rule_binders(rule, f"IB{index}_")
+        for index, rule in enumerate(rules)
+        if rule_application_conclusion(rule).kind == "app"
+        and len(rule_application_binders(rule)) <= 3
+        and len(rule.premises) <= 3
+        and len(expr_text(rule_application_conclusion(rule))) <= 220
+    ][:128]
+    for step in steps:
+        if step.kind != "premise" or step.expr is None:
+            continue
+        for candidate in list(candidates):
+            if all(binder in candidate for binder in binders):
+                continue
+            premise = substitute_expr(step.expr, candidate)
+            for helper in helper_rules:
+                helper_binders = set(rule_application_binders(helper))
+                variables = set(binders) | helper_binders
+                trial = dict(candidate)
+                if not unify_expr_variables(premise, rule_application_conclusion(helper), variables, trial):
+                    continue
+                projected = {
+                    binder: expand_unified_expr(value, trial)
+                    for binder, value in trial.items()
+                    if binder in binders
+                }
+                key = tuple(sorted((name, expr_key(value)) for name, value in projected.items()))
+                if key in seen_candidates:
+                    continue
+                seen_candidates.add(key)
+                candidates.append(projected)
+                if len(candidates) >= limit:
+                    break
+            if len(candidates) >= limit:
+                break
+        if len(candidates) >= limit:
+            break
+    return [
+        candidate
+        for candidate in candidates
+        if all(binder in candidate for binder in binders)
+    ][:limit]
+
+
 def expr_subterms(expr: Expr, limit: int = 128) -> list[Expr]:
     found: list[Expr] = []
     seen: set[str] = set()
@@ -4067,6 +4169,21 @@ def rule_application_parts(
     if inferred_subst is not None:
         candidate_substs.append(inferred_subst)
     missing = [binder for binder in application_binders if binder not in subst]
+    if (
+        0 < len(missing) <= 2
+        and len(steps) <= 8
+        and len(rule.premises) <= 4
+        and len(expr_text(rule_application_conclusion(rule))) <= 260
+    ):
+        candidate_substs.extend(
+            infer_rule_binder_candidates_from_rule_conclusions(
+                steps,
+                application_binders,
+                subst,
+                rules,
+                limit=16,
+            )
+        )
     if 0 < len(missing) <= 2 and rule_depth > 0:
         seed_terms = candidate_terms_from_state(
             known,
@@ -6484,6 +6601,124 @@ def false_proof_from_branch(
     return None
 
 
+def branch_or_rule_to_target_proof(
+    branch: Expr,
+    branch_proof: str,
+    target: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 1 or app_args(target, "vampire_or", 2) is None:
+        return None
+
+    local_known = dict(known)
+    local_known_canonical = dict(known_canonical)
+    local_rules = list(rules)
+    local_eq_facts = list(eq_facts)
+    remember_proposition(
+        local_known,
+        local_known_canonical,
+        local_rules,
+        local_eq_facts,
+        branch_proof,
+        expr_text(branch),
+    )
+
+    ordered_rules = [rule for rule in reversed(rules) if not re.fullmatch(r"S[0-9]+", rule.name)]
+    ordered_rules.extend(rule for rule in reversed(rules) if re.fullmatch(r"S[0-9]+", rule.name))
+    for rule in ordered_rules:
+        conclusion = rule_application_conclusion(rule)
+        disjuncts = app_args(conclusion, "vampire_or", 2)
+        if disjuncts is None:
+            continue
+        binders = set(rule_application_binders(rule))
+        seed_substs: list[dict[str, Expr]] = []
+        for source_part in disjuncts:
+            subst: dict[str, Expr] = {}
+            if match_expr_with_alpha_instantiation(source_part, branch, binders, subst):
+                seed_substs.append(subst)
+        target_disjuncts = app_args(target, "vampire_or", 2)
+        if target_disjuncts is not None:
+            for source_part in disjuncts:
+                for target_part in target_disjuncts:
+                    subst = {}
+                    if match_expr_with_alpha_instantiation(source_part, target_part, binders, subst):
+                        seed_substs.append(subst)
+
+        seen: set[tuple[tuple[str, str], ...]] = set()
+        for subst in seed_substs:
+            seed_key = tuple(sorted((name, expr_key(value)) for name, value in subst.items()))
+            if seed_key in seen:
+                continue
+            seen.add(seed_key)
+            application_parts = rule_application_parts(
+                rule,
+                subst,
+                local_known,
+                local_known_canonical,
+                local_rules,
+                local_eq_facts,
+                definitions,
+                max(0, rule_depth - 1),
+            )
+            if application_parts is None:
+                continue
+            instantiated_left = substitute_expr(disjuncts[0], subst)
+            instantiated_right = substitute_expr(disjuncts[1], subst)
+            left_name = fresh_identifier(
+                "HorL",
+                expr_text(branch),
+                expr_text(instantiated_left),
+                expr_text(target),
+                rule.name,
+            )
+            right_name = fresh_identifier(
+                "HorR",
+                expr_text(branch),
+                expr_text(instantiated_right),
+                expr_text(target),
+                rule.name,
+                left_name,
+            )
+            left_target = branch_to_target_proof(
+                instantiated_left,
+                left_name,
+                target,
+                local_known,
+                local_known_canonical,
+                local_rules,
+                local_eq_facts,
+                definitions,
+                rule_depth - 1,
+            )
+            if left_target is None:
+                continue
+            right_target = branch_to_target_proof(
+                instantiated_right,
+                right_name,
+                target,
+                local_known,
+                local_known_canonical,
+                local_rules,
+                local_eq_facts,
+                definitions,
+                rule_depth - 1,
+            )
+            if right_target is None:
+                continue
+            or_proof = rule_application_text(application_parts)
+            return (
+                f"({proof_head(or_proof)} {proof_arg_text(target)} "
+                f"(fun {left_name} => {left_target}) "
+                f"(fun {right_name} => {right_target}))"
+            )
+    return None
+
+
 def branch_to_target_proof(
     branch: Expr,
     branch_proof: str,
@@ -6499,6 +6734,20 @@ def branch_to_target_proof(
         return branch_proof
     if rule_depth <= 0:
         return None
+
+    nested_or_rule = branch_or_rule_to_target_proof(
+        branch,
+        branch_proof,
+        target,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        rule_depth,
+    )
+    if nested_or_rule is not None:
+        return nested_or_rule
 
     target_disjuncts = app_args(target, "vampire_or", 2)
     if target_disjuncts is not None:
@@ -6699,34 +6948,39 @@ def implication_intro_proof(
     allow_rule: bool,
     rule_depth: int,
 ) -> str | None:
+    if len(expr_text(expr)) > 1200:
+        return None
     binders, body = collect_foralls(expr)
     premises, conclusion = split_arrows(body)
-    if not premises:
+    if not binders and not premises:
         return None
-    if len(premises) > 2:
+    if len(binders) > 6 or len(premises) > 4:
         return None
-    if (
-        conclusion.kind != "app"
-        or len(conclusion.args) != 3
-        or expr_key(conclusion.args[0]) != "vampire_or"
-    ):
+    if expr_key(conclusion) == expr_key(expr):
         return None
     local_known = dict(known)
     local_known_canonical = dict(known_canonical)
+    local_rules = list(rules)
+    local_eq_facts = list(eq_facts)
     premise_names = [f"H{index}" for index, _ in enumerate(premises)]
     for premise, name in zip(premises, premise_names):
-        key = expr_key(premise)
-        local_known[key] = name
-        local_known_canonical[canonical_proposition(key)] = name
+        remember_proposition(
+            local_known,
+            local_known_canonical,
+            local_rules,
+            local_eq_facts,
+            name,
+            expr_text(premise),
+        )
     conclusion_proof = proof_for_expr(
         conclusion,
         local_known,
         local_known_canonical,
-        rules,
-        eq_facts,
+        local_rules,
+        local_eq_facts,
         definitions,
         allow_rule=allow_rule,
-        rule_depth=rule_depth,
+        rule_depth=max(0, rule_depth - 1),
     )
     if conclusion_proof is None:
         return None
@@ -10536,7 +10790,7 @@ def proof_for_proposition(
                 rules,
                 eq_facts,
                 definitions,
-                rule_depth=3,
+                rule_depth=5,
             )
     return None
 
@@ -10679,6 +10933,15 @@ def fill_repeated_claim_admits(lines: list[str]) -> list[str]:
                 delattr(PROOF_SEARCH_STATE, "deadline")
         else:
             PROOF_SEARCH_STATE.deadline = previous_deadline
+
+
+def should_retry_pruned_claim_fill(lines: list[str]) -> bool:
+    if "{ admit. }" not in lines:
+        return False
+    claims = sum(1 for line in lines if line.startswith("claim "))
+    if claims > 4:
+        return False
+    return sum(len(line) for line in lines) <= 4000
 
 
 def proof_for_claim_at(lines: list[str], claim_index: int) -> str | None:
@@ -10970,7 +11233,10 @@ def check_megalodon_lines(
     output_lines = fill_source_candidate_claims(output_lines, proof_text)
     output_lines = fill_repeated_claim_admits(output_lines) if fill_repeated_admits else output_lines
     output_lines = prune_unused_rectify_axiom_admits(output_lines, proof_text)
-    output_lines = prune_unreachable_claims(output_lines) if fill_repeated_admits else output_lines
+    if fill_repeated_admits:
+        output_lines = prune_unreachable_claims(output_lines)
+        if should_retry_pruned_claim_fill(output_lines):
+            output_lines = fill_repeated_claim_admits(output_lines)
     output_lines = annotate_remaining_admits(output_lines, proof_text)
     output_lines = annotate_source_links(output_lines, proof, proof_text, source)
     if header:
