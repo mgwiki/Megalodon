@@ -11729,6 +11729,9 @@ def raw_tptp_one_parent_transform_proof(
         return None
     if expr_same_mod_alpha(source, target):
         return raw_tptp_claim_name(parents[0])
+    simple = raw_simple_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
+    if simple is not None:
+        return simple
     if not raw_clause_replay_budget_ok(source, target, max_literals=max_literals, max_literal_product=max_literal_product):
         return None
     return raw_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
@@ -12145,6 +12148,8 @@ def raw_tptp_replay_proof(
         "avatar_contradiction_clause",
     }:
         return raw_tptp_trivial_inequality_removal_proof(proposition, parents, propositions_by_name)
+    if rule == "avatar_sat_refutation":
+        return raw_tptp_one_parent_transform_proof(proposition, parents, propositions_by_name)
     if rule in {
         "rectify",
         "fool_elimination",
