@@ -11254,7 +11254,7 @@ def raw_clause_transform_proof(
         return None
     left, right = source_parts
     left_name = fresh_identifier("HL", expr_text(source), expr_text(target), source_proof)
-    right_name = fresh_identifier("HR", expr_text(source), expr_text(target), left_name)
+    right_name = fresh_identifier("HR", expr_text(source), expr_text(target), source_proof, left_name)
     left_target = raw_clause_transform_proof(left, target, left_name, depth + 1, rewrites)
     right_target = raw_clause_transform_proof(right, target, right_name, depth + 1, rewrites)
     if left_target is None or right_target is None:
@@ -11436,7 +11436,7 @@ def raw_resolver_clause_to_target(
         return None
     left, right = resolver_parts
     left_name = fresh_identifier("HL", expr_text(resolver), expr_text(target), resolver_proof, source_literal_proof)
-    right_name = fresh_identifier("HR", expr_text(resolver), expr_text(target), left_name)
+    right_name = fresh_identifier("HR", expr_text(resolver), expr_text(target), resolver_proof, source_literal_proof, left_name)
     left_target = raw_resolver_clause_to_target(left, target, left_name, source_literal, source_literal_proof, depth + 1)
     right_target = raw_resolver_clause_to_target(right, target, right_name, source_literal, source_literal_proof, depth + 1)
     if left_target is None or right_target is None:
@@ -11465,7 +11465,7 @@ def raw_clause_resolution_proof(
         return None
     left, right = source_parts
     left_name = fresh_identifier("HL", expr_text(source), expr_text(target), source_proof, resolver_proof)
-    right_name = fresh_identifier("HR", expr_text(source), expr_text(target), left_name)
+    right_name = fresh_identifier("HR", expr_text(source), expr_text(target), source_proof, resolver_proof, left_name)
     left_target = raw_clause_resolution_proof(left, target, left_name, resolver, resolver_proof, depth + 1)
     right_target = raw_clause_resolution_proof(right, target, right_name, resolver, resolver_proof, depth + 1)
     if left_target is None or right_target is None:
@@ -11477,6 +11477,9 @@ def raw_tptp_trivial_inequality_removal_proof(
     proposition: str,
     parents: list[str],
     propositions_by_name: dict[str, str],
+    *,
+    max_literals: int = 10,
+    max_literal_product: int = 64,
 ) -> str | None:
     if len(parents) != 1:
         return None
@@ -11487,7 +11490,7 @@ def raw_tptp_trivial_inequality_removal_proof(
     target = parse_expr(proposition)
     if source is None or target is None:
         return None
-    if not raw_clause_replay_budget_ok(source, target):
+    if not raw_clause_replay_budget_ok(source, target, max_literals=max_literals, max_literal_product=max_literal_product):
         return None
     return raw_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
 
@@ -11646,6 +11649,47 @@ def raw_tptp_forward_subsumption_resolution_proof(
             if proof is not None:
                 return proof
             proof = raw_clause_resolution_proof(second_clause, target, second_proof, first_clause, first_proof)
+            if proof is not None:
+                return proof
+    return None
+
+
+def raw_tptp_rat_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> str | None:
+    if len(parents) == 1:
+        return raw_tptp_trivial_inequality_removal_proof(
+            proposition,
+            parents,
+            propositions_by_name,
+            max_literals=16,
+            max_literal_product=256,
+        )
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    parent_exprs: list[tuple[str, Expr, str]] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        if parent_proposition is None:
+            continue
+        parent_expr = parse_expr(parent_proposition)
+        if parent_expr is not None:
+            parent_exprs.append((parent, parent_expr, raw_tptp_claim_name(parent)))
+    if len(parent_exprs) < 2:
+        return None
+    for _, source, source_proof in parent_exprs[:1]:
+        for _, resolver, resolver_proof in parent_exprs[1:]:
+            if not raw_clause_replay_budget_ok(source, resolver, target, max_literals=16, max_literal_product=512):
+                continue
+            if not raw_clauses_have_complement(source, resolver):
+                continue
+            proof = raw_clause_resolution_proof(source, target, source_proof, resolver, resolver_proof)
+            if proof is not None:
+                return proof
+            proof = raw_clause_resolution_proof(resolver, target, resolver_proof, source, source_proof)
             if proof is not None:
                 return proof
     return None
@@ -11866,12 +11910,20 @@ def raw_tptp_replay_proof(
     propositions_by_name: dict[str, str],
     variable_sorts: dict[str, str],
 ) -> str | None:
+    if rule == "rat":
+        return raw_tptp_rat_proof(proposition, parents, propositions_by_name)
+    if rule == "sat_conversion":
+        return raw_tptp_trivial_inequality_removal_proof(
+            proposition,
+            parents,
+            propositions_by_name,
+            max_literals=16,
+            max_literal_product=256,
+        )
     if rule in {
         "trivial_inequality_removal",
         "duplicate_literal_removal",
         "avatar_contradiction_clause",
-        "sat_conversion",
-        "rat",
     }:
         return raw_tptp_trivial_inequality_removal_proof(proposition, parents, propositions_by_name)
     if rule in {
