@@ -730,7 +730,7 @@ def decode_tptp_identifier(name: str) -> str:
     name = name.strip()
     if name.startswith("c_"):
         name = name[2:]
-    return re.sub(r"_([0-9A-Fa-f]{2})", lambda match: chr(int(match.group(1), 16)), name)
+    return re.sub(r"_([0-9A-Fa-f]{2})(?![0-9A-Fa-f])", lambda match: chr(int(match.group(1), 16)), name)
 
 
 def split_top_level_commas(text: str) -> list[str] | None:
@@ -1004,11 +1004,27 @@ def tptp_formula_to_megalodon_proposition(text: str, variable_sorts: dict[str, s
 
     inequality = split_top_level_operator(text, "!=")
     if inequality is not None:
+        left_expr = tptp_term_to_expr(inequality[0])
+        right_expr = tptp_term_to_expr(inequality[1])
         left = tptp_formula_to_megalodon_proposition(inequality[0], variable_sorts)
         right = tptp_formula_to_megalodon_proposition(inequality[1], variable_sorts)
         if left is None or right is None:
             return None
-        return f"({left} = {right}) -> vampire_false"
+        if (
+            left_expr is not None
+            and right_expr is not None
+            and expr_sort(left_expr, variable_sorts) == "set"
+            and expr_sort(right_expr, variable_sorts) == "set"
+        ):
+            return f"vampire_eq_set {proof_arg_text(left_expr)} {proof_arg_text(right_expr)} -> vampire_false"
+        if (
+            left_expr is not None
+            and right_expr is not None
+            and expr_sort(left_expr, variable_sorts) == "prop"
+            and expr_sort(right_expr, variable_sorts) == "prop"
+        ):
+            return f"vampire_eq_prop {proof_arg_text(left_expr)} {proof_arg_text(right_expr)} -> vampire_false"
+        return f"({proposition_argument_text(left)} = {proposition_argument_text(right)}) -> vampire_false"
 
     equality = split_top_level_equality(text)
     if equality is not None:
@@ -1032,7 +1048,7 @@ def tptp_formula_to_megalodon_proposition(text: str, variable_sorts: dict[str, s
             and expr_sort(right_expr, variable_sorts) == "prop"
         ):
             return f"vampire_eq_prop {proof_arg_text(left_expr)} {proof_arg_text(right_expr)}"
-        return f"{left} = {right}"
+        return f"{proposition_argument_text(left)} = {proposition_argument_text(right)}"
 
     if text == "$true":
         return "vampire_true"
@@ -10897,6 +10913,268 @@ def write_manifest(path: Path, obligations: Iterable[Obligation]) -> None:
             f.write("\n")
 
 
+def collect_tptp_declarations(text: str) -> list[str]:
+    declarations: list[str] = []
+    current: list[str] = []
+    depth = 0
+    active = False
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not active:
+            if not re.match(r"^(?:thf|tff|cnf)\(", stripped):
+                continue
+            current = [stripped]
+            depth = stripped.count("(") - stripped.count(")")
+            active = True
+        else:
+            current.append(stripped)
+            depth += stripped.count("(") - stripped.count(")")
+        if active and depth <= 0 and stripped.endswith("."):
+            declarations.append("\n".join(current))
+            current = []
+            depth = 0
+            active = False
+    return declarations
+
+
+def tptp_decl_formula_parts(text: str) -> tuple[str, str, str, list[str]] | None:
+    stripped = text.strip()
+    match = re.match(r"^(?:thf|tff|cnf)\((?P<body>.*)\)\.\s*$", stripped, re.DOTALL)
+    if match is None:
+        return None
+    parts = split_top_level_commas(match.group("body"))
+    if parts is None or len(parts) < 3:
+        return None
+    return parts[0].strip(), parts[1].strip(), parts[2].strip(), parts[3:]
+
+
+def raw_tptp_type_variables(declarations: list[str]) -> dict[str, str]:
+    variables: dict[str, str] = {}
+    for declaration in declarations:
+        parsed = tptp_decl_formula_parts(declaration)
+        if parsed is None:
+            continue
+        _, role, body, _ = parsed
+        if role != "type" or ":" not in body:
+            continue
+        raw_name, raw_sort = body.split(":", 1)
+        name = decode_tptp_identifier(raw_name.strip())
+        sort = tptp_sort_to_megalodon(raw_sort.strip())
+        if not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", name):
+            continue
+        if "$" in sort or "*" in sort or not sort:
+            continue
+        variables.setdefault(name, sort)
+    return variables
+
+
+def tptp_inference_rule(annotations: list[str]) -> str | None:
+    text = ",".join(annotations)
+    match = re.search(r"\binference\(([^,\)]+)", text)
+    return match.group(1) if match else None
+
+
+def tptp_formula_source_name(annotations: list[str]) -> str | None:
+    text = ",".join(annotations)
+    match = re.search(r"\bfile\([^,]+,\s*([^)]+)\)", text)
+    return decode_tptp_identifier(match.group(1).strip()) if match else None
+
+
+def raw_tptp_claim_name(name: str) -> str:
+    decoded = decode_tptp_identifier(name)
+    sanitized = re.sub(r"[^_A-Za-z0-9']", "_", decoded)
+    if not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", sanitized):
+        sanitized = f"R_{sanitized}"
+    return f"R_{sanitized}"
+
+
+def infer_missing_raw_tptp_sorts(expr: Expr, variables: dict[str, str], local_sorts: dict[str, str], expected: str | None = None) -> None:
+    if expr.kind == "var" and expr.value is not None:
+        if expr.value not in variables and expr.value not in local_sorts and expected in {"set", "prop"}:
+            variables[expr.value] = expected
+        return
+    if expr.kind in {"forall", "lambda"}:
+        assert expr.value is not None and expr.sort is not None
+        nested_sorts = dict(local_sorts)
+        nested_sorts[expr.value] = expr.sort
+        infer_missing_raw_tptp_sorts(expr.args[0], variables, nested_sorts, "prop" if expr.kind == "forall" else None)
+        return
+    if expr.kind == "arrow":
+        infer_missing_raw_tptp_sorts(expr.args[0], variables, local_sorts, "prop")
+        infer_missing_raw_tptp_sorts(expr.args[1], variables, local_sorts, "prop")
+        return
+    if expr.kind == "eq":
+        known_sorts = {
+            **variables,
+            **local_sorts,
+            "vampire_true": "prop",
+            "vampire_false": "prop",
+        }
+        left_sort = expr_sort(expr.args[0], known_sorts)
+        right_sort = expr_sort(expr.args[1], known_sorts)
+        infer_missing_raw_tptp_sorts(expr.args[0], variables, local_sorts, right_sort)
+        infer_missing_raw_tptp_sorts(expr.args[1], variables, local_sorts, left_sort)
+        return
+    if expr.kind == "app" and expr.args:
+        head = expr.args[0]
+        head_sort = None
+        if head.kind == "var" and head.value is not None:
+            head_sort = local_sorts.get(head.value) or variables.get(head.value)
+        if head_sort is not None:
+            pieces = split_sort_arrows(head_sort)
+            for arg, arg_sort in zip(expr.args[1:], pieces[:-1]):
+                infer_missing_raw_tptp_sorts(arg, variables, local_sorts, arg_sort)
+            for arg in expr.args[len(pieces) :]:
+                infer_missing_raw_tptp_sorts(arg, variables, local_sorts)
+            return
+    for arg in expr.args:
+        infer_missing_raw_tptp_sorts(arg, variables, local_sorts)
+
+
+def add_missing_raw_tptp_variables(propositions: list[str], variables: dict[str, str]) -> None:
+    for proposition in propositions:
+        parsed = parse_expr(proposition)
+        if parsed is None:
+            continue
+        infer_missing_raw_tptp_sorts(parsed, variables, {}, "prop")
+        for name in sorted(expr_variables(parsed)):
+            if name.startswith("spl") and name not in variables:
+                variables[name] = "prop"
+
+
+def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | None = None) -> list[str]:
+    text = proof.read_text(encoding="utf-8", errors="replace")
+    declarations = collect_tptp_declarations(text)
+    variable_sorts = raw_tptp_type_variables(declarations)
+    entries: list[tuple[str, str, str, str | None, str | None, str | None]] = []
+    propositions: list[str] = []
+    for declaration in declarations:
+        parsed = tptp_decl_formula_parts(declaration)
+        if parsed is None:
+            continue
+        name, role, formula, annotations = parsed
+        if role == "type":
+            continue
+        proposition = tptp_formula_to_megalodon_proposition(formula, variable_sorts)
+        rule = tptp_inference_rule(annotations)
+        source_name = tptp_formula_source_name(annotations)
+        if proposition is None:
+            entries.append((name, role, formula, None, rule, source_name))
+            continue
+        entries.append((name, role, formula, proposition, rule, source_name))
+        propositions.append(proposition)
+    add_missing_raw_tptp_variables(propositions, variable_sorts)
+
+    decoded_entries: list[tuple[str, str, str, str | None, str | None]] = []
+    decoded_propositions: list[str] = []
+    unsupported = 0
+    for name, role, formula, _, rule, source_name in entries:
+        proposition = tptp_formula_to_megalodon_proposition(formula, variable_sorts)
+        if proposition is None:
+            unsupported += 1
+        else:
+            decoded_propositions.append(proposition)
+        decoded_entries.append((name, role, proposition or "", rule, source_name))
+    entries = decoded_entries
+    propositions = decoded_propositions
+
+    final_name = None
+    final_proposition = "vampire_false"
+    for name, _, proposition, _, _ in reversed(entries):
+        if proposition:
+            final_name = raw_tptp_claim_name(name)
+            final_proposition = proposition
+            break
+
+    lines = [
+        "// Raw Vampire TPTP reconstruction skeleton.",
+        f"// proof: {proof}",
+    ]
+    if problem is not None:
+        lines.append(f"// problem: {problem}")
+    if source is not None:
+        lines.append(f"// source: {source}")
+    lines.append(f"// tptp declarations: {len(declarations)}")
+    lines.append(f"// decoded proof formulas: {len(propositions)}")
+    lines.append(f"// unsupported proof formulas: {unsupported}")
+    lines.extend(reconstruction_prelude_for(propositions))
+    for name, sort in sorted(variable_sorts.items()):
+        if name.startswith("vampire_"):
+            continue
+        lines.append(f"Variable {name}:{sort}.")
+
+    seen_claims: set[str] = set()
+    for name, role, proposition, rule, source_name in entries:
+        claim_name = raw_tptp_claim_name(name)
+        if claim_name in seen_claims:
+            continue
+        seen_claims.add(claim_name)
+        if role not in {"axiom", "definition"}:
+            continue
+        rule_text = rule or "input"
+        if source_name:
+            lines.append(f"// raw vampire node {name}: {role}, {rule_text}, source {source_name}")
+        else:
+            lines.append(f"// raw vampire node {name}: {role}, {rule_text}")
+        if not proposition:
+            lines.append(f"// unsupported raw vampire formula {name}.")
+            continue
+        lines.append(f"Axiom {claim_name}:{proposition}.")
+
+    theorem_name = "vampire_raw_tptp_reconstruction"
+    lines.append(f"Theorem {theorem_name}: {final_proposition}.")
+
+    seen_theorem_claims: set[str] = set()
+    for name, role, proposition, rule, source_name in entries:
+        claim_name = raw_tptp_claim_name(name)
+        if claim_name in seen_theorem_claims:
+            continue
+        seen_theorem_claims.add(claim_name)
+        if role in {"axiom", "definition"}:
+            continue
+        rule_text = rule or "input"
+        if source_name:
+            lines.append(f"// raw vampire node {name}: {role}, {rule_text}, source {source_name}")
+        else:
+            lines.append(f"// raw vampire node {name}: {role}, {rule_text}")
+        if not proposition:
+            lines.append(f"// unsupported raw vampire formula {name}.")
+            continue
+        lines.append(f"claim {claim_name}: {proposition}.")
+        lines.append("{ admit. }")
+
+    if final_name is None:
+        lines.append("admit.")
+    else:
+        lines.append(f"exact {final_name}.")
+    lines.append("Qed.")
+    return lines
+
+
+def write_raw_tptp_skeletons(
+    proofs: list[Path],
+    output_dir: Path,
+    repo: Path,
+    source: Path | None = None,
+) -> list[Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    for proof in proofs:
+        proof_path = proof if proof.is_absolute() else (repo / proof)
+        if not proof_path.exists():
+            raise SystemExit(f"raw TPTP proof not found: {proof_path}")
+        problem = repo / "examples/hammer" / proof_path.name
+        if not problem.exists():
+            problem = None
+        output = output_dir / f"{proof_path.stem}.raw_tptp_skeleton.mg"
+        output.write_text(
+            "\n".join(raw_tptp_skeleton_lines(proof_path, problem, source)) + "\n",
+            encoding="utf-8",
+        )
+        written.append(output)
+    return written
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", type=Path, default=Path.cwd())
@@ -10925,6 +11203,8 @@ def main() -> int:
     parser.add_argument("--require-claim-skeletons", action="store_true")
     parser.add_argument("--claim-skeleton-dir", type=Path)
     parser.add_argument("--index-claim-skeleton-dir", type=Path)
+    parser.add_argument("--raw-tptp-proof", action="append", type=Path)
+    parser.add_argument("--raw-tptp-skeleton-dir", type=Path)
     args = parser.parse_args()
 
     repo = args.repo.resolve()
@@ -10942,6 +11222,19 @@ def main() -> int:
             if not args.claim_skeleton_dir.is_absolute()
             else args.claim_skeleton_dir
         )
+
+    if args.raw_tptp_proof:
+        if args.raw_tptp_skeleton_dir is None:
+            raise SystemExit("--raw-tptp-skeleton-dir is required with --raw-tptp-proof")
+        raw_tptp_skeleton_dir = (
+            (repo / args.raw_tptp_skeleton_dir).resolve()
+            if not args.raw_tptp_skeleton_dir.is_absolute()
+            else args.raw_tptp_skeleton_dir
+        )
+        written = write_raw_tptp_skeletons(args.raw_tptp_proof, raw_tptp_skeleton_dir, repo, source)
+        for path in written:
+            print(f"raw TPTP skeleton: {path}")
+        return 0
 
     if args.index_claim_skeleton_dir:
         skeleton_dir = (
