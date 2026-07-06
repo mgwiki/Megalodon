@@ -4086,6 +4086,7 @@ def main() -> int:
     parser.add_argument("--check-claim-skeletons", action="store_true")
     parser.add_argument("--require-claim-skeletons", action="store_true")
     parser.add_argument("--claim-skeleton-dir", type=Path)
+    parser.add_argument("--index-claim-skeleton-dir", type=Path)
     args = parser.parse_args()
 
     repo = args.repo.resolve()
@@ -4103,6 +4104,19 @@ def main() -> int:
             if not args.claim_skeleton_dir.is_absolute()
             else args.claim_skeleton_dir
         )
+
+    if args.index_claim_skeleton_dir:
+        skeleton_dir = (
+            (repo / args.index_claim_skeleton_dir).resolve()
+            if not args.index_claim_skeleton_dir.is_absolute()
+            else args.index_claim_skeleton_dir
+        )
+        index = write_claim_skeleton_index(skeleton_dir)
+        if index is None:
+            raise SystemExit(f"no claim skeletons found in {skeleton_dir}")
+        print(f"claim skeleton index: {index}")
+        print(f"claim skeleton summary: {index.with_suffix('.summary.json')}")
+        return 0
 
     if args.check_existing:
         obligations, checked_sources, checked_skeletons = check_existing(
