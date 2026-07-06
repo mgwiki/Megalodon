@@ -3630,6 +3630,161 @@ def quantified_equality_rule_proof(
     return f"({prefix}{proof})"
 
 
+def transport_equality_argument_proof(
+    target: Expr,
+    source_left: Expr,
+    source_right: Expr,
+    source_proof: str,
+    side: int,
+    equality_proof: str,
+) -> tuple[Expr, Expr, str]:
+    if side == 0:
+        context = f"(fun zz:set => zz = {proof_arg_text(source_right)})"
+        proof = f"{proof_term_text(equality_proof)} {context} ({source_proof})"
+        return target.args[0], source_right, proof
+    context = f"(fun zz:set => {proof_arg_text(source_left)} = zz)"
+    proof = f"{proof_term_text(equality_proof)} {context} ({source_proof})"
+    return source_left, target.args[1], proof
+
+
+def quantified_equality_transported_rule_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 0 or len(expr_text(expr)) > 900:
+        return None
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if not binders or len(binders) > 4 or len(premises) > 3 or conclusion.kind != "eq":
+        return None
+
+    local_known = dict(known)
+    local_known_canonical = dict(known_canonical)
+    local_rules = list(rules)
+    local_eq_facts = list(eq_facts)
+    premise_names: list[str] = []
+    for index, premise in enumerate(premises):
+        name = f"H{index}"
+        premise_names.append(name)
+        remember_proposition(
+            local_known,
+            local_known_canonical,
+            local_rules,
+            local_eq_facts,
+            name,
+            expr_text(premise),
+        )
+
+    seed_terms: list[Expr] = []
+    seen_terms: set[str] = set()
+
+    def add_terms(node: Expr, limit: int = 32) -> None:
+        for term in expr_subterms(node, limit=limit):
+            key = expr_key(term)
+            if key in seen_terms:
+                continue
+            seen_terms.add(key)
+            seed_terms.append(term)
+
+    add_terms(conclusion, limit=64)
+    for premise in premises:
+        add_terms(premise, limit=32)
+    for known_prop in local_known:
+        parsed = parse_expr(known_prop)
+        if parsed is not None:
+            add_terms(parsed, limit=16)
+        if len(seed_terms) >= 96:
+            break
+
+    for rule_index, original_rule in enumerate(reversed(rules)):
+        rule = rename_rule_binders(original_rule, f"QE{rule_index}_")
+        rule_conclusion = rule_application_conclusion(rule)
+        if rule_conclusion.kind != "eq":
+            continue
+        variables = set(rule_application_binders(rule))
+        initial_substs: list[dict[str, Expr]] = []
+        for source_side, target_side in ((0, 0), (1, 1), (0, 1), (1, 0)):
+            trial: dict[str, Expr] = {}
+            if match_expr(rule_conclusion.args[source_side], conclusion.args[target_side], variables, trial):
+                initial_substs.append(trial)
+        if not initial_substs:
+            initial_substs.append({})
+
+        tried: set[tuple[tuple[str, str], ...]] = set()
+        for initial_subst in initial_substs:
+            for subst in fill_missing_binders_with_terms(
+                rule_application_binders(rule),
+                initial_subst,
+                seed_terms,
+                limit=96,
+            ):
+                if not all(binder in subst for binder in rule_application_binders(rule)):
+                    continue
+                key = tuple(sorted((name, expr_key(value)) for name, value in subst.items()))
+                if key in tried:
+                    continue
+                tried.add(key)
+                source = substitute_expr(rule_conclusion, subst)
+                if source.kind != "eq":
+                    continue
+                changed = [
+                    index
+                    for index, (source_arg, target_arg) in enumerate(zip(source.args, conclusion.args))
+                    if expr_key(source_arg) != expr_key(target_arg)
+                ]
+                if not changed or len(changed) > 2:
+                    continue
+                parts = rule_application_parts(
+                    rule,
+                    subst,
+                    local_known,
+                    local_known_canonical,
+                    local_rules,
+                    local_eq_facts,
+                    definitions,
+                    max(0, rule_depth - 1),
+                )
+                if parts is None:
+                    continue
+                proof = rule_application_text(parts)
+                current_left, current_right = source.args
+                ok = True
+                for side in changed:
+                    source_arg = current_left if side == 0 else current_right
+                    target_arg = conclusion.args[side]
+                    equality_proof = equality_transport_side_proof(
+                        source_arg,
+                        target_arg,
+                        local_known,
+                        local_known_canonical,
+                        local_rules,
+                        local_eq_facts,
+                        definitions,
+                        rule_depth,
+                    )
+                    if equality_proof is None:
+                        ok = False
+                        break
+                    current_left, current_right, proof = transport_equality_argument_proof(
+                        Expr("eq", args=(conclusion.args[0], conclusion.args[1])),
+                        current_left,
+                        current_right,
+                        proof,
+                        side,
+                        equality_proof,
+                    )
+                if ok and expr_key(current_left) == expr_key(conclusion.args[0]) and expr_key(current_right) == expr_key(conclusion.args[1]):
+                    prefix = "".join(f"fun {name}:{sort} => " for name, sort in binders)
+                    prefix += "".join(f"fun {name} => " for name in premise_names)
+                    return f"({prefix}{proof})"
+    return None
+
+
 IDENTIFIER_CHARS = "_'0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 FORALL_RE = re.compile(r"forall (?P<name>[_A-Za-z][_A-Za-z0-9']*):(?P<sort>[^,]+), ")
 
@@ -11820,6 +11975,18 @@ def proof_for_proposition(
     proof = proof_for_expr(expr, known, known_canonical, rules, eq_facts, definitions)
     if proof is not None:
         return proof
+    if expr.kind == "forall" and len(expr_text(expr)) <= 500:
+        transported_equality_proof = quantified_equality_transported_rule_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth=3,
+        )
+        if transported_equality_proof is not None:
+            return transported_equality_proof
     if expr.kind == "app" and len(expr_text(expr)) <= 500:
         return proof_for_expr(
             expr,
