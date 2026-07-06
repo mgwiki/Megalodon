@@ -8762,6 +8762,138 @@ def ap1_sigma_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
     )
 
 
+def sigma_membership_expr(premise: Expr, item: Expr, base: Expr, family: Expr) -> bool:
+    membership = app_args(premise, "In", 2)
+    if membership is None:
+        return False
+    member, sigma = membership
+    if expr_key(member) != expr_key(item):
+        return False
+    if sigma.kind != "app" or len(sigma.args) != 3:
+        return False
+    if sigma.args[0].kind != "var" or sigma.args[0].value != "Sigma":
+        return False
+    if expr_key(sigma.args[1]) != expr_key(base):
+        return False
+    return alpha_equivalent(eta_reduce_unary_function(sigma.args[2]), eta_reduce_unary_function(family))
+
+
+def find_sigma_exists_ap_rules(rules: list[ProofRule]) -> tuple[str | None, str | None, str | None]:
+    sigma_exists = None
+    ap0_pair = None
+    ap1_pair = None
+    empty = Expr("var", value="Empty")
+    one = unary_app("ordsucc", empty)
+    for rule in rules:
+        b = {name: Expr("var", value=name) for name in rule.binders}
+        if len(rule.binders) == 2 and not rule.premises and rule.conclusion.kind == "eq":
+            left, right = rule.conclusion.args
+            pair = Expr("app", args=(Expr("var", value="setsum"), b[rule.binders[0]], b[rule.binders[1]]))
+            if expr_key(left) == expr_key(Expr("app", args=(Expr("var", value="ap"), pair, empty))) and expr_key(right) == rule.binders[0]:
+                ap0_pair = rule.name
+            if expr_key(left) == expr_key(Expr("app", args=(Expr("var", value="ap"), pair, one))) and expr_key(right) == rule.binders[1]:
+                ap1_pair = rule.name
+        if len(rule.binders) != 3 or len(rule.premises) != 1:
+            continue
+        base, family, pair_var = (b[name] for name in rule.binders)
+        if not sigma_membership_expr(rule.premises[0], pair_var, base, family):
+            continue
+        outer_exists = vampire_exists_body(rule.conclusion)
+        if outer_exists is None:
+            continue
+        source_name, outer_body = outer_exists
+        source = Expr("var", value=source_name)
+        outer_parts = vampire_and_parts(outer_body)
+        if outer_parts is None or not atom2(outer_parts[0], "In", source, base):
+            continue
+        inner_exists = vampire_exists_body(outer_parts[1])
+        if inner_exists is None:
+            continue
+        value_name, inner_body = inner_exists
+        value = Expr("var", value=value_name)
+        inner_parts = vampire_and_parts(inner_body)
+        if inner_parts is None:
+            continue
+        if not atom2(inner_parts[0], "In", value, Expr("app", args=(family, source))):
+            continue
+        sides = equality_like_sides(inner_parts[1])
+        expected_pair = Expr("app", args=(Expr("var", value="setsum"), source, value))
+        if sides is None or expr_key(sides[0]) != expr_key(expected_pair) or expr_key(sides[1]) != expr_key(pair_var):
+            continue
+        sigma_exists = rule.name
+    return sigma_exists, ap0_pair, ap1_pair
+
+
+def ap0_sigma_exists_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if len(binders) != 3 or len(premises) != 1:
+        return None
+    names = [name for name, _ in binders]
+    sorts = [sort for _, sort in binders]
+    if sorts != ["set", "set->set", "set"]:
+        return None
+    base, family, pair = (Expr("var", value=name) for name in names)
+    if not sigma_membership_expr(premises[0], pair, base, family):
+        return None
+    if not atom2(conclusion, "In", Expr("app", args=(Expr("var", value="ap"), pair, Expr("var", value="Empty"))), base):
+        return None
+    sigma_exists, ap0_pair, _ = find_sigma_exists_ap_rules(rules)
+    if sigma_exists is None or ap0_pair is None:
+        return None
+    return (
+        f"(fun {names[0]} {names[1]} {names[2]} H0 => "
+        f"(({sigma_exists} {names[0]} {names[1]} {names[2]} H0) "
+        f"(In (ap {names[2]} Empty) {names[0]}) "
+        f"(fun W HWand => HWand (In (ap {names[2]} Empty) {names[0]}) "
+        f"(fun HW Hex => Hex (In (ap {names[2]} Empty) {names[0]}) "
+        f"(fun V HVand => HVand (In (ap {names[2]} Empty) {names[0]}) "
+        f"(fun HV Heq => (Heq (fun zz:set => In (ap zz Empty) {names[0]}) "
+        f"((({ap0_pair} W V) "
+        f"(fun zz:set => In zz {names[0]} -> In (ap (setsum W V) Empty) {names[0]}) "
+        f"(fun H => H)) HW))))))))"
+    )
+
+
+def ap1_sigma_exists_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if len(binders) != 3 or len(premises) != 1:
+        return None
+    names = [name for name, _ in binders]
+    sorts = [sort for _, sort in binders]
+    if sorts != ["set", "set->set", "set"]:
+        return None
+    base, family, pair = (Expr("var", value=name) for name in names)
+    if not sigma_membership_expr(premises[0], pair, base, family):
+        return None
+    empty = Expr("var", value="Empty")
+    one = unary_app("ordsucc", empty)
+    ap0 = Expr("app", args=(Expr("var", value="ap"), pair, empty))
+    ap1 = Expr("app", args=(Expr("var", value="ap"), pair, one))
+    if not atom2(conclusion, "In", ap1, Expr("app", args=(family, ap0))):
+        return None
+    sigma_exists, ap0_pair, ap1_pair = find_sigma_exists_ap_rules(rules)
+    if sigma_exists is None or ap0_pair is None or ap1_pair is None:
+        return None
+    return (
+        f"(fun {names[0]} {names[1]} {names[2]} H0 => "
+        f"(({sigma_exists} {names[0]} {names[1]} {names[2]} H0) "
+        f"(In (ap {names[2]} (ordsucc Empty)) ({names[1]} (ap {names[2]} Empty))) "
+        f"(fun W HWand => HWand (In (ap {names[2]} (ordsucc Empty)) ({names[1]} (ap {names[2]} Empty))) "
+        f"(fun HW Hex => Hex (In (ap {names[2]} (ordsucc Empty)) ({names[1]} (ap {names[2]} Empty))) "
+        f"(fun V HVand => HVand (In (ap {names[2]} (ordsucc Empty)) ({names[1]} (ap {names[2]} Empty))) "
+        f"(fun HV Heq => (Heq (fun zz:set => In (ap zz (ordsucc Empty)) ({names[1]} (ap zz Empty))) "
+        f"((({ap0_pair} W V) "
+        f"(fun zz:set => In (ap (setsum W V) (ordsucc Empty)) ({names[1]} zz) -> "
+        f"In (ap (setsum W V) (ordsucc Empty)) ({names[1]} (ap (setsum W V) Empty))) "
+        f"(fun H => H)) "
+        f"((({ap1_pair} W V) "
+        f"(fun zz:set => In zz ({names[1]} W) -> In (ap (setsum W V) (ordsucc Empty)) ({names[1]} W)) "
+        f"(fun H => H)) HV)))))))))"
+    )
+
+
 def forall_prop_identity(expr: Expr) -> bool:
     binders, body = collect_foralls(expr)
     return (
@@ -9029,6 +9161,8 @@ def _proof_for_expr_impl(
         algebraic_interchange_commutativity_proof(expr, rules),
         pair_sigma_e1_proof(expr, rules),
         ap1_sigma_proof(expr, rules),
+        ap0_sigma_exists_proof(expr, rules),
+        ap1_sigma_exists_proof(expr, rules),
     ):
         if derived is not None:
             return derived
