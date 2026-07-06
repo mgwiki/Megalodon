@@ -972,7 +972,7 @@ def tptp_formula_to_megalodon_proposition(text: str, variable_sorts: dict[str, s
         right = tptp_formula_to_megalodon_proposition(equivalence[1], variable_sorts)
         if left is None or right is None:
             return None
-        return f"vampire_and ({left} -> {right}) ({right} -> {left})"
+        return f"vampire_and ({proposition_argument_text(left)} -> {right}) ({proposition_argument_text(right)} -> {left})"
 
     implication = split_top_level_operator(text, "=>")
     if implication is not None:
