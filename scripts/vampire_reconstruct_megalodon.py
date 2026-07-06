@@ -3159,6 +3159,246 @@ def introduced_unary_equality_bridge_proof(
     return f"({' '.join(['fun'] + args + ['=>', proof])})"
 
 
+def one_rewrite_transport_side_proof(
+    source: Expr,
+    target: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if expr_key(source) == expr_key(target):
+        return "(fun Q H => H)"
+    target_subterms = expr_subterms(target, limit=32)
+    seen_pairs: set[tuple[str, str]] = set()
+    for old in expr_subterms(source, limit=32):
+        for new in target_subterms:
+            key = (expr_key(old), expr_key(new))
+            if key in seen_pairs or key[0] == key[1]:
+                continue
+            seen_pairs.add(key)
+            replaced, changed = replace_expr(source, old, new)
+            if not changed or expr_key(replaced) != expr_key(target):
+                continue
+            equality = Expr("eq", args=(old, new))
+            equality_proof = equality_direct_rule_proof(
+                equality,
+                known,
+                known_canonical,
+                rules,
+                eq_facts,
+                definitions,
+                rule_depth,
+            )
+            if equality_proof is None:
+                reverse = Expr("eq", args=(new, old))
+                reverse_proof = equality_direct_rule_proof(
+                    reverse,
+                    known,
+                    known_canonical,
+                    rules,
+                    eq_facts,
+                    definitions,
+                    rule_depth,
+                )
+                if reverse_proof is None:
+                    continue
+                equality_proof = eq_symmetry_proof(reverse_proof, new)
+            hole_name = fresh_identifier("zz", expr_text(source), expr_text(target))
+            context, context_changed = replace_expr(source, old, Expr("var", value=hole_name))
+            if not context_changed:
+                continue
+            return (
+                f"{proof_term_text(equality_proof)} "
+                f"(fun {hole_name}:set => {expr_text(source)} = {expr_text(context)}) "
+                f"(fun R Hr => Hr)"
+            )
+    return None
+
+
+def introduced_equality_one_rewrite_rule_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if (
+        not binders
+        or len(binders) > 5
+        or not (2 <= len(premises) <= 6)
+        or not (2 <= len(rules) <= 5)
+        or conclusion.kind != "eq"
+    ):
+        return None
+
+    local_known = dict(known)
+    local_known_canonical = dict(known_canonical)
+    local_rules = list(rules)
+    local_eq_facts = list(eq_facts)
+    args = [name for name, _ in binders]
+    used_names = set(args)
+    used_names.update(known.values())
+    for index, premise in enumerate(premises):
+        name = "H" + str(index)
+        while name in used_names:
+            index += 1
+            name = "H" + str(index)
+        used_names.add(name)
+        args.append(name)
+        remember_proposition(
+            local_known,
+            local_known_canonical,
+            local_rules,
+            local_eq_facts,
+            name,
+            expr_text(premise),
+        )
+
+    target_left = normalize_defined_expr(conclusion.args[0], definitions)
+    target_right = normalize_defined_expr(conclusion.args[1], definitions)
+    for rule_index, original_rule in enumerate(reversed(local_rules)):
+        rule = rename_rule_binders(original_rule, f"IOR{rule_index}_")
+        rule_conclusion = rule_application_conclusion(rule)
+        if rule_conclusion.kind != "eq":
+            continue
+        rule_binders = rule_application_binders(rule)
+        variables = set(rule_binders)
+        for matched_side, moving_side, reverse_base in (
+            (rule_conclusion.args[0], rule_conclusion.args[1], False),
+            (rule_conclusion.args[1], rule_conclusion.args[0], True),
+        ):
+            subst: dict[str, Expr] = {}
+            if not match_expr(matched_side, target_left, variables, subst):
+                continue
+            terms = expr_subterms(target_right, limit=32)
+            terms.sort(key=lambda term: (len(expr_text(term)), expr_text(term)))
+            for candidate_subst in fill_missing_binders_with_terms(rule_binders, subst, terms, limit=48):
+                if not all(binder in candidate_subst for binder in rule_binders):
+                    continue
+                source = normalize_defined_expr(substitute_expr(moving_side, candidate_subst), definitions)
+                side_prefix = one_rewrite_transport_side_proof(
+                    source,
+                    target_right,
+                    local_known,
+                    local_known_canonical,
+                    local_rules,
+                    local_eq_facts,
+                    definitions,
+                    max(0, rule_depth - 1),
+                )
+                if side_prefix is None:
+                    continue
+                parts = rule_application_parts(
+                    rule,
+                    candidate_subst,
+                    local_known,
+                    local_known_canonical,
+                    local_rules,
+                    local_eq_facts,
+                    definitions,
+                    max(0, rule_depth - 1),
+                )
+                if parts is None:
+                    continue
+                base_proof = rule_application_text(parts)
+                if reverse_base:
+                    base_proof = eq_symmetry_proof(base_proof, source)
+                proof = eq_transitivity_proof([base_proof, side_prefix], expr_text(target_left))
+                if proof is not None:
+                    return f"({' '.join(['fun'] + args + ['=>', proof])})"
+    return None
+
+
+def introduced_atomic_rule_transport_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if (
+        conclusion.kind != "app"
+        or not binders
+        or len(binders) > 4
+        or len(premises) > 6
+        or not (5 <= len(rules) <= 8)
+        or len(expr_text(expr)) > 700
+    ):
+        return None
+    for rule in rules:
+        rule_binders = rule_application_binders(rule)
+        if len(rule_binders) != 2:
+            continue
+        rule_conclusion = rule_application_conclusion(rule)
+        if rule_conclusion.kind != "eq":
+            continue
+        left = rule_conclusion.args[0]
+        right = rule_conclusion.args[1]
+        if (
+            left.kind == "app"
+            and right.kind == "app"
+            and len(left.args) == 3
+            and len(right.args) == 3
+            and expr_key(left.args[0]) == expr_key(right.args[0])
+            and left.args[1].kind == "var"
+            and left.args[2].kind == "var"
+            and right.args[1].kind == "var"
+            and right.args[2].kind == "var"
+            and left.args[1].value == rule_binders[0]
+            and left.args[2].value == rule_binders[1]
+            and right.args[1].value == rule_binders[1]
+            and right.args[2].value == rule_binders[0]
+        ):
+            return None
+
+    local_known = dict(known)
+    local_known_canonical = dict(known_canonical)
+    local_rules = list(rules)
+    local_eq_facts = list(eq_facts)
+    args = [name for name, _ in binders]
+    used_names = set(args)
+    used_names.update(known.values())
+    for index, premise in enumerate(premises):
+        name = "H" + str(index)
+        while name in used_names:
+            index += 1
+            name = "H" + str(index)
+        used_names.add(name)
+        args.append(name)
+        remember_proposition(
+            local_known,
+            local_known_canonical,
+            local_rules,
+            local_eq_facts,
+            name,
+            expr_text(premise),
+        )
+
+    proof = atomic_rule_transport_proof(
+        conclusion,
+        local_known,
+        local_known_canonical,
+        local_rules,
+        local_eq_facts,
+        definitions,
+        rule_depth,
+    )
+    if proof is None:
+        return None
+    return f"({' '.join(['fun'] + args + ['=>', proof])})"
+
+
 def app_context_text(head: Expr, args: tuple[Expr, ...], hole_index: int, hole_name: str) -> str:
     parts = [expr_text(head)]
     for index, arg in enumerate(args):
@@ -5858,6 +6098,29 @@ def proof_for_proposition(
         )
         if introduced_bridge_proof is not None:
             return introduced_bridge_proof
+        one_rewrite_rule_proof = introduced_equality_one_rewrite_rule_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth=3,
+        )
+        if one_rewrite_rule_proof is not None:
+            return one_rewrite_rule_proof
+    if expr.kind == "forall" and len(expr_text(expr)) <= 700:
+        introduced_atomic_proof = introduced_atomic_rule_transport_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth=3,
+        )
+        if introduced_atomic_proof is not None:
+            return introduced_atomic_proof
     proof = proof_for_expr(expr, known, known_canonical, rules, eq_facts, definitions)
     if proof is not None:
         return proof
