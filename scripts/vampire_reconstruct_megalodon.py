@@ -1968,8 +1968,9 @@ def rule_application_parts(
             parts.append(proof_arg_text(subst[step.name]))
             continue
         assert step.expr is not None
+        premise = substitute_expr(step.expr, subst)
         premise_proof = proof_for_expr(
-            substitute_expr(step.expr, subst),
+            premise,
             known,
             known_canonical,
             rules,
@@ -1978,6 +1979,17 @@ def rule_application_parts(
             allow_rule=rule_depth > 0,
             rule_depth=max(0, rule_depth - 1),
         )
+        if premise_proof is None and premise.kind == "forall" and rule_depth > 0:
+            premise_proof = proof_for_expr(
+                premise,
+                known,
+                known_canonical,
+                rules,
+                eq_facts,
+                definitions,
+                allow_rule=True,
+                rule_depth=max(rule_depth, 2),
+            )
         if premise_proof is None:
             return None
         parts.append(proof_argument_text(premise_proof))
@@ -2061,6 +2073,17 @@ def sequential_rule_application_proof(
                 allow_rule=True,
                 rule_depth=rule_depth - 1,
             )
+            if premise_proof is None and premise.kind == "forall" and rule_depth > 0:
+                premise_proof = proof_for_expr(
+                    premise,
+                    known,
+                    known_canonical,
+                    rules,
+                    eq_facts,
+                    definitions,
+                    allow_rule=True,
+                    rule_depth=rule_depth,
+                )
             if premise_proof is None:
                 ok = False
                 break
