@@ -19823,15 +19823,27 @@ def raw_tptp_skolem_rewrites(
             continue
         binders, body = collect_foralls(expr)
         premises, conclusion = split_arrows(body)
-        if len(premises) != 1:
+        rewrite_premise: Expr | None = None
+        rewrite_conclusion: Expr | None = None
+        if len(premises) == 1:
+            rewrite_premise = premises[0]
+            rewrite_conclusion = conclusion
+        elif len(premises) == 2 and false_eliminator_expr(conclusion):
+            for premise_index, premise in enumerate(premises):
+                if any(raw_exists_transform_parts(subterm) is not None for subterm in expr_subterms(premise, limit=32)):
+                    rewrite_premise = premise
+                    other = premises[1 - premise_index]
+                    rewrite_conclusion = Expr("arrow", args=(other, conclusion))
+                    break
+        if rewrite_premise is None or rewrite_conclusion is None:
             continue
-        if not any(raw_exists_transform_parts(subterm) is not None for subterm in expr_subterms(premises[0], limit=32)):
+        if not any(raw_exists_transform_parts(subterm) is not None for subterm in expr_subterms(rewrite_premise, limit=32)):
             continue
         rewrites.append(
             RawSkolemRewrite(
                 tuple(binders),
-                premises[0],
-                conclusion,
+                rewrite_premise,
+                rewrite_conclusion,
                 raw_tptp_claim_name(parent),
             )
         )
@@ -19849,6 +19861,9 @@ def raw_skolem_rewrite_instance_proof(
     subst: dict[str, Expr] = {}
     if not match_expr_with_alpha_instantiation(rewrite.premise, source, binder_names, subst):
         return None
+    conclusion_subst = dict(subst)
+    if match_expr_with_alpha_instantiation(rewrite.conclusion, target, binder_names, conclusion_subst):
+        subst = conclusion_subst
     flatten_substitution(subst)
     local_sorts = {**variable_sorts, **{name: sort for name, sort in rewrite.binders}}
     candidate_exprs = (source, target, rewrite.premise, rewrite.conclusion)
@@ -19863,8 +19878,11 @@ def raw_skolem_rewrite_instance_proof(
             subst[name] = candidates[0]
     if any(name not in subst for name, _ in rewrite.binders):
         return None
-    if any(expr_variables(value) & binder_names for value in subst.values()):
-        return None
+    for name, value in subst.items():
+        if value.kind == "var" and value.value == name:
+            continue
+        if expr_variables(value) & binder_names:
+            return None
     instantiated_premise = substitute_expr(rewrite.premise, subst)
     if not expr_same_mod_alpha(instantiated_premise, source):
         return None
