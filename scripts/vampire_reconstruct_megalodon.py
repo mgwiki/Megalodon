@@ -16683,6 +16683,9 @@ def raw_tptp_one_parent_transform_proof(
     simple = raw_simple_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
     if simple is not None:
         return simple
+    deep = raw_deep_formula_transform_proof(source, target, raw_tptp_claim_name(parents[0]), variable_sorts or {})
+    if deep is not None:
+        return deep
     implication_or = raw_classical_implication_to_or_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
     if implication_or is not None:
         return implication_or
@@ -16867,6 +16870,7 @@ def raw_tptp_deep_formula_transform_proof(
     proposition: str,
     parents: list[str],
     propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str] | None = None,
 ) -> str | None:
     if len(parents) != 1:
         return None
@@ -16877,7 +16881,7 @@ def raw_tptp_deep_formula_transform_proof(
     target = parse_expr(proposition)
     if source is None or target is None:
         return None
-    return raw_deep_formula_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
+    return raw_deep_formula_transform_proof(source, target, raw_tptp_claim_name(parents[0]), variable_sorts or {})
 
 
 def raw_eq_symmetry_proof(proof: str, left: Expr, sort: str) -> str:
@@ -16892,12 +16896,40 @@ def raw_eq_symmetry_proof(proof: str, left: Expr, sort: str) -> str:
     return f"({proof_head(proof)} (fun {name}:{sort} => {predicate}) (fun R Hr => Hr))"
 
 
+def raw_candidate_terms_for_sort(
+    exprs: tuple[Expr, ...],
+    sort: str,
+    variable_sorts: dict[str, str],
+) -> list[Expr]:
+    candidates: list[Expr] = []
+    seen: set[str] = set()
+
+    def add(candidate: Expr) -> None:
+        text = expr_text(candidate)
+        if text in seen:
+            return
+        if expr_sort(candidate, variable_sorts) != sort:
+            return
+        seen.add(text)
+        candidates.append(candidate)
+
+    for name, candidate_sort in sorted(variable_sorts.items()):
+        if candidate_sort == sort:
+            add(Expr("var", value=name))
+    for expr in exprs:
+        for candidate in expr_subterms(expr, limit=128):
+            add(candidate)
+    return candidates
+
+
 def raw_deep_formula_transform_proof(
     source: Expr,
     target: Expr,
     source_proof: str,
+    variable_sorts: dict[str, str] | None = None,
     depth: int = 0,
 ) -> str | None:
+    variable_sorts = variable_sorts or {}
     if depth > 80 or proof_search_timed_out():
         return None
     if len(expr_text(source)) + len(expr_text(target)) > 9000:
@@ -16924,10 +16956,43 @@ def raw_deep_formula_transform_proof(
         if source.value != target.value:
             source_body = rename_expr_variables(source_body, {source.value: target.value})
         inner_source = f"({proof_head(source_proof)} {target.value})"
-        inner = raw_deep_formula_transform_proof(source_body, target.args[0], inner_source, depth + 1)
+        inner = raw_deep_formula_transform_proof(
+            source_body,
+            target.args[0],
+            inner_source,
+            {**variable_sorts, target.value: target.sort},
+            depth + 1,
+        )
         if inner is None:
             return None
         return f"(fun {target.value}:{target.sort} => {inner})"
+
+    if target.kind == "forall" and target.value is not None and target.sort is not None:
+        inner = raw_deep_formula_transform_proof(
+            source,
+            target.args[0],
+            source_proof,
+            {**variable_sorts, target.value: target.sort},
+            depth + 1,
+        )
+        if inner is not None:
+            return f"(fun {target.value}:{target.sort} => {inner})"
+
+    if source.kind == "forall" and source.value is not None and source.sort is not None:
+        source_body = source.args[0]
+        candidates = raw_candidate_terms_for_sort((target, source_body), source.sort, variable_sorts)
+        for candidate in candidates[:12]:
+            instantiated_source = substitute_expr(source_body, {source.value: candidate})
+            inner_source = f"({proof_head(source_proof)} {proof_arg_text(candidate)})"
+            inner = raw_deep_formula_transform_proof(
+                instantiated_source,
+                target,
+                inner_source,
+                variable_sorts,
+                depth + 1,
+            )
+            if inner is not None:
+                return inner
 
     if source.kind == "arrow" and target.kind == "arrow":
         source_premise, source_conclusion = source.args
@@ -16937,6 +17002,7 @@ def raw_deep_formula_transform_proof(
             target_premise,
             source_premise,
             premise_name,
+            variable_sorts,
             depth + 1,
         )
         if source_premise_proof is None:
@@ -16946,6 +17012,7 @@ def raw_deep_formula_transform_proof(
             source_conclusion,
             target_conclusion,
             conclusion_source,
+            variable_sorts,
             depth + 1,
         )
         if conclusion is None:
@@ -18475,7 +18542,7 @@ def raw_tptp_replay_proof(
         if proof is not None:
             return proof
         if rule == "fool_elimination":
-            return raw_tptp_deep_formula_transform_proof(proposition, parents, propositions_by_name)
+            return raw_tptp_deep_formula_transform_proof(proposition, parents, propositions_by_name, variable_sorts)
         if rule == "cnf_transformation":
             return raw_tptp_small_forall_permutation_transform_proof(proposition, parents, propositions_by_name)
         return None
