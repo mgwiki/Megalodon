@@ -27777,6 +27777,13 @@ def raw_tptp_replay_proof_has_synthetic_db(proof: str) -> bool:
     return RAW_TPTP_SYNTHETIC_DB_RE.search(proof) is not None
 
 
+def raw_tptp_replay_proof_has_free_synthetic_db(proof: str) -> bool:
+    parsed = parse_expr(proof)
+    if parsed is None:
+        return False
+    return any(RAW_TPTP_SYNTHETIC_DB_RE.fullmatch(name) for name in expr_variables(parsed))
+
+
 RAW_TPTP_SURFACE_VAR_RE = re.compile(r"\b[XY][0-9]+\b")
 RAW_TPTP_SURFACE_BINDER_RE = re.compile(r"\b(?:fun|forall)\s+([XY][0-9]+)\s*:")
 RAW_TPTP_BAD_DEFINITION_CONTEXT_RE = re.compile(r"\bR_S[0-9]+_def\s+\(fun\b")
@@ -27804,7 +27811,11 @@ def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: s
         return True
     if raw_tptp_replay_proof_has_free_surface_variable(proof):
         return True
+    if raw_tptp_replay_proof_has_free_synthetic_db(proof):
+        return True
     if raw_tptp_replay_proof_has_escaped_surface_variable(proposition, proof):
+        return True
+    if rule in {"forward_demodulation", "backward_demodulation"} and raw_tptp_replay_proof_has_synthetic_db(proof):
         return True
     if rule in {"definition_folding", "definition_unfolding"} and raw_tptp_replay_proof_has_synthetic_db(proof):
         return raw_tptp_replay_proof_has_unbound_synthetic_db(proof)
