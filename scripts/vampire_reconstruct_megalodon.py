@@ -22568,11 +22568,31 @@ def raw_instantiated_clause_from_exported_literal(
     ]
     candidate_literals.sort(key=lambda literal: -len(expr_variables(literal) & (binder_names - subst.keys())))
 
+    def completed_substitution_score(current: dict[str, Expr]) -> tuple[int, int, int]:
+        matched_targets: set[int] = set()
+        matched_literals = 0
+        for source_literal in candidate_literals:
+            if not (expr_variables(source_literal) & binder_names) <= current.keys():
+                continue
+            instantiated_source = substitute_expr(source_literal, current)
+            for target_index, target_literal in enumerate(target_literals):
+                trial: dict[str, Expr] = {}
+                if raw_match_literal_mod_equality_symmetry(instantiated_source, target_literal, set(), trial):
+                    matched_targets.add(target_index)
+                    matched_literals += 1
+                    break
+        used_target_names = {
+            value.value
+            for value in current.values()
+            if value.kind == "var" and value.value in target_by_name
+        }
+        return (matched_literals, len(matched_targets), len(used_target_names))
+
     def complete_from_target(index: int, current: dict[str, Expr]) -> dict[str, Expr] | None:
         if binder_names <= current.keys():
             return current
         if index >= len(candidate_literals):
-            return None
+            return current
         source_literal = candidate_literals[index]
         trials: list[dict[str, Expr]] = []
         for target_literal in target_literals:
@@ -22595,6 +22615,7 @@ def raw_instantiated_clause_from_exported_literal(
             ),
             reverse=True,
         )
+        candidates: list[dict[str, Expr]] = []
         seen_trials: set[tuple[tuple[str, str], ...]] = set()
         for trial in trials:
             key = tuple(sorted((name, expr_key(value)) for name, value in trial.items()))
@@ -22603,8 +22624,13 @@ def raw_instantiated_clause_from_exported_literal(
             seen_trials.add(key)
             found = complete_from_target(index + 1, trial)
             if found is not None:
-                return found
-        return complete_from_target(index + 1, current)
+                candidates.append(found)
+        skipped = complete_from_target(index + 1, current)
+        if skipped is not None:
+            candidates.append(skipped)
+        if not candidates:
+            return None
+        return max(candidates, key=completed_substitution_score)
 
     completed = complete_from_target(0, dict(subst))
     if completed is not None:
