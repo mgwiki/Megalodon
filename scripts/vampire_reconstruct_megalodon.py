@@ -22181,6 +22181,120 @@ def raw_tptp_extra_formula_expr(
     return parse_expr(proposition) if proposition is not None else None
 
 
+def raw_equality_goal_expr(left: Expr, right: Expr, sort: str) -> Expr:
+    if sort == "prop":
+        return Expr("app", args=(Expr("var", value="vampire_eq_prop"), left, right))
+    return Expr("eq", args=(left, right))
+
+
+def raw_equality_right_transport_proof(
+    equality_proof: str,
+    equality_left: Expr,
+    equality_right: Expr,
+    premise_proof: str,
+    fixed_right: Expr,
+    sort: str,
+) -> str:
+    hole_name = fresh_identifier(
+        "zz",
+        expr_text(equality_left),
+        expr_text(equality_right),
+        expr_text(fixed_right),
+        sort,
+    )
+    if sort == "prop":
+        predicate = f"vampire_eq_prop {hole_name} {proof_arg_text(fixed_right)}"
+    else:
+        predicate = f"{hole_name} = {expr_text(fixed_right)}"
+    return (
+        f"{proof_term_text(equality_proof)} "
+        f"(fun {hole_name} :{sort} => {predicate}) "
+        f"{proof_term_text(premise_proof)}"
+    )
+
+
+def raw_equality_composition_proof(
+    first: Expr,
+    first_proof: str,
+    second: Expr,
+    second_proof: str,
+    target: Expr,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    first_sides = equality_like_sides(first)
+    second_sides = equality_like_sides(second)
+    target_sides = equality_like_sides(target)
+    if first_sides is None or second_sides is None or target_sides is None:
+        return None
+    sort = raw_equality_transport_sort(first_sides[0], first_sides[1], variable_sorts)
+    first_orientations = (
+        (first_sides[0], first_sides[1], first_proof),
+        (first_sides[1], first_sides[0], raw_eq_symmetry_proof(first_proof, first_sides[0], sort)),
+    )
+    second_sort = raw_equality_transport_sort(second_sides[0], second_sides[1], variable_sorts)
+    second_orientations = (
+        (second_sides[0], second_sides[1], second_proof),
+        (second_sides[1], second_sides[0], raw_eq_symmetry_proof(second_proof, second_sides[0], second_sort)),
+    )
+    for left, right, proof in first_orientations:
+        for other_left, other_right, other_proof in second_orientations:
+            if not expr_same_mod_alpha(left, other_left):
+                continue
+            candidate = raw_equality_goal_expr(right, other_right, sort)
+            if expr_same_mod_alpha(candidate, target):
+                return raw_equality_right_transport_proof(proof, left, right, other_proof, other_right, sort)
+            candidate = raw_equality_goal_expr(other_right, right, sort)
+            if expr_same_mod_alpha(candidate, target):
+                symmetric = raw_eq_symmetry_proof(
+                    raw_equality_right_transport_proof(proof, left, right, other_proof, other_right, sort),
+                    right,
+                    sort,
+                )
+                return symmetric
+    return None
+
+
+def raw_quantified_equality_instances(
+    expr: Expr,
+    proof: str,
+    candidate_exprs: tuple[Expr, ...],
+    variable_sorts: dict[str, str],
+    limit: int = 32,
+) -> list[tuple[Expr, str]]:
+    binders, body = collect_foralls(expr)
+    if len(binders) > 4 or equality_like_sides(body) is None:
+        return []
+    local_sorts = {**variable_sorts, **{name: sort for name, sort in binders}}
+    result: list[tuple[Expr, str]] = []
+    seen: set[str] = set()
+
+    def search(index: int, subst: dict[str, Expr], proof_text: str) -> None:
+        if len(result) >= limit or proof_search_timed_out():
+            return
+        if index >= len(binders):
+            instantiated = substitute_expr(body, subst)
+            key = expr_key(instantiated)
+            if key not in seen:
+                seen.add(key)
+                result.append((instantiated, proof_text))
+            return
+        name, sort = binders[index]
+        candidates = raw_candidate_terms_for_sort((*candidate_exprs, body), sort, local_sorts)
+        for candidate in candidates[:16]:
+            if expr_variables(candidate) & {binder for binder, _ in binders}:
+                continue
+            next_subst = dict(subst)
+            next_subst[name] = candidate
+            search(
+                index + 1,
+                next_subst,
+                f"({proof_head(proof_text)} {proof_arg_text(candidate)})",
+            )
+
+    search(0, {}, proof)
+    return result
+
+
 def raw_match_literal_mod_equality_symmetry(
     pattern: Expr,
     concrete: Expr,
@@ -22404,6 +22518,48 @@ def raw_tptp_exported_two_literal_resolution_proof(
             target_binders,
             target_body,
         )
+        if selected_clause is not None:
+            selected_expr, selected_proof = selected_clause
+            candidate_exprs = (target_body, selected_substituted, other_substituted)
+            for other_expr, other_proof in raw_quantified_equality_instances(
+                parsed_parents[other_parent][0],
+                parsed_parents[other_parent][1],
+                candidate_exprs,
+                extra_sorts,
+            ):
+                composed = raw_equality_composition_proof(
+                    selected_expr,
+                    selected_proof,
+                    other_expr,
+                    other_proof,
+                    target_body,
+                    extra_sorts,
+                )
+                if composed is not None:
+                    for name, sort in reversed(target_binders):
+                        composed = f"(fun {name} :{sort} => {composed})"
+                    return composed
+        if other_clause is not None:
+            other_expr, other_proof = other_clause
+            candidate_exprs = (target_body, selected_substituted, other_substituted)
+            for selected_expr, selected_proof in raw_quantified_equality_instances(
+                parsed_parents[selected_parent][0],
+                parsed_parents[selected_parent][1],
+                candidate_exprs,
+                extra_sorts,
+            ):
+                composed = raw_equality_composition_proof(
+                    selected_expr,
+                    selected_proof,
+                    other_expr,
+                    other_proof,
+                    target_body,
+                    extra_sorts,
+                )
+                if composed is not None:
+                    for name, sort in reversed(target_binders):
+                        composed = f"(fun {name} :{sort} => {composed})"
+                    return composed
         if selected_clause is not None:
             source, source_proof = selected_clause
             body_proof = None
