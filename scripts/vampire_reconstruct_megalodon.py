@@ -3886,6 +3886,38 @@ def infer_vampire_db_sort(
     return None
 
 
+def vampire_db_body_suggests_prop(expr: Expr, variable_sorts: dict[str, str]) -> bool:
+    saw_prop_signal = False
+
+    def visit(node: Expr) -> bool:
+        nonlocal saw_prop_signal
+        if node.kind == "var" and node.value is not None:
+            if DB_VAR_RE.fullmatch(node.value):
+                return True
+            if node.value in {"vampire_true", "vampire_false", "True", "False"}:
+                saw_prop_signal = True
+                return True
+            sort = variable_sorts.get(node.value)
+            if sort == "prop":
+                saw_prop_signal = True
+                return True
+            return False
+        if node.kind in {"arrow", "eq"}:
+            saw_prop_signal = True
+            return all(visit(arg) for arg in node.args)
+        if node.kind in {"forall", "lambda"}:
+            return all(visit(arg) for arg in node.args)
+        if node.kind != "app" or not node.args:
+            return True
+        head = node.args[0]
+        if head.kind != "var" or head.value not in {"vOR", "vAND", "vNOT", "vIMP", "vEQ"}:
+            return False
+        saw_prop_signal = True
+        return all(visit(arg) for arg in node.args[1:])
+
+    return visit(expr) and saw_prop_signal
+
+
 def free_vampire_db_indices(expr: Expr, depth: int = 0) -> set[int]:
     if expr.kind == "var" and expr.value is not None:
         match = DB_VAR_RE.fullmatch(expr.value)
@@ -3991,11 +4023,18 @@ def surface_direct_step_expr(
         body_sort_override: str | None = None,
     ) -> Expr:
         pieces = split_sort_arrows(lambda_sort) if lambda_sort is not None else []
+        binder_sort_is_contextual = binder_sort_override is not None or len(pieces) > 1
         binder_sort = binder_sort_override or (pieces[0] if len(pieces) > 1 else "set")
         body_sort = body_sort_override or (join_sort_arrows(pieces[1:]) if len(pieces) > 1 else None)
         inferred_binder_sort = infer_vampire_db_sort(body, variable_sorts)
-        if inferred_binder_sort is not None and binder_sort == "set":
+        if not binder_sort_is_contextual and inferred_binder_sort is not None and binder_sort == "set":
             binder_sort = inferred_binder_sort
+        elif (
+            not binder_sort_is_contextual
+            and binder_sort == "set"
+            and vampire_db_body_suggests_prop(body, variable_sorts)
+        ):
+            binder_sort = "prop"
         binder = raw_tptp_db_binder_name(len(db_stack))
         return Expr(
             "lambda",
@@ -4178,10 +4217,25 @@ def surface_direct_step_proposition(proposition: str, variable_sorts: dict[str, 
     return expr_text(surface_direct_step_expr(parsed, variable_sorts)) if parsed is not None else proposition
 
 
+def repair_vampire_negated_premise_arrows(expr: Expr) -> Expr:
+    if not expr.args:
+        return expr
+    repaired_args = tuple(repair_vampire_negated_premise_arrows(arg) for arg in expr.args)
+    repaired = Expr(expr.kind, value=expr.value, args=repaired_args, sort=expr.sort)
+    if repaired.kind != "arrow":
+        return repaired
+    premises, conclusion = split_arrows(repaired)
+    if len(premises) < 2 or not false_eliminator_expr(premises[1]):
+        return repaired
+    combined = Expr("arrow", args=(premises[0], premises[1]))
+    return make_arrow_expr([combined, *premises[2:]], conclusion)
+
+
 def raw_tptp_normalize_step_proposition(proposition: str, variable_sorts: dict[str, str]) -> str:
     parsed = parse_expr(proposition)
     if parsed is None:
         return proposition
+    parsed = repair_vampire_negated_premise_arrows(parsed)
     surfaced = surface_direct_step_expr(parsed, variable_sorts)
     return lower_function_equality_proposition(surfaced, variable_sorts)
 
@@ -4559,10 +4613,70 @@ def raw_tptp_replay_extra_expr(
     parsed = parse_expr(text)
     if parsed is None:
         return None
+    parsed = repair_vampire_negated_premise_arrows(parsed)
     surfaced = surface_direct_step_expr(parsed, variable_sorts)
     lowered = lower_function_equality_proposition(surfaced, variable_sorts)
     lowered_expr = parse_expr(lowered)
     return lowered_expr if lowered_expr is not None else surfaced
+
+
+FORALL_PREFIX_RE = re.compile(r"\s*forall\s+([A-Za-z_][A-Za-z0-9_']*)\s*:\s*([^,]+),\s*(.*)\s*$", re.DOTALL)
+
+
+def raw_replay_extra_expr_from_parsed(parsed: Expr, variable_sorts: dict[str, str]) -> Expr | None:
+    parsed = repair_vampire_negated_premise_arrows(parsed)
+    surfaced = surface_direct_step_expr(parsed, variable_sorts)
+    lowered = lower_function_equality_proposition(surfaced, variable_sorts)
+    lowered_expr = parse_expr(lowered)
+    return lowered_expr if lowered_expr is not None else surfaced
+
+
+def raw_parse_extra_expr_with_arrow_hints(text: str, hints: Iterable[str]) -> Expr | None:
+    stripped = text.strip()
+    parsed = parse_expr(stripped)
+    hint_texts = [hint.strip() for hint in hints if hint.strip() and hint.strip() != stripped]
+
+    for hint in sorted(hint_texts, key=len, reverse=True):
+        for prefix in (hint, f"({hint})"):
+            if not stripped.startswith(prefix):
+                continue
+            rest = stripped[len(prefix):].lstrip()
+            if not rest.startswith("->"):
+                continue
+            right = rest[2:].strip()
+            left_expr = raw_parse_extra_expr_with_arrow_hints(hint, hint_texts)
+            right_expr = raw_parse_extra_expr_with_arrow_hints(right, hint_texts)
+            if left_expr is not None and right_expr is not None:
+                return Expr("arrow", args=(left_expr, right_expr))
+
+    match = FORALL_PREFIX_RE.match(stripped)
+    if match is not None:
+        name, sort, body = match.groups()
+        body_expr = raw_parse_extra_expr_with_arrow_hints(body, hint_texts)
+        if body_expr is not None:
+            return Expr("forall", value=name, sort=normalize_megalodon_sort(sort), args=(body_expr,))
+
+    return parsed
+
+
+def raw_tptp_replay_extra_expr_with_pair_hints(
+    fields: dict[str, str],
+    key: str,
+    variable_sorts: dict[str, str],
+) -> Expr | None:
+    text = fields.get(key)
+    if text is None:
+        return None
+    suffix = key.rsplit("_", 1)[-1] if "_" in key else key
+    hints = [
+        value
+        for hint_key, value in fields.items()
+        if hint_key != key and (hint_key == suffix or hint_key.endswith(f"_{suffix}"))
+    ]
+    parsed = raw_parse_extra_expr_with_arrow_hints(text, hints)
+    if parsed is None:
+        return None
+    return raw_replay_extra_expr_from_parsed(parsed, variable_sorts)
 
 
 def raw_tptp_replay_extra_surface_expr(
@@ -19044,6 +19158,42 @@ def raw_negative_formula_transform_proof(
     if depth > 32 or proof_search_timed_out():
         return None
     target_premises, target_conclusion = split_arrows(target)
+    source_premises, source_conclusion = split_arrows(source)
+    if len(source_premises) == 1 and false_eliminator_expr(source_conclusion):
+        target_text = proof_arg_text(target)
+        target_name = fresh_identifier(
+            f"Htarget{depth}",
+            expr_text(source),
+            expr_text(target),
+            not_source_proof,
+        )
+        not_target_name = fresh_identifier(
+            f"HnotTarget{depth}",
+            expr_text(source),
+            expr_text(target),
+            not_source_proof,
+            target_name,
+        )
+        target_from_source_premise = raw_deep_formula_transform_proof(
+            source_premises[0],
+            target,
+            target_name,
+            variable_sorts,
+            depth + 1,
+        )
+        if target_from_source_premise is None:
+            target_from_source_premise = raw_clause_transform_proof(source_premises[0], target, target_name)
+        if target_from_source_premise is not None:
+            source_refutation = (
+                f"(fun {target_name} :{proof_arg_text(source_premises[0])} => "
+                f"{not_target_name} {proof_term_text(target_from_source_premise)})"
+            )
+            return (
+                f"(xm {target_text} {target_text} "
+                f"(fun {target_name} => {target_name}) "
+                f"(fun {not_target_name} => "
+                f"({proof_head(not_source_proof)} {proof_term_text(source_refutation)} {target_text})))"
+            )
     if len(target_premises) == 1 and false_eliminator_expr(target_conclusion):
         target_to_source = raw_deep_formula_transform_proof(
             target_premises[0],
@@ -19070,7 +19220,6 @@ def raw_negative_formula_transform_proof(
         if proof is not None:
             return proof
 
-    source_premises, source_conclusion = split_arrows(source)
     target_components = raw_conjunction_components(target)
     if not source_premises or len(target_components) != len(source_premises) + 1:
         return None
@@ -26063,6 +26212,53 @@ def raw_tptp_definition_rewrite_proof(
     return None
 
 
+def raw_tptp_exported_normal_form_proof(
+    rule: str | None,
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+    replay_step: MegalodonReplayStep | None,
+) -> str | None:
+    if replay_step is None or len(parents) != 1:
+        return None
+    local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
+    source_proof = raw_tptp_claim_name(parents[0])
+    candidate_pairs: list[tuple[Expr, Expr]] = []
+    for fields in megalodon_replay_extra_fields(replay_step, "normal_form"):
+        exported_rule = fields.get("rule", "").replace(" ", "_")
+        if exported_rule and rule is not None and exported_rule not in {rule, "normal_form"}:
+            continue
+        for source_key, target_key in [("source", "target"), ("pair_0_source", "pair_0_target")]:
+            source = raw_tptp_replay_extra_expr_with_pair_hints(fields, source_key, local_sorts)
+            target = raw_tptp_replay_extra_expr_with_pair_hints(fields, target_key, local_sorts)
+            if source is not None and target is not None:
+                candidate_pairs.append((source, target))
+
+    parsed_parent = parse_expr(propositions_by_name.get(parents[0], ""))
+    parsed_target = parse_expr(proposition)
+    if parsed_parent is not None and parsed_target is not None:
+        candidate_pairs.append((ambient_basic_logic_expr(parsed_parent), ambient_basic_logic_expr(parsed_target)))
+
+    for source, target in candidate_pairs:
+        if expr_same_mod_alpha(source, target):
+            return source_proof
+        proof = raw_classical_implication_to_or_transform_proof(source, target, source_proof)
+        if proof is not None:
+            return proof
+        proof = raw_negated_implication_chain_to_conjunction_proof(source, target, source_proof, local_sorts)
+        if proof is not None:
+            return proof
+        proof = raw_deep_formula_transform_proof(source, target, source_proof, local_sorts)
+        if proof is not None:
+            return proof
+        if raw_clause_replay_budget_ok(source, target, max_literals=12, max_literal_product=96):
+            proof = raw_clause_transform_proof(source, target, source_proof)
+            if proof is not None:
+                return proof
+    return None
+
+
 def raw_tptp_normal_form_allows_generic_replay(
     rule: str | None,
     replay_step: MegalodonReplayStep | None,
@@ -26362,15 +26558,24 @@ def raw_tptp_replay_proof(
             PROOF_SEARCH_STATE.deep_clause_literals = True
         try:
             proof = None
+            proof = raw_tptp_exported_normal_form_proof(
+                rule,
+                proposition,
+                parents,
+                propositions_by_name,
+                variable_sorts,
+                replay_step,
+            )
             if raw_tptp_normal_form_allows_generic_replay(rule, replay_step):
-                proof = raw_tptp_one_parent_transform_proof(
-                    proposition,
-                    parents,
-                    propositions_by_name,
-                    variable_sorts,
-                    max_literals=12,
-                    max_literal_product=96,
-                )
+                if proof is None:
+                    proof = raw_tptp_one_parent_transform_proof(
+                        proposition,
+                        parents,
+                        propositions_by_name,
+                        variable_sorts,
+                        max_literals=12,
+                        max_literal_product=96,
+                    )
         finally:
             PROOF_SEARCH_STATE.deep_clause_literals = previous_deep_clause_literals
             if previous_deadline is not None:
@@ -27179,7 +27384,15 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if name is not None
     }
     seen_infixes = {line for line in lines if line.startswith("Infix ")}
-    for declaration in raw_tptp_exported_source_declarations(text):
+    source_declarations = raw_tptp_exported_source_declarations(text)
+    early_source_declarations: list[str] = []
+    later_source_declarations: list[str] = []
+    for declaration in source_declarations:
+        if declaration.startswith(("Infix ", "Variable ", "Definition ")):
+            early_source_declarations.append(declaration)
+        else:
+            later_source_declarations.append(declaration)
+    for declaration in early_source_declarations:
         if declaration.startswith("Infix "):
             if declaration in seen_infixes:
                 continue
@@ -27227,6 +27440,13 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             lines.append(f"Axiom {raw_tptp_claim_name(definition.proof)}:{equality_proposition}.")
     for name, body in sorted(avatar_split_definitions.items()):
         lines.append(f"Definition {name} : prop := {body}.")
+    for declaration in later_source_declarations:
+        declared_name = megalodon_declared_name(declaration)
+        if declared_name is not None and declared_name in declared_names:
+            continue
+        if declared_name is not None:
+            declared_names.add(declared_name)
+        lines.append(declaration)
 
     known_raw_propositions: dict[str, str] = {}
 
