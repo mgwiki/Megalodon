@@ -10732,7 +10732,7 @@ def repl_intro_from_equivalence_proof(expr: Expr, rules: list[ProofRule]) -> str
     component_proofs: list[str] = []
     for component in source_components:
         sides = equality_like_sides(component)
-        if sides is not None and expr_key(sides[0]) == expr_key(sides[1]):
+        if sides is not None and expr_same_mod_alpha(sides[0], sides[1]):
             component_proofs.append("(fun Q H => H)")
         elif expr_key(component) == expr_key(membership):
             component_proofs.append("H0")
@@ -10818,6 +10818,97 @@ def repl_exists_from_equivalence_proof(expr: Expr, rules: list[ProofRule]) -> st
         f"(fun {witness_name} HW => {target_exists_proof}))"
     )
     return f"(fun {base_name} {function_name} {image_name} H0 => {converted})"
+
+
+def ground_repl_intro_from_equivalence_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 0 or len(expr_text(expr)) > 900:
+        return None
+    equivalence = find_repl_equivalence_rule(rules)
+    if equivalence is None:
+        return None
+    rule, forward_index, exists_var, _, _, _, exists_expr, exists_body = equivalence
+    backward_index = 1 - forward_index
+    membership = app_args(expr, "In", 2)
+    if membership is None:
+        return None
+    image, image_set = membership
+    repl_args = app_args(image_set, "Repl", 2)
+    if repl_args is None:
+        return None
+    base, raw_function = repl_args
+    function = eta_reduce_unary_function(raw_function)
+
+    source: Expr | None = None
+    if image.kind == "app" and len(image.args) == 2 and expr_key(image.args[0]) == expr_key(function):
+        source = image.args[1]
+    elif raw_function.kind == "lambda" and raw_function.value is not None:
+        candidates = sorted(expr_subterms(image), key=lambda candidate: len(expr_text(candidate)))
+        for candidate in candidates:
+            instantiated = substitute_expr(raw_function.args[0], {raw_function.value: candidate})
+            if expr_same_mod_alpha(instantiated, image):
+                source = candidate
+                break
+    if source is None:
+        return None
+
+    source_membership = Expr("app", args=(Expr("var", value="In"), source, base))
+    source_membership_proof = proof_for_expr(
+        source_membership,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        allow_rule=True,
+        rule_depth=max(0, rule_depth - 1),
+    )
+    if source_membership_proof is None:
+        return None
+
+    source_body = substitute_expr(
+        exists_body,
+        {
+            rule.binders[0]: base,
+            rule.binders[1]: function,
+            rule.binders[2]: image,
+            exists_var: source,
+        },
+    )
+    source_components = vampire_and_parts(source_body)
+    if source_components is None:
+        return None
+    component_proofs: list[str] = []
+    for component in source_components:
+        sides = equality_like_sides(component)
+        if sides is not None and expr_same_mod_alpha(sides[0], sides[1]):
+            component_proofs.append("(fun Q H => H)")
+        elif expr_key(component) == expr_key(source_membership):
+            component_proofs.append(source_membership_proof)
+        else:
+            return None
+    exists_proof = (
+        f"(fun Q H => H {proof_arg_text(source)} "
+        f"(fun P K => K {component_proofs[0]} {component_proofs[1]}))"
+    )
+    source_exists_expr = substitute_expr(
+        exists_expr,
+        {
+            rule.binders[0]: base,
+            rule.binders[1]: function,
+            rule.binders[2]: image,
+        },
+    )
+    selected_component = Expr("arrow", args=(source_exists_expr, expr))
+    projection = repl_projection_text(rule, backward_index, base, function, image, selected_component)
+    return f"({projection} {exists_proof})"
 
 
 def find_repl_exists_rule(rules: list[ProofRule]) -> tuple[ProofRule, str, Expr] | None:
@@ -12547,6 +12638,15 @@ def _proof_for_expr_impl(
         ordsucc_empty_cases_proof(expr, known, rules),
         repl_intro_from_equivalence_proof(expr, rules),
         repl_exists_from_equivalence_proof(expr, rules),
+        ground_repl_intro_from_equivalence_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth,
+        ),
         repl_predicate_from_exists_proof(expr, rules),
         repl_elimination_proof(expr, rules),
         repl_image_membership_elim_proof(expr, known, known_canonical, rules, eq_facts, definitions, rule_depth),
