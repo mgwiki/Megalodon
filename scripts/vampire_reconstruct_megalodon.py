@@ -2498,6 +2498,29 @@ def expr_subterms(expr: Expr, limit: int = 128) -> list[Expr]:
     return found
 
 
+def expr_head_name(expr: Expr) -> str | None:
+    if expr.kind == "var":
+        return expr.value
+    if expr.kind == "app" and expr.args:
+        return expr_head_name(expr.args[0])
+    return None
+
+
+def candidate_term_priority(expr: Expr) -> tuple[int, int, str]:
+    text = expr_text(expr)
+    if expr.kind in {"forall", "arrow", "eq", "lambda"}:
+        return (4, len(text), text)
+    if expr.kind == "app":
+        head = expr_head_name(expr)
+        if head is not None and (
+            head.startswith("vampire_")
+            or head in {"In", "SNo", "SNoLt", "SNo_", "ordinal", "finite", "nat_p", "Subq", "equip"}
+        ):
+            return (3, len(text), text)
+        return (1, len(text), text)
+    return (0, len(text), text)
+
+
 def fill_missing_binders_with_terms(
     binders: tuple[str, ...],
     subst: dict[str, Expr],
@@ -3604,6 +3627,226 @@ def quantified_atomic_rule_transport_proof(
     return None
 
 
+def quantified_atomic_rule_multi_transport_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 0 or len(expr_text(expr)) > 900:
+        return None
+    prefix_steps: list[tuple[str, str, str | None]] = []
+    binders: list[tuple[str, str]] = []
+    premises: list[Expr] = []
+    current = expr
+    interleaved_quantifier = False
+    while True:
+        if current.kind == "forall":
+            assert current.value is not None and current.sort is not None
+            if premises:
+                interleaved_quantifier = True
+            binders.append((current.value, current.sort))
+            prefix_steps.append(("binder", current.value, current.sort))
+            current = current.args[0]
+            continue
+        if current.kind == "arrow":
+            name = f"H{len(premises)}"
+            premises.append(current.args[0])
+            prefix_steps.append(("premise", name, None))
+            current = current.args[1]
+            continue
+        break
+    if not interleaved_quantifier:
+        return None
+    conclusion = current
+    if not binders or len(binders) > 5 or len(premises) > 6:
+        return None
+    target = normalize_defined_expr(conclusion, definitions)
+    if target.kind != "app" or len(target.args) < 2:
+        return None
+
+    local_known = dict(known)
+    local_known_canonical = dict(known_canonical)
+    local_rules = list(rules)
+    local_eq_facts = list(eq_facts)
+    for index, premise in enumerate(premises):
+        name = f"H{index}"
+        remember_proposition(
+            local_known,
+            local_known_canonical,
+            local_rules,
+            local_eq_facts,
+            name,
+            expr_text(premise),
+        )
+
+    seed_terms: list[Expr] = []
+    seen_terms: set[str] = set()
+
+    def add_terms(node: Expr, limit: int = 32) -> None:
+        for term in expr_subterms(node, limit=limit):
+            key = expr_key(term)
+            if key in seen_terms:
+                continue
+            seen_terms.add(key)
+            seed_terms.append(term)
+
+    add_terms(target, limit=64)
+    for premise in premises:
+        add_terms(premise, limit=24)
+    for known_prop in local_known:
+        parsed = parse_expr(known_prop)
+        if parsed is not None:
+            add_terms(parsed, limit=12)
+        if len(seed_terms) >= 96:
+            break
+    applied_heads = {
+        head
+        for term in seed_terms
+        for head in [expr_head_name(term)]
+        if term.kind == "app" and head is not None
+    }
+
+    def local_candidate_priority(term: Expr) -> tuple[int, int, str]:
+        if term.kind == "var" and term.value in applied_heads:
+            text = expr_text(term)
+            return (2, len(text), text)
+        return candidate_term_priority(term)
+
+    seed_terms.sort(key=local_candidate_priority)
+
+    for rule_index, original_rule in enumerate(reversed(rules)):
+        if len(premises) > 1 and len(original_rule.premises) <= 1:
+            continue
+        if len(original_rule.premises) > 6 or len(rule_application_binders(original_rule)) > 5:
+            continue
+        rule = rename_rule_binders(original_rule, f"QAT{rule_index}_")
+        rule_conclusion = normalize_defined_expr(rule_application_conclusion(rule), definitions)
+        if (
+            rule_conclusion.kind != "app"
+            or len(rule_conclusion.args) != len(target.args)
+            or expr_key(rule_conclusion.args[0]) != expr_key(target.args[0])
+        ):
+            continue
+        rule_binders = rule_application_binders(rule)
+        variables = set(rule_binders)
+        initial_substs: list[dict[str, Expr]] = []
+        for source_arg, target_arg in zip(rule_conclusion.args[1:], target.args[1:]):
+            trial: dict[str, Expr] = {}
+            matched = match_expr(source_arg, target_arg, variables, trial)
+            if matched or trial:
+                initial_substs.append(trial)
+        if not initial_substs:
+            initial_substs.append({})
+
+        tried: set[tuple[tuple[str, str], ...]] = set()
+        for initial_subst in initial_substs:
+            steps = rule.steps or tuple(RuleStep("binder", name=binder) for binder in rule_binders) + tuple(
+                RuleStep("premise", expr=premise) for premise in rule.premises
+            )
+            candidate_substs = infer_rule_binder_candidates_from_known(
+                steps,
+                rule_binders,
+                initial_subst,
+                local_known,
+                limit=48,
+                require_premise_match=False,
+            )
+            candidate_substs.extend(
+                fill_missing_binders_with_terms(
+                    rule_binders,
+                    initial_subst,
+                    seed_terms,
+                    limit=128,
+                )
+            )
+
+            def candidate_known_premise_score(candidate: dict[str, Expr]) -> tuple[int, int, str]:
+                known_count = 0
+                for premise in rule.premises:
+                    instantiated = substitute_expr(premise, candidate)
+                    if (
+                        expr_key(instantiated) in local_known
+                        or canonical_proposition(expr_key(instantiated)) in local_known_canonical
+                    ):
+                        known_count += 1
+                source = normalize_defined_expr(substitute_expr(rule_conclusion, candidate), definitions)
+                changed_count = 99
+                if source.kind == "app" and len(source.args) == len(target.args):
+                    changed_count = sum(
+                        1
+                        for source_arg, target_arg in zip(source.args[1:], target.args[1:])
+                        if expr_key(source_arg) != expr_key(target_arg)
+                    )
+                key_text = " ".join(expr_text(candidate.get(binder, Expr("var", value=binder))) for binder in rule_binders)
+                return (-known_count, changed_count, key_text)
+
+            candidate_substs.sort(key=candidate_known_premise_score)
+            for subst in candidate_substs:
+                if not all(binder in subst for binder in rule_binders):
+                    continue
+                key = tuple(sorted((name, expr_key(value)) for name, value in subst.items()))
+                if key in tried:
+                    continue
+                tried.add(key)
+                source = normalize_defined_expr(substitute_expr(rule_conclusion, subst), definitions)
+                if source.kind != "app" or len(source.args) != len(target.args):
+                    continue
+                changed = [
+                    index
+                    for index, (source_arg, target_arg) in enumerate(zip(source.args[1:], target.args[1:]))
+                    if expr_key(source_arg) != expr_key(target_arg)
+                ]
+                if not changed or len(changed) > 2:
+                    continue
+                parts = rule_application_parts(
+                    rule,
+                    subst,
+                    local_known,
+                    local_known_canonical,
+                    local_rules,
+                    local_eq_facts,
+                    definitions,
+                    max(0, rule_depth - 1),
+                )
+                if parts is None:
+                    continue
+                proof = rule_application_text(parts)
+                current_args = list(source.args[1:])
+                ok = True
+                for index in changed:
+                    equality_proof = equality_transport_side_proof(
+                        current_args[index],
+                        target.args[index + 1],
+                        local_known,
+                        local_known_canonical,
+                        local_rules,
+                        local_eq_facts,
+                        definitions,
+                        max(1, rule_depth - 2),
+                    )
+                    if equality_proof is None:
+                        ok = False
+                        break
+                    proof = transport_atomic_argument_proof(target, current_args, proof, index, equality_proof)
+                    current_args[index] = target.args[index + 1]
+                if not ok:
+                    continue
+                prefix_parts: list[str] = []
+                for kind, name, sort in prefix_steps:
+                    if kind == "binder":
+                        assert sort is not None
+                        prefix_parts.append(f"fun {name}:{sort} => ")
+                    else:
+                        prefix_parts.append(f"fun {name} => ")
+                prefix = "".join(prefix_parts)
+                return f"({prefix}{proof})"
+    return None
+
+
 def quantified_equality_rule_proof(
     expr: Expr,
     known: dict[str, str],
@@ -3746,7 +3989,8 @@ def quantified_equality_transported_rule_proof(
         initial_substs: list[dict[str, Expr]] = []
         for source_side, target_side in ((0, 0), (1, 1), (0, 1), (1, 0)):
             trial: dict[str, Expr] = {}
-            if match_expr(rule_conclusion.args[source_side], conclusion.args[target_side], variables, trial):
+            matched = match_expr(rule_conclusion.args[source_side], conclusion.args[target_side], variables, trial)
+            if matched or trial:
                 initial_substs.append(trial)
         if not initial_substs:
             initial_substs.append({})
@@ -13343,6 +13587,17 @@ def proof_for_proposition(
         )
         if quantified_transport_proof is not None:
             return quantified_transport_proof
+        quantified_multi_transport_proof = quantified_atomic_rule_multi_transport_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth=3,
+        )
+        if quantified_multi_transport_proof is not None:
+            return quantified_multi_transport_proof
         quantified_equality_proof = quantified_equality_rule_proof(
             expr,
             known,
@@ -13354,6 +13609,18 @@ def proof_for_proposition(
         )
         if quantified_equality_proof is not None:
             return quantified_equality_proof
+        if any("vampire_and" in proposition for proposition in known):
+            transported_equality_proof = quantified_equality_transported_rule_proof(
+                expr,
+                known,
+                known_canonical,
+                rules,
+                eq_facts,
+                definitions,
+                rule_depth=3,
+            )
+            if transported_equality_proof is not None:
+                return transported_equality_proof
         introduced_bridge_proof = introduced_unary_equality_bridge_proof(
             expr,
             known,
@@ -13430,18 +13697,6 @@ def proof_for_proposition(
     proof = proof_for_expr(expr, known, known_canonical, rules, eq_facts, definitions)
     if proof is not None:
         return proof
-    if expr.kind == "forall" and len(expr_text(expr)) <= 500:
-        transported_equality_proof = quantified_equality_transported_rule_proof(
-            expr,
-            known,
-            known_canonical,
-            rules,
-            eq_facts,
-            definitions,
-            rule_depth=3,
-        )
-        if transported_equality_proof is not None:
-            return transported_equality_proof
     if expr.kind == "app" and len(expr_text(expr)) <= 500:
         return proof_for_expr(
             expr,
