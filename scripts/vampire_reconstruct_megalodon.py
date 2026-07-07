@@ -1423,6 +1423,9 @@ def expr_sort(expr: Expr, variable_sorts: dict[str, str]) -> str | None:
             "vampire_eq_prop": "prop->prop->prop",
             "vampire_or": "prop->prop->prop",
             "vampire_and": "prop->prop->prop",
+            "or": "prop->prop->prop",
+            "and": "prop->prop->prop",
+            "not": "prop->prop",
             "vampire_exists_set": "(set->prop)->prop",
             "vampire_exists_prop": "(prop->prop)->prop",
             "vampire_exists_set_prop": "((set->prop)->prop)->prop",
@@ -3547,6 +3550,33 @@ def surface_direct_step_expr(
         return Expr("eq", args=(left, right))
     if expr.kind == "app":
         args = list(expr.args)
+        if args and args[0].kind == "var":
+            head = args[0].value
+            if head == "vNOT" and len(args) == 2:
+                return Expr(
+                    "arrow",
+                    args=(
+                        surface_direct_step_expr(args[1], variable_sorts, db_stack, "prop"),
+                        Expr("var", value="False"),
+                    ),
+                )
+            if head == "vIMP" and len(args) == 3:
+                return Expr(
+                    "arrow",
+                    args=(
+                        surface_direct_step_expr(args[1], variable_sorts, db_stack, "prop"),
+                        surface_direct_step_expr(args[2], variable_sorts, db_stack, "prop"),
+                    ),
+                )
+            if head in {"vAND", "vOR"} and len(args) == 3:
+                return Expr(
+                    "app",
+                    args=(
+                        Expr("var", value="and" if head == "vAND" else "or"),
+                        surface_direct_step_expr(args[1], variable_sorts, db_stack, "prop"),
+                        surface_direct_step_expr(args[2], variable_sorts, db_stack, "prop"),
+                    ),
+                )
         if (
             len(args) == 2
             and args[0].kind == "var"
@@ -22947,6 +22977,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     source_names = source_declared_names(source)
     for name, sort in sorted(variable_sorts.items()):
         if name.startswith("vampire_"):
+            continue
+        if name in {"vAND", "vOR", "vIMP", "vNOT"}:
             continue
         if name in source_names:
             continue
