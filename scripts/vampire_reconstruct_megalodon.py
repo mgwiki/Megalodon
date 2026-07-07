@@ -11516,6 +11516,114 @@ def if_correct_branch_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
     return None
 
 
+def ground_if_known_branch_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    sides = equality_like_sides(expr)
+    if sides is None or rule_depth <= 0 or len(expr_text(expr)) > 2200:
+        return None
+    if_expr: Expr | None = None
+    target_branch: str | None = None
+    needs_symmetry = False
+    if sides[0].kind == "app" and len(sides[0].args) == 4 and expr_key(sides[0].args[0]) == "If_i":
+        if_expr = sides[0]
+        if expr_key(sides[1]) == expr_key(if_expr.args[2]):
+            target_branch = "then"
+        elif expr_key(sides[1]) == expr_key(if_expr.args[3]):
+            target_branch = "else"
+    elif sides[1].kind == "app" and len(sides[1].args) == 4 and expr_key(sides[1].args[0]) == "If_i":
+        if_expr = sides[1]
+        needs_symmetry = True
+        if expr_key(sides[0]) == expr_key(if_expr.args[2]):
+            target_branch = "then"
+        elif expr_key(sides[0]) == expr_key(if_expr.args[3]):
+            target_branch = "else"
+    if if_expr is None or target_branch is None:
+        return None
+
+    condition, then_branch, else_branch = if_expr.args[1:]
+    neg_condition = Expr("arrow", args=(condition, Expr("var", value="vampire_false")))
+    condition_proof = proof_for_expr(
+        condition,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        allow_rule=True,
+        rule_depth=max(0, rule_depth - 1),
+    )
+    neg_condition_proof = proof_for_expr(
+        neg_condition,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        allow_rule=True,
+        rule_depth=max(0, rule_depth - 1),
+    )
+    if target_branch == "then" and condition_proof is None:
+        return None
+    if target_branch == "else" and neg_condition_proof is None:
+        return None
+
+    def parts_of_and(node: Expr) -> tuple[Expr, Expr] | None:
+        return app_args(node, "vampire_and", 2)
+
+    def parts_of_or(node: Expr) -> tuple[Expr, Expr] | None:
+        return app_args(node, "vampire_or", 2)
+
+    def component_handler(component: Expr, name: str) -> str | None:
+        parts = parts_of_and(component)
+        if parts is None:
+            return None
+        for component_expr, component_name in ((parts[0], "HA"), (parts[1], "HB")):
+            component_sides = equality_like_sides(component_expr)
+            if component_sides is not None:
+                if expr_key(component_expr) == expr_key(expr):
+                    return f"(fun {name} => {name} {proof_arg_text(expr)} (fun HA HB => {component_name}))"
+                if expr_key(component_sides[0]) == expr_key(sides[1]) and expr_key(component_sides[1]) == expr_key(sides[0]):
+                    symmetric = eq_symmetry_proof(component_name, component_sides[0])
+                    return f"(fun {name} => {name} {proof_arg_text(expr)} (fun HA HB => {symmetric}))"
+            if target_branch == "then" and condition_proof is not None and expr_key(component_expr) == expr_key(neg_condition):
+                return (
+                    f"(fun {name} => {name} {proof_arg_text(expr)} "
+                    f"(fun HA HB => {component_name} {condition_proof} {proof_arg_text(expr)}))"
+                )
+            if target_branch == "else" and neg_condition_proof is not None and expr_key(component_expr) == expr_key(condition):
+                return (
+                    f"(fun {name} => {name} {proof_arg_text(expr)} "
+                    f"(fun HA HB => {neg_condition_proof} {component_name} {proof_arg_text(expr)}))"
+                )
+        return None
+
+    for rule in rules:
+        if len(rule.binders) != 3 or rule.premises:
+            continue
+        subst = {
+            rule.binders[0]: condition,
+            rule.binders[1]: then_branch,
+            rule.binders[2]: else_branch,
+        }
+        disjuncts = parts_of_or(substitute_expr(rule.conclusion, subst))
+        if disjuncts is None:
+            continue
+        left_handler = component_handler(disjuncts[0], "HL")
+        right_handler = component_handler(disjuncts[1], "HR")
+        if left_handler is None or right_handler is None:
+            continue
+        rule_args = [proof_arg_text(condition), proof_arg_text(then_branch), proof_arg_text(else_branch)]
+        return f"({rule.name} {' '.join(rule_args)} {proof_arg_text(expr)} {left_handler} {right_handler})"
+    return None
+
+
 def binary_application(node: Expr) -> tuple[str, Expr, Expr] | None:
     if (
         node.kind == "app"
@@ -12531,6 +12639,18 @@ def _proof_for_expr_impl(
     if_branch = if_correct_branch_proof(expr, rules)
     if if_branch is not None:
         return if_branch
+
+    ground_if_branch = ground_if_known_branch_proof(
+        expr,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        rule_depth,
+    )
+    if ground_if_branch is not None:
+        return ground_if_branch
 
     rule_conjunction = rule_conjunction_projection_proof(expr, rules)
     if rule_conjunction is not None:
