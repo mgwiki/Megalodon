@@ -16013,11 +16013,16 @@ def raw_factored_forall_literal_transform_proof(
             source_name: Expr("var", value=target_name)
             for (source_name, _), (target_name, _) in zip(remaining, target_binders)
         }
-        for target_name, target_sort in target_binders:
-            if target_sort != removed_sort:
-                continue
+        candidates = [
+            Expr("var", value=target_name)
+            for target_name, target_sort in target_binders
+            if target_sort == removed_sort
+        ]
+        if removed_sort == "prop":
+            candidates.extend((Expr("var", value="vampire_false"), Expr("var", value="vampire_true")))
+        for candidate in candidates:
             subst = dict(base_subst)
-            subst[removed_name] = Expr("var", value=target_name)
+            subst[removed_name] = candidate
             instantiated_source_body = substitute_expr(source_body, subst)
             if not raw_clause_replay_budget_ok(instantiated_source_body, target_body, max_literals=16, max_literal_product=256):
                 continue
@@ -21569,6 +21574,7 @@ def raw_tptp_replay_proof(
     if rule in {
         "trivial_inequality_removal",
         "duplicate_literal_removal",
+        "condensation",
         "avatar_contradiction_clause",
     }:
         return raw_tptp_trivial_inequality_removal_proof(proposition, parents, propositions_by_name)
@@ -21608,6 +21614,9 @@ def raw_tptp_replay_proof(
             finally:
                 if previous_deadline is not None:
                     PROOF_SEARCH_STATE.deadline = previous_deadline
+        previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+        if rule == "rectify" and previous_deadline is not None:
+            PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 1.0)
         proof = raw_tptp_one_parent_transform_proof(
             proposition,
             parents,
@@ -21616,6 +21625,8 @@ def raw_tptp_replay_proof(
             max_literals=12,
             max_literal_product=96,
         )
+        if previous_deadline is not None:
+            PROOF_SEARCH_STATE.deadline = previous_deadline
         if proof is not None:
             return proof
         if rule == "fool_elimination":
