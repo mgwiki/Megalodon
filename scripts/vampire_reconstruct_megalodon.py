@@ -2149,6 +2149,7 @@ def megalodon_replay_steps(
             normalized = surface_direct_step_proposition(
                 proposition,
                 {**variable_sorts, **step_sorts},
+                raw_tptp_step_lambda_sort_hints(info),
             )
             steps[step] = MegalodonReplayStep(
                 rule=info.rule,
@@ -4024,7 +4025,9 @@ def surface_direct_step_expr(
     variable_sorts: dict[str, str],
     db_stack: tuple[str, ...] = (),
     expected_sort: str | None = None,
+    lambda_sort_hints: dict[str, str] | None = None,
 ) -> Expr:
+    lambda_sort_hints = lambda_sort_hints or {}
     if expr.kind == "var" and expr.value is not None:
         if expr.value == "true":
             return Expr("var", value="vampire_true")
@@ -4067,14 +4070,15 @@ def surface_direct_step_expr(
                     {**variable_sorts, binder: binder_sort},
                     (binder,) + db_stack,
                     body_sort,
+                    lambda_sort_hints,
                 ),
             ),
         )
 
     if expr.kind == "eq":
-        left = surface_direct_step_expr(expr.args[0], variable_sorts, db_stack)
+        left = surface_direct_step_expr(expr.args[0], variable_sorts, db_stack, None, lambda_sort_hints)
         left_sort = expr_sort(left, variable_sorts)
-        right = surface_direct_step_expr(expr.args[1], variable_sorts, db_stack, left_sort)
+        right = surface_direct_step_expr(expr.args[1], variable_sorts, db_stack, left_sort, lambda_sort_hints)
         left_sort = expr_sort(left, variable_sorts)
         right_sort = expr_sort(right, variable_sorts)
         if left_sort == "prop" or right_sort == "prop":
@@ -4085,15 +4089,15 @@ def surface_direct_step_expr(
         return Expr(
             "eq",
             args=(
-                surface_direct_step_expr(set_equality[0], variable_sorts, db_stack),
-                surface_direct_step_expr(set_equality[1], variable_sorts, db_stack),
+                surface_direct_step_expr(set_equality[0], variable_sorts, db_stack, None, lambda_sort_hints),
+                surface_direct_step_expr(set_equality[1], variable_sorts, db_stack, None, lambda_sort_hints),
             ),
         )
     vampire_equality = app_args(expr, "vEQ", 2)
     if vampire_equality is not None:
-        left = surface_direct_step_expr(vampire_equality[0], variable_sorts, db_stack)
+        left = surface_direct_step_expr(vampire_equality[0], variable_sorts, db_stack, None, lambda_sort_hints)
         left_sort = expr_sort(left, variable_sorts)
-        right = surface_direct_step_expr(vampire_equality[1], variable_sorts, db_stack, left_sort)
+        right = surface_direct_step_expr(vampire_equality[1], variable_sorts, db_stack, left_sort, lambda_sort_hints)
         right_sort = expr_sort(right, variable_sorts)
         if left_sort == "prop" or right_sort == "prop":
             return Expr("app", args=(Expr("var", value="vampire_eq_prop"), left, right))
@@ -4111,7 +4115,7 @@ def surface_direct_step_expr(
                 return Expr(
                     "arrow",
                     args=(
-                        surface_direct_step_expr(args[1], variable_sorts, db_stack, "prop"),
+                        surface_direct_step_expr(args[1], variable_sorts, db_stack, "prop", lambda_sort_hints),
                         Expr("var", value="False"),
                     ),
                 )
@@ -4119,8 +4123,8 @@ def surface_direct_step_expr(
                 return Expr(
                     "arrow",
                     args=(
-                        surface_direct_step_expr(args[1], variable_sorts, db_stack, "prop"),
-                        surface_direct_step_expr(args[2], variable_sorts, db_stack, "prop"),
+                        surface_direct_step_expr(args[1], variable_sorts, db_stack, "prop", lambda_sort_hints),
+                        surface_direct_step_expr(args[2], variable_sorts, db_stack, "prop", lambda_sort_hints),
                     ),
                 )
             if head in {"vAND", "vOR"} and len(args) == 3:
@@ -4128,8 +4132,8 @@ def surface_direct_step_expr(
                     "app",
                     args=(
                         Expr("var", value="and" if head == "vAND" else "or"),
-                        surface_direct_step_expr(args[1], variable_sorts, db_stack, "prop"),
-                        surface_direct_step_expr(args[2], variable_sorts, db_stack, "prop"),
+                        surface_direct_step_expr(args[1], variable_sorts, db_stack, "prop", lambda_sort_hints),
+                        surface_direct_step_expr(args[2], variable_sorts, db_stack, "prop", lambda_sort_hints),
                     ),
                 )
         if (
@@ -4137,19 +4141,21 @@ def surface_direct_step_expr(
             and args[0].kind == "var"
             and args[0].value == "vLAM"
         ):
-            return surface_vlam_body(args[1], expected_sort)
+            lambda_sort = lambda_sort_hints.get(expr_key(expr)) or lambda_sort_hints.get(expr_text(expr)) or expected_sort
+            return surface_vlam_body(args[1], lambda_sort)
         if (
             len(args) >= 2
             and args[0].kind == "var"
             and args[0].value == "vLAM"
         ):
             converted_arguments = [
-                surface_direct_step_expr(arg, variable_sorts, db_stack)
+                surface_direct_step_expr(arg, variable_sorts, db_stack, None, lambda_sort_hints)
                 for arg in args[2:]
             ]
             argument_sorts = [expr_sort(arg, variable_sorts) for arg in converted_arguments]
             known_argument_sorts = [sort for sort in argument_sorts if sort is not None]
-            lambda_sort = (
+            exported_lambda_sort = lambda_sort_hints.get(expr_key(expr)) or lambda_sort_hints.get(expr_text(expr))
+            lambda_sort = exported_lambda_sort or (
                 join_sort_arrows([*known_argument_sorts, expected_sort])
                 if expected_sort is not None and len(known_argument_sorts) == len(converted_arguments)
                 else None
@@ -4171,7 +4177,7 @@ def surface_direct_step_expr(
         converted: list[Expr] = []
         head_sort: str | None = None
         if args:
-            converted_head = surface_direct_step_expr(args[0], variable_sorts, db_stack)
+            converted_head = surface_direct_step_expr(args[0], variable_sorts, db_stack, None, lambda_sort_hints)
             converted.append(converted_head)
             head_sort = expr_sort(converted_head, variable_sorts)
             index = 1
@@ -4186,11 +4192,17 @@ def surface_direct_step_expr(
                 and args[index].kind == "var"
                 and args[index].value == "vLAM"
             ):
-                converted.append(surface_vlam_body(args[index + 1], argument_sort))
+                lambda_expr = Expr("app", args=(args[index], args[index + 1]))
+                lambda_sort = (
+                    lambda_sort_hints.get(expr_key(lambda_expr))
+                    or lambda_sort_hints.get(expr_text(lambda_expr))
+                    or argument_sort
+                )
+                converted.append(surface_vlam_body(args[index + 1], lambda_sort))
                 index += 2
                 argument_index += 1
                 continue
-            converted.append(surface_direct_step_expr(args[index], variable_sorts, db_stack, argument_sort))
+            converted.append(surface_direct_step_expr(args[index], variable_sorts, db_stack, argument_sort, lambda_sort_hints))
             index += 1
             argument_index += 1
         if (
@@ -4218,7 +4230,7 @@ def surface_direct_step_expr(
         return Expr(
             expr.kind,
             value=expr.value,
-            args=tuple(surface_direct_step_expr(arg, variable_sorts, db_stack) for arg in expr.args),
+            args=tuple(surface_direct_step_expr(arg, variable_sorts, db_stack, None, lambda_sort_hints) for arg in expr.args),
             sort=expr.sort,
         )
     if expr.kind in {"forall", "lambda"}:
@@ -4227,15 +4239,19 @@ def surface_direct_step_expr(
         return Expr(
             expr.kind,
             value=expr.value,
-            args=(surface_direct_step_expr(expr.args[0], nested_sorts, db_stack),),
+            args=(surface_direct_step_expr(expr.args[0], nested_sorts, db_stack, None, lambda_sort_hints),),
             sort=expr.sort,
         )
     return expr
 
 
-def surface_direct_step_proposition(proposition: str, variable_sorts: dict[str, str]) -> str:
+def surface_direct_step_proposition(
+    proposition: str,
+    variable_sorts: dict[str, str],
+    lambda_sort_hints: dict[str, str] | None = None,
+) -> str:
     parsed = parse_expr(proposition)
-    return expr_text(surface_direct_step_expr(parsed, variable_sorts)) if parsed is not None else proposition
+    return expr_text(surface_direct_step_expr(parsed, variable_sorts, lambda_sort_hints=lambda_sort_hints)) if parsed is not None else proposition
 
 
 def repair_vampire_negated_premise_arrows(expr: Expr) -> Expr:
@@ -4252,13 +4268,17 @@ def repair_vampire_negated_premise_arrows(expr: Expr) -> Expr:
     return make_arrow_expr([combined, *premises[2:]], conclusion)
 
 
-def raw_tptp_normalize_step_proposition(proposition: str, variable_sorts: dict[str, str]) -> str:
+def raw_tptp_normalize_step_proposition(
+    proposition: str,
+    variable_sorts: dict[str, str],
+    lambda_sort_hints: dict[str, str] | None = None,
+) -> str:
     parsed = parse_expr(proposition)
     if parsed is None:
         return proposition
     parsed = normalize_vampire_boolean_expr(parsed)
     parsed = repair_vampire_negated_premise_arrows(parsed)
-    surfaced = surface_direct_step_expr(parsed, variable_sorts)
+    surfaced = surface_direct_step_expr(parsed, variable_sorts, lambda_sort_hints=lambda_sort_hints)
     return lower_function_equality_proposition(surfaced, variable_sorts)
 
 
@@ -25594,19 +25614,61 @@ def raw_tptp_extra_formula_expr(
     fields: dict[str, str],
     key: str,
     variable_sorts: dict[str, str],
+    lambda_sort_hints: dict[str, str] | None = None,
 ) -> Expr | None:
     proposition = fields.get(f"{key}_proposition")
     if proposition is not None:
         expr = parse_expr(proposition)
         if expr is None:
             return None
-        expr = surface_direct_step_expr(expr, variable_sorts)
+        expr = surface_direct_step_expr(expr, variable_sorts, lambda_sort_hints=lambda_sort_hints)
         return parse_expr(lower_function_equality_proposition(expr, variable_sorts))
     formula = fields.get(key)
     if formula is None:
         return None
     proposition = tptp_formula_to_megalodon_proposition(formula, variable_sorts)
     return parse_expr(proposition) if proposition is not None else None
+
+
+def raw_tptp_extra_lambda_sort_hints(
+    fields: dict[str, str],
+    *prefixes: str,
+) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for prefix in prefixes:
+        count_text = fields.get(f"{prefix}_lambda_count")
+        if count_text is None:
+            continue
+        try:
+            count = int(count_text)
+        except ValueError:
+            continue
+        for index in range(max(0, count)):
+            text = fields.get(f"{prefix}_lambda_{index}")
+            sort = fields.get(f"{prefix}_lambda_{index}_sort")
+            if not text or not sort:
+                continue
+            expr = parse_expr(text)
+            if expr is not None:
+                result[expr_key(expr)] = sort
+                result[expr_text(expr)] = sort
+            result[text] = sort
+    return result
+
+
+def raw_tptp_step_lambda_sort_hints(step: MegalodonReplayStep) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for kind, _ in step.extras:
+        for fields in megalodon_replay_extra_fields(step, kind):
+            result.update(
+                raw_tptp_extra_lambda_sort_hints(
+                    fields,
+                    "selected_parent",
+                    "other_parent",
+                    "conclusion",
+                )
+            )
+    return result
 
 
 def raw_tptp_extra_lambda_exprs(
@@ -25630,7 +25692,9 @@ def raw_tptp_extra_lambda_exprs(
         expr = parse_expr(text)
         if expr is None:
             continue
-        expr = surface_direct_step_expr(expr, variable_sorts)
+        lambda_sort = fields.get(f"{prefix}_lambda_{index}_sort")
+        lambda_sort_hints = raw_tptp_extra_lambda_sort_hints(fields, prefix)
+        expr = surface_direct_step_expr(expr, variable_sorts, expected_sort=lambda_sort, lambda_sort_hints=lambda_sort_hints)
         lowered = parse_expr(lower_function_equality_proposition(expr, variable_sorts))
         if lowered is not None:
             expr = lowered
@@ -26059,8 +26123,14 @@ def raw_tptp_exported_two_literal_resolution_proof(
             continue
         if selected_parent not in {0, 1} or other_parent not in {0, 1} or selected_parent == other_parent:
             continue
-        selected_substituted = raw_tptp_extra_formula_expr(fields, "selected_substituted", extra_sorts)
-        other_substituted = raw_tptp_extra_formula_expr(fields, "other_substituted", extra_sorts)
+        lambda_sort_hints = raw_tptp_extra_lambda_sort_hints(
+            fields,
+            "selected_parent",
+            "other_parent",
+            "conclusion",
+        )
+        selected_substituted = raw_tptp_extra_formula_expr(fields, "selected_substituted", extra_sorts, lambda_sort_hints)
+        other_substituted = raw_tptp_extra_formula_expr(fields, "other_substituted", extra_sorts, lambda_sort_hints)
         if selected_substituted is None or other_substituted is None:
             continue
         exported_lambda_exprs = (
@@ -29392,6 +29462,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             role = "axiom" if step.rule == "negated conjecture" or (step.rule in axiom_like_rules and not step.parents) else "plain"
             rule = step.rule.replace(" ", "_") if step.rule else None
             local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(step)}
+            lambda_sort_hints = raw_tptp_step_lambda_sort_hints(step)
             parent_propositions = [
                 replay_steps[parent].proposition
                 for parent in step.parents
@@ -29402,7 +29473,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 proposition = guarded_avatar_component_extra_proposition(
                     list(step.extras),
                     [
-                        raw_tptp_normalize_step_proposition(parent, local_sorts)
+                        raw_tptp_normalize_step_proposition(parent, local_sorts, lambda_sort_hints)
                         for parent in parent_propositions
                     ],
                     local_sorts,
@@ -29410,7 +29481,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             if proposition is None:
                 proposition = megalodon_equality_extra_proposition(list(step.extras), local_sorts)
             if proposition is None:
-                proposition = raw_tptp_normalize_step_proposition(step.proposition, local_sorts)
+                proposition = raw_tptp_normalize_step_proposition(step.proposition, local_sorts, lambda_sort_hints)
             if not proposition:
                 for fields in megalodon_replay_extra_fields(step, "definition_rewrite"):
                     target_expr = raw_tptp_replay_extra_expr(fields, "target", local_sorts)
