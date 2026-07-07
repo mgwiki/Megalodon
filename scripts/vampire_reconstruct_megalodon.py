@@ -17178,6 +17178,47 @@ def raw_exists_transform_proof(
     )
 
 
+def raw_or_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int,
+) -> str | None:
+    if depth > 80 or proof_search_timed_out():
+        return None
+    source_parts = app_args(source, "vampire_or", 2)
+    target_parts = app_args(target, "vampire_or", 2)
+    if source_parts is None or target_parts is None:
+        return None
+    left_name = fresh_identifier("HorL", expr_text(source), expr_text(target), source_proof)
+    right_name = fresh_identifier("HorR", expr_text(source), expr_text(target), source_proof, left_name)
+    left_proof = raw_deep_formula_transform_proof(
+        source_parts[0],
+        target_parts[0],
+        left_name,
+        variable_sorts,
+        depth + 1,
+    )
+    if left_proof is None:
+        return None
+    right_proof = raw_deep_formula_transform_proof(
+        source_parts[1],
+        target_parts[1],
+        right_name,
+        variable_sorts,
+        depth + 1,
+    )
+    if right_proof is None:
+        return None
+    target_text = proof_arg_text(target)
+    return (
+        f"({proof_head(source_proof)} {target_text} "
+        f"(fun {left_name} => fun P Hleft Hright => Hleft {proof_term_text(left_proof)}) "
+        f"(fun {right_name} => fun P Hleft Hright => Hright {proof_term_text(right_proof)}))"
+    )
+
+
 def raw_eq_symmetry_proof(proof: str, left: Expr, sort: str) -> str:
     left_text = expr_text(left)
     name = fresh_identifier("zz", left_text, sort)
@@ -17295,6 +17336,10 @@ def raw_deep_formula_transform_proof(
     exists_transform = raw_exists_transform_proof(source, target, source_proof, variable_sorts, depth + 1)
     if exists_transform is not None:
         return exists_transform
+
+    or_transform = raw_or_transform_proof(source, target, source_proof, variable_sorts, depth + 1)
+    if or_transform is not None:
+        return or_transform
 
     if source.kind == "arrow" and target.kind == "arrow":
         source_premise, source_conclusion = source.args
