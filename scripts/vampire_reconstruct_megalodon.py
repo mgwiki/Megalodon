@@ -24850,10 +24850,10 @@ def raw_avatar_sat_dpll_refutation_proof(
 
 
 SOURCE_DECLARED_NAME_RE = re.compile(
-    r"^\s*Definition\s+(?P<name>[_A-Za-z][_A-Za-z0-9']*)\b"
+    r"^\s*Definition\s+(?P<name>[_A-Za-z][_A-Za-z0-9']*)(?=\s|:|\.|$)"
 )
 MEGALODON_DECLARED_NAME_RE = re.compile(
-    r"^\s*(?:Variable|Parameter|Definition|Axiom)\s+(?P<name>[_A-Za-z][_A-Za-z0-9']*)\b"
+    r"^\s*(?:Variable|Parameter|Definition|Axiom)\s+(?P<name>[_A-Za-z][_A-Za-z0-9']*)(?=\s|:|\.|$)"
 )
 MEGALODON_SORT_DECL_RE = re.compile(
     r"^\s*(?:Variable|Parameter|Definition)\s+"
@@ -24936,7 +24936,22 @@ def raw_tptp_exported_source_declarations(proof_text: str) -> list[str]:
                 continue
             seen_lines.add(line)
             declarations.append(line)
-    return declarations
+    priorities = {
+        "Variable ": 0,
+        "Parameter ": 0,
+        "Definition ": 1,
+        "Infix ": 2,
+        "Axiom ": 3,
+    }
+
+    def priority(item: tuple[int, str]) -> tuple[int, int]:
+        index, line = item
+        for prefix, value in priorities.items():
+            if line.startswith(prefix):
+                return value, index
+        return 99, index
+
+    return [line for _, line in sorted(enumerate(declarations), key=priority)]
 
 
 def raw_tptp_exported_source_variable_sorts(proof_text: str) -> dict[str, str]:
