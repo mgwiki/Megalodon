@@ -42,6 +42,13 @@ MEGALODON_STEP_FORMULA_RE = re.compile(
 MEGALODON_STEP_DETAIL_RE = re.compile(
     r'^megalodon_step\((?P<id>[0-9]+),"(?P<rule>(?:\\.|[^"\\])*)","[^"]*",\[(?P<parents>[0-9,]*)\],(?:true|false),[0-9]+,"(?P<formula>(?:\\.|[^"\\])*)"\)\.$'
 )
+MEGALODON_STEP_PROPOSITION_RE = re.compile(
+    r'^megalodon_step_proposition\((?P<id>[0-9]+),"(?P<proposition>(?:\\.|[^"\\])*)"\)\.$'
+)
+MEGALODON_PLACEHOLDER_FORMULA_RE = re.compile(
+    r'^\s*(?:tff|cnf)\(u[0-9]+,\s*plain,\s*\$true\)\.\s*$',
+    re.DOTALL,
+)
 MEGALODON_STEP_SUBSTITUTIONS_RE = re.compile(
     r'^megalodon_step_substitutions\((?P<id>[0-9]+),\[(?P<formulas>.*)\]\)\.$'
 )
@@ -1392,6 +1399,8 @@ def expr_sort(expr: Expr, variable_sorts: dict[str, str]) -> str | None:
         helper_sorts = {
             "vampire_true": "prop",
             "vampire_false": "prop",
+            "True": "prop",
+            "False": "prop",
             "vampire_eq_set": "set->set->prop",
             "vampire_eq_prop": "prop->prop->prop",
             "vampire_or": "prop->prop->prop",
@@ -1808,14 +1817,32 @@ def megalodon_replay_steps(
     substitutions: dict[str, tuple[str, ...]] = {}
     replay_kinds: dict[str, str] = {}
     extras: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
+    direct_propositions: dict[str, str] = {}
+    placeholder_steps: set[str] = set()
     for raw in proof_text.splitlines():
         line = raw.strip()
+        proposition_match = MEGALODON_STEP_PROPOSITION_RE.match(line)
+        if proposition_match is not None:
+            step = f"S{proposition_match.group('id')}"
+            direct_proposition = json.loads(f'"{proposition_match.group("proposition")}"')
+            if "vLAM" not in direct_proposition:
+                direct_propositions[step] = direct_proposition
+            continue
         step_match = MEGALODON_STEP_DETAIL_RE.match(line)
         if step_match is not None:
             formula = json.loads(f'"{step_match.group("formula")}"')
             step = f"S{step_match.group('id')}"
+            if MEGALODON_PLACEHOLDER_FORMULA_RE.match(formula):
+                placeholder_steps.add(step)
             step_sorts = step_variable_sorts.get(step, {})
-            proposition = megalodon_step_proposition(formula, {**variable_sorts, **step_sorts})
+            direct_proposition = direct_propositions.get(step)
+            if direct_proposition is not None:
+                proposition = surface_direct_step_proposition(
+                    direct_proposition,
+                    {**variable_sorts, **step_sorts},
+                )
+            else:
+                proposition = megalodon_step_proposition(formula, {**variable_sorts, **step_sorts})
             if proposition is None:
                 continue
             proposition = quantify_megalodon_step_variables(proposition, step_sorts)
@@ -1875,6 +1902,29 @@ def megalodon_replay_steps(
                 extras=tuple(extras.get(step, info.extras)),
                 variable_sorts=info.variable_sorts,
             )
+    for step, proposition in direct_propositions.items():
+        info = steps.get(step)
+        if info is not None and info.proposition != proposition:
+            step_sorts = dict(
+                entry.split(":", 1)
+                for entry in info.variable_sorts
+                if ":" in entry
+            )
+            normalized = surface_direct_step_proposition(
+                proposition,
+                {**variable_sorts, **step_sorts},
+            )
+            steps[step] = MegalodonReplayStep(
+                rule=info.rule,
+                parents=info.parents,
+                proposition=quantify_megalodon_step_variables(normalized, step_sorts),
+                substitutions=info.substitutions,
+                replay_kind=info.replay_kind,
+                extras=info.extras,
+                variable_sorts=info.variable_sorts,
+            )
+    for step in placeholder_steps - direct_propositions.keys():
+        steps.pop(step, None)
     for step, replay_kind in replay_kinds.items():
         info = steps.get(step)
         if info is not None and info.replay_kind != replay_kind:
@@ -3257,6 +3307,48 @@ def surface_replay_expr(expr: Expr) -> Expr:
 def surface_replay_proposition(proposition: str) -> str:
     parsed = parse_expr(proposition)
     return expr_text(surface_replay_expr(parsed)) if parsed is not None else proposition
+
+
+def surface_direct_step_expr(expr: Expr, variable_sorts: dict[str, str]) -> Expr:
+    if expr.kind == "eq":
+        left = surface_direct_step_expr(expr.args[0], variable_sorts)
+        right = surface_direct_step_expr(expr.args[1], variable_sorts)
+        left_sort = expr_sort(left, variable_sorts)
+        right_sort = expr_sort(right, variable_sorts)
+        if left_sort == "prop" or right_sort == "prop":
+            return Expr("app", args=(Expr("var", value="vampire_eq_prop"), left, right))
+        return Expr("eq", args=(left, right))
+    set_equality = app_args(expr, "vampire_eq_set", 2)
+    if set_equality is not None:
+        return Expr(
+            "eq",
+            args=(
+                surface_direct_step_expr(set_equality[0], variable_sorts),
+                surface_direct_step_expr(set_equality[1], variable_sorts),
+            ),
+        )
+    if expr.kind in {"app", "arrow"}:
+        return Expr(
+            expr.kind,
+            value=expr.value,
+            args=tuple(surface_direct_step_expr(arg, variable_sorts) for arg in expr.args),
+            sort=expr.sort,
+        )
+    if expr.kind in {"forall", "lambda"}:
+        assert expr.value is not None and expr.sort is not None
+        nested_sorts = {**variable_sorts, expr.value: expr.sort}
+        return Expr(
+            expr.kind,
+            value=expr.value,
+            args=(surface_direct_step_expr(expr.args[0], nested_sorts),),
+            sort=expr.sort,
+        )
+    return expr
+
+
+def surface_direct_step_proposition(proposition: str, variable_sorts: dict[str, str]) -> str:
+    parsed = parse_expr(proposition)
+    return expr_text(surface_direct_step_expr(parsed, variable_sorts)) if parsed is not None else proposition
 
 
 def fill_replay_substitution_claims(
