@@ -4093,6 +4093,23 @@ def raw_tptp_definition_rewrite_split_definition(
     return None
 
 
+def raw_tptp_replay_extra_expr(
+    fields: dict[str, str],
+    key: str,
+    variable_sorts: dict[str, str],
+) -> Expr | None:
+    text = fields.get(key)
+    if text is None:
+        return None
+    parsed = parse_expr(text)
+    if parsed is None:
+        return None
+    surfaced = surface_direct_step_expr(parsed, variable_sorts)
+    lowered = lower_function_equality_proposition(surfaced, variable_sorts)
+    lowered_expr = parse_expr(lowered)
+    return lowered_expr if lowered_expr is not None else surfaced
+
+
 def raw_tptp_predicate_definition_target(
     step: MegalodonReplayStep,
     body: Expr,
@@ -23282,6 +23299,43 @@ def raw_tptp_definition_rewrite_proof(
         return None
     local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
     for fields in megalodon_replay_extra_fields(replay_step, "definition_rewrite"):
+        exported_source = raw_tptp_replay_extra_expr(fields, "source", local_sorts)
+        exported_target = raw_tptp_replay_extra_expr(fields, "target", local_sorts)
+        if exported_source is not None and exported_target is not None:
+            proof = raw_deep_formula_transform_proof(
+                exported_source,
+                exported_target,
+                raw_tptp_claim_name(parents[0]),
+                local_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_clause_transform_proof(exported_source, exported_target, raw_tptp_claim_name(parents[0]))
+            if proof is not None:
+                return proof
+
+            augmented_propositions = dict(propositions_by_name)
+            for index, parent in enumerate(parents):
+                parent_expr = raw_tptp_replay_extra_expr(fields, f"parent_{index}", local_sorts)
+                if parent_expr is not None:
+                    augmented_propositions[parent] = expr_text(parent_expr)
+            proof = raw_tptp_parent_equality_chain_rewrite_proof(
+                expr_text(exported_target),
+                parents,
+                augmented_propositions,
+                local_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_tptp_parent_equality_rewrite_proof(
+                expr_text(exported_target),
+                parents,
+                augmented_propositions,
+                local_sorts,
+            )
+            if proof is not None:
+                return proof
+
         split_definition = raw_tptp_definition_rewrite_split_definition(fields, local_sorts)
         if split_definition is None:
             continue
