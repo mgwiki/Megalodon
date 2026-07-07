@@ -17787,6 +17787,48 @@ def raw_tptp_trivial_inequality_removal_proof(
     return raw_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
 
 
+def raw_vampire_eq_set_to_native_equality_proof(source: Expr, target: Expr, source_proof: str) -> str | None:
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if len(source_binders) != len(target_binders):
+        return None
+    if any(source_sort != target_sort for (_, source_sort), (_, target_sort) in zip(source_binders, target_binders)):
+        return None
+    renamed_source_body = source_body
+    rename = {
+        source_name: target_name
+        for (source_name, _), (target_name, _) in zip(source_binders, target_binders)
+        if source_name != target_name
+    }
+    if rename:
+        renamed_source_body = rename_expr_variables(renamed_source_body, rename)
+    source_sides = app_args(renamed_source_body, "vampire_eq_set", 2)
+    target_sides = equality_like_sides(target_body)
+    if source_sides is None or target_sides is None or target_body.kind != "eq":
+        return None
+
+    source_instance = source_proof
+    for name, _ in target_binders:
+        source_instance = f"({proof_head(source_instance)} {name})"
+
+    if expr_same_mod_alpha(source_sides[0], target_sides[0]) and expr_same_mod_alpha(source_sides[1], target_sides[1]):
+        set_equality_proof = source_instance
+    elif expr_same_mod_alpha(source_sides[0], target_sides[1]) and expr_same_mod_alpha(source_sides[1], target_sides[0]):
+        set_equality_proof = raw_eq_symmetry_proof(source_instance, source_sides[0], "set")
+    else:
+        return None
+
+    hole = fresh_identifier("zz", expr_text(target_body), source_proof)
+    body_proof = (
+        f"({proof_head(set_equality_proof)} "
+        f"(fun {hole}:set => {proof_arg_text(target_sides[0])} = {hole}) "
+        f"(fun R Hr => Hr))"
+    )
+    for name, sort in reversed(target_binders):
+        body_proof = f"(fun {name}:{sort} => {body_proof})"
+    return body_proof
+
+
 def raw_tptp_one_parent_transform_proof(
     proposition: str,
     parents: list[str],
@@ -17812,6 +17854,9 @@ def raw_tptp_one_parent_transform_proof(
     conjunction_projection = vampire_and_projection_from_proof(raw_tptp_claim_name(parents[0]), source, target)
     if conjunction_projection is not None:
         return conjunction_projection
+    set_equality_bridge = raw_vampire_eq_set_to_native_equality_proof(source, target, raw_tptp_claim_name(parents[0]))
+    if set_equality_bridge is not None:
+        return set_equality_bridge
     simple = raw_simple_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
     if simple is not None:
         return simple
@@ -21321,6 +21366,9 @@ def raw_parent_transform_proof(
         return None
     if expr_same_mod_alpha(source, target):
         return parent_proof
+    set_equality_bridge = raw_vampire_eq_set_to_native_equality_proof(source, target, parent_proof)
+    if set_equality_bridge is not None:
+        return set_equality_bridge
     simple = raw_simple_clause_transform_proof(source, target, parent_proof)
     if simple is not None:
         return simple
