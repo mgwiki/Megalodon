@@ -19724,6 +19724,10 @@ def raw_instantiated_clause_from_exported_literal(
         ):
             return None
     target_literals = raw_clause_literals(target_body)
+    target_by_name = {name: sort for name, sort in target_binders}
+    target_by_sort: dict[str, list[str]] = {}
+    for name, sort in target_binders:
+        target_by_sort.setdefault(sort, []).append(name)
     candidate_literals = [
         literal
         for index, literal in enumerate(literals)
@@ -19737,12 +19741,11 @@ def raw_instantiated_clause_from_exported_literal(
         if index >= len(candidate_literals):
             return None
         source_literal = candidate_literals[index]
+        trials: list[dict[str, Expr]] = []
         for target_literal in target_literals:
             trial = dict(current)
             if raw_match_literal_mod_equality_symmetry(source_literal, target_literal, binder_names, trial):
-                found = complete_from_target(index + 1, trial)
-                if found is not None:
-                    return found
+                trials.append(trial)
             source_sides = equality_like_sides(source_literal)
             target_sides = equality_like_sides(target_literal)
             if source_sides is not None and target_sides is not None:
@@ -19751,18 +19754,28 @@ def raw_instantiated_clause_from_exported_literal(
                     match_expr_with_alpha_instantiation(source_sides[0], target_sides[1], binder_names, trial)
                     and match_expr_with_alpha_instantiation(source_sides[1], target_sides[0], binder_names, trial)
                 ):
-                    found = complete_from_target(index + 1, trial)
-                    if found is not None:
-                        return found
+                    trials.append(trial)
+        trials.sort(
+            key=lambda trial: (
+                sum(1 for value in trial.values() if value.kind == "var" and value.value in target_by_name),
+                len(trial),
+            ),
+            reverse=True,
+        )
+        seen_trials: set[tuple[tuple[str, str], ...]] = set()
+        for trial in trials:
+            key = tuple(sorted((name, expr_key(value)) for name, value in trial.items()))
+            if key in seen_trials:
+                continue
+            seen_trials.add(key)
+            found = complete_from_target(index + 1, trial)
+            if found is not None:
+                return found
         return complete_from_target(index + 1, current)
 
     completed = complete_from_target(0, dict(subst))
     if completed is not None:
         subst = completed
-    target_by_name = {name: sort for name, sort in target_binders}
-    target_by_sort: dict[str, list[str]] = {}
-    for name, sort in target_binders:
-        target_by_sort.setdefault(sort, []).append(name)
     used_target_names = {
         value.value
         for value in subst.values()
