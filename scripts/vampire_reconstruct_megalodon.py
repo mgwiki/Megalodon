@@ -88,8 +88,9 @@ def vampire_exists_name_for_sort(sort: str) -> str:
     return f"vampire_exists_{suffix}"
 
 
-def vampire_exists_definition_for_sort(sort: str) -> str:
-    name = vampire_exists_name_for_sort(sort)
+def vampire_exists_definition_for_sort(sort: str, name: str | None = None) -> str:
+    if name is None:
+        name = vampire_exists_name_for_sort(sort)
     predicate_sort = f"({sort})->prop" if "->" in sort else f"{sort}->prop"
     return (
         f"Definition {name} : ({predicate_sort})->prop := "
@@ -1337,11 +1338,11 @@ def reconstruction_prelude_for(propositions: list[str]) -> list[str]:
     for name in sorted(set(re.findall(r"\bvampire_exists_[A-Za-z0-9_']+\b", joined))):
         for proposition in propositions:
             sort = vampire_exists_sort_from_proposition(proposition, name)
-            if sort is not None and vampire_exists_name_for_sort(sort) == name:
+            if sort is not None:
                 exists_sorts.setdefault(name, sort)
                 break
     for name, sort in sorted(exists_sorts.items()):
-        lines.append(vampire_exists_definition_for_sort(sort))
+        lines.append(vampire_exists_definition_for_sort(sort, name))
     return lines
 
 
@@ -22401,6 +22402,8 @@ def raw_quantified_equality_rewrite_clause_steps(
     for source_name, _ in source_binders:
         source_body_proof = f"({proof_head(source_body_proof)} {source_name})"
     equality_binder_names = {name for name, _ in equality_binders}
+    leading_source_binder_names = {name for name, _ in source_binders}
+    inner_source_binder_names = expr_bound_variables(source_body) - leading_source_binder_names
     local_sorts = {
         **variable_sorts,
         **{name: sort for name, sort in source_binders},
@@ -22420,6 +22423,8 @@ def raw_quantified_equality_rewrite_clause_steps(
             if any(name not in subst for name, _ in equality_binders):
                 continue
             if any(raw_expr_has_synthetic_db_variable(subst[name]) for name, _ in equality_binders):
+                continue
+            if any(expr_variables(subst[name]) & inner_source_binder_names for name, _ in equality_binders):
                 continue
             new_subterm = substitute_expr(new_pattern, subst)
             replaced_body, changed = replace_expr(source_body, old_subterm, new_subterm)
@@ -23487,6 +23492,9 @@ def raw_tptp_superposition_proof(
     variable_sorts: dict[str, str],
     replay_step: MegalodonReplayStep | None = None,
 ) -> str | None:
+    has_superposition_replay = bool(megalodon_replay_extra_fields(replay_step, "superposition"))
+    if not has_superposition_replay:
+        return None
     proof = raw_tptp_exported_two_literal_resolution_proof(
         proposition,
         parents,
@@ -23504,7 +23512,7 @@ def raw_tptp_superposition_proof(
     )
     if proof is not None:
         return proof
-    if len(parents) == 2:
+    if len(parents) == 2 and has_superposition_replay:
         for source_index, equality_index in megalodon_replay_parent_pair_order(parents, replay_step):
             ordered_parents = [parents[source_index], parents[equality_index]]
             proof = raw_tptp_quantified_equality_clause_superposition_proof(
@@ -23515,9 +23523,10 @@ def raw_tptp_superposition_proof(
             )
             if proof is not None:
                 return proof
-    proof = raw_tptp_parent_equality_rewrite_proof(proposition, parents, propositions_by_name, variable_sorts)
-    if proof is not None:
-        return proof
+    if has_superposition_replay:
+        proof = raw_tptp_parent_equality_rewrite_proof(proposition, parents, propositions_by_name, variable_sorts)
+        if proof is not None:
+            return proof
     if len(parents) == 2:
         proof = raw_tptp_forward_subsumption_resolution_proof(
             proposition,
@@ -24342,7 +24351,16 @@ def raw_tptp_replay_proof_has_escaped_surface_variable(proposition: str, proof: 
     return bool(proof_variables - proposition_variables - proof_binders)
 
 
+def raw_tptp_replay_proof_has_free_surface_variable(proof: str) -> bool:
+    parsed = parse_expr(proof)
+    if parsed is None:
+        return False
+    return any(RAW_TPTP_SURFACE_VAR_RE.fullmatch(name) for name in expr_variables(parsed))
+
+
 def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: str) -> bool:
+    if raw_tptp_replay_proof_has_free_surface_variable(proof):
+        return True
     if raw_tptp_replay_proof_has_escaped_surface_variable(proposition, proof):
         return True
     if rule in {"definition_folding", "definition_unfolding"} and raw_tptp_replay_proof_has_synthetic_db(proof):
