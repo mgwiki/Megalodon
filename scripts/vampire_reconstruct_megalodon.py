@@ -27044,7 +27044,23 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             role = "axiom" if step.rule == "negated conjecture" or (step.rule in axiom_like_rules and not step.parents) else "plain"
             rule = step.rule.replace(" ", "_") if step.rule else None
             local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(step)}
-            proposition = megalodon_equality_extra_proposition(list(step.extras), local_sorts)
+            parent_propositions = [
+                replay_steps[parent].proposition
+                for parent in step.parents
+                if parent in replay_steps and replay_steps[parent].proposition
+            ]
+            proposition = None
+            if rule == "avatar_component_clause":
+                proposition = guarded_avatar_component_extra_proposition(
+                    list(step.extras),
+                    [
+                        raw_tptp_normalize_step_proposition(parent, local_sorts)
+                        for parent in parent_propositions
+                    ],
+                    local_sorts,
+                )
+            if proposition is None:
+                proposition = megalodon_equality_extra_proposition(list(step.extras), local_sorts)
             if proposition is None:
                 proposition = raw_tptp_normalize_step_proposition(step.proposition, local_sorts)
             if not proposition:
