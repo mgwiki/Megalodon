@@ -20471,21 +20471,41 @@ def raw_negated_forall_implication_to_exists_conjunction_proof(
     target_body_at_witness = substitute_expr(target_body, source_var_subst)
     target_components = raw_conjunction_components(target_body_at_witness)
     conclusion_is_false = false_eliminator_expr(implication_conclusion)
-    expected_component_count = len(implication_premises) if conclusion_is_false else len(implication_premises) + 1
+    premise_component_groups = [raw_conjunction_components(premise) for premise in implication_premises]
+    expected_component_count = sum(len(components) for components in premise_component_groups)
+    if not conclusion_is_false:
+        expected_component_count += 1
     if len(target_components) != expected_component_count:
         return None
 
     local_sorts = {**variable_sorts, **{name: sort for name, sort in source_binders}}
 
-    def premise_component_proof(source_premise: Expr, component: Expr, proof_name: str) -> str | None:
-        proof = raw_deep_formula_transform_proof(source_premise, component, proof_name, local_sorts)
+    def premise_component_proof(
+        source_premise: Expr,
+        source_component: Expr,
+        component: Expr,
+        proof_name: str,
+    ) -> str | None:
+        component_source_proof = vampire_and_projection_from_proof(proof_name, source_premise, source_component)
+        if component_source_proof is None:
+            return None
+        proof = raw_deep_formula_transform_proof(source_component, component, component_source_proof, local_sorts)
         if proof is None:
-            proof = raw_classical_implication_to_or_transform_proof(source_premise, component, proof_name)
+            proof = raw_classical_implication_to_or_transform_proof(source_component, component, component_source_proof)
         if proof is None:
-            proof = raw_clause_transform_proof(source_premise, component, proof_name)
+            proof = raw_clause_transform_proof(source_component, component, component_source_proof)
         return proof
 
     def negated_conclusion_component_proof(component: Expr) -> str | None:
+        negated_conjunction = raw_negated_conjunction_to_or_negated_components_proof(
+            Expr("arrow", args=(implication_conclusion, Expr("var", value="False"))),
+            component,
+            "HnotSourceConclusion",
+            local_sorts,
+        )
+        if negated_conjunction is not None:
+            return negated_conjunction
+
         negative_premises, negative_conclusion = split_arrows(component)
         if len(negative_premises) == 1 and false_eliminator_expr(negative_conclusion):
             target_negative_body = negative_premises[0]
@@ -20575,17 +20595,18 @@ def raw_negated_forall_implication_to_exists_conjunction_proof(
     component_proofs: dict[int, str] = {}
     for premise_index, source_premise in enumerate(implication_premises):
         proof_name = f"HsourcePremise{premise_index}"
-        for component_index, component in enumerate(target_components):
-            if component_index in used:
-                continue
-            proof = premise_component_proof(source_premise, component, proof_name)
-            if proof is None:
-                continue
-            used.add(component_index)
-            component_proofs[component_index] = proof
-            break
-        else:
-            return None
+        for source_component in premise_component_groups[premise_index]:
+            for component_index, component in enumerate(target_components):
+                if component_index in used:
+                    continue
+                proof = premise_component_proof(source_premise, source_component, component, proof_name)
+                if proof is None:
+                    continue
+                used.add(component_index)
+                component_proofs[component_index] = proof
+                break
+            else:
+                return None
 
     def target_component_proof(component: Expr) -> str | None:
         for index, target_component in enumerate(target_components):
