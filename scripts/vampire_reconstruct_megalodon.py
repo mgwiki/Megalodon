@@ -15651,6 +15651,24 @@ def raw_literal_direct_transform_proof(
     source_sides = equality_like_sides(source)
     target_sides = equality_like_sides(target)
     if (
+        source.kind == "app"
+        and len(source.args) == 3
+        and source.args[0].kind == "var"
+        and source.args[0].value == "vampire_eq_prop"
+        and source_sides is not None
+        and target_sides is None
+    ):
+        true_expr = Expr("var", value="vampire_true")
+        true_proof = "(fun Q H => H)"
+        if expr_key(source_sides[0]) == expr_key(true_expr) and expr_same_mod_alpha(source_sides[1], target):
+            return f"({proof_head(source_proof)} (fun R:prop => R) {true_proof})"
+        if expr_same_mod_alpha(source_sides[0], target) and expr_key(source_sides[1]) == expr_key(true_expr):
+            return (
+                f"(({proof_head(source_proof)} "
+                f"(fun R:prop => R -> {proof_arg_text(target)}) "
+                f"(fun H => H)) {true_proof})"
+            )
+    if (
         source_sides is not None
         and target_sides is not None
         and expr_same_mod_alpha(source_sides[0], target_sides[1])
