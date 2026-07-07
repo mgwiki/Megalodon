@@ -17082,6 +17082,102 @@ def raw_tptp_deep_formula_transform_proof(
     return raw_deep_formula_transform_proof(source, target, raw_tptp_claim_name(parents[0]), variable_sorts or {})
 
 
+def raw_conjunction_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int,
+) -> str | None:
+    if depth > 80 or proof_search_timed_out():
+        return None
+    target_parts = vampire_and_parts(target)
+    if target_parts is not None:
+        left_proof = raw_conjunction_transform_proof(source, target_parts[0], source_proof, variable_sorts, depth + 1)
+        if left_proof is None:
+            return None
+        right_proof = raw_conjunction_transform_proof(source, target_parts[1], source_proof, variable_sorts, depth + 1)
+        if right_proof is None:
+            return None
+        return f"(fun P K => K {proof_term_text(left_proof)} {proof_term_text(right_proof)})"
+
+    projected = vampire_and_projection_from_proof(source_proof, source, target)
+    if projected is not None:
+        return projected
+    if expr_same_mod_alpha(source, target):
+        return source_proof
+
+    source_parts = vampire_and_parts(source)
+    if source_parts is None:
+        return None
+    for component in source_parts:
+        component_proof = vampire_and_projection_from_proof(source_proof, source, component)
+        if component_proof is None:
+            continue
+        transformed = raw_deep_formula_transform_proof(
+            component,
+            target,
+            component_proof,
+            variable_sorts,
+            depth + 1,
+        )
+        if transformed is not None:
+            return transformed
+    return None
+
+
+def raw_exists_transform_parts(expr: Expr) -> tuple[str, str, Expr, str, Expr] | None:
+    for head, sort in (
+        ("vampire_exists_set", "set"),
+        ("vampire_exists_prop", "prop"),
+        ("vampire_exists_set_prop", "set->prop"),
+    ):
+        args = app_args(expr, head, 1)
+        if args is None:
+            continue
+        predicate = args[0]
+        if predicate.kind != "lambda" or predicate.value is None:
+            return None
+        return head, sort, predicate, predicate.value, predicate.args[0]
+    return None
+
+
+def raw_exists_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int,
+) -> str | None:
+    if depth > 80 or proof_search_timed_out():
+        return None
+    source_parts = raw_exists_transform_parts(source)
+    target_parts = raw_exists_transform_parts(target)
+    if source_parts is None or target_parts is None:
+        return None
+    source_head, source_sort, _source_predicate, source_name, source_body = source_parts
+    target_head, target_sort, _target_predicate, target_name, target_body = target_parts
+    if source_head != target_head or source_sort != target_sort:
+        return None
+    witness_name = fresh_identifier("w", expr_text(source), expr_text(target), source_proof)
+    source_body = rename_expr_variables(source_body, {source_name: witness_name})
+    target_body = rename_expr_variables(target_body, {target_name: witness_name})
+    body_proof = raw_deep_formula_transform_proof(
+        source_body,
+        target_body,
+        "Hbody",
+        {**variable_sorts, witness_name: source_sort},
+        depth + 1,
+    )
+    if body_proof is None:
+        return None
+    target_intro = f"(fun Q Hexists => Hexists {witness_name} {proof_term_text(body_proof)})"
+    return (
+        f"({proof_head(source_proof)} {proof_arg_text(target)} "
+        f"(fun {witness_name}:{source_sort} => fun Hbody => {target_intro}))"
+    )
+
+
 def raw_eq_symmetry_proof(proof: str, left: Expr, sort: str) -> str:
     left_text = expr_text(left)
     name = fresh_identifier("zz", left_text, sort)
@@ -17191,6 +17287,14 @@ def raw_deep_formula_transform_proof(
             )
             if inner is not None:
                 return inner
+
+    conjunction = raw_conjunction_transform_proof(source, target, source_proof, variable_sorts, depth + 1)
+    if conjunction is not None:
+        return conjunction
+
+    exists_transform = raw_exists_transform_proof(source, target, source_proof, variable_sorts, depth + 1)
+    if exists_transform is not None:
+        return exists_transform
 
     if source.kind == "arrow" and target.kind == "arrow":
         source_premise, source_conclusion = source.args
