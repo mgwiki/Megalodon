@@ -16047,12 +16047,19 @@ def raw_literal_to_clause_proof(
     literal_proof: str,
     target_literals: list[Expr],
     rewrites: tuple[RawSplitRewrite, ...],
+    deep_literals: bool = False,
 ) -> str | None:
     false_elim = raw_false_literal_elimination_proof(literal, target, literal_proof)
     if false_elim is not None:
         return false_elim
     for index, target_literal in enumerate(target_literals):
         target_literal_proof = raw_literal_direct_transform_proof(literal, target_literal, literal_proof, rewrites)
+        if (
+            target_literal_proof is None
+            and deep_literals
+            and len(expr_text(literal)) + len(expr_text(target_literal)) <= 7000
+        ):
+            target_literal_proof = raw_deep_formula_transform_proof(literal, target_literal, literal_proof, {})
         if target_literal_proof is None:
             continue
         proof = raw_or_intro_literal_at(target, index, target_literal_proof)
@@ -16067,15 +16074,16 @@ def raw_clause_cases_proof(
     target_literals: list[Expr],
     rewrites: tuple[RawSplitRewrite, ...],
     source_proof: str,
+    deep_literals: bool = False,
 ) -> str | None:
     parts = raw_or_parts(source)
     if parts is None:
-        return raw_literal_to_clause_proof(source, target, source_proof, target_literals, rewrites)
+        return raw_literal_to_clause_proof(source, target, source_proof, target_literals, rewrites, deep_literals)
     left, right = parts
     left_name = fresh_identifier("HL", expr_text(source), expr_text(target), source_proof)
     right_name = fresh_identifier("HR", expr_text(source), expr_text(target), source_proof, left_name)
-    left_target = raw_clause_cases_proof(left, target, target_literals, rewrites, left_name)
-    right_target = raw_clause_cases_proof(right, target, target_literals, rewrites, right_name)
+    left_target = raw_clause_cases_proof(left, target, target_literals, rewrites, left_name, deep_literals)
+    right_target = raw_clause_cases_proof(right, target, target_literals, rewrites, right_name, deep_literals)
     if left_target is None or right_target is None:
         return None
     return f"({proof_head(source_proof)} {proof_arg_text(target)} (fun {left_name} => {left_target}) (fun {right_name} => {right_target}))"
@@ -16086,15 +16094,16 @@ def raw_clause_subsumption_transform_proof(
     target: Expr,
     source_proof: str,
     rewrites: tuple[RawSplitRewrite, ...] = (),
+    deep_literals: bool = False,
 ) -> str | None:
     source_literals = raw_clause_literals(source)
     target_literals = raw_clause_literals(target)
     if len(source_literals) > 24 or len(target_literals) > 24:
         return None
     for literal in source_literals:
-        if raw_literal_to_clause_proof(literal, target, "HLit", target_literals, rewrites) is None:
+        if raw_literal_to_clause_proof(literal, target, "HLit", target_literals, rewrites, deep_literals) is None:
             return None
-    return raw_clause_cases_proof(source, target, target_literals, rewrites, source_proof)
+    return raw_clause_cases_proof(source, target, target_literals, rewrites, source_proof, deep_literals)
 
 
 def raw_forall_permutation_transform_proof(source: Expr, target: Expr, source_proof: str) -> str | None:
@@ -18614,6 +18623,8 @@ def raw_or_transform_proof(
         return None
     if raw_clause_replay_budget_ok(source, target, max_literals=16, max_literal_product=256):
         clause_transform = raw_clause_transform_proof(source, target, source_proof)
+        if clause_transform is None and getattr(PROOF_SEARCH_STATE, "deep_clause_literals", False):
+            clause_transform = raw_clause_subsumption_transform_proof(source, target, source_proof, deep_literals=True)
         if clause_transform is not None:
             return clause_transform
     left_name = fresh_identifier("HorL", expr_text(source), expr_text(target), source_proof)
@@ -21618,16 +21629,22 @@ def raw_tptp_replay_proof(
         previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
         if rule == "rectify" and previous_deadline is not None:
             PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 1.0)
-        proof = raw_tptp_one_parent_transform_proof(
-            proposition,
-            parents,
-            propositions_by_name,
-            variable_sorts,
-            max_literals=12,
-            max_literal_product=96,
-        )
-        if previous_deadline is not None:
-            PROOF_SEARCH_STATE.deadline = previous_deadline
+        previous_deep_clause_literals = getattr(PROOF_SEARCH_STATE, "deep_clause_literals", False)
+        if rule == "flattening":
+            PROOF_SEARCH_STATE.deep_clause_literals = True
+        try:
+            proof = raw_tptp_one_parent_transform_proof(
+                proposition,
+                parents,
+                propositions_by_name,
+                variable_sorts,
+                max_literals=12,
+                max_literal_product=96,
+            )
+        finally:
+            PROOF_SEARCH_STATE.deep_clause_literals = previous_deep_clause_literals
+            if previous_deadline is not None:
+                PROOF_SEARCH_STATE.deadline = previous_deadline
         if proof is not None:
             return proof
         if rule == "fool_elimination":
