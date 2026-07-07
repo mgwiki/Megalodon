@@ -17962,12 +17962,19 @@ def raw_classical_implication_to_or_body_proof(
         if positive_branch is None:
             continue
         not_name = f"HnotPrem{premise_offset + index}"
-        negative_branch = raw_negated_implication_forall_to_conjunction_proof(
-            source_premise,
+        negative_branch = raw_negated_forall_implication_to_exists_conjunction_proof(
+            Expr("arrow", args=(source_premise, Expr("var", value="vampire_false"))),
             target_negative,
             not_name,
             {},
         )
+        if negative_branch is None:
+            negative_branch = raw_negated_implication_forall_to_conjunction_proof(
+                source_premise,
+                target_negative,
+                not_name,
+                {},
+            )
         if negative_branch is None:
             negative_branch = raw_nested_exists_counterexample_proof(
                 source_premise,
@@ -18353,10 +18360,8 @@ def raw_negated_forall_implication_to_exists_conjunction_proof(
         return None
     source_name, source_sort = source_binders[0]
     implication_premises, implication_conclusion = split_arrows(source_body)
-    if len(implication_premises) != 1:
+    if not implication_premises or len(implication_premises) > 6:
         return None
-    source_positive = implication_premises[0]
-    source_negative_body = implication_conclusion
 
     exists_parts = raw_exists_transform_parts(target)
     if exists_parts is None:
@@ -18366,59 +18371,145 @@ def raw_negated_forall_implication_to_exists_conjunction_proof(
         return None
     witness = Expr("var", value=source_name)
     target_body_at_witness = substitute_expr(target_body, {target_name: witness})
-    target_components = vampire_and_parts(target_body_at_witness)
-    if target_components is None:
+    target_components = raw_conjunction_components(target_body_at_witness)
+    if len(target_components) != len(implication_premises) + 1:
         return None
 
     local_sorts = {**variable_sorts, source_name: source_sort}
-    for target_positive, target_negative in (target_components, (target_components[1], target_components[0])):
-        positive_proof = raw_deep_formula_transform_proof(
-            source_positive,
-            target_positive,
-            "HsourcePositive",
-            local_sorts,
-        )
-        if positive_proof is None:
-            positive_proof = raw_clause_transform_proof(source_positive, target_positive, "HsourcePositive")
-        negative_premises, negative_conclusion = split_arrows(target_negative)
-        if (
-            positive_proof is None
-            or len(negative_premises) != 1
-            or not false_eliminator_expr(negative_conclusion)
-        ):
-            continue
-        target_negative_body = negative_premises[0]
+
+    def premise_component_proof(source_premise: Expr, component: Expr, proof_name: str) -> str | None:
+        proof = raw_deep_formula_transform_proof(source_premise, component, proof_name, local_sorts)
+        if proof is None:
+            proof = raw_classical_implication_to_or_transform_proof(source_premise, component, proof_name)
+        if proof is None:
+            proof = raw_clause_transform_proof(source_premise, component, proof_name)
+        return proof
+
+    def negated_conclusion_component_proof(component: Expr) -> str | None:
+        negative_premises, negative_conclusion = split_arrows(component)
+        if len(negative_premises) == 1 and false_eliminator_expr(negative_conclusion):
+            target_negative_body = negative_premises[0]
+            negative_body_to_source = raw_deep_formula_transform_proof(
+                target_negative_body,
+                implication_conclusion,
+                "HtargetNegativeBody",
+                local_sorts,
+            )
+            if negative_body_to_source is None:
+                negative_body_to_source = raw_clause_transform_proof(
+                    target_negative_body,
+                    implication_conclusion,
+                    "HtargetNegativeBody",
+                )
+            if negative_body_to_source is None:
+                return None
+            return f"(fun HtargetNegativeBody => HnotSourceConclusion {proof_term_text(negative_body_to_source)})"
+
+        conclusion_binders, conclusion_body = collect_foralls(implication_conclusion)
+        exists_parts = raw_exists_transform_parts(component)
+        if not conclusion_binders or exists_parts is None:
+            return None
+        _head, exists_sort, _predicate, exists_name, exists_body = exists_parts
+        if len(conclusion_binders) != 1 or conclusion_binders[0][1] != exists_sort:
+            return None
+        conclusion_name, _ = conclusion_binders[0]
+        witness = Expr("var", value=exists_name)
+        source_body_at_witness = substitute_expr(conclusion_body, {conclusion_name: witness})
+        target_body_at_witness = substitute_expr(exists_body, {exists_name: witness})
+        target_negative_premises, target_negative_conclusion = split_arrows(target_body_at_witness)
+        if len(target_negative_premises) != 1 or not false_eliminator_expr(target_negative_conclusion):
+            return None
+        target_negative_body = target_negative_premises[0]
         negative_body_to_source = raw_deep_formula_transform_proof(
             target_negative_body,
-            source_negative_body,
+            source_body_at_witness,
             "HtargetNegativeBody",
-            local_sorts,
+            {**local_sorts, exists_name: exists_sort},
         )
         if negative_body_to_source is None:
             negative_body_to_source = raw_clause_transform_proof(
                 target_negative_body,
-                source_negative_body,
+                source_body_at_witness,
                 "HtargetNegativeBody",
             )
         if negative_body_to_source is None:
-            continue
-        target_text = proof_arg_text(target)
-        source_negative_text = proof_arg_text(source_negative_body)
-        negative_proof = f"(fun HtargetNegativeBody => HnotSourceNegative {proof_term_text(negative_body_to_source)})"
-        conjunction_proof = f"(fun P K => K {proof_term_text(positive_proof)} {proof_term_text(negative_proof)})"
-        exists_proof = f"(fun Q Hexists => Hexists {source_name} {proof_term_text(conjunction_proof)})"
-        implication_proof = (
-            f"(fun {source_name}:{source_sort} => fun HsourcePositive => "
-            f"(xm {source_negative_text} {source_negative_text} "
-            f"(fun HsourceNegative => HsourceNegative) "
-            f"(fun HnotSourceNegative => ((HnotTarget {proof_term_text(exists_proof)}) {source_negative_text}))))"
+            return None
+        source_body_text = proof_arg_text(source_body_at_witness)
+        target_component_text = proof_arg_text(component)
+        exists_intro = (
+            f"(fun Q Hexists => Hexists {exists_name} "
+            f"(fun HtargetNegativeBody => HnotSourceBody {proof_term_text(negative_body_to_source)}))"
+        )
+        forall_source_proof = (
+            f"(fun {exists_name}:{exists_sort} => "
+            f"(xm {source_body_text} {source_body_text} "
+            f"(fun HsourceBody => HsourceBody) "
+            f"(fun HnotSourceBody => ((HnotTargetComponent {proof_term_text(exists_intro)}) {source_body_text}))))"
         )
         return (
-            f"(xm {target_text} {target_text} "
-            f"(fun Htarget => Htarget) "
-            f"(fun HnotTarget => ({proof_head(source_proof)} {proof_term_text(implication_proof)} {target_text})))"
+            f"(xm {target_component_text} {target_component_text} "
+            f"(fun HtargetComponent => HtargetComponent) "
+            f"(fun HnotTargetComponent => "
+            f"((HnotSourceConclusion {proof_term_text(forall_source_proof)}) {target_component_text})))"
         )
-    return None
+
+    used: set[int] = set()
+    component_proofs: dict[int, str] = {}
+    for premise_index, source_premise in enumerate(implication_premises):
+        source_premise_at_witness = substitute_expr(source_premise, {source_name: witness})
+        proof_name = f"HsourcePremise{premise_index}"
+        for component_index, component in enumerate(target_components):
+            if component_index in used:
+                continue
+            proof = premise_component_proof(source_premise_at_witness, component, proof_name)
+            if proof is None:
+                continue
+            used.add(component_index)
+            component_proofs[component_index] = proof
+            break
+        else:
+            return None
+
+    negative_component_index: int | None = None
+    for component_index, component in enumerate(target_components):
+        if component_index in used:
+            continue
+        proof = negated_conclusion_component_proof(component)
+        if proof is None:
+            continue
+        negative_component_index = component_index
+        component_proofs[component_index] = proof
+        used.add(component_index)
+        break
+    if negative_component_index is None or len(component_proofs) != len(target_components):
+        return None
+
+    def target_component_proof(component: Expr) -> str | None:
+        for index, target_component in enumerate(target_components):
+            if expr_same_mod_alpha(component, target_component):
+                return component_proofs.get(index)
+        return None
+
+    conjunction_proof = raw_build_conjunction_from_component_proofs(target_body_at_witness, target_component_proof)
+    if conjunction_proof is None:
+        return None
+    exists_proof = f"(fun Q Hexists => Hexists {source_name} {proof_term_text(conjunction_proof)})"
+    source_conclusion_at_witness = substitute_expr(implication_conclusion, {source_name: witness})
+    source_conclusion_text = proof_arg_text(source_conclusion_at_witness)
+    body = (
+        f"(xm {source_conclusion_text} {source_conclusion_text} "
+        f"(fun HsourceConclusion => HsourceConclusion) "
+        f"(fun HnotSourceConclusion => ((HnotTarget {proof_term_text(exists_proof)}) {source_conclusion_text})))"
+    )
+    for premise_index in reversed(range(len(implication_premises))):
+        body = f"(fun HsourcePremise{premise_index} => {body})"
+    implication_proof = f"(fun {source_name}:{source_sort} => {body})"
+    target_text = proof_arg_text(target)
+    return (
+        f"(xm {target_text} {target_text} "
+        f"(fun Htarget => Htarget) "
+        f"(fun HnotTarget => ({proof_head(source_proof)} {proof_term_text(implication_proof)} {target_text})))"
+    )
 
 
 def raw_negated_target_from_not_target_proof(
