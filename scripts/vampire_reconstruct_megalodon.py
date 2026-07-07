@@ -22137,12 +22137,12 @@ def raw_lambda_function_parent_equality_rewrite_proof(
     source_lambdas = [
         expr
         for expr in expr_subterms(renamed_source_body, limit=192)
-        if expr.kind == "lambda" and expr_sort(expr, local_sorts) == "set->set"
+        if expr.kind == "lambda" and expr_sort(expr, local_sorts) in {"set->set", "set->prop"}
     ]
     target_lambdas = [
         expr
         for expr in expr_subterms(target_body, limit=192)
-        if expr.kind == "lambda" and expr_sort(expr, local_sorts) == "set->set"
+        if expr.kind == "lambda" and expr_sort(expr, local_sorts) in {"set->set", "set->prop"}
     ]
     if not source_lambdas or not target_lambdas:
         return None
@@ -22177,8 +22177,19 @@ def raw_lambda_function_parent_equality_rewrite_proof(
                 sort=source_lambda_sort,
                 args=(normalized_target_lambda_body,),
             )
+            lambda_sort = expr_sort(source_lambda, local_sorts)
+            if lambda_sort != expr_sort(normalized_target_lambda, local_sorts):
+                continue
+            if lambda_sort == "set->set":
+                funext_helper = "vampire_funext_set_set"
+                equality_sort = "set"
+            elif lambda_sort == "set->prop":
+                funext_helper = "vampire_funext_set_prop"
+                equality_sort = "prop"
+            else:
+                continue
             replaced_body, changed = replace_expr(renamed_source_body, source_lambda, normalized_target_lambda)
-            if not changed or not expr_same_mod_alpha(replaced_body, target_body):
+            if not changed:
                 continue
 
             for old_pattern, new_pattern, reverse in (
@@ -22206,9 +22217,13 @@ def raw_lambda_function_parent_equality_rewrite_proof(
                 for name, _ in equality_binders:
                     equality_instance = f"({proof_head(equality_instance)} {proof_arg_text(subst[name])})"
                 if reverse:
-                    equality_instance = raw_eq_symmetry_proof(equality_instance, normalized_target_lambda_body, "set")
+                    equality_instance = raw_eq_symmetry_proof(
+                        equality_instance,
+                        normalized_target_lambda_body,
+                        equality_sort,
+                    )
                 function_equality = (
-                    f"(vampire_funext_set_set "
+                    f"({funext_helper} "
                     f"{proof_arg_text(source_lambda)} "
                     f"{proof_arg_text(normalized_target_lambda)} "
                     f"(fun {source_lambda_name} :{source_lambda_sort} => {proof_term_text(equality_instance)}))"
@@ -22228,7 +22243,7 @@ def raw_lambda_function_parent_equality_rewrite_proof(
                     continue
                 transported = (
                     f"{proof_term_text(function_equality)} "
-                    f"(fun {hole_name} :set->set => {expr_text(context)}) "
+                    f"(fun {hole_name} :{lambda_sort} => {expr_text(context)}) "
                     f"{proof_term_text(source_body_proof)}"
                 )
                 body_proof: str | None
