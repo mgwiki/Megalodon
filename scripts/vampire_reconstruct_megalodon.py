@@ -17742,6 +17742,14 @@ def raw_tptp_one_parent_transform_proof(
     )
     if implication_exists is not None:
         return implication_exists
+    negated_forall_exists = raw_negated_forall_to_exists_negation_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+        variable_sorts or {},
+    )
+    if negated_forall_exists is not None:
+        return negated_forall_exists
     negated_forall_implication_exists = raw_negated_forall_implication_to_exists_conjunction_proof(
         source,
         target,
@@ -18724,6 +18732,84 @@ def raw_not_exists_to_forall_not_transform_proof(source: Expr, target: Expr, sou
     return (
         f"(fun {target_name}:{target_sort} => fun Hprem => "
         f"{proof_head(source_proof)} (fun Q:prop => fun Hexists => Hexists {target_name} Hprem))"
+    )
+
+
+def raw_nested_exists_parts(expr: Expr) -> tuple[list[tuple[str, str]], Expr] | None:
+    binders: list[tuple[str, str]] = []
+    current = expr
+    while True:
+        parts = raw_exists_transform_parts(current)
+        if parts is None:
+            break
+        _head, sort, _predicate, name, body = parts
+        binders.append((name, sort))
+        current = body
+    if not binders:
+        return None
+    return binders, current
+
+
+def raw_negated_forall_to_exists_negation_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_premises, source_conclusion = split_arrows(source)
+    if len(source_premises) != 1 or not false_eliminator_expr(source_conclusion):
+        return None
+    source_binders, source_body = collect_foralls(source_premises[0])
+    if not source_binders:
+        return None
+    target_parts = raw_nested_exists_parts(target)
+    if target_parts is None:
+        return None
+    target_binders, target_body = target_parts
+    if len(target_binders) != len(source_binders):
+        return None
+    for (_, source_sort), (_, target_sort) in zip(source_binders, target_binders):
+        if source_sort != target_sort:
+            return None
+    target_to_source_names = {
+        target_name: Expr("var", value=source_name)
+        for (source_name, _), (target_name, _) in zip(source_binders, target_binders)
+    }
+    target_body_at_source = substitute_expr(target_body, target_to_source_names)
+    target_neg_premises, target_neg_conclusion = split_arrows(target_body_at_source)
+    if len(target_neg_premises) != 1 or not false_eliminator_expr(target_neg_conclusion):
+        return None
+    target_positive = target_neg_premises[0]
+    local_sorts = {**variable_sorts, **{name: sort for name, sort in source_binders}}
+    target_to_source = raw_deep_formula_transform_proof(target_positive, source_body, "HtargetPositive", local_sorts)
+    if target_to_source is None:
+        target_to_source = raw_clause_transform_proof(target_positive, source_body, "HtargetPositive")
+    if target_to_source is None and expr_same_mod_alpha(target_positive, source_body):
+        target_to_source = "HtargetPositive"
+    if target_to_source is None:
+        return None
+
+    neg_target_positive = (
+        f"(fun HtargetPositive => HnotSourceBody {proof_term_text(target_to_source)})"
+    )
+    exists_intro = proof_term_text(neg_target_positive)
+    for source_name, _sort in reversed(source_binders):
+        exists_intro = f"(fun Q Hexists => Hexists {source_name} {exists_intro})"
+
+    source_body_text = proof_arg_text(source_body)
+    target_text = proof_arg_text(target)
+    false_to_source_body = f"(HnotTarget {proof_term_text(exists_intro)} {source_body_text})"
+    forall_body = (
+        f"(xm {source_body_text} {source_body_text} "
+        f"(fun HsourceBody => HsourceBody) "
+        f"(fun HnotSourceBody => {false_to_source_body}))"
+    )
+    for source_name, source_sort in reversed(source_binders):
+        forall_body = f"(fun {source_name}:{source_sort} => {forall_body})"
+    return (
+        f"(xm {target_text} {target_text} "
+        f"(fun Htarget => Htarget) "
+        f"(fun HnotTarget => ({proof_head(source_proof)} {proof_term_text(forall_body)} {target_text})))"
     )
 
 
