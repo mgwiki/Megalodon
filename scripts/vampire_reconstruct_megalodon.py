@@ -20131,6 +20131,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 unsupported += 1
             else:
                 decoded_propositions.append(proposition)
+            if rule == "skolem_symbol_introduction" and not parents:
+                role = "axiom"
             decoded_entries.append((name, role, proposition or "", rule, source_name, parents, trusted_definition))
         entries = decoded_entries
         propositions = decoded_propositions
@@ -20145,7 +20147,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         propositions = []
         for name in sorted(replay_steps, key=lambda value: int(value[1:]) if value.startswith("S") and value[1:].isdigit() else value):
             step = replay_steps[name]
-            role = "axiom" if step.rule == "input" and not step.parents else "plain"
+            role = "axiom" if step.rule in {"input", "skolem symbol introduction"} and not step.parents else "plain"
             rule = step.rule.replace(" ", "_") if step.rule else None
             proposition = step.proposition
             entries.append((name, role, proposition, rule, None, list(step.parents), False))
