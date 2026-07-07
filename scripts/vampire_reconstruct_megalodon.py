@@ -4295,18 +4295,68 @@ def raw_tptp_exported_definition_chain_proof(
     target = raw_tptp_replay_extra_expr(fields, "target", variable_sorts)
     if source is None or target is None:
         return None
-    states: list[tuple[Expr, str]] = [(source, raw_tptp_claim_name(parents[0]))]
+    equalities: list[tuple[Expr, str]] = []
     for index, parent in enumerate(parents[1:], start=1):
         equality = raw_tptp_replay_extra_expr(fields, f"parent_{index}", variable_sorts)
-        if equality is None:
-            continue
+        if equality is not None:
+            equalities.append((equality, raw_tptp_claim_name(parent)))
+
+    def finish(states: list[tuple[Expr, str]]) -> str | None:
+        for current, proof in states:
+            if expr_same_mod_alpha(current, target):
+                return proof
+            transformed = raw_clause_transform_proof(current, target, proof)
+            if transformed is not None:
+                return transformed
+            transformed = raw_deep_formula_transform_proof(current, target, proof, variable_sorts)
+            if transformed is not None:
+                return transformed
+        return None
+
+    def apply_sequence(sequence: list[tuple[Expr, str]]) -> str | None:
+        states: list[tuple[Expr, str]] = [(source, raw_tptp_claim_name(parents[0]))]
+        for equality, equality_proof in sequence:
+            next_states: list[tuple[Expr, str]] = []
+            for current, current_proof in states:
+                for replaced, proof in raw_quantified_equality_rewrite_clause_steps(
+                    current,
+                    current_proof,
+                    equality,
+                    equality_proof,
+                    variable_sorts,
+                    limit=8,
+                ):
+                    next_states.append((replaced, proof))
+                    normalized = beta_normalize_expr(replaced)
+                    if not expr_same_mod_alpha(normalized, replaced):
+                        next_states.append((normalized, proof))
+                    if len(next_states) >= 16:
+                        break
+                if len(next_states) >= 16:
+                    break
+            if next_states:
+                states = next_states
+                proof = finish(states)
+                if proof is not None:
+                    return proof
+        return finish(states)
+
+    proof = apply_sequence(equalities)
+    if proof is not None:
+        return proof
+    proof = apply_sequence(list(reversed(equalities)))
+    if proof is not None:
+        return proof
+
+    states: list[tuple[Expr, str]] = [(source, raw_tptp_claim_name(parents[0]))]
+    for equality, equality_proof in equalities:
         next_states: list[tuple[Expr, str]] = []
         for current, current_proof in states:
             for replaced, proof in raw_quantified_equality_rewrite_clause_steps(
                 current,
                 current_proof,
                 equality,
-                raw_tptp_claim_name(parent),
+                equality_proof,
                 variable_sorts,
                 limit=8,
             ):
@@ -4320,16 +4370,7 @@ def raw_tptp_exported_definition_chain_proof(
                 break
         if next_states:
             states = next_states
-    for current, proof in states:
-        if expr_same_mod_alpha(current, target):
-            return proof
-        transformed = raw_clause_transform_proof(current, target, proof)
-        if transformed is not None:
-            return transformed
-        transformed = raw_deep_formula_transform_proof(current, target, proof, variable_sorts)
-        if transformed is not None:
-            return transformed
-    return None
+    return finish(states)
 
 
 def raw_tptp_predicate_definition_target(
