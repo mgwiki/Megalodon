@@ -25663,6 +25663,7 @@ def raw_tptp_step_lambda_sort_hints(step: MegalodonReplayStep) -> dict[str, str]
             result.update(
                 raw_tptp_extra_lambda_sort_hints(
                     fields,
+                    "step",
                     "selected_parent",
                     "other_parent",
                     "conclusion",
