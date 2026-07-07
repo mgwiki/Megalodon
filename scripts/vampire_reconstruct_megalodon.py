@@ -2683,9 +2683,10 @@ def make_eq_fact(name: str, proposition: str) -> EqFact | None:
         return None
     binders, body = collect_foralls(expr)
     premises, conclusion = split_arrows(body)
-    if binders or premises or conclusion.kind != "eq":
+    sides = equality_like_sides(conclusion)
+    if binders or premises or sides is None:
         return None
-    return EqFact(conclusion.args[0], conclusion.args[1], name)
+    return EqFact(sides[0], sides[1], name)
 
 
 def fresh_definition(proposition: str, variable_sorts: dict[str, str]) -> tuple[str, DefinitionInfo] | None:
@@ -9242,6 +9243,180 @@ def binary_reflexive_relation_transport_proof(
     return None
 
 
+def binary_constructor_relation_intro_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 0 or len(expr_text(expr)) > 800:
+        return None
+    target = normalize_defined_expr(expr, definitions)
+    if target.kind != "app" or len(target.args) < 3:
+        return None
+    if not any(arg.kind == "app" and len(arg.args) == 3 for arg in target.args[1:]):
+        return None
+
+    def relation_inclusion_via_equality_proof(relation: Expr, left: Expr, right: Expr) -> str | None:
+        target_atom = Expr("app", args=(relation, left, right))
+        for inclusion_index, original_inclusion in enumerate(reversed(rules)):
+            inclusion = rename_rule_binders(original_inclusion, f"CI{inclusion_index}_")
+            inclusion_conclusion = binary_atom_parts(rule_application_conclusion(inclusion))
+            if inclusion_conclusion is None or inclusion.premises:
+                continue
+            if expr_key(Expr("var", value=inclusion_conclusion[0])) != expr_key(relation):
+                continue
+            inclusion_binders = rule_application_binders(inclusion)
+            inclusion_subst: dict[str, Expr] = {}
+            if not match_expr(inclusion_conclusion[1], left, set(inclusion_binders), inclusion_subst):
+                continue
+            for equality_index, original_equality in enumerate(reversed(rules)):
+                equality = rename_rule_binders(original_equality, f"CE{equality_index}_")
+                equality_sides = equality_like_sides(rule_application_conclusion(equality))
+                if equality_sides is None or len(equality.premises) > 3:
+                    continue
+                equality_binders = rule_application_binders(equality)
+                for source_side, target_side, reverse in (
+                    (equality_sides[0], equality_sides[1], False),
+                    (equality_sides[1], equality_sides[0], True),
+                ):
+                    initial_equality_subst: dict[str, Expr] = {}
+                    if not match_expr(target_side, right, set(equality_binders), initial_equality_subst):
+                        continue
+                    equality_substs = completed_rule_substs(
+                        equality,
+                        initial_equality_subst,
+                        known,
+                        eq_facts,
+                        limit=8,
+                    )
+                    if not equality_substs:
+                        equality_substs = [initial_equality_subst]
+                    for equality_subst in equality_substs:
+                        if not all(binder in equality_subst for binder in equality_binders):
+                            continue
+                        instantiated_source = substitute_expr(source_side, equality_subst)
+                        candidate_inclusion_subst = dict(inclusion_subst)
+                        if not match_expr(
+                            inclusion_conclusion[2],
+                            instantiated_source,
+                            set(inclusion_binders),
+                            candidate_inclusion_subst,
+                        ):
+                            continue
+                        if not all(binder in candidate_inclusion_subst for binder in inclusion_binders):
+                            continue
+                        inclusion_parts = rule_application_parts(
+                            inclusion,
+                            candidate_inclusion_subst,
+                            known,
+                            known_canonical,
+                            rules,
+                            eq_facts,
+                            definitions,
+                            1,
+                        )
+                        if inclusion_parts is None:
+                            continue
+                        equality_parts = rule_application_parts(
+                            equality,
+                            equality_subst,
+                            known,
+                            known_canonical,
+                            rules,
+                            eq_facts,
+                            definitions,
+                            1,
+                        )
+                        if equality_parts is None:
+                            continue
+                        source = substitute_expr(inclusion_conclusion[2], candidate_inclusion_subst)
+                        inclusion_proof = rule_application_text(inclusion_parts)
+                        equality_proof = rule_application_text(equality_parts)
+                        if reverse:
+                            equality_proof = eq_symmetry_proof(equality_proof, right)
+                        return transport_atomic_argument_proof(
+                            target_atom,
+                            [left, source],
+                            inclusion_proof,
+                            1,
+                            equality_proof,
+                        )
+        return None
+
+    for rule in reversed(rules):
+        binders = rule_application_binders(rule)
+        if len(binders) > 4 or len(rule.premises) > 4:
+            continue
+        conclusion = normalize_defined_expr(rule_application_conclusion(rule), definitions)
+        if conclusion.kind != "app" or len(conclusion.args) != len(target.args):
+            continue
+        if expr_key(conclusion.args[0]) != expr_key(target.args[0]):
+            continue
+        if not any(arg.kind == "app" and len(arg.args) == 3 for arg in conclusion.args[1:]):
+            continue
+        subst: dict[str, Expr] = {}
+        if not match_expr(conclusion, target, set(binders), subst):
+            continue
+        if not all(binder in subst for binder in binders):
+            continue
+        steps = rule.steps or tuple(RuleStep("binder", name=binder) for binder in binders) + tuple(
+            RuleStep("premise", expr=premise) for premise in rule.premises
+        )
+        manual_parts = [rule.name]
+        ok = True
+        for step in steps:
+            if step.kind == "binder":
+                assert step.name is not None
+                manual_parts.append(proof_arg_text(subst[step.name]))
+                continue
+            assert step.expr is not None
+            premise = substitute_expr(step.expr, subst)
+            premise_key = expr_key(premise)
+            premise_proof = known.get(premise_key) or known_canonical.get(canonical_proposition(premise_key))
+            if premise_proof is None:
+                premise_atom = binary_atom_parts(premise)
+                if premise_atom is not None:
+                    premise_proof = relation_inclusion_via_equality_proof(
+                        Expr("var", value=premise_atom[0]),
+                        premise_atom[1],
+                        premise_atom[2],
+                    )
+            if premise_proof is None:
+                premise_proof = proof_for_expr(
+                    premise,
+                    known,
+                    known_canonical,
+                    rules,
+                    eq_facts,
+                    definitions,
+                    allow_rule=True,
+                    rule_depth=1,
+                )
+            if premise_proof is None:
+                ok = False
+                break
+            manual_parts.append(proof_argument_text(premise_proof))
+        if ok:
+            return rule_application_text(manual_parts)
+        parts = rule_application_parts(
+            rule,
+            subst,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            max(rule_depth - 1, 3),
+        )
+        if parts is not None:
+            return rule_application_text(parts)
+    return None
+
+
 def unary_binary_closure_rule_proof(
     target: Expr,
     predicate: Expr,
@@ -11952,6 +12127,18 @@ def _proof_for_expr_impl(
     )
     if reflexive_relation_transport is not None:
         return reflexive_relation_transport
+
+    constructor_relation_intro = binary_constructor_relation_intro_proof(
+        expr,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        rule_depth,
+    )
+    if constructor_relation_intro is not None:
+        return constructor_relation_intro
 
     if allow_rule:
         atomic_rule_rewrite = atomic_rule_result_one_rewrite_proof(
