@@ -1825,8 +1825,7 @@ def megalodon_replay_steps(
         if proposition_match is not None:
             step = f"S{proposition_match.group('id')}"
             direct_proposition = json.loads(f'"{proposition_match.group("proposition")}"')
-            if "vLAM" not in direct_proposition:
-                direct_propositions[step] = direct_proposition
+            direct_propositions[step] = direct_proposition
             continue
         step_match = MEGALODON_STEP_DETAIL_RE.match(line)
         if step_match is not None:
@@ -3327,7 +3326,33 @@ def surface_direct_step_expr(expr: Expr, variable_sorts: dict[str, str]) -> Expr
                 surface_direct_step_expr(set_equality[1], variable_sorts),
             ),
         )
-    if expr.kind in {"app", "arrow"}:
+    if expr.kind == "app":
+        args = [surface_direct_step_expr(arg, variable_sorts) for arg in expr.args]
+        if (
+            len(args) == 2
+            and args[0].kind == "var"
+            and args[0].value == "vLAM"
+        ):
+            return Expr("lambda", value="db0", sort="set", args=(args[1],))
+        converted: list[Expr] = []
+        index = 0
+        changed = False
+        while index < len(args):
+            if (
+                index + 1 < len(args)
+                and args[index].kind == "var"
+                and args[index].value == "vLAM"
+            ):
+                converted.append(Expr("lambda", value="db0", sort="set", args=(args[index + 1],)))
+                index += 2
+                changed = True
+                continue
+            converted.append(args[index])
+            index += 1
+        if changed:
+            return Expr("app", value=expr.value, args=tuple(converted), sort=expr.sort)
+        return Expr("app", value=expr.value, args=tuple(args), sort=expr.sort)
+    if expr.kind == "arrow":
         return Expr(
             expr.kind,
             value=expr.value,
