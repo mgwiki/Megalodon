@@ -47,6 +47,9 @@ MEGALODON_STEP_SUBSTITUTIONS_RE = re.compile(
 MEGALODON_STEP_REPLAY_KIND_RE = re.compile(
     r'^megalodon_step_replay_kind\((?P<id>[0-9]+),"(?P<kind>(?:\\.|[^"\\])*)"\)\.$'
 )
+MEGALODON_STEP_EXTRA_RE = re.compile(
+    r'^megalodon_step_extra\((?P<id>[0-9]+),"(?P<kind>(?:\\.|[^"\\])*)",\[(?P<fields>.*)\]\)\.$'
+)
 MEGALODON_FINAL_STEP_RE = re.compile(r"^megalodon_final_step\((?P<id>[0-9]+)\)\.$")
 FRESH_SET_RE = re.compile(r"^sF[0-9]+$")
 VAMPIRE_DEPENDENCY_RE = re.compile(r"^(s[FK]|db)[0-9]+$")
@@ -157,6 +160,7 @@ class MegalodonReplayStep:
     proposition: str
     substitutions: tuple[str, ...] = ()
     replay_kind: str = ""
+    extras: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 def sha256(path: Path) -> str:
@@ -303,7 +307,7 @@ def vampire_command(args: argparse.Namespace, problem: Path, proof_path: Path) -
                     "off",
                 ]
             )
-            if args.proof_mode == "leancheck":
+            if args.proof_mode in {"leancheck", "megalodon"}:
                 cmd.extend(["--output_mode", "lean"])
     cmd.append(str(problem))
     return cmd
@@ -1675,6 +1679,7 @@ def megalodon_replay_steps(
     steps: dict[str, MegalodonReplayStep] = {}
     substitutions: dict[str, tuple[str, ...]] = {}
     replay_kinds: dict[str, str] = {}
+    extras: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
     for raw in proof_text.splitlines():
         line = raw.strip()
         step_match = MEGALODON_STEP_DETAIL_RE.match(line)
@@ -1693,6 +1698,16 @@ def megalodon_replay_steps(
                 parents=parents,
                 proposition=proposition,
             )
+            continue
+        extra_match = MEGALODON_STEP_EXTRA_RE.match(line)
+        if extra_match is not None:
+            try:
+                fields = json.loads(f'[{extra_match.group("fields")}]')
+            except json.JSONDecodeError:
+                continue
+            step = f"S{extra_match.group('id')}"
+            kind = json.loads(f'"{extra_match.group("kind")}"')
+            extras.setdefault(step, []).append((kind, tuple(str(field) for field in fields)))
             continue
         replay_kind_match = MEGALODON_STEP_REPLAY_KIND_RE.match(line)
         if replay_kind_match is not None:
@@ -1725,6 +1740,7 @@ def megalodon_replay_steps(
                 proposition=info.proposition,
                 substitutions=replay_substitutions,
                 replay_kind=replay_kinds.get(step, info.replay_kind),
+                extras=tuple(extras.get(step, info.extras)),
             )
     for step, replay_kind in replay_kinds.items():
         info = steps.get(step)
@@ -1735,6 +1751,18 @@ def megalodon_replay_steps(
                 proposition=info.proposition,
                 substitutions=info.substitutions,
                 replay_kind=replay_kind,
+                extras=tuple(extras.get(step, info.extras)),
+            )
+    for step, step_extras in extras.items():
+        info = steps.get(step)
+        if info is not None and tuple(step_extras) != info.extras:
+            steps[step] = MegalodonReplayStep(
+                rule=info.rule,
+                parents=info.parents,
+                proposition=info.proposition,
+                substitutions=info.substitutions,
+                replay_kind=info.replay_kind,
+                extras=tuple(step_extras),
             )
     return steps
 
