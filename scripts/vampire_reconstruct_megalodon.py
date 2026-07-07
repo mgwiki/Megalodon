@@ -23583,6 +23583,39 @@ def raw_tptp_extra_formula_expr(
     return parse_expr(proposition) if proposition is not None else None
 
 
+def raw_tptp_extra_lambda_exprs(
+    fields: dict[str, str],
+    prefix: str,
+    variable_sorts: dict[str, str],
+) -> tuple[Expr, ...]:
+    count_text = fields.get(f"{prefix}_lambda_count")
+    if count_text is None:
+        return ()
+    try:
+        count = int(count_text)
+    except ValueError:
+        return ()
+    result: list[Expr] = []
+    seen: set[str] = set()
+    for index in range(max(0, count)):
+        text = fields.get(f"{prefix}_lambda_{index}")
+        if not text:
+            continue
+        expr = parse_expr(text)
+        if expr is None:
+            continue
+        expr = surface_direct_step_expr(expr, variable_sorts)
+        lowered = parse_expr(lower_function_equality_proposition(expr, variable_sorts))
+        if lowered is not None:
+            expr = lowered
+        key = expr_key(expr)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(expr)
+    return tuple(result)
+
+
 def raw_equality_goal_expr(left: Expr, right: Expr, sort: str) -> Expr:
     if sort == "prop":
         return Expr("app", args=(Expr("var", value="vampire_eq_prop"), left, right))
@@ -24004,6 +24037,11 @@ def raw_tptp_exported_two_literal_resolution_proof(
         other_substituted = raw_tptp_extra_formula_expr(fields, "other_substituted", extra_sorts)
         if selected_substituted is None or other_substituted is None:
             continue
+        exported_lambda_exprs = (
+            *raw_tptp_extra_lambda_exprs(fields, "selected_parent", extra_sorts),
+            *raw_tptp_extra_lambda_exprs(fields, "other_parent", extra_sorts),
+            *raw_tptp_extra_lambda_exprs(fields, "conclusion", extra_sorts),
+        )
         selected_clause = raw_instantiated_clause_from_exported_literal(
             parsed_parents[selected_parent][0],
             parsed_parents[selected_parent][1],
@@ -24036,7 +24074,7 @@ def raw_tptp_exported_two_literal_resolution_proof(
                     return body_proof
         if selected_clause is not None:
             selected_expr, selected_proof = selected_clause
-            candidate_exprs = (target_body, selected_substituted, other_substituted)
+            candidate_exprs = (target_body, selected_substituted, other_substituted, *exported_lambda_exprs)
             for other_expr, other_proof in raw_quantified_equality_instances(
                 parsed_parents[other_parent][0],
                 parsed_parents[other_parent][1],
@@ -24069,7 +24107,7 @@ def raw_tptp_exported_two_literal_resolution_proof(
                     return rewritten
         if other_clause is not None:
             other_expr, other_proof = other_clause
-            candidate_exprs = (target_body, selected_substituted, other_substituted)
+            candidate_exprs = (target_body, selected_substituted, other_substituted, *exported_lambda_exprs)
             for selected_expr, selected_proof in raw_quantified_equality_instances(
                 parsed_parents[selected_parent][0],
                 parsed_parents[selected_parent][1],
