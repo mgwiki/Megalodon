@@ -17467,6 +17467,18 @@ def raw_specialize_forall_transform_proof(
     subst: dict[str, Expr] = {}
     if not match_expr_with_alpha_instantiation(body, target, binder_names, subst):
         subst = {}
+    clause_subst = raw_clause_literal_instantiation_subst(body, target, binders, variable_sorts, subst)
+    if clause_subst is not None:
+        instantiated = substitute_expr(body, clause_subst)
+        if raw_clause_replay_budget_ok(instantiated, target, max_literals=24, max_literal_product=384):
+            proof = source_proof
+            for name, _ in binders:
+                proof = f"({proof_head(proof)} {proof_arg_text(clause_subst[name])})"
+            transformed = raw_clause_subsumption_transform_proof(instantiated, target, proof)
+            if transformed is None:
+                transformed = raw_clause_transform_proof(instantiated, target, proof)
+            if transformed is not None:
+                return transformed
     target_subterms = expr_subterms(target, limit=128)
     local_sorts = {**variable_sorts, **{name: sort for name, sort in binders}}
     for name, sort in binders:
@@ -17485,6 +17497,71 @@ def raw_specialize_forall_transform_proof(
     if expr_same_mod_alpha(instantiated, target):
         return proof
     return raw_clause_subsumption_transform_proof(instantiated, target, proof) or raw_clause_transform_proof(instantiated, target, proof)
+
+
+def raw_clause_literal_instantiation_subst(
+    source_body: Expr,
+    target: Expr,
+    binders: list[tuple[str, str]],
+    variable_sorts: dict[str, str],
+    initial_subst: dict[str, Expr] | None = None,
+) -> dict[str, Expr] | None:
+    if proof_search_timed_out():
+        return None
+    source_literals = raw_clause_literals(source_body)
+    target_literals = raw_clause_literals(target)
+    if not source_literals or len(source_literals) > 12 or len(target_literals) > 16:
+        return None
+    binder_sorts = dict(binders)
+    binder_names = set(binder_sorts)
+    subst = dict(initial_subst or {})
+    source_literals = sorted(
+        source_literals,
+        key=lambda literal: (
+            -len(expr_variables(literal) & binder_names),
+            len(expr_text(literal)),
+        ),
+    )
+
+    def fill_missing(current: dict[str, Expr]) -> dict[str, Expr] | None:
+        result = dict(current)
+        target_vars = sorted(expr_variables(target))
+        for name, sort in binders:
+            if name in result:
+                continue
+            candidates = [
+                Expr("var", value=variable)
+                for variable in target_vars
+                if variable_sorts.get(variable, binder_sorts.get(variable)) == sort
+            ]
+            if name in target_vars and variable_sorts.get(name, binder_sorts.get(name)) == sort:
+                candidates.insert(0, Expr("var", value=name))
+            if not candidates:
+                return None
+            result[name] = candidates[0]
+        return result
+
+    def search(index: int, current: dict[str, Expr]) -> dict[str, Expr] | None:
+        if proof_search_timed_out():
+            return None
+        if index >= len(source_literals):
+            return fill_missing(current)
+        source_literal = source_literals[index]
+        for target_literal in target_literals:
+            trial = dict(current)
+            if not raw_match_literal_mod_equality_symmetry(source_literal, target_literal, binder_names, trial):
+                continue
+            found = search(index + 1, trial)
+            if found is not None:
+                return found
+        return None
+
+    result = search(0, subst)
+    if result is None:
+        return None
+    if not binder_names <= result.keys():
+        return None
+    return {name: result[name] for name, _ in binders}
 
 
 def raw_classical_implication_to_or_transform_proof(
