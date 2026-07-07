@@ -1861,6 +1861,8 @@ def megalodon_replay_steps(
         **megalodon_outline_symbol_sorts(proof_text),
         **raw_tptp_exported_source_variable_sorts(proof_text),
     }
+    function_definitions = tptp_function_definition_infos(proof_text, variable_sorts)
+    variable_sorts.update(raw_tptp_function_definition_sorts(function_definitions, variable_sorts))
     step_variable_sorts = megalodon_outline_step_variable_sorts(proof_text)
     steps: dict[str, MegalodonReplayStep] = {}
     substitutions: dict[str, tuple[str, ...]] = {}
@@ -2365,6 +2367,27 @@ def tptp_function_definition_infos(
             )
             break
     return definitions
+
+
+def raw_tptp_function_definition_sorts(
+    definitions: dict[str, DefinitionInfo],
+    variable_sorts: dict[str, str],
+) -> dict[str, str]:
+    sorts = {name: definition.sort for name, definition in definitions.items()}
+    known_sorts = {**variable_sorts, **sorts}
+    for definition in definitions.values():
+        local_sorts = raw_tptp_nonlocal_sorts(known_sorts)
+        for binder_name, binder_sort in zip(definition.binders, sort_argument_sorts(definition.sort)):
+            local_sorts[binder_name] = binder_sort
+        body_sort = sort_after_arguments(definition.sort, len(definition.binders)) or definition.sort
+        infer_missing_raw_tptp_sorts(
+            definition.body,
+            sorts,
+            local_sorts,
+            body_sort,
+        )
+        known_sorts.update(sorts)
+    return sorts
 
 
 TOKEN_RE = re.compile(r"->|=>|[A-Za-z_][A-Za-z0-9_']*|[0-9]+|[(),:=]")
@@ -24698,6 +24721,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             **source_declared_sorts(source),
             **raw_tptp_type_variables(declarations),
         }
+        function_definitions = tptp_function_definition_infos(text, variable_sorts)
+        variable_sorts.update(raw_tptp_function_definition_sorts(function_definitions, variable_sorts))
         raw_entries: list[tuple[str, str, str, str | None, str | None, str | None, list[str], bool]] = []
         propositions: list[str] = []
         for declaration in declarations:
@@ -24741,6 +24766,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             **megalodon_outline_symbol_sorts(text),
             **raw_tptp_exported_source_variable_sorts(text),
         }
+        function_definitions = tptp_function_definition_infos(text, variable_sorts)
+        variable_sorts.update(raw_tptp_function_definition_sorts(function_definitions, variable_sorts))
         replay_steps = megalodon_replay_steps(text, proof, problem, source)
         entries = []
         propositions = []
@@ -24761,6 +24788,9 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             propositions.append(proposition)
         add_missing_raw_tptp_variables(propositions, variable_sorts)
     propositions_by_name = {name: proposition for name, _, proposition, _, _, _, _ in entries if proposition}
+    if "function_definitions" not in locals():
+        function_definitions = tptp_function_definition_infos(text, variable_sorts)
+        variable_sorts.update(raw_tptp_function_definition_sorts(function_definitions, variable_sorts))
     predicate_definitions, predicate_definition_keys_by_step = raw_tptp_predicate_definition_infos(replay_steps, variable_sorts)
     predicate_definition_equalities: dict[str, str] = {}
     for definition_name, definition in predicate_definitions.items():
@@ -24847,9 +24877,16 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             continue
         if name in avatar_split_definitions or name.replace("__", "_") in avatar_split_definitions:
             continue
+        if name in function_definitions:
+            continue
         if name in predicate_definitions:
             continue
         lines.append(f"Variable {name}:{sort}.")
+        declared_names.add(name)
+    for name, definition in ordered_definitions(function_definitions):
+        if name in declared_names:
+            continue
+        lines.append(f"Definition {name} : {definition.sort} := {definition.body_text}.")
         declared_names.add(name)
     for name, definition in ordered_definitions(predicate_definitions):
         lines.append(f"Definition {name} : {definition.sort} := {definition.body_text}.")
