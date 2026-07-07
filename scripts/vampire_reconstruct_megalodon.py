@@ -25588,6 +25588,12 @@ def raw_tptp_avatar_sat_refutation_proof(
     if len(parsed) < 2:
         return None
     allow_recursive_clauses = len(parsed) <= 4
+    branch_counter = 0
+
+    def fresh_avatar_branch_name(prefix: str) -> str:
+        nonlocal branch_counter
+        branch_counter += 1
+        return f"{prefix}_sat_{branch_counter}"
 
     def close_literal(
         literal: Expr,
@@ -25635,8 +25641,8 @@ def raw_tptp_avatar_sat_refutation_proof(
         if parts is None:
             return close_literal(clause, clause_proof, facts, used_clauses, depth)
         left, right = parts
-        left_name = fresh_identifier("HL", expr_text(clause), clause_proof, str(depth))
-        right_name = fresh_identifier("HR", expr_text(clause), clause_proof, left_name, str(depth))
+        left_name = fresh_avatar_branch_name("HL")
+        right_name = fresh_avatar_branch_name("HR")
         left_proof = close_clause(left, left_name, facts, used_clauses, depth + 1)
         right_proof = close_clause(right, right_name, facts, used_clauses, depth + 1)
         if left_proof is None or right_proof is None:
