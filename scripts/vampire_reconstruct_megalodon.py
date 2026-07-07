@@ -17625,6 +17625,19 @@ def raw_classical_implication_to_or_transform_proof(
     source_application = source_proof
     for name, _ in target_binders:
         source_application = f"({proof_head(source_application)} {name})"
+    direct = raw_classical_single_implication_to_or_by_conclusion_proof(
+        source_premises,
+        source_conclusion,
+        target_body,
+        source_application,
+        {name: sort for name, sort in target_binders},
+        premise_offset,
+    )
+    if direct is not None:
+        proof = direct
+        for name, sort in reversed(target_binders):
+            proof = f"(fun {name}:{sort} => {proof})"
+        return proof
     proof = raw_classical_implication_to_or_body_proof(
         source_premises,
         source_conclusion,
@@ -17639,6 +17652,243 @@ def raw_classical_implication_to_or_transform_proof(
     for name, sort in reversed(target_binders):
         proof = f"(fun {name}:{sort} => {proof})"
     return proof
+
+
+def raw_classical_single_implication_to_or_by_conclusion_proof(
+    source_premises: list[Expr],
+    source_conclusion: Expr,
+    target: Expr,
+    source_application: str,
+    variable_sorts: dict[str, str],
+    premise_offset: int,
+) -> str | None:
+    if len(source_premises) != 1:
+        return None
+    target_or = app_args(target, "vampire_or", 2)
+    if target_or is None:
+        return None
+    source_premise = source_premises[0]
+    for negative_index, target_negative, target_positive in (
+        (0, target_or[0], target_or[1]),
+        (1, target_or[1], target_or[0]),
+    ):
+        source_conclusion_name = fresh_identifier(
+            f"HdirectConclusion{premise_offset}",
+            source_application,
+            proof_arg_text(source_conclusion),
+            proof_arg_text(target_negative),
+            proof_arg_text(target_positive),
+        )
+        not_conclusion_name = fresh_identifier(
+            f"HnotDirectConclusion{premise_offset}",
+            source_application,
+            source_conclusion_name,
+            proof_arg_text(source_conclusion),
+            proof_arg_text(target_negative),
+            proof_arg_text(target_positive),
+        )
+        positive_from_conclusion = raw_direct_conclusion_transform_proof(
+            source_conclusion,
+            target_positive,
+            source_conclusion_name,
+        )
+        if positive_from_conclusion is None:
+            continue
+        source_premise_name = fresh_identifier(
+            f"HdirectPremise{premise_offset}",
+            source_application,
+            proof_arg_text(source_premise),
+            proof_arg_text(target_negative),
+            proof_arg_text(target_positive),
+        )
+        source_conclusion_from_premise = f"({proof_head(source_application)} {source_premise_name})"
+        positive_from_source = raw_direct_conclusion_transform_proof(
+            source_conclusion,
+            target_positive,
+            source_conclusion_from_premise,
+        )
+        if positive_from_source is None:
+            continue
+        not_premise_proof = (
+            f"(fun {source_premise_name}:{proof_arg_text(source_premise)} => "
+            f"{not_conclusion_name} {proof_term_text(positive_from_source)})"
+        )
+        negative_branch = raw_negative_formula_transform_proof(
+            source_premise,
+            target_negative,
+            not_premise_proof,
+            variable_sorts,
+        )
+        if negative_branch is None:
+            continue
+        if negative_index == 0:
+            positive_intro = f"(fun P Hleft Hright => Hright {proof_term_text(positive_from_conclusion)})"
+            negative_intro = f"(fun P Hleft Hright => Hleft {proof_term_text(negative_branch)})"
+        else:
+            positive_intro = f"(fun P Hleft Hright => Hleft {proof_term_text(positive_from_conclusion)})"
+            negative_intro = f"(fun P Hleft Hright => Hright {proof_term_text(negative_branch)})"
+        return (
+            f"(xm {proof_arg_text(target_positive)} {proof_arg_text(target)} "
+            f"(fun {source_conclusion_name} => {positive_intro}) "
+            f"(fun {not_conclusion_name} => {negative_intro}))"
+        )
+    return None
+
+
+def raw_direct_conclusion_transform_proof(source: Expr, target: Expr, source_proof: str) -> str | None:
+    if expr_same_mod_alpha(source, target):
+        return source_proof
+    true_equality_elim = raw_proof_from_prop_true_equality(source, target, source_proof)
+    if true_equality_elim is not None:
+        return true_equality_elim
+    true_equality_intro = raw_proof_to_prop_true_equality(source, target, source_proof)
+    if true_equality_intro is not None:
+        return true_equality_intro
+    source_sides = equality_like_sides(source)
+    target_sides = equality_like_sides(target)
+    if (
+        source_sides is not None
+        and target_sides is not None
+        and expr_same_mod_alpha(source_sides[0], target_sides[1])
+        and expr_same_mod_alpha(source_sides[1], target_sides[0])
+    ):
+        sort = "prop" if source.kind == "app" and source.args[0].kind == "var" and source.args[0].value == "vampire_eq_prop" else "set"
+        return raw_eq_symmetry_proof(source_proof, source_sides[0], sort)
+    return None
+
+
+def raw_implication_from_false_proof(
+    premises: list[Expr],
+    conclusion: Expr,
+    false_proof: str,
+    premise_names: list[str],
+) -> str:
+    body = raw_false_to_expr_proof(false_proof, conclusion)
+    for name, premise in reversed(list(zip(premise_names, premises))):
+        body = f"(fun {name}:{proof_arg_text(premise)} => {body})"
+    return body
+
+
+def raw_implication_from_conclusion_proof(
+    premises: list[Expr],
+    conclusion_proof: str,
+    premise_names: list[str],
+) -> str:
+    body = conclusion_proof
+    for name, premise in reversed(list(zip(premise_names, premises))):
+        body = f"(fun {name}:{proof_arg_text(premise)} => {body})"
+    return body
+
+
+def raw_negative_formula_transform_proof(
+    source: Expr,
+    target: Expr,
+    not_source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 32 or proof_search_timed_out():
+        return None
+    target_premises, target_conclusion = split_arrows(target)
+    if len(target_premises) == 1 and false_eliminator_expr(target_conclusion):
+        target_to_source = raw_deep_formula_transform_proof(
+            target_premises[0],
+            source,
+            "Htarget",
+            variable_sorts,
+        )
+        if target_to_source is None:
+            target_to_source = raw_clause_transform_proof(target_premises[0], source, "Htarget")
+        if target_to_source is not None:
+            return f"(fun Htarget => {proof_head(not_source_proof)} {proof_term_text(target_to_source)})"
+
+    exists_parts = raw_exists_transform_parts(target)
+    if exists_parts is not None:
+        proof = raw_negated_forall_implication_to_exists_conjunction_proof(
+            Expr("arrow", args=(source, Expr("var", value="vampire_false"))),
+            target,
+            not_source_proof,
+            variable_sorts,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_nested_exists_counterexample_proof(source, target, not_source_proof, variable_sorts)
+        if proof is not None:
+            return proof
+
+    source_premises, source_conclusion = split_arrows(source)
+    target_components = raw_conjunction_components(target)
+    if not source_premises or len(target_components) != len(source_premises) + 1:
+        return None
+    used_name_texts = [not_source_proof, expr_text(source), expr_text(target)]
+    premise_names: list[str] = []
+    for index in range(len(source_premises)):
+        name = fresh_identifier(f"HnegPrem{depth}_{index}", *used_name_texts)
+        premise_names.append(name)
+        used_name_texts.append(name)
+    component_proofs: list[str] = []
+    for index, (premise, component) in enumerate(zip(source_premises, target_components)):
+        premise_text = proof_arg_text(premise)
+        not_premise_name = fresh_identifier(
+            f"HnotNegPrem{depth}_{index}",
+            *used_name_texts,
+            premise_text,
+        )
+        used_name_texts.append(not_premise_name)
+        false_from_not_premise = f"({not_premise_name} {premise_names[index]})"
+        implication_from_false = raw_implication_from_false_proof(
+            source_premises,
+            source_conclusion,
+            false_from_not_premise,
+            premise_names,
+        )
+        premise_proof = (
+            f"(xm {premise_text} {premise_text} "
+            f"(fun {premise_names[index]}:{premise_text} => {premise_names[index]}) "
+            f"(fun {not_premise_name} => "
+            f"({proof_head(not_source_proof)} {proof_term_text(implication_from_false)} {premise_text})))"
+        )
+        component_proof = raw_deep_formula_transform_proof(premise, component, premise_proof, variable_sorts)
+        if component_proof is None:
+            component_proof = raw_classical_implication_to_or_transform_proof(premise, component, premise_proof)
+        if component_proof is None:
+            component_proof = raw_clause_transform_proof(premise, component, premise_proof)
+        if component_proof is None:
+            return None
+        component_proofs.append(component_proof)
+
+    conclusion_name = fresh_identifier(
+        f"HnegConclusion{depth}",
+        *used_name_texts,
+        proof_arg_text(source_conclusion),
+    )
+    implication_from_conclusion = raw_implication_from_conclusion_proof(
+        source_premises,
+        conclusion_name,
+        premise_names,
+    )
+    not_conclusion_proof = (
+        f"(fun {conclusion_name}:{proof_arg_text(source_conclusion)} => "
+        f"{proof_head(not_source_proof)} {proof_term_text(implication_from_conclusion)})"
+    )
+    negative_conclusion_proof = raw_negative_formula_transform_proof(
+        source_conclusion,
+        target_components[-1],
+        not_conclusion_proof,
+        variable_sorts,
+        depth + 1,
+    )
+    if negative_conclusion_proof is None:
+        return None
+    component_proofs.append(negative_conclusion_proof)
+
+    def component_proof(component: Expr) -> str | None:
+        for candidate, proof in zip(target_components, component_proofs):
+            if expr_same_mod_alpha(component, candidate):
+                return proof
+        return None
+
+    return raw_build_conjunction_from_component_proofs(target, component_proof)
 
 
 def raw_false_to_expr_proof(false_proof: str, target: Expr) -> str:
