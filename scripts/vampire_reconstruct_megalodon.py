@@ -4154,6 +4154,54 @@ def raw_tptp_replay_extra_expr(
     return lowered_expr if lowered_expr is not None else surfaced
 
 
+def raw_tptp_exported_definition_chain_proof(
+    fields: dict[str, str],
+    parents: list[str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if not parents:
+        return None
+    source = raw_tptp_replay_extra_expr(fields, "source", variable_sorts)
+    target = raw_tptp_replay_extra_expr(fields, "target", variable_sorts)
+    if source is None or target is None:
+        return None
+    states: list[tuple[Expr, str]] = [(source, raw_tptp_claim_name(parents[0]))]
+    for index, parent in enumerate(parents[1:], start=1):
+        equality = raw_tptp_replay_extra_expr(fields, f"parent_{index}", variable_sorts)
+        if equality is None:
+            continue
+        next_states: list[tuple[Expr, str]] = []
+        for current, current_proof in states:
+            for replaced, proof in raw_quantified_equality_rewrite_clause_steps(
+                current,
+                current_proof,
+                equality,
+                raw_tptp_claim_name(parent),
+                variable_sorts,
+                limit=8,
+            ):
+                next_states.append((replaced, proof))
+                normalized = beta_normalize_expr(replaced)
+                if not expr_same_mod_alpha(normalized, replaced):
+                    next_states.append((normalized, proof))
+                if len(next_states) >= 16:
+                    break
+            if len(next_states) >= 16:
+                break
+        if next_states:
+            states = next_states
+    for current, proof in states:
+        if expr_same_mod_alpha(current, target):
+            return proof
+        transformed = raw_clause_transform_proof(current, target, proof)
+        if transformed is not None:
+            return transformed
+        transformed = raw_deep_formula_transform_proof(current, target, proof, variable_sorts)
+        if transformed is not None:
+            return transformed
+    return None
+
+
 def raw_tptp_predicate_definition_target(
     step: MegalodonReplayStep,
     body: Expr,
@@ -16820,6 +16868,48 @@ def ambient_basic_logic_expr(expr: Expr) -> Expr:
     )
 
 
+def raw_or_swap_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    depth: int,
+    rewrites: tuple[RawSplitRewrite, ...],
+) -> str | None:
+    source_parts = app_args(source, "vampire_or", 2)
+    target_parts = app_args(target, "vampire_or", 2)
+    if source_parts is None or target_parts is None:
+        return None
+    left, right = source_parts
+    target_left, target_right = target_parts
+    left_name = fresh_identifier("HL", expr_text(source), expr_text(target), source_proof)
+    right_name = fresh_identifier("HR", expr_text(source), expr_text(target), source_proof, left_name)
+    left_to_target_right = raw_clause_subsumption_transform_proof(
+        left,
+        target_right,
+        left_name,
+        rewrites,
+    )
+    right_to_target_left = raw_clause_subsumption_transform_proof(
+        right,
+        target_left,
+        right_name,
+        rewrites,
+    )
+    if left_to_target_right is None or right_to_target_left is None:
+        if depth > 12:
+            return None
+        left_to_target_right = raw_clause_transform_proof(left, target_right, left_name, depth + 1, rewrites)
+        right_to_target_left = raw_clause_transform_proof(right, target_left, right_name, depth + 1, rewrites)
+    if left_to_target_right is None or right_to_target_left is None:
+        return None
+    target_text = proof_arg_text(target)
+    return (
+        f"({proof_head(source_proof)} {target_text} "
+        f"(fun {left_name} => fun P Hleft Hright => Hright {proof_term_text(left_to_target_right)}) "
+        f"(fun {right_name} => fun P Hleft Hright => Hleft {proof_term_text(right_to_target_left)}))"
+    )
+
+
 def raw_clause_transform_proof(
     source: Expr,
     target: Expr,
@@ -16856,6 +16946,10 @@ def raw_clause_transform_proof(
         if inner is None:
             return None
         return f"(fun {source.value}:{source.sort} => {inner})"
+
+    or_swap = raw_or_swap_transform_proof(source, target, source_proof, depth + 1, rewrites)
+    if or_swap is not None:
+        return or_swap
 
     source_parts = app_args(source, "vampire_or", 2)
     if source_parts is None:
@@ -22669,18 +22763,6 @@ def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: s
     if raw_tptp_replay_proof_has_escaped_surface_variable(proposition, proof):
         return True
     if rule in {"definition_folding", "definition_unfolding"} and raw_tptp_replay_proof_has_synthetic_db(proof):
-        if not any(
-            name in proof
-            for name in (
-                "vampire_funext_set_set",
-                "vampire_funext_set_set_prop",
-                "vampire_funext_set_set_set",
-                "vampire_funext_set_setfun_set",
-                "vampire_funext_set_prop",
-                "vampire_eps_ext",
-            )
-        ):
-            return True
         return raw_tptp_replay_proof_has_unbound_synthetic_db(proof)
     if rule in {"avatar_component_clause", "avatar_split_clause"}:
         return len(proposition) > MAX_RAW_TPTP_EXACT_AVATAR_PROPOSITION or len(proof) > MAX_RAW_TPTP_EXACT_PROOF_TERM
@@ -23372,6 +23454,9 @@ def raw_tptp_definition_rewrite_proof(
         exported_source = raw_tptp_replay_extra_expr(fields, "source", local_sorts)
         exported_target = raw_tptp_replay_extra_expr(fields, "target", local_sorts)
         if exported_source is not None and exported_target is not None:
+            proof = raw_tptp_exported_definition_chain_proof(fields, parents, local_sorts)
+            if proof is not None:
+                return proof
             proof = raw_deep_formula_transform_proof(
                 exported_source,
                 exported_target,
