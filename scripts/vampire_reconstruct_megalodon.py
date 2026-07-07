@@ -19040,6 +19040,15 @@ def raw_negated_forall_implication_to_exists_conjunction_proof(
                 return None
             return f"(fun HtargetNegativeBody => HnotSourceConclusion {proof_term_text(negative_body_to_source)})"
 
+        recursive = raw_negated_forall_implication_to_exists_conjunction_proof(
+            Expr("arrow", args=(implication_conclusion, Expr("var", value="False"))),
+            component,
+            "HnotSourceConclusion",
+            local_sorts,
+        )
+        if recursive is not None:
+            return recursive
+
         conclusion_binders, conclusion_body = collect_foralls(implication_conclusion)
         exists_parts = raw_exists_transform_parts(component)
         if not conclusion_binders or exists_parts is None:
