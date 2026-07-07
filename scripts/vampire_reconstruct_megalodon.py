@@ -390,7 +390,6 @@ def vampire_command(args: argparse.Namespace, problem: Path, proof_path: Path) -
         for item in args.vampire_arg:
             cmd.extend(item)
     else:
-        vampire_proof_mode = "leancheck" if args.proof_mode == "megalodon" else args.proof_mode
         cmd.extend(
             [
                 "--input_syntax",
@@ -402,7 +401,7 @@ def vampire_command(args: argparse.Namespace, problem: Path, proof_path: Path) -
                 "-t",
                 str(args.timeout),
                 "--proof",
-                vampire_proof_mode,
+                args.proof_mode,
             ]
         )
         if args.proof_mode in {"leancheck", "megalodon"}:
