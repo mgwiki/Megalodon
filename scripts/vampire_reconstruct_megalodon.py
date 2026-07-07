@@ -3776,6 +3776,40 @@ def raw_tptp_predicate_definition_equality_proposition(name: str, definition: De
     return proposition
 
 
+def raw_tptp_definition_rewrite_split_definition(
+    fields: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> tuple[str, Expr, Expr] | None:
+    definition_text = fields.get("definition") or fields.get("parent_1")
+    if definition_text is None:
+        return None
+    definition = parse_expr(definition_text)
+    if definition is None:
+        return None
+    definition = surface_direct_step_expr(definition, variable_sorts)
+    parts = raw_or_parts(definition)
+    if parts is None:
+        return None
+    left, right = parts
+    split: Expr
+    component: Expr
+    left_premises, left_conclusion = split_arrows(left)
+    right_premises, right_conclusion = split_arrows(right)
+    if len(left_premises) == 1 and false_eliminator_expr(left_conclusion):
+        split, component = left_premises[0], right
+    elif len(right_premises) == 1 and false_eliminator_expr(right_conclusion):
+        split, component = right_premises[0], left
+    else:
+        return None
+    sides = equality_like_sides(split)
+    if sides is None:
+        return None
+    for side in sides:
+        if side.kind == "var" and side.value is not None and expr_key(side) not in {"True", "vampire_true"}:
+            return side.value, component, split
+    return None
+
+
 def raw_tptp_predicate_definition_target(
     step: MegalodonReplayStep,
     body: Expr,
@@ -21917,6 +21951,41 @@ def raw_tptp_replay_rule_candidates(step: MegalodonReplayStep) -> list[str]:
     return candidates
 
 
+def raw_tptp_definition_rewrite_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+    replay_step: MegalodonReplayStep | None,
+) -> str | None:
+    if replay_step is None or not parents:
+        return None
+    source_proposition = propositions_by_name.get(parents[0])
+    source = parse_expr(source_proposition) if source_proposition is not None else None
+    target = parse_expr(proposition)
+    if source is None or target is None:
+        return None
+    local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
+    for fields in megalodon_replay_extra_fields(replay_step, "definition_rewrite"):
+        split_definition = raw_tptp_definition_rewrite_split_definition(fields, local_sorts)
+        if split_definition is None:
+            continue
+        name, component, _split = split_definition
+        normalized_target = substitute_expr(target, {name: component})
+        proof = raw_deep_formula_transform_proof(
+            source,
+            normalized_target,
+            raw_tptp_claim_name(parents[0]),
+            local_sorts,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_clause_transform_proof(source, normalized_target, raw_tptp_claim_name(parents[0]))
+        if proof is not None:
+            return proof
+    return None
+
+
 def raw_tptp_replay_proof_from_step(
     step: MegalodonReplayStep,
     proposition: str,
@@ -21979,6 +22048,9 @@ def raw_tptp_replay_proof(
             return proof
         return raw_tptp_one_parent_transform_proof(proposition, parents, propositions_by_name, variable_sorts)
     if rule in {"definition_folding", "definition_unfolding"}:
+        proof = raw_tptp_definition_rewrite_proof(proposition, parents, propositions_by_name, variable_sorts, replay_step)
+        if proof is not None:
+            return proof
         proof = raw_tptp_parent_equality_chain_rewrite_proof(proposition, parents, propositions_by_name, variable_sorts)
         if proof is not None:
             return proof
@@ -22583,6 +22655,14 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             continue
         split_name, body = definition
         avatar_split_definitions.setdefault(split_name, expr_text(body))
+    for step in replay_steps.values():
+        local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(step)}
+        for fields in megalodon_replay_extra_fields(step, "definition_rewrite"):
+            definition = raw_tptp_definition_rewrite_split_definition(fields, local_sorts)
+            if definition is None:
+                continue
+            split_name, body, _split = definition
+            avatar_split_definitions.setdefault(split_name, expr_text(body))
 
     final_name = None
     final_proposition = "vampire_false"
