@@ -21929,7 +21929,7 @@ def raw_tptp_replay_proof_has_synthetic_db(proof: str) -> bool:
 
 
 RAW_TPTP_SURFACE_VAR_RE = re.compile(r"\b[XY][0-9]+\b")
-RAW_TPTP_SURFACE_BINDER_RE = re.compile(r"\bfun\s+([XY][0-9]+)\s*:")
+RAW_TPTP_SURFACE_BINDER_RE = re.compile(r"\b(?:fun|forall)\s+([XY][0-9]+)\s*:")
 
 
 def raw_tptp_replay_proof_has_escaped_surface_variable(proposition: str, proof: str) -> bool:
@@ -22708,10 +22708,10 @@ def raw_tptp_replay_proof(
                 PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 0.5)
             try:
                 proof = raw_tptp_cnf_formula_clause_proof(proposition, parents, propositions_by_name, variable_sorts)
-                if proof is not None:
+                if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
                     return proof
                 proof = raw_tptp_small_forall_permutation_transform_proof(proposition, parents, propositions_by_name)
-                if proof is not None:
+                if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
                     return proof
             finally:
                 if previous_deadline is not None:
