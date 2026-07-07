@@ -22057,6 +22057,58 @@ def raw_quantified_equality_rewrite_clause_steps(
     return steps
 
 
+def raw_repeated_quantified_equality_rewrite_clause_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality: Expr,
+    equality_proof: str,
+    variable_sorts: dict[str, str],
+    max_depth: int = 3,
+) -> str | None:
+    states: list[tuple[Expr, str]] = [(source, source_proof)]
+    seen: set[str] = {expr_key(source)}
+    for _ in range(max_depth):
+        next_states: list[tuple[Expr, str]] = []
+        for current, current_proof in states:
+            for replaced, proof in raw_quantified_equality_rewrite_clause_steps(
+                current,
+                current_proof,
+                equality,
+                equality_proof,
+                variable_sorts,
+                limit=16,
+            ):
+                candidates = [replaced]
+                normalized = beta_normalize_expr(replaced)
+                if not expr_same_mod_alpha(normalized, replaced):
+                    candidates.append(normalized)
+                for candidate in candidates:
+                    if expr_same_mod_alpha(candidate, target):
+                        return proof
+                    transformed = raw_clause_transform_proof(candidate, target, proof)
+                    if transformed is not None:
+                        return transformed
+                    transformed = raw_deep_formula_transform_proof(candidate, target, proof, variable_sorts)
+                    if transformed is not None:
+                        return transformed
+                    key = expr_key(candidate)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    next_states.append((candidate, proof))
+                    if len(next_states) >= 48:
+                        break
+                if len(next_states) >= 48:
+                    break
+            if len(next_states) >= 48:
+                break
+        states = next_states
+        if not states:
+            break
+    return None
+
+
 def raw_pointwise_set_function_equality(
     equality: Expr,
     equality_proof: str,
@@ -22731,6 +22783,15 @@ def raw_tptp_exported_two_literal_resolution_proof(
                 if transformed is not None:
                     body_proof = transformed
                     break
+            if body_proof is None:
+                body_proof = raw_repeated_quantified_equality_rewrite_clause_proof(
+                    source,
+                    target_body,
+                    source_proof,
+                    parsed_parents[other_parent][0],
+                    parsed_parents[other_parent][1],
+                    extra_sorts,
+                )
             if body_proof is not None:
                 for name, sort in reversed(target_binders):
                     body_proof = f"(fun {name} :{sort} => {body_proof})"
