@@ -16648,6 +16648,25 @@ def raw_tptp_cnf_formula_clause_proof(
     )
 
 
+def ambient_basic_logic_expr(expr: Expr) -> Expr:
+    replacements = {
+        "vampire_false": "False",
+        "vampire_true": "True",
+        "vampire_or": "or",
+        "vampire_and": "and",
+    }
+    if expr.kind == "var" and expr.value in replacements:
+        return Expr("var", value=replacements[expr.value], sort=expr.sort)
+    if not expr.args:
+        return expr
+    return Expr(
+        expr.kind,
+        value=expr.value,
+        args=tuple(ambient_basic_logic_expr(arg) for arg in expr.args),
+        sort=expr.sort,
+    )
+
+
 def raw_clause_transform_proof(
     source: Expr,
     target: Expr,
@@ -17703,6 +17722,8 @@ def raw_tptp_one_parent_transform_proof(
     target = parse_expr(proposition)
     if source is None or target is None:
         return None
+    source = ambient_basic_logic_expr(source)
+    target = ambient_basic_logic_expr(target)
     if expr_same_mod_alpha(source, target):
         return raw_tptp_claim_name(parents[0])
     simple = raw_simple_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
