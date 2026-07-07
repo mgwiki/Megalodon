@@ -16696,6 +16696,13 @@ def raw_tptp_one_parent_transform_proof(
     )
     if implication_exists is not None:
         return implication_exists
+    forall_implication_exists = raw_forall_implication_to_negated_exists_conjunction_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+    )
+    if forall_implication_exists is not None:
+        return forall_implication_exists
     implication_or = raw_classical_implication_to_or_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
     if implication_or is not None:
         return implication_or
@@ -16961,6 +16968,72 @@ def raw_implication_exists_to_negative_conjunction_proof(
             f"False (fun {witness_name}:{witness_sort} => fun Hpos => {contradiction}))"
         )
     return None
+
+
+def raw_forall_implication_to_negated_exists_conjunction_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+) -> str | None:
+    source_binders, source_body = collect_foralls(source)
+    if len(source_binders) != 1:
+        return None
+    source_name, source_sort = source_binders[0]
+    source_premises, source_conclusion = split_arrows(source_body)
+    if len(source_premises) != 1:
+        return None
+    target_premises, target_conclusion = split_arrows(target)
+    if len(target_premises) != 1 or not false_eliminator_expr(target_conclusion):
+        return None
+    exists_parts = raw_exists_transform_parts(target_premises[0])
+    if exists_parts is None:
+        return None
+    _, witness_sort, _, exists_name, exists_body = exists_parts
+    if witness_sort != source_sort:
+        return None
+
+    witness_name = fresh_identifier("w", expr_text(source), expr_text(target), source_proof)
+    witness = Expr("var", value=witness_name)
+    source_premise_at_witness = substitute_expr(source_premises[0], {source_name: witness})
+    source_conclusion_at_witness = substitute_expr(source_conclusion, {source_name: witness})
+    target_body_at_witness = substitute_expr(exists_body, {exists_name: witness})
+    negative_conclusion = Expr(
+        "arrow",
+        args=(source_conclusion_at_witness, Expr("var", value="vampire_false")),
+    )
+
+    def flatten_conjunction(node: Expr) -> list[Expr]:
+        parts = vampire_and_parts(node)
+        if parts is None:
+            return [node]
+        return flatten_conjunction(parts[0]) + flatten_conjunction(parts[1])
+
+    def component_proof_for(desired: Expr) -> str | None:
+        exact = vampire_and_projection_from_proof("Hbody", target_body_at_witness, desired)
+        if exact is not None:
+            return exact
+        for component in flatten_conjunction(target_body_at_witness):
+            projected = vampire_and_projection_from_proof("Hbody", target_body_at_witness, component)
+            if projected is None:
+                continue
+            transformed = raw_clause_transform_proof(component, desired, projected)
+            if transformed is None:
+                transformed = raw_deep_formula_transform_proof(component, desired, projected, {})
+            if transformed is not None:
+                return transformed
+        return None
+
+    negative_proof = component_proof_for(negative_conclusion)
+    premise_proof = component_proof_for(source_premise_at_witness)
+    if negative_proof is None or premise_proof is None:
+        return None
+    source_application = f"({proof_head(source_proof)} {witness_name})"
+    positive_proof = f"({source_application} {proof_term_text(premise_proof)})"
+    return (
+        f"(fun Hexists => Hexists vampire_false "
+        f"(fun {witness_name}:{witness_sort} => fun Hbody => "
+        f"{proof_head(negative_proof)} {proof_term_text(positive_proof)}))"
+    )
 
 
 def raw_negated_target_from_not_target_proof(
