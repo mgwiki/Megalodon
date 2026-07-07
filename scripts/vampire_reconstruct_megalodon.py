@@ -5259,6 +5259,102 @@ def sequential_rule_application_proof(
     return None
 
 
+def alpha_equivalent_rule_application_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    target_text = expr_text(expr)
+    if rule_depth <= 0 or expr.kind != "eq" or len(target_text) > 700 or "fun " not in target_text:
+        return None
+    for rule in rules:
+        binders = rule_application_binders(rule)
+        steps = rule.steps or tuple(RuleStep("binder", name=binder) for binder in binders) + tuple(
+            RuleStep("premise", expr=premise) for premise in rule.premises
+        )
+        if not binders or len(binders) > 3 or len(steps) > 7:
+            continue
+        conclusion = rule_application_conclusion(rule)
+        if conclusion.kind != "eq" or len(expr_text(conclusion)) > 700:
+            continue
+
+        candidate_substs: list[dict[str, Expr]] = []
+        inferred = infer_rule_binders_from_known(steps, binders, {}, known)
+        if inferred is not None:
+            candidate_substs.append(inferred)
+        candidate_substs.extend(
+            infer_rule_binder_candidates_from_rule_conclusions(steps, binders, {}, rules, limit=24)
+        )
+
+        terms: list[Expr] = []
+        seen_terms: set[str] = set()
+        for term in expr_subterms(expr, limit=80) + candidate_terms_from_state(
+            known,
+            eq_facts,
+            seed=expr_subterms(expr, limit=24),
+            exclude_names=set(binders),
+            limit=120,
+        ):
+            key = expr_key(term)
+            if key not in seen_terms:
+                seen_terms.add(key)
+                terms.append(term)
+        if len(binders) <= 2:
+            candidate_substs.extend(fill_missing_binders_with_terms(binders, {}, terms, limit=256))
+
+        seen_substs: set[tuple[tuple[str, str], ...]] = set()
+        for candidate in candidate_substs:
+            if not all(binder in candidate for binder in binders):
+                continue
+            helper_vars = sorted(
+                {
+                    variable
+                    for value in candidate.values()
+                    for variable in expr_variables(value)
+                    if variable.startswith("IB")
+                }
+            )
+            helper_substs = fill_missing_binders_with_terms(tuple(helper_vars), {}, terms, limit=128) if helper_vars else [{}]
+            for helper_subst in helper_substs:
+                subst = {name: substitute_expr(value, helper_subst) for name, value in candidate.items()}
+                key = tuple(sorted((name, expr_key(value)) for name, value in subst.items()))
+                if key in seen_substs:
+                    continue
+                seen_substs.add(key)
+                if not expr_same_mod_alpha(substitute_expr(conclusion, subst), expr):
+                    continue
+                parts = [rule.name]
+                ok = True
+                for step in steps:
+                    if step.kind == "binder":
+                        assert step.name is not None
+                        parts.append(proof_arg_text(subst[step.name]))
+                        continue
+                    assert step.expr is not None
+                    premise = substitute_expr(step.expr, subst)
+                    premise_proof = proof_for_expr(
+                        premise,
+                        known,
+                        known_canonical,
+                        rules,
+                        eq_facts,
+                        definitions,
+                        allow_rule=True,
+                        rule_depth=max(0, rule_depth - 1),
+                    )
+                    if premise_proof is None:
+                        ok = False
+                        break
+                    parts.append(proof_argument_text(premise_proof))
+                if ok:
+                    return rule_application_text(parts)
+    return None
+
+
 def equality_rule_chain_proof(
     expr: Expr,
     known: dict[str, str],
@@ -12922,6 +13018,18 @@ def _proof_for_expr_impl(
         )
         if sequential_rule_proof is not None:
             return sequential_rule_proof
+
+        alpha_rule_proof = alpha_equivalent_rule_application_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth,
+        )
+        if alpha_rule_proof is not None:
+            return alpha_rule_proof
 
     if allow_rule:
         rule_transport_proof = atomic_rule_transport_proof(
