@@ -17496,9 +17496,6 @@ def raw_infer_forall_clause_substitution(
         if proof_search_timed_out():
             return None
         if binder_names <= subst.keys():
-            flatten_substitution(subst)
-            if any(expr_variables(value) & binder_names for value in subst.values()):
-                return None
             return subst
         if index >= len(pattern_literals) or attempts > 128:
             return None
@@ -17547,10 +17544,7 @@ def raw_infer_forall_clause_substitution_candidates(
     attempts = 0
 
     def remember(subst: dict[str, Expr]) -> None:
-        flatten_substitution(subst)
         if not binder_names <= subst.keys():
-            return
-        if any(expr_variables(value) & binder_names for value in subst.values()):
             return
         key = tuple(sorted((name, expr_key(value)) for name, value in subst.items() if name in binder_names))
         if key in seen:
@@ -17627,7 +17621,7 @@ def raw_instantiated_forall_clause_options(
     for subst in candidates:
         if not binder_names <= subst.keys():
             continue
-        instantiated = substitute_expr(body, subst)
+        instantiated = flatten_applications(substitute_expr(body, subst))
         key = expr_key(instantiated)
         if key in seen:
             continue
