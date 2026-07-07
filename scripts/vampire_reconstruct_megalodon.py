@@ -1244,7 +1244,6 @@ def reconstruction_prelude_for(propositions: list[str]) -> list[str]:
     ]
     if "vampire_or " in joined:
         lines.append("Definition vampire_or : prop->prop->prop := fun A B:prop => forall P:prop, (A -> P) -> (B -> P) -> P.")
-        lines.append("Axiom vampire_xm: forall VampireXmP:prop, vampire_or VampireXmP (VampireXmP -> vampire_false).")
     if "vampire_and " in joined:
         lines.append("Definition vampire_and : prop->prop->prop := fun A B:prop => forall P:prop, (A -> B -> P) -> P.")
     if "vampire_exists_set " in joined:
@@ -3287,7 +3286,6 @@ def fill_replay_substitution_claims(
 BOOLEAN_EXT_HELPERS = [
     "Definition vampire_eq_prop : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y.",
     "Definition vampire_eq_prop_fun : (prop->prop)->(prop->prop)->prop := fun x y:prop->prop => forall Q:(prop->prop)->prop, Q x -> Q y.",
-    "Axiom vampire_xm: forall VampireXmP:prop, vampire_or VampireXmP (VampireXmP -> vampire_false).",
     "Axiom vampire_prop_ext: forall P Q:prop, (P -> Q) -> (Q -> P) -> vampire_eq_prop P Q.",
     "Axiom vampire_funext_prop: forall F G:prop->prop, (forall X:prop, vampire_eq_prop (F X) (G X)) -> vampire_eq_prop_fun F G.",
     "Axiom vampire_funext_prop_prop: forall F G:prop->prop->prop, (forall X:prop, vampire_eq_prop_fun (F X) (G X)) -> F = G.",
@@ -3436,34 +3434,6 @@ def add_missing_basic_connective_definitions(lines: list[str]) -> list[str]:
     return result
 
 
-def add_vampire_xm_axiom_if_used(lines: list[str]) -> list[str]:
-    used = any("vampire_xm" in line for line in lines)
-    if not used:
-        return list(lines)
-    if any(line.startswith("Axiom vampire_xm:") for line in lines):
-        return list(lines)
-    or_definition = (
-        "Definition vampire_or : prop->prop->prop := "
-        "fun A B:prop => forall P:prop, (A -> P) -> (B -> P) -> P."
-    )
-    has_or_definition = any(line.startswith("Definition vampire_or : prop->prop->prop") for line in lines)
-    axiom = "Axiom vampire_xm: forall VampireXmP:prop, vampire_or VampireXmP (VampireXmP -> vampire_false)."
-    result: list[str] = []
-    inserted = False
-    for line in lines:
-        if not inserted and (line.startswith("Axiom ") or line.startswith("Theorem ")):
-            if not has_or_definition:
-                result.append(or_definition)
-            result.append(axiom)
-            inserted = True
-        result.append(line)
-    if not inserted:
-        if not has_or_definition:
-            result.append(or_definition)
-        result.append(axiom)
-    return result
-
-
 def lower_function_equality_proposition(expr: Expr, variable_sorts: dict[str, str]) -> str:
     if expr.kind == "forall":
         assert expr.value is not None and expr.sort is not None
@@ -3527,7 +3497,6 @@ def boolean_or_nand_extensionality_proof(expr: Expr, known: dict[str, str]) -> s
     if not is_or_nand_binary_function_equality(expr):
         return None
     required = {
-        "vampire_xm",
         "vampire_prop_ext",
         "vampire_funext_prop",
         "vampire_funext_prop_prop",
@@ -3548,8 +3517,8 @@ def boolean_or_nand_extensionality_proof(expr: Expr, known: dict[str, str]) -> s
         "(fun HX0 => Hand vampire_false (fun HnX0 HnX1 => HnX0 HX0)) "
         "(fun HX1 => Hand vampire_false (fun HnX0 HnX1 => HnX1 HX1))) "
         "(fun Hnot P Hleft Hright => "
-        "(vampire_xm X0) P Hleft "
-        "(fun HnX0 => (vampire_xm X1) P Hright "
+        "(xm X0) P Hleft "
+        "(fun HnX0 => (xm X1) P Hright "
         "(fun HnX1 => (Hnot (fun R Hpair => Hpair HnX0 HnX1)) P))))))"
     )
 
@@ -3607,7 +3576,7 @@ def is_or_nand_pointwise_prop_equality(expr: Expr) -> tuple[str, str] | None:
 
 def boolean_or_nand_pointwise_proof(expr: Expr, known: dict[str, str]) -> str | None:
     names = is_or_nand_pointwise_prop_equality(expr)
-    if names is None or not {"vampire_xm", "vampire_prop_ext"} <= set(known.values()):
+    if names is None or "vampire_prop_ext" not in set(known.values()):
         return None
     left_name, right_name = names
     return (
@@ -3618,8 +3587,8 @@ def boolean_or_nand_pointwise_proof(expr: Expr, known: dict[str, str]) -> str | 
         f"(fun H{left_name} => Hand vampire_false (fun Hn{left_name} Hn{right_name} => Hn{left_name} H{left_name})) "
         f"(fun H{right_name} => Hand vampire_false (fun Hn{left_name} Hn{right_name} => Hn{right_name} H{right_name}))) "
         f"(fun Hnot P Hleft Hright => "
-        f"(vampire_xm {left_name}) P Hleft "
-        f"(fun Hn{left_name} => (vampire_xm {right_name}) P Hright "
+        f"(xm {left_name}) P Hleft "
+        f"(fun Hn{left_name} => (xm {right_name}) P Hright "
         f"(fun Hn{right_name} => (Hnot (fun R Hpair => Hpair Hn{left_name} Hn{right_name})) P))))"
     )
 
@@ -4558,7 +4527,7 @@ def classical_two_branch_unary_transport_proof(expr: Expr, rules: list[ProofRule
 
     return (
         f"(fun {binder_name}:set => fun {premise_name} => "
-        f"(vampire_xm {proof_arg_text(positive_case)} {target_text} "
+        f"(xm {proof_arg_text(positive_case)} {target_text} "
         f"(fun {case_name} => {positive}) "
         f"(fun {not_case_name} => {negative})))"
     )
@@ -8954,10 +8923,10 @@ def global_or_exists_from_pointwise_split_proof(
                 f"(fun Heq => {false_to_success}))"
             )
             proof = (
-                f"(vampire_xm {global_text} {target_text} "
+                f"(xm {global_text} {target_text} "
                 f"(fun Hlim => (fun P L R => L Hlim)) "
                 f"(fun Hnlim => "
-                f"(vampire_xm {exists_text} {target_text} "
+                f"(xm {exists_text} {target_text} "
                 f"(fun Hex => (fun P L R => R Hex)) "
                 f"(fun Hnex => (Hnlim {proof_term_text(pointwise_proof)} {target_text})))))"
             )
@@ -14505,7 +14474,6 @@ def check_megalodon_lines(
     output_lines = add_boolean_extensionality_helpers(output_lines)
     output_lines = fill_source_candidate_claims(output_lines, proof_text)
     output_lines = fill_repeated_claim_admits(output_lines) if fill_repeated_admits else output_lines
-    output_lines = add_vampire_xm_axiom_if_used(output_lines)
     output_lines = prune_unused_rectify_axiom_admits(output_lines, proof_text)
     if fill_repeated_admits:
         output_lines = prune_unreachable_claims(output_lines)
@@ -16682,6 +16650,7 @@ def raw_tptp_one_parent_transform_proof(
     proposition: str,
     parents: list[str],
     propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str] | None = None,
     *,
     max_literals: int = 10,
     max_literal_product: int = 64,
@@ -16700,9 +16669,109 @@ def raw_tptp_one_parent_transform_proof(
     simple = raw_simple_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
     if simple is not None:
         return simple
+    classical = raw_classical_double_negation_transform_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+        variable_sorts or {},
+    )
+    if classical is not None:
+        return classical
     if not raw_clause_replay_budget_ok(source, target, max_literals=max_literals, max_literal_product=max_literal_product):
         return None
     return raw_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
+
+
+def raw_specialize_forall_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    binders, body = collect_foralls(source)
+    if not binders:
+        return raw_clause_subsumption_transform_proof(source, target, source_proof) or raw_clause_transform_proof(source, target, source_proof)
+    binder_names = {name for name, _ in binders}
+    subst: dict[str, Expr] = {}
+    if not match_expr_with_alpha_instantiation(body, target, binder_names, subst):
+        subst = {}
+    target_subterms = expr_subterms(target, limit=128)
+    local_sorts = {**variable_sorts, **{name: sort for name, sort in binders}}
+    for name, sort in binders:
+        if name in subst:
+            continue
+        for subterm in target_subterms:
+            if expr_sort(subterm, local_sorts) == sort:
+                subst[name] = subterm
+                break
+        if name not in subst:
+            return None
+    instantiated = substitute_expr(body, subst)
+    proof = source_proof
+    for name, _ in binders:
+        proof = f"({proof_head(proof)} {proof_arg_text(subst[name])})"
+    if expr_same_mod_alpha(instantiated, target):
+        return proof
+    return raw_clause_subsumption_transform_proof(instantiated, target, proof) or raw_clause_transform_proof(instantiated, target, proof)
+
+
+def raw_negated_target_from_not_target_proof(
+    negative: Expr,
+    target: Expr,
+    not_target_proof: str,
+) -> str | None:
+    binders, body = collect_foralls(negative)
+    premises, conclusion = split_arrows(body)
+    if len(premises) != 1 or not false_eliminator_expr(conclusion):
+        return None
+    positive = premises[0]
+    positive_to_target = raw_clause_subsumption_transform_proof(positive, target, "Hpositive")
+    if positive_to_target is None:
+        positive_to_target = raw_clause_transform_proof(positive, target, "Hpositive")
+    if positive_to_target is None:
+        return None
+    proof = f"(fun Hpositive => {proof_head(not_target_proof)} {proof_term_text(positive_to_target)})"
+    for name, sort in reversed(binders):
+        proof = f"(fun {name}:{sort} => {proof})"
+    return proof
+
+
+def raw_classical_double_negation_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    premises, conclusion = split_arrows(source)
+    if len(premises) != 1 or not false_eliminator_expr(conclusion):
+        return None
+    negative = premises[0]
+    target_text = proof_arg_text(target)
+    negative_from_not_target = raw_negated_target_from_not_target_proof(negative, target, "HnotTarget")
+    if negative_from_not_target is not None:
+        return (
+            f"(xm {target_text} {target_text} "
+            f"(fun Htarget => Htarget) "
+            f"(fun HnotTarget => ({proof_head(source_proof)} "
+            f"{proof_term_text(negative_from_not_target)} "
+            f"{target_text})))"
+        )
+    negative_premises, negative_conclusion = split_arrows(negative)
+    if len(negative_premises) != 1 or not false_eliminator_expr(negative_conclusion):
+        return None
+    positive = negative_premises[0]
+    if not raw_clause_replay_budget_ok(positive, target, max_literals=16, max_literal_product=256):
+        return None
+    positive_to_target = raw_specialize_forall_transform_proof(positive, target, "Hpositive", variable_sorts)
+    if positive_to_target is None:
+        return None
+    return (
+        f"(xm {target_text} {target_text} "
+        f"(fun Htarget => Htarget) "
+        f"(fun HnotTarget => ({proof_head(source_proof)} "
+        f"(fun Hpositive => HnotTarget {proof_term_text(positive_to_target)}) "
+        f"{target_text})))"
+    )
 
 
 def raw_tptp_deep_formula_transform_proof(
@@ -17669,7 +17738,7 @@ def raw_tptp_avatar_component_clause_proof(
         return (
             f"({parent_name} {target_text} "
             f"(fun Hforward Hback => "
-            f"(vampire_xm {proof_arg_text(split_atom)} {target_text} "
+            f"(xm {proof_arg_text(split_atom)} {target_text} "
             f"(fun Hsplit => {proof_term_text(raw_or_left_intro(target, component_proof) or '')}) "
             f"(fun Hnotsplit => {proof_term_text(raw_or_right_intro(target, 'Hnotsplit') or '')}))))"
         )
@@ -17692,7 +17761,7 @@ def raw_tptp_avatar_component_clause_proof(
         return (
             f"({parent_name} {target_text} "
             f"(fun Hforward Hback => "
-            f"(vampire_xm {proof_arg_text(component)} {target_text} "
+            f"(xm {proof_arg_text(component)} {target_text} "
             f"(fun Hcomponent => {proof_term_text(raw_or_right_intro(target, '(Hback Hcomponent)') or '')}) "
             f"(fun Hnotcomponent => {proof_term_text(raw_or_left_intro(target, negative_component_proof) or '')}))))"
         )
@@ -18015,7 +18084,7 @@ def raw_tptp_avatar_split_direct_component_proof(
                 result = None
                 break
             result = (
-                f"(vampire_xm {proof_arg_text(literal)} {proof_arg_text(target)} "
+                f"(xm {proof_arg_text(literal)} {proof_arg_text(target)} "
                 f"(fun Hsplit{index} => {proof_term_text(true_branch)}) "
                 f"(fun {not_name} => {proof_term_text(result)}))"
             )
@@ -18140,7 +18209,7 @@ def raw_tptp_replay_proof(
     }:
         return raw_tptp_trivial_inequality_removal_proof(proposition, parents, propositions_by_name)
     if rule == "avatar_sat_refutation":
-        return raw_tptp_one_parent_transform_proof(proposition, parents, propositions_by_name)
+        return raw_tptp_one_parent_transform_proof(proposition, parents, propositions_by_name, variable_sorts)
     if rule in {"definition_folding", "definition_unfolding"}:
         proof = raw_tptp_parent_equality_chain_rewrite_proof(proposition, parents, propositions_by_name, variable_sorts)
         if proof is not None:
@@ -18163,6 +18232,7 @@ def raw_tptp_replay_proof(
             proposition,
             parents,
             propositions_by_name,
+            variable_sorts,
             max_literals=12,
             max_literal_product=96,
         )
