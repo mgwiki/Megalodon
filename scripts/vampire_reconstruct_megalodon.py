@@ -546,7 +546,7 @@ def source_candidate_rewrite_chain_proof(
             if expr_key(old) != expr_key(equality_left)
             else eq_symmetry_proof(equality_proof, equality_left)
         )
-        proof = f"{proof_head(transport_proof)} (fun {hole_name}:set => {expr_text(context)}) {proof_argument_text(proof)}"
+        proof = f"{proof_head(transport_proof)} (fun {hole_name} :set => {expr_text(context)}) {proof_argument_text(proof)}"
     return proof
 
 
@@ -1201,7 +1201,7 @@ def tptp_applied_quantifier_proposition(text: str, variable_sorts: dict[str, str
         if parts[0] == "!!":
             body = f"forall {name}:{sort}, {body}"
         else:
-            body = f"{vampire_exists_name_for_sort(sort)} (fun {name}:{sort} => {body})"
+            body = f"{vampire_exists_name_for_sort(sort)} (fun {name} :{sort} => {body})"
     return body
 
 
@@ -1224,7 +1224,7 @@ def tptp_formula_to_megalodon_proposition(text: str, variable_sorts: dict[str, s
             if quantifier == "!":
                 body = f"forall {name}:{sort}, {body}"
             else:
-                body = f"{vampire_exists_name_for_sort(sort)} (fun {name}:{sort} => {body})"
+                body = f"{vampire_exists_name_for_sort(sort)} (fun {name} :{sort} => {body})"
         return body
 
     equivalence = split_top_level_operator(text, "<=>")
@@ -1815,6 +1815,21 @@ def megalodon_outline_step_variable_sorts(proof_text: str | None) -> dict[str, d
     return result
 
 
+RAW_TPTP_LOCAL_VARIABLE_RE = re.compile(r"[A-Z][0-9]+")
+RAW_TPTP_AMBIENT_CONSTANTS = {"True", "False", "vampire_true", "vampire_false"}
+
+
+def raw_tptp_nonlocal_sorts(variable_sorts: dict[str, str]) -> dict[str, str]:
+    sorts = {
+        name: sort
+        for name, sort in variable_sorts.items()
+        if RAW_TPTP_LOCAL_VARIABLE_RE.fullmatch(name) is None
+    }
+    sorts.setdefault("True", "prop")
+    sorts.setdefault("False", "prop")
+    return sorts
+
+
 def quantify_megalodon_step_variables(proposition: str, variable_sorts: dict[str, str]) -> str:
     if not variable_sorts:
         return proposition
@@ -1824,6 +1839,8 @@ def quantify_megalodon_step_variables(proposition: str, variable_sorts: dict[str
     free_variables = expr_variables(parsed)
     result = proposition
     for name in sorted(variable_sorts, reverse=True):
+        if name in RAW_TPTP_AMBIENT_CONSTANTS:
+            continue
         if name in free_variables:
             result = f"forall {name}:{variable_sorts[name]}, {result}"
     return result
@@ -1833,13 +1850,16 @@ def megalodon_replay_steps(
     proof_text: str | None,
     proof: Path | None,
     problem: Path | None = None,
+    source: Path | None = None,
 ) -> dict[str, MegalodonReplayStep]:
     if proof_text is None:
         return {}
     variable_sorts = {
+        **source_declared_sorts(source),
         **proof_text_type_variable_sorts(proof_text),
         **problem_type_variable_sorts(proof, problem),
         **megalodon_outline_symbol_sorts(proof_text),
+        **raw_tptp_exported_source_variable_sorts(proof_text),
     }
     step_variable_sorts = megalodon_outline_step_variable_sorts(proof_text)
     steps: dict[str, MegalodonReplayStep] = {}
@@ -1887,6 +1907,14 @@ def megalodon_replay_steps(
                 proposition = megalodon_step_proposition(formula, {**variable_sorts, **step_sorts})
             if proposition is None:
                 continue
+            parsed_proposition = parse_expr(proposition)
+            if parsed_proposition is not None:
+                infer_missing_raw_tptp_sorts(
+                    parsed_proposition,
+                    step_sorts,
+                    raw_tptp_nonlocal_sorts(variable_sorts),
+                    "prop",
+                )
             proposition = quantify_megalodon_step_variables(proposition, step_sorts)
             steps[step] = MegalodonReplayStep(
                 rule=step_details[step][0],
@@ -2328,7 +2356,7 @@ def tptp_function_definition_infos(
             body_expr_text = expr_text(body)
             definition_body = body_expr_text
             for binder_name, binder_sort in reversed(list(zip(binders, arg_sorts))):
-                definition_body = f"fun {binder_name}:{binder_sort} => {definition_body}"
+                definition_body = f"fun {binder_name} :{binder_sort} => {definition_body}"
             proof_args = list(binders) + ["Q", "H"]
             proof = f"({' '.join(['fun'] + proof_args + ['=>', 'H'])})"
             definitions.setdefault(
@@ -2467,7 +2495,7 @@ def expr_text(expr: Expr, context: str = "top") -> str:
         text = f"forall {expr.value}:{expr.sort}, {expr_text(expr.args[0])}"
     elif expr.kind == "lambda":
         assert expr.value is not None and expr.sort is not None
-        text = f"fun {expr.value}:{expr.sort} => {expr_text(expr.args[0])}"
+        text = f"fun {expr.value} :{expr.sort} => {expr_text(expr.args[0])}"
     else:
         raise ValueError(f"unknown expression kind {expr.kind}")
     if context in {"app_arg", "eq_side"} and expr.kind in {"app", "eq", "arrow", "forall", "lambda"}:
@@ -3161,7 +3189,7 @@ def fresh_definition(proposition: str, variable_sorts: dict[str, str]) -> tuple[
             proof = f"({' '.join(['fun'] + binder_names + ['Q', 'H', '=>', 'H'])})"
             definition_body = body_text
             for binder_name, binder_sort in reversed(binders):
-                definition_body = f"fun {binder_name}:{binder_sort} => {definition_body}"
+                definition_body = f"fun {binder_name} :{binder_sort} => {definition_body}"
         else:
             proof = "(fun Q H => H)"
             definition_body = body_text
@@ -4089,7 +4117,7 @@ def raw_tptp_predicate_definition_infos(
             body_text = expr_text(body)
             definition_body = body_text
             for binder_name, binder_sort in reversed(list(zip(binders, arg_sorts))):
-                definition_body = f"fun {binder_name}:{binder_sort} => {definition_body}"
+                definition_body = f"fun {binder_name} :{binder_sort} => {definition_body}"
             definition_key = f"{step_name}_def"
             definitions.setdefault(
                 target_name,
@@ -4498,7 +4526,7 @@ def boolean_or_nand_pointwise_proof(expr: Expr, known: dict[str, str]) -> str | 
         return None
     left_name, right_name = names
     return (
-        f"(fun {left_name}:prop => fun {right_name}:prop => vampire_prop_ext "
+        f"(fun {left_name} :prop => fun {right_name} :prop => vampire_prop_ext "
         f"(vampire_or {left_name} {right_name}) "
         f"((vampire_and ({left_name} -> vampire_false) ({right_name} -> vampire_false)) -> vampire_false) "
         f"(fun Hor Hand => Hor vampire_false "
@@ -4607,7 +4635,7 @@ def quantified_atomic_rule_transport_proof(
             current_args[index] = target.args[index + 1]
         if not ok:
             continue
-        prefix = "".join(f"fun {name}:{sort} => " for name, sort in binders)
+        prefix = "".join(f"fun {name} :{sort} => " for name, sort in binders)
         prefix += "".join(f"fun {name} => " for name in premise_names)
         return f"({prefix}{proof})"
     return None
@@ -4825,7 +4853,7 @@ def quantified_atomic_rule_multi_transport_proof(
                 for kind, name, sort in prefix_steps:
                     if kind == "binder":
                         assert sort is not None
-                        prefix_parts.append(f"fun {name}:{sort} => ")
+                        prefix_parts.append(f"fun {name} :{sort} => ")
                     else:
                         prefix_parts.append(f"fun {name} => ")
                 prefix = "".join(prefix_parts)
@@ -4890,7 +4918,7 @@ def quantified_equality_rule_proof(
             proof = eq_symmetry_proof(reverse_proof, conclusion.args[1])
     if proof is None:
         return None
-    prefix = "".join(f"fun {name}:{sort} => " for name, sort in binders)
+    prefix = "".join(f"fun {name} :{sort} => " for name, sort in binders)
     prefix += "".join(f"fun {name} => " for name in premise_names)
     return f"({prefix}{proof})"
 
@@ -5045,7 +5073,7 @@ def quantified_equality_transported_rule_proof(
                         equality_proof,
                     )
                 if ok and expr_key(current_left) == expr_key(conclusion.args[0]) and expr_key(current_right) == expr_key(conclusion.args[1]):
-                    prefix = "".join(f"fun {name}:{sort} => " for name, sort in binders)
+                    prefix = "".join(f"fun {name} :{sort} => " for name, sort in binders)
                     prefix += "".join(f"fun {name} => " for name in premise_names)
                     return f"({prefix}{proof})"
     return None
@@ -5168,7 +5196,7 @@ def no_cycle_successor_injectivity_proof(expr: Expr, rules: list[ProofRule]) -> 
     )
     outer_right = eq_symmetry_proof(right_branch, right_var)
     return (
-        f"(fun {binders[0][0]}:set => fun {binders[1][0]}:set => fun {equality_name} => "
+        f"(fun {binders[0][0]} :set => fun {binders[1][0]} :set => fun {equality_name} => "
         f"({case_rule.name} {target_right} {target_left} {first_member}) "
         f"{proof_arg_text(conclusion)} "
         f"(fun {left_branch} => {nested_case}) "
@@ -5296,10 +5324,10 @@ def disjoint_constructor_membership_contradiction_proof(expr: Expr, rules: list[
     eq_to_empty = eq_symmetry_proof(eq_proof, Expr("app", args=(right_constructor.args[0], Expr("var", value=witness))))
     contradiction = f"({right_empty_contradiction.name} {witness} {eq_to_empty})"
     return (
-        f"(fun {binders[0][0]}:set => fun {binders[1][0]}:set => fun {equality_name} => "
+        f"(fun {binders[0][0]} :set => fun {binders[1][0]} :set => fun {equality_name} => "
         f"({left_elim.name} {proof_arg_text(left_arg)} {proof_arg_text(distinguished)} {transported_member}) "
         f"vampire_false "
-        f"(fun {witness}:set => fun {pair} => "
+        f"(fun {witness} :set => fun {pair} => "
         f"{pair} vampire_false (fun {first} {second} => {contradiction})))"
     )
 
@@ -5444,7 +5472,7 @@ def classical_two_branch_unary_transport_proof(expr: Expr, rules: list[ProofRule
         return None
 
     return (
-        f"(fun {binder_name}:set => fun {premise_name} => "
+        f"(fun {binder_name} :set => fun {premise_name} => "
         f"(xm {proof_arg_text(positive_case)} {target_text} "
         f"(fun {case_name} => {positive}) "
         f"(fun {not_case_name} => {negative})))"
@@ -5543,7 +5571,7 @@ def canonical_expr_text(expr: Expr, env: dict[str, str], next_var: list[int]) ->
         body = canonical_expr_text(expr.args[0], inner_env, next_var)
         if expr.kind == "forall":
             return f"forall {replacement}:{expr.sort}, {body}"
-        return f"fun {replacement}:{expr.sort} => {body}"
+        return f"fun {replacement} :{expr.sort} => {body}"
     raise ValueError(f"unknown expression kind {expr.kind}")
 
 
@@ -5577,7 +5605,7 @@ def eq_symmetry_proof(proof: str, left: Expr) -> str:
     name = fresh_identifier("zz", left_text)
     return (
         f"({proof_head(proof)} "
-        f"(fun {name}:set => {name} = {proof_arg_text(left)}) "
+        f"(fun {name} :set => {name} = {proof_arg_text(left)}) "
         f"(fun R Hr => Hr))"
     )
 
@@ -5585,7 +5613,7 @@ def eq_symmetry_proof(proof: str, left: Expr) -> str:
 def set_eq_symmetry_proof(proof: str, left: Expr) -> str:
     left_text = expr_text(left)
     name = fresh_identifier("zz", left_text)
-    return f"({proof_head(proof)} (fun {name}:set => vampire_eq_set {name} {proof_arg_text(left)}) (fun Q H => H))"
+    return f"({proof_head(proof)} (fun {name} :set => vampire_eq_set {name} {proof_arg_text(left)}) (fun Q H => H))"
 
 
 def eq_transitivity_proof(proofs: list[str], start_text: str | None = None) -> str | None:
@@ -5902,7 +5930,7 @@ def contextual_equality_proof(
     context = app_context_text(substitute_expr(left.args[0], subst), instantiated_args, candidate_index - 1, hole_name)
     return (
         f"(fun Q:set->prop => fun H:Q ({expr_text(instantiated_left)}) => "
-        f"{proof_term_text(argument_proof)} (fun {hole_name}:set => Q ({context})) H)"
+        f"{proof_term_text(argument_proof)} (fun {hole_name} :set => Q ({context})) H)"
     )
 
 
@@ -6668,7 +6696,7 @@ def equality_rule_chain_proof(
                 context = app_context_text(node.args[0], tuple(node.args[1:]), index - 1, hole_name)
                 proof = (
                     f"(fun Q:set->prop => fun H:Q ({expr_text(node)}) => "
-                    f"{proof_term_text(argument_proof)} (fun {hole_name}:set => Q ({context})) H)"
+                    f"{proof_term_text(argument_proof)} (fun {hole_name} :set => Q ({context})) H)"
                 )
                 found.append((Expr("app", args=tuple(next_args)), proof))
         return found
@@ -6903,7 +6931,7 @@ def one_rewrite_transport_side_proof(
                 continue
             return (
                 f"{proof_term_text(equality_proof)} "
-                f"(fun {hole_name}:set => {expr_text(source)} = {expr_text(context)}) "
+                f"(fun {hole_name} :set => {expr_text(source)} = {expr_text(context)}) "
                 f"(fun R Hr => Hr)"
             )
     return None
@@ -7144,7 +7172,7 @@ def equality_congruence_proof(
     context = app_context_text(left.args[0], left.args[1:], arg_index, hole_name)
     return (
         f"(fun Q:set->prop => fun H:Q ({expr_text(left)}) => "
-        f"{proof_term_text(argument_proof)} (fun {hole_name}:set => Q ({context})) H)"
+        f"{proof_term_text(argument_proof)} (fun {hole_name} :set => Q ({context})) H)"
     )
 
 
@@ -7232,7 +7260,7 @@ def equality_multi_congruence_proof(
         context = app_context_text(left.args[0], tuple(current_args), arg_index, hole_name)
         proofs.append(
             f"(fun Q:set->prop => fun H:Q ({expr_text(current)}) => "
-            f"{proof_term_text(argument_proof)} (fun {hole_name}:set => Q ({context})) H)"
+            f"{proof_term_text(argument_proof)} (fun {hole_name} :set => Q ({context})) H)"
         )
         current_args[arg_index] = target_arg
 
@@ -7310,7 +7338,7 @@ def unary_equality_rule_bridge_proof(
             other_to_target = (
                 f"(fun Q:set->prop => fun H:Q ({expr_text(other_side)}) => "
                 f"{proof_head(other_to_target_arg)} "
-                f"(fun {hole_name}:set => Q ({left_app[0]} {hole_name})) H)"
+                f"(fun {hole_name} :set => Q ({left_app[0]} {hole_name})) H)"
             )
             return eq_transitivity_proof([left_to_other, other_to_target], expr_text(left))
     return None
@@ -7371,7 +7399,7 @@ def equality_direct_demodulation_proof(
                     continue
                 proof = (
                     f"(fun Q:set->prop => fun H:Q ({expr_text(node)}) => "
-                    f"{proof_head(equality_proof)} (fun {hole_name}:set => Q ({expr_text(context)})) H)"
+                    f"{proof_head(equality_proof)} (fun {hole_name} :set => Q ({expr_text(context)})) H)"
                 )
                 next_proofs = proofs + [proof]
                 if next_key == expr_key(target):
@@ -7496,7 +7524,7 @@ def equality_rule_demodulation_proof(
                         continue
                     proof = (
                         f"(fun Q:set->prop => fun H:Q ({expr_text(node)}) => "
-                        f"{proof_head(equality_proof)} (fun {hole_name}:set => Q ({expr_text(context)})) H)"
+                        f"{proof_head(equality_proof)} (fun {hole_name} :set => Q ({expr_text(context)})) H)"
                     )
                     next_proofs = proofs + [proof]
                     if next_key == expr_key(target):
@@ -7633,7 +7661,7 @@ def equality_guided_rewrite_chain_proof(
                     else:
                         proof = (
                             f"(fun Q:set->prop => fun H:Q ({expr_text(node)}) => "
-                            f"{proof_head(equality_proof)} (fun {hole_name}:set => Q ({expr_text(context)})) H)"
+                            f"{proof_head(equality_proof)} (fun {hole_name} :set => Q ({expr_text(context)})) H)"
                         )
                     edges.append((next_node, proof))
                     if len(edges) >= max_edges_per_node:
@@ -7682,7 +7710,7 @@ def transport_atomic_argument_proof(
 ) -> str:
     hole_name = fresh_identifier("zz", expr_text(target))
     context = atomic_transport_context(target.args[0], tuple(current_args), index, hole_name)
-    return f"{proof_term_text(equality_proof)} (fun {hole_name}:set => {context}) ({proof})"
+    return f"{proof_term_text(equality_proof)} (fun {hole_name} :set => {context}) ({proof})"
 
 
 def atomic_transport_context_with_arg_text(
@@ -7767,7 +7795,7 @@ def transport_atomic_nested_app_arguments_proof(
             index,
             nested_context,
         )
-        nested_proof = f"{proof_term_text(equality_proof)} (fun {hole_name}:set => {context}) ({nested_proof})"
+        nested_proof = f"{proof_term_text(equality_proof)} (fun {hole_name} :set => {context}) ({nested_proof})"
         current_inner_args[inner_index] = target_inner
         current_top_args[index] = Expr("app", args=(source_app.args[0],) + tuple(current_inner_args))
         changed = True
@@ -8704,13 +8732,13 @@ def direct_proof_expr(expr: Expr) -> str | None:
                                     if reversed_equality:
                                         equality = eq_symmetry_proof("Heq", target_element_expr)
                                         return (
-                                            f"(fun {first_name}:set => fun H{first_name} => "
-                                            f"fun {second_name}:set => fun H{second_name} => fun Heq => "
+                                            f"(fun {first_name} :set => fun H{first_name} => "
+                                            f"fun {second_name} :set => fun H{second_name} => fun Heq => "
                                             f"{equality} (fun zz:set => In zz {target_set_text}) {proof})"
                                         )
                                     return (
-                                        f"(fun {first_name}:set => fun H{first_name} => "
-                                        f"fun {second_name}:set => fun H{second_name} => fun Heq => "
+                                        f"(fun {first_name} :set => fun H{first_name} => "
+                                        f"fun {second_name} :set => fun H{second_name} => fun Heq => "
                                         f"Heq (fun zz:set => In zz {target_set_text}) {proof})"
                                     )
 
@@ -8865,7 +8893,7 @@ def contradiction_from_equality_branch_proof(
                 context = make_binary_application(head, left, Expr("var", value=hole_name))
                 false_proof = (
                     f"(({proof_head(branch_proof)} "
-                    f"(fun {hole_name}:set => {expr_text(context)} -> vampire_false) "
+                    f"(fun {hole_name} :set => {expr_text(context)} -> vampire_false) "
                     f"({rule_name} {proof_arg_text(left)})) {proof_argument_text(atom_proof)})"
                 )
                 return f"({false_proof} {proof_arg_text(target)})"
@@ -8874,7 +8902,7 @@ def contradiction_from_equality_branch_proof(
                 context = make_binary_application(head, Expr("var", value=hole_name), left)
                 false_proof = (
                     f"(({proof_head(branch_proof)} "
-                    f"(fun {hole_name}:set => {expr_text(context)} -> vampire_false) "
+                    f"(fun {hole_name} :set => {expr_text(context)} -> vampire_false) "
                     f"({rule_name} {proof_arg_text(left)})) {proof_argument_text(atom_proof)})"
                 )
                 return f"({false_proof} {proof_arg_text(target)})"
@@ -9838,7 +9866,7 @@ def global_or_exists_from_pointwise_split_proof(
                 f"(Hnex {proof_term_text(exists_proof)} {proof_arg_text(global_conclusion)})"
             )
             pointwise_proof = (
-                f"(fun {global_binders[0][0]}:{global_binders[0][1]} => "
+                f"(fun {global_binders[0][0]} :{global_binders[0][1]} => "
                 f"fun {premise_proof_name} => "
                 f"{proof_term_text(rule_proof)} {proof_arg_text(global_conclusion)} "
                 f"(fun Hsucc => Hsucc) "
@@ -10815,8 +10843,8 @@ def repl_elimination_goal_proof(
         return (
             f"({eliminator} {proof_arg_text(base)} {proof_arg_text(function)} {proof_arg_text(image)} "
             f"{proof_argument_text(image_proof)} {proof_arg_text(expr)} "
-            f"(fun {preimage_name}:set => fun Hw => fun Heq => "
-            f"Heq (fun {hole_name}:set => {expr_text(context_expr)}) {proof_argument_text(preimage_proof)}))"
+            f"(fun {preimage_name} :set => fun Hw => fun Heq => "
+            f"Heq (fun {hole_name} :set => {expr_text(context_expr)}) {proof_argument_text(preimage_proof)}))"
         )
     return None
 
@@ -11593,7 +11621,7 @@ def atomic_rule_result_one_rewrite_proof(
                         continue
                     return (
                         f"{proof_term_text(equality_proof)} "
-                        f"(fun {hole_name}:set => {expr_text(context)}) "
+                        f"(fun {hole_name} :set => {expr_text(context)}) "
                         f"{proof_argument_text(source_proof)}"
                     )
     return None
@@ -12631,7 +12659,7 @@ def repl_image_membership_elim_proof(
             f"(fun {image_name} {membership_name} => "
             f"({elim} {proof_arg_text(base)} {proof_arg_text(function)} {image_name} {membership_name} "
             f"(In {image_name} {proof_arg_text(target_set)}) "
-            f"(fun {witness_name}:set => fun {witness_membership_name} => fun {equality_name} => "
+            f"(fun {witness_name} :set => fun {witness_membership_name} => fun {equality_name} => "
                 f"{equality_name} (fun zz:set => In zz {proof_arg_text(target_set)}) {mapped_proof})))"
         )
     return None
@@ -12751,8 +12779,8 @@ def repl_image_property_elim_proof(
         f"(fun {image_name} {image_membership_name} => "
         f"({elim} {proof_arg_text(base)} {proof_arg_text(function)} {image_name} {image_membership_name} "
         f"{proof_arg_text(conclusion)} "
-        f"(fun {witness_name}:set => fun {witness_membership_name} => fun {equality_name} => "
-        f"{equality_name} (fun {hole_name}:set => {expr_text(context_expr)}) "
+        f"(fun {witness_name} :set => fun {witness_membership_name} => fun {equality_name} => "
+        f"{equality_name} (fun {hole_name} :set => {expr_text(context_expr)}) "
         f"{proof_argument_text(witness_proof)})))"
     )
 
@@ -14016,7 +14044,7 @@ def contradiction_transport_proof(
                     continue
                 transported = (
                     f"{proof_term_text(equality_proof)} "
-                    f"(fun {hole_name}:set => {expr_text(context_expr)}) "
+                    f"(fun {hole_name} :set => {expr_text(context_expr)}) "
                     f"{proof_argument_text(source_proof)}"
                 )
                 return f"({contradiction_name} ({transported}) ({expr_text(expr)}))"
@@ -16238,7 +16266,9 @@ class RawSplitRewrite:
 
 def infer_missing_raw_tptp_sorts(expr: Expr, variables: dict[str, str], local_sorts: dict[str, str], expected: str | None = None) -> None:
     if expr.kind == "var" and expr.value is not None:
-        if expr.value not in variables and expr.value not in local_sorts and expected in {"set", "prop"}:
+        if expr.value in RAW_TPTP_AMBIENT_CONSTANTS:
+            return
+        if expr.value not in variables and expr.value not in local_sorts and expected is not None:
             variables[expr.value] = expected
         return
     if expr.kind in {"forall", "lambda"}:
@@ -16292,11 +16322,32 @@ def infer_missing_raw_tptp_sorts(expr: Expr, variables: dict[str, str], local_so
             ):
                 predicate_sort = f"({expr.args[1].sort})->prop" if "->" in expr.args[1].sort else f"{expr.args[1].sort}->prop"
                 head_sort = f"({predicate_sort})->prop"
-            if head_sort is None and expected in {"set", "prop"} and head.value not in local_sorts:
+            stale_head_sort = False
+            if head_sort is not None and len(expr.args) - 1 >= len(split_sort_arrows(head_sort)):
+                stale_head_sort = True
+                head_sort = None
+            if head_sort is None and expected in {"set", "prop"} and (head.value not in local_sorts or stale_head_sort):
                 arg_sorts = [expr_sort(arg, known_sorts) for arg in expr.args[1:]]
+                if any(sort is None for sort in arg_sorts):
+                    inferred_arg_sorts: list[str | None] = []
+                    for arg, arg_sort in zip(expr.args[1:], arg_sorts):
+                        if (
+                            arg_sort is None
+                            and arg.kind == "var"
+                            and arg.value is not None
+                            and arg.value not in RAW_TPTP_AMBIENT_CONSTANTS
+                            and arg.value not in local_sorts
+                        ):
+                            variables.setdefault(arg.value, "set")
+                            inferred_arg_sorts.append("set")
+                        else:
+                            inferred_arg_sorts.append(arg_sort)
+                    arg_sorts = inferred_arg_sorts
                 if arg_sorts and all(sort is not None for sort in arg_sorts):
                     variables[head.value] = join_sort_arrows([*(sort for sort in arg_sorts if sort is not None), expected])
                     head_sort = variables[head.value]
+        elif head.kind != "var":
+            head_sort = expr_sort(head, known_sorts)
         if head_sort is not None:
             pieces = split_sort_arrows(head_sort)
             for arg, arg_sort in zip(expr.args[1:], pieces[:-1]):
@@ -16458,22 +16509,22 @@ def raw_literal_direct_transform_proof(
         true_proof = "(fun Q H => H)"
         prop_name = fresh_identifier("Qprop", expr_text(source), expr_text(target), source_proof)
         if expr_key(source_sides[0]) == expr_key(true_expr) and expr_same_mod_alpha(source_sides[1], target):
-            return f"({proof_head(source_proof)} (fun {prop_name}:prop => {prop_name}) {true_proof})"
+            return f"({proof_head(source_proof)} (fun {prop_name} :prop => {prop_name}) {true_proof})"
         if expr_key(source_sides[0]) == expr_key(true_expr):
-            proposition_proof = f"({proof_head(source_proof)} (fun {prop_name}:prop => {prop_name}) {true_proof})"
+            proposition_proof = f"({proof_head(source_proof)} (fun {prop_name} :prop => {prop_name}) {true_proof})"
             rewrite_proof = raw_split_rewrite_proof(source_sides[1], target, proposition_proof, rewrites)
             if rewrite_proof is not None:
                 return rewrite_proof
         if expr_same_mod_alpha(source_sides[0], target) and expr_key(source_sides[1]) == expr_key(true_expr):
             return (
                 f"(({proof_head(source_proof)} "
-                f"(fun {prop_name}:prop => {prop_name} -> {proof_arg_text(target)}) "
+                f"(fun {prop_name} :prop => {prop_name} -> {proof_arg_text(target)}) "
                 f"(fun H => H)) {true_proof})"
             )
         if expr_key(source_sides[1]) == expr_key(true_expr):
             proposition_proof = (
                 f"(({proof_head(source_proof)} "
-                f"(fun {prop_name}:prop => {prop_name} -> {proof_arg_text(source_sides[0])}) "
+                f"(fun {prop_name} :prop => {prop_name} -> {proof_arg_text(source_sides[0])}) "
                 f"(fun H => H)) {true_proof})"
             )
             rewrite_proof = raw_split_rewrite_proof(source_sides[0], target, proposition_proof, rewrites)
@@ -16498,7 +16549,7 @@ def raw_literal_direct_transform_proof(
         inner_source_proof = f"({proof_head(source_proof)} {target.value})"
         inner = raw_clause_subsumption_transform_proof(source_body, target.args[0], inner_source_proof, rewrites)
         if inner is not None:
-            return f"(fun {target.value}:{target.sort} => {inner})"
+            return f"(fun {target.value} :{target.sort} => {inner})"
     rewrite_proof = raw_split_rewrite_proof(source, target, source_proof, rewrites)
     if rewrite_proof is not None:
         return rewrite_proof
@@ -16549,7 +16600,7 @@ def raw_factored_forall_literal_transform_proof(
             if body_proof is None:
                 continue
             for name, sort in reversed(target_binders):
-                body_proof = f"(fun {name}:{sort} => {body_proof})"
+                body_proof = f"(fun {name} :{sort} => {body_proof})"
             return body_proof
     return None
 
@@ -16654,7 +16705,7 @@ def raw_forall_permutation_transform_proof(source: Expr, target: Expr, source_pr
     for source_name, _ in source_binders:
         proof = f"({proof_head(proof)} {proof_arg_text(subst[source_name])})"
     for target_name, target_sort in reversed(target_binders):
-        proof = f"(fun {target_name}:{target_sort} => {proof})"
+        proof = f"(fun {target_name} :{target_sort} => {proof})"
     return proof
 
 
@@ -16682,7 +16733,7 @@ def raw_forall_clause_transform_proof(
     if body_proof is None:
         return None
     for target_name, target_sort in reversed(target_binders):
-        body_proof = f"(fun {target_name}:{target_sort} => {body_proof})"
+        body_proof = f"(fun {target_name} :{target_sort} => {body_proof})"
     return body_proof
 
 
@@ -16723,7 +16774,7 @@ def raw_small_forall_permutation_clause_transform_proof(
             if body_proof is None:
                 return None
             for target_name, target_sort in reversed(target_binders):
-                body_proof = f"(fun {target_name}:{target_sort} => {body_proof})"
+                body_proof = f"(fun {target_name} :{target_sort} => {body_proof})"
             return body_proof
         source_name, source_sort = source_binders[index]
         for target_name in candidates(source_name, source_sort):
@@ -16777,7 +16828,7 @@ def raw_formula_entails_clause_proof(
             depth + 1,
         )
         if inner is not None:
-            return f"(fun {target.value}:{target.sort} => {inner})"
+            return f"(fun {target.value} :{target.sort} => {inner})"
 
     if source.kind == "forall" and source.value is not None and source.sort is not None:
         source_body = source.args[0]
@@ -16958,7 +17009,7 @@ def raw_clause_transform_proof(
         inner = raw_clause_transform_proof(source.args[0], target.args[0], inner_source_proof, depth + 1, rewrites)
         if inner is None:
             return None
-        return f"(fun {source.value}:{source.sort} => {inner})"
+        return f"(fun {source.value} :{source.sort} => {inner})"
 
     or_swap = raw_or_swap_transform_proof(source, target, source_proof, depth + 1, rewrites)
     if or_swap is not None:
@@ -17148,7 +17199,7 @@ def raw_simple_clause_transform_proof(source: Expr, target: Expr, source_proof: 
         inner = raw_simple_clause_transform_proof(source.args[0], target_body, inner_source_proof, depth + 1)
         if inner is None:
             return None
-        return f"(fun {source.value}:{source.sort} => {inner})"
+        return f"(fun {source.value} :{source.sort} => {inner})"
     parts = app_args(source, "vampire_or", 2)
     if parts is None:
         return None
@@ -17554,7 +17605,7 @@ def raw_quantified_literal_body_resolution_intro(
             continue
         target_literal_proof = body_proof
         for target_name, target_sort in reversed(target_binders):
-            target_literal_proof = f"(fun {target_name}:{target_sort} => {target_literal_proof})"
+            target_literal_proof = f"(fun {target_name} :{target_sort} => {target_literal_proof})"
         return raw_or_intro_literal_at(target_clause, target_literal_index, target_literal_proof)
     return None
 
@@ -17998,11 +18049,11 @@ def raw_vampire_eq_set_to_native_equality_proof(source: Expr, target: Expr, sour
     hole = fresh_identifier("zz", expr_text(target_body), source_proof)
     body_proof = (
         f"({proof_head(set_equality_proof)} "
-        f"(fun {hole}:set => {proof_arg_text(target_sides[0])} = {hole}) "
+        f"(fun {hole} :set => {proof_arg_text(target_sides[0])} = {hole}) "
         f"(fun R Hr => Hr))"
     )
     for name, sort in reversed(target_binders):
-        body_proof = f"(fun {name}:{sort} => {body_proof})"
+        body_proof = f"(fun {name} :{sort} => {body_proof})"
     return body_proof
 
 
@@ -18265,7 +18316,7 @@ def raw_classical_implication_to_or_transform_proof(
     if direct is not None:
         proof = direct
         for name, sort in reversed(target_binders):
-            proof = f"(fun {name}:{sort} => {proof})"
+            proof = f"(fun {name} :{sort} => {proof})"
         return proof
     proof = raw_classical_implication_to_or_body_proof(
         source_premises,
@@ -18279,7 +18330,7 @@ def raw_classical_implication_to_or_transform_proof(
     if proof is None:
         return None
     for name, sort in reversed(target_binders):
-        proof = f"(fun {name}:{sort} => {proof})"
+        proof = f"(fun {name} :{sort} => {proof})"
     return proof
 
 
@@ -18339,7 +18390,7 @@ def raw_classical_single_implication_to_or_by_conclusion_proof(
         if positive_from_source is None:
             continue
         not_premise_proof = (
-            f"(fun {source_premise_name}:{proof_arg_text(source_premise)} => "
+            f"(fun {source_premise_name} :{proof_arg_text(source_premise)} => "
             f"{not_conclusion_name} {proof_term_text(positive_from_source)})"
         )
         negative_branch = raw_negative_formula_transform_proof(
@@ -18394,7 +18445,7 @@ def raw_implication_from_false_proof(
 ) -> str:
     body = raw_false_to_expr_proof(false_proof, conclusion)
     for name, premise in reversed(list(zip(premise_names, premises))):
-        body = f"(fun {name}:{proof_arg_text(premise)} => {body})"
+        body = f"(fun {name} :{proof_arg_text(premise)} => {body})"
     return body
 
 
@@ -18405,7 +18456,7 @@ def raw_implication_from_conclusion_proof(
 ) -> str:
     body = conclusion_proof
     for name, premise in reversed(list(zip(premise_names, premises))):
-        body = f"(fun {name}:{proof_arg_text(premise)} => {body})"
+        body = f"(fun {name} :{proof_arg_text(premise)} => {body})"
     return body
 
 
@@ -18473,7 +18524,7 @@ def raw_negative_formula_transform_proof(
         )
         premise_proof = (
             f"(xm {premise_text} {premise_text} "
-            f"(fun {premise_names[index]}:{premise_text} => {premise_names[index]}) "
+            f"(fun {premise_names[index]} :{premise_text} => {premise_names[index]}) "
             f"(fun {not_premise_name} => "
             f"({proof_head(not_source_proof)} {proof_term_text(implication_from_false)} {premise_text})))"
         )
@@ -18497,7 +18548,7 @@ def raw_negative_formula_transform_proof(
         premise_names,
     )
     not_conclusion_proof = (
-        f"(fun {conclusion_name}:{proof_arg_text(source_conclusion)} => "
+        f"(fun {conclusion_name} :{proof_arg_text(source_conclusion)} => "
         f"{proof_head(not_source_proof)} {proof_term_text(implication_from_conclusion)})"
     )
     negative_conclusion_proof = raw_negative_formula_transform_proof(
@@ -18523,7 +18574,7 @@ def raw_negative_formula_transform_proof(
 def raw_false_to_expr_proof(false_proof: str, target: Expr) -> str:
     if target.kind == "forall" and target.value is not None and target.sort is not None:
         inner = raw_false_to_expr_proof(false_proof, target.args[0])
-        return f"(fun {target.value}:{target.sort} => {inner})"
+        return f"(fun {target.value} :{target.sort} => {inner})"
     return f"({proof_head(false_proof)} {proof_arg_text(target)})"
 
 
@@ -18601,7 +18652,7 @@ def raw_negated_implication_forall_to_conjunction_proof(
         f"(fun Hbody => HnotBody {proof_term_text(body_to_negative_premise)}))"
     )
     forall_body = (
-        f"(fun {exists_name}:{exists_sort} => "
+        f"(fun {exists_name} :{exists_sort} => "
         f"(xm {body_text} {body_text} "
         f"(fun Hbody => Hbody) "
         f"(fun HnotBody => (HnotExists {proof_term_text(exists_intro)} {body_text}))))"
@@ -18765,7 +18816,7 @@ def raw_nested_exists_counterexample_proof(
             body = source_body(expr.args[0], index_premise, {**local_sorts, name: sort})
             if body is None:
                 return None
-            return f"(fun {name}:{sort} => {body})"
+            return f"(fun {name} :{sort} => {body})"
         if expr.kind == "arrow":
             body = source_body(expr.args[1], index_premise + 1, local_sorts)
             if body is None:
@@ -19057,7 +19108,7 @@ def raw_not_exists_to_forall_not_transform_proof(source: Expr, target: Expr, sou
     if not expr_same_mod_alpha(expected_premise, target_premises[0]):
         return None
     return (
-        f"(fun {target_name}:{target_sort} => fun Hprem => "
+        f"(fun {target_name} :{target_sort} => fun Hprem => "
         f"{proof_head(source_proof)} (fun Q:prop => fun Hexists => Hexists {target_name} Hprem))"
     )
 
@@ -19132,7 +19183,7 @@ def raw_negated_forall_to_exists_negation_proof(
         f"(fun HnotSourceBody => {false_to_source_body}))"
     )
     for source_name, source_sort in reversed(source_binders):
-        forall_body = f"(fun {source_name}:{source_sort} => {forall_body})"
+        forall_body = f"(fun {source_name} :{source_sort} => {forall_body})"
     return (
         f"(xm {target_text} {target_text} "
         f"(fun Htarget => Htarget) "
@@ -19232,7 +19283,7 @@ def raw_implication_exists_to_negative_conjunction_proof(
             continue
         return (
             f"(fun Htarget => ({proof_head(source_proof)} {proof_term_text(premise_proof)}) "
-            f"False (fun {witness_name}:{witness_sort} => fun Hpos => {contradiction}))"
+            f"False (fun {witness_name} :{witness_sort} => fun Hpos => {contradiction}))"
         )
     return None
 
@@ -19298,7 +19349,7 @@ def raw_forall_implication_to_negated_exists_conjunction_proof(
     positive_proof = f"({source_application} {proof_term_text(premise_proof)})"
     return (
         f"(fun Hexists => Hexists vampire_false "
-        f"(fun {witness_name}:{witness_sort} => fun Hbody => "
+        f"(fun {witness_name} :{witness_sort} => fun Hbody => "
         f"{proof_head(negative_proof)} {proof_term_text(positive_proof)}))"
     )
 
@@ -19412,7 +19463,7 @@ def raw_negated_forall_implication_to_exists_conjunction_proof(
             f"(fun HtargetNegativeBody => HnotSourceBody {proof_term_text(negative_body_to_source)}))"
         )
         forall_source_proof = (
-            f"(fun {exists_name}:{exists_sort} => "
+            f"(fun {exists_name} :{exists_sort} => "
             f"(xm {source_body_text} {source_body_text} "
             f"(fun HsourceBody => HsourceBody) "
             f"(fun HnotSourceBody => ((HnotTargetComponent {proof_term_text(exists_intro)}) {source_body_text}))))"
@@ -19476,7 +19527,7 @@ def raw_negated_forall_implication_to_exists_conjunction_proof(
         body = f"(fun HsourcePremise{premise_index} => {body})"
     implication_proof = body
     for source_name, source_sort in reversed(source_binders):
-        implication_proof = f"(fun {source_name}:{source_sort} => {implication_proof})"
+        implication_proof = f"(fun {source_name} :{source_sort} => {implication_proof})"
     target_text = proof_arg_text(target)
     return (
         f"(xm {target_text} {target_text} "
@@ -19502,7 +19553,7 @@ def raw_negated_target_from_not_target_proof(
         return None
     proof = f"(fun Hpositive => {proof_head(not_target_proof)} {proof_term_text(positive_to_target)})"
     for name, sort in reversed(binders):
-        proof = f"(fun {name}:{sort} => {proof})"
+        proof = f"(fun {name} :{sort} => {proof})"
     return proof
 
 
@@ -19582,7 +19633,7 @@ def raw_negated_forall_double_negated_equality_to_negative_equality_proof(
     source_equality = raw_eq_symmetry_proof("Htarget", target_sides[0], equality_sort)
     proof = f"(fun HnotEq => HnotEq {proof_term_text(source_equality)})"
     for name, sort in reversed(binders):
-        proof = f"(fun {name}:{sort} => {proof})"
+        proof = f"(fun {name} :{sort} => {proof})"
     return f"(fun Htarget => {proof_head(source_proof)} {proof_term_text(proof)})"
 
 
@@ -19670,7 +19721,7 @@ def raw_rectify_formula_transform_proof(
                 depth + 1,
             )
             if inner is not None:
-                return f"(fun {target.value}:{target.sort} => {inner})"
+                return f"(fun {target.value} :{target.sort} => {inner})"
 
     if source.kind == "forall" and source.value is not None and source.sort is not None:
         source_body = source.args[0]
@@ -19722,7 +19773,7 @@ def raw_rectify_formula_transform_proof(
         )
         if inner is None:
             return None
-        return f"(fun {binder}:{target.sort} => {inner})"
+        return f"(fun {binder} :{target.sort} => {inner})"
 
     if source.kind == "arrow" and target.kind == "arrow":
         source_premise, source_conclusion = source.args
@@ -19895,7 +19946,7 @@ def raw_exists_transform_proof(
     target_intro = f"(fun Q Hexists => Hexists {witness_name} {proof_term_text(body_proof)})"
     return (
         f"({proof_head(source_proof)} {proof_arg_text(target)} "
-        f"(fun {witness_name}:{source_sort} => fun Hbody => {target_intro}))"
+        f"(fun {witness_name} :{source_sort} => fun Hbody => {target_intro}))"
     )
 
 
@@ -19955,7 +20006,7 @@ def raw_eq_symmetry_proof(proof: str, left: Expr, sort: str) -> str:
         predicate = f"vampire_eq_prop {name} {proof_arg_text(left)}"
     else:
         predicate = f"{name} = {left_text}"
-    return f"({proof_head(proof)} (fun {name}:{sort} => {predicate}) (fun R Hr => Hr))"
+    return f"({proof_head(proof)} (fun {name} :{sort} => {predicate}) (fun R Hr => Hr))"
 
 
 def raw_candidate_terms_for_sort(
@@ -20022,10 +20073,10 @@ def raw_proof_from_prop_true_equality(source: Expr, target: Expr, source_proof: 
     true_proof = raw_true_intro_proof()
     prop_name = fresh_identifier("Qprop", expr_text(source), expr_text(target), source_proof)
     if true_on_left:
-        return f"({proof_head(source_proof)} (fun {prop_name}:prop => {prop_name}) {true_proof})"
+        return f"({proof_head(source_proof)} (fun {prop_name} :prop => {prop_name}) {true_proof})"
     return (
         f"(({proof_head(source_proof)} "
-        f"(fun {prop_name}:prop => {prop_name} -> {proof_arg_text(target)}) "
+        f"(fun {prop_name} :prop => {prop_name} -> {proof_arg_text(target)}) "
         f"(fun H => H)) {true_proof})"
     )
 
@@ -20200,7 +20251,7 @@ def raw_prop_implication_transform_proof(
             depth + 1,
         )
         if body_proof is not None:
-            return f"(fun {binder}:{source.sort} => {body_proof})"
+            return f"(fun {binder} :{source.sort} => {body_proof})"
 
     source_exists = raw_exists_transform_parts(source)
     target_exists = raw_exists_transform_parts(target)
@@ -20221,7 +20272,7 @@ def raw_prop_implication_transform_proof(
             if body_proof is not None:
                 return (
                     f"({proof_head(source_proof)} {proof_arg_text(target)} "
-                    f"(fun {witness}:{source_sort} => fun Hbody => "
+                    f"(fun {witness} :{source_sort} => fun Hbody => "
                     f"(fun Q Hexists => Hexists {witness} {proof_term_text(body_proof)})))"
                 )
 
@@ -20283,7 +20334,7 @@ def raw_prop_argument_set_rewrite_proof(
     context = Expr("app", args=tuple(context_args))
     return (
         f"{proof_term_text(equality)} "
-        f"(fun {hole}:set => {expr_text(context)}) "
+        f"(fun {hole} :set => {expr_text(context)}) "
         f"{proof_term_text(source_proof)}"
     )
 
@@ -20336,7 +20387,7 @@ def raw_set_predicate_extensionality_proof(
         return None
     return (
         f"(vampire_funext_set_prop {proof_arg_text(source_predicate)} {proof_arg_text(target_predicate)} "
-        f"(fun {binder}:set => {proof_term_text(body_proof)}))"
+        f"(fun {binder} :set => {proof_term_text(body_proof)}))"
     )
 
 
@@ -20385,7 +20436,7 @@ def raw_set_term_equality_transform_proof(
             return None
         return (
             f"(vampire_eps_ext {proof_arg_text(source_predicate)} {proof_arg_text(target_predicate)} "
-            f"(fun {binder}:set => {proof_term_text(body_proof)}))"
+            f"(fun {binder} :set => {proof_term_text(body_proof)}))"
         )
     argument_equality = raw_set_term_equality_transform_proof(
         source.args[index],
@@ -20401,7 +20452,7 @@ def raw_set_term_equality_transform_proof(
     context = Expr("app", args=tuple(context_args))
     return (
         f"{proof_term_text(argument_equality)} "
-        f"(fun {hole}:set => {proof_arg_text(source)} = {expr_text(context)}) "
+        f"(fun {hole} :set => {proof_arg_text(source)} = {expr_text(context)}) "
         f"(fun Q H => H)"
     )
 
@@ -20439,7 +20490,7 @@ def raw_function_argument_transport_proof(
         renamed_source_body = rename_expr_variables(renamed_source_body, {source_name: binder})
         renamed_target_body = rename_expr_variables(renamed_target_body, {target_name: binder})
         local_sorts[binder] = source_sort
-        binder_texts.append(f"fun {binder}:{source_sort} => ")
+        binder_texts.append(f"fun {binder} :{source_sort} => ")
     body_proof = raw_set_term_equality_transform_proof(renamed_source_body, renamed_target_body, local_sorts, depth + 1)
     if body_proof is None:
         return None
@@ -20485,7 +20536,7 @@ def raw_set_application_multi_argument_equality_proof(
                 return None
             proof = (
                 f"{proof_term_text(argument_equality)} "
-                f"(fun {hole}:set => {expr_text(current_expr)} = {expr_text(context)}) "
+                f"(fun {hole} :set => {expr_text(current_expr)} = {expr_text(context)}) "
                 f"(fun Q:(set->prop) => fun H:Q ({proof_arg_text(current_expr)}) => H)"
             )
         elif arg_sort in {"set->set", "set->set->set", "set->(set->set)"}:
@@ -20495,7 +20546,7 @@ def raw_set_application_multi_argument_equality_proof(
                 return None
             proof = (
                 f"{proof_term_text(argument_transport)} "
-                f"(fun {hole}:{arg_sort} => {expr_text(current_expr)} = {expr_text(context)}) "
+                f"(fun {hole} :{arg_sort} => {expr_text(current_expr)} = {expr_text(context)}) "
                 f"(fun Q:(set->prop) => fun H:Q ({proof_arg_text(current_expr)}) => H)"
             )
         else:
@@ -20529,13 +20580,13 @@ def raw_two_sided_equality_transform_proof(
         left_hole = fresh_identifier("zz", expr_text(source), expr_text(target), "left")
         left_transport = (
             f"{proof_term_text(left_equality)} "
-            f"(fun {left_hole}:set => {left_hole} = {proof_arg_text(right)}) "
+            f"(fun {left_hole} :set => {left_hole} = {proof_arg_text(right)}) "
             f"{proof_term_text(proof)}"
         )
         right_hole = fresh_identifier("zz", expr_text(source), expr_text(target), "right")
         return (
             f"{proof_term_text(right_equality)} "
-            f"(fun {right_hole}:set => {proof_arg_text(target_sides[0])} = {right_hole}) "
+            f"(fun {right_hole} :set => {proof_arg_text(target_sides[0])} = {right_hole}) "
             f"{proof_term_text(left_transport)}"
         )
     return None
@@ -20590,7 +20641,7 @@ def raw_equality_predicate_argument_rewrite_proof(
                 context = Expr("eq", args=(source_sides[0], context_app))
             return (
                 f"{proof_term_text(predicate_equality)} "
-                f"(fun {hole}:set->prop => {expr_text(context)}) "
+                f"(fun {hole} :set->prop => {expr_text(context)}) "
                 f"{proof_term_text(source_proof)}"
             )
         term_equality = raw_set_term_equality_transform_proof(source_app, target_app, variable_sorts)
@@ -20603,7 +20654,7 @@ def raw_equality_predicate_argument_rewrite_proof(
             context = Expr("eq", args=(source_sides[0], Expr("var", value=hole)))
         return (
             f"{proof_term_text(term_equality)} "
-            f"(fun {hole}:set => {expr_text(context)}) "
+            f"(fun {hole} :set => {expr_text(context)}) "
             f"{proof_term_text(source_proof)}"
         )
     return None
@@ -20696,7 +20747,7 @@ def raw_deep_formula_transform_proof(
         )
         if inner is None:
             return None
-        return f"(fun {binder}:{target.sort} => {inner})"
+        return f"(fun {binder} :{target.sort} => {inner})"
 
     if source.kind == "forall" and source.value is not None and source.sort is not None:
         source_body = source.args[0]
@@ -20734,7 +20785,7 @@ def raw_deep_formula_transform_proof(
                 depth + 1,
             )
             if inner is not None:
-                return f"(fun {target.value}:{target.sort} => {inner})"
+                return f"(fun {target.value} :{target.sort} => {inner})"
 
     if target.kind == "forall" and target.value is not None and target.sort is not None:
         inner = raw_deep_formula_transform_proof(
@@ -20745,7 +20796,7 @@ def raw_deep_formula_transform_proof(
             depth + 1,
         )
         if inner is not None:
-            return f"(fun {target.value}:{target.sort} => {inner})"
+            return f"(fun {target.value} :{target.sort} => {inner})"
 
     if source.kind == "forall" and source.value is not None and source.sort is not None:
         source_body = source.args[0]
@@ -21040,7 +21091,7 @@ def raw_quantified_equality_rewrite_clause_proof(
             if body_proof is None:
                 continue
             for name, sort in reversed(renamed_target_binders):
-                body_proof = f"(fun {name}:{sort} => {body_proof})"
+                body_proof = f"(fun {name} :{sort} => {body_proof})"
             return body_proof
     return None
 
@@ -21195,7 +21246,7 @@ def raw_equality_rewrite_clause_steps(
             seen.add(key)
             transported = (
                 f"{proof_term_text(proof)} "
-                f"(fun {hole_name}:{equality_sort} => {expr_text(context)}) "
+                f"(fun {hole_name} :{equality_sort} => {expr_text(context)}) "
                 f"{proof_term_text(source_proof)}"
             )
             steps.append((replaced, transported))
@@ -21211,7 +21262,7 @@ def raw_equality_rewrite_clause_steps(
         seen.add(key)
         transported = (
             f"{proof_term_text(proof)} "
-            f"(fun {hole_name}:{equality_sort} => {expr_text(context)}) "
+            f"(fun {hole_name} :{equality_sort} => {expr_text(context)}) "
             f"{proof_term_text(source_proof)}"
         )
         steps.append((replaced, transported))
@@ -21290,7 +21341,7 @@ def raw_quantified_parent_equality_rewrite_clause_proof(
                     continue
                 transported = (
                     f"{proof_term_text(equality_instance)} "
-                    f"(fun {hole_name}:{instantiated_sort} => {expr_text(context)}) "
+                    f"(fun {hole_name} :{instantiated_sort} => {expr_text(context)}) "
                     f"{proof_term_text(source_body_proof)}"
                 )
                 body_proof: str | None
@@ -21303,7 +21354,7 @@ def raw_quantified_parent_equality_rewrite_clause_proof(
                 if body_proof is None:
                     continue
                 for name, sort in reversed(target_binders):
-                    body_proof = f"(fun {name}:{sort} => {body_proof})"
+                    body_proof = f"(fun {name} :{sort} => {body_proof})"
                 return body_proof
     return None
 
@@ -21423,7 +21474,7 @@ def raw_lambda_function_parent_equality_rewrite_proof(
                     f"(vampire_funext_set_set "
                     f"{proof_arg_text(source_lambda)} "
                     f"{proof_arg_text(normalized_target_lambda)} "
-                    f"(fun {source_lambda_name}:{source_lambda_sort} => {proof_term_text(equality_instance)}))"
+                    f"(fun {source_lambda_name} :{source_lambda_sort} => {proof_term_text(equality_instance)}))"
                 )
                 hole_name = fresh_identifier(
                     "zz",
@@ -21440,7 +21491,7 @@ def raw_lambda_function_parent_equality_rewrite_proof(
                     continue
                 transported = (
                     f"{proof_term_text(function_equality)} "
-                    f"(fun {hole_name}:set->set => {expr_text(context)}) "
+                    f"(fun {hole_name} :set->set => {expr_text(context)}) "
                     f"{proof_term_text(source_body_proof)}"
                 )
                 body_proof: str | None
@@ -21451,7 +21502,7 @@ def raw_lambda_function_parent_equality_rewrite_proof(
                 if body_proof is None:
                     continue
                 for name, sort in reversed(target_binders):
-                    body_proof = f"(fun {name}:{sort} => {body_proof})"
+                    body_proof = f"(fun {name} :{sort} => {body_proof})"
                 return body_proof
     return None
 
@@ -21647,7 +21698,7 @@ def raw_negative_implication_quantified_equality_rewrite_proof(
                     continue
                 transported = (
                     f"{proof_term_text(equality_instance)} "
-                    f"(fun {hole_name}:{equality_sort} => {expr_text(context)}) "
+                    f"(fun {hole_name} :{equality_sort} => {expr_text(context)}) "
                     f"Htarget"
                 )
                 return f"(fun Htarget => {proof_head(source_proof)} {proof_term_text(transported)})"
@@ -21818,12 +21869,12 @@ def raw_quantified_equality_rewrite_clause_steps(
                 continue
             transported = (
                 f"{proof_term_text(equality_instance)} "
-                f"(fun {hole_name}:{instantiated_sort} => {expr_text(context)}) "
+                f"(fun {hole_name} :{instantiated_sort} => {expr_text(context)}) "
                 f"{proof_term_text(source_body_proof)}"
             )
             proof = transported
             for name, sort in reversed(source_binders):
-                proof = f"(fun {name}:{sort} => {proof})"
+                proof = f"(fun {name} :{sort} => {proof})"
             replaced = replaced_body
             for name, sort in reversed(source_binders):
                 replaced = Expr("forall", value=name, sort=sort, args=(replaced,))
@@ -22279,7 +22330,7 @@ def raw_tptp_exported_two_literal_resolution_proof(
                     break
             if body_proof is not None:
                 for name, sort in reversed(target_binders):
-                    body_proof = f"(fun {name}:{sort} => {body_proof})"
+                    body_proof = f"(fun {name} :{sort} => {body_proof})"
                 return body_proof
         if selected_clause is None or other_clause is None:
             continue
@@ -22333,7 +22384,7 @@ def raw_tptp_exported_two_literal_resolution_proof(
                     break
         if body_proof is not None:
             for name, sort in reversed(target_binders):
-                body_proof = f"(fun {name}:{sort} => {body_proof})"
+                body_proof = f"(fun {name} :{sort} => {body_proof})"
             return body_proof
     return None
 
@@ -22609,7 +22660,7 @@ def raw_tptp_forward_subsumption_resolution_proof(
         if body_proof is not None:
             proof = body_proof
             for target_name, target_sort in reversed(target_binders):
-                proof = f"(fun {target_name}:{target_sort} => {proof})"
+                proof = f"(fun {target_name} :{target_sort} => {proof})"
             return proof
 
     return None
@@ -22787,7 +22838,7 @@ def raw_tptp_equality_resolution_with_instantiations_proof(
         if body_proof is None:
             continue
         for name, sort in reversed(target_binders):
-            body_proof = f"(fun {name}:{sort} => {body_proof})"
+            body_proof = f"(fun {name} :{sort} => {body_proof})"
         return body_proof
     return None
 
@@ -22966,7 +23017,7 @@ def raw_skolemised_formula_transform_proof(
             depth + 1,
         )
         if inner is not None:
-            return f"(fun {target.value}:{target.sort} => {inner})"
+            return f"(fun {target.value} :{target.sort} => {inner})"
 
     if target.kind == "forall" and target.value is not None and target.sort is not None:
         inner = raw_skolemised_formula_transform_proof(
@@ -22978,7 +23029,7 @@ def raw_skolemised_formula_transform_proof(
             depth + 1,
         )
         if inner is not None:
-            return f"(fun {target.value}:{target.sort} => {inner})"
+            return f"(fun {target.value} :{target.sort} => {inner})"
 
     for rewrite in rewrites:
         instance = raw_skolem_rewrite_instance_proof(source, rewrite, source_proof, variable_sorts, target)
@@ -23213,7 +23264,7 @@ def raw_tptp_avatar_component_clause_proof(
 
     def wrap_target_binders(proof: str) -> str:
         for name, sort in reversed(target_binders):
-            proof = f"(fun {name}:{sort} => {proof})"
+            proof = f"(fun {name} :{sort} => {proof})"
         return proof
 
     def component_to_target_left(proof: str) -> str | None:
@@ -23615,7 +23666,7 @@ def raw_avatar_split_component_from_source_proof(
         if body_proof is None:
             continue
         for name, sort in reversed(component_binders):
-            body_proof = f"(fun {name}:{sort} => {body_proof})"
+            body_proof = f"(fun {name} :{sort} => {body_proof})"
         return body_proof
     return None
 
@@ -24127,7 +24178,7 @@ def raw_fool_exhaustiveness_axiom_proof(proposition: str) -> str | None:
             return None
         return eq_proof
     return (
-        f"(fun {name}:prop => "
+        f"(fun {name} :prop => "
         f"(xm {name} {proof_arg_text(body)} "
         f"(fun Htrue => (fun P Hleft Hright => Hleft Htrue)) "
         f"(fun Hfalse => (fun P Hleft Hright => Hright Hfalse))))"
@@ -24185,14 +24236,14 @@ def raw_fool_prop_equality_exhaustiveness_proof(name: str, body: Expr, left: Exp
         return None
     if left_component.startswith("true_") and right_component.startswith("false_"):
         return (
-            f"(fun {name}:prop => "
+            f"(fun {name} :prop => "
             f"(xm {name} {proof_arg_text(body)} "
             f"(fun Htrue_case => (fun P Hleft Hright => Hleft {true_equality_proof(left_component)})) "
             f"(fun Hfalse_case => (fun P Hleft Hright => Hright {false_equality_proof(right_component)}))))"
         )
     if left_component.startswith("false_") and right_component.startswith("true_"):
         return (
-            f"(fun {name}:prop => "
+            f"(fun {name} :prop => "
             f"(xm {name} {proof_arg_text(body)} "
             f"(fun Htrue_case => (fun P Hleft Hright => Hright {true_equality_proof(right_component)})) "
             f"(fun Hfalse_case => (fun P Hleft Hright => Hleft {false_equality_proof(left_component)}))))"
@@ -24538,6 +24589,14 @@ def raw_avatar_sat_dpll_refutation_proof(
 SOURCE_DECLARED_NAME_RE = re.compile(
     r"^\s*Definition\s+(?P<name>[_A-Za-z][_A-Za-z0-9']*)\b"
 )
+MEGALODON_DECLARED_NAME_RE = re.compile(
+    r"^\s*(?:Variable|Parameter|Definition|Axiom)\s+(?P<name>[_A-Za-z][_A-Za-z0-9']*)\b"
+)
+MEGALODON_SORT_DECL_RE = re.compile(
+    r"^\s*(?:Variable|Parameter|Definition)\s+"
+    r"(?P<name>[_A-Za-z][_A-Za-z0-9']*)\s*:\s*"
+    r"(?P<sort>.*?)(?::=|\.|$)"
+)
 
 
 def source_declared_names(source: Path | None) -> set[str]:
@@ -24555,6 +24614,79 @@ def source_declared_names(source: Path | None) -> set[str]:
     return names
 
 
+def normalize_megalodon_sort(sort: str) -> str:
+    text = sort.strip()
+    text = re.sub(r"\s*->\s*", "->", text)
+    text = re.sub(r"\s+", "", text)
+    return strip_balanced_parens(text)
+
+
+def megalodon_declared_sort(line: str) -> tuple[str, str] | None:
+    match = MEGALODON_SORT_DECL_RE.match(line)
+    if match is None:
+        return None
+    sort = normalize_megalodon_sort(match.group("sort"))
+    if not sort:
+        return None
+    return match.group("name"), sort
+
+
+def source_declared_sorts(source: Path | None) -> dict[str, str]:
+    if source is None:
+        return {}
+    try:
+        text = source.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    sorts: dict[str, str] = {}
+    for line in text.splitlines():
+        declared = megalodon_declared_sort(line)
+        if declared is not None:
+            name, sort = declared
+            sorts[name] = sort
+    return sorts
+
+
+def megalodon_declared_name(line: str) -> str | None:
+    match = MEGALODON_DECLARED_NAME_RE.match(line)
+    return match.group("name") if match is not None else None
+
+
+def raw_tptp_exported_source_declarations(proof_text: str) -> list[str]:
+    declarations: list[str] = []
+    seen_lines: set[str] = set()
+    for block in extract_marked_megalodon_blocks(
+        proof_text,
+        "megalodon_claim_skeleton_start.",
+        "megalodon_claim_skeleton_end.",
+    ):
+        for line in block:
+            if not (
+                line.startswith("Variable ")
+                or line.startswith("Parameter ")
+                or line.startswith("Definition ")
+                or line.startswith("Axiom ")
+                or line.startswith("Infix ")
+            ):
+                continue
+            if line in seen_lines:
+                continue
+            seen_lines.add(line)
+            declarations.append(line)
+    return declarations
+
+
+def raw_tptp_exported_source_variable_sorts(proof_text: str) -> dict[str, str]:
+    sorts: dict[str, str] = {}
+    for declaration in raw_tptp_exported_source_declarations(proof_text):
+        declared = megalodon_declared_sort(declaration)
+        if declared is None:
+            continue
+        name, sort = declared
+        sorts[name] = sort
+    return sorts
+
+
 def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | None = None) -> list[str]:
     text = proof.read_text(encoding="utf-8", errors="replace")
     declarations = collect_tptp_declarations(text)
@@ -24562,7 +24694,10 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     replay_steps: dict[str, MegalodonReplayStep] = {}
     unsupported = 0
     if declarations:
-        variable_sorts = raw_tptp_type_variables(declarations)
+        variable_sorts = {
+            **source_declared_sorts(source),
+            **raw_tptp_type_variables(declarations),
+        }
         raw_entries: list[tuple[str, str, str, str | None, str | None, str | None, list[str], bool]] = []
         propositions: list[str] = []
         for declaration in declarations:
@@ -24600,11 +24735,13 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         propositions = decoded_propositions
     else:
         variable_sorts = {
+            **source_declared_sorts(source),
             **proof_text_type_variable_sorts(text),
             **problem_type_variable_sorts(proof, problem),
             **megalodon_outline_symbol_sorts(text),
+            **raw_tptp_exported_source_variable_sorts(text),
         }
-        replay_steps = megalodon_replay_steps(text, proof, problem)
+        replay_steps = megalodon_replay_steps(text, proof, problem, source)
         entries = []
         propositions = []
         axiom_like_rules = {"input", "skolem symbol introduction", "predicate definition introduction", "function definition"}
@@ -24673,19 +24810,47 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     lines.append(f"// decoded proof formulas: {len(propositions)}")
     lines.append(f"// unsupported proof formulas: {unsupported}")
     lines.extend(reconstruction_prelude_for(propositions))
+    declared_names = {
+        name
+        for line in lines
+        for name in [megalodon_declared_name(line)]
+        if name is not None
+    }
+    seen_infixes = {line for line in lines if line.startswith("Infix ")}
+    for declaration in raw_tptp_exported_source_declarations(text):
+        if declaration.startswith("Infix "):
+            if declaration in seen_infixes:
+                continue
+            seen_infixes.add(declaration)
+            lines.append(declaration)
+            continue
+        declared_name = megalodon_declared_name(declaration)
+        if declared_name is not None and declared_name in declared_names:
+            continue
+        if declared_name is not None:
+            declared_names.add(declared_name)
+        lines.append(declaration)
     source_names = source_declared_names(source)
+    source_sort_names = set(source_declared_sorts(source))
     for name, sort in sorted(variable_sorts.items()):
+        if name in RAW_TPTP_AMBIENT_CONSTANTS:
+            continue
         if name.startswith("vampire_"):
             continue
         if name in {"vAND", "vOR", "vIMP", "vNOT"}:
             continue
         if name in source_names:
             continue
+        if name in source_sort_names:
+            continue
+        if name in declared_names:
+            continue
         if name in avatar_split_definitions or name.replace("__", "_") in avatar_split_definitions:
             continue
         if name in predicate_definitions:
             continue
         lines.append(f"Variable {name}:{sort}.")
+        declared_names.add(name)
     for name, definition in ordered_definitions(predicate_definitions):
         lines.append(f"Definition {name} : {definition.sort} := {definition.body_text}.")
         equality_proposition = predicate_definition_equalities.get(definition.proof)
