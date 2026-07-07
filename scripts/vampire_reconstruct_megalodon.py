@@ -1927,10 +1927,48 @@ def megalodon_replay_steps(
             propositions.append(proposition)
         if propositions:
             substitutions[f"S{substitution_match.group('id')}"] = tuple(propositions)
+
+    def parsed_extra_fields(fields: tuple[str, ...]) -> dict[str, str]:
+        parsed: dict[str, str] = {}
+        for field in fields:
+            if "=" in field:
+                key, value = field.split("=", 1)
+                parsed[key] = value
+            else:
+                parsed[field] = ""
+        return parsed
+
+    derived_propositions: dict[str, str] = {}
+    for step, step_extras in extras.items():
+        details = step_details.get(step)
+        if details is None:
+            continue
+        rule, parents, _step_sorts = details
+        if rule != "fool elimination" or not parents:
+            continue
+        parent = parents[0]
+        if parent not in placeholder_steps or parent in direct_propositions:
+            continue
+        parent_details = step_details.get(parent)
+        if parent_details is None:
+            continue
+        for kind, fields in step_extras:
+            if kind != "fool":
+                continue
+            source = parsed_extra_fields(fields).get("source")
+            if source is None:
+                continue
+            parent_sorts = parent_details[2]
+            derived_propositions[parent] = surface_direct_step_proposition(
+                source,
+                {**variable_sorts, **parent_sorts},
+            )
+            break
+
     for step, (rule, parents, step_sorts) in step_details.items():
         if step in steps:
             continue
-        direct_proposition = direct_propositions.get(step)
+        direct_proposition = direct_propositions.get(step) or derived_propositions.get(step)
         if direct_proposition is not None:
             proposition = surface_direct_step_proposition(
                 direct_proposition,
@@ -1985,7 +2023,7 @@ def megalodon_replay_steps(
                 extras=info.extras,
                 variable_sorts=info.variable_sorts,
             )
-    for step in placeholder_steps - direct_propositions.keys():
+    for step in placeholder_steps - direct_propositions.keys() - derived_propositions.keys():
         info = steps.get(step)
         if info is not None and any(
             kind in {"function_definition", "clause_equality"} for kind, _ in info.extras
