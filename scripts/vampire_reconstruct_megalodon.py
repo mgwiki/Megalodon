@@ -2036,10 +2036,33 @@ def megalodon_replay_steps(
                 {**variable_sorts, **step_sorts},
             )
         else:
-            proposition = megalodon_equality_extra_proposition(
-                extras.get(step, []),
-                {**variable_sorts, **step_sorts},
-            )
+            if rule == "avatar component clause":
+                parent_propositions = [
+                    steps[parent].proposition
+                    for parent in parents
+                    if parent in steps and steps[parent].proposition
+                ]
+                proposition = guarded_avatar_component_extra_proposition(
+                    extras.get(step, []),
+                    parent_propositions,
+                    {**variable_sorts, **step_sorts},
+                )
+            elif rule == "superposition":
+                parent_propositions = [
+                    steps[parent].proposition
+                    for parent in parents
+                    if parent in steps and steps[parent].proposition
+                ]
+                proposition = parent_guarded_equality_extra_proposition(
+                    extras.get(step, []),
+                    parent_propositions,
+                    {**variable_sorts, **step_sorts},
+                )
+            else:
+                proposition = megalodon_equality_extra_proposition(
+                    extras.get(step, []),
+                    {**variable_sorts, **step_sorts},
+                )
             if proposition is None:
                 for kind, fields in extras.get(step, []):
                     if kind != "definition_rewrite":
@@ -2161,6 +2184,78 @@ def megalodon_equality_extra_proposition(
         expr = surface_direct_step_expr(expr, local_sorts)
         return lower_function_equality_proposition(expr, local_sorts)
     return None
+
+
+def guarded_avatar_component_extra_proposition(
+    extras: list[tuple[str, tuple[str, ...]]],
+    parent_propositions: list[str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    equality_proposition = megalodon_equality_extra_proposition(extras, variable_sorts)
+    if equality_proposition is None:
+        return None
+    split_name = None
+    for parent_proposition in parent_propositions:
+        definition = raw_tptp_avatar_definition_parts(parent_proposition)
+        if definition is not None:
+            split_name = definition[0]
+            break
+    if split_name is None:
+        return equality_proposition
+    equality_expr = parse_expr(equality_proposition)
+    if equality_expr is None:
+        return equality_proposition
+    binders, body = collect_foralls(equality_expr)
+    guarded_body = Expr(
+        "app",
+        args=(
+            Expr("var", value="vampire_or"),
+            body,
+            Expr("arrow", args=(Expr("var", value=split_name), Expr("var", value="vampire_false"))),
+        ),
+    )
+    result = guarded_body
+    for name, sort in reversed(binders):
+        result = Expr("forall", value=name, sort=sort, args=(result,))
+    return expr_text(result)
+
+
+def guarded_parent_literal(parent_propositions: list[str]) -> Expr | None:
+    for parent_proposition in parent_propositions:
+        parent_expr = parse_expr(parent_proposition)
+        if parent_expr is None:
+            continue
+        _binders, body = collect_foralls(parent_expr)
+        parts = raw_or_parts(body)
+        if parts is None:
+            continue
+        for part in parts:
+            implication = implication_sides(part)
+            if implication is not None and false_eliminator_expr(implication[1]):
+                return part
+    return None
+
+
+def parent_guarded_equality_extra_proposition(
+    extras: list[tuple[str, tuple[str, ...]]],
+    parent_propositions: list[str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    equality_proposition = megalodon_equality_extra_proposition(extras, variable_sorts)
+    if equality_proposition is None:
+        return None
+    guard = guarded_parent_literal(parent_propositions)
+    if guard is None:
+        return equality_proposition
+    equality_expr = parse_expr(equality_proposition)
+    if equality_expr is None:
+        return equality_proposition
+    binders, body = collect_foralls(equality_expr)
+    guarded_body = Expr("app", args=(Expr("var", value="vampire_or"), body, guard))
+    result = guarded_body
+    for name, sort in reversed(binders):
+        result = Expr("forall", value=name, sort=sort, args=(result,))
+    return expr_text(result)
 
 
 def problem_predicate_eliminator_axioms(problem: Path, lines: list[str]) -> list[tuple[str, str]]:
@@ -4046,6 +4141,10 @@ BOOLEAN_EXT_HELPERS = [
     "Axiom vampire_funext_prop_prop: forall F G:prop->prop->prop, (forall X:prop, vampire_eq_prop_fun (F X) (G X)) -> F = G.",
     "Axiom vampire_funext_set_prop: forall F G:set->prop, (forall X:set, vampire_eq_prop (F X) (G X)) -> forall Q:(set->prop)->prop, Q F -> Q G.",
     "Axiom vampire_eps_ext: forall F G:set->prop, (forall X:set, vampire_eq_prop (F X) (G X)) -> Eps_i F = Eps_i G.",
+    "Axiom vampire_congr_set_prop: forall F G:set->prop, F = G -> forall X:set, vampire_eq_prop (F X) (G X).",
+    "Axiom vampire_congr_set_set: forall F G:set->set, F = G -> forall X:set, F X = G X.",
+    "Axiom vampire_congr_set_set_prop: forall F G:set->set->prop, F = G -> forall X:set, forall Y:set, vampire_eq_prop (F X Y) (G X Y).",
+    "Axiom vampire_congr_set_set_set: forall F G:set->set->set, F = G -> forall X:set, forall Y:set, F X Y = G X Y.",
     "Axiom vampire_funext_set_set: forall F G:set->set, (forall X:set, F X = G X) -> forall Q:(set->set)->prop, Q F -> Q G.",
     "Axiom vampire_funext_set_set_prop: forall F G:set->set->prop, (forall X:set, forall Y:set, vampire_eq_prop (F X Y) (G X Y)) -> forall Q:(set->set->prop)->prop, Q F -> Q G.",
     "Axiom vampire_funext_set_set_set: forall F G:set->set->set, (forall X:set, forall Y:set, F X Y = G X Y) -> forall Q:(set->set->set)->prop, Q F -> Q G.",
@@ -22285,6 +22384,95 @@ def raw_pointwise_set_function_equality(
     return Expr("eq", args=(left, right)), proof
 
 
+def raw_function_equality_to_pointwise_proof(
+    equality: Expr,
+    target: Expr,
+    equality_proof: str,
+    variable_sorts: dict[str, str],
+    *,
+    wrap_binders: bool = True,
+) -> str | None:
+    equality_sides = equality_like_sides(equality)
+    if equality_sides is None:
+        return None
+    function_left, function_right = equality_sides
+    binders, target_body = collect_foralls(target)
+    if not binders:
+        return None
+    binder_vars = [Expr("var", value=name) for name, _ in binders]
+    left_app = append_application_args(function_left, binder_vars)
+    right_app = append_application_args(function_right, binder_vars)
+    body_sides = equality_like_sides(target_body)
+    if body_sides is None:
+        return None
+    function_sort = expr_sort(function_left, variable_sorts) or expr_sort(function_right, variable_sorts)
+    if function_sort is None:
+        return None
+    target_left, target_right = body_sides
+    congr_helper = None
+    if function_sort == "set->prop" and len(binders) == 1 and target_body.kind != "eq":
+        congr_helper = "vampire_congr_set_prop"
+    elif function_sort == "set->set" and len(binders) == 1 and target_body.kind == "eq":
+        congr_helper = "vampire_congr_set_set"
+    elif function_sort == "set->set->prop" and len(binders) == 2 and target_body.kind != "eq":
+        congr_helper = "vampire_congr_set_set_prop"
+    elif function_sort == "set->set->set" and len(binders) == 2 and target_body.kind == "eq":
+        congr_helper = "vampire_congr_set_set_set"
+    if congr_helper is not None:
+        args_text = " ".join(proof_arg_text(var) for var in binder_vars)
+        proof = (
+            f"({congr_helper} {proof_arg_text(function_left)} {proof_arg_text(function_right)} "
+            f"{proof_term_text(equality_proof)} {args_text})"
+        )
+        if expr_same_mod_alpha(target_left, left_app) and expr_same_mod_alpha(target_right, right_app):
+            if wrap_binders:
+                for name, sort in reversed(binders):
+                    proof = f"(fun {name} :{sort} => {proof})"
+            return proof
+        if expr_same_mod_alpha(target_left, right_app) and expr_same_mod_alpha(target_right, left_app):
+            equality_sort = raw_equality_transport_sort(body_sides[0], body_sides[1], variable_sorts)
+            proof = raw_eq_symmetry_proof(proof, body_sides[1], equality_sort)
+            if wrap_binders:
+                for name, sort in reversed(binders):
+                    proof = f"(fun {name} :{sort} => {proof})"
+            return proof
+
+    def body_proof(forward: bool) -> str | None:
+        if forward:
+            if not (expr_same_mod_alpha(target_left, left_app) and expr_same_mod_alpha(target_right, right_app)):
+                return None
+        else:
+            if not (expr_same_mod_alpha(target_left, right_app) and expr_same_mod_alpha(target_right, left_app)):
+                return None
+        hole = fresh_identifier("zz", expr_text(equality), expr_text(target))
+        hole_app = append_application_args(Expr("var", value=hole), binder_vars)
+        if target_body.kind == "eq":
+            predicate = f"{proof_arg_text(left_app)} = {expr_text(hole_app)}"
+            refl = "(fun Q H => H)"
+        else:
+            predicate = f"vampire_eq_prop {proof_arg_text(left_app)} {proof_arg_text(hole_app)}"
+            refl = "(fun Q H => H)"
+        proof = (
+            f"{proof_term_text(equality_proof)} "
+            f"(fun {hole} :{function_sort} => {predicate}) "
+            f"{refl}"
+        )
+        if forward:
+            return proof
+        equality_sort = raw_equality_transport_sort(body_sides[0], body_sides[1], variable_sorts)
+        return raw_eq_symmetry_proof(proof, body_sides[1], equality_sort)
+
+    proof = body_proof(True)
+    if proof is None:
+        proof = body_proof(False)
+    if proof is None:
+        return None
+    if wrap_binders:
+        for name, sort in reversed(binders):
+            proof = f"(fun {name} :{sort} => {proof})"
+    return proof
+
+
 def raw_expr_has_synthetic_db_variable(expr: Expr) -> bool:
     return any(RAW_TPTP_SYNTHETIC_DB_RE.fullmatch(name) for name in expr_variables(expr))
 
@@ -23004,6 +23192,87 @@ def raw_tptp_exported_two_literal_resolution_proof(
     return None
 
 
+def raw_tptp_guarded_parent_equality_rewrite_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parents) != 2:
+        return None
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    target_binders, target_body = collect_foralls(target)
+    target_parts = raw_or_parts(target_body)
+    if target_parts is None:
+        return None
+    target_left, target_guard = target_parts
+    parsed: list[tuple[Expr, str]] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+        if parent_expr is None:
+            return None
+        parsed.append((parent_expr, raw_tptp_claim_name(parent)))
+    for source_index, guard_index in ((0, 1), (1, 0)):
+        source, source_proof = parsed[source_index]
+        guard_source, guard_proof = parsed[guard_index]
+        guard_parts = raw_or_parts(collect_foralls(guard_source)[1])
+        if guard_parts is None:
+            continue
+        positive_guard: Expr | None = None
+        for positive_candidate, guard_candidate in (guard_parts, (guard_parts[1], guard_parts[0])):
+            if expr_same_mod_alpha(guard_candidate, target_guard):
+                positive_guard = positive_candidate
+                break
+        if positive_guard is None:
+            continue
+        source_binders, source_body = collect_foralls(source)
+        if len(source_binders) != len(target_binders):
+            continue
+        local_sorts = {**variable_sorts}
+        source_body_proof = source_proof
+        source_body_open = source_body
+        ok = True
+        for (source_name, source_sort), (target_name, target_sort) in zip(source_binders, target_binders):
+            if source_sort != target_sort:
+                ok = False
+                break
+            source_body_open = rename_expr_variables(source_body_open, {source_name: target_name})
+            source_body_proof = f"({proof_head(source_body_proof)} {target_name})"
+            local_sorts[target_name] = target_sort
+        if not ok:
+            continue
+        positive_proof = raw_equality_rewrite_expr_proof(
+            source_body_open,
+            target_left,
+            source_body_proof,
+            positive_guard,
+            "Hpositive",
+            local_sorts,
+        )
+        if positive_proof is None:
+            transformed = raw_clause_transform_proof(source_body_open, target_left, source_body_proof)
+            positive_proof = transformed
+        if positive_proof is None:
+            continue
+        target_text = proof_arg_text(target_body)
+        left_branch = raw_or_left_intro(target_body, positive_proof)
+        right_branch = raw_or_right_intro(target_body, "Hguard")
+        if left_branch is None or right_branch is None:
+            continue
+        body_proof = (
+            f"({proof_head(guard_proof)} {target_text} "
+            f"(fun Hpositive => {proof_term_text(left_branch)}) "
+            f"(fun Hguard => {proof_term_text(right_branch)}))"
+        )
+        for name, sort in reversed(target_binders):
+            body_proof = f"(fun {name} :{sort} => {body_proof})"
+        return body_proof
+    return None
+
+
 def raw_tptp_fast_parent_transform_proof(
     proposition: str,
     parent: str,
@@ -23049,6 +23318,14 @@ def raw_tptp_superposition_proof(
         propositions_by_name,
         variable_sorts,
         replay_step,
+    )
+    if proof is not None:
+        return proof
+    proof = raw_tptp_guarded_parent_equality_rewrite_proof(
+        proposition,
+        parents,
+        propositions_by_name,
+        variable_sorts,
     )
     if proof is not None:
         return proof
@@ -23832,14 +24109,14 @@ def raw_tptp_avatar_definition_proof(proposition: str) -> str | None:
 
 
 def raw_or_left_intro(target: Expr, proof: str) -> str | None:
-    parts = app_args(target, "vampire_or", 2)
+    parts = raw_or_parts(target)
     if parts is None:
         return None
     return f"(fun P Hleft Hright => Hleft {proof_term_text(proof)})"
 
 
 def raw_or_right_intro(target: Expr, proof: str) -> str | None:
-    parts = app_args(target, "vampire_or", 2)
+    parts = raw_or_parts(target)
     if parts is None:
         return None
     return f"(fun P Hleft Hright => Hright {proof_term_text(proof)})"
@@ -23849,7 +24126,9 @@ def raw_tptp_avatar_component_clause_proof(
     proposition: str,
     parents: list[str],
     propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str] | None = None,
 ) -> str | None:
+    variable_sorts = variable_sorts or {}
     if len(parents) != 1:
         return None
     parent_proposition = propositions_by_name.get(parents[0])
@@ -23859,9 +24138,9 @@ def raw_tptp_avatar_component_clause_proof(
     target = parse_expr(proposition)
     if parent_expr is None or target is None:
         return None
-    parent_parts = app_args(parent_expr, "vampire_and", 2)
+    parent_parts = vampire_and_parts(parent_expr)
     target_binders, target_body = collect_foralls(target)
-    target_parts = app_args(target_body, "vampire_or", 2)
+    target_parts = raw_or_parts(target_body)
     if parent_parts is None or target_parts is None:
         return None
     forward = implication_sides(parent_parts[0])
@@ -23886,12 +24165,29 @@ def raw_tptp_avatar_component_clause_proof(
         transformed = raw_specialize_forall_transform_proof(component, target_left, proof, local_sorts)
         if transformed is not None:
             return transformed
+        quantified_target_left = target_left
+        for name, sort in reversed(target_binders):
+            quantified_target_left = Expr("forall", value=name, sort=sort, args=(quantified_target_left,))
+        transformed = raw_function_equality_to_pointwise_proof(
+            component,
+            quantified_target_left,
+            proof,
+            {**variable_sorts, **local_sorts},
+            wrap_binders=False,
+        )
+        if transformed is not None:
+            return transformed
         transformed = raw_clause_transform_proof(component, target_left, proof)
         if transformed is not None:
             return transformed
         return raw_forall_clause_transform_proof(component, target_left, proof, 0, ())
 
-    if expr_key(target_right) == expr_key(Expr("arrow", args=(split_atom, Expr("var", value="vampire_false")))):
+    target_right_implication = implication_sides(target_right)
+    if (
+        target_right_implication is not None
+        and expr_same_mod_alpha(target_right_implication[0], split_atom)
+        and false_eliminator_expr(target_right_implication[1])
+    ):
         if not raw_clause_replay_budget_ok(component, target_left, max_literals=24, max_literal_product=384):
             return None
         component_proof = component_to_target_left("(Hforward Hsplit)")
@@ -24421,6 +24717,13 @@ def raw_tptp_avatar_split_clause_proof(
     target = parse_expr(proposition)
     if source is None or target is None:
         return None
+    guarded_component = raw_tptp_avatar_split_guarded_component_proof(
+        target,
+        parents,
+        propositions_by_name,
+    )
+    if guarded_component is not None:
+        return guarded_component
     rewrites = raw_tptp_split_rewrites(parents[1:], propositions_by_name)
     if not rewrites:
         return None
@@ -24564,6 +24867,93 @@ def raw_tptp_definition_rewrite_proof(
         if proof is not None:
             return proof
     return None
+
+
+def raw_tptp_avatar_split_guarded_component_proof(
+    target: Expr,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> str | None:
+    target_parts = raw_or_parts(target)
+    if target_parts is None:
+        return None
+    target_guard, target_split = target_parts
+    target_split_name = raw_split_definition_name(target_split)
+    if target_split_name is None:
+        return None
+    target_guard_implication = implication_sides(target_guard)
+    if target_guard_implication is None or not false_eliminator_expr(target_guard_implication[1]):
+        return None
+    guard_split = target_guard_implication[0]
+
+    split_definition: tuple[str, Expr, str] | None = None
+    for parent in parents[1:]:
+        parent_proposition = propositions_by_name.get(parent)
+        if parent_proposition is None:
+            continue
+        definition = raw_tptp_avatar_definition_parts(parent_proposition)
+        if definition is not None and definition[0] == target_split_name:
+            split_definition = (definition[0], definition[1], raw_tptp_claim_name(parent))
+            break
+    if split_definition is None:
+        return None
+    _split_name, component, component_definition_proof = split_definition
+    component_sides = equality_like_sides(component)
+    if component_sides is None:
+        return None
+    component_left, component_right = component_sides
+
+    source_parent = parents[0]
+    source_proposition = propositions_by_name.get(source_parent)
+    source = parse_expr(source_proposition) if source_proposition is not None else None
+    if source is None:
+        return None
+    binders, source_body = collect_foralls(source)
+    source_parts = raw_or_parts(source_body)
+    if source_parts is None:
+        return None
+    pointwise_body: Expr | None = None
+    for left, right in (source_parts, (source_parts[1], source_parts[0])):
+        if expr_same_mod_alpha(right, target_guard):
+            pointwise_body = left
+            break
+    if pointwise_body is None:
+        return None
+    binder_vars = [Expr("var", value=name) for name, _ in binders]
+    expected_left = append_application_args(component_left, binder_vars)
+    expected_right = append_application_args(component_right, binder_vars)
+    pointwise_sides = equality_like_sides(pointwise_body)
+    if pointwise_sides is None:
+        return None
+    if not (expr_same_mod_alpha(pointwise_sides[0], expected_left) and expr_same_mod_alpha(pointwise_sides[1], expected_right)):
+        return None
+    if len(binders) != 2 or any(sort != "set" for _, sort in binders):
+        return None
+
+    source_proof = raw_tptp_claim_name(source_parent)
+    x_name, x_sort = binders[0]
+    y_name, y_sort = binders[1]
+    pointwise_target = proof_arg_text(pointwise_body)
+    pointwise_proof = (
+        f"(fun {x_name} :{x_sort} => fun {y_name} :{y_sort} => "
+        f"((({proof_head(source_proof)} {x_name}) {y_name}) {pointwise_target} "
+        f"(fun Heq => Heq) "
+        f"(fun Hguard => ((Hguard Hsplit) {pointwise_target}))))"
+    )
+    split_proof = (
+        f"(({component_definition_proof} ({proof_arg_text(component)} -> {proof_arg_text(target_split)}) "
+        f"(fun Hforward Hback => Hback)) {pointwise_proof})"
+    )
+    target_text = proof_arg_text(target)
+    left_branch = raw_or_left_intro(target, "HnotSplit")
+    right_branch = raw_or_right_intro(target, split_proof)
+    if left_branch is None or right_branch is None:
+        return None
+    return (
+        f"(xm {proof_arg_text(guard_split)} {target_text} "
+        f"(fun Hsplit => {proof_term_text(right_branch)}) "
+        f"(fun HnotSplit => {proof_term_text(left_branch)}))"
+    )
 
 
 def raw_tptp_replay_proof_from_step(
@@ -24760,7 +25150,7 @@ def raw_tptp_replay_proof(
             max_literal_product=256,
         )
     if rule == "avatar_component_clause":
-        return raw_tptp_avatar_component_clause_proof(proposition, parents, propositions_by_name)
+        return raw_tptp_avatar_component_clause_proof(proposition, parents, propositions_by_name, variable_sorts)
     if rule == "avatar_split_clause":
         previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
         if previous_deadline is not None:
