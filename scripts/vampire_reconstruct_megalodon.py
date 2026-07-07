@@ -1979,6 +1979,19 @@ def megalodon_replay_steps(
                 extras.get(step, []),
                 {**variable_sorts, **step_sorts},
             )
+            if proposition is None:
+                for kind, fields in extras.get(step, []):
+                    if kind != "definition_rewrite":
+                        continue
+                    target = parsed_extra_fields(fields).get("target")
+                    if target is None:
+                        continue
+                    target_expr = raw_tptp_replay_extra_expr({"target": target}, "target", {**variable_sorts, **step_sorts})
+                    proposition = expr_text(target_expr) if target_expr is not None else surface_direct_step_proposition(
+                        target,
+                        {**variable_sorts, **step_sorts},
+                    )
+                    break
         if proposition is None:
             continue
         proposition = quantify_megalodon_step_variables(proposition, step_sorts)
@@ -2026,7 +2039,7 @@ def megalodon_replay_steps(
     for step in placeholder_steps - direct_propositions.keys() - derived_propositions.keys():
         info = steps.get(step)
         if info is not None and any(
-            kind in {"function_definition", "clause_equality"} for kind, _ in info.extras
+            kind in {"function_definition", "clause_equality", "definition_rewrite"} for kind, _ in info.extras
         ):
             continue
         steps.pop(step, None)
@@ -3834,6 +3847,7 @@ BOOLEAN_EXT_HELPERS = [
     "Axiom vampire_funext_set_prop: forall F G:set->prop, (forall X:set, vampire_eq_prop (F X) (G X)) -> forall Q:(set->prop)->prop, Q F -> Q G.",
     "Axiom vampire_eps_ext: forall F G:set->prop, (forall X:set, vampire_eq_prop (F X) (G X)) -> Eps_i F = Eps_i G.",
     "Axiom vampire_funext_set_set: forall F G:set->set, (forall X:set, F X = G X) -> forall Q:(set->set)->prop, Q F -> Q G.",
+    "Axiom vampire_funext_set_set_prop: forall F G:set->set->prop, (forall X:set, forall Y:set, vampire_eq_prop (F X Y) (G X Y)) -> forall Q:(set->set->prop)->prop, Q F -> Q G.",
     "Axiom vampire_funext_set_set_set: forall F G:set->set->set, (forall X:set, forall Y:set, F X Y = G X Y) -> forall Q:(set->set->set)->prop, Q F -> Q G.",
     "Axiom vampire_funext_set_setfun_set: forall F G:set->(set->set)->set, (forall X:set, forall Y:set->set, F X Y = G X Y) -> forall Q:(set->(set->set)->set)->prop, Q F -> Q G.",
 ]
@@ -21313,10 +21327,11 @@ def raw_pointwise_set_function_equality(
     if len(binders) not in {1, 2}:
         return None
     binder_sorts = [sort for _, sort in binders]
+    prop_valued = app_args(body, "vampire_eq_prop", 2) is not None
     if binder_sorts == ["set"]:
         helper = "vampire_funext_set_set"
     elif binder_sorts == ["set", "set"]:
-        helper = "vampire_funext_set_set_set"
+        helper = "vampire_funext_set_set_prop" if prop_valued else "vampire_funext_set_set_set"
     elif binder_sorts == ["set", "set->set"]:
         helper = "vampire_funext_set_setfun_set"
     else:
@@ -21408,6 +21423,14 @@ def raw_tptp_parent_equality_chain_rewrite_proof(
                         transformed = raw_clause_transform_proof(current, comparison_target, current_proof)
                         if transformed is not None:
                             return transformed
+                        transformed = raw_deep_formula_transform_proof(
+                            current,
+                            comparison_target,
+                            current_proof,
+                            variable_sorts,
+                        )
+                        if transformed is not None:
+                            return transformed
                 for equality_name, _, equality_proof, sides in equality_parents:
                     if equality_name == source_name or equality_name in used or sides is None:
                         continue
@@ -21450,6 +21473,14 @@ def raw_tptp_parent_equality_chain_rewrite_proof(
                             for comparison_target in (target, normalized_target):
                                 if raw_clause_replay_budget_ok(candidate, comparison_target, max_literals=16, max_literal_product=256):
                                     transformed = raw_clause_transform_proof(candidate, comparison_target, proof)
+                                    if transformed is not None:
+                                        return transformed
+                                    transformed = raw_deep_formula_transform_proof(
+                                        candidate,
+                                        comparison_target,
+                                        proof,
+                                        variable_sorts,
+                                    )
                                     if transformed is not None:
                                         return transformed
                             next_states.append((candidate, proof, frozenset((*used, equality_name))))
@@ -22572,7 +22603,7 @@ def raw_tptp_safe_split_definition_body(body: Expr, variable_sorts: dict[str, st
 
 
 RAW_TPTP_SYNTHETIC_DB_RE = re.compile(r"\bDB[0-9]+\b")
-RAW_TPTP_SYNTHETIC_DB_BINDER_RE = re.compile(r"\bfun\s+(DB[0-9]+)\s*:")
+RAW_TPTP_SYNTHETIC_DB_BINDER_RE = re.compile(r"\b(?:fun|forall)\s+(DB[0-9]+)\s*:")
 
 
 def raw_tptp_replay_proof_has_unbound_synthetic_db(proof: str) -> bool:
@@ -22604,6 +22635,7 @@ def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: s
             name in proof
             for name in (
                 "vampire_funext_set_set",
+                "vampire_funext_set_set_prop",
                 "vampire_funext_set_set_set",
                 "vampire_funext_set_setfun_set",
                 "vampire_funext_set_prop",
@@ -24036,6 +24068,12 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             rule = step.rule.replace(" ", "_") if step.rule else None
             local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(step)}
             proposition = raw_tptp_normalize_step_proposition(step.proposition, local_sorts)
+            if not proposition:
+                for fields in megalodon_replay_extra_fields(step, "definition_rewrite"):
+                    target_expr = raw_tptp_replay_extra_expr(fields, "target", local_sorts)
+                    if target_expr is not None:
+                        proposition = expr_text(target_expr)
+                        break
             entries.append((name, role, proposition, rule, None, list(step.parents), False))
             propositions.append(proposition)
         add_missing_raw_tptp_variables(propositions, variable_sorts)
