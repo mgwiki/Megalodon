@@ -20878,7 +20878,7 @@ def raw_tptp_parent_equality_chain_rewrite_proof(
     propositions_by_name: dict[str, str],
     variable_sorts: dict[str, str],
 ) -> str | None:
-    if len(parents) < 3:
+    if len(parents) < 2:
         return None
     target = parse_expr(proposition)
     if target is None:
