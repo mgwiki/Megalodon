@@ -19646,6 +19646,113 @@ def raw_negated_eliminator_implication_to_counterexample_proof(
     )
 
 
+def raw_prop_extensionality_cases_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if len(source_binders) != 2 or len(target_binders) != 2:
+        return None
+    if any(sort != "prop" for _, sort in source_binders + target_binders):
+        return None
+    source_body = substitute_expr(
+        source_body,
+        {
+            source_binders[0][0]: Expr("var", value=target_binders[0][0]),
+            source_binders[1][0]: Expr("var", value=target_binders[1][0]),
+        },
+    )
+    local_sorts = {**variable_sorts, **{name: sort for name, sort in target_binders}}
+    premises, conclusion = split_arrows(source_body)
+    if len(premises) != 2:
+        return None
+    first_premises, first_conclusion = split_arrows(premises[0])
+    second_premises, second_conclusion = split_arrows(premises[1])
+    if len(first_premises) != 1 or len(second_premises) != 1:
+        return None
+    positive_left = first_premises[0]
+    positive_right = first_conclusion
+    if not expr_same_mod_alpha(second_premises[0], positive_right):
+        return None
+    if not expr_same_mod_alpha(second_conclusion, positive_left):
+        return None
+
+    target_literals = raw_clause_literals(target_body)
+    if len(target_literals) < 3:
+        return None
+    left_counter = Expr(
+        "app",
+        args=(
+            Expr("var", value="and"),
+            positive_left,
+            Expr("arrow", args=(positive_right, Expr("var", value="False"))),
+        ),
+    )
+    right_counter = Expr(
+        "app",
+        args=(
+            Expr("var", value="and"),
+            positive_right,
+            Expr("arrow", args=(positive_left, Expr("var", value="False"))),
+        ),
+    )
+    left_counter_branch = raw_or_intro_from_branch(
+        target_body,
+        left_counter,
+        "(fun P K => K HleftPositive HnotRightPositive)",
+    )
+    right_counter_branch = raw_or_intro_from_branch(
+        target_body,
+        right_counter,
+        "(fun P K => K HrightPositive HnotLeftPositive)",
+    )
+    if left_counter_branch is None or right_counter_branch is None:
+        return None
+
+    def equality_branch(imp_left_to_right: str, imp_right_to_left: str) -> str | None:
+        proof = source_proof
+        for name, _sort in target_binders:
+            proof = f"({proof_head(proof)} {name})"
+        proof = f"(({proof_head(proof)} {proof_term_text(imp_left_to_right)}) {proof_term_text(imp_right_to_left)})"
+        transformed = raw_deep_formula_transform_proof(conclusion, target_literals[-1], proof, local_sorts)
+        if transformed is None:
+            transformed = raw_clause_transform_proof(conclusion, target_literals[-1], proof)
+        if transformed is None and expr_same_mod_alpha(conclusion, target_literals[-1]):
+            transformed = proof
+        if transformed is None:
+            return None
+        return raw_or_intro_from_branch(target_body, target_literals[-1], transformed)
+
+    both_positive = equality_branch(
+        "(fun HleftPositive2 => HrightPositive)",
+        "(fun HrightPositive2 => HleftPositive)",
+    )
+    both_negative = equality_branch(
+        f"(fun HleftPositive2 => {raw_false_to_expr_proof('(HnotLeftPositive HleftPositive2)', positive_right)})",
+        f"(fun HrightPositive2 => {raw_false_to_expr_proof('(HnotRightPositive HrightPositive2)', positive_left)})",
+    )
+    if both_positive is None or both_negative is None:
+        return None
+
+    body_proof = (
+        f"(xm {proof_arg_text(positive_left)} {proof_arg_text(target_body)} "
+        f"(fun HleftPositive => "
+        f"(xm {proof_arg_text(positive_right)} {proof_arg_text(target_body)} "
+        f"(fun HrightPositive => {proof_term_text(both_positive)}) "
+        f"(fun HnotRightPositive => {proof_term_text(left_counter_branch)}))) "
+        f"(fun HnotLeftPositive => "
+        f"(xm {proof_arg_text(positive_right)} {proof_arg_text(target_body)} "
+        f"(fun HrightPositive => {proof_term_text(right_counter_branch)}) "
+        f"(fun HnotRightPositive => {proof_term_text(both_negative)}))))"
+    )
+    for name, sort in reversed(target_binders):
+        body_proof = f"(fun {name} :{sort} => {body_proof})"
+    return body_proof
+
+
 def raw_forall_implication_spine(expr: Expr) -> tuple[list[tuple[str, str]], list[Expr], Expr]:
     binders: list[tuple[str, str]] = []
     premises: list[Expr] = []
@@ -28089,6 +28196,14 @@ def raw_tptp_exported_normal_form_proof(
         if proof is not None:
             return proof
         proof = raw_negated_eliminator_implication_to_counterexample_proof(
+            source,
+            target,
+            source_proof,
+            local_sorts,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_prop_extensionality_cases_proof(
             source,
             target,
             source_proof,
