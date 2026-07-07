@@ -19777,7 +19777,8 @@ def raw_negated_implication_chain_to_conjunction_proof(
     implication_premises, implication_conclusion = split_arrows(source_premises[0])
     if not implication_premises or len(implication_premises) > 5:
         return None
-    if len(raw_conjunction_components(target)) > len(implication_premises) + 1:
+    conclusion_components = raw_clause_literals(implication_conclusion)
+    if len(raw_conjunction_components(target)) > len(implication_premises) + len(conclusion_components):
         return None
 
     def contradiction_function_from_negative(index: int, negative_name: str) -> str:
@@ -19809,6 +19810,10 @@ def raw_negated_implication_chain_to_conjunction_proof(
             "Hconclusion",
             variable_sorts,
         )
+        if conclusion_proof is None:
+            conclusion_proof = raw_clause_transform_proof(premises[0], implication_conclusion, "Hconclusion")
+        if conclusion_proof is None:
+            conclusion_proof = raw_or_intro_from_branch(implication_conclusion, premises[0], "Hconclusion")
         if conclusion_proof is None:
             return None
         body = proof_term_text(conclusion_proof)
