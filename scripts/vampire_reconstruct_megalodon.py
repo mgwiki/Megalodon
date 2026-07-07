@@ -1580,6 +1580,34 @@ def add_recovered_input_axioms(lines: list[str], proof_text: str | None) -> list
     return result
 
 
+def remove_axiom_shadowing_claims(lines: list[str]) -> list[str]:
+    axiom_proposition_by_name = {
+        axiom[0]: axiom[1]
+        for line in lines
+        for axiom in [proposition_after_colon(line, "Axiom ")]
+        if axiom is not None
+    }
+    if not axiom_proposition_by_name:
+        return list(lines)
+    result: list[str] = []
+    index = 0
+    while index < len(lines):
+        claim = proposition_after_colon(lines[index], "claim ")
+        if claim is None:
+            result.append(lines[index])
+            index += 1
+            continue
+        axiom_proposition = axiom_proposition_by_name.get(claim[0])
+        if axiom_proposition is None or canonical_proposition(axiom_proposition) == canonical_proposition(claim[1]):
+            result.append(lines[index])
+            index += 1
+            continue
+        index += 1
+        if index < len(lines) and lines[index].startswith("{ "):
+            index += 1
+    return result
+
+
 def problem_path_for_proof(proof: Path) -> Path | None:
     if proof.parent.name != "proofs":
         return None
@@ -3286,22 +3314,29 @@ def add_missing_basic_connective_definitions(lines: list[str]) -> list[str]:
 
 
 def add_vampire_xm_axiom_if_used(lines: list[str]) -> list[str]:
-    if any(line.startswith("Axiom vampire_xm:") for line in lines):
-        return list(lines)
-    if not any(line.startswith("Definition vampire_or : prop->prop->prop") for line in lines):
-        return list(lines)
     used = any("vampire_xm" in line for line in lines)
     if not used:
         return list(lines)
+    if any(line.startswith("Axiom vampire_xm:") for line in lines):
+        return list(lines)
+    or_definition = (
+        "Definition vampire_or : prop->prop->prop := "
+        "fun A B:prop => forall P:prop, (A -> P) -> (B -> P) -> P."
+    )
+    has_or_definition = any(line.startswith("Definition vampire_or : prop->prop->prop") for line in lines)
     axiom = "Axiom vampire_xm: forall VampireXmP:prop, vampire_or VampireXmP (VampireXmP -> vampire_false)."
     result: list[str] = []
     inserted = False
     for line in lines:
         if not inserted and (line.startswith("Axiom ") or line.startswith("Theorem ")):
+            if not has_or_definition:
+                result.append(or_definition)
             result.append(axiom)
             inserted = True
         result.append(line)
     if not inserted:
+        if not has_or_definition:
+            result.append(or_definition)
         result.append(axiom)
     return result
 
@@ -3858,9 +3893,11 @@ def no_cycle_successor_injectivity_proof(expr: Expr, rules: list[ProofRule]) -> 
                 and expr_key(premise_atom[1]) == rule_binders[1]
             ):
                 left_disjunct, right_disjunct = disjuncts
+                equality_disjunct = right_disjunct
                 relation_disjunct = binary_atom_parts(left_disjunct)
                 equality_sides = equality_like_sides(right_disjunct)
                 if relation_disjunct is None or equality_sides is None:
+                    equality_disjunct = left_disjunct
                     relation_disjunct = binary_atom_parts(right_disjunct)
                     equality_sides = equality_like_sides(left_disjunct)
                 if (
@@ -3875,7 +3912,8 @@ def no_cycle_successor_injectivity_proof(expr: Expr, rules: list[ProofRule]) -> 
                     }
                     == {rule_binders[0], rule_binders[1]}
                 ):
-                    case_rule = rule
+                    if case_rule is None or equality_disjunct.kind == "eq":
+                        case_rule = rule
                     relation_head = rule.premises[0].args[0]
 
     if no_cycle is None or intro is None or case_rule is None or relation_head is None:
@@ -4032,6 +4070,153 @@ def disjoint_constructor_membership_contradiction_proof(expr: Expr, rules: list[
         f"vampire_false "
         f"(fun {witness}:set => fun {pair} => "
         f"{pair} vampire_false (fun {first} {second} => {contradiction})))"
+    )
+
+
+def unary_atom_transport_by_equality(
+    predicate: Expr,
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality_left: Expr,
+    equality_right: Expr,
+    equality_proof: str,
+) -> str | None:
+    if expr_key(equality_left) == expr_key(source) and expr_key(equality_right) == expr_key(target):
+        return f"({proof_head(equality_proof)} (fun zz:set => {expr_text(Expr('app', args=(predicate, Expr('var', value='zz'))))}) {source_proof})"
+    if expr_key(equality_left) == expr_key(target) and expr_key(equality_right) == expr_key(source):
+        symmetry = eq_symmetry_proof(equality_proof, target)
+        return f"({symmetry} (fun zz:set => {expr_text(Expr('app', args=(predicate, Expr('var', value='zz'))))}) {source_proof})"
+    return None
+
+
+def classical_two_branch_unary_transport_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
+    if len(expr_text(expr)) > 400:
+        return None
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if len(binders) != 1 or len(premises) != 1:
+        return None
+    if conclusion.kind != "app" or len(conclusion.args) != 2:
+        return None
+    premise = premises[0]
+    if premise.kind != "app" or len(premise.args) != 2 or expr_key(premise.args[0]) != expr_key(conclusion.args[0]):
+        return None
+    binder_name, binder_sort = binders[0]
+    if binder_sort != "set" or expr_key(premise.args[1]) != binder_name:
+        return None
+
+    predicate = conclusion.args[0]
+    premise_term = premise.args[1]
+    target_term = conclusion.args[1]
+    binder_var = Expr("var", value=binder_name)
+
+    closure_rule: ProofRule | None = None
+    closure_source: Expr | None = None
+    positive_rule: ProofRule | None = None
+    positive_case: Expr | None = None
+    negative_rule: ProofRule | None = None
+
+    for rule in rules:
+        rule_binders = rule_application_binders(rule)
+        if len(rule_binders) != 1:
+            continue
+        subst = {rule_binders[0]: binder_var}
+        rule_conclusion = substitute_expr(rule_application_conclusion(rule), subst)
+        rule_premises = [substitute_expr(rule_premise, subst) for rule_premise in rule.premises]
+
+        if (
+            len(rule_premises) == 1
+            and expr_key(rule_premises[0]) == expr_key(premise)
+            and rule_conclusion.kind == "app"
+            and len(rule_conclusion.args) == 2
+            and expr_key(rule_conclusion.args[0]) == expr_key(predicate)
+            and expr_key(rule_conclusion.args[1]) != expr_key(target_term)
+        ):
+            closure_rule = rule
+            closure_source = rule_conclusion.args[1]
+
+        equality_sides = equality_like_sides(rule_conclusion)
+        if len(rule_premises) == 1 and equality_sides is not None:
+            sides = equality_sides
+            if {
+                expr_key(sides[0]),
+                expr_key(sides[1]),
+            } == {expr_key(premise_term), expr_key(target_term)}:
+                positive_rule = rule
+                positive_case = rule_premises[0]
+
+    if closure_rule is None or closure_source is None or positive_rule is None or positive_case is None:
+        return None
+
+    for rule in rules:
+        rule_binders = rule_application_binders(rule)
+        if len(rule_binders) != 1:
+            continue
+        subst = {rule_binders[0]: binder_var}
+        rule_conclusion = substitute_expr(rule_application_conclusion(rule), subst)
+        rule_premises = [substitute_expr(rule_premise, subst) for rule_premise in rule.premises]
+        equality_sides = equality_like_sides(rule_conclusion)
+        if len(rule_premises) != 1 or rule_premises[0].kind != "arrow" or equality_sides is None:
+            continue
+        if expr_key(rule_premises[0].args[0]) != expr_key(positive_case):
+            continue
+        sides = equality_sides
+        if {
+            expr_key(sides[0]),
+            expr_key(sides[1]),
+        } == {expr_key(closure_source), expr_key(target_term)}:
+            negative_rule = rule
+
+    if negative_rule is None:
+        return None
+
+    premise_name = "H0"
+    case_name = "Hcase"
+    not_case_name = "Hnot"
+    target_text = proof_arg_text(conclusion)
+    positive_eq = equality_like_sides(
+        substitute_expr(rule_application_conclusion(positive_rule), {rule_application_binders(positive_rule)[0]: binder_var})
+    )
+    if positive_eq is None:
+        return None
+    positive_eq_proof = f"({positive_rule.name} {binder_name} {case_name})"
+    positive = unary_atom_transport_by_equality(
+        predicate,
+        premise_term,
+        target_term,
+        premise_name,
+        positive_eq[0],
+        positive_eq[1],
+        positive_eq_proof,
+    )
+    if positive is None:
+        return None
+
+    closure_proof = f"({closure_rule.name} {binder_name} {premise_name})"
+    negative_eq = equality_like_sides(
+        substitute_expr(rule_application_conclusion(negative_rule), {rule_application_binders(negative_rule)[0]: binder_var})
+    )
+    if negative_eq is None:
+        return None
+    negative_eq_proof = f"({negative_rule.name} {binder_name} {not_case_name})"
+    negative = unary_atom_transport_by_equality(
+        predicate,
+        closure_source,
+        target_term,
+        closure_proof,
+        negative_eq[0],
+        negative_eq[1],
+        negative_eq_proof,
+    )
+    if negative is None:
+        return None
+
+    return (
+        f"(fun {binder_name}:set => fun {premise_name} => "
+        f"(vampire_xm {proof_arg_text(positive_case)} {target_text} "
+        f"(fun {case_name} => {positive}) "
+        f"(fun {not_case_name} => {negative})))"
     )
 
 
@@ -8015,7 +8200,15 @@ def global_or_exists_from_pointwise_split_proof(
         expr_text(global_premises[0]),
     )
 
-    for rule in reversed(local_rules):
+    def direct_equality_disjunction_rule(rule: ProofRule) -> bool:
+        disjuncts = app_args(rule_application_conclusion(rule), "vampire_or", 2)
+        return disjuncts is not None and any(disjunct.kind == "eq" for disjunct in disjuncts)
+
+    ordered_rules = sorted(
+        reversed(local_rules),
+        key=lambda rule: 0 if direct_equality_disjunction_rule(rule) else 1,
+    )
+    for rule in ordered_rules:
         rule_conclusion = rule_application_conclusion(rule)
         rule_disjuncts = app_args(rule_conclusion, "vampire_or", 2)
         if rule_disjuncts is None:
@@ -9696,6 +9889,125 @@ def ordsucc_empty_cases_proof(expr: Expr, known: dict[str, str], rules: list[Pro
             f"({rule.name} Empty {element_name} H0 ({predicate_name} {element_name}) "
             f"{branches[0]} {branches[1]}))"
         )
+    return None
+
+
+def successor_successor_membership_via_intersection_proof(expr: Expr, rules: list[ProofRule]) -> str | None:
+    atom = binary_atom_parts(expr)
+    if atom is None or atom[0] != "In":
+        return None
+    element, target = atom[1], atom[2]
+    if target.kind != "app" or len(target.args) != 2 or expr_key(target.args[0]) != "ordsucc":
+        return None
+    source = target.args[1]
+    if source.kind != "app" or len(source.args) != 2 or expr_key(source.args[0]) != "ordsucc":
+        return None
+    if expr_key(source.args[1]) != expr_key(element):
+        return None
+
+    subq_atom = Expr("app", args=(Expr("var", value="Subq"), source, target))
+    intersection = Expr("app", args=(Expr("var", value="binintersect"), source, target))
+    source_membership = Expr("app", args=(Expr("var", value="In"), element, source))
+    intersection_membership = Expr("app", args=(Expr("var", value="In"), element, intersection))
+
+    subq_proof: str | None = None
+    for rule in rules:
+        if rule.premises:
+            continue
+        variables = set(rule_application_binders(rule))
+        subst: dict[str, Expr] = {}
+        if not match_expr(rule_application_conclusion(rule), subq_atom, variables, subst):
+            continue
+        if not all(binder in subst for binder in rule_application_binders(rule)):
+            continue
+        args = " ".join(proof_arg_text(subst[binder]) for binder in rule_application_binders(rule))
+        subq_proof = f"({rule.name} {args})" if args else rule.name
+        break
+    if subq_proof is None:
+        return None
+
+    source_membership_proof: str | None = None
+    for rule in rules:
+        if rule.premises:
+            continue
+        variables = set(rule_application_binders(rule))
+        subst = {}
+        if not match_expr(rule_application_conclusion(rule), source_membership, variables, subst):
+            continue
+        if not all(binder in subst for binder in rule_application_binders(rule)):
+            continue
+        args = " ".join(proof_arg_text(subst[binder]) for binder in rule_application_binders(rule))
+        source_membership_proof = f"({rule.name} {args})" if args else rule.name
+        break
+    if source_membership_proof is None:
+        return None
+
+    equality_proof: str | None = None
+    equality_sides: tuple[Expr, Expr] | None = None
+    for rule in rules:
+        if len(rule.premises) != 1:
+            continue
+        variables = set(rule_application_binders(rule))
+        subst = {}
+        if not match_expr(rule.premises[0], subq_atom, variables, subst):
+            continue
+        if not all(binder in subst for binder in rule_application_binders(rule)):
+            continue
+        instantiated = substitute_expr(rule_application_conclusion(rule), subst)
+        sides = equality_like_sides(instantiated)
+        if sides is None:
+            continue
+        if {expr_key(sides[0]), expr_key(sides[1])} != {expr_key(intersection), expr_key(source)}:
+            continue
+        args = " ".join(proof_arg_text(subst[binder]) for binder in rule_application_binders(rule))
+        equality_proof = (
+            f"({rule.name} {args} {proof_term_text(subq_proof)})"
+            if args
+            else f"({rule.name} {proof_term_text(subq_proof)})"
+        )
+        equality_sides = sides
+        break
+    if equality_proof is None or equality_sides is None:
+        return None
+
+    if expr_key(equality_sides[0]) == expr_key(source) and expr_key(equality_sides[1]) == expr_key(intersection):
+        intersection_membership_proof = (
+            f"({proof_head(equality_proof)} (fun zz:set => In {proof_arg_text(element)} zz) "
+            f"{proof_term_text(source_membership_proof)})"
+        )
+    else:
+        symmetry = set_eq_symmetry_proof(equality_proof, intersection)
+        intersection_membership_proof = (
+            f"({proof_head(symmetry)} (fun zz:set => In {proof_arg_text(element)} zz) "
+            f"{proof_term_text(source_membership_proof)})"
+        )
+
+    for rule in rules:
+        if len(rule.premises) != 1:
+            continue
+        variables = set(rule_application_binders(rule))
+        subst = {}
+        if not match_expr(rule.premises[0], intersection_membership, variables, subst):
+            continue
+        if not all(binder in subst for binder in rule_application_binders(rule)):
+            continue
+        instantiated = substitute_expr(rule_application_conclusion(rule), subst)
+        conjuncts = vampire_and_parts(instantiated)
+        if conjuncts is None:
+            continue
+        if expr_key(conjuncts[0]) == expr_key(expr):
+            projection = "HL"
+        elif expr_key(conjuncts[1]) == expr_key(expr):
+            projection = "HR"
+        else:
+            continue
+        args = " ".join(proof_arg_text(subst[binder]) for binder in rule_application_binders(rule))
+        and_proof = (
+            f"({rule.name} {args} {proof_term_text(intersection_membership_proof)})"
+            if args
+            else f"({rule.name} {proof_term_text(intersection_membership_proof)})"
+        )
+        return f"({proof_head(and_proof)} {proof_arg_text(expr)} (fun HL HR => {projection}))"
     return None
 
 
@@ -12217,6 +12529,9 @@ def proof_for_proposition(
             if exists_intro_proof is not None:
                 return exists_intro_proof
     if expr.kind == "app" and binary_atom_parts(expr) is not None and len(expr_text(expr)) <= 700:
+        successor_membership = successor_successor_membership_via_intersection_proof(expr, rules)
+        if successor_membership is not None:
+            return successor_membership
         transitivity_proof = binary_transitivity_proof(
             expr,
             known,
@@ -12228,6 +12543,10 @@ def proof_for_proposition(
         )
         if transitivity_proof is not None:
             return transitivity_proof
+    if expr.kind == "forall" and len(expr_text(expr)) <= 500:
+        two_branch_transport = classical_two_branch_unary_transport_proof(expr, rules)
+        if two_branch_transport is not None:
+            return two_branch_transport
     proof = proof_for_expr(expr, known, known_canonical, rules, eq_facts, definitions)
     if proof is not None:
         return proof
@@ -12344,6 +12663,8 @@ def fill_repeated_claim_admits(lines: list[str]) -> list[str]:
     rules: list[ProofRule] = []
     eq_facts: list[EqFact] = []
     definitions: dict[str, DefinitionInfo] = {}
+    axiom_proposition_by_name: dict[str, str] = {}
+    recovered_axiom_proposition_by_step_name: dict[str, str] = {}
     theorem: str | None = None
     result = list(lines)
     index = 0
@@ -12380,6 +12701,10 @@ def fill_repeated_claim_admits(lines: list[str]) -> list[str]:
             axiom = proposition_after_colon(line, "Axiom ")
             if axiom is not None:
                 name, proposition = axiom
+                axiom_proposition_by_name[name] = proposition
+                recovered_match = re.fullmatch(r"ax_recovered_(S\d+)(?:_\d+)?", name)
+                if recovered_match is not None:
+                    recovered_axiom_proposition_by_step_name[recovered_match.group(1)] = proposition
                 remember_proposition(known, known_canonical, rules, eq_facts, name, proposition)
                 index += 1
                 continue
@@ -12397,7 +12722,9 @@ def fill_repeated_claim_admits(lines: list[str]) -> list[str]:
                     proof_name = proof_for_proposition(proposition, known, known_canonical, rules, eq_facts, definitions)
                 if proof_name is not None and index + 1 < len(result) and result[index + 1] == "{ admit. }":
                     result[index + 1] = "{ exact " + proof_argument_text(proof_name) + ". }"
-                remember_proposition(known, known_canonical, rules, eq_facts, name, proposition)
+                axiom_proposition = axiom_proposition_by_name.get(name) or recovered_axiom_proposition_by_step_name.get(name)
+                if axiom_proposition is None or canonical_proposition(axiom_proposition) == canonical_proposition(proposition):
+                    remember_proposition(known, known_canonical, rules, eq_facts, name, proposition)
                 index += 2 if index + 1 < len(result) and result[index + 1].startswith("{ ") else 1
                 continue
             if line == "admit." and theorem is not None:
@@ -12709,6 +13036,7 @@ def check_megalodon_lines(
     output_lines = add_missing_basic_connective_definitions(output_lines)
     output_lines = add_boolean_extensionality_helpers(output_lines)
     output_lines = parenthesize_atomic_axiom_propositions(output_lines)
+    output_lines = remove_axiom_shadowing_claims(output_lines)
     output_lines = fill_replay_substitution_claims(output_lines, proof, proof_text, problem)
     output_lines = add_missing_basic_connective_definitions(output_lines)
     output_lines = add_boolean_extensionality_helpers(output_lines)
