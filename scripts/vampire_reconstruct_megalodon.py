@@ -1416,6 +1416,8 @@ def expr_sort(expr: Expr, variable_sorts: dict[str, str]) -> str | None:
     if expr.kind == "var":
         assert expr.value is not None
         helper_sorts = {
+            "true": "prop",
+            "false": "prop",
             "vampire_true": "prop",
             "vampire_false": "prop",
             "True": "prop",
@@ -1817,7 +1819,22 @@ def megalodon_outline_step_variable_sorts(proof_text: str | None) -> dict[str, d
 
 
 RAW_TPTP_LOCAL_VARIABLE_RE = re.compile(r"[A-Z][0-9]+")
-RAW_TPTP_AMBIENT_CONSTANTS = {"True", "False", "vampire_true", "vampire_false"}
+RAW_TPTP_AMBIENT_CONSTANTS = {"true", "false", "True", "False", "vampire_true", "vampire_false"}
+
+
+def normalize_vampire_boolean_expr(expr: Expr) -> Expr:
+    if expr.kind == "var" and expr.value == "true":
+        return Expr("var", value="vampire_true")
+    if expr.kind == "var" and expr.value == "false":
+        return Expr("var", value="vampire_false")
+    if not expr.args:
+        return expr
+    return Expr(
+        expr.kind,
+        value=expr.value,
+        args=tuple(normalize_vampire_boolean_expr(arg) for arg in expr.args),
+        sort=expr.sort,
+    )
 
 
 def raw_tptp_nonlocal_sorts(variable_sorts: dict[str, str]) -> dict[str, str]:
@@ -4009,6 +4026,10 @@ def surface_direct_step_expr(
     expected_sort: str | None = None,
 ) -> Expr:
     if expr.kind == "var" and expr.value is not None:
+        if expr.value == "true":
+            return Expr("var", value="vampire_true")
+        if expr.value == "false":
+            return Expr("var", value="vampire_false")
         match = DB_VAR_RE.fullmatch(expr.value)
         if match is not None:
             index = int(match.group(1))
@@ -4235,6 +4256,7 @@ def raw_tptp_normalize_step_proposition(proposition: str, variable_sorts: dict[s
     parsed = parse_expr(proposition)
     if parsed is None:
         return proposition
+    parsed = normalize_vampire_boolean_expr(parsed)
     parsed = repair_vampire_negated_premise_arrows(parsed)
     surfaced = surface_direct_step_expr(parsed, variable_sorts)
     return lower_function_equality_proposition(surfaced, variable_sorts)
@@ -4613,6 +4635,7 @@ def raw_tptp_replay_extra_expr(
     parsed = parse_expr(text)
     if parsed is None:
         return None
+    parsed = normalize_vampire_boolean_expr(parsed)
     parsed = repair_vampire_negated_premise_arrows(parsed)
     surfaced = surface_direct_step_expr(parsed, variable_sorts)
     lowered = lower_function_equality_proposition(surfaced, variable_sorts)
@@ -4624,6 +4647,7 @@ FORALL_PREFIX_RE = re.compile(r"\s*forall\s+([A-Za-z_][A-Za-z0-9_']*)\s*:\s*([^,
 
 
 def raw_replay_extra_expr_from_parsed(parsed: Expr, variable_sorts: dict[str, str]) -> Expr | None:
+    parsed = normalize_vampire_boolean_expr(parsed)
     parsed = repair_vampire_negated_premise_arrows(parsed)
     surfaced = surface_direct_step_expr(parsed, variable_sorts)
     lowered = lower_function_equality_proposition(surfaced, variable_sorts)
@@ -14585,7 +14609,7 @@ def forall_prop_identity(expr: Expr) -> bool:
 
 
 def false_eliminator_expr(expr: Expr) -> bool:
-    return (expr.kind == "var" and expr.value in {"vampire_false", "False"}) or forall_prop_identity(expr)
+    return (expr.kind == "var" and expr.value in {"false", "vampire_false", "False"}) or forall_prop_identity(expr)
 
 
 def contradiction_transport_proof(
@@ -18769,6 +18793,14 @@ def raw_tptp_one_parent_transform_proof(
     implication_or = raw_classical_implication_to_or_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
     if implication_or is not None:
         return implication_or
+    implication_chain_or = raw_implication_chain_to_or_negated_premises_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+        variable_sorts or {},
+    )
+    if implication_chain_or is not None:
+        return implication_chain_or
     negated_implication_chain = raw_negated_implication_chain_to_conjunction_proof(
         source,
         target,
@@ -20172,6 +20204,107 @@ def raw_not_exists_conjunction_to_forall_or_negated_components_proof(
     if body is None:
         return None
     return f"(fun {target_name} :{target_sort} => {body})"
+
+
+def raw_implication_chain_to_or_negated_premises_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if len(source_binders) != len(target_binders):
+        return None
+    if [sort for _, sort in source_binders] != [sort for _, sort in target_binders]:
+        return None
+    if source_binders:
+        source_body = rename_expr_variables(
+            source_body,
+            {
+                source_name: target_name
+                for (source_name, _), (target_name, _) in zip(source_binders, target_binders)
+            },
+        )
+    source_premises, source_conclusion = split_arrows(source_body)
+    if not source_premises or len(source_premises) > 6 or not false_eliminator_expr(source_conclusion):
+        return None
+    target_literals = raw_clause_literals(target_body)
+    if len(target_literals) != len(source_premises):
+        return None
+    local_sorts = {**variable_sorts, **{name: sort for name, sort in target_binders}}
+    source_application = source_proof
+    for name, _sort in target_binders:
+        source_application = f"({proof_head(source_application)} {name})"
+
+    matched: list[tuple[Expr, Expr, str]] = []
+    used_premises: set[int] = set()
+    for literal in target_literals:
+        literal_premises, literal_conclusion = split_arrows(literal)
+        if len(literal_premises) != 1 or not false_eliminator_expr(literal_conclusion):
+            return None
+        target_negative_body = literal_premises[0]
+        for premise_index, source_premise in enumerate(source_premises):
+            if premise_index in used_premises:
+                continue
+            target_to_source = raw_deep_formula_transform_proof(
+                target_negative_body,
+                source_premise,
+                "HtargetNegativeBody",
+                local_sorts,
+            )
+            if target_to_source is None:
+                target_to_source = raw_clause_transform_proof(
+                    target_negative_body,
+                    source_premise,
+                    "HtargetNegativeBody",
+                )
+            if target_to_source is None and expr_same_mod_alpha(target_negative_body, source_premise):
+                target_to_source = "HtargetNegativeBody"
+            if target_to_source is None:
+                continue
+            matched.append((source_premise, literal, target_to_source))
+            used_premises.add(premise_index)
+            break
+        else:
+            return None
+
+    positive_names = [f"HsourcePremise{index}" for index in range(len(matched))]
+
+    def contradiction_from_all_positive() -> str:
+        proof = source_application
+        for name in positive_names:
+            proof = f"({proof_head(proof)} {name})"
+        return proof
+
+    def search(index: int) -> str | None:
+        if index >= len(matched):
+            return raw_false_to_expr_proof(contradiction_from_all_positive(), target_body)
+        source_premise, literal, target_to_source = matched[index]
+        positive_name = positive_names[index]
+        negative_name = f"HnotSourcePremise{index}"
+        positive_branch = search(index + 1)
+        if positive_branch is None:
+            return None
+        negative_literal = (
+            f"(fun HtargetNegativeBody :{proof_arg_text(literal.args[0])} => "
+            f"{negative_name} {proof_term_text(target_to_source)})"
+        )
+        negative_branch = raw_or_intro_literal_at(target_body, index, negative_literal)
+        if negative_branch is None:
+            return None
+        return (
+            f"(xm {proof_arg_text(source_premise)} {proof_arg_text(target_body)} "
+            f"(fun {positive_name} => {positive_branch}) "
+            f"(fun {negative_name} => {negative_branch}))"
+        )
+
+    proof = search(0)
+    if proof is None:
+        return None
+    for name, sort in reversed(target_binders):
+        proof = f"(fun {name} :{sort} => {proof})"
+    return proof
 
 
 def raw_negated_forall_implication_to_exists_conjunction_proof(
@@ -26352,6 +26485,9 @@ def raw_tptp_exported_normal_form_proof(
         proof = raw_classical_implication_to_or_transform_proof(source, target, source_proof)
         if proof is not None:
             return proof
+        proof = raw_implication_chain_to_or_negated_premises_proof(source, target, source_proof, local_sorts)
+        if proof is not None:
+            return proof
         proof = raw_negated_implication_chain_to_conjunction_proof(source, target, source_proof, local_sorts)
         if proof is not None:
             return proof
@@ -27299,6 +27435,7 @@ def raw_tptp_exported_source_declarations(proof_text: str) -> list[str]:
                 or line.startswith("Infix ")
             ):
                 continue
+            line = normalize_vampire_boolean_literals([line])[0]
             if line in seen_lines:
                 continue
             seen_lines.add(line)
