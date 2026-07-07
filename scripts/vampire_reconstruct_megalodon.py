@@ -2027,6 +2027,27 @@ def megalodon_replay_steps(
                     else surface_direct_step_proposition(parent_text, {**variable_sorts, **parent_sorts})
                 )
 
+    for step, step_extras in extras.items():
+        if step in derived_propositions or step in direct_propositions or step not in placeholder_steps:
+            continue
+        details = step_details.get(step)
+        if details is None:
+            continue
+        _rule, _parents, step_sorts = details
+        for kind, fields in step_extras:
+            if kind not in {"skolemize", "cnf", "normal_form"}:
+                continue
+            target = parsed_extra_fields(fields).get("target")
+            if target is None:
+                continue
+            target_expr = raw_tptp_replay_extra_expr({"target": target}, "target", {**variable_sorts, **step_sorts})
+            derived_propositions[step] = (
+                expr_text(target_expr)
+                if target_expr is not None
+                else surface_direct_step_proposition(target, {**variable_sorts, **step_sorts})
+            )
+            break
+
     for step, (rule, parents, step_sorts) in step_details.items():
         if step in steps:
             continue
@@ -17271,6 +17292,9 @@ def raw_formula_entails_clause_proof(
     if source.kind == "forall" and source.value is not None and source.sort is not None:
         source_body = source.args[0]
         candidates = raw_candidate_terms_for_sort((target, source_body), source.sort, variable_sorts)
+        if variable_sorts.get(source.value) == source.sort:
+            preferred = Expr("var", value=source.value)
+            candidates = [preferred, *(candidate for candidate in candidates if expr_key(candidate) != expr_key(preferred))]
         for candidate in candidates[:16]:
             instantiated_source = substitute_expr(source_body, {source.value: candidate})
             instantiated_proof = f"({proof_head(source_proof)} {proof_arg_text(candidate)})"
