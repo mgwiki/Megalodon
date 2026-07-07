@@ -4592,7 +4592,26 @@ def raw_tptp_exported_definition_chain_proof(
     if source is None or target is None:
         return None
     equalities: list[tuple[Expr, str]] = []
+
+    def add_equality(equality: Expr | None, equality_proof: str) -> None:
+        if equality is None:
+            return
+        _, equality_body = collect_foralls(equality)
+        if equality_like_sides(equality_body) is None:
+            return
+        equalities.append((equality, equality_proof))
+
     for index, parent in enumerate(parents[1:], start=1):
+        synthetic_definition_name = f"{parent}_def"
+        synthetic_definition = (propositions_by_name or {}).get(synthetic_definition_name)
+        if synthetic_definition is not None:
+            synthetic_equality = raw_tptp_replay_extra_expr(
+                {synthetic_definition_name: synthetic_definition},
+                synthetic_definition_name,
+                variable_sorts,
+            )
+            add_equality(synthetic_equality, raw_tptp_claim_name(synthetic_definition_name))
+
         equality = raw_tptp_replay_extra_expr(fields, f"parent_{index}", variable_sorts)
         if equality is None:
             continue
@@ -4608,7 +4627,7 @@ def raw_tptp_exported_definition_chain_proof(
             function_equality = raw_pointwise_set_function_equality(parent_expr, equality_proof)
             if function_equality is not None and expr_same_mod_alpha(function_equality[0], surface_equality):
                 equality, equality_proof = function_equality
-        equalities.append((equality, equality_proof))
+        add_equality(equality, equality_proof)
 
     def finish(states: list[tuple[Expr, str]]) -> str | None:
         for current, proof in states:
@@ -24568,6 +24587,7 @@ def raw_tptp_replay_proof_has_synthetic_db(proof: str) -> bool:
 RAW_TPTP_SURFACE_VAR_RE = re.compile(r"\b[XY][0-9]+\b")
 RAW_TPTP_SURFACE_BINDER_RE = re.compile(r"\b(?:fun|forall)\s+([XY][0-9]+)\s*:")
 RAW_TPTP_BAD_DEFINITION_CONTEXT_RE = re.compile(r"\bR_S[0-9]+_def\s+\(fun\b")
+RAW_TPTP_NESTED_BAD_DEFINITION_CONTEXT_RE = re.compile(r"\bR_S[0-9]+_def\s+\(fun\b[^)]*\s=>.*\bforall\b")
 
 
 def raw_tptp_replay_proof_has_escaped_surface_variable(proposition: str, proof: str) -> bool:
@@ -24585,7 +24605,9 @@ def raw_tptp_replay_proof_has_free_surface_variable(proof: str) -> bool:
 
 
 def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: str) -> bool:
-    if RAW_TPTP_BAD_DEFINITION_CONTEXT_RE.search(proof):
+    if rule in {"definition_folding", "definition_unfolding"} and RAW_TPTP_NESTED_BAD_DEFINITION_CONTEXT_RE.search(proof):
+        return True
+    if rule not in {"definition_folding", "definition_unfolding"} and RAW_TPTP_BAD_DEFINITION_CONTEXT_RE.search(proof):
         return True
     if raw_tptp_replay_proof_has_free_surface_variable(proof):
         return True
