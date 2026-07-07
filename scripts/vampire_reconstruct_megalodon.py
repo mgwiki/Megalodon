@@ -48,9 +48,13 @@ MEGALODON_STEP_SUBSTITUTIONS_RE = re.compile(
 MEGALODON_STEP_REPLAY_KIND_RE = re.compile(
     r'^megalodon_step_replay_kind\((?P<id>[0-9]+),"(?P<kind>(?:\\.|[^"\\])*)"\)\.$'
 )
+MEGALODON_STEP_VARIABLE_SORTS_RE = re.compile(
+    r'^megalodon_step_variable_sorts\((?P<id>[0-9]+),\[(?P<sorts>.*)\]\)\.$'
+)
 MEGALODON_STEP_EXTRA_RE = re.compile(
     r'^megalodon_step_extra\((?P<id>[0-9]+),"(?P<kind>(?:\\.|[^"\\])*)",\[(?P<fields>.*)\]\)\.$'
 )
+MEGALODON_SYMBOL_DECLARATION_RE = re.compile(r'^megalodon_symbol_declaration\("(?P<declaration>(?:\\.|[^"\\])*)"\)\.$')
 MEGALODON_FINAL_STEP_RE = re.compile(r"^megalodon_final_step\((?P<id>[0-9]+)\)\.$")
 FRESH_SET_RE = re.compile(r"^sF[0-9]+$")
 VAMPIRE_DEPENDENCY_RE = re.compile(r"^(s[FK]|db)[0-9]+$")
@@ -162,6 +166,7 @@ class MegalodonReplayStep:
     substitutions: tuple[str, ...] = ()
     replay_kind: str = ""
     extras: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    variable_sorts: tuple[str, ...] = ()
 
 
 def sha256(path: Path) -> str:
@@ -1667,6 +1672,61 @@ def megalodon_step_proposition(formula: str, variable_sorts: dict[str, str]) -> 
     return surface_replay_proposition(proposition) if proposition is not None else None
 
 
+def megalodon_outline_symbol_sorts(proof_text: str | None) -> dict[str, str]:
+    if proof_text is None:
+        return {}
+    result: dict[str, str] = {}
+    for raw in proof_text.splitlines():
+        match = MEGALODON_SYMBOL_DECLARATION_RE.match(raw.strip())
+        if match is None:
+            continue
+        declaration = json.loads(f'"{match.group("declaration")}"')
+        variable = proposition_after_colon(declaration, "Variable ")
+        if variable is None:
+            continue
+        result[variable[0]] = variable[1].rstrip(".")
+    return result
+
+
+def parse_megalodon_sort_items(raw_sorts: str) -> dict[str, str]:
+    try:
+        items = json.loads(f"[{raw_sorts}]")
+    except json.JSONDecodeError:
+        return {}
+    result: dict[str, str] = {}
+    for item in items:
+        name, separator, sort = str(item).partition(":")
+        if separator and re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", name) and sort:
+            result[name] = sort
+    return result
+
+
+def megalodon_outline_step_variable_sorts(proof_text: str | None) -> dict[str, dict[str, str]]:
+    if proof_text is None:
+        return {}
+    result: dict[str, dict[str, str]] = {}
+    for raw in proof_text.splitlines():
+        match = MEGALODON_STEP_VARIABLE_SORTS_RE.match(raw.strip())
+        if match is None:
+            continue
+        result[f"S{match.group('id')}"] = parse_megalodon_sort_items(match.group("sorts"))
+    return result
+
+
+def quantify_megalodon_step_variables(proposition: str, variable_sorts: dict[str, str]) -> str:
+    if not variable_sorts:
+        return proposition
+    parsed = parse_expr(proposition)
+    if parsed is None:
+        return proposition
+    free_variables = expr_variables(parsed)
+    result = proposition
+    for name in sorted(variable_sorts, reverse=True):
+        if name in free_variables:
+            result = f"forall {name}:{variable_sorts[name]}, {result}"
+    return result
+
+
 def megalodon_replay_steps(
     proof_text: str | None,
     proof: Path | None,
@@ -1674,7 +1734,12 @@ def megalodon_replay_steps(
 ) -> dict[str, MegalodonReplayStep]:
     if proof_text is None:
         return {}
-    variable_sorts = {**proof_text_type_variable_sorts(proof_text), **problem_type_variable_sorts(proof, problem)}
+    variable_sorts = {
+        **proof_text_type_variable_sorts(proof_text),
+        **problem_type_variable_sorts(proof, problem),
+        **megalodon_outline_symbol_sorts(proof_text),
+    }
+    step_variable_sorts = megalodon_outline_step_variable_sorts(proof_text)
     steps: dict[str, MegalodonReplayStep] = {}
     substitutions: dict[str, tuple[str, ...]] = {}
     replay_kinds: dict[str, str] = {}
@@ -1684,18 +1749,22 @@ def megalodon_replay_steps(
         step_match = MEGALODON_STEP_DETAIL_RE.match(line)
         if step_match is not None:
             formula = json.loads(f'"{step_match.group("formula")}"')
-            proposition = megalodon_step_proposition(formula, variable_sorts)
+            step = f"S{step_match.group('id')}"
+            step_sorts = step_variable_sorts.get(step, {})
+            proposition = megalodon_step_proposition(formula, {**variable_sorts, **step_sorts})
             if proposition is None:
                 continue
+            proposition = quantify_megalodon_step_variables(proposition, step_sorts)
             parents = tuple(
                 f"S{parent}"
                 for parent in step_match.group("parents").split(",")
                 if parent
             )
-            steps[f"S{step_match.group('id')}"] = MegalodonReplayStep(
+            steps[step] = MegalodonReplayStep(
                 rule=json.loads(f'"{step_match.group("rule")}"'),
                 parents=parents,
                 proposition=proposition,
+                variable_sorts=tuple(f"{name}:{sort}" for name, sort in sorted(step_sorts.items())),
             )
             continue
         extra_match = MEGALODON_STEP_EXTRA_RE.match(line)
@@ -1740,6 +1809,7 @@ def megalodon_replay_steps(
                 substitutions=replay_substitutions,
                 replay_kind=replay_kinds.get(step, info.replay_kind),
                 extras=tuple(extras.get(step, info.extras)),
+                variable_sorts=info.variable_sorts,
             )
     for step, replay_kind in replay_kinds.items():
         info = steps.get(step)
@@ -1751,6 +1821,7 @@ def megalodon_replay_steps(
                 substitutions=info.substitutions,
                 replay_kind=replay_kind,
                 extras=tuple(extras.get(step, info.extras)),
+                variable_sorts=info.variable_sorts,
             )
     for step, step_extras in extras.items():
         info = steps.get(step)
@@ -1762,6 +1833,7 @@ def megalodon_replay_steps(
                 substitutions=info.substitutions,
                 replay_kind=info.replay_kind,
                 extras=tuple(step_extras),
+                variable_sorts=info.variable_sorts,
             )
     return steps
 
@@ -18167,7 +18239,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         entries = decoded_entries
         propositions = decoded_propositions
     else:
-        variable_sorts = {**proof_text_type_variable_sorts(text), **problem_type_variable_sorts(proof, problem)}
+        variable_sorts = {
+            **proof_text_type_variable_sorts(text),
+            **problem_type_variable_sorts(proof, problem),
+            **megalodon_outline_symbol_sorts(text),
+        }
         replay_steps = megalodon_replay_steps(text, proof, problem)
         entries = []
         propositions = []
