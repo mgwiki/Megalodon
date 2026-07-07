@@ -21395,6 +21395,13 @@ def raw_negated_forall_implication_to_exists_conjunction_proof(
                     local_sorts,
                 )
             if proof is None:
+                proof = raw_negated_forall_implication_to_exists_conjunction_proof(
+                    disjunct_negative,
+                    component,
+                    disjunct_negative_proof,
+                    local_sorts,
+                )
+            if proof is None:
                 proof = raw_not_exists_conjunction_to_forall_or_negated_components_proof(
                     disjunct,
                     component,
