@@ -19910,6 +19910,97 @@ def raw_rectify_formula_transform_proof(
             return None
         return f"(fun {binder} :{target.sort} => {inner})"
 
+    source_sides = equality_like_sides(source)
+    target_sides = equality_like_sides(target)
+    if source_sides is not None and target_sides is not None:
+        if (
+            expr_same_mod_alpha(source_sides[0], target_sides[1])
+            and expr_same_mod_alpha(source_sides[1], target_sides[0])
+        ):
+            equality_sort = raw_equality_transport_sort(source_sides[0], source_sides[1], variable_sorts)
+            return raw_eq_symmetry_proof(source_proof, source_sides[0], equality_sort)
+
+    source_or = raw_or_parts(source)
+    target_or = raw_or_parts(target)
+    if source_or is not None and target_or is not None:
+        left_name = fresh_identifier("HorL", expr_text(source), expr_text(target), source_proof)
+        right_name = fresh_identifier("HorR", expr_text(source), expr_text(target), source_proof, left_name)
+        left_proof = raw_rectify_formula_transform_proof(
+            source_or[0],
+            target_or[0],
+            left_name,
+            variable_sorts,
+            depth + 1,
+        )
+        right_proof = raw_rectify_formula_transform_proof(
+            source_or[1],
+            target_or[1],
+            right_name,
+            variable_sorts,
+            depth + 1,
+        )
+        if left_proof is not None and right_proof is not None:
+            target_text = proof_arg_text(target)
+            return (
+                f"({proof_head(source_proof)} {target_text} "
+                f"(fun {left_name} => fun P Hleft Hright => Hleft {proof_term_text(left_proof)}) "
+                f"(fun {right_name} => fun P Hleft Hright => Hright {proof_term_text(right_proof)}))"
+            )
+
+    source_and = vampire_and_parts(source)
+    target_and = vampire_and_parts(target)
+    if source_and is not None and target_and is not None:
+        left_name = fresh_identifier("HandL", expr_text(source), expr_text(target), source_proof)
+        right_name = fresh_identifier("HandR", expr_text(source), expr_text(target), source_proof, left_name)
+        left_proof = raw_rectify_formula_transform_proof(
+            source_and[0],
+            target_and[0],
+            left_name,
+            variable_sorts,
+            depth + 1,
+        )
+        right_proof = raw_rectify_formula_transform_proof(
+            source_and[1],
+            target_and[1],
+            right_name,
+            variable_sorts,
+            depth + 1,
+        )
+        if left_proof is not None and right_proof is not None:
+            target_text = proof_arg_text(target)
+            return (
+                f"({proof_head(source_proof)} {target_text} "
+                f"(fun {left_name} {right_name} => "
+                f"fun P K => K {proof_term_text(left_proof)} {proof_term_text(right_proof)}))"
+            )
+
+    source_exists = app_args(source, "vampire_exists_set", 1)
+    target_exists = app_args(target, "vampire_exists_set", 1)
+    if source_exists is not None and target_exists is not None:
+        source_binders, source_body = collect_lambdas(source_exists[0])
+        target_binders, target_body = collect_lambdas(target_exists[0])
+        if len(source_binders) == 1 and len(target_binders) == 1 and source_binders[0][1] == target_binders[0][1]:
+            witness_name = fresh_identifier("W", expr_text(source), expr_text(target), source_proof)
+            source_name, source_sort = source_binders[0]
+            target_name, _ = target_binders[0]
+            renamed_source_body = rename_expr_variables(source_body, {source_name: witness_name})
+            renamed_target_body = rename_expr_variables(target_body, {target_name: witness_name})
+            body_name = fresh_identifier("HexistsBody", expr_text(source), expr_text(target), witness_name)
+            body_proof = raw_rectify_formula_transform_proof(
+                renamed_source_body,
+                renamed_target_body,
+                body_name,
+                {**variable_sorts, witness_name: source_sort},
+                depth + 1,
+            )
+            if body_proof is not None:
+                target_text = proof_arg_text(target)
+                return (
+                    f"({proof_head(source_proof)} {target_text} "
+                    f"(fun {witness_name} :{source_sort} => fun {body_name} => "
+                    f"fun Q Hexists => Hexists {witness_name} {proof_term_text(body_proof)}))"
+                )
+
     if source.kind == "arrow" and target.kind == "arrow":
         source_premise, source_conclusion = source.args
         target_premise, target_conclusion = target.args
