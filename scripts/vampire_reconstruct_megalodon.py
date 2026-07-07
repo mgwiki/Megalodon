@@ -18662,6 +18662,11 @@ def raw_tptp_trivial_inequality_removal_proof(
     target = parse_expr(proposition)
     if source is None or target is None:
         return None
+    ambient_source = ambient_basic_logic_expr(source)
+    ambient_target = ambient_basic_logic_expr(target)
+    deep = raw_deep_formula_transform_proof(ambient_source, ambient_target, raw_tptp_claim_name(parents[0]))
+    if deep is not None:
+        return deep
     simple = raw_simple_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
     if simple is not None:
         return simple
@@ -21413,6 +21418,294 @@ def raw_prop_equality_to_equivalence_conjunction_proof(source: Expr, target: Exp
     return f"(fun P K => K {proof_term_text(left_proof)} {proof_term_text(right_proof)})"
 
 
+def raw_boolean_tautology_proof(
+    target: Expr,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 16 or proof_search_timed_out():
+        return None
+    if raw_true_expr(target):
+        return raw_true_intro_proof()
+    sides = equality_like_sides(target)
+    if sides is not None and target.kind == "app" and target.args and target.args[0].kind == "var":
+        equality_head = target.args[0].value
+        if equality_head == "vampire_eq_prop":
+            return raw_prop_equivalence_proof(sides[0], sides[1], variable_sorts, depth + 1)
+        if equality_head == "vampire_eq_set" and expr_same_mod_alpha(sides[0], sides[1]):
+            return "(fun Q H => H)"
+    if target.kind == "forall" and target.value is not None and target.sort is not None:
+        body_proof = raw_boolean_tautology_proof(
+            target.args[0],
+            {**variable_sorts, target.value: target.sort},
+            depth + 1,
+        )
+        if body_proof is not None:
+            return f"(fun {target.value} :{target.sort} => {body_proof})"
+    target_and = raw_church_and_parts(target)
+    if target_and is not None:
+        left = raw_boolean_tautology_proof(target_and[0], variable_sorts, depth + 1)
+        right = raw_boolean_tautology_proof(target_and[1], variable_sorts, depth + 1)
+        if left is not None and right is not None:
+            return f"(fun P K => K {proof_term_text(left)} {proof_term_text(right)})"
+    target_or = raw_or_parts(target)
+    if target_or is not None:
+        left = raw_boolean_tautology_proof(target_or[0], variable_sorts, depth + 1)
+        if left is not None:
+            return f"(fun P Hleft Hright => Hleft {proof_term_text(left)})"
+        right = raw_boolean_tautology_proof(target_or[1], variable_sorts, depth + 1)
+        if right is not None:
+            return f"(fun P Hleft Hright => Hright {proof_term_text(right)})"
+    premises, conclusion = split_arrows(target)
+    if len(premises) == 1:
+        premise_name = fresh_identifier("Hprem", expr_text(target))
+        conclusion_proof = raw_boolean_tautology_proof(
+            conclusion,
+            variable_sorts,
+            depth + 1,
+        )
+        if conclusion_proof is not None:
+            return f"(fun {premise_name} :{proof_arg_text(premises[0])} => {conclusion_proof})"
+        if false_eliminator_expr(premises[0]):
+            return (
+                f"(fun {premise_name} :{proof_arg_text(premises[0])} => "
+                f"{raw_false_to_expr_proof(premise_name, conclusion)})"
+            )
+    return None
+
+
+def raw_basic_boolean_implication_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int,
+) -> str | None:
+    if raw_true_expr(target):
+        return raw_true_intro_proof()
+    if false_eliminator_expr(source):
+        return raw_false_to_expr_proof(source_proof, target)
+
+    source_premises, source_conclusion = split_arrows(source)
+    if (
+        len(source_premises) == 1
+        and raw_true_expr(source_premises[0])
+        and false_eliminator_expr(source_conclusion)
+        and false_eliminator_expr(target)
+    ):
+        return f"({proof_head(source_proof)} {raw_true_intro_proof()})"
+    if len(source_premises) == 1 and false_eliminator_expr(source_conclusion) and false_eliminator_expr(target):
+        source_premise_proof = raw_boolean_tautology_proof(
+            source_premises[0],
+            variable_sorts,
+            depth + 1,
+        )
+        if source_premise_proof is not None:
+            return f"({proof_head(source_proof)} {proof_term_text(source_premise_proof)})"
+
+    if target.kind == "arrow":
+        target_premise, target_conclusion = target.args
+        if false_eliminator_expr(target_premise) and false_eliminator_expr(target_conclusion):
+            premise_name = fresh_identifier("Hfalse", expr_text(source), expr_text(target), source_proof)
+            return (
+                f"(fun {premise_name} :{proof_arg_text(target_premise)} => "
+                f"{raw_false_to_expr_proof(premise_name, target_conclusion)})"
+            )
+        target_negated_premises, target_negated_conclusion = split_arrows(target_premise)
+        if (
+            len(target_negated_premises) == 1
+            and false_eliminator_expr(target_negated_conclusion)
+            and false_eliminator_expr(target_conclusion)
+            and expr_same_mod_alpha(target_negated_premises[0], source)
+        ):
+            not_name = fresh_identifier("Hnot", expr_text(source), expr_text(target), source_proof)
+            return (
+                f"(fun {not_name} :{proof_arg_text(target_premise)} => "
+                f"{raw_false_to_expr_proof(f'({proof_head(not_name)} {proof_term_text(source_proof)})', target_conclusion)})"
+            )
+
+    source_premises, source_conclusion = split_arrows(source)
+    if len(source_premises) == 1 and false_eliminator_expr(source_conclusion):
+        negated_premises, negated_conclusion = split_arrows(source_premises[0])
+        if (
+            len(negated_premises) == 1
+            and false_eliminator_expr(negated_conclusion)
+            and expr_same_mod_alpha(negated_premises[0], target)
+        ):
+            positive_name = fresh_identifier("Hpos", expr_text(source), expr_text(target), source_proof)
+            negative_name = fresh_identifier("Hnot", expr_text(source), expr_text(target), positive_name)
+            false_proof = f"({proof_head(source_proof)} {negative_name})"
+            negative_branch = raw_false_to_expr_proof(false_proof, target)
+            return (
+                f"(xm {proof_arg_text(target)} {proof_arg_text(target)} "
+                f"(fun {positive_name} => {positive_name}) "
+                f"(fun {negative_name} => {proof_term_text(negative_branch)}))"
+            )
+
+    if target.kind == "arrow" and false_eliminator_expr(target.args[1]):
+        source_premises, source_conclusion = split_arrows(source)
+        if len(source_premises) == 1 and false_eliminator_expr(source_conclusion):
+            source_premise_proof = raw_boolean_tautology_proof(
+                source_premises[0],
+                variable_sorts,
+                depth + 1,
+            )
+            if source_premise_proof is not None:
+                premise_name = fresh_identifier("Hprem", expr_text(source), expr_text(target), source_proof)
+                return (
+                    f"(fun {premise_name} :{proof_arg_text(target.args[0])} => "
+                    f"({proof_head(source_proof)} {proof_term_text(source_premise_proof)}))"
+                )
+
+    target_or = raw_or_parts(target)
+    if target_or is not None:
+        target_left, target_right = target_or
+        if raw_true_expr(target_left):
+            return f"(fun P Hleft Hright => Hleft {raw_true_intro_proof()})"
+        if raw_true_expr(target_right):
+            return f"(fun P Hleft Hright => Hright {raw_true_intro_proof()})"
+        if false_eliminator_expr(target_left):
+            right_name = fresh_identifier("HorRight", expr_text(source), expr_text(target), source_proof)
+            right_proof = raw_prop_implication_transform_proof(
+                source,
+                target_right,
+                source_proof,
+                variable_sorts,
+                depth + 1,
+            )
+            if right_proof is not None:
+                return f"(fun P Hleft Hright => Hright {proof_term_text(right_proof)})"
+        if false_eliminator_expr(target_right):
+            left_proof = raw_prop_implication_transform_proof(
+                source,
+                target_left,
+                source_proof,
+                variable_sorts,
+                depth + 1,
+            )
+            if left_proof is not None:
+                return f"(fun P Hleft Hright => Hleft {proof_term_text(left_proof)})"
+
+    source_or = raw_or_parts(source)
+    if source_or is not None:
+        source_left, source_right = source_or
+        left_false = raw_negated_tautology_false_proof(
+            source_left,
+            "HleftFalse",
+            variable_sorts,
+            depth + 1,
+        )
+        if left_false is not None:
+            right_name = fresh_identifier("HorRight", expr_text(source), expr_text(target), source_proof)
+            right_to_target = raw_prop_implication_transform_proof(
+                source_right,
+                target,
+                right_name,
+                variable_sorts,
+                depth + 1,
+            )
+            if right_to_target is not None:
+                left_name = fresh_identifier("HleftFalse", expr_text(source), expr_text(target), right_name)
+                left_false = raw_negated_tautology_false_proof(
+                    source_left,
+                    left_name,
+                    variable_sorts,
+                    depth + 1,
+                )
+                if left_false is not None:
+                    left_branch = raw_false_to_expr_proof(left_false, target)
+                    return (
+                        f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                        f"(fun {left_name} => {proof_term_text(left_branch)}) "
+                        f"(fun {right_name} => {proof_term_text(right_to_target)}))"
+                    )
+        right_false = raw_negated_tautology_false_proof(
+            source_right,
+            "HrightFalse",
+            variable_sorts,
+            depth + 1,
+        )
+        if right_false is not None:
+            left_name = fresh_identifier("HorLeft", expr_text(source), expr_text(target), source_proof)
+            left_to_target = raw_prop_implication_transform_proof(
+                source_left,
+                target,
+                left_name,
+                variable_sorts,
+                depth + 1,
+            )
+            if left_to_target is not None:
+                right_name = fresh_identifier("HrightFalse", expr_text(source), expr_text(target), left_name)
+                right_false = raw_negated_tautology_false_proof(
+                    source_right,
+                    right_name,
+                    variable_sorts,
+                    depth + 1,
+                )
+                if right_false is not None:
+                    right_branch = raw_false_to_expr_proof(right_false, target)
+                    return (
+                        f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                        f"(fun {left_name} => {proof_term_text(left_to_target)}) "
+                        f"(fun {right_name} => {proof_term_text(right_branch)}))"
+                    )
+        if false_eliminator_expr(source_left):
+            right_name = fresh_identifier("HorRight", expr_text(source), expr_text(target), source_proof)
+            right_to_target = raw_prop_implication_transform_proof(
+                source_right,
+                target,
+                right_name,
+                variable_sorts,
+                depth + 1,
+            )
+            if right_to_target is not None:
+                left_name = fresh_identifier("Hfalse", expr_text(source), expr_text(target), right_name)
+                left_branch = raw_false_to_expr_proof(left_name, target)
+                return (
+                    f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                    f"(fun {left_name} => {proof_term_text(left_branch)}) "
+                    f"(fun {right_name} => {proof_term_text(right_to_target)}))"
+                )
+        if false_eliminator_expr(source_right):
+            left_name = fresh_identifier("HorLeft", expr_text(source), expr_text(target), source_proof)
+            left_to_target = raw_prop_implication_transform_proof(
+                source_left,
+                target,
+                left_name,
+                variable_sorts,
+                depth + 1,
+            )
+            if left_to_target is not None:
+                right_name = fresh_identifier("Hfalse", expr_text(source), expr_text(target), left_name)
+                right_branch = raw_false_to_expr_proof(right_name, target)
+                return (
+                    f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                    f"(fun {left_name} => {proof_term_text(left_to_target)}) "
+                    f"(fun {right_name} => {proof_term_text(right_branch)}))"
+                )
+
+    return None
+
+
+def raw_negated_tautology_false_proof(
+    source: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int,
+) -> str | None:
+    premises, conclusion = split_arrows(source)
+    if len(premises) != 1 or not false_eliminator_expr(conclusion):
+        return None
+    premise_proof = raw_boolean_tautology_proof(
+        premises[0],
+        variable_sorts,
+        depth + 1,
+    )
+    if premise_proof is None:
+        return None
+    return f"({proof_head(source_proof)} {proof_term_text(premise_proof)})"
+
+
 def raw_proof_from_prop_true_equality(source: Expr, target: Expr, source_proof: str) -> str | None:
     component = raw_prop_equality_to_true_component(source)
     if component is None:
@@ -21488,6 +21781,18 @@ def raw_prop_implication_transform_proof(
         return None
     if expr_same_mod_alpha(source, target):
         return source_proof
+    beta_source = beta_normalize_expr(source)
+    beta_target = beta_normalize_expr(target)
+    if not expr_same_mod_alpha(beta_source, source) or not expr_same_mod_alpha(beta_target, target):
+        transformed = raw_prop_implication_transform_proof(
+            beta_source,
+            beta_target,
+            source_proof,
+            variable_sorts,
+            depth + 1,
+        )
+        if transformed is not None:
+            return transformed
     source_true_component = raw_prop_equality_to_true_component(source)
     if source_true_component is not None:
         source_component, _ = source_true_component
@@ -21523,6 +21828,16 @@ def raw_prop_implication_transform_proof(
     if true_intro is not None:
         return true_intro
 
+    boolean = raw_basic_boolean_implication_proof(
+        source,
+        target,
+        source_proof,
+        variable_sorts,
+        depth + 1,
+    )
+    if boolean is not None:
+        return boolean
+
     equivalence_to_equality = raw_equivalence_conjunction_to_prop_equality_proof(source, target, source_proof)
     if equivalence_to_equality is not None:
         return equivalence_to_equality
@@ -21542,6 +21857,24 @@ def raw_prop_implication_transform_proof(
         return raw_eq_symmetry_proof(source_proof, source_sides[0], sort)
 
     prop_argument_rewrite = raw_prop_argument_set_rewrite_proof(
+        source,
+        target,
+        source_proof,
+        variable_sorts,
+        depth + 1,
+    )
+    if prop_argument_rewrite is not None:
+        return prop_argument_rewrite
+    prop_argument_rewrite = raw_prop_multi_argument_prop_rewrite_proof(
+        source,
+        target,
+        source_proof,
+        variable_sorts,
+        depth + 1,
+    )
+    if prop_argument_rewrite is not None:
+        return prop_argument_rewrite
+    prop_argument_rewrite = raw_prop_argument_prop_rewrite_proof(
         source,
         target,
         source_proof,
@@ -21699,6 +22032,123 @@ def raw_prop_argument_set_rewrite_proof(
         f"(fun {hole} :set => {expr_text(context)}) "
         f"{proof_term_text(source_proof)}"
     )
+
+
+def raw_prop_argument_sort_is_prop(expr: Expr, known_sorts: dict[str, str]) -> bool:
+    return expr_sort(expr, known_sorts) == "prop" or expr_sort(beta_normalize_expr(expr), known_sorts) == "prop"
+
+
+def raw_prop_argument_prop_rewrite_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 24 or proof_search_timed_out():
+        return None
+    if source.kind != "app" or target.kind != "app" or len(source.args) != len(target.args):
+        return None
+    if not source.args or not expr_same_mod_alpha(source.args[0], target.args[0]):
+        return None
+    differing = [
+        index
+        for index, (source_arg, target_arg) in enumerate(zip(source.args, target.args))
+        if not expr_same_mod_alpha(source_arg, target_arg)
+    ]
+    if len(differing) != 1 or differing[0] == 0:
+        return None
+    index = differing[0]
+    known_sorts = {
+        **variable_sorts,
+        "vampire_true": "prop",
+        "vampire_false": "prop",
+        "True": "prop",
+        "False": "prop",
+    }
+    head = source.args[0]
+    argument_is_prop = (
+        head.kind == "var"
+        and head.value == "vampire_eq_prop"
+        and index in {1, 2}
+    )
+    source_sort = expr_sort(source.args[index], known_sorts) or expr_sort(beta_normalize_expr(source.args[index]), known_sorts)
+    target_sort = expr_sort(target.args[index], known_sorts) or expr_sort(beta_normalize_expr(target.args[index]), known_sorts)
+    if not argument_is_prop and (source_sort != "prop" or target_sort != "prop"):
+        return None
+    equality = raw_prop_equivalence_proof(source.args[index], target.args[index], variable_sorts, depth + 1)
+    if equality is None:
+        return None
+    hole = fresh_identifier("Qprop", expr_text(source), expr_text(target), source_proof)
+    context_args = list(source.args)
+    context_args[index] = Expr("var", value=hole)
+    context = Expr("app", args=tuple(context_args))
+    return (
+        f"{proof_term_text(equality)} "
+        f"(fun {hole} :prop => {expr_text(context)}) "
+        f"{proof_term_text(source_proof)}"
+    )
+
+
+def raw_prop_multi_argument_prop_rewrite_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 24 or proof_search_timed_out():
+        return None
+    if source.kind != "app" or target.kind != "app" or len(source.args) != len(target.args):
+        return None
+    if not source.args or not expr_same_mod_alpha(source.args[0], target.args[0]):
+        return None
+    differing = [
+        index
+        for index, (source_arg, target_arg) in enumerate(zip(source.args, target.args))
+        if index != 0 and not expr_same_mod_alpha(source_arg, target_arg)
+    ]
+    if len(differing) <= 1:
+        return None
+    known_sorts = {
+        **variable_sorts,
+        "vampire_true": "prop",
+        "vampire_false": "prop",
+        "True": "prop",
+        "False": "prop",
+    }
+    head = source.args[0]
+    if not (
+        head.kind == "var"
+        and head.value == "vampire_eq_prop"
+        and all(index in {1, 2} for index in differing)
+    ):
+        if any(
+            not raw_prop_argument_sort_is_prop(source.args[index], known_sorts)
+            or not raw_prop_argument_sort_is_prop(target.args[index], known_sorts)
+            for index in differing
+        ):
+            return None
+    current_args = list(source.args)
+    proof = source_proof
+    for index in differing:
+        current_expr = Expr("app", args=tuple(current_args))
+        current_arg = current_args[index]
+        target_arg = target.args[index]
+        equality = raw_prop_equivalence_proof(current_arg, target_arg, variable_sorts, depth + 1)
+        if equality is None:
+            return None
+        hole = fresh_identifier("Qprop", expr_text(current_expr), expr_text(target), str(index), proof)
+        context_args = list(current_args)
+        context_args[index] = Expr("var", value=hole)
+        context = Expr("app", args=tuple(context_args))
+        proof = (
+            f"{proof_term_text(equality)} "
+            f"(fun {hole} :prop => {expr_text(context)}) "
+            f"{proof_term_text(proof)}"
+        )
+        current_args[index] = target_arg
+    return proof
 
 
 def raw_prop_equivalence_proof(
