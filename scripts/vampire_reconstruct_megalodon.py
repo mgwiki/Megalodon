@@ -10015,7 +10015,15 @@ def empty_power_singleton_proof(expr: Expr, rules: list[ProofRule]) -> str | Non
 def app_args(expr: Expr, head: str, arity: int) -> tuple[Expr, ...] | None:
     if expr.kind != "app" or len(expr.args) != arity + 1:
         return None
-    if expr.args[0].kind != "var" or expr.args[0].value != head:
+    if expr.args[0].kind != "var":
+        return None
+    actual = expr.args[0].value
+    equivalent = (
+        actual == head
+        or (head == "vampire_or" and actual == "or")
+        or (head == "vampire_and" and actual == "and")
+    )
+    if not equivalent:
         return None
     return expr.args[1:]
 
