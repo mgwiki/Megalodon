@@ -16728,39 +16728,66 @@ def raw_classical_implication_to_or_transform_proof(source: Expr, target: Expr, 
     renames = {source_name: target_name for (source_name, _), (target_name, _) in zip(source_binders, target_binders)}
     source_body = rename_expr_variables(source_body, renames)
     source_premises, source_conclusion = split_arrows(source_body)
-    if len(source_premises) != 1:
+    if not source_premises:
         return None
-    target_or = app_args(target_body, "vampire_or", 2)
+    source_application = source_proof
+    for name, _ in target_binders:
+        source_application = f"({proof_head(source_application)} {name})"
+    proof = raw_classical_implication_to_or_body_proof(
+        source_premises,
+        source_conclusion,
+        target_body,
+        source_application,
+        0,
+        [],
+    )
+    if proof is None:
+        return None
+    for name, sort in reversed(target_binders):
+        proof = f"(fun {name}:{sort} => {proof})"
+    return proof
+
+
+def raw_classical_implication_to_or_body_proof(
+    premises: list[Expr],
+    conclusion: Expr,
+    target: Expr,
+    source_application: str,
+    index: int,
+    premise_names: list[str],
+) -> str | None:
+    if index == len(premises):
+        source_proof = source_application
+        for name in premise_names:
+            source_proof = f"({proof_head(source_proof)} {name})"
+        return raw_clause_subsumption_transform_proof(conclusion, target, source_proof) or raw_clause_transform_proof(conclusion, target, source_proof)
+    target_or = app_args(target, "vampire_or", 2)
     if target_or is None:
         return None
     target_positive, target_negative = target_or
     target_negative_premises, target_negative_conclusion = split_arrows(target_negative)
     if len(target_negative_premises) != 1 or not false_eliminator_expr(target_negative_conclusion):
         return None
-    source_premise = source_premises[0]
+    source_premise = premises[index]
     target_premise = target_negative_premises[0]
     if not expr_same_mod_alpha(source_premise, target_premise):
         return None
-    source_application = source_proof
-    for name, _ in target_binders:
-        source_application = f"({proof_head(source_application)} {name})"
-    positive_proof = raw_clause_subsumption_transform_proof(
-        source_conclusion,
+    premise_name = f"Hprem{index}"
+    positive_branch = raw_classical_implication_to_or_body_proof(
+        premises,
+        conclusion,
         target_positive,
-        f"({proof_head(source_application)} Hprem)",
+        source_application,
+        index + 1,
+        [*premise_names, premise_name],
     )
-    if positive_proof is None:
-        positive_proof = raw_clause_transform_proof(source_conclusion, target_positive, f"({proof_head(source_application)} Hprem)")
-    if positive_proof is None:
+    if positive_branch is None:
         return None
-    proof = (
-        f"(xm {proof_arg_text(target_premise)} {proof_arg_text(target_body)} "
-        f"(fun Hprem => (fun P Hleft Hright => Hleft {proof_term_text(positive_proof)})) "
-        f"(fun HnotPrem => (fun P Hleft Hright => Hright HnotPrem)))"
+    return (
+        f"(xm {proof_arg_text(target_premise)} {proof_arg_text(target)} "
+        f"(fun {premise_name} => (fun P Hleft Hright => Hleft {proof_term_text(positive_branch)})) "
+        f"(fun HnotPrem{index} => (fun P Hleft Hright => Hright HnotPrem{index})))"
     )
-    for name, sort in reversed(target_binders):
-        proof = f"(fun {name}:{sort} => {proof})"
-    return proof
 
 
 def raw_negated_target_from_not_target_proof(
