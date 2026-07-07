@@ -18236,6 +18236,8 @@ def raw_tptp_replay_proof(
     propositions_by_name: dict[str, str],
     variable_sorts: dict[str, str],
 ) -> str | None:
+    if rule == "fool_exhaustiveness_axiom":
+        return raw_fool_exhaustiveness_axiom_proof(proposition)
     if rule == "rat":
         return raw_tptp_rat_proof(proposition, parents, propositions_by_name)
     if rule == "superposition":
@@ -18315,6 +18317,30 @@ def raw_tptp_replay_proof(
     if rule == "avatar_split_clause":
         return raw_tptp_avatar_split_clause_proof(proposition, parents, propositions_by_name)
     return None
+
+
+def raw_fool_exhaustiveness_axiom_proof(proposition: str) -> str | None:
+    expr = parse_expr(proposition)
+    if expr is None:
+        return None
+    binders, body = collect_foralls(expr)
+    if len(binders) != 1 or binders[0][1] != "prop":
+        return None
+    name = binders[0][0]
+    disjuncts = app_args(body, "vampire_or", 2)
+    if disjuncts is None:
+        return None
+    left, right = disjuncts
+    expected_left = Expr("var", value=name)
+    expected_right = Expr("arrow", args=(Expr("var", value=name), Expr("var", value="vampire_false")))
+    if not expr_same_mod_alpha(left, expected_left) or not expr_same_mod_alpha(right, expected_right):
+        return None
+    return (
+        f"(fun {name}:prop => "
+        f"(xm {name} {proof_arg_text(body)} "
+        f"(fun Htrue => (fun P Hleft Hright => Hleft Htrue)) "
+        f"(fun Hfalse => (fun P Hleft Hright => Hright Hfalse))))"
+    )
 
 
 def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | None = None) -> list[str]:
