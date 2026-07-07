@@ -22390,6 +22390,14 @@ def raw_tptp_forward_demodulation_proof(
     )
     if proof is not None:
         return proof
+    proof = raw_tptp_guarded_parent_equality_rewrite_proof(
+        proposition,
+        parents,
+        propositions_by_name,
+        variable_sorts,
+    )
+    if proof is not None:
+        return proof
     proof = raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name)
     if proof is not None:
         return proof
