@@ -17726,6 +17726,9 @@ def raw_tptp_one_parent_transform_proof(
     target = ambient_basic_logic_expr(target)
     if expr_same_mod_alpha(source, target):
         return raw_tptp_claim_name(parents[0])
+    conjunction_projection = vampire_and_projection_from_proof(raw_tptp_claim_name(parents[0]), source, target)
+    if conjunction_projection is not None:
+        return conjunction_projection
     simple = raw_simple_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
     if simple is not None:
         return simple
@@ -17795,6 +17798,25 @@ def raw_tptp_one_parent_transform_proof(
     if not raw_clause_replay_budget_ok(source, target, max_literals=max_literals, max_literal_product=max_literal_product):
         return None
     return raw_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
+
+
+def raw_tptp_one_parent_conjunction_projection_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> str | None:
+    if len(parents) != 1:
+        return None
+    parent_proposition = propositions_by_name.get(parents[0])
+    if parent_proposition is None:
+        return None
+    source = parse_expr(parent_proposition)
+    target = parse_expr(proposition)
+    if source is None or target is None:
+        return None
+    source = ambient_basic_logic_expr(source)
+    target = ambient_basic_logic_expr(target)
+    return vampire_and_projection_from_proof(raw_tptp_claim_name(parents[0]), source, target)
 
 
 def raw_specialize_forall_transform_proof(
@@ -22455,6 +22477,9 @@ def raw_tptp_replay_proof(
         "true_and_false_elimination",
     }:
         if rule == "cnf_transformation":
+            proof = raw_tptp_one_parent_conjunction_projection_proof(proposition, parents, propositions_by_name)
+            if proof is not None:
+                return proof
             previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
             if previous_deadline is not None:
                 PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 0.5)
