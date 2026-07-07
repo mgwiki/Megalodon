@@ -1055,7 +1055,7 @@ def tptp_term_to_expr(text: str, variable_sorts: dict[str, str] | None = None) -
 
 def sort_argument_sorts(sort: str) -> list[str]:
     pieces = split_sort_arrows(sort)
-    return pieces[:-1] if len(pieces) > 1 and pieces[-1] == "set" else []
+    return pieces[:-1] if len(pieces) > 1 else []
 
 
 def append_application_args(expr: Expr, args: list[Expr]) -> Expr:
@@ -1861,6 +1861,7 @@ def megalodon_replay_steps(
         **megalodon_outline_symbol_sorts(proof_text),
         **raw_tptp_exported_source_variable_sorts(proof_text),
     }
+    variable_sorts.update(raw_tptp_skolem_binder_sorts(proof_text, variable_sorts))
     function_definitions = tptp_function_definition_infos(proof_text, variable_sorts)
     variable_sorts.update(raw_tptp_function_definition_sorts(function_definitions, variable_sorts))
     step_variable_sorts = megalodon_outline_step_variable_sorts(proof_text)
@@ -2331,18 +2332,55 @@ def tptp_function_definition_infos(
         sides = [strip_balanced_parens(equation.group("left")), strip_balanced_parens(equation.group("right"))]
         candidates = [(sides[0], sides[1]), (sides[1], sides[0])]
         for target_text, body_text in candidates:
-            target = decode_tptp_identifier(strip_balanced_parens(target_text))
+            definition_sorts = {name: info.sort for name, info in definitions.items()}
+            known_sorts = {**variable_sorts, **definition_sorts}
+            target_expr = tptp_term_to_expr(target_text, known_sorts)
+            target_binders: tuple[str, ...] = ()
+            target_binder_sorts: dict[str, str] = {}
+            if (
+                target_expr is not None
+                and target_expr.kind == "app"
+                and target_expr.args
+                and target_expr.args[0].kind == "var"
+                and target_expr.args[0].value is not None
+                and FRESH_SET_RE.match(target_expr.args[0].value)
+                and all(arg.kind == "var" and arg.value is not None for arg in target_expr.args[1:])
+            ):
+                target = target_expr.args[0].value
+                target_binders = tuple(arg.value for arg in target_expr.args[1:] if arg.value is not None)
+            else:
+                target = decode_tptp_identifier(strip_balanced_parens(target_text))
             if not FRESH_SET_RE.match(target):
                 continue
-            definition_sorts = {name: info.sort for name, info in definitions.items()}
-            body = tptp_term_to_expr(body_text, {**variable_sorts, **definition_sorts})
+            body = tptp_term_to_expr(body_text, known_sorts)
             if body is None:
                 continue
-            body_sort = expr_sort(body, {**variable_sorts, **definition_sorts})
+            if target_binders:
+                inferred_binder_sorts: dict[str, str] = {}
+                infer_missing_raw_tptp_sorts(
+                    body,
+                    inferred_binder_sorts,
+                    raw_tptp_nonlocal_sorts(known_sorts),
+                    expr_sort(body, {**known_sorts, **inferred_binder_sorts}),
+                )
+                target_binder_sorts = {
+                    binder: inferred_binder_sorts[binder]
+                    for binder in target_binders
+                    if binder in inferred_binder_sorts
+                }
+                if len(target_binder_sorts) != len(target_binders):
+                    continue
+            local_known_sorts = {**known_sorts, **target_binder_sorts}
+            body_sort = expr_sort(body, local_known_sorts)
             target_sort = variable_sorts.get(target) or body_sort
+            if target_binders and body_sort is not None:
+                target_sort = variable_sorts.get(target) or join_sort_arrows(
+                    [*(target_binder_sorts[binder] for binder in target_binders), body_sort]
+                )
             if target_sort is None:
                 continue
-            if body_sort is not None and body_sort != target_sort:
+            result_sort = sort_after_arguments(target_sort, len(target_binders)) if target_binders else target_sort
+            if body_sort is not None and result_sort is not None and body_sort != result_sort:
                 continue
             if (
                 body_sort is None
@@ -2352,9 +2390,13 @@ def tptp_function_definition_infos(
                 and len(split_sort_arrows(target_sort)) > 1
             ):
                 continue
-            arg_sorts = sort_argument_sorts(target_sort)
-            binders = tuple(f"X{index}" for index in range(len(arg_sorts)))
-            body = append_application_args(body, [Expr("var", value=name) for name in binders])
+            if target_binders:
+                binders = target_binders
+                arg_sorts = [target_binder_sorts[binder] for binder in binders]
+            else:
+                arg_sorts = sort_argument_sorts(target_sort)
+                binders = tuple(f"X{index}" for index in range(len(arg_sorts)))
+                body = append_application_args(body, [Expr("var", value=name) for name in binders])
             body_expr_text = expr_text(body)
             definition_body = body_expr_text
             for binder_name, binder_sort in reversed(list(zip(binders, arg_sorts))):
@@ -2387,6 +2429,34 @@ def raw_tptp_function_definition_sorts(
             body_sort,
         )
         known_sorts.update(sorts)
+    return sorts
+
+
+def raw_tptp_skolem_binder_sorts(proof_text: str, variable_sorts: dict[str, str]) -> dict[str, str]:
+    sorts: dict[str, str] = {}
+    for line in proof_text.splitlines():
+        match = MEGALODON_STEP_FORMULA_RE.match(line.strip())
+        if match is None:
+            continue
+        rule = json.loads(f'"{match.group("rule")}"')
+        if rule not in {"skolem symbol introduction", "skolemisation"}:
+            continue
+        formula = json.loads(f'"{match.group("formula")}"')
+        proposition = megalodon_step_proposition(formula, {**variable_sorts, **sorts})
+        if proposition is None:
+            continue
+        parsed = parse_expr(proposition)
+        if parsed is None:
+            continue
+        inferred: dict[str, str] = {}
+        infer_missing_raw_tptp_sorts(parsed, inferred, raw_tptp_nonlocal_sorts({**variable_sorts, **sorts}), "prop")
+        for name, sort in inferred.items():
+            if re.fullmatch(r"sK[0-9]+", name):
+                sorts.setdefault(name, sort)
+        binders, _ = collect_foralls(parsed)
+        for name, sort in binders:
+            if re.fullmatch(r"sK[0-9]+", name):
+                sorts.setdefault(name, sort)
     return sorts
 
 
@@ -24721,6 +24791,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             **source_declared_sorts(source),
             **raw_tptp_type_variables(declarations),
         }
+        variable_sorts.update(raw_tptp_skolem_binder_sorts(text, variable_sorts))
         function_definitions = tptp_function_definition_infos(text, variable_sorts)
         variable_sorts.update(raw_tptp_function_definition_sorts(function_definitions, variable_sorts))
         raw_entries: list[tuple[str, str, str, str | None, str | None, str | None, list[str], bool]] = []
@@ -24766,6 +24837,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             **megalodon_outline_symbol_sorts(text),
             **raw_tptp_exported_source_variable_sorts(text),
         }
+        variable_sorts.update(raw_tptp_skolem_binder_sorts(text, variable_sorts))
         function_definitions = tptp_function_definition_infos(text, variable_sorts)
         variable_sorts.update(raw_tptp_function_definition_sorts(function_definitions, variable_sorts))
         replay_steps = megalodon_replay_steps(text, proof, problem, source)
