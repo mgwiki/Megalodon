@@ -19647,6 +19647,110 @@ def raw_tptp_fool_elimination_proof(
     return None
 
 
+def raw_rectify_formula_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 80 or proof_search_timed_out():
+        return None
+    if expr_same_mod_alpha(source, target):
+        return source_proof
+
+    if target.kind == "forall" and target.value is not None and target.sort is not None:
+        target_body = target.args[0]
+        if target.value not in expr_variables(target_body):
+            inner = raw_rectify_formula_transform_proof(
+                source,
+                target_body,
+                source_proof,
+                {**variable_sorts, target.value: target.sort},
+                depth + 1,
+            )
+            if inner is not None:
+                return f"(fun {target.value}:{target.sort} => {inner})"
+
+    if source.kind == "forall" and source.value is not None and source.sort is not None:
+        source_body = source.args[0]
+        if source.value not in expr_variables(source_body):
+            candidates = raw_candidate_terms_for_sort((target, source_body), source.sort, variable_sorts)
+            inhabitant = raw_simple_inhabitant_for_sort(source.sort)
+            if inhabitant is not None:
+                candidates.append(inhabitant)
+            seen_candidates: set[str] = set()
+            for candidate in candidates[:16]:
+                candidate_key = expr_key(candidate)
+                if candidate_key in seen_candidates:
+                    continue
+                seen_candidates.add(candidate_key)
+                instantiated_source = substitute_expr(source_body, {source.value: candidate})
+                inner = raw_rectify_formula_transform_proof(
+                    instantiated_source,
+                    target,
+                    f"({proof_head(source_proof)} {proof_arg_text(candidate)})",
+                    variable_sorts,
+                    depth + 1,
+                )
+                if inner is not None:
+                    return inner
+
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
+        assert source.value is not None and target.value is not None and target.sort is not None
+        binder = target.value
+        source_body = source.args[0]
+        target_body = target.args[0]
+        if source.value != binder and binder in (expr_variables(source_body) | expr_bound_variables(source_body)):
+            used_names = (
+                expr_variables(source_body)
+                | expr_bound_variables(source_body)
+                | expr_variables(target_body)
+                | expr_bound_variables(target_body)
+                | {source.value, target.value}
+            )
+            binder = fresh_identifier(target.value, " ".join(sorted(used_names)))
+            target_body = rename_expr_variables(target_body, {target.value: binder})
+        if source.value != binder:
+            source_body = rename_expr_variables(source_body, {source.value: binder})
+        inner = raw_rectify_formula_transform_proof(
+            source_body,
+            target_body,
+            f"({proof_head(source_proof)} {binder})",
+            {**variable_sorts, binder: target.sort},
+            depth + 1,
+        )
+        if inner is None:
+            return None
+        return f"(fun {binder}:{target.sort} => {inner})"
+
+    if source.kind == "arrow" and target.kind == "arrow":
+        source_premise, source_conclusion = source.args
+        target_premise, target_conclusion = target.args
+        premise_name = fresh_identifier("Hprem", expr_text(source), expr_text(target), source_proof)
+        premise_proof = raw_rectify_formula_transform_proof(
+            target_premise,
+            source_premise,
+            premise_name,
+            variable_sorts,
+            depth + 1,
+        )
+        if premise_proof is None:
+            return None
+        conclusion_proof = raw_rectify_formula_transform_proof(
+            source_conclusion,
+            target_conclusion,
+            f"({proof_head(source_proof)} {proof_term_text(premise_proof)})",
+            variable_sorts,
+            depth + 1,
+        )
+        if conclusion_proof is None:
+            return None
+        return f"(fun {premise_name} : {expr_text(target_premise)} => {conclusion_proof})"
+
+    return None
+
+
 def raw_tptp_rectify_proof(
     proposition: str,
     parents: list[str],
@@ -19659,8 +19763,14 @@ def raw_tptp_rectify_proof(
     local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
     parent_proof = raw_tptp_claim_name(parents[0])
     target = parse_expr(proposition)
-    candidate_pairs: list[tuple[Expr, Expr]] = []
+    parent_proposition = propositions_by_name.get(parents[0])
+    parsed_parent = parse_expr(parent_proposition) if parent_proposition is not None else None
+    if parsed_parent is not None and target is not None:
+        proof = raw_rectify_formula_transform_proof(parsed_parent, target, parent_proof, local_sorts)
+        if proof is not None:
+            return proof
 
+    candidate_pairs: list[tuple[Expr, Expr]] = []
     for fields in megalodon_replay_extra_fields(replay_step, "rectify"):
         exported_source = raw_tptp_replay_extra_expr(fields, "source", local_sorts)
         exported_target = raw_tptp_replay_extra_expr(fields, "target", local_sorts)
@@ -19679,25 +19789,18 @@ def raw_tptp_rectify_proof(
             if substituted is not None and renamed is not None:
                 candidate_pairs.append((substituted, renamed))
 
-    parent_proposition = propositions_by_name.get(parents[0])
-    parsed_parent = parse_expr(parent_proposition) if parent_proposition is not None else None
     if parsed_parent is not None and target is not None:
-        candidate_pairs.append((parsed_parent, target))
-
-    previous_allow = getattr(PROOF_SEARCH_STATE, "allow_two_sided_equality", False)
-    PROOF_SEARCH_STATE.allow_two_sided_equality = True
-    try:
         for source, candidate_target in candidate_pairs:
-            proof = raw_deep_formula_transform_proof(source, candidate_target, parent_proof, local_sorts)
+            if not expr_same_mod_alpha(parsed_parent, source):
+                continue
+            proof = raw_rectify_formula_transform_proof(source, candidate_target, parent_proof, local_sorts)
             if proof is None:
                 continue
-            if target is None or expr_same_mod_alpha(candidate_target, target):
+            if expr_same_mod_alpha(candidate_target, target):
                 return proof
-            bridge = raw_deep_formula_transform_proof(candidate_target, target, proof, local_sorts)
-            if bridge is not None:
-                return bridge
-    finally:
-        PROOF_SEARCH_STATE.allow_two_sided_equality = previous_allow
+            bridged = raw_rectify_formula_transform_proof(candidate_target, target, proof, local_sorts)
+            if bridged is not None:
+                return bridged
     return None
 
 
@@ -23920,6 +24023,15 @@ def raw_tptp_replay_proof(
                 if previous_deadline is not None:
                     PROOF_SEARCH_STATE.deadline = previous_deadline
         if rule == "rectify":
+            proof = raw_tptp_rectify_proof(
+                proposition,
+                parents,
+                propositions_by_name,
+                variable_sorts,
+                replay_step,
+            )
+            if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
+                return proof
             return None
         previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
         if rule == "rectify" and previous_deadline is not None:
