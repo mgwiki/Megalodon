@@ -17079,32 +17079,49 @@ def raw_classical_implication_to_or_body_proof(
     target_or = app_args(target, "vampire_or", 2)
     if target_or is None:
         return None
-    target_positive, target_negative = target_or
-    target_negative_premises, target_negative_conclusion = split_arrows(target_negative)
-    if len(target_negative_premises) != 1 or not false_eliminator_expr(target_negative_conclusion):
-        return None
     source_premise = premises[index]
-    target_premise = target_negative_premises[0]
-    if not expr_same_mod_alpha(source_premise, target_premise):
-        return None
-    premise_name = f"Hprem{premise_offset + index}"
-    positive_branch = raw_classical_implication_to_or_body_proof(
-        premises,
-        conclusion,
-        target_positive,
-        source_application,
-        index + 1,
-        [*premise_names, premise_name],
-        premise_offset,
-    )
-    if positive_branch is None:
-        return None
-    return (
-        f"(xm {proof_arg_text(target_premise)} {proof_arg_text(target)} "
-        f"(fun {premise_name} => (fun P Hleft Hright => Hleft {proof_term_text(positive_branch)})) "
-        f"(fun HnotPrem{premise_offset + index} => "
-        f"(fun P Hleft Hright => Hright HnotPrem{premise_offset + index})))"
-    )
+    for negative_index, target_negative, target_positive in (
+        (1, target_or[1], target_or[0]),
+        (0, target_or[0], target_or[1]),
+    ):
+        target_negative_premises, target_negative_conclusion = split_arrows(target_negative)
+        if len(target_negative_premises) != 1 or not false_eliminator_expr(target_negative_conclusion):
+            continue
+        target_premise = target_negative_premises[0]
+        premise_name = f"Hprem{premise_offset + index}"
+        source_premise_proof = raw_deep_formula_transform_proof(
+            target_premise,
+            source_premise,
+            premise_name,
+            {},
+            0,
+        )
+        if source_premise_proof is None:
+            continue
+        positive_branch = raw_classical_implication_to_or_body_proof(
+            premises,
+            conclusion,
+            target_positive,
+            source_application,
+            index + 1,
+            [*premise_names, source_premise_proof],
+            premise_offset,
+        )
+        if positive_branch is None:
+            continue
+        not_name = f"HnotPrem{premise_offset + index}"
+        if negative_index == 1:
+            positive_intro = f"(fun P Hleft Hright => Hleft {proof_term_text(positive_branch)})"
+            negative_intro = f"(fun P Hleft Hright => Hright {not_name})"
+        else:
+            positive_intro = f"(fun P Hleft Hright => Hright {proof_term_text(positive_branch)})"
+            negative_intro = f"(fun P Hleft Hright => Hleft {not_name})"
+        return (
+            f"(xm {proof_arg_text(target_premise)} {proof_arg_text(target)} "
+            f"(fun {premise_name} => {positive_intro}) "
+            f"(fun {not_name} => {negative_intro}))"
+        )
+    return None
 
 
 def raw_predicate_application(predicate: Expr, argument: Expr) -> Expr:
