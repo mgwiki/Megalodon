@@ -2469,6 +2469,13 @@ def split_arrows(expr: Expr) -> tuple[list[Expr], Expr]:
     return premises, expr
 
 
+def make_arrow_expr(premises: list[Expr], conclusion: Expr) -> Expr:
+    result = conclusion
+    for premise in reversed(premises):
+        result = Expr("arrow", args=(premise, result))
+    return result
+
+
 def match_expr(pattern: Expr, target: Expr, variables: set[str], subst: dict[str, Expr]) -> bool:
     if pattern.kind == "var" and pattern.value in variables:
         previous = subst.get(pattern.value)
@@ -3824,6 +3831,8 @@ BOOLEAN_EXT_HELPERS = [
     "Axiom vampire_prop_ext: forall P Q:prop, (P -> Q) -> (Q -> P) -> vampire_eq_prop P Q.",
     "Axiom vampire_funext_prop: forall F G:prop->prop, (forall X:prop, vampire_eq_prop (F X) (G X)) -> vampire_eq_prop_fun F G.",
     "Axiom vampire_funext_prop_prop: forall F G:prop->prop->prop, (forall X:prop, vampire_eq_prop_fun (F X) (G X)) -> F = G.",
+    "Axiom vampire_funext_set_prop: forall F G:set->prop, (forall X:set, vampire_eq_prop (F X) (G X)) -> forall Q:(set->prop)->prop, Q F -> Q G.",
+    "Axiom vampire_eps_ext: forall F G:set->prop, (forall X:set, vampire_eq_prop (F X) (G X)) -> Eps_i F = Eps_i G.",
     "Axiom vampire_funext_set_set: forall F G:set->set, (forall X:set, F X = G X) -> forall Q:(set->set)->prop, Q F -> Q G.",
     "Axiom vampire_funext_set_set_set: forall F G:set->set->set, (forall X:set, forall Y:set, F X Y = G X Y) -> forall Q:(set->set->set)->prop, Q F -> Q G.",
     "Axiom vampire_funext_set_setfun_set: forall F G:set->(set->set)->set, (forall X:set, forall Y:set->set, F X Y = G X Y) -> forall Q:(set->(set->set)->set)->prop, Q F -> Q G.",
@@ -19676,6 +19685,402 @@ def raw_proof_to_prop_true_equality(source: Expr, target: Expr, source_proof: st
     )
 
 
+def raw_church_and_parts(expr: Expr) -> tuple[Expr, Expr] | None:
+    return app_args(expr, "and", 2) or app_args(expr, "vampire_and", 2)
+
+
+def raw_church_and_projection_from_proof(proof: str, node: Expr, target: Expr, depth: int = 0) -> str | None:
+    if depth > 24:
+        return None
+    if expr_same_mod_alpha(node, target):
+        return proof
+    parts = raw_church_and_parts(node)
+    if parts is None:
+        return None
+    left, right = parts
+    left_name = fresh_identifier("HL", expr_text(node), expr_text(target), proof)
+    left_projection = f"({proof_head(proof)} {proof_arg_text(left)} (fun {left_name} HR => {left_name}))"
+    found_left = raw_church_and_projection_from_proof(left_projection, left, target, depth + 1)
+    if found_left is not None:
+        return found_left
+    right_name = fresh_identifier("HR", expr_text(node), expr_text(target), proof, left_name)
+    right_projection = f"({proof_head(proof)} {proof_arg_text(right)} (fun HL {right_name} => {right_name}))"
+    return raw_church_and_projection_from_proof(right_projection, right, target, depth + 1)
+
+
+def raw_prop_implication_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 48 or proof_search_timed_out():
+        return None
+    if expr_same_mod_alpha(source, target):
+        return source_proof
+    source_true_component = raw_prop_equality_to_true_component(source)
+    if source_true_component is not None:
+        source_component, _ = source_true_component
+        component_proof = raw_proof_from_prop_true_equality(source, source_component, source_proof)
+        if component_proof is not None:
+            transformed = raw_prop_implication_transform_proof(
+                source_component,
+                target,
+                component_proof,
+                variable_sorts,
+                depth + 1,
+            )
+            if transformed is not None:
+                return transformed
+    target_true_component = raw_prop_equality_to_true_component(target)
+    if target_true_component is not None:
+        target_component, _ = target_true_component
+        component_proof = raw_prop_implication_transform_proof(
+            source,
+            target_component,
+            source_proof,
+            variable_sorts,
+            depth + 1,
+        )
+        if component_proof is not None:
+            transformed = raw_proof_to_prop_true_equality(target_component, target, component_proof)
+            if transformed is not None:
+                return transformed
+    true_elim = raw_proof_from_prop_true_equality(source, target, source_proof)
+    if true_elim is not None:
+        return true_elim
+    true_intro = raw_proof_to_prop_true_equality(source, target, source_proof)
+    if true_intro is not None:
+        return true_intro
+
+    prop_argument_rewrite = raw_prop_argument_set_rewrite_proof(
+        source,
+        target,
+        source_proof,
+        variable_sorts,
+        depth + 1,
+    )
+    if prop_argument_rewrite is not None:
+        return prop_argument_rewrite
+
+    target_and = raw_church_and_parts(target)
+    if target_and is not None:
+        left = raw_prop_implication_transform_proof(source, target_and[0], source_proof, variable_sorts, depth + 1)
+        right = raw_prop_implication_transform_proof(source, target_and[1], source_proof, variable_sorts, depth + 1)
+        if left is not None and right is not None:
+            return f"(fun P K => K {proof_term_text(left)} {proof_term_text(right)})"
+
+    projected = raw_church_and_projection_from_proof(source_proof, source, target)
+    if projected is not None:
+        return projected
+    source_and = raw_church_and_parts(source)
+    if source_and is not None:
+        for component in source_and:
+            component_proof = raw_church_and_projection_from_proof(source_proof, source, component)
+            if component_proof is None:
+                continue
+            transformed = raw_prop_implication_transform_proof(
+                component,
+                target,
+                component_proof,
+                variable_sorts,
+                depth + 1,
+            )
+            if transformed is not None:
+                return transformed
+
+    if (
+        source.kind == "forall"
+        and target.kind == "forall"
+        and source.sort == target.sort
+        and source.value is not None
+        and target.value is not None
+        and source.sort is not None
+    ):
+        binder = target.value
+        source_body = source.args[0]
+        if source.value != binder:
+            source_body = rename_expr_variables(source_body, {source.value: binder})
+        body_proof = raw_prop_implication_transform_proof(
+            source_body,
+            target.args[0],
+            f"({proof_head(source_proof)} {binder})",
+            {**variable_sorts, binder: source.sort},
+            depth + 1,
+        )
+        if body_proof is not None:
+            return f"(fun {binder}:{source.sort} => {body_proof})"
+
+    source_exists = raw_exists_transform_parts(source)
+    target_exists = raw_exists_transform_parts(target)
+    if source_exists is not None and target_exists is not None:
+        source_head, source_sort, _source_predicate, source_name, source_body = source_exists
+        target_head, target_sort, _target_predicate, target_name, target_body = target_exists
+        if source_head == target_head and source_sort == target_sort:
+            witness = fresh_identifier("w", expr_text(source), expr_text(target), source_proof)
+            source_body = rename_expr_variables(source_body, {source_name: witness})
+            target_body = rename_expr_variables(target_body, {target_name: witness})
+            body_proof = raw_prop_implication_transform_proof(
+                source_body,
+                target_body,
+                "Hbody",
+                {**variable_sorts, witness: source_sort},
+                depth + 1,
+            )
+            if body_proof is not None:
+                return (
+                    f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                    f"(fun {witness}:{source_sort} => fun Hbody => "
+                    f"(fun Q Hexists => Hexists {witness} {proof_term_text(body_proof)})))"
+                )
+
+    source_premises, source_conclusion = split_arrows(source)
+    target_premises, target_conclusion = split_arrows(target)
+    if source_premises and target_premises and len(source_premises) == len(target_premises):
+        premise_name = fresh_identifier("Hprem", expr_text(source), expr_text(target), source_proof)
+        source_premise = raw_prop_implication_transform_proof(
+            target_premises[0],
+            source_premises[0],
+            premise_name,
+            variable_sorts,
+            depth + 1,
+        )
+        if source_premise is not None:
+            source_tail = make_arrow_expr(source_premises[1:], source_conclusion)
+            target_tail = make_arrow_expr(target_premises[1:], target_conclusion)
+            source_tail_proof = f"({proof_head(source_proof)} {proof_term_text(source_premise)})"
+            target_conclusion_proof = raw_prop_implication_transform_proof(
+                source_tail,
+                target_tail,
+                source_tail_proof,
+                variable_sorts,
+                depth + 1,
+            )
+            if target_conclusion_proof is not None:
+                return f"(fun {premise_name}:{expr_text(target_premises[0])} => {target_conclusion_proof})"
+
+    return None
+
+
+def raw_prop_argument_set_rewrite_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 24 or proof_search_timed_out():
+        return None
+    if source.kind != "app" or target.kind != "app" or len(source.args) != len(target.args):
+        return None
+    if not source.args or not expr_same_mod_alpha(source.args[0], target.args[0]):
+        return None
+    differing = [
+        index
+        for index, (source_arg, target_arg) in enumerate(zip(source.args, target.args))
+        if not expr_same_mod_alpha(source_arg, target_arg)
+    ]
+    if len(differing) != 1 or differing[0] == 0:
+        return None
+    index = differing[0]
+    equality = raw_set_term_equality_transform_proof(source.args[index], target.args[index], variable_sorts, depth + 1)
+    if equality is None:
+        return None
+    hole = fresh_identifier("zz", expr_text(source), expr_text(target), source_proof)
+    context_args = list(source.args)
+    context_args[index] = Expr("var", value=hole)
+    context = Expr("app", args=tuple(context_args))
+    return (
+        f"{proof_term_text(equality)} "
+        f"(fun {hole}:set => {expr_text(context)}) "
+        f"{proof_term_text(source_proof)}"
+    )
+
+
+def raw_prop_equivalence_proof(
+    source: Expr,
+    target: Expr,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 24 or proof_search_timed_out():
+        return None
+    forward_name = fresh_identifier("Hsrc", expr_text(source), expr_text(target))
+    backward_name = fresh_identifier("Htgt", expr_text(source), expr_text(target), forward_name)
+    forward = raw_prop_implication_transform_proof(source, target, forward_name, variable_sorts, depth + 1)
+    if forward is None:
+        return None
+    backward = raw_prop_implication_transform_proof(target, source, backward_name, variable_sorts, depth + 1)
+    if backward is None:
+        return None
+    return (
+        f"(vampire_prop_ext {proof_arg_text(source)} {proof_arg_text(target)} "
+        f"(fun {forward_name}:{expr_text(source)} => {proof_term_text(forward)}) "
+        f"(fun {backward_name}:{expr_text(target)} => {proof_term_text(backward)}))"
+    )
+
+
+def raw_set_predicate_extensionality_proof(
+    source_predicate: Expr,
+    target_predicate: Expr,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_binders, source_body = collect_lambdas(source_predicate)
+    target_binders, target_body = collect_lambdas(target_predicate)
+    if len(source_binders) != 1 or len(target_binders) != 1:
+        return None
+    source_name, source_sort = source_binders[0]
+    target_name, target_sort = target_binders[0]
+    if source_sort != "set" or target_sort != "set":
+        return None
+    binder = fresh_identifier("X", expr_text(source_predicate), expr_text(target_predicate))
+    source_body = rename_expr_variables(source_body, {source_name: binder})
+    target_body = rename_expr_variables(target_body, {target_name: binder})
+    body_proof = raw_prop_equivalence_proof(
+        source_body,
+        target_body,
+        {**variable_sorts, binder: "set"},
+    )
+    if body_proof is None:
+        return None
+    return (
+        f"(vampire_funext_set_prop {proof_arg_text(source_predicate)} {proof_arg_text(target_predicate)} "
+        f"(fun {binder}:set => {proof_term_text(body_proof)}))"
+    )
+
+
+def raw_set_term_equality_transform_proof(
+    source: Expr,
+    target: Expr,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 24 or proof_search_timed_out():
+        return None
+    if expr_same_mod_alpha(source, target):
+        return "(fun Q H => H)"
+    if source.kind != "app" or target.kind != "app" or len(source.args) != len(target.args):
+        return None
+    if not source.args or not expr_same_mod_alpha(source.args[0], target.args[0]):
+        return None
+    head = source.args[0]
+    differing = [
+        index
+        for index, (source_arg, target_arg) in enumerate(zip(source.args, target.args))
+        if not expr_same_mod_alpha(source_arg, target_arg)
+    ]
+    if len(differing) != 1 or differing[0] == 0:
+        return None
+    index = differing[0]
+    if head.kind == "var" and head.value == "Eps_i" and index == 1:
+        source_predicate = source.args[index]
+        target_predicate = target.args[index]
+        source_binders, source_body = collect_lambdas(source_predicate)
+        target_binders, target_body = collect_lambdas(target_predicate)
+        if len(source_binders) != 1 or len(target_binders) != 1:
+            return None
+        source_name, source_sort = source_binders[0]
+        target_name, target_sort = target_binders[0]
+        if source_sort != "set" or target_sort != "set":
+            return None
+        binder = fresh_identifier("X", expr_text(source), expr_text(target))
+        source_body = rename_expr_variables(source_body, {source_name: binder})
+        target_body = rename_expr_variables(target_body, {target_name: binder})
+        body_proof = raw_prop_equivalence_proof(source_body, target_body, {**variable_sorts, binder: "set"}, depth + 1)
+        if body_proof is None:
+            return None
+        return (
+            f"(vampire_eps_ext {proof_arg_text(source_predicate)} {proof_arg_text(target_predicate)} "
+            f"(fun {binder}:set => {proof_term_text(body_proof)}))"
+        )
+    argument_equality = raw_set_term_equality_transform_proof(
+        source.args[index],
+        target.args[index],
+        variable_sorts,
+        depth + 1,
+    )
+    if argument_equality is None:
+        return None
+    hole = fresh_identifier("zz", expr_text(source), expr_text(target))
+    context_args = list(source.args)
+    context_args[index] = Expr("var", value=hole)
+    context = Expr("app", args=tuple(context_args))
+    return (
+        f"{proof_term_text(argument_equality)} "
+        f"(fun {hole}:set => {proof_arg_text(source)} = {expr_text(context)}) "
+        f"(fun Q H => H)"
+    )
+
+
+def raw_equality_predicate_argument_rewrite_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_sides = equality_like_sides(source)
+    target_sides = equality_like_sides(target)
+    if source_sides is None or target_sides is None:
+        return None
+    for side_index in (0, 1):
+        other_index = 1 - side_index
+        if not expr_same_mod_alpha(source_sides[other_index], target_sides[other_index]):
+            continue
+        source_app = source_sides[side_index]
+        target_app = target_sides[side_index]
+        if source_app.kind != "app" or target_app.kind != "app" or len(source_app.args) != len(target_app.args):
+            continue
+        differing: list[int] = []
+        for index, (source_arg, target_arg) in enumerate(zip(source_app.args, target_app.args)):
+            if not expr_same_mod_alpha(source_arg, target_arg):
+                differing.append(index)
+        if len(differing) != 1:
+            continue
+        predicate_index = differing[0]
+        if predicate_index == 0:
+            continue
+        if any(
+            not expr_same_mod_alpha(source_arg, target_arg)
+            for index, (source_arg, target_arg) in enumerate(zip(source_app.args, target_app.args))
+            if index != predicate_index
+        ):
+            continue
+        source_predicate = source_app.args[predicate_index]
+        target_predicate = target_app.args[predicate_index]
+        if source_predicate.kind == "lambda" and target_predicate.kind == "lambda":
+            predicate_equality = raw_set_predicate_extensionality_proof(source_predicate, target_predicate, variable_sorts)
+            if predicate_equality is None:
+                continue
+            hole = fresh_identifier("zz", expr_text(source), expr_text(target), source_proof)
+            context_args = list(source_app.args)
+            context_args[predicate_index] = Expr("var", value=hole)
+            context_app = Expr("app", args=tuple(context_args))
+            if side_index == 0:
+                context = Expr("eq", args=(context_app, source_sides[1]))
+            else:
+                context = Expr("eq", args=(source_sides[0], context_app))
+            return (
+                f"{proof_term_text(predicate_equality)} "
+                f"(fun {hole}:set->prop => {expr_text(context)}) "
+                f"{proof_term_text(source_proof)}"
+            )
+        term_equality = raw_set_term_equality_transform_proof(source_app, target_app, variable_sorts)
+        if term_equality is None:
+            continue
+        hole = fresh_identifier("zz", expr_text(source), expr_text(target), source_proof)
+        if side_index == 0:
+            context = Expr("eq", args=(Expr("var", value=hole), source_sides[1]))
+        else:
+            context = Expr("eq", args=(source_sides[0], Expr("var", value=hole)))
+        return (
+            f"{proof_term_text(term_equality)} "
+            f"(fun {hole}:set => {expr_text(context)}) "
+            f"{proof_term_text(source_proof)}"
+        )
+    return None
+
+
 def raw_deep_formula_transform_proof(
     source: Expr,
     target: Expr,
@@ -19686,10 +20091,30 @@ def raw_deep_formula_transform_proof(
     variable_sorts = variable_sorts or {}
     if depth > 80 or proof_search_timed_out():
         return None
-    if len(expr_text(source)) + len(expr_text(target)) > 9000:
-        return None
     if expr_same_mod_alpha(source, target):
         return source_proof
+
+    predicate_argument_rewrite = raw_equality_predicate_argument_rewrite_proof(
+        source,
+        target,
+        source_proof,
+        variable_sorts,
+    )
+    if predicate_argument_rewrite is not None:
+        return predicate_argument_rewrite
+
+    implication_transform = raw_prop_implication_transform_proof(
+        source,
+        target,
+        source_proof,
+        variable_sorts,
+        depth + 1,
+    )
+    if implication_transform is not None:
+        return implication_transform
+
+    if len(expr_text(source)) + len(expr_text(target)) > 9000:
+        return None
 
     true_equality_elim = raw_proof_from_prop_true_equality(source, target, source_proof)
     if true_equality_elim is not None:
@@ -22164,6 +22589,8 @@ def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: s
                 "vampire_funext_set_set",
                 "vampire_funext_set_set_set",
                 "vampire_funext_set_setfun_set",
+                "vampire_funext_set_prop",
+                "vampire_eps_ext",
             )
         ):
             return True
