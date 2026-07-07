@@ -25944,6 +25944,33 @@ def megalodon_declared_name(line: str) -> str | None:
     return match.group("name") if match is not None else None
 
 
+def reconcile_megalodon_declarations(lines: list[str]) -> list[str]:
+    definition_names = {
+        name
+        for line in lines
+        if line.startswith("Definition ")
+        for name in [megalodon_declared_name(line)]
+        if name is not None
+    }
+    seen_definition_names: set[str] = set()
+    seen_declaration_lines: set[str] = set()
+    result: list[str] = []
+    for line in lines:
+        name = megalodon_declared_name(line)
+        if line.startswith(("Variable ", "Parameter ")) and name in definition_names:
+            continue
+        if line.startswith("Definition ") and name is not None:
+            if name in seen_definition_names:
+                continue
+            seen_definition_names.add(name)
+        if line.startswith(("Variable ", "Parameter ", "Definition ", "Axiom ", "Infix ")):
+            if line in seen_declaration_lines:
+                continue
+            seen_declaration_lines.add(line)
+        result.append(line)
+    return result
+
+
 def raw_tptp_exported_source_declarations(proof_text: str) -> list[str]:
     declarations: list[str] = []
     seen_lines: set[str] = set()
@@ -26280,9 +26307,9 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     else:
         lines.append(f"exact {final_name}.")
     lines.append("Qed.")
-    lines = use_ambient_basic_logic(add_problem_type_variables(lines, proof, text, problem))
+    lines = reconcile_megalodon_declarations(use_ambient_basic_logic(add_problem_type_variables(lines, proof, text, problem)))
     lines = parenthesize_atomic_axiom_propositions(lines)
-    return add_used_boolean_extensionality_helpers(lines)
+    return reconcile_megalodon_declarations(add_used_boolean_extensionality_helpers(lines))
 
 
 def write_raw_tptp_skeletons(
