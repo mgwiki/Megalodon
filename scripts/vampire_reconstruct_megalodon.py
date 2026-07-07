@@ -17187,7 +17187,47 @@ def raw_quantified_equality_rewrite_clause_proof(
     if target_rename:
         target_body = rename_expr_variables(target_body, target_rename)
     resolver = Expr("app", args=(Expr("var", value="vampire_eq_set"), equality_left, equality_right))
-    substitutions = raw_infer_forall_clause_substitution_candidates(source_body, target_body, resolver, binder_names)
+    substitutions: list[dict[str, Expr]] = []
+    seen_substitutions: set[tuple[tuple[str, str], ...]] = set()
+
+    def add_substitution(subst: dict[str, Expr]) -> None:
+        flatten_substitution(subst)
+        if not binder_names <= subst.keys():
+            return
+        if any(expr_variables(value) & binder_names for value in subst.values()):
+            return
+        key = tuple(sorted((name, expr_key(value)) for name, value in subst.items() if name in binder_names))
+        if key in seen_substitutions:
+            return
+        seen_substitutions.add(key)
+        substitutions.append({name: subst[name] for name in binder_names})
+
+    for subst in raw_infer_forall_clause_substitution_candidates(source_body, target_body, resolver, binder_names):
+        add_substitution(subst)
+        if len(substitutions) >= 8:
+            break
+
+    source_literals = raw_clause_literals(source_body)
+    target_literals = raw_clause_literals(target_body)
+    for old_side, _ in ((equality_left, equality_right), (equality_right, equality_left)):
+        if len(substitutions) >= 8:
+            break
+        for source_subterm in expr_subterms(source_body, limit=128):
+            trial: dict[str, Expr] = {}
+            if not match_expr_with_alpha_instantiation(source_subterm, old_side, binder_names, trial):
+                continue
+            partial_source = substitute_expr(source_body, trial)
+            for source_literal in raw_clause_literals(partial_source):
+                for target_literal in target_literals:
+                    completed = dict(trial)
+                    if match_expr_with_alpha_instantiation(source_literal, target_literal, binder_names, completed):
+                        add_substitution(completed)
+                        if len(substitutions) >= 8:
+                            break
+                if len(substitutions) >= 8:
+                    break
+            if len(substitutions) >= 8:
+                break
     if not substitutions:
         return None
     for subst in substitutions:
