@@ -18400,7 +18400,16 @@ def raw_instantiated_clause_from_exported_literal(
     binder_names = set(binder_sorts)
     subst: dict[str, Expr] = {}
     if not match_expr_with_alpha_instantiation(literals[literal_index], substituted_literal, binder_names, subst):
-        return None
+        literal_sides = equality_like_sides(literals[literal_index])
+        substituted_sides = equality_like_sides(substituted_literal)
+        if not (
+            not binder_names
+            and literal_sides is not None
+            and substituted_sides is not None
+            and expr_same_mod_alpha(literal_sides[0], substituted_sides[0])
+            and expr_same_mod_alpha(literal_sides[1], substituted_sides[1])
+        ):
+            return None
     target_literals = raw_clause_literals(target_body)
     candidate_literals = [
         literal
@@ -18525,18 +18534,38 @@ def raw_tptp_exported_two_literal_resolution_proof(
             continue
         source, source_proof = selected_clause
         resolver, resolver_proof = other_clause
-        if not raw_clause_replay_budget_ok(source, resolver, target_body, max_literals=16, max_literal_product=384):
-            continue
-        if not raw_clauses_have_complement(source, resolver):
-            continue
-        body_proof = raw_flat_clause_resolution_proof(source, target_body, source_proof, resolver, resolver_proof)
-        if body_proof is None:
-            body_proof = raw_clause_resolution_proof(source, target_body, source_proof, resolver, resolver_proof)
-        if body_proof is None:
-            continue
-        for name, sort in reversed(target_binders):
-            body_proof = f"(fun {name}:{sort} => {body_proof})"
-        return body_proof
+        body_proof = None
+        if (
+            raw_clause_replay_budget_ok(source, resolver, target_body, max_literals=16, max_literal_product=384)
+            and raw_clauses_have_complement(source, resolver)
+        ):
+            body_proof = raw_flat_clause_resolution_proof(source, target_body, source_proof, resolver, resolver_proof)
+            if body_proof is None:
+                body_proof = raw_clause_resolution_proof(source, target_body, source_proof, resolver, resolver_proof)
+        if body_proof is None and raw_clause_replay_budget_ok(source, resolver, target_body, max_literals=12, max_literal_product=192):
+            for rewritten, rewritten_proof, equality, equality_proof in (
+                (source, source_proof, resolver, resolver_proof),
+                (resolver, resolver_proof, source, source_proof),
+            ):
+                sides = equality_like_sides(equality)
+                if sides is None:
+                    continue
+                equality_sort = raw_equality_transport_sort(sides[0], sides[1], extra_sorts)
+                body_proof = raw_equality_rewrite_clause_proof(
+                    rewritten,
+                    target_body,
+                    rewritten_proof,
+                    sides[0],
+                    sides[1],
+                    equality_proof,
+                    equality_sort,
+                )
+                if body_proof is not None:
+                    break
+        if body_proof is not None:
+            for name, sort in reversed(target_binders):
+                body_proof = f"(fun {name}:{sort} => {body_proof})"
+            return body_proof
     return None
 
 
