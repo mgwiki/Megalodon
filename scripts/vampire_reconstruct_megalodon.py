@@ -228,6 +228,18 @@ def megalodon_replay_parent_pair_order(
     return ordered
 
 
+def megalodon_replay_step_variable_sorts(step: MegalodonReplayStep | None) -> dict[str, str]:
+    result: dict[str, str] = {}
+    if step is None:
+        return result
+    for entry in step.variable_sorts:
+        if ":" not in entry:
+            continue
+        name, sort = entry.split(":", 1)
+        result[name] = sort
+    return result
+
+
 def sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -10008,6 +10020,10 @@ def app_args(expr: Expr, head: str, arity: int) -> tuple[Expr, ...] | None:
     return expr.args[1:]
 
 
+def raw_or_parts(expr: Expr) -> tuple[Expr, Expr] | None:
+    return app_args(expr, "vampire_or", 2) or app_args(expr, "or", 2)
+
+
 def vampire_and_parts(expr: Expr) -> tuple[Expr, Expr] | None:
     return app_args(expr, "vampire_and", 2)
 
@@ -13065,7 +13081,7 @@ def forall_prop_identity(expr: Expr) -> bool:
 
 
 def false_eliminator_expr(expr: Expr) -> bool:
-    return (expr.kind == "var" and expr.value == "vampire_false") or forall_prop_identity(expr)
+    return (expr.kind == "var" and expr.value in {"vampire_false", "False"}) or forall_prop_identity(expr)
 
 
 def contradiction_transport_proof(
@@ -15482,7 +15498,7 @@ def raw_or_intro_from_branch(
 ) -> str | None:
     if depth > 16 or proof_search_timed_out():
         return None
-    parts = app_args(target, "vampire_or", 2)
+    parts = raw_or_parts(target)
     if parts is None:
         return None
     left, right = parts
@@ -15508,7 +15524,7 @@ def raw_or_intro_from_branch(
 def raw_or_intro_literal_at(target: Expr, index: int, literal_proof: str) -> str | None:
     if index < 0:
         return None
-    parts = app_args(target, "vampire_or", 2)
+    parts = raw_or_parts(target)
     if parts is None:
         return literal_proof if index == 0 else None
     left, right = parts
@@ -15631,7 +15647,7 @@ def raw_clause_cases_proof(
     rewrites: tuple[RawSplitRewrite, ...],
     source_proof: str,
 ) -> str | None:
-    parts = app_args(source, "vampire_or", 2)
+    parts = raw_or_parts(source)
     if parts is None:
         return raw_literal_to_clause_proof(source, target, source_proof, target_literals, rewrites)
     left, right = parts
@@ -15929,7 +15945,7 @@ def raw_quantified_complement_resolution_proof(
 def raw_clause_literals(expr: Expr, depth: int = 0) -> list[Expr]:
     if depth > 64:
         return [expr]
-    parts = app_args(expr, "vampire_or", 2)
+    parts = raw_or_parts(expr)
     if parts is None:
         return [expr]
     return raw_clause_literals(parts[0], depth + 1) + raw_clause_literals(parts[1], depth + 1)
@@ -16352,7 +16368,7 @@ def raw_quantified_source_literal_to_target(
     if resolver_direct is not None:
         return resolver_direct
 
-    resolver_parts = app_args(resolver, "vampire_or", 2)
+    resolver_parts = raw_or_parts(resolver)
     if resolver_parts is not None:
         left, right = resolver_parts
         left_name = fresh_identifier("HL", expr_text(source_literal), expr_text(target), resolver_proof, source_proof)
@@ -16389,7 +16405,7 @@ def raw_quantified_literal_resolution_proof(
 ) -> str | None:
     if depth > 16 or proof_search_timed_out():
         return None
-    source_parts = app_args(source, "vampire_or", 2)
+    source_parts = raw_or_parts(source)
     if source_parts is None:
         return raw_quantified_source_literal_to_target(source, target, source_proof, resolver, resolver_proof, depth + 1)
     left, right = source_parts
@@ -16424,7 +16440,7 @@ def raw_resolver_clause_to_target(
     complement = raw_complement_resolution_proof(source_literal, source_literal_proof, resolver, resolver_proof, target)
     if complement is not None:
         return complement
-    resolver_parts = app_args(resolver, "vampire_or", 2)
+    resolver_parts = raw_or_parts(resolver)
     if resolver_parts is None:
         return None
     left, right = resolver_parts
@@ -16453,7 +16469,7 @@ def raw_clause_resolution_proof(
     resolved = raw_resolver_clause_to_target(resolver, target, resolver_proof, source, source_proof, depth + 1)
     if resolved is not None:
         return resolved
-    source_parts = app_args(source, "vampire_or", 2)
+    source_parts = raw_or_parts(source)
     if source_parts is None:
         return None
     left, right = source_parts
@@ -16475,7 +16491,7 @@ def raw_clause_cases_with_handler(
 ) -> str | None:
     if depth > 16 or proof_search_timed_out():
         return None
-    parts = app_args(source, "vampire_or", 2)
+    parts = raw_or_parts(source)
     if parts is None:
         return handler(source, source_proof)
     left, right = parts
@@ -18356,6 +18372,174 @@ def raw_tptp_parent_equality_chain_rewrite_proof(
     return None
 
 
+def raw_tptp_extra_formula_expr(
+    fields: dict[str, str],
+    key: str,
+    variable_sorts: dict[str, str],
+) -> Expr | None:
+    formula = fields.get(key)
+    if formula is None:
+        return None
+    proposition = tptp_formula_to_megalodon_proposition(formula, variable_sorts)
+    return parse_expr(proposition) if proposition is not None else None
+
+
+def raw_instantiated_clause_from_exported_literal(
+    clause: Expr,
+    clause_proof: str,
+    literal_index: int,
+    substituted_literal: Expr,
+    target_binders: list[tuple[str, str]],
+    target_body: Expr,
+) -> tuple[Expr, str] | None:
+    binders, body = collect_foralls(clause)
+    literals = raw_clause_literals(body)
+    if literal_index < 0 or literal_index >= len(literals):
+        return None
+    binder_sorts = {name: sort for name, sort in binders}
+    binder_names = set(binder_sorts)
+    subst: dict[str, Expr] = {}
+    if not match_expr_with_alpha_instantiation(literals[literal_index], substituted_literal, binder_names, subst):
+        return None
+    target_literals = raw_clause_literals(target_body)
+    candidate_literals = [
+        literal
+        for index, literal in enumerate(literals)
+        if index != literal_index and expr_variables(literal) & (binder_names - subst.keys())
+    ]
+    candidate_literals.sort(key=lambda literal: -len(expr_variables(literal) & (binder_names - subst.keys())))
+
+    def complete_from_target(index: int, current: dict[str, Expr]) -> dict[str, Expr] | None:
+        if binder_names <= current.keys():
+            return current
+        if index >= len(candidate_literals):
+            return None
+        source_literal = candidate_literals[index]
+        for target_literal in target_literals:
+            trial = dict(current)
+            if match_expr_with_alpha_instantiation(source_literal, target_literal, binder_names, trial):
+                found = complete_from_target(index + 1, trial)
+                if found is not None:
+                    return found
+        return complete_from_target(index + 1, current)
+
+    completed = complete_from_target(0, dict(subst))
+    if completed is not None:
+        subst = completed
+    target_by_name = {name: sort for name, sort in target_binders}
+    target_by_sort: dict[str, list[str]] = {}
+    for name, sort in target_binders:
+        target_by_sort.setdefault(sort, []).append(name)
+    used_target_names = {
+        value.value
+        for value in subst.values()
+        if value.kind == "var" and value.value in target_by_name
+    }
+    for name, sort in binders:
+        if name in subst:
+            continue
+        if target_by_name.get(name) == sort:
+            subst[name] = Expr("var", value=name)
+            used_target_names.add(name)
+            continue
+        candidates = [candidate for candidate in target_by_sort.get(sort, []) if candidate not in used_target_names]
+        if len(candidates) == 1:
+            subst[name] = Expr("var", value=candidates[0])
+            used_target_names.add(candidates[0])
+    if any(name not in subst for name in binder_sorts):
+        return None
+    instantiated = substitute_expr(body, subst)
+    instantiated_proof = clause_proof
+    for name, _ in binders:
+        value = subst.get(name)
+        if value is None:
+            return None
+        instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(value)})"
+    return instantiated, instantiated_proof
+
+
+def raw_tptp_exported_two_literal_resolution_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+    replay_step: MegalodonReplayStep | None,
+) -> str | None:
+    if replay_step is None or len(parents) != 2:
+        return None
+    fields_groups = megalodon_replay_extra_fields(replay_step, "two_literal_rewrite")
+    if not fields_groups:
+        return None
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    target_binders, target_body = collect_foralls(target)
+    extra_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
+    parsed_parents: list[tuple[Expr, str]] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        if parent_proposition is None:
+            return None
+        parent_expr = parse_expr(parent_proposition)
+        if parent_expr is None:
+            return None
+        parsed_parents.append((parent_expr, raw_tptp_claim_name(parent)))
+
+    for fields in fields_groups:
+        selected_index = fields.get("selected_parent_index")
+        other_index = fields.get("other_parent_index")
+        selected_literal_index = fields.get("selected_literal_index")
+        other_literal_index = fields.get("other_literal_index")
+        if None in {selected_index, other_index, selected_literal_index, other_literal_index}:
+            continue
+        try:
+            selected_parent = int(selected_index)
+            other_parent = int(other_index)
+            selected_literal = int(selected_literal_index)
+            other_literal = int(other_literal_index)
+        except ValueError:
+            continue
+        if selected_parent not in {0, 1} or other_parent not in {0, 1} or selected_parent == other_parent:
+            continue
+        selected_substituted = raw_tptp_extra_formula_expr(fields, "selected_substituted", extra_sorts)
+        other_substituted = raw_tptp_extra_formula_expr(fields, "other_substituted", extra_sorts)
+        if selected_substituted is None or other_substituted is None:
+            continue
+        selected_clause = raw_instantiated_clause_from_exported_literal(
+            parsed_parents[selected_parent][0],
+            parsed_parents[selected_parent][1],
+            selected_literal,
+            selected_substituted,
+            target_binders,
+            target_body,
+        )
+        other_clause = raw_instantiated_clause_from_exported_literal(
+            parsed_parents[other_parent][0],
+            parsed_parents[other_parent][1],
+            other_literal,
+            other_substituted,
+            target_binders,
+            target_body,
+        )
+        if selected_clause is None or other_clause is None:
+            continue
+        source, source_proof = selected_clause
+        resolver, resolver_proof = other_clause
+        if not raw_clause_replay_budget_ok(source, resolver, target_body, max_literals=16, max_literal_product=384):
+            continue
+        if not raw_clauses_have_complement(source, resolver):
+            continue
+        body_proof = raw_flat_clause_resolution_proof(source, target_body, source_proof, resolver, resolver_proof)
+        if body_proof is None:
+            body_proof = raw_clause_resolution_proof(source, target_body, source_proof, resolver, resolver_proof)
+        if body_proof is None:
+            continue
+        for name, sort in reversed(target_binders):
+            body_proof = f"(fun {name}:{sort} => {body_proof})"
+        return body_proof
+    return None
+
+
 def raw_tptp_fast_parent_transform_proof(
     proposition: str,
     parent: str,
@@ -18392,6 +18576,15 @@ def raw_tptp_superposition_proof(
     variable_sorts: dict[str, str],
     replay_step: MegalodonReplayStep | None = None,
 ) -> str | None:
+    proof = raw_tptp_exported_two_literal_resolution_proof(
+        proposition,
+        parents,
+        propositions_by_name,
+        variable_sorts,
+        replay_step,
+    )
+    if proof is not None:
+        return proof
     if len(parents) == 2:
         for source_index, equality_index in megalodon_replay_parent_pair_order(parents, replay_step):
             ordered_parents = [parents[source_index], parents[equality_index]]
