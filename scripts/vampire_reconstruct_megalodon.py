@@ -21961,6 +21961,62 @@ def raw_tptp_forward_demodulation_proof(
     )
     if proof is not None:
         return proof
+    pointwise_function = raw_pointwise_set_function_equality(second, second_name)
+    if pointwise_function is not None:
+        function_equality, function_equality_proof = pointwise_function
+        function_sides = equality_like_sides(function_equality)
+        if function_sides is not None:
+            function_sort = raw_equality_transport_sort(function_sides[0], function_sides[1], variable_sorts)
+            proof = raw_negative_implication_equality_rewrite_proof(
+                first,
+                target,
+                first_name,
+                function_sides[0],
+                function_sides[1],
+                function_equality_proof,
+                function_sort,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_equality_rewrite_clause_proof(
+                first,
+                target,
+                first_name,
+                function_sides[0],
+                function_sides[1],
+                function_equality_proof,
+                function_sort,
+            )
+            if proof is not None:
+                return proof
+    pointwise_function = raw_pointwise_set_function_equality(first, first_name)
+    if pointwise_function is not None:
+        function_equality, function_equality_proof = pointwise_function
+        function_sides = equality_like_sides(function_equality)
+        if function_sides is not None:
+            function_sort = raw_equality_transport_sort(function_sides[0], function_sides[1], variable_sorts)
+            proof = raw_negative_implication_equality_rewrite_proof(
+                second,
+                target,
+                second_name,
+                function_sides[0],
+                function_sides[1],
+                function_equality_proof,
+                function_sort,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_equality_rewrite_clause_proof(
+                second,
+                target,
+                second_name,
+                function_sides[0],
+                function_sides[1],
+                function_equality_proof,
+                function_sort,
+            )
+            if proof is not None:
+                return proof
     if second_sides is not None:
         equality_sort = raw_equality_transport_sort(second_sides[0], second_sides[1], variable_sorts)
         proof = raw_negative_implication_equality_rewrite_proof(
