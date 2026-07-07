@@ -19560,6 +19560,14 @@ def raw_candidate_terms_for_sort(
     return candidates
 
 
+def raw_simple_inhabitant_for_sort(sort: str) -> Expr | None:
+    if sort == "set":
+        return Expr("var", value="Empty")
+    if sort == "prop":
+        return Expr("var", value="True")
+    return None
+
+
 def raw_true_expr(expr: Expr) -> bool:
     return expr.kind == "var" and expr.value in {"vampire_true", "True"}
 
@@ -19655,6 +19663,44 @@ def raw_deep_formula_transform_proof(
         if source.kind == "app" and source.args[0].kind == "var" and source.args[0].value == "vampire_eq_prop":
             sort = "prop"
         return raw_eq_symmetry_proof(source_proof, source_sides[0], sort)
+
+    if source.kind == "forall" and source.value is not None and source.sort is not None:
+        source_body = source.args[0]
+        if source.value not in expr_variables(source_body):
+            candidates = raw_candidate_terms_for_sort((target, source_body), source.sort, variable_sorts)
+            inhabitant = raw_simple_inhabitant_for_sort(source.sort)
+            if inhabitant is not None:
+                candidates.append(inhabitant)
+            seen_candidates: set[str] = set()
+            for candidate in candidates[:16]:
+                candidate_key = expr_key(candidate)
+                if candidate_key in seen_candidates:
+                    continue
+                seen_candidates.add(candidate_key)
+                instantiated_source = substitute_expr(source_body, {source.value: candidate})
+                inner_source = f"({proof_head(source_proof)} {proof_arg_text(candidate)})"
+                inner = raw_deep_formula_transform_proof(
+                    instantiated_source,
+                    target,
+                    inner_source,
+                    variable_sorts,
+                    depth + 1,
+                )
+                if inner is not None:
+                    return inner
+
+    if target.kind == "forall" and target.value is not None and target.sort is not None:
+        target_body = target.args[0]
+        if target.value not in expr_variables(target_body):
+            inner = raw_deep_formula_transform_proof(
+                source,
+                target_body,
+                source_proof,
+                {**variable_sorts, target.value: target.sort},
+                depth + 1,
+            )
+            if inner is not None:
+                return f"(fun {target.value}:{target.sort} => {inner})"
 
     if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
         assert source.value is not None and target.value is not None and target.sort is not None
