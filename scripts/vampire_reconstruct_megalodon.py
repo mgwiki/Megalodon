@@ -835,6 +835,10 @@ def join_sort_arrows(pieces: Iterable[str]) -> str:
     return "->".join(rendered)
 
 
+def equivalent_sorts(left: str | None, right: str | None) -> bool:
+    return left is not None and right is not None and split_sort_arrows(left) == split_sort_arrows(right)
+
+
 def split_tptp_application(text: str) -> list[str] | None:
     text = strip_balanced_parens(text)
     parts: list[str] = []
@@ -1452,7 +1456,7 @@ def is_function_value(expr: Expr, sort: str | None) -> bool:
 
 def pointwise_equality_proposition(left: Expr, right: Expr, sort: str) -> str | None:
     pieces = split_sort_arrows(sort)
-    if len(pieces) < 2 or pieces[-1] not in {"set", "prop"} or any(piece not in {"set", "prop"} for piece in pieces[:-1]):
+    if len(pieces) < 2 or pieces[-1] not in {"set", "prop"}:
         return None
     used_texts = [expr_text(left), expr_text(right)]
     binders: list[Expr] = []
@@ -1487,7 +1491,7 @@ def tptp_function_equality_proposition(
     *,
     negated: bool,
 ) -> str | None:
-    if left_sort is None or right_sort is None or left_sort != right_sort:
+    if not equivalent_sorts(left_sort, right_sort):
         return None
     proposition = pointwise_equality_proposition(left, right, left_sort)
     if proposition is None:
@@ -2039,6 +2043,7 @@ def megalodon_equality_extra_proposition(
         expr = parse_expr(proposition)
         if expr is None:
             return proposition
+        expr = surface_direct_step_expr(expr, local_sorts)
         return lower_function_equality_proposition(expr, local_sorts)
     return None
 
@@ -3400,10 +3405,118 @@ def surface_replay_proposition(proposition: str) -> str:
     return expr_text(surface_replay_expr(parsed)) if parsed is not None else proposition
 
 
-def surface_direct_step_expr(expr: Expr, variable_sorts: dict[str, str]) -> Expr:
+DB_VAR_RE = re.compile(r"db([0-9]+)")
+
+
+def raw_tptp_db_binder_name(depth: int) -> str:
+    return f"DB{depth}"
+
+
+def infer_vampire_db_sort(
+    expr: Expr,
+    variable_sorts: dict[str, str],
+    target_index: int = 0,
+) -> str | None:
+    suggestions: list[str] = []
+
+    def visit(node: Expr, index: int, expected_sort: str | None = None) -> None:
+        if node.kind == "var" and node.value is not None:
+            match = DB_VAR_RE.fullmatch(node.value)
+            if match is not None and int(match.group(1)) == index and expected_sort is not None:
+                suggestions.append(expected_sort)
+            return
+        if node.kind in {"forall", "lambda"}:
+            visit(node.args[0], index, None)
+            return
+        if node.kind in {"eq", "arrow"}:
+            for arg in node.args:
+                visit(arg, index, None)
+            return
+        if node.kind != "app" or not node.args:
+            return
+        args = list(node.args)
+        if len(args) >= 2 and args[0].kind == "var" and args[0].value == "vLAM":
+            for arg in args[2:]:
+                visit(arg, index, None)
+            visit(args[1], index + 1, None)
+            return
+        head = args[0]
+        if head.kind == "var" and head.value is not None and expected_sort is not None:
+            match = DB_VAR_RE.fullmatch(head.value)
+            if match is not None and int(match.group(1)) == index:
+                converted_argument_sorts = [expr_sort(arg, variable_sorts) for arg in args[1:]]
+                if converted_argument_sorts and all(sort is not None for sort in converted_argument_sorts):
+                    suggestions.append(join_sort_arrows([*(sort for sort in converted_argument_sorts if sort is not None), expected_sort]))
+        head_sort = expr_sort(head, variable_sorts)
+        argument_sorts = split_sort_arrows(head_sort)[:-1] if head_sort is not None else []
+        visit(head, index, None)
+        arg_index = 0
+        cursor = 1
+        while cursor < len(args):
+            argument_sort = argument_sorts[arg_index] if arg_index < len(argument_sorts) else None
+            if cursor + 1 < len(args) and args[cursor].kind == "var" and args[cursor].value == "vLAM":
+                visit(args[cursor + 1], index + 1, None)
+                cursor += 2
+            else:
+                visit(args[cursor], index, argument_sort)
+                cursor += 1
+            arg_index += 1
+
+    visit(expr, target_index)
+    normalized = {join_sort_arrows(split_sort_arrows(sort)) for sort in suggestions}
+    if len(normalized) == 1:
+        return next(iter(normalized))
+    non_set = {sort for sort in normalized if sort != "set"}
+    if len(non_set) == 1:
+        return next(iter(non_set))
+    return None
+
+
+def surface_direct_step_expr(
+    expr: Expr,
+    variable_sorts: dict[str, str],
+    db_stack: tuple[str, ...] = (),
+    expected_sort: str | None = None,
+) -> Expr:
+    if expr.kind == "var" and expr.value is not None:
+        match = DB_VAR_RE.fullmatch(expr.value)
+        if match is not None:
+            index = int(match.group(1))
+            if index < len(db_stack):
+                return Expr("var", value=db_stack[index])
+        return expr
+
+    def surface_vlam_body(
+        body: Expr,
+        lambda_sort: str | None = None,
+        binder_sort_override: str | None = None,
+        body_sort_override: str | None = None,
+    ) -> Expr:
+        pieces = split_sort_arrows(lambda_sort) if lambda_sort is not None else []
+        binder_sort = binder_sort_override or (pieces[0] if len(pieces) > 1 else "set")
+        body_sort = body_sort_override or (join_sort_arrows(pieces[1:]) if len(pieces) > 1 else None)
+        inferred_binder_sort = infer_vampire_db_sort(body, variable_sorts)
+        if inferred_binder_sort is not None and binder_sort == "set":
+            binder_sort = inferred_binder_sort
+        binder = raw_tptp_db_binder_name(len(db_stack))
+        return Expr(
+            "lambda",
+            value=binder,
+            sort=binder_sort,
+            args=(
+                surface_direct_step_expr(
+                    body,
+                    {**variable_sorts, binder: binder_sort},
+                    (binder,) + db_stack,
+                    body_sort,
+                ),
+            ),
+        )
+
     if expr.kind == "eq":
-        left = surface_direct_step_expr(expr.args[0], variable_sorts)
-        right = surface_direct_step_expr(expr.args[1], variable_sorts)
+        left = surface_direct_step_expr(expr.args[0], variable_sorts, db_stack)
+        left_sort = expr_sort(left, variable_sorts)
+        right = surface_direct_step_expr(expr.args[1], variable_sorts, db_stack, left_sort)
         left_sort = expr_sort(left, variable_sorts)
         right_sort = expr_sort(right, variable_sorts)
         if left_sort == "prop" or right_sort == "prop":
@@ -3414,41 +3527,113 @@ def surface_direct_step_expr(expr: Expr, variable_sorts: dict[str, str]) -> Expr
         return Expr(
             "eq",
             args=(
-                surface_direct_step_expr(set_equality[0], variable_sorts),
-                surface_direct_step_expr(set_equality[1], variable_sorts),
+                surface_direct_step_expr(set_equality[0], variable_sorts, db_stack),
+                surface_direct_step_expr(set_equality[1], variable_sorts, db_stack),
             ),
         )
+    vampire_equality = app_args(expr, "vEQ", 2)
+    if vampire_equality is not None:
+        left = surface_direct_step_expr(vampire_equality[0], variable_sorts, db_stack)
+        left_sort = expr_sort(left, variable_sorts)
+        right = surface_direct_step_expr(vampire_equality[1], variable_sorts, db_stack, left_sort)
+        right_sort = expr_sort(right, variable_sorts)
+        if left_sort == "prop" or right_sort == "prop":
+            return Expr("app", args=(Expr("var", value="vampire_eq_prop"), left, right))
+        if equivalent_sorts(left_sort, right_sort) and left_sort is not None and is_function_value(left, left_sort):
+            pointwise = pointwise_equality_proposition(left, right, left_sort)
+            parsed_pointwise = parse_expr(pointwise) if pointwise is not None else None
+            if parsed_pointwise is not None:
+                return parsed_pointwise
+        return Expr("eq", args=(left, right))
     if expr.kind == "app":
-        args = [surface_direct_step_expr(arg, variable_sorts) for arg in expr.args]
+        args = list(expr.args)
         if (
             len(args) == 2
             and args[0].kind == "var"
             and args[0].value == "vLAM"
         ):
-            return Expr("lambda", value="db0", sort="set", args=(args[1],))
+            return surface_vlam_body(args[1], expected_sort)
+        if (
+            len(args) >= 2
+            and args[0].kind == "var"
+            and args[0].value == "vLAM"
+        ):
+            converted_arguments = [
+                surface_direct_step_expr(arg, variable_sorts, db_stack)
+                for arg in args[2:]
+            ]
+            argument_sorts = [expr_sort(arg, variable_sorts) for arg in converted_arguments]
+            known_argument_sorts = [sort for sort in argument_sorts if sort is not None]
+            lambda_sort = (
+                join_sort_arrows([*known_argument_sorts, expected_sort])
+                if expected_sort is not None and len(known_argument_sorts) == len(converted_arguments)
+                else None
+            )
+            body_sort = (
+                join_sort_arrows([*known_argument_sorts[1:], expected_sort])
+                if expected_sort is not None and len(known_argument_sorts) == len(converted_arguments) and known_argument_sorts
+                else None
+            )
+            lambda_expr = surface_vlam_body(
+                args[1],
+                lambda_sort,
+                known_argument_sorts[0] if known_argument_sorts else None,
+                body_sort,
+            )
+            if not converted_arguments:
+                return lambda_expr
+            return Expr("app", value=expr.value, args=(lambda_expr, *converted_arguments), sort=expr.sort)
         converted: list[Expr] = []
-        index = 0
-        changed = False
+        head_sort: str | None = None
+        if args:
+            converted_head = surface_direct_step_expr(args[0], variable_sorts, db_stack)
+            converted.append(converted_head)
+            head_sort = expr_sort(converted_head, variable_sorts)
+            index = 1
+        else:
+            index = 0
+        argument_sorts = split_sort_arrows(head_sort)[:-1] if head_sort is not None else []
+        argument_index = 0
         while index < len(args):
+            argument_sort = argument_sorts[argument_index] if argument_index < len(argument_sorts) else None
             if (
                 index + 1 < len(args)
                 and args[index].kind == "var"
                 and args[index].value == "vLAM"
             ):
-                converted.append(Expr("lambda", value="db0", sort="set", args=(args[index + 1],)))
+                converted.append(surface_vlam_body(args[index + 1], argument_sort))
                 index += 2
-                changed = True
+                argument_index += 1
                 continue
-            converted.append(args[index])
+            converted.append(surface_direct_step_expr(args[index], variable_sorts, db_stack, argument_sort))
             index += 1
-        if changed:
-            return Expr("app", value=expr.value, args=tuple(converted), sort=expr.sort)
-        return Expr("app", value=expr.value, args=tuple(args), sort=expr.sort)
+            argument_index += 1
+        if (
+            len(converted) == 2
+            and converted[0].kind == "var"
+            and converted[0].value == "vPI"
+            and converted[1].kind == "lambda"
+            and converted[1].value is not None
+            and converted[1].sort is not None
+        ):
+            return Expr("forall", value=converted[1].value, sort=converted[1].sort, args=converted[1].args)
+        if (
+            len(converted) == 2
+            and converted[0].kind == "var"
+            and converted[0].value == "vSIGMA"
+            and converted[1].kind == "lambda"
+            and converted[1].sort is not None
+        ):
+            return Expr(
+                "app",
+                args=(Expr("var", value=vampire_exists_name_for_sort(converted[1].sort)), converted[1]),
+            )
+        return Expr("app", value=expr.value, args=tuple(converted), sort=expr.sort)
     if expr.kind == "arrow":
         return Expr(
             expr.kind,
             value=expr.value,
-            args=tuple(surface_direct_step_expr(arg, variable_sorts) for arg in expr.args),
+            args=tuple(surface_direct_step_expr(arg, variable_sorts, db_stack) for arg in expr.args),
             sort=expr.sort,
         )
     if expr.kind in {"forall", "lambda"}:
@@ -3457,7 +3642,7 @@ def surface_direct_step_expr(expr: Expr, variable_sorts: dict[str, str]) -> Expr
         return Expr(
             expr.kind,
             value=expr.value,
-            args=(surface_direct_step_expr(expr.args[0], nested_sorts),),
+            args=(surface_direct_step_expr(expr.args[0], nested_sorts, db_stack),),
             sort=expr.sort,
         )
     return expr
@@ -3931,7 +4116,7 @@ def lower_function_equality_proposition(expr: Expr, variable_sorts: dict[str, st
     if expr.kind == "eq":
         left_sort = expr_sort(expr.args[0], variable_sorts)
         right_sort = expr_sort(expr.args[1], variable_sorts)
-        if left_sort is not None and left_sort == right_sort and is_function_value(expr.args[0], left_sort):
+        if equivalent_sorts(left_sort, right_sort) and is_function_value(expr.args[0], left_sort):
             pointwise = pointwise_equality_proposition(expr.args[0], expr.args[1], left_sort)
             if pointwise is not None:
                 return pointwise
@@ -16019,23 +16204,24 @@ def raw_literal_direct_transform_proof(
     ):
         true_expr = Expr("var", value="vampire_true")
         true_proof = "(fun Q H => H)"
+        prop_name = fresh_identifier("Qprop", expr_text(source), expr_text(target), source_proof)
         if expr_key(source_sides[0]) == expr_key(true_expr) and expr_same_mod_alpha(source_sides[1], target):
-            return f"({proof_head(source_proof)} (fun R:prop => R) {true_proof})"
+            return f"({proof_head(source_proof)} (fun {prop_name}:prop => {prop_name}) {true_proof})"
         if expr_key(source_sides[0]) == expr_key(true_expr):
-            proposition_proof = f"({proof_head(source_proof)} (fun R:prop => R) {true_proof})"
+            proposition_proof = f"({proof_head(source_proof)} (fun {prop_name}:prop => {prop_name}) {true_proof})"
             rewrite_proof = raw_split_rewrite_proof(source_sides[1], target, proposition_proof, rewrites)
             if rewrite_proof is not None:
                 return rewrite_proof
         if expr_same_mod_alpha(source_sides[0], target) and expr_key(source_sides[1]) == expr_key(true_expr):
             return (
                 f"(({proof_head(source_proof)} "
-                f"(fun R:prop => R -> {proof_arg_text(target)}) "
+                f"(fun {prop_name}:prop => {prop_name} -> {proof_arg_text(target)}) "
                 f"(fun H => H)) {true_proof})"
             )
         if expr_key(source_sides[1]) == expr_key(true_expr):
             proposition_proof = (
                 f"(({proof_head(source_proof)} "
-                f"(fun R:prop => R -> {proof_arg_text(source_sides[0])}) "
+                f"(fun {prop_name}:prop => {prop_name} -> {proof_arg_text(source_sides[0])}) "
                 f"(fun H => H)) {true_proof})"
             )
             rewrite_proof = raw_split_rewrite_proof(source_sides[0], target, proposition_proof, rewrites)
@@ -19138,11 +19324,12 @@ def raw_proof_from_prop_true_equality(source: Expr, target: Expr, source_proof: 
     if not expr_same_mod_alpha(proposition, target):
         return None
     true_proof = raw_true_intro_proof()
+    prop_name = fresh_identifier("Qprop", expr_text(source), expr_text(target), source_proof)
     if true_on_left:
-        return f"({proof_head(source_proof)} (fun R:prop => R) {true_proof})"
+        return f"({proof_head(source_proof)} (fun {prop_name}:prop => {prop_name}) {true_proof})"
     return (
         f"(({proof_head(source_proof)} "
-        f"(fun R:prop => R -> {proof_arg_text(target)}) "
+        f"(fun {prop_name}:prop => {prop_name} -> {proof_arg_text(target)}) "
         f"(fun H => H)) {true_proof})"
     )
 
@@ -21319,6 +21506,45 @@ def raw_tptp_avatar_definition_parts(proposition: str) -> tuple[str, Expr] | Non
     return None
 
 
+MAX_RAW_TPTP_SPLIT_DEFINITION_BODY = 10000
+MAX_RAW_TPTP_EXACT_AVATAR_PROPOSITION = 12000
+MAX_RAW_TPTP_EXACT_PROOF_TERM = 40000
+
+
+def raw_tptp_safe_split_definition_body(body: Expr, variable_sorts: dict[str, str]) -> str | None:
+    if expr_sort(body, variable_sorts) != "prop":
+        return None
+    body_text = expr_text(body)
+    if len(body_text) > MAX_RAW_TPTP_SPLIT_DEFINITION_BODY:
+        return None
+    return body_text
+
+
+def raw_tptp_replay_proof_has_synthetic_db(proof: str) -> bool:
+    return re.search(r"\bDB[0-9]+\b", proof) is not None
+
+
+RAW_TPTP_SURFACE_VAR_RE = re.compile(r"\b[XY][0-9]+\b")
+RAW_TPTP_SURFACE_BINDER_RE = re.compile(r"\bfun\s+([XY][0-9]+)\s*:")
+
+
+def raw_tptp_replay_proof_has_escaped_surface_variable(proposition: str, proof: str) -> bool:
+    proposition_variables = set(RAW_TPTP_SURFACE_VAR_RE.findall(proposition))
+    proof_variables = set(RAW_TPTP_SURFACE_VAR_RE.findall(proof))
+    proof_binders = set(RAW_TPTP_SURFACE_BINDER_RE.findall(proof))
+    return bool(proof_variables - proposition_variables - proof_binders)
+
+
+def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: str) -> bool:
+    if raw_tptp_replay_proof_has_escaped_surface_variable(proposition, proof):
+        return True
+    if rule in {"definition_folding", "definition_unfolding"} and raw_tptp_replay_proof_has_synthetic_db(proof):
+        return True
+    if rule in {"avatar_component_clause", "avatar_split_clause"}:
+        return len(proposition) > MAX_RAW_TPTP_EXACT_AVATAR_PROPOSITION or len(proof) > MAX_RAW_TPTP_EXACT_PROOF_TERM
+    return False
+
+
 def raw_tptp_avatar_definition_proof(proposition: str) -> str | None:
     if raw_tptp_avatar_definition_parts(proposition) is None:
         return None
@@ -22654,7 +22880,9 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if definition is None:
             continue
         split_name, body = definition
-        avatar_split_definitions.setdefault(split_name, expr_text(body))
+        body_text = raw_tptp_safe_split_definition_body(body, variable_sorts)
+        if body_text is not None:
+            avatar_split_definitions.setdefault(split_name, body_text)
     for step in replay_steps.values():
         local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(step)}
         for fields in megalodon_replay_extra_fields(step, "definition_rewrite"):
@@ -22662,7 +22890,9 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             if definition is None:
                 continue
             split_name, body, _split = definition
-            avatar_split_definitions.setdefault(split_name, expr_text(body))
+            body_text = raw_tptp_safe_split_definition_body(body, local_sorts)
+            if body_text is not None:
+                avatar_split_definitions.setdefault(split_name, body_text)
 
     final_name = None
     final_proposition = "vampire_false"
@@ -22773,6 +23003,12 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                         delattr(PROOF_SEARCH_STATE, "deadline")
                 else:
                     PROOF_SEARCH_STATE.deadline = previous_deadline
+        if replay_proof is not None and raw_tptp_replay_proof_is_unsafe(rule, proposition, replay_proof):
+            replay_proof = None
+        if rule == "avatar_definition" and replay_proof is not None:
+            definition = raw_tptp_avatar_definition_parts(proposition)
+            if definition is not None and definition[0] not in avatar_split_definitions:
+                replay_proof = None
         lines.append(f"claim {claim_name}: {proposition}.")
         if replay_proof is None:
             lines.append("{ admit. }")
@@ -22786,6 +23022,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         lines.append(f"exact {final_name}.")
     lines.append("Qed.")
     lines = use_ambient_basic_logic(add_problem_type_variables(lines, proof, text, problem))
+    lines = parenthesize_atomic_axiom_propositions(lines)
     return add_used_boolean_extensionality_helpers(lines)
 
 
