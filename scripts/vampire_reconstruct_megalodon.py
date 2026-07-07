@@ -16686,6 +16686,9 @@ def raw_tptp_one_parent_transform_proof(
     deep = raw_deep_formula_transform_proof(source, target, raw_tptp_claim_name(parents[0]), variable_sorts or {})
     if deep is not None:
         return deep
+    not_exists = raw_not_exists_to_forall_not_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
+    if not_exists is not None:
+        return not_exists
     implication_or = raw_classical_implication_to_or_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
     if implication_or is not None:
         return implication_or
@@ -16804,6 +16807,48 @@ def raw_classical_implication_to_or_body_proof(
         f"(xm {proof_arg_text(target_premise)} {proof_arg_text(target)} "
         f"(fun {premise_name} => (fun P Hleft Hright => Hleft {proof_term_text(positive_branch)})) "
         f"(fun HnotPrem{index} => (fun P Hleft Hright => Hright HnotPrem{index})))"
+    )
+
+
+def raw_predicate_application(predicate: Expr, argument: Expr) -> Expr:
+    if predicate.kind == "lambda" and predicate.value is not None:
+        return substitute_expr(predicate.args[0], {predicate.value: argument})
+    return Expr("app", args=(predicate, argument))
+
+
+def raw_not_exists_to_forall_not_transform_proof(source: Expr, target: Expr, source_proof: str) -> str | None:
+    source_premises, source_conclusion = split_arrows(source)
+    if len(source_premises) != 1 or not false_eliminator_expr(source_conclusion):
+        return None
+    exists_arg: Expr | None = None
+    exists_sort: str | None = None
+    for head, binder_sort in (
+        ("vampire_exists_set", "set"),
+        ("vampire_exists_prop", "prop"),
+        ("vampire_exists_set_prop", "set->prop"),
+    ):
+        args = app_args(source_premises[0], head, 1)
+        if args is not None:
+            exists_arg = args[0]
+            exists_sort = binder_sort
+            break
+    if exists_arg is None or exists_sort is None:
+        return None
+    target_binders, target_body = collect_foralls(target)
+    if len(target_binders) != 1:
+        return None
+    target_name, target_sort = target_binders[0]
+    if target_sort != exists_sort:
+        return None
+    target_premises, target_conclusion = split_arrows(target_body)
+    if len(target_premises) != 1 or not false_eliminator_expr(target_conclusion):
+        return None
+    expected_premise = raw_predicate_application(exists_arg, Expr("var", value=target_name))
+    if not expr_same_mod_alpha(expected_premise, target_premises[0]):
+        return None
+    return (
+        f"(fun {target_name}:{target_sort} => fun Hprem => "
+        f"{proof_head(source_proof)} (fun Q:prop => fun Hexists => Hexists {target_name} Hprem))"
     )
 
 
