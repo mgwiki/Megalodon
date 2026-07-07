@@ -19643,6 +19643,47 @@ def raw_tptp_extra_formula_expr(
     return parse_expr(proposition) if proposition is not None else None
 
 
+def raw_match_literal_mod_equality_symmetry(
+    pattern: Expr,
+    concrete: Expr,
+    variables: set[str],
+    subst: dict[str, Expr],
+) -> bool:
+    if match_expr_with_alpha_instantiation(pattern, concrete, variables, subst):
+        return True
+    pattern_sides = equality_like_sides(pattern)
+    concrete_sides = equality_like_sides(concrete)
+    if pattern_sides is not None and concrete_sides is not None:
+        trial = dict(subst)
+        if (
+            match_expr_with_alpha_instantiation(pattern_sides[0], concrete_sides[1], variables, trial)
+            and match_expr_with_alpha_instantiation(pattern_sides[1], concrete_sides[0], variables, trial)
+        ):
+            subst.clear()
+            subst.update(trial)
+            return True
+    pattern_premises, pattern_conclusion = split_arrows(pattern)
+    concrete_premises, concrete_conclusion = split_arrows(concrete)
+    if (
+        len(pattern_premises) == 1
+        and len(concrete_premises) == 1
+        and false_eliminator_expr(pattern_conclusion)
+        and false_eliminator_expr(concrete_conclusion)
+    ):
+        pattern_sides = equality_like_sides(pattern_premises[0])
+        concrete_sides = equality_like_sides(concrete_premises[0])
+        if pattern_sides is not None and concrete_sides is not None:
+            trial = dict(subst)
+            if (
+                match_expr_with_alpha_instantiation(pattern_sides[0], concrete_sides[1], variables, trial)
+                and match_expr_with_alpha_instantiation(pattern_sides[1], concrete_sides[0], variables, trial)
+            ):
+                subst.clear()
+                subst.update(trial)
+                return True
+    return False
+
+
 def raw_instantiated_clause_from_exported_literal(
     clause: Expr,
     clause_proof: str,
@@ -19658,7 +19699,7 @@ def raw_instantiated_clause_from_exported_literal(
     binder_sorts = {name: sort for name, sort in binders}
     binder_names = set(binder_sorts)
     subst: dict[str, Expr] = {}
-    if not match_expr_with_alpha_instantiation(literals[literal_index], substituted_literal, binder_names, subst):
+    if not raw_match_literal_mod_equality_symmetry(literals[literal_index], substituted_literal, binder_names, subst):
         literal_sides = equality_like_sides(literals[literal_index])
         substituted_sides = equality_like_sides(substituted_literal)
         matched_symmetric_equality = False
@@ -19697,7 +19738,7 @@ def raw_instantiated_clause_from_exported_literal(
         source_literal = candidate_literals[index]
         for target_literal in target_literals:
             trial = dict(current)
-            if match_expr_with_alpha_instantiation(source_literal, target_literal, binder_names, trial):
+            if raw_match_literal_mod_equality_symmetry(source_literal, target_literal, binder_names, trial):
                 found = complete_from_target(index + 1, trial)
                 if found is not None:
                     return found
