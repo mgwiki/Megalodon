@@ -19819,10 +19819,11 @@ def raw_rectify_formula_transform_proof(
     if source.kind == "forall" and source.value is not None and source.sort is not None:
         source_body = source.args[0]
         if source.value not in expr_variables(source_body):
-            candidates = raw_candidate_terms_for_sort((target, source_body), source.sort, variable_sorts)
+            candidates = []
             inhabitant = raw_simple_inhabitant_for_sort(source.sort)
             if inhabitant is not None:
                 candidates.append(inhabitant)
+            candidates.extend(raw_candidate_terms_for_sort((target, source_body), source.sort, variable_sorts))
             seen_candidates: set[str] = set()
             for candidate in candidates[:16]:
                 candidate_key = expr_key(candidate)
@@ -20133,6 +20134,18 @@ def raw_simple_inhabitant_for_sort(sort: str) -> Expr | None:
         return Expr("var", value="Empty")
     if sort == "prop":
         return Expr("var", value="True")
+    pieces = split_sort_arrows(sort)
+    if len(pieces) > 1:
+        domain = pieces[0]
+        range_sort = join_sort_arrows(pieces[1:])
+        name = "Xinh"
+        if domain == range_sort:
+            body = Expr("var", value=name)
+        else:
+            body = raw_simple_inhabitant_for_sort(range_sort)
+        if body is None:
+            return None
+        return Expr("lambda", value=name, sort=domain, args=(body,))
     return None
 
 
@@ -20845,10 +20858,11 @@ def raw_deep_formula_transform_proof(
     if source.kind == "forall" and source.value is not None and source.sort is not None:
         source_body = source.args[0]
         if source.value not in expr_variables(source_body):
-            candidates = raw_candidate_terms_for_sort((target, source_body), source.sort, variable_sorts)
+            candidates = []
             inhabitant = raw_simple_inhabitant_for_sort(source.sort)
             if inhabitant is not None:
                 candidates.append(inhabitant)
+            candidates.extend(raw_candidate_terms_for_sort((target, source_body), source.sort, variable_sorts))
             seen_candidates: set[str] = set()
             for candidate in candidates[:16]:
                 candidate_key = expr_key(candidate)
