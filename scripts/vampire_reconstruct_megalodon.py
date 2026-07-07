@@ -8896,6 +8896,269 @@ def binary_transitivity_transported_rule_leg_proof(
     return None
 
 
+def membership_antisymmetry_equality_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+) -> str | None:
+    if rule_depth <= 0 or len(expr_text(expr)) > 900:
+        return None
+
+    def rule_premises_in_application_order(rule: ProofRule) -> tuple[Expr, ...]:
+        return tuple(
+            step.expr for step in rule.steps if step.kind == "premise" and step.expr is not None
+        ) or rule.premises
+
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if binders or len(premises) != 1:
+        return None
+    membership = binary_atom_parts(premises[0])
+    sides = equality_like_sides(conclusion)
+    if membership is None or membership[0] != "In" or sides is None:
+        return None
+    member, container = membership[1], membership[2]
+    if expr_key(sides[0]) == expr_key(member) and expr_key(sides[1]) == expr_key(container):
+        target_left, target_right = sides
+    elif expr_key(sides[1]) == expr_key(member) and expr_key(sides[0]) == expr_key(container):
+        target_left, target_right = sides
+    else:
+        return None
+
+    def apply_rule(
+        rule: ProofRule,
+        subst: dict[str, Expr],
+        premise_proofs: dict[str, str],
+    ) -> str | None:
+        parts = [rule.name]
+        steps = rule.steps
+        if not steps:
+            steps = tuple(RuleStep("binder", name=binder) for binder in rule_application_binders(rule)) + tuple(
+                RuleStep("premise", expr=premise) for premise in rule.premises
+            )
+        for step in steps:
+            if step.kind == "binder":
+                if step.name is None or step.name not in subst:
+                    return None
+                parts.append(proof_arg_text(subst[step.name]))
+                continue
+            assert step.expr is not None
+            proof = premise_proofs.get(expr_key(substitute_expr(step.expr, subst)))
+            if proof is None:
+                return None
+            parts.append(proof_argument_text(proof))
+        return rule_application_text(parts)
+
+    antisymmetry_rule: ProofRule | None = None
+    relation_head: str | None = None
+    for rule in rules:
+        rule_premises = rule_premises_in_application_order(rule)
+        if len(rule_application_binders(rule)) != 2 or len(rule_premises) != 2:
+            continue
+        rule_sides = equality_like_sides(rule_application_conclusion(rule))
+        first = binary_atom_parts(rule_premises[0])
+        second = binary_atom_parts(rule_premises[1])
+        if rule_sides is None or first is None or second is None or first[0] != second[0]:
+            continue
+        b0, b1 = rule_application_binders(rule)
+        if (
+            expr_key(first[1]) == b0
+            and expr_key(first[2]) == b1
+            and expr_key(second[1]) == b1
+            and expr_key(second[2]) == b0
+            and expr_key(rule_sides[0]) == b0
+            and expr_key(rule_sides[1]) == b1
+        ):
+            antisymmetry_rule = rule
+            relation_head = first[0]
+            break
+    if antisymmetry_rule is None or relation_head is None:
+        return None
+
+    succ_rule: ProofRule | None = None
+    succ_head: str | None = None
+    for rule in rules:
+        rule_binders = rule_application_binders(rule)
+        conclusion_atom = binary_atom_parts(rule_application_conclusion(rule))
+        if (
+            len(rule_binders) != 1
+            or rule_premises_in_application_order(rule)
+            or conclusion_atom is None
+            or conclusion_atom[0] != relation_head
+        ):
+            continue
+        if expr_key(conclusion_atom[1]) != rule_binders[0]:
+            continue
+        app = unary_application(conclusion_atom[2])
+        if app is None or expr_key(app[1]) != rule_binders[0]:
+            continue
+        succ_rule = rule
+        succ_head = app[0]
+        break
+    if succ_rule is None or succ_head is None:
+        return None
+
+    member_subset_rule: ProofRule | None = None
+    ordinal_predicate: str | None = None
+    for rule in rules:
+        rule_binders = rule_application_binders(rule)
+        rule_premises = rule_premises_in_application_order(rule)
+        if len(rule_binders) != 2 or len(rule_premises) != 2:
+            continue
+        conclusion_atom = binary_atom_parts(rule_application_conclusion(rule))
+        if conclusion_atom is None or conclusion_atom[0] != relation_head:
+            continue
+        app = unary_application(conclusion_atom[1])
+        if app is None or app[0] != succ_head or expr_key(app[1]) != rule_binders[1]:
+            continue
+        if expr_key(conclusion_atom[2]) != rule_binders[0]:
+            continue
+        premise_atoms = [binary_atom_parts(premise) for premise in rule_premises]
+        has_membership = any(
+            atom is not None
+            and atom[0] == "In"
+            and expr_key(atom[1]) == rule_binders[1]
+            and expr_key(atom[2]) == rule_binders[0]
+            for atom in premise_atoms
+        )
+        unary_premises = [unary_predicate_application(premise) for premise in rule_premises]
+        ordinal_candidates = [
+            pred
+            for pred in unary_premises
+            if pred is not None and expr_key(pred[1]) == rule_binders[0]
+        ]
+        if has_membership and ordinal_candidates:
+            member_subset_rule = rule
+            ordinal_predicate = ordinal_candidates[0][0]
+            break
+    if member_subset_rule is None or ordinal_predicate is None:
+        return None
+
+    transitivity_rule: ProofRule | None = None
+    for rule in rules:
+        rule_binders = rule_application_binders(rule)
+        rule_premises = rule_premises_in_application_order(rule)
+        if len(rule_binders) != 3 or len(rule_premises) != 2:
+            continue
+        conclusion_atom = binary_atom_parts(rule_application_conclusion(rule))
+        if conclusion_atom is None or conclusion_atom[0] != relation_head:
+            continue
+        b0, b1, b2 = rule_binders
+        expected = {
+            expr_key(Expr("app", args=(Expr("var", value=relation_head), Expr("var", value=b0), Expr("var", value=b1)))),
+            expr_key(Expr("app", args=(Expr("var", value=relation_head), Expr("var", value=b1), Expr("var", value=b2)))),
+        }
+        if (
+            expr_key(conclusion_atom[1]) == b0
+            and expr_key(conclusion_atom[2]) == b2
+            and {expr_key(premise) for premise in rule_premises} == expected
+        ):
+            transitivity_rule = rule
+            break
+    if transitivity_rule is None:
+        return None
+
+    local_known = dict(known)
+    local_known_canonical = dict(known_canonical)
+    local_rules = list(rules)
+    local_eq_facts = list(eq_facts)
+    premise_name = "H0"
+    remember_proposition(
+        local_known,
+        local_known_canonical,
+        local_rules,
+        local_eq_facts,
+        premise_name,
+        expr_text(premises[0]),
+    )
+
+    reverse_relation = Expr("app", args=(Expr("var", value=relation_head), target_right, target_left))
+    reverse_proof = proof_for_expr(
+        reverse_relation,
+        local_known,
+        local_known_canonical,
+        local_rules,
+        local_eq_facts,
+        definitions,
+        allow_rule=True,
+        rule_depth=max(0, rule_depth - 1),
+    )
+    ordinal_expr = Expr("app", args=(Expr("var", value=ordinal_predicate), target_right))
+    ordinal_proof = proof_for_expr(
+        ordinal_expr,
+        local_known,
+        local_known_canonical,
+        local_rules,
+        local_eq_facts,
+        definitions,
+        allow_rule=True,
+        rule_depth=max(0, rule_depth - 1),
+    )
+    if reverse_proof is None or ordinal_proof is None:
+        return None
+
+    successor = unary_app(succ_head, target_left)
+    succ_relation = Expr("app", args=(Expr("var", value=relation_head), target_left, successor))
+    member_relation = Expr("app", args=(Expr("var", value=relation_head), successor, target_right))
+    forward_relation = Expr("app", args=(Expr("var", value=relation_head), target_left, target_right))
+
+    succ_subst = {rule_application_binders(succ_rule)[0]: target_left}
+    succ_proof = apply_rule(succ_rule, succ_subst, {})
+    if succ_proof is None:
+        return None
+
+    member_subst = {
+        rule_application_binders(member_subset_rule)[0]: target_right,
+        rule_application_binders(member_subset_rule)[1]: target_left,
+    }
+    member_proof = apply_rule(
+        member_subset_rule,
+        member_subst,
+        {
+            expr_key(premises[0]): premise_name,
+            expr_key(ordinal_expr): ordinal_proof,
+        },
+    )
+    if member_proof is None:
+        return None
+
+    trans_subst = {
+        rule_application_binders(transitivity_rule)[0]: target_left,
+        rule_application_binders(transitivity_rule)[1]: successor,
+        rule_application_binders(transitivity_rule)[2]: target_right,
+    }
+    forward_proof = apply_rule(
+        transitivity_rule,
+        trans_subst,
+        {
+            expr_key(succ_relation): succ_proof,
+            expr_key(member_relation): member_proof,
+        },
+    )
+    if forward_proof is None:
+        return None
+
+    anti_subst = {
+        rule_application_binders(antisymmetry_rule)[0]: target_left,
+        rule_application_binders(antisymmetry_rule)[1]: target_right,
+    }
+    equality_proof = apply_rule(
+        antisymmetry_rule,
+        anti_subst,
+        {
+            expr_key(forward_relation): forward_proof,
+            expr_key(reverse_relation): reverse_proof,
+        },
+    )
+    if equality_proof is None:
+        return None
+    return f"(fun {premise_name} => {equality_proof})"
+
+
 def binary_relation_transported_rule_proof(
     target: Expr,
     target_head: str,
@@ -12105,6 +12368,18 @@ def _proof_for_expr_impl(
     )
     if case_antisymmetry is not None:
         return case_antisymmetry
+
+    membership_antisymmetry = membership_antisymmetry_equality_proof(
+        expr,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        rule_depth,
+    )
+    if membership_antisymmetry is not None:
+        return membership_antisymmetry
 
     implication_intro = implication_intro_proof(
         expr,
