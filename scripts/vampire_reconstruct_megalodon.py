@@ -16700,6 +16700,14 @@ def raw_tptp_one_parent_transform_proof(
     )
     if classical is not None:
         return classical
+    negated_forall_equality = raw_negated_forall_double_negated_equality_to_negative_equality_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+        variable_sorts or {},
+    )
+    if negated_forall_equality is not None:
+        return negated_forall_equality
     if not raw_clause_replay_budget_ok(source, target, max_literals=max_literals, max_literal_product=max_literal_product):
         return None
     return raw_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
@@ -16909,6 +16917,48 @@ def raw_classical_double_negation_transform_proof(
         f"(fun Hpositive => HnotTarget {proof_term_text(positive_to_target)}) "
         f"{target_text})))"
     )
+
+
+def raw_negated_forall_double_negated_equality_to_negative_equality_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_premises, source_conclusion = split_arrows(source)
+    target_premises, target_conclusion = split_arrows(target)
+    if (
+        len(source_premises) != 1
+        or len(target_premises) != 1
+        or not false_eliminator_expr(source_conclusion)
+        or not false_eliminator_expr(target_conclusion)
+    ):
+        return None
+    binders, body = collect_foralls(source_premises[0])
+    body_premises, body_conclusion = split_arrows(body)
+    if len(body_premises) != 1 or not false_eliminator_expr(body_conclusion):
+        return None
+    negated_equality_premises, negated_equality_conclusion = split_arrows(body_premises[0])
+    if len(negated_equality_premises) != 1 or not false_eliminator_expr(negated_equality_conclusion):
+        return None
+    source_sides = equality_like_sides(negated_equality_premises[0])
+    target_sides = equality_like_sides(target_premises[0])
+    if source_sides is None or target_sides is None:
+        return None
+    if not (
+        expr_same_mod_alpha(source_sides[0], target_sides[1])
+        and expr_same_mod_alpha(source_sides[1], target_sides[0])
+    ):
+        return None
+    local_sorts = dict(variable_sorts)
+    for name, sort in binders:
+        local_sorts[name] = sort
+    equality_sort = raw_equality_transport_sort(target_sides[0], target_sides[1], local_sorts)
+    source_equality = raw_eq_symmetry_proof("Htarget", target_sides[0], equality_sort)
+    proof = f"(fun HnotEq => HnotEq {proof_term_text(source_equality)})"
+    for name, sort in reversed(binders):
+        proof = f"(fun {name}:{sort} => {proof})"
+    return f"(fun Htarget => {proof_head(source_proof)} {proof_term_text(proof)})"
 
 
 def raw_tptp_deep_formula_transform_proof(
