@@ -1235,17 +1235,11 @@ def strip_tptp_negation(text: str) -> str | None:
 def reconstruction_prelude_for(propositions: list[str]) -> list[str]:
     joined = "\n".join(propositions)
     lines = [
-        "Definition vampire_false : prop := forall P:prop, P.",
         "Definition vampire_eq : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y.",
         "Infix = 502 := vampire_eq.",
         "Definition vampire_eq_set : set->set->prop := vampire_eq.",
         "Definition vampire_eq_prop : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y.",
-        "Definition vampire_true : prop := forall P:prop, P -> P.",
     ]
-    if "vampire_or " in joined:
-        lines.append("Definition vampire_or : prop->prop->prop := fun A B:prop => forall P:prop, (A -> P) -> (B -> P) -> P.")
-    if "vampire_and " in joined:
-        lines.append("Definition vampire_and : prop->prop->prop := fun A B:prop => forall P:prop, (A -> B -> P) -> P.")
     if "vampire_exists_set " in joined:
         lines.append("Definition vampire_exists_set : (set->prop)->prop := fun P => forall Q:prop, (forall X:set, P X -> Q) -> Q.")
     if "vampire_exists_prop " in joined:
@@ -14278,6 +14272,26 @@ def normalize_vampire_boolean_literals(lines: list[str]) -> list[str]:
     return result
 
 
+AMBIENT_BASIC_LOGIC_REPLACEMENTS = (
+    ("vampire_false", "False"),
+    ("vampire_true", "True"),
+    ("vampire_or", "or"),
+    ("vampire_and", "and"),
+)
+
+
+def use_ambient_basic_logic(lines: list[str]) -> list[str]:
+    result: list[str] = []
+    for line in lines:
+        if any(line.startswith(f"Definition {name} ") for name, _ in AMBIENT_BASIC_LOGIC_REPLACEMENTS):
+            continue
+        if not line.lstrip().startswith("//"):
+            for name, replacement in AMBIENT_BASIC_LOGIC_REPLACEMENTS:
+                line = replace_identifier(line, name, replacement)
+        result.append(line)
+    return result
+
+
 def source_dependency_names(line_text: str | None) -> list[str]:
     if line_text is None:
         return []
@@ -17318,8 +17332,39 @@ def raw_tptp_forward_demodulation_proof(
     second_sides = equality_like_sides(second)
     first_name = raw_tptp_claim_name(parents[0])
     second_name = raw_tptp_claim_name(parents[1])
+    proof = raw_negative_implication_quantified_equality_rewrite_proof(
+        first,
+        target,
+        first_name,
+        second,
+        second_name,
+        variable_sorts,
+    )
+    if proof is not None:
+        return proof
+    proof = raw_negative_implication_quantified_equality_rewrite_proof(
+        second,
+        target,
+        second_name,
+        first,
+        first_name,
+        variable_sorts,
+    )
+    if proof is not None:
+        return proof
     if second_sides is not None:
         equality_sort = raw_equality_transport_sort(second_sides[0], second_sides[1], variable_sorts)
+        proof = raw_negative_implication_equality_rewrite_proof(
+            first,
+            target,
+            first_name,
+            second_sides[0],
+            second_sides[1],
+            second_name,
+            equality_sort,
+        )
+        if proof is not None:
+            return proof
         proof = raw_equality_rewrite_clause_proof(
             first,
             target,
@@ -17333,6 +17378,17 @@ def raw_tptp_forward_demodulation_proof(
             return proof
     if first_sides is not None:
         equality_sort = raw_equality_transport_sort(first_sides[0], first_sides[1], variable_sorts)
+        proof = raw_negative_implication_equality_rewrite_proof(
+            second,
+            target,
+            second_name,
+            first_sides[0],
+            first_sides[1],
+            first_name,
+            equality_sort,
+        )
+        if proof is not None:
+            return proof
         proof = raw_equality_rewrite_clause_proof(
             second,
             target,
@@ -17353,6 +17409,106 @@ def raw_tptp_forward_demodulation_proof(
     proof = raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name)
     if proof is not None:
         return proof
+    return None
+
+
+def raw_negative_implication_quantified_equality_rewrite_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality: Expr,
+    equality_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_premises, source_conclusion = split_arrows(source)
+    target_premises, target_conclusion = split_arrows(target)
+    if (
+        len(source_premises) != 1
+        or len(target_premises) != 1
+        or not false_eliminator_expr(source_conclusion)
+        or not false_eliminator_expr(target_conclusion)
+    ):
+        return None
+    binders, equality_body = collect_foralls(equality)
+    sides = equality_like_sides(equality_body)
+    if sides is None:
+        return None
+    binder_names = {name for name, _ in binders}
+    local_sorts = {**variable_sorts, **{name: sort for name, sort in binders}}
+    source_subterms = expr_subterms(source_premises[0], limit=128)
+    target_subterms = expr_subterms(target_premises[0], limit=128)
+    for old_pattern, new_pattern, reverse in (
+        (sides[0], sides[1], False),
+        (sides[1], sides[0], True),
+    ):
+        for old_subterm in target_subterms:
+            for new_subterm in source_subterms:
+                subst: dict[str, Expr] = {}
+                if not match_expr_with_alpha_instantiation(old_pattern, old_subterm, binder_names, subst):
+                    continue
+                if not match_expr_with_alpha_instantiation(new_pattern, new_subterm, binder_names, subst):
+                    continue
+                for name, sort in binders:
+                    if name in subst:
+                        continue
+                    for candidate in [*target_subterms, *source_subterms]:
+                        if expr_sort(candidate, local_sorts) == sort:
+                            subst[name] = candidate
+                            break
+                    if name not in subst:
+                        break
+                if any(name not in subst for name, _ in binders):
+                    continue
+                replaced, changed = replace_expr(target_premises[0], old_subterm, new_subterm)
+                if not changed or not expr_same_mod_alpha(replaced, source_premises[0]):
+                    continue
+                equality_instance = equality_proof
+                for name, _ in binders:
+                    equality_instance = f"({proof_head(equality_instance)} {proof_arg_text(subst[name])})"
+                equality_sort = raw_equality_transport_sort(old_subterm, new_subterm, local_sorts)
+                if reverse:
+                    equality_instance = raw_eq_symmetry_proof(equality_instance, new_subterm, equality_sort)
+                hole_name = fresh_identifier("zz", expr_text(target_premises[0]), expr_text(old_subterm), expr_text(new_subterm))
+                context, context_changed = replace_expr(target_premises[0], old_subterm, Expr("var", value=hole_name))
+                if not context_changed:
+                    continue
+                transported = (
+                    f"{proof_term_text(equality_instance)} "
+                    f"(fun {hole_name}:{equality_sort} => {expr_text(context)}) "
+                    f"Htarget"
+                )
+                return f"(fun Htarget => {proof_head(source_proof)} {proof_term_text(transported)})"
+    return None
+
+
+def raw_negative_implication_equality_rewrite_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality_left: Expr,
+    equality_right: Expr,
+    equality_proof: str,
+    equality_sort: str,
+) -> str | None:
+    source_premises, source_conclusion = split_arrows(source)
+    target_premises, target_conclusion = split_arrows(target)
+    if (
+        len(source_premises) != 1
+        or len(target_premises) != 1
+        or not false_eliminator_expr(source_conclusion)
+        or not false_eliminator_expr(target_conclusion)
+    ):
+        return None
+    for rewritten, transported in raw_equality_rewrite_clause_steps(
+        target_premises[0],
+        "Htarget",
+        equality_left,
+        equality_right,
+        equality_proof,
+        equality_sort,
+    ):
+        if expr_same_mod_alpha(rewritten, source_premises[0]):
+            return f"(fun Htarget => {proof_head(source_proof)} {proof_term_text(transported)})"
     return None
 
 
@@ -18513,7 +18669,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     else:
         lines.append(f"exact {final_name}.")
     lines.append("Qed.")
-    return add_problem_type_variables(lines, proof, text, problem)
+    return use_ambient_basic_logic(add_problem_type_variables(lines, proof, text, problem))
 
 
 def write_raw_tptp_skeletons(
