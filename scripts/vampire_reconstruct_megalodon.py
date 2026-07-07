@@ -1820,6 +1820,7 @@ def megalodon_replay_steps(
     extras: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
     direct_propositions: dict[str, str] = {}
     placeholder_steps: set[str] = set()
+    step_details: dict[str, tuple[str, tuple[str, ...], dict[str, str]]] = {}
     for raw in proof_text.splitlines():
         line = raw.strip()
         proposition_match = MEGALODON_STEP_PROPOSITION_RE.match(line)
@@ -1832,27 +1833,35 @@ def megalodon_replay_steps(
         if step_match is not None:
             formula = json.loads(f'"{step_match.group("formula")}"')
             step = f"S{step_match.group('id')}"
-            if MEGALODON_PLACEHOLDER_FORMULA_RE.match(formula):
+            is_placeholder = MEGALODON_PLACEHOLDER_FORMULA_RE.match(formula) is not None
+            if is_placeholder:
                 placeholder_steps.add(step)
             step_sorts = step_variable_sorts.get(step, {})
+            parents = tuple(
+                f"S{parent}"
+                for parent in step_match.group("parents").split(",")
+                if parent
+            )
+            step_details[step] = (
+                json.loads(f'"{step_match.group("rule")}"'),
+                parents,
+                dict(step_sorts),
+            )
             direct_proposition = direct_propositions.get(step)
             if direct_proposition is not None:
                 proposition = surface_direct_step_proposition(
                     direct_proposition,
                     {**variable_sorts, **step_sorts},
                 )
+            elif is_placeholder:
+                proposition = None
             else:
                 proposition = megalodon_step_proposition(formula, {**variable_sorts, **step_sorts})
             if proposition is None:
                 continue
             proposition = quantify_megalodon_step_variables(proposition, step_sorts)
-            parents = tuple(
-                f"S{parent}"
-                for parent in step_match.group("parents").split(",")
-                if parent
-            )
             steps[step] = MegalodonReplayStep(
-                rule=json.loads(f'"{step_match.group("rule")}"'),
+                rule=step_details[step][0],
                 parents=parents,
                 proposition=proposition,
                 variable_sorts=tuple(f"{name}:{sort}" for name, sort in sorted(step_sorts.items())),
@@ -1890,6 +1899,31 @@ def megalodon_replay_steps(
             propositions.append(proposition)
         if propositions:
             substitutions[f"S{substitution_match.group('id')}"] = tuple(propositions)
+    for step, (rule, parents, step_sorts) in step_details.items():
+        if step in steps:
+            continue
+        direct_proposition = direct_propositions.get(step)
+        if direct_proposition is not None:
+            proposition = surface_direct_step_proposition(
+                direct_proposition,
+                {**variable_sorts, **step_sorts},
+            )
+        else:
+            proposition = megalodon_function_definition_extra_proposition(
+                extras.get(step, []),
+                {**variable_sorts, **step_sorts},
+            )
+        if proposition is None:
+            continue
+        proposition = quantify_megalodon_step_variables(proposition, step_sorts)
+        steps[step] = MegalodonReplayStep(
+            rule=rule,
+            parents=parents,
+            proposition=proposition,
+            replay_kind=replay_kinds.get(step, ""),
+            extras=tuple(extras.get(step, ())),
+            variable_sorts=tuple(f"{name}:{sort}" for name, sort in sorted(step_sorts.items())),
+        )
     for step, replay_substitutions in substitutions.items():
         info = steps.get(step)
         if info is not None:
@@ -1924,6 +1958,9 @@ def megalodon_replay_steps(
                 variable_sorts=info.variable_sorts,
             )
     for step in placeholder_steps - direct_propositions.keys():
+        info = steps.get(step)
+        if info is not None and any(kind == "function_definition" for kind, _ in info.extras):
+            continue
         steps.pop(step, None)
     for step, replay_kind in replay_kinds.items():
         info = steps.get(step)
@@ -1950,6 +1987,37 @@ def megalodon_replay_steps(
                 variable_sorts=info.variable_sorts,
             )
     return steps
+
+
+def megalodon_function_definition_extra_proposition(
+    extras: list[tuple[str, tuple[str, ...]]],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    for kind, fields in extras:
+        if kind != "function_definition":
+            continue
+        parsed: dict[str, str] = {}
+        for field in fields:
+            if "=" in field:
+                key, value = field.split("=", 1)
+                parsed[key] = value
+        introduced = parsed.get("introduced_symbol")
+        introduced_sort = parsed.get("sort")
+        local_sorts = dict(variable_sorts)
+        if introduced is not None and introduced_sort is not None:
+            local_sorts[introduced] = introduced_sort
+        proposition = parsed.get("proposition")
+        if proposition is None:
+            lhs = parsed.get("lhs")
+            rhs = parsed.get("rhs")
+            if lhs is None or rhs is None:
+                continue
+            proposition = f"{lhs} = {rhs}"
+        expr = parse_expr(proposition)
+        if expr is None:
+            return proposition
+        return lower_function_equality_proposition(expr, local_sorts)
+    return None
 
 
 def problem_predicate_eliminator_axioms(problem: Path, lines: list[str]) -> list[tuple[str, str]]:
@@ -19218,6 +19286,79 @@ def raw_tptp_parent_equality_rewrite_proof(
     return None
 
 
+def raw_quantified_equality_rewrite_clause_steps(
+    source: Expr,
+    source_proof: str,
+    equality: Expr,
+    equality_proof: str,
+    variable_sorts: dict[str, str],
+    limit: int = 16,
+) -> list[tuple[Expr, str]]:
+    if proof_search_timed_out():
+        return []
+    source_binders, source_body = collect_foralls(source)
+    equality_binders, equality_body = collect_foralls(equality)
+    equality_sides = equality_like_sides(equality_body)
+    if equality_sides is None or len(source_binders) > 6 or len(equality_binders) > 6:
+        return []
+    equality_left_body, equality_right_body = equality_sides
+    source_body_proof = source_proof
+    for source_name, _ in source_binders:
+        source_body_proof = f"({proof_head(source_body_proof)} {source_name})"
+    equality_binder_names = {name for name, _ in equality_binders}
+    local_sorts = {
+        **variable_sorts,
+        **{name: sort for name, sort in source_binders},
+        **{name: sort for name, sort in equality_binders},
+    }
+    steps: list[tuple[Expr, str]] = []
+    seen: set[str] = set()
+    for old_pattern, new_pattern, reverse in (
+        (equality_left_body, equality_right_body, False),
+        (equality_right_body, equality_left_body, True),
+    ):
+        for old_subterm in expr_subterms(source_body, limit=192):
+            subst: dict[str, Expr] = {}
+            if not match_expr_with_alpha_instantiation(old_pattern, old_subterm, equality_binder_names, subst):
+                continue
+            flatten_substitution(subst)
+            if any(name not in subst for name, _ in equality_binders):
+                continue
+            new_subterm = substitute_expr(new_pattern, subst)
+            replaced_body, changed = replace_expr(source_body, old_subterm, new_subterm)
+            if not changed:
+                continue
+            equality_instance = equality_proof
+            for name, _ in equality_binders:
+                equality_instance = f"({proof_head(equality_instance)} {proof_arg_text(subst[name])})"
+            instantiated_sort = raw_equality_transport_sort(old_subterm, new_subterm, local_sorts)
+            if reverse:
+                equality_instance = raw_eq_symmetry_proof(equality_instance, new_subterm, instantiated_sort)
+            hole_name = fresh_identifier("zz", expr_text(source_body), expr_text(old_subterm), expr_text(new_subterm))
+            context, context_changed = replace_expr(source_body, old_subterm, Expr("var", value=hole_name))
+            if not context_changed:
+                continue
+            transported = (
+                f"{proof_term_text(equality_instance)} "
+                f"(fun {hole_name}:{instantiated_sort} => {expr_text(context)}) "
+                f"{proof_term_text(source_body_proof)}"
+            )
+            proof = transported
+            for name, sort in reversed(source_binders):
+                proof = f"(fun {name}:{sort} => {proof})"
+            replaced = replaced_body
+            for name, sort in reversed(source_binders):
+                replaced = Expr("forall", value=name, sort=sort, args=(replaced,))
+            key = expr_key(replaced)
+            if key in seen:
+                continue
+            seen.add(key)
+            steps.append((replaced, proof))
+            if len(steps) >= limit:
+                return steps
+    return steps
+
+
 def raw_tptp_parent_equality_chain_rewrite_proof(
     proposition: str,
     parents: list[str],
@@ -19238,16 +19379,16 @@ def raw_tptp_parent_equality_chain_rewrite_proof(
         if parent_expr is not None:
             parent_exprs.append((parent, parent_expr, raw_tptp_claim_name(parent)))
     equality_parents = [
-        (name, expr, proof, equality_like_sides(expr))
+        (name, expr, proof, equality_like_sides(collect_foralls(expr)[1]))
         for name, expr, proof in parent_exprs
-        if equality_like_sides(expr) is not None
+        if equality_like_sides(collect_foralls(expr)[1]) is not None
     ]
     if len(equality_parents) < 2:
         return None
     for source_name, source, source_proof in parent_exprs:
         states: list[tuple[Expr, str, frozenset[str]]] = [(source, source_proof, frozenset())]
         seen = {expr_key(source)}
-        for _ in range(min(4, len(equality_parents))):
+        for _ in range(min(8, len(equality_parents))):
             next_states: list[tuple[Expr, str, frozenset[str]]] = []
             for current, current_proof, used in states:
                 if expr_key(current) == expr_key(target):
@@ -19259,25 +19400,41 @@ def raw_tptp_parent_equality_chain_rewrite_proof(
                 for equality_name, _, equality_proof, sides in equality_parents:
                     if equality_name == source_name or equality_name in used or sides is None:
                         continue
-                    equality_sort = raw_equality_transport_sort(sides[0], sides[1], variable_sorts)
-                    for replaced, proof in raw_equality_rewrite_clause_steps(
+                    _, equality_expr, _, _ = next(
+                        item for item in equality_parents if item[0] == equality_name
+                    )
+                    rewrite_steps = raw_quantified_equality_rewrite_clause_steps(
                         current,
                         current_proof,
-                        sides[0],
-                        sides[1],
+                        equality_expr,
                         equality_proof,
-                        equality_sort,
-                    ):
+                        variable_sorts,
+                    )
+                    if not rewrite_steps:
+                        equality_sort = raw_equality_transport_sort(sides[0], sides[1], variable_sorts)
+                        rewrite_steps = raw_equality_rewrite_clause_steps(
+                            current,
+                            current_proof,
+                            sides[0],
+                            sides[1],
+                            equality_proof,
+                            equality_sort,
+                        )
+                    for replaced, proof in rewrite_steps:
                         key = expr_key(replaced)
                         if key in seen:
                             continue
                         seen.add(key)
                         if key == expr_key(target):
                             return proof
+                        if raw_clause_replay_budget_ok(replaced, target, max_literals=16, max_literal_product=256):
+                            transformed = raw_clause_transform_proof(replaced, target, proof)
+                            if transformed is not None:
+                                return transformed
                         next_states.append((replaced, proof, frozenset((*used, equality_name))))
-                        if len(next_states) >= 32:
+                        if len(next_states) >= 64:
                             break
-                    if len(next_states) >= 32:
+                    if len(next_states) >= 64:
                         break
             states = next_states
             if not states:
@@ -21242,7 +21399,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         replay_steps = megalodon_replay_steps(text, proof, problem)
         entries = []
         propositions = []
-        axiom_like_rules = {"input", "skolem symbol introduction", "predicate definition introduction"}
+        axiom_like_rules = {"input", "skolem symbol introduction", "predicate definition introduction", "function definition"}
         for name in sorted(replay_steps, key=lambda value: int(value[1:]) if value.startswith("S") and value[1:].isdigit() else value):
             step = replay_steps[name]
             role = "axiom" if step.rule in axiom_like_rules and not step.parents else "plain"
