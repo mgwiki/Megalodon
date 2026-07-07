@@ -25959,10 +25959,48 @@ def raw_tptp_equality_resolution_with_instantiations_proof(
     return None
 
 
+def raw_tptp_exported_equality_resolution_instantiations(
+    parent_body: Expr,
+    parent_binders: list[tuple[str, str]],
+    variable_sorts: dict[str, str],
+    replay_step: MegalodonReplayStep | None,
+) -> list[tuple[str, Expr]]:
+    if replay_step is None:
+        return []
+    binder_names = {name for name, _ in parent_binders}
+    if not binder_names:
+        return []
+    local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
+    result: list[tuple[str, Expr]] = []
+    seen: set[tuple[str, str]] = set()
+    for fields in megalodon_replay_extra_fields(replay_step, "literal"):
+        selected_substituted = raw_tptp_extra_formula_expr(fields, "selected_substituted", local_sorts)
+        if selected_substituted is None:
+            continue
+        for literal in raw_clause_literals(parent_body):
+            subst: dict[str, Expr] = {}
+            if not match_expr_with_alpha_instantiation(literal, selected_substituted, binder_names, subst):
+                continue
+            flatten_substitution(subst)
+            if len(subst) != 1:
+                continue
+            name, replacement = next(iter(subst.items()))
+            if name not in binder_names or expr_variables(replacement) & binder_names:
+                continue
+            key = (name, expr_key(replacement))
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append((name, replacement))
+    return result
+
+
 def raw_tptp_equality_resolution_proof(
     proposition: str,
     parents: list[str],
     propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+    replay_step: MegalodonReplayStep | None = None,
 ) -> str | None:
     if len(parents) != 1:
         return None
@@ -25988,6 +26026,22 @@ def raw_tptp_equality_resolution_proof(
         target_body,
         parent_proof,
         raw_negative_equality_instantiations(parent_body, parent_binder_names),
+    )
+    if proof is not None:
+        return proof
+    proof = raw_tptp_equality_resolution_with_instantiations_proof(
+        target,
+        parent_binders,
+        parent_body,
+        target_binders,
+        target_body,
+        parent_proof,
+        raw_tptp_exported_equality_resolution_instantiations(
+            parent_body,
+            parent_binders,
+            variable_sorts,
+            replay_step,
+        ),
     )
     if proof is not None:
         return proof
@@ -27531,7 +27585,13 @@ def raw_tptp_replay_proof(
             replay_step,
         )
     if rule == "equality_resolution":
-        return raw_tptp_equality_resolution_proof(proposition, parents, propositions_by_name)
+        return raw_tptp_equality_resolution_proof(
+            proposition,
+            parents,
+            propositions_by_name,
+            variable_sorts,
+            replay_step,
+        )
     if rule == "equality_factoring":
         return raw_tptp_trivial_inequality_removal_proof(
             proposition,
