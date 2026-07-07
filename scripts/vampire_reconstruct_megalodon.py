@@ -18547,6 +18547,54 @@ def write_raw_tptp_skeleton(task: tuple[Path, Path, Path, Path | None]) -> Path:
     return output
 
 
+def check_raw_tptp_skeletons(
+    skeletons: list[Path],
+    source: Path,
+    output_dir: Path,
+    megalodon: Path,
+    repo: Path,
+    jobs: int = 1,
+    timeout: int = 30,
+) -> list[tuple[Path, bool, Path]]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    tasks = [(skeleton, source, output_dir, megalodon, repo, timeout) for skeleton in skeletons]
+    if jobs <= 1 or len(tasks) <= 1:
+        return [check_raw_tptp_skeleton(task) for task in tasks]
+    with concurrent.futures.ProcessPoolExecutor(max_workers=min(jobs, len(tasks))) as executor:
+        return list(executor.map(check_raw_tptp_skeleton, tasks))
+
+
+def check_raw_tptp_skeleton(task: tuple[Path, Path, Path, Path, Path, int]) -> tuple[Path, bool, Path]:
+    skeleton, source, output_dir, megalodon, repo, timeout = task
+    context = output_dir / f"{skeleton.stem}.source_context.mg"
+    log = output_dir / f"{skeleton.stem}.source_context.log"
+    context.write_text(
+        source.read_text(encoding="utf-8", errors="replace")
+        + "\n"
+        + skeleton.read_text(encoding="utf-8", errors="replace"),
+        encoding="utf-8",
+    )
+    command = [str(megalodon), "-allowincompleteqed", str(context)]
+    try:
+        result = subprocess.run(
+            command,
+            cwd=str(repo),
+            timeout=timeout,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        log.write_text(result.stdout, encoding="utf-8")
+        return skeleton, result.returncode == 0, log
+    except subprocess.TimeoutExpired as exc:
+        output = exc.stdout or ""
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", errors="replace")
+        log.write_text(output + f"\nTIMEOUT after {timeout}s\n", encoding="utf-8")
+        return skeleton, False, log
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", type=Path, default=Path.cwd())
@@ -18577,6 +18625,9 @@ def main() -> int:
     parser.add_argument("--index-claim-skeleton-dir", type=Path)
     parser.add_argument("--raw-tptp-proof", action="append", type=Path)
     parser.add_argument("--raw-tptp-skeleton-dir", type=Path)
+    parser.add_argument("--check-raw-tptp-skeletons", action="store_true")
+    parser.add_argument("--raw-tptp-check-dir", type=Path)
+    parser.add_argument("--raw-tptp-check-timeout", type=int, default=30)
     args = parser.parse_args()
 
     repo = args.repo.resolve()
@@ -18606,6 +18657,30 @@ def main() -> int:
         written = write_raw_tptp_skeletons(args.raw_tptp_proof, raw_tptp_skeleton_dir, repo, source, args.jobs)
         for path in written:
             print(f"raw TPTP skeleton: {path}")
+        if args.check_raw_tptp_skeletons:
+            raw_tptp_check_dir = (
+                (repo / args.raw_tptp_check_dir).resolve()
+                if args.raw_tptp_check_dir is not None and not args.raw_tptp_check_dir.is_absolute()
+                else args.raw_tptp_check_dir
+            )
+            if raw_tptp_check_dir is None:
+                raw_tptp_check_dir = raw_tptp_skeleton_dir / "source_context_checks"
+            results = check_raw_tptp_skeletons(
+                written,
+                source,
+                raw_tptp_check_dir,
+                megalodon,
+                repo,
+                args.jobs,
+                args.raw_tptp_check_timeout,
+            )
+            failures = 0
+            for skeleton, ok, log in results:
+                status = "ok" if ok else "fail"
+                print(f"raw TPTP source-context check {status}: {skeleton} log={log}")
+                failures += 0 if ok else 1
+            if failures:
+                return 1
         return 0
 
     if args.index_claim_skeleton_dir:
