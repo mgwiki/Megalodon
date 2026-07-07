@@ -13133,6 +13133,7 @@ def proof_for_proposition(
             and premise_count <= 3
             and (
                 conclusion.kind == "app"
+                or expr_key(conclusion) == "vampire_false"
                 or (conclusion.kind == "eq" and "set->" in expr_text(expr))
             )
         ):
