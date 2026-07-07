@@ -22542,6 +22542,15 @@ def raw_tptp_exported_demodulation_rewrite_proof(
             continue
         rule_lhs = rule_lhs or redex
         rule_rhs = rule_rhs or replacement
+        guarded = raw_tptp_exported_guarded_demodulation_rewrite_proof(
+            target,
+            parents,
+            local_sorts,
+            redex,
+            replacement,
+        )
+        if guarded is not None:
+            return guarded
         for source_index, equality_index in ((0, 1), (1, 0)):
             source, source_proof = parents[source_index]
             equality, equality_proof = parents[equality_index]
@@ -22563,6 +22572,135 @@ def raw_tptp_exported_demodulation_rewrite_proof(
                 )
                 if proof is not None:
                     return proof
+    return None
+
+
+def raw_tptp_exported_guarded_demodulation_rewrite_proof(
+    target: Expr,
+    parents: tuple[tuple[Expr, str], tuple[Expr, str]],
+    variable_sorts: dict[str, str],
+    redex: Expr,
+    replacement: Expr,
+) -> str | None:
+    target_binders, target_body = collect_foralls(target)
+    if len(target_binders) > 6:
+        return None
+    target_literals = raw_clause_literals(target_body)
+    if len(target_literals) > 24:
+        return None
+
+    def open_source(source: Expr, source_proof: str) -> tuple[Expr, str, dict[str, str]] | None:
+        source_binders, source_body = collect_foralls(source)
+        if len(source_binders) != len(target_binders):
+            return None
+        opened = source_body
+        proof = source_proof
+        local_sorts = dict(variable_sorts)
+        for (source_name, source_sort), (target_name, target_sort) in zip(source_binders, target_binders):
+            if source_sort != target_sort:
+                return None
+            opened = rename_expr_variables(opened, {source_name: target_name})
+            proof = f"({proof_head(proof)} {target_name})"
+            local_sorts[target_name] = target_sort
+        return opened, proof, local_sorts
+
+    def open_guard(guard: Expr, guard_proof: str) -> tuple[Expr, str] | None:
+        guard_binders, guard_body = collect_foralls(guard)
+        if not guard_binders:
+            return guard_body, guard_proof
+        if len(guard_binders) != len(target_binders):
+            return None
+        opened = guard_body
+        proof = guard_proof
+        for (guard_name, guard_sort), (target_name, target_sort) in zip(guard_binders, target_binders):
+            if guard_sort != target_sort:
+                return None
+            opened = rename_expr_variables(opened, {guard_name: target_name})
+            proof = f"({proof_head(proof)} {target_name})"
+        return opened, proof
+
+    for source_index, guard_index in ((0, 1), (1, 0)):
+        source, source_proof = parents[source_index]
+        guard, guard_proof = parents[guard_index]
+        opened_source = open_source(source, source_proof)
+        opened_guard = open_guard(guard, guard_proof)
+        if opened_source is None or opened_guard is None:
+            continue
+        source_body, source_body_proof, local_sorts = opened_source
+        guard_body, guard_body_proof = opened_guard
+        if not raw_clause_replay_budget_ok(source_body, guard_body, target_body, max_literals=24, max_literal_product=4096):
+            continue
+
+        def prove_equality_branch(equality: Expr, equality_proof: str) -> str | None:
+            sides = equality_like_sides(equality)
+            if sides is None:
+                return None
+            for left, right, proof in (
+                (sides[0], sides[1], equality_proof),
+                (
+                    sides[1],
+                    sides[0],
+                    raw_eq_symmetry_proof(
+                        equality_proof,
+                        sides[0],
+                        raw_equality_transport_sort(sides[0], sides[1], local_sorts),
+                    ),
+                ),
+            ):
+                if not (
+                    (expr_same_mod_alpha(left, redex) and expr_same_mod_alpha(right, replacement))
+                    or (expr_same_mod_alpha(left, replacement) and expr_same_mod_alpha(right, redex))
+                ):
+                    continue
+                equality_sort = raw_equality_transport_sort(left, right, local_sorts)
+                for replaced, transported in raw_equality_rewrite_clause_steps(
+                    source_body,
+                    source_body_proof,
+                    left,
+                    right,
+                    proof,
+                    equality_sort,
+                ):
+                    if expr_same_mod_alpha(replaced, target_body):
+                        return transported
+                    transformed = raw_clause_subsumption_transform_proof(replaced, target_body, transported)
+                    if transformed is not None:
+                        return transformed
+                    if raw_clause_replay_budget_ok(replaced, target_body, max_literals=24, max_literal_product=512):
+                        transformed = raw_clause_transform_proof(replaced, target_body, transported)
+                        if transformed is not None:
+                            return transformed
+            return None
+
+        def prove_literal_branch(literal: Expr, literal_proof: str) -> str | None:
+            equality_branch = prove_equality_branch(literal, literal_proof)
+            if equality_branch is not None:
+                return equality_branch
+            return raw_literal_to_clause_proof(literal, target_body, literal_proof, target_literals, ())
+
+        def prove_clause_branch(clause: Expr, clause_proof: str) -> str | None:
+            parts = raw_or_parts(clause)
+            if parts is None:
+                return prove_literal_branch(clause, clause_proof)
+            left, right = parts
+            left_name = fresh_identifier("HguardL", expr_text(clause), expr_text(target_body), clause_proof)
+            right_name = fresh_identifier("HguardR", expr_text(clause), expr_text(target_body), clause_proof, left_name)
+            left_proof = prove_clause_branch(left, left_name)
+            right_proof = prove_clause_branch(right, right_name)
+            if left_proof is None or right_proof is None:
+                return None
+            return (
+                f"({proof_head(clause_proof)} {proof_arg_text(target_body)} "
+                f"(fun {left_name} => {left_proof}) "
+                f"(fun {right_name} => {right_proof}))"
+            )
+
+        body_proof = prove_clause_branch(guard_body, guard_body_proof)
+        if body_proof is None:
+            continue
+        for name, sort in reversed(target_binders):
+            body_proof = f"(fun {name} :{sort} => {body_proof})"
+        return body_proof
     return None
 
 
@@ -23882,6 +24020,20 @@ def raw_tptp_exported_two_literal_resolution_proof(
             target_binders,
             target_body,
         )
+        if selected_clause is not None and other_clause is not None:
+            source, source_proof = selected_clause
+            resolver, resolver_proof = other_clause
+            if (
+                raw_clause_replay_budget_ok(source, resolver, target_body, max_literals=16, max_literal_product=384)
+                and raw_clauses_have_complement(source, resolver)
+            ):
+                body_proof = raw_flat_clause_resolution_proof(source, target_body, source_proof, resolver, resolver_proof)
+                if body_proof is None:
+                    body_proof = raw_clause_resolution_proof(source, target_body, source_proof, resolver, resolver_proof)
+                if body_proof is not None:
+                    for name, sort in reversed(target_binders):
+                        body_proof = f"(fun {name} :{sort} => {body_proof})"
+                    return body_proof
         if selected_clause is not None:
             selected_expr, selected_proof = selected_clause
             candidate_exprs = (target_body, selected_substituted, other_substituted)
