@@ -20118,8 +20118,8 @@ def raw_prop_equivalence_proof(
         return None
     return (
         f"(vampire_prop_ext {proof_arg_text(source)} {proof_arg_text(target)} "
-        f"(fun {forward_name}:{expr_text(source)} => {proof_term_text(forward)}) "
-        f"(fun {backward_name}:{expr_text(target)} => {proof_term_text(backward)}))"
+        f"(fun {forward_name} => {proof_term_text(forward)}) "
+        f"(fun {backward_name} => {proof_term_text(backward)}))"
     )
 
 
