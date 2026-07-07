@@ -19962,6 +19962,18 @@ def raw_split_atom_name(expr: Expr) -> str | None:
     return raw_split_definition_name(expr)
 
 
+def raw_split_literal_parts(expr: Expr) -> tuple[str, bool] | None:
+    positive = raw_split_atom_name(expr)
+    if positive is not None:
+        return positive, True
+    premises, conclusion = split_arrows(expr)
+    if len(premises) == 1 and false_eliminator_expr(conclusion):
+        negative = raw_split_atom_name(premises[0])
+        if negative is not None:
+            return negative, False
+    return None
+
+
 def raw_literal_refutation_from_split_assumption(
     literal: Expr,
     literal_proof: str,
@@ -19977,6 +19989,22 @@ def raw_literal_refutation_from_split_assumption(
     return f"({proof_head(false_proof)} {proof_arg_text(target)})"
 
 
+def raw_literal_refutation_from_split_true_assumption(
+    literal: Expr,
+    literal_proof: str,
+    target: Expr,
+    split: Expr,
+    split_proof_name: str,
+) -> str | None:
+    premises, conclusion = split_arrows(literal)
+    if len(premises) != 1 or not false_eliminator_expr(conclusion):
+        return None
+    if not expr_same_mod_alpha(premises[0], split):
+        return None
+    false_proof = f"({proof_head(literal_proof)} {split_proof_name})"
+    return f"({proof_head(false_proof)} {proof_arg_text(target)})"
+
+
 def raw_literal_to_clause_with_split_refutations(
     literal: Expr,
     target: Expr,
@@ -19984,12 +20012,18 @@ def raw_literal_to_clause_with_split_refutations(
     target_literals: list[Expr],
     rewrites: tuple[RawSplitRewrite, ...],
     refutations: list[tuple[RawSplitRewrite, str]],
+    split_true_refutations: list[tuple[Expr, str]] | None = None,
 ) -> str | None:
+    split_true_refutations = split_true_refutations or []
     proof = raw_literal_to_clause_proof(literal, target, literal_proof, target_literals, rewrites)
     if proof is not None:
         return proof
     for rewrite, not_split_name in refutations:
         proof = raw_literal_refutation_from_split_assumption(literal, literal_proof, target, rewrite, not_split_name)
+        if proof is not None:
+            return proof
+    for split, split_proof_name in split_true_refutations:
+        proof = raw_literal_refutation_from_split_true_assumption(literal, literal_proof, target, split, split_proof_name)
         if proof is not None:
             return proof
     return None
@@ -20001,6 +20035,7 @@ def raw_clause_cases_with_split_refutations(
     target_literals: list[Expr],
     rewrites: tuple[RawSplitRewrite, ...],
     refutations: list[tuple[RawSplitRewrite, str]],
+    split_true_refutations: list[tuple[Expr, str]],
     source_proof: str,
 ) -> str | None:
     parts = app_args(source, "vampire_or", 2)
@@ -20012,6 +20047,7 @@ def raw_clause_cases_with_split_refutations(
             target_literals,
             rewrites,
             refutations,
+            split_true_refutations,
         )
     left, right = parts
     left_name = fresh_identifier("HL", expr_text(source), expr_text(target), source_proof)
@@ -20022,6 +20058,7 @@ def raw_clause_cases_with_split_refutations(
         target_literals,
         rewrites,
         refutations,
+        split_true_refutations,
         left_name,
     )
     right_target = raw_clause_cases_with_split_refutations(
@@ -20030,6 +20067,7 @@ def raw_clause_cases_with_split_refutations(
         target_literals,
         rewrites,
         refutations,
+        split_true_refutations,
         right_name,
     )
     if left_target is None or right_target is None:
@@ -20042,6 +20080,7 @@ def raw_avatar_split_component_from_source_proof(
     source_proof: str,
     component: Expr,
     refutations: list[tuple[RawSplitRewrite, str]],
+    split_true_refutations: list[tuple[Expr, str]],
     rewrites: tuple[RawSplitRewrite, ...],
 ) -> str | None:
     if proof_search_timed_out() or len(expr_text(source)) + len(expr_text(component)) > 6000:
@@ -20088,6 +20127,7 @@ def raw_avatar_split_component_from_source_proof(
             target_literals,
             rewrites,
             refutations,
+            split_true_refutations,
             applied_source_proof,
         )
         if body_proof is None:
@@ -20110,36 +20150,58 @@ def raw_tptp_avatar_split_direct_component_proof(
     if len(target_literals) < 2 or len(target_literals) > 4:
         return None
     rewrite_by_split = {raw_split_atom_name(rewrite.split): rewrite for rewrite in rewrites}
-    if any(raw_split_atom_name(literal) not in rewrite_by_split for literal in target_literals):
+    target_split_literals = [raw_split_literal_parts(literal) for literal in target_literals]
+    if any(item is None or item[0] not in rewrite_by_split for item in target_split_literals):
         return None
 
     for main_index, main_literal in enumerate(target_literals):
-        main_name = raw_split_atom_name(main_literal)
-        if main_name is None:
+        main_parts = target_split_literals[main_index]
+        if main_parts is None:
+            continue
+        main_name, main_positive = main_parts
+        if not main_positive:
             continue
         main_rewrite = rewrite_by_split[main_name]
         other_literals = [
-            (index, literal, rewrite_by_split[raw_split_atom_name(literal)])
+            (index, literal, target_split_literals[index][1], rewrite_by_split[target_split_literals[index][0]])
             for index, literal in enumerate(target_literals)
-            if index != main_index and raw_split_atom_name(literal) is not None
+            if index != main_index and target_split_literals[index] is not None
         ]
         not_names: list[str] = []
-        for index, literal, _ in other_literals:
-            not_name = fresh_identifier(
-                "Hnot",
+        split_true_names: list[str] = []
+        for index, literal, positive, _ in other_literals:
+            name = fresh_identifier(
+                "Hnot" if positive else "Hsplit",
                 expr_text(target),
                 expr_text(literal),
                 source_proof,
                 str(index),
-                " ".join(not_names),
+                " ".join(not_names + split_true_names),
             )
-            not_names.append(not_name)
-        refutations = [(rewrite, not_name) for (_, _, rewrite), not_name in zip(other_literals, not_names)]
+            if positive:
+                not_names.append(name)
+            else:
+                split_true_names.append(name)
+        refutations: list[tuple[RawSplitRewrite, str]] = []
+        split_true_refutations: list[tuple[Expr, str]] = []
+        not_iter = iter(not_names)
+        split_true_iter = iter(split_true_names)
+        branch_names: list[str] = []
+        for _, literal, positive, rewrite in other_literals:
+            if positive:
+                name = next(not_iter)
+                branch_names.append(name)
+                refutations.append((rewrite, name))
+            else:
+                name = next(split_true_iter)
+                branch_names.append(name)
+                split_true_refutations.append((literal.args[0], name))
         component_proof = raw_avatar_split_component_from_source_proof(
             source,
             source_proof,
             main_rewrite.component,
             refutations,
+            split_true_refutations,
             rewrites,
         )
         if component_proof is None:
@@ -20148,16 +20210,24 @@ def raw_tptp_avatar_split_direct_component_proof(
         result = raw_or_intro_literal_at(target, main_index, main_split_proof)
         if result is None:
             continue
-        for (index, literal, _), not_name in reversed(list(zip(other_literals, not_names))):
-            true_branch = raw_or_intro_literal_at(target, index, f"Hsplit{index}")
-            if true_branch is None:
+        for (index, literal, positive, _), branch_name in reversed(list(zip(other_literals, branch_names))):
+            branch_proof = raw_or_intro_literal_at(target, index, f"Hsplit{index}" if positive else f"Hnot{index}")
+            if branch_proof is None:
                 result = None
                 break
-            result = (
-                f"(xm {proof_arg_text(literal)} {proof_arg_text(target)} "
-                f"(fun Hsplit{index} => {proof_term_text(true_branch)}) "
-                f"(fun {not_name} => {proof_term_text(result)}))"
-            )
+            split_expr = literal if positive else literal.args[0]
+            if positive:
+                result = (
+                    f"(xm {proof_arg_text(split_expr)} {proof_arg_text(target)} "
+                    f"(fun Hsplit{index} => {proof_term_text(branch_proof)}) "
+                    f"(fun {branch_name} => {proof_term_text(result)}))"
+                )
+            else:
+                result = (
+                    f"(xm {proof_arg_text(split_expr)} {proof_arg_text(target)} "
+                    f"(fun {branch_name} => {proof_term_text(result)}) "
+                    f"(fun Hnot{index} => {proof_term_text(branch_proof)}))"
+                )
         if result is not None:
             return result
     return None
