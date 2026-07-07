@@ -20224,6 +20224,176 @@ def raw_not_exists_conjunction_to_forall_or_negated_components_proof(
     return f"(fun {target_name} :{target_sort} => {body})"
 
 
+def raw_not_exists_negative_to_forall_positive_proof(
+    source_exists: Expr,
+    target_forall: Expr,
+    not_exists_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    exists_parts = raw_exists_transform_parts(source_exists)
+    if exists_parts is None:
+        return None
+    _head, exists_sort, predicate, _exists_name, _exists_body = exists_parts
+    target_binders, target_body = collect_foralls(target_forall)
+    if len(target_binders) != 1:
+        return None
+    target_name, target_sort = target_binders[0]
+    if target_sort != exists_sort:
+        return None
+    witness = Expr("var", value=target_name)
+    source_body = raw_predicate_application(predicate, witness)
+    negative_premises, negative_conclusion = split_arrows(source_body)
+    if len(negative_premises) != 1 or not false_eliminator_expr(negative_conclusion):
+        return None
+    local_sorts = {**variable_sorts, target_name: target_sort}
+    source_positive_to_target = raw_deep_formula_transform_proof(
+        negative_premises[0],
+        target_body,
+        "HsourcePositive",
+        local_sorts,
+    )
+    if source_positive_to_target is None:
+        source_positive_to_target = raw_clause_transform_proof(negative_premises[0], target_body, "HsourcePositive")
+    if source_positive_to_target is None and expr_same_mod_alpha(negative_premises[0], target_body):
+        source_positive_to_target = "HsourcePositive"
+    if source_positive_to_target is None:
+        return None
+    target_to_source_positive = raw_deep_formula_transform_proof(
+        target_body,
+        negative_premises[0],
+        "Htarget",
+        local_sorts,
+    )
+    if target_to_source_positive is None:
+        target_to_source_positive = raw_clause_transform_proof(target_body, negative_premises[0], "Htarget")
+    if target_to_source_positive is None and expr_same_mod_alpha(target_body, negative_premises[0]):
+        target_to_source_positive = "Htarget"
+    if target_to_source_positive is None:
+        return None
+    exists_proof = (
+        f"(fun Q Hexists => Hexists {target_name} "
+        f"(fun HsourcePositive :{proof_arg_text(negative_premises[0])} => "
+        f"HnotTarget {proof_term_text(source_positive_to_target)}))"
+    )
+    target_text = proof_arg_text(target_body)
+    return (
+        f"(fun {target_name} :{target_sort} => "
+        f"(xm {target_text} {target_text} "
+        f"(fun Htarget => Htarget) "
+        f"(fun HnotTarget => (({proof_head(not_exists_proof)} {proof_term_text(exists_proof)}) {target_text}))))"
+    )
+
+
+def raw_negated_implication_to_negated_exists_conjunction_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_premises, source_conclusion = split_arrows(source)
+    if len(source_premises) != 1 or not false_eliminator_expr(source_conclusion):
+        return None
+    implication_premises, implication_conclusion = split_arrows(source_premises[0])
+    if not implication_premises or len(implication_premises) > 4:
+        return None
+    if raw_exists_transform_parts(implication_conclusion) is None:
+        return None
+
+    target_components = raw_conjunction_components(target)
+    premise_component_groups = [raw_conjunction_components(premise) for premise in implication_premises]
+    if len(target_components) != sum(len(components) for components in premise_component_groups) + 1:
+        return None
+
+    def premise_component_proof(
+        source_premise: Expr,
+        source_component: Expr,
+        component: Expr,
+        proof_name: str,
+    ) -> str | None:
+        component_source_proof = vampire_and_projection_from_proof(proof_name, source_premise, source_component)
+        if component_source_proof is None:
+            return None
+        proof = raw_deep_formula_transform_proof(source_component, component, component_source_proof, variable_sorts)
+        if proof is None:
+            proof = raw_classical_implication_to_or_transform_proof(source_component, component, component_source_proof)
+        if proof is None:
+            proof = raw_clause_transform_proof(source_component, component, component_source_proof)
+        return proof
+
+    used: set[int] = set()
+    component_proofs: dict[int, str] = {}
+    for premise_index, source_premise in enumerate(implication_premises):
+        proof_name = f"HsourcePremise{premise_index}"
+        for source_component in premise_component_groups[premise_index]:
+            for component_index, component in enumerate(target_components):
+                if component_index in used:
+                    continue
+                proof = premise_component_proof(source_premise, source_component, component, proof_name)
+                if proof is None:
+                    continue
+                used.add(component_index)
+                component_proofs[component_index] = proof
+                break
+            else:
+                return None
+
+    negative_component_index: int | None = None
+    for component_index, component in enumerate(target_components):
+        if component_index in used:
+            continue
+        proof = raw_not_exists_conjunction_to_forall_or_negated_components_proof(
+            implication_conclusion,
+            component,
+            "HnotSourceConclusion",
+            variable_sorts,
+        )
+        if proof is None:
+            proof = raw_not_exists_negative_to_forall_positive_proof(
+                implication_conclusion,
+                component,
+                "HnotSourceConclusion",
+                variable_sorts,
+            )
+        if proof is None:
+            proof = raw_not_exists_to_forall_not_transform_proof(
+                Expr("arrow", args=(implication_conclusion, Expr("var", value="False"))),
+                component,
+                "HnotSourceConclusion",
+            )
+        if proof is None:
+            continue
+        negative_component_index = component_index
+        component_proofs[component_index] = proof
+        used.add(component_index)
+        break
+    if negative_component_index is None or len(component_proofs) != len(target_components):
+        return None
+
+    def target_component_proof(component: Expr) -> str | None:
+        for index, target_component in enumerate(target_components):
+            if expr_same_mod_alpha(component, target_component):
+                return component_proofs.get(index)
+        return None
+
+    conjunction_proof = raw_build_conjunction_from_component_proofs(target, target_component_proof)
+    if conjunction_proof is None:
+        return None
+    target_text = proof_arg_text(target)
+    source_conclusion_text = proof_arg_text(implication_conclusion)
+    body = (
+        f"(xm {source_conclusion_text} {source_conclusion_text} "
+        f"(fun HsourceConclusion => HsourceConclusion) "
+        f"(fun HnotSourceConclusion => ((HnotTarget {proof_term_text(conjunction_proof)}) {source_conclusion_text})))"
+    )
+    for premise_index in reversed(range(len(implication_premises))):
+        body = f"(fun HsourcePremise{premise_index} => {body})"
+    return (
+        f"(xm {target_text} {target_text} "
+        f"(fun Htarget => Htarget) "
+        f"(fun HnotTarget => ({proof_head(source_proof)} {proof_term_text(body)} {target_text})))"
+    )
+
+
 def raw_implication_chain_to_or_negated_premises_proof(
     source: Expr,
     target: Expr,
@@ -20439,6 +20609,149 @@ def raw_negated_conjunction_to_or_negated_components_proof(
     return proof
 
 
+def raw_negated_conjunction_of_negatives_to_or_components_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if len(source_binders) != len(target_binders):
+        return None
+    if [sort for _, sort in source_binders] != [sort for _, sort in target_binders]:
+        return None
+    if source_binders:
+        source_body = rename_expr_variables(
+            source_body,
+            {
+                source_name: target_name
+                for (source_name, _), (target_name, _) in zip(source_binders, target_binders)
+            },
+        )
+    source_premises, source_conclusion = split_arrows(source_body)
+    if len(source_premises) != 1 or not false_eliminator_expr(source_conclusion):
+        return None
+    source_components = raw_conjunction_components(source_premises[0])
+    target_literals = raw_clause_literals(target_body)
+    if len(source_components) <= 1 or len(source_components) != len(target_literals):
+        return None
+
+    local_sorts = {**variable_sorts, **{name: sort for name, sort in target_binders}}
+    source_application = source_proof
+    for name, _sort in target_binders:
+        source_application = f"({proof_head(source_application)} {name})"
+
+    matched: list[tuple[Expr, Expr, str]] = []
+    used_components: set[int] = set()
+    for literal in target_literals:
+        for component_index, source_component in enumerate(source_components):
+            if component_index in used_components:
+                continue
+            negative_premises, negative_conclusion = split_arrows(source_component)
+            if len(negative_premises) != 1 or not false_eliminator_expr(negative_conclusion):
+                continue
+            negative_premise_to_literal = raw_deep_formula_transform_proof(
+                negative_premises[0],
+                literal,
+                "HnegativePremise",
+                local_sorts,
+            )
+            if negative_premise_to_literal is None:
+                negative_premise_to_literal = raw_clause_transform_proof(
+                    negative_premises[0],
+                    literal,
+                    "HnegativePremise",
+                )
+            if negative_premise_to_literal is None and expr_same_mod_alpha(negative_premises[0], literal):
+                negative_premise_to_literal = "HnegativePremise"
+            if negative_premise_to_literal is None:
+                continue
+            matched.append((source_component, literal, negative_premise_to_literal))
+            used_components.add(component_index)
+            break
+        else:
+            return None
+
+    negative_names = [f"HnotTargetLiteral{index}" for index in range(len(matched))]
+
+    def contradiction_from_all_negative() -> str | None:
+        def component_proof(component: Expr) -> str | None:
+            for index, (source_component, _literal, negative_premise_to_literal) in enumerate(matched):
+                if not expr_same_mod_alpha(component, source_component):
+                    continue
+                negative_premises, negative_conclusion = split_arrows(source_component)
+                if len(negative_premises) != 1 or not false_eliminator_expr(negative_conclusion):
+                    return None
+                return (
+                    f"(fun HnegativePremise :{proof_arg_text(negative_premises[0])} => "
+                    f"{negative_names[index]} {proof_term_text(negative_premise_to_literal)})"
+                )
+            return None
+
+        conjunction_proof = raw_build_conjunction_from_component_proofs(source_premises[0], component_proof)
+        if conjunction_proof is None:
+            return None
+        return f"({proof_head(source_application)} {proof_term_text(conjunction_proof)})"
+
+    def search(index: int) -> str | None:
+        if index >= len(matched):
+            false_proof = contradiction_from_all_negative()
+            if false_proof is None:
+                return None
+            return raw_false_to_expr_proof(false_proof, target_body)
+        _source_component, literal, _negative_premise_to_literal = matched[index]
+        positive_name = f"HtargetLiteral{index}"
+        positive_branch = raw_or_intro_literal_at(target_body, index, positive_name)
+        if positive_branch is None:
+            return None
+        negative_branch = search(index + 1)
+        if negative_branch is None:
+            return None
+        return (
+            f"(xm {proof_arg_text(literal)} {proof_arg_text(target_body)} "
+            f"(fun {positive_name} => {proof_term_text(positive_branch)}) "
+            f"(fun {negative_names[index]} => {proof_term_text(negative_branch)}))"
+        )
+
+    proof = search(0)
+    if proof is None:
+        return None
+    for name, sort in reversed(target_binders):
+        proof = f"(fun {name} :{sort} => {proof})"
+    return proof
+
+
+def raw_negated_or_to_negative_component_proof(source: Expr, target: Expr, source_proof: str) -> str | None:
+    source_premises, source_conclusion = split_arrows(source)
+    target_premises, target_conclusion = split_arrows(target)
+    if (
+        len(source_premises) != 1
+        or len(target_premises) != 1
+        or not false_eliminator_expr(source_conclusion)
+        or not false_eliminator_expr(target_conclusion)
+    ):
+        return None
+    source_or = source_premises[0]
+    target_positive = target_premises[0]
+    intro = raw_or_intro_from_branch(source_or, target_positive, "HtargetPositive")
+    if intro is None:
+        return None
+    return f"(fun HtargetPositive :{proof_arg_text(target_positive)} => {proof_head(source_proof)} {proof_term_text(intro)})"
+
+
+def raw_normal_form_premise_components(source_premise: Expr) -> list[Expr]:
+    negative_premises, negative_conclusion = split_arrows(source_premise)
+    if len(negative_premises) == 1 and false_eliminator_expr(negative_conclusion):
+        literals = raw_clause_literals(negative_premises[0])
+        if len(literals) > 1:
+            return [
+                Expr("arrow", args=(literal, Expr("var", value="False")))
+                for literal in literals
+            ]
+    return raw_conjunction_components(source_premise)
+
+
 def raw_negated_forall_implication_to_exists_conjunction_proof(
     source: Expr,
     target: Expr,
@@ -20471,7 +20784,7 @@ def raw_negated_forall_implication_to_exists_conjunction_proof(
     target_body_at_witness = substitute_expr(target_body, source_var_subst)
     target_components = raw_conjunction_components(target_body_at_witness)
     conclusion_is_false = false_eliminator_expr(implication_conclusion)
-    premise_component_groups = [raw_conjunction_components(premise) for premise in implication_premises]
+    premise_component_groups = [raw_normal_form_premise_components(premise) for premise in implication_premises]
     expected_component_count = sum(len(components) for components in premise_component_groups)
     if not conclusion_is_false:
         expected_component_count += 1
@@ -20488,8 +20801,21 @@ def raw_negated_forall_implication_to_exists_conjunction_proof(
     ) -> str | None:
         component_source_proof = vampire_and_projection_from_proof(proof_name, source_premise, source_component)
         if component_source_proof is None:
+            component_source_proof = raw_negated_or_to_negative_component_proof(
+                source_premise,
+                source_component,
+                proof_name,
+            )
+        if component_source_proof is None:
             return None
-        proof = raw_deep_formula_transform_proof(source_component, component, component_source_proof, local_sorts)
+        proof = raw_negated_forall_to_exists_negation_proof(
+            source_component,
+            component,
+            component_source_proof,
+            local_sorts,
+        )
+        if proof is None:
+            proof = raw_deep_formula_transform_proof(source_component, component, component_source_proof, local_sorts)
         if proof is None:
             proof = raw_classical_implication_to_or_transform_proof(source_component, component, component_source_proof)
         if proof is None:
@@ -20505,6 +20831,15 @@ def raw_negated_forall_implication_to_exists_conjunction_proof(
         )
         if negated_conjunction is not None:
             return negated_conjunction
+
+        negated_negative_conjunction = raw_negated_conjunction_of_negatives_to_or_components_proof(
+            Expr("arrow", args=(implication_conclusion, Expr("var", value="False"))),
+            component,
+            "HnotSourceConclusion",
+            local_sorts,
+        )
+        if negated_negative_conjunction is not None:
+            return negated_negative_conjunction
 
         negative_premises, negative_conclusion = split_arrows(component)
         if len(negative_premises) == 1 and false_eliminator_expr(negative_conclusion):
@@ -20542,6 +20877,15 @@ def raw_negated_forall_implication_to_exists_conjunction_proof(
         )
         if not_exists_forall is not None:
             return not_exists_forall
+
+        not_exists_positive_forall = raw_not_exists_negative_to_forall_positive_proof(
+            implication_conclusion,
+            component,
+            "HnotSourceConclusion",
+            local_sorts,
+        )
+        if not_exists_positive_forall is not None:
+            return not_exists_positive_forall
 
         conclusion_binders, conclusion_body = collect_foralls(implication_conclusion)
         exists_parts = raw_exists_transform_parts(component)
@@ -27227,6 +27571,14 @@ def raw_tptp_exported_normal_form_proof(
         if proof is not None:
             return proof
         proof = raw_negated_implication_chain_to_conjunction_proof(source, target, source_proof, local_sorts)
+        if proof is not None:
+            return proof
+        proof = raw_negated_implication_to_negated_exists_conjunction_proof(
+            source,
+            target,
+            source_proof,
+            local_sorts,
+        )
         if proof is not None:
             return proof
         proof = raw_negated_forall_implication_to_exists_conjunction_proof(
