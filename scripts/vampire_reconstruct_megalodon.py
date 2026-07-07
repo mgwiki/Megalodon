@@ -18221,6 +18221,15 @@ def raw_tptp_superposition_proof(
     propositions_by_name: dict[str, str],
     variable_sorts: dict[str, str],
 ) -> str | None:
+    if len(parents) == 2:
+        proof = raw_tptp_quantified_equality_clause_superposition_proof(
+            proposition,
+            parents,
+            propositions_by_name,
+            variable_sorts,
+        )
+        if proof is not None:
+            return proof
     proof = raw_tptp_parent_equality_rewrite_proof(proposition, parents, propositions_by_name, variable_sorts)
     if proof is not None:
         return proof
@@ -18245,6 +18254,109 @@ def raw_tptp_superposition_proof(
         if proof is not None:
             return proof
     return None
+
+
+def raw_equality_clause_superposition_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality_clause: Expr,
+    equality_clause_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(raw_clause_literals(source)) > 12 or len(raw_clause_literals(equality_clause)) > 12 or len(raw_clause_literals(target)) > 16:
+        return None
+    target_text = proof_arg_text(target)
+    target_literals = raw_clause_literals(target)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+
+    def source_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
+        direct = raw_literal_to_clause_proof(source_literal, target, source_literal_proof, target_literals, ())
+        if direct is not None:
+            return direct
+
+        def equality_clause_handler(clause_literal: Expr, clause_literal_proof: str) -> str | None:
+            direct_clause = raw_literal_to_clause_proof(clause_literal, target, clause_literal_proof, target_literals, ())
+            if direct_clause is not None:
+                return direct_clause
+            sides = equality_like_sides(clause_literal)
+            if sides is None:
+                return None
+            equality_sort = raw_equality_transport_sort(sides[0], sides[1], variable_sorts)
+            for replaced, transported in raw_equality_rewrite_clause_steps(
+                source_literal,
+                source_literal_proof,
+                sides[0],
+                sides[1],
+                clause_literal_proof,
+                equality_sort,
+            ):
+                proof = raw_literal_to_clause_proof(replaced, target, transported, target_literals, ())
+                if proof is not None:
+                    return proof
+            return None
+
+        return raw_clause_cases_with_handler(
+            equality_clause,
+            equality_clause_proof,
+            equality_clause_handler,
+            avoid_text=source_literal_proof,
+        )
+
+    try:
+        return raw_clause_cases_with_handler(source, source_proof, source_handler)
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
+def raw_tptp_quantified_equality_clause_superposition_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parents) != 2:
+        return None
+    first_proposition = propositions_by_name.get(parents[0])
+    second_proposition = propositions_by_name.get(parents[1])
+    if first_proposition is None or second_proposition is None:
+        return None
+    first = parse_expr(first_proposition)
+    second = parse_expr(second_proposition)
+    target = parse_expr(proposition)
+    if first is None or second is None or target is None:
+        return None
+    first_name = raw_tptp_claim_name(parents[0])
+    second_name = raw_tptp_claim_name(parents[1])
+
+    def replay(source: Expr, source_proof: str, equality_clause: Expr, equality_clause_proof: str) -> str | None:
+        source_options = raw_instantiated_forall_clause_options(source, source_proof, target, equality_clause)
+        equality_options = raw_instantiated_forall_clause_options(equality_clause, equality_clause_proof, target, source)
+        for source_option, source_option_proof in source_options[:3]:
+            for equality_option, equality_option_proof in equality_options[:3]:
+                if not any(equality_like_sides(literal) is not None for literal in raw_clause_literals(equality_option)):
+                    continue
+                proof = raw_equality_clause_superposition_proof(
+                    source_option,
+                    target,
+                    source_option_proof,
+                    equality_option,
+                    equality_option_proof,
+                    variable_sorts,
+                )
+                if proof is not None:
+                    return proof
+        return None
+
+    proof = replay(first, first_name, second, second_name)
+    if proof is not None:
+        return proof
+    return replay(second, second_name, first, first_name)
 
 
 def raw_tptp_forward_subsumption_resolution_proof(
