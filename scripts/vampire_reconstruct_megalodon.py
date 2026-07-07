@@ -19326,33 +19326,60 @@ def raw_tptp_forward_subsumption_resolution_proof(
     first_name = raw_tptp_claim_name(parents[0])
     second_name = raw_tptp_claim_name(parents[1])
     parsed = [(first, first_name), (second, second_name)]
-    for source_index, resolver_index in megalodon_replay_parent_pair_order(parents, replay_step):
-        source, source_name = parsed[source_index]
-        resolver, resolver_name = parsed[resolver_index]
-        if raw_clause_replay_budget_ok(source, resolver, target, max_literals=12, max_literal_product=512):
-            proof = raw_flat_clause_resolution_proof(source, target, source_name, resolver, resolver_name)
-            if proof is not None:
-                return proof
-            proof = raw_quantified_flat_clause_resolution_proof(source, target, source_name, resolver, resolver_name)
-            if proof is not None:
-                return proof
-        source_options = raw_instantiated_forall_clause_options(source, source_name, target, resolver)
-        resolver_options = raw_instantiated_forall_clause_options(resolver, resolver_name, target, source)
-        for source_clause, source_proof in source_options:
-            for resolver_clause, resolver_proof in resolver_options:
-                if not raw_clause_replay_budget_ok(source_clause, resolver_clause, target, max_literals=8, max_literal_product=128):
-                    continue
-                if not raw_clauses_have_complement(source_clause, resolver_clause):
-                    continue
-                proof = raw_clause_resolution_proof(source_clause, target, source_proof, resolver_clause, resolver_proof)
+
+    def replay_pairs(target_expr: Expr, entries: list[tuple[Expr, str]]) -> str | None:
+        for source_index, resolver_index in megalodon_replay_parent_pair_order(parents, replay_step):
+            source, source_name = entries[source_index]
+            resolver, resolver_name = entries[resolver_index]
+            if raw_clause_replay_budget_ok(source, resolver, target_expr, max_literals=12, max_literal_product=512):
+                proof = raw_flat_clause_resolution_proof(source, target_expr, source_name, resolver, resolver_name)
                 if proof is not None:
                     return proof
-        if allow_quantified_literal:
-            if not raw_clause_replay_budget_ok(source, resolver, target, max_literals=16, max_literal_product=384):
-                continue
-            proof = raw_quantified_literal_resolution_proof(source, target, source_name, resolver, resolver_name)
-            if proof is not None:
-                return proof
+                proof = raw_quantified_flat_clause_resolution_proof(source, target_expr, source_name, resolver, resolver_name)
+                if proof is not None:
+                    return proof
+            source_options = raw_instantiated_forall_clause_options(source, source_name, target_expr, resolver)
+            resolver_options = raw_instantiated_forall_clause_options(resolver, resolver_name, target_expr, source)
+            for source_clause, source_proof in source_options:
+                for resolver_clause, resolver_proof in resolver_options:
+                    if not raw_clause_replay_budget_ok(source_clause, resolver_clause, target_expr, max_literals=8, max_literal_product=128):
+                        continue
+                    if not raw_clauses_have_complement(source_clause, resolver_clause):
+                        continue
+                    proof = raw_clause_resolution_proof(source_clause, target_expr, source_proof, resolver_clause, resolver_proof)
+                    if proof is not None:
+                        return proof
+            if allow_quantified_literal:
+                if not raw_clause_replay_budget_ok(source, resolver, target_expr, max_literals=16, max_literal_product=384):
+                    continue
+                proof = raw_quantified_literal_resolution_proof(source, target_expr, source_name, resolver, resolver_name)
+                if proof is not None:
+                    return proof
+        return None
+
+    direct_proof = replay_pairs(target, parsed)
+    if direct_proof is not None:
+        return direct_proof
+
+    target_binders, target_body = collect_foralls(target)
+    if target_binders:
+        opened: list[tuple[Expr, str]] = parsed
+        for target_name, target_sort in target_binders:
+            next_opened: list[tuple[Expr, str]] = []
+            for expr, proof in opened:
+                if expr.kind == "forall" and expr.sort == target_sort and expr.value is not None:
+                    body = rename_expr_variables(expr.args[0], {expr.value: target_name})
+                    next_opened.append((body, f"({proof_head(proof)} {target_name})"))
+                else:
+                    next_opened.append((expr, proof))
+            opened = next_opened
+        body_proof = replay_pairs(target_body, opened)
+        if body_proof is not None:
+            proof = body_proof
+            for target_name, target_sort in reversed(target_binders):
+                proof = f"(fun {target_name}:{target_sort} => {proof})"
+            return proof
+
     return None
 
 
