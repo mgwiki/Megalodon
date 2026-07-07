@@ -169,6 +169,65 @@ class MegalodonReplayStep:
     variable_sorts: tuple[str, ...] = ()
 
 
+def megalodon_replay_extra_fields(
+    step: MegalodonReplayStep | None,
+    kind: str | None = None,
+) -> list[dict[str, str]]:
+    if step is None:
+        return []
+    groups: list[dict[str, str]] = []
+    for extra_kind, fields in step.extras:
+        if kind is not None and extra_kind != kind:
+            continue
+        parsed: dict[str, str] = {}
+        for field in fields:
+            if "=" in field:
+                key, value = field.split("=", 1)
+                parsed[key] = value
+            else:
+                parsed[field] = ""
+        groups.append(parsed)
+    return groups
+
+
+def megalodon_replay_extra_int(
+    step: MegalodonReplayStep | None,
+    kind: str,
+    key: str,
+) -> int | None:
+    for fields in megalodon_replay_extra_fields(step, kind):
+        value = fields.get(key)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except ValueError:
+            continue
+    return None
+
+
+def megalodon_replay_parent_pair_order(
+    parents: list[str],
+    step: MegalodonReplayStep | None,
+) -> list[tuple[int, int]]:
+    if len(parents) != 2:
+        return []
+    default = [(0, 1), (1, 0)]
+    selected = megalodon_replay_extra_int(step, "literal", "selected_parent_index")
+    other = megalodon_replay_extra_int(step, "literal", "other_parent_index")
+    preferred: list[tuple[int, int]] = []
+    if selected in {0, 1}:
+        paired = other if other in {0, 1} and other != selected else 1 - selected
+        preferred.append((selected, paired))
+    if other in {0, 1} and selected in {0, 1} and other != selected:
+        preferred.append((other, selected))
+    ordered: list[tuple[int, int]] = []
+    for pair in preferred + default:
+        if pair not in ordered:
+            ordered.append(pair)
+    return ordered
+
+
 def sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -18331,16 +18390,19 @@ def raw_tptp_superposition_proof(
     parents: list[str],
     propositions_by_name: dict[str, str],
     variable_sorts: dict[str, str],
+    replay_step: MegalodonReplayStep | None = None,
 ) -> str | None:
     if len(parents) == 2:
-        proof = raw_tptp_quantified_equality_clause_superposition_proof(
-            proposition,
-            parents,
-            propositions_by_name,
-            variable_sorts,
-        )
-        if proof is not None:
-            return proof
+        for source_index, equality_index in megalodon_replay_parent_pair_order(parents, replay_step):
+            ordered_parents = [parents[source_index], parents[equality_index]]
+            proof = raw_tptp_quantified_equality_clause_superposition_proof(
+                proposition,
+                ordered_parents,
+                propositions_by_name,
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
     proof = raw_tptp_parent_equality_rewrite_proof(proposition, parents, propositions_by_name, variable_sorts)
     if proof is not None:
         return proof
@@ -18430,6 +18492,7 @@ def raw_tptp_quantified_equality_clause_superposition_proof(
     parents: list[str],
     propositions_by_name: dict[str, str],
     variable_sorts: dict[str, str],
+    replay_step: MegalodonReplayStep | None = None,
 ) -> str | None:
     if len(parents) != 2:
         return None
@@ -18464,10 +18527,14 @@ def raw_tptp_quantified_equality_clause_superposition_proof(
                     return proof
         return None
 
-    proof = replay(first, first_name, second, second_name)
-    if proof is not None:
-        return proof
-    return replay(second, second_name, first, first_name)
+    for source_index, equality_index in megalodon_replay_parent_pair_order(parents, replay_step):
+        if source_index == 0:
+            proof = replay(first, first_name, second, second_name)
+        else:
+            proof = replay(second, second_name, first, first_name)
+        if proof is not None:
+            return proof
+    return None
 
 
 def raw_tptp_forward_subsumption_resolution_proof(
@@ -18476,6 +18543,7 @@ def raw_tptp_forward_subsumption_resolution_proof(
     propositions_by_name: dict[str, str],
     *,
     allow_quantified_literal: bool = True,
+    replay_step: MegalodonReplayStep | None = None,
 ) -> str | None:
     if len(parents) != 2:
         return None
@@ -18490,39 +18558,32 @@ def raw_tptp_forward_subsumption_resolution_proof(
         return None
     first_name = raw_tptp_claim_name(parents[0])
     second_name = raw_tptp_claim_name(parents[1])
-    if raw_clause_replay_budget_ok(first, second, target, max_literals=12, max_literal_product=512):
-        proof = raw_flat_clause_resolution_proof(first, target, first_name, second, second_name)
-        if proof is not None:
-            return proof
-        proof = raw_flat_clause_resolution_proof(second, target, second_name, first, first_name)
-        if proof is not None:
-            return proof
-        proof = raw_quantified_flat_clause_resolution_proof(first, target, first_name, second, second_name)
-        if proof is not None:
-            return proof
-        proof = raw_quantified_flat_clause_resolution_proof(second, target, second_name, first, first_name)
-        if proof is not None:
-            return proof
-    first_options = raw_instantiated_forall_clause_options(first, first_name, target, second)
-    second_options = raw_instantiated_forall_clause_options(second, second_name, target, first)
-    for first_clause, first_proof in first_options:
-        for second_clause, second_proof in second_options:
-            if not raw_clause_replay_budget_ok(first_clause, second_clause, target, max_literals=8, max_literal_product=128):
+    parsed = [(first, first_name), (second, second_name)]
+    for source_index, resolver_index in megalodon_replay_parent_pair_order(parents, replay_step):
+        source, source_name = parsed[source_index]
+        resolver, resolver_name = parsed[resolver_index]
+        if raw_clause_replay_budget_ok(source, resolver, target, max_literals=12, max_literal_product=512):
+            proof = raw_flat_clause_resolution_proof(source, target, source_name, resolver, resolver_name)
+            if proof is not None:
+                return proof
+            proof = raw_quantified_flat_clause_resolution_proof(source, target, source_name, resolver, resolver_name)
+            if proof is not None:
+                return proof
+        source_options = raw_instantiated_forall_clause_options(source, source_name, target, resolver)
+        resolver_options = raw_instantiated_forall_clause_options(resolver, resolver_name, target, source)
+        for source_clause, source_proof in source_options:
+            for resolver_clause, resolver_proof in resolver_options:
+                if not raw_clause_replay_budget_ok(source_clause, resolver_clause, target, max_literals=8, max_literal_product=128):
+                    continue
+                if not raw_clauses_have_complement(source_clause, resolver_clause):
+                    continue
+                proof = raw_clause_resolution_proof(source_clause, target, source_proof, resolver_clause, resolver_proof)
+                if proof is not None:
+                    return proof
+        if allow_quantified_literal:
+            if not raw_clause_replay_budget_ok(source, resolver, target, max_literals=16, max_literal_product=384):
                 continue
-            if not raw_clauses_have_complement(first_clause, second_clause):
-                continue
-            proof = raw_clause_resolution_proof(first_clause, target, first_proof, second_clause, second_proof)
-            if proof is not None:
-                return proof
-            proof = raw_clause_resolution_proof(second_clause, target, second_proof, first_clause, first_proof)
-            if proof is not None:
-                return proof
-    if allow_quantified_literal:
-        if raw_clause_replay_budget_ok(first, second, target, max_literals=16, max_literal_product=384):
-            proof = raw_quantified_literal_resolution_proof(first, target, first_name, second, second_name)
-            if proof is not None:
-                return proof
-            proof = raw_quantified_literal_resolution_proof(second, target, second_name, first, first_name)
+            proof = raw_quantified_literal_resolution_proof(source, target, source_name, resolver, resolver_name)
             if proof is not None:
                 return proof
     return None
@@ -19165,7 +19226,7 @@ def raw_tptp_avatar_split_clause_proof(
     return raw_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]), rewrites=rewrites)
 
 
-def raw_tptp_replay_rule_candidates(step: MegalodonStep) -> list[str]:
+def raw_tptp_replay_rule_candidates(step: MegalodonReplayStep) -> list[str]:
     rule_key = step.rule.replace(" ", "_")
     replay_kind = step.replay_kind
     if replay_kind == "normal_form" and rule_key not in {
@@ -19183,7 +19244,7 @@ def raw_tptp_replay_rule_candidates(step: MegalodonStep) -> list[str]:
 
 
 def raw_tptp_replay_proof_from_step(
-    step: MegalodonStep,
+    step: MegalodonReplayStep,
     proposition: str,
     parents: list[str],
     propositions_by_name: dict[str, str],
@@ -19196,6 +19257,7 @@ def raw_tptp_replay_proof_from_step(
             parents,
             propositions_by_name,
             variable_sorts,
+            step,
         )
         if proof is not None:
             return proof
@@ -19208,15 +19270,16 @@ def raw_tptp_replay_proof(
     parents: list[str],
     propositions_by_name: dict[str, str],
     variable_sorts: dict[str, str],
+    replay_step: MegalodonReplayStep | None = None,
 ) -> str | None:
     if rule == "fool_exhaustiveness_axiom":
         return raw_fool_exhaustiveness_axiom_proof(proposition)
     if rule == "rat":
         return raw_tptp_rat_proof(proposition, parents, propositions_by_name)
     if rule == "superposition":
-        return raw_tptp_superposition_proof(proposition, parents, propositions_by_name, variable_sorts)
+        return raw_tptp_superposition_proof(proposition, parents, propositions_by_name, variable_sorts, replay_step)
     if rule in {"resolution", "factoring"}:
-        return raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name)
+        return raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name, replay_step=replay_step)
     if rule == "sat_conversion":
         return raw_tptp_trivial_inequality_removal_proof(
             proposition,
@@ -19270,9 +19333,9 @@ def raw_tptp_replay_proof(
         proof = raw_tptp_unit_resulting_resolution_proof(proposition, parents, propositions_by_name)
         if proof is not None:
             return proof
-        return raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name)
+        return raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name, replay_step=replay_step)
     if rule == "forward_subsumption_resolution":
-        return raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name)
+        return raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name, replay_step=replay_step)
     if rule in {"forward_demodulation", "backward_demodulation"}:
         return raw_tptp_forward_demodulation_proof(proposition, parents, propositions_by_name, variable_sorts)
     if rule == "equality_resolution":
@@ -19320,6 +19383,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     text = proof.read_text(encoding="utf-8", errors="replace")
     declarations = collect_tptp_declarations(text)
     entries: list[tuple[str, str, str, str | None, str | None, list[str], bool]]
+    replay_steps: dict[str, MegalodonReplayStep] = {}
     unsupported = 0
     if declarations:
         variable_sorts = raw_tptp_type_variables(declarations)
@@ -19449,7 +19513,17 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
             PROOF_SEARCH_STATE.deadline = proof_search_now() + RAW_TPTP_REPLAY_SECONDS
             try:
-                replay_proof = raw_tptp_replay_proof(rule, proposition, parents, propositions_by_name, variable_sorts)
+                step_info = replay_steps.get(name)
+                if step_info is not None:
+                    replay_proof = raw_tptp_replay_proof_from_step(
+                        step_info,
+                        proposition,
+                        parents,
+                        propositions_by_name,
+                        variable_sorts,
+                    )
+                else:
+                    replay_proof = raw_tptp_replay_proof(rule, proposition, parents, propositions_by_name, variable_sorts)
             finally:
                 if previous_deadline is None:
                     if hasattr(PROOF_SEARCH_STATE, "deadline"):
