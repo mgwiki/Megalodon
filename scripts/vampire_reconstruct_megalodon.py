@@ -7386,6 +7386,86 @@ def contradiction_from_equality_branch_proof(
     return None
 
 
+def contradiction_from_successor_self_equality_branch_proof(
+    branch: Expr,
+    branch_proof: str,
+    target: Expr,
+    rules: list[ProofRule],
+) -> str | None:
+    no_cycle_rules: list[tuple[str, str]] = []
+    successor_intro_rules: list[tuple[str, str]] = []
+    for rule in rules:
+        rule_binders = rule_application_binders(rule)
+        rule_conclusion = rule_application_conclusion(rule)
+        if len(rule_binders) == 2 and len(rule.premises) == 2 and false_eliminator_expr(rule_conclusion):
+            first = binary_atom_parts(rule.premises[0])
+            second = binary_atom_parts(rule.premises[1])
+            if (
+                first is not None
+                and second is not None
+                and first[0] == second[0]
+                and expr_key(first[1]) == rule_binders[0]
+                and expr_key(first[2]) == rule_binders[1]
+                and expr_key(second[1]) == rule_binders[1]
+                and expr_key(second[2]) == rule_binders[0]
+            ):
+                no_cycle_rules.append((first[0], rule.name))
+        if len(rule_binders) == 1 and not rule.premises:
+            atom = binary_atom_parts(rule_conclusion)
+            if (
+                atom is not None
+                and expr_key(atom[1]) == rule_binders[0]
+                and expr_key(atom[2]) == expr_key(unary_app("ordsucc", Expr("var", value=rule_binders[0])))
+            ):
+                successor_intro_rules.append((atom[0], rule.name))
+    if not no_cycle_rules or not successor_intro_rules:
+        return None
+
+    def flattened_conjunction_components(node: Expr) -> list[Expr]:
+        parts = vampire_and_parts(node)
+        if parts is None:
+            return [node]
+        return flattened_conjunction_components(parts[0]) + flattened_conjunction_components(parts[1])
+
+    def successor_self_equality(expr: Expr) -> tuple[Expr, bool] | None:
+        sides = equality_like_sides(expr)
+        if sides is None:
+            return None
+        for direct_left, direct_right in ((sides[0], sides[1]), (sides[1], sides[0])):
+            app = unary_application(direct_right)
+            if app is None or app[0] != "ordsucc":
+                continue
+            if expr_key(app[1]) == expr_key(direct_left):
+                equality_is_forward = expr_key(sides[0]) == expr_key(direct_left)
+                return direct_left, equality_is_forward
+        return None
+
+    for component in flattened_conjunction_components(branch):
+        equality_info = successor_self_equality(component)
+        if equality_info is None:
+            continue
+        base, equality_is_forward = equality_info
+        component_proof = vampire_and_projection_from_proof(branch_proof, branch, component)
+        if component_proof is None:
+            continue
+        base_text = proof_arg_text(base)
+        for relation_head, no_cycle_name in no_cycle_rules:
+            intro_name = next((name for head, name in successor_intro_rules if head == relation_head), None)
+            if intro_name is None:
+                continue
+            container_eq = eq_symmetry_proof(component_proof, base) if equality_is_forward else component_proof
+            relation_context = expr_text(make_binary_application(relation_head, base, Expr("var", value="zz")))
+            successor_member = f"({intro_name} {base_text})"
+            self_member = (
+                f"({proof_term_text(container_eq)} "
+                f"(fun zz:set => {relation_context}) "
+                f"{proof_argument_text(successor_member)})"
+            )
+            false_proof = f"({no_cycle_name} {base_text} {base_text} {self_member} {self_member})"
+            return f"({false_proof} {proof_arg_text(target)})"
+    return None
+
+
 def false_proof_from_branch(
     branch: Expr,
     branch_proof: str,
@@ -7690,6 +7770,15 @@ def branch_to_target_proof(
     )
     if assumed_target is not None:
         return assumed_target
+
+    successor_self_contradiction = contradiction_from_successor_self_equality_branch_proof(
+        branch,
+        branch_proof,
+        target,
+        rules,
+    )
+    if successor_self_contradiction is not None:
+        return successor_self_contradiction
 
     false_proof = false_proof_from_branch(
         branch,
