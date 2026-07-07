@@ -21841,7 +21841,229 @@ def raw_tptp_avatar_sat_refutation_proof(
         proof = close_clause(clause, clause_proof, facts, {parsed[index][0]})
         if proof is not None:
             return proof
+    return raw_avatar_sat_dpll_refutation_proof(parsed, target)
+
+
+def raw_avatar_split_literal(expr: Expr) -> tuple[str, bool] | None:
+    if expr.kind == "var" and isinstance(expr.value, str) and expr.value.startswith("split_"):
+        return expr.value, True
+    premises, conclusion = split_arrows(expr)
+    if len(premises) == 1 and false_eliminator_expr(conclusion):
+        premise = premises[0]
+        if premise.kind == "var" and isinstance(premise.value, str) and premise.value.startswith("split_"):
+            return premise.value, False
     return None
+
+
+def raw_avatar_literal_expr(literal: tuple[str, bool]) -> Expr:
+    name, polarity = literal
+    atom = Expr("var", value=name)
+    if polarity:
+        return atom
+    return Expr("arrow", args=(atom, Expr("var", value="vampire_false")))
+
+
+def raw_avatar_clause_split_literals(clause: Expr) -> list[tuple[Expr, tuple[str, bool]]] | None:
+    result: list[tuple[Expr, tuple[str, bool]]] = []
+    for literal in raw_clause_literals(clause):
+        parsed = raw_avatar_split_literal(literal)
+        if parsed is None:
+            return None
+        result.append((literal, parsed))
+    return result
+
+
+def raw_avatar_literal_false_proof(
+    literal_expr: Expr,
+    literal: tuple[str, bool],
+    literal_proof: str,
+    assignment: dict[str, tuple[bool, str]],
+) -> str | None:
+    name, polarity = literal
+    assigned = assignment.get(name)
+    if assigned is None or assigned[0] == polarity:
+        return None
+    assigned_polarity, assigned_proof = assigned
+    if assigned_polarity:
+        return f"({proof_head(literal_proof)} {proof_term_text(assigned_proof)})"
+    return f"({proof_head(assigned_proof)} {proof_term_text(literal_proof)})"
+
+
+def raw_avatar_clause_elim_proof(
+    clause: Expr,
+    clause_proof: str,
+    target: Expr,
+    branch_proof: Callable[[Expr, str], str | None],
+    depth: int = 0,
+) -> str | None:
+    if depth > 32 or proof_search_timed_out():
+        return None
+    parts = raw_or_parts(clause)
+    if parts is None:
+        return branch_proof(clause, clause_proof)
+    left, right = parts
+    left_name = fresh_identifier("HL", expr_text(clause), clause_proof, expr_text(target), str(depth))
+    right_name = fresh_identifier("HR", expr_text(clause), clause_proof, left_name, str(depth))
+    left_proof = raw_avatar_clause_elim_proof(left, left_name, target, branch_proof, depth + 1)
+    right_proof = raw_avatar_clause_elim_proof(right, right_name, target, branch_proof, depth + 1)
+    if left_proof is None or right_proof is None:
+        return None
+    return (
+        f"({proof_head(clause_proof)} {proof_arg_text(target)} "
+        f"(fun {left_name} => {left_proof}) "
+        f"(fun {right_name} => {right_proof}))"
+    )
+
+
+def raw_avatar_falsified_clause_proof(
+    clause: Expr,
+    clause_proof: str,
+    assignment: dict[str, tuple[bool, str]],
+    target: Expr,
+) -> str | None:
+    def branch(literal_expr: Expr, literal_proof: str) -> str | None:
+        literal = raw_avatar_split_literal(literal_expr)
+        if literal is None:
+            return None
+        false_proof = raw_avatar_literal_false_proof(literal_expr, literal, literal_proof, assignment)
+        if false_proof is None:
+            return None
+        return raw_false_to_expr_proof(false_proof, target)
+
+    return raw_avatar_clause_elim_proof(clause, clause_proof, target, branch)
+
+
+def raw_avatar_unit_literal_proof(
+    clause: Expr,
+    clause_proof: str,
+    unit: tuple[str, bool],
+    assignment: dict[str, tuple[bool, str]],
+) -> str | None:
+    target = raw_avatar_literal_expr(unit)
+
+    def branch(literal_expr: Expr, literal_proof: str) -> str | None:
+        literal = raw_avatar_split_literal(literal_expr)
+        if literal is None:
+            return None
+        if literal == unit:
+            return literal_proof
+        false_proof = raw_avatar_literal_false_proof(literal_expr, literal, literal_proof, assignment)
+        if false_proof is None:
+            return None
+        return raw_false_to_expr_proof(false_proof, target)
+
+    return raw_avatar_clause_elim_proof(clause, clause_proof, target, branch)
+
+
+def raw_avatar_sat_dpll_refutation_proof(
+    parsed: list[tuple[str, Expr, str]],
+    target: Expr,
+) -> str | None:
+    clauses: list[tuple[str, Expr, str, list[tuple[Expr, tuple[str, bool]]]]] = []
+    variables: set[str] = set()
+    for name, clause, clause_proof in parsed:
+        literals = raw_avatar_clause_split_literals(clause)
+        if literals is None:
+            return None
+        clauses.append((name, clause, clause_proof, literals))
+        for _, (variable, _) in literals:
+            variables.add(variable)
+    if not clauses or len(variables) > 24:
+        return None
+    search_nodes = 0
+
+    def assign_literal(
+        assignment: dict[str, tuple[bool, str]],
+        literal: tuple[str, bool],
+        literal_proof: str,
+    ) -> tuple[dict[str, tuple[bool, str]] | None, str | None]:
+        name, polarity = literal
+        previous = assignment.get(name)
+        if previous is None:
+            next_assignment = dict(assignment)
+            next_assignment[name] = (polarity, literal_proof)
+            return next_assignment, None
+        if previous[0] == polarity:
+            return assignment, None
+        if polarity:
+            return None, f"({proof_head(previous[1])} {proof_term_text(literal_proof)})"
+        return None, f"({proof_head(literal_proof)} {proof_term_text(previous[1])})"
+
+    def clause_state(
+        literals: list[tuple[Expr, tuple[str, bool]]],
+        assignment: dict[str, tuple[bool, str]],
+    ) -> tuple[str, tuple[str, bool] | None]:
+        unknown: tuple[str, bool] | None = None
+        for _, literal in literals:
+            assigned = assignment.get(literal[0])
+            if assigned is None:
+                if unknown is not None:
+                    return "open", None
+                unknown = literal
+            elif assigned[0] == literal[1]:
+                return "satisfied", None
+        if unknown is None:
+            return "falsified", None
+        return "unit", unknown
+
+    def choose_branch_variable(assignment: dict[str, tuple[bool, str]]) -> str | None:
+        best: tuple[int, str] | None = None
+        for _, _, _, literals in clauses:
+            state, _ = clause_state(literals, assignment)
+            if state == "satisfied":
+                continue
+            unassigned = sorted({literal[0] for _, literal in literals if literal[0] not in assignment})
+            for variable in unassigned:
+                candidate = (len(unassigned), variable)
+                if best is None or candidate < best:
+                    best = candidate
+        return best[1] if best is not None else None
+
+    def search(assignment: dict[str, tuple[bool, str]], depth: int) -> str | None:
+        nonlocal search_nodes
+        search_nodes += 1
+        if depth > 80 or search_nodes > 4096 or proof_search_timed_out():
+            return None
+        changed = True
+        while changed:
+            changed = False
+            for _, clause, clause_proof, literals in clauses:
+                state, unit = clause_state(literals, assignment)
+                if state == "falsified":
+                    return raw_avatar_falsified_clause_proof(clause, clause_proof, assignment, target)
+                if state != "unit" or unit is None or unit[0] in assignment:
+                    continue
+                unit_proof = raw_avatar_unit_literal_proof(clause, clause_proof, unit, assignment)
+                if unit_proof is None:
+                    return None
+                next_assignment, contradiction = assign_literal(assignment, unit, unit_proof)
+                if contradiction is not None:
+                    return raw_false_to_expr_proof(contradiction, target)
+                if next_assignment is None:
+                    return None
+                assignment = next_assignment
+                changed = True
+                break
+        variable = choose_branch_variable(assignment)
+        if variable is None:
+            return None
+        true_assignment = dict(assignment)
+        true_assignment[variable] = (True, "Hsplit_true")
+        true_proof = search(true_assignment, depth + 1)
+        if true_proof is None:
+            return None
+        false_assignment = dict(assignment)
+        false_assignment[variable] = (False, "Hsplit_false")
+        false_proof = search(false_assignment, depth + 1)
+        if false_proof is None:
+            return None
+        return (
+            f"(xm {variable} {proof_arg_text(target)} "
+            f"(fun Hsplit_true => {true_proof}) "
+            f"(fun Hsplit_false => {false_proof}))"
+        )
+
+    return search({}, 0)
 
 
 def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | None = None) -> list[str]:
