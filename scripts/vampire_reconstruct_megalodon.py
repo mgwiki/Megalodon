@@ -20952,6 +20952,13 @@ def raw_normal_form_premise_components(source_premise: Expr) -> list[Expr]:
     return raw_conjunction_components(source_premise)
 
 
+def raw_normal_form_negated_conclusion_component_count(conclusion: Expr) -> int:
+    literals = raw_clause_literals(conclusion)
+    if len(literals) > 1:
+        return len(literals)
+    return 1
+
+
 def raw_negated_forall_implication_to_exists_conjunction_proof(
     source: Expr,
     target: Expr,
@@ -20987,7 +20994,7 @@ def raw_negated_forall_implication_to_exists_conjunction_proof(
     premise_component_groups = [raw_normal_form_premise_components(premise) for premise in implication_premises]
     expected_component_count = sum(len(components) for components in premise_component_groups)
     if not conclusion_is_false:
-        expected_component_count += 1
+        expected_component_count += raw_normal_form_negated_conclusion_component_count(implication_conclusion)
     if len(target_components) != expected_component_count:
         return None
 
@@ -21041,6 +21048,66 @@ def raw_negated_forall_implication_to_exists_conjunction_proof(
         return proof
 
     def negated_conclusion_component_proof(component: Expr) -> str | None:
+        negated_or_component = raw_negated_or_to_negative_component_proof(
+            Expr("arrow", args=(implication_conclusion, Expr("var", value="False"))),
+            component,
+            "HnotSourceConclusion",
+        )
+        if negated_or_component is not None:
+            return negated_or_component
+
+        for disjunct in raw_clause_literals(implication_conclusion):
+            if expr_same_mod_alpha(disjunct, implication_conclusion):
+                continue
+            disjunct_negative = Expr("arrow", args=(disjunct, Expr("var", value="False")))
+            disjunct_negative_proof = raw_negated_or_to_negative_component_proof(
+                Expr("arrow", args=(implication_conclusion, Expr("var", value="False"))),
+                disjunct_negative,
+                "HnotSourceConclusion",
+            )
+            if disjunct_negative_proof is None:
+                continue
+            proof = raw_deep_formula_transform_proof(
+                disjunct_negative,
+                component,
+                disjunct_negative_proof,
+                local_sorts,
+            )
+            if proof is None:
+                proof = raw_clause_transform_proof(disjunct_negative, component, disjunct_negative_proof)
+            if proof is None and expr_same_mod_alpha(disjunct_negative, component):
+                proof = disjunct_negative_proof
+            if proof is None:
+                proof = raw_negated_forall_to_exists_negation_proof(
+                    disjunct_negative,
+                    component,
+                    disjunct_negative_proof,
+                    local_sorts,
+                )
+            if proof is None:
+                proof = raw_not_exists_conjunction_to_forall_or_negated_components_proof(
+                    disjunct,
+                    component,
+                    disjunct_negative_proof,
+                    local_sorts,
+                )
+            if proof is None:
+                proof = raw_not_exists_negative_to_forall_positive_proof(
+                    disjunct,
+                    component,
+                    disjunct_negative_proof,
+                    local_sorts,
+                )
+            if proof is None:
+                proof = raw_negated_forall_negative_to_exists_positive_proof(
+                    disjunct_negative,
+                    component,
+                    disjunct_negative_proof,
+                    local_sorts,
+                )
+            if proof is not None:
+                return proof
+
         negated_conjunction = raw_negated_conjunction_to_or_negated_components_proof(
             Expr("arrow", args=(implication_conclusion, Expr("var", value="False"))),
             component,
@@ -21205,18 +21272,20 @@ def raw_negated_forall_implication_to_exists_conjunction_proof(
             f"(fun HnotTarget => ({proof_head(source_proof)} {proof_term_text(implication_proof)} {target_text})))"
         )
 
-    negative_component_index: int | None = None
+    negative_component_count = 0
     for component_index, component in enumerate(target_components):
         if component_index in used:
             continue
         proof = negated_conclusion_component_proof(component)
         if proof is None:
             continue
-        negative_component_index = component_index
+        negative_component_count += 1
         component_proofs[component_index] = proof
         used.add(component_index)
-        break
-    if negative_component_index is None or len(component_proofs) != len(target_components):
+    if (
+        negative_component_count != raw_normal_form_negated_conclusion_component_count(implication_conclusion)
+        or len(component_proofs) != len(target_components)
+    ):
         return None
 
     conjunction_proof = raw_build_conjunction_from_component_proofs(target_body_at_witness, target_component_proof)
