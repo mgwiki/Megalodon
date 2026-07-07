@@ -16500,6 +16500,20 @@ def raw_instantiated_forall_clause_options(
     if not candidates:
         subst = raw_infer_forall_clause_substitution(body, target, resolver, binder_names)
         candidates = [subst] if subst is not None else []
+    prop_binders = [name for name, sort in binders if sort == "prop"]
+    if prop_binders:
+        for truth_name in ("True", "False"):
+            fallback = {
+                name: Expr("var", value=truth_name)
+                for name, sort in binders
+                if sort == "prop"
+            }
+            if binder_names <= fallback.keys() and not any(
+                all(expr_key(fallback[name]) == expr_key(existing.get(name, Expr("var", value=""))) for name in binder_names)
+                for existing in candidates
+                if binder_names <= existing.keys()
+            ):
+                candidates.append(fallback)
     for subst in candidates:
         if not binder_names <= subst.keys():
             continue
