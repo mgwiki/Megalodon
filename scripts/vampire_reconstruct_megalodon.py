@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import functools
+import heapq
 import hashlib
 import json
 import os
@@ -5081,6 +5082,17 @@ def equality_transport_side_proof(
     )
     if proof is not None:
         return proof
+    proof = equality_guided_rewrite_chain_proof(
+        equality,
+        known,
+        known_canonical,
+        rules,
+        eq_facts,
+        definitions,
+        rule_depth,
+    )
+    if proof is not None:
+        return proof
     proof = proof_for_expr(
         equality,
         known,
@@ -6536,6 +6548,160 @@ def equality_rule_demodulation_proof(
                     break
             if len(seen) > max_nodes:
                 break
+    return None
+
+
+def equality_guided_rewrite_chain_proof(
+    expr: Expr,
+    known: dict[str, str],
+    known_canonical: dict[str, str],
+    rules: list[ProofRule],
+    eq_facts: list[EqFact],
+    definitions: dict[str, DefinitionInfo],
+    rule_depth: int,
+    max_steps: int = 6,
+    max_nodes: int = 96,
+    max_edges_per_node: int = 24,
+) -> str | None:
+    if not getattr(PROOF_SEARCH_STATE, "guided_rewrite_enabled", False):
+        return None
+    if expr.kind != "eq" or rule_depth <= 0:
+        return None
+    start = normalize_defined_expr(expr.args[0], definitions)
+    target = normalize_defined_expr(expr.args[1], definitions)
+    if expr_key(start) == expr_key(target):
+        return "(fun Q H => H)"
+    if start.kind == "lambda" or target.kind == "lambda":
+        return None
+    if len(expr_text(start)) > 3500 or len(expr_text(target)) > 3500 or len(rules) > 32:
+        return None
+
+    target_text = expr_text(target)
+    target_subterms = expr_subterms(target, limit=96)
+    target_subterm_keys = {expr_key(term) for term in target_subterms}
+    target_heads = {head for term in target_subterms if (head := expr_head_name(term)) is not None}
+
+    equality_rules = [
+        rule
+        for rule in rules
+        if rule_application_conclusion(rule).kind == "eq"
+        and len(rule_application_binders(rule)) <= 6
+        and len(rule.premises) <= 8
+    ]
+
+    def term_score(term: Expr) -> tuple[int, int, int, str]:
+        text = expr_text(term)
+        subterms = expr_subterms(term, limit=64)
+        exact_missing = 0 if expr_key(term) in target_subterm_keys else 1
+        heads = {head for subterm in subterms if (head := expr_head_name(subterm)) is not None}
+        missing_heads = len(target_heads - heads)
+        length_gap = abs(len(text) - len(target_text))
+        return (exact_missing, missing_heads, length_gap, text)
+
+    def add_fact_rewrites(term: Expr, out: list[tuple[Expr, str]]) -> None:
+        term_key = expr_key(term)
+        for fact in eq_facts:
+            left = normalize_defined_expr(fact.left, definitions)
+            right = normalize_defined_expr(fact.right, definitions)
+            if expr_key(left) == term_key:
+                out.append((right, fact.proof))
+            if expr_key(right) == term_key:
+                out.append((left, eq_symmetry_proof(fact.proof, fact.left)))
+
+    def add_rule_rewrites(term: Expr, out: list[tuple[Expr, str]]) -> None:
+        if term.kind in {"forall", "arrow", "lambda"}:
+            return
+        for rule in equality_rules:
+            if proof_search_timed_out():
+                return
+            conclusion = rule_application_conclusion(rule)
+            variables = set(rule_application_binders(rule))
+            for source_index, target_index, reverse in ((0, 1, False), (1, 0, True)):
+                subst: dict[str, Expr] = {}
+                if not match_expr_with_alpha_instantiation(conclusion.args[source_index], term, variables, subst):
+                    continue
+                for candidate_subst in completed_rule_substs(rule, subst, known, eq_facts, limit=24):
+                    source = normalize_defined_expr(substitute_expr(conclusion.args[source_index], candidate_subst), definitions)
+                    if expr_key(source) != expr_key(term):
+                        continue
+                    parts = rule_application_parts(
+                        rule,
+                        candidate_subst,
+                        known,
+                        known_canonical,
+                        rules,
+                        eq_facts,
+                        definitions,
+                        max(0, rule_depth - 1),
+                    )
+                    if parts is None:
+                        continue
+                    replacement = normalize_defined_expr(substitute_expr(conclusion.args[target_index], candidate_subst), definitions)
+                    if expr_key(replacement) == expr_key(term):
+                        continue
+                    proof = rule_application_text(parts)
+                    if reverse:
+                        proof = eq_symmetry_proof(proof, replacement)
+                    out.append((replacement, proof))
+                    if len(out) >= max_edges_per_node * 2:
+                        return
+
+    def lifted_edges(node: Expr) -> list[tuple[Expr, str]]:
+        subterms = expr_subterms(node, limit=80)
+        subterms.sort(key=lambda term: (0 if expr_key(term) in target_subterm_keys else 1, -len(expr_text(term)), expr_text(term)))
+        edges: list[tuple[Expr, str]] = []
+        seen_edges: set[tuple[str, str]] = set()
+        for subterm in subterms:
+            rewrites: list[tuple[Expr, str]] = []
+            add_fact_rewrites(subterm, rewrites)
+            add_rule_rewrites(subterm, rewrites)
+            rewrites.sort(key=lambda item: term_score(item[0]))
+            for replacement, equality_proof in rewrites[:8]:
+                hole_name = fresh_identifier("zz", expr_text(node), expr_text(subterm), expr_text(replacement))
+                hole = Expr("var", value=hole_name)
+                for next_node, context in single_replacement_contexts(node, subterm, replacement, hole, limit=2):
+                    next_node = normalize_defined_expr(next_node, definitions)
+                    edge_key = (expr_key(next_node), expr_key(subterm))
+                    if edge_key in seen_edges:
+                        continue
+                    seen_edges.add(edge_key)
+                    if expr_key(next_node) == expr_key(node):
+                        continue
+                    if expr_key(subterm) == expr_key(node):
+                        proof = equality_proof
+                    else:
+                        proof = (
+                            f"(fun Q:set->prop => fun H:Q ({expr_text(node)}) => "
+                            f"{proof_head(equality_proof)} (fun {hole_name}:set => Q ({expr_text(context)})) H)"
+                        )
+                    edges.append((next_node, proof))
+                    if len(edges) >= max_edges_per_node:
+                        return edges
+        edges.sort(key=lambda item: term_score(item[0]))
+        return edges[:max_edges_per_node]
+
+    counter = 0
+    queue: list[tuple[tuple[int, int, int, str], int, Expr, list[str]]] = []
+    heapq.heappush(queue, (term_score(start), counter, start, []))
+    seen: dict[str, int] = {expr_key(start): 0}
+    target_key = expr_key(target)
+    while queue and len(seen) <= max_nodes:
+        if proof_search_timed_out():
+            return None
+        _, _, node, proofs = heapq.heappop(queue)
+        if len(proofs) >= max_steps:
+            continue
+        for next_node, proof in lifted_edges(node):
+            key = expr_key(next_node)
+            next_depth = len(proofs) + 1
+            if key in seen and seen[key] <= next_depth:
+                continue
+            next_proofs = proofs + [proof]
+            if key == target_key:
+                return eq_transitivity_proof(next_proofs, expr_text(start))
+            seen[key] = next_depth
+            counter += 1
+            heapq.heappush(queue, (term_score(next_node), counter, next_node, next_proofs))
     return None
 
 
@@ -13239,6 +13405,19 @@ def _proof_for_expr_impl(
     if two_rule_join is not None:
         return two_rule_join
 
+    if allow_rule and expr.kind == "eq" and rule_depth >= 2:
+        guided_rule_chain_proof = equality_guided_rewrite_chain_proof(
+            expr,
+            known,
+            known_canonical,
+            rules,
+            eq_facts,
+            definitions,
+            rule_depth=rule_depth,
+        )
+        if guided_rule_chain_proof is not None:
+            return guided_rule_chain_proof
+
     empty_power = empty_power_singleton_proof(expr, rules)
     if empty_power is not None:
         return empty_power
@@ -13917,6 +14096,56 @@ def should_retry_pruned_claim_fill(lines: list[str]) -> bool:
     return sum(len(line) for line in lines) <= 4000
 
 
+def fill_small_remaining_claim_admits(lines: list[str]) -> list[str]:
+    if not should_retry_pruned_claim_fill(lines):
+        return lines
+    claim_indices = [
+        index
+        for index, line in enumerate(lines)
+        if line.startswith("claim ") and index + 1 < len(lines) and lines[index + 1] == "{ admit. }"
+    ]
+    if len(claim_indices) != 1:
+        return lines
+    claim = proposition_after_colon(lines[claim_indices[0]], "claim ")
+    if claim is None:
+        return lines
+    parsed_claim = parse_expr(claim[1])
+    if parsed_claim is None:
+        return lines
+    if parsed_claim.kind != "eq":
+        return lines
+    previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+    previous_guided = getattr(PROOF_SEARCH_STATE, "guided_rewrite_enabled", None)
+    PROOF_SEARCH_STATE.deadline = proof_search_now() + max(PROOF_SEARCH_SECONDS, 20.0)
+    PROOF_SEARCH_STATE.guided_rewrite_enabled = True
+    result = list(lines)
+    try:
+        index = 0
+        while index < len(result):
+            if proof_search_timed_out():
+                break
+            claim = proposition_after_colon(result[index], "claim ")
+            if claim is None or index + 1 >= len(result) or result[index + 1] != "{ admit. }":
+                index += 1
+                continue
+            proof_name = proof_for_claim_at(result, index)
+            if proof_name is not None:
+                result[index + 1] = "{ exact " + proof_argument_text(proof_name) + ". }"
+            index += 2
+        return result
+    finally:
+        if previous_deadline is None:
+            if hasattr(PROOF_SEARCH_STATE, "deadline"):
+                delattr(PROOF_SEARCH_STATE, "deadline")
+        else:
+            PROOF_SEARCH_STATE.deadline = previous_deadline
+        if previous_guided is None:
+            if hasattr(PROOF_SEARCH_STATE, "guided_rewrite_enabled"):
+                delattr(PROOF_SEARCH_STATE, "guided_rewrite_enabled")
+        else:
+            PROOF_SEARCH_STATE.guided_rewrite_enabled = previous_guided
+
+
 def proof_for_claim_at(lines: list[str], claim_index: int) -> str | None:
     claim = proposition_after_colon(lines[claim_index], "claim ") if 0 <= claim_index < len(lines) else None
     if claim is None:
@@ -14212,6 +14441,8 @@ def check_megalodon_lines(
         output_lines = prune_unreachable_claims(output_lines)
         if should_retry_pruned_claim_fill(output_lines):
             output_lines = fill_repeated_claim_admits(output_lines)
+        if should_retry_pruned_claim_fill(output_lines):
+            output_lines = fill_small_remaining_claim_admits(output_lines)
     output_lines = annotate_remaining_admits(output_lines, proof_text)
     output_lines = annotate_source_links(output_lines, proof, proof_text, source)
     if header:
