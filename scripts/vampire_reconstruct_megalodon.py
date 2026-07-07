@@ -4280,6 +4280,14 @@ def beta_normalize_expr(expr: Expr, depth: int = 0) -> Expr:
     return beta_normalize_expr(contracted, depth + 1)
 
 
+def beta_normalize_forall_body_expr(expr: Expr) -> Expr:
+    binders, body = collect_foralls(expr)
+    body = beta_normalize_expr(body)
+    for name, sort in reversed(binders):
+        body = Expr("forall", value=name, sort=sort, args=(body,))
+    return body
+
+
 def is_or_nand_pointwise_prop_equality(expr: Expr) -> tuple[str, str] | None:
     binders, body = collect_foralls(expr)
     if [sort for _, sort in binders] != ["prop", "prop"]:
@@ -20609,6 +20617,16 @@ def raw_tptp_parent_equality_rewrite_proof(
             )
             if lambda_function_proof is not None:
                 return lambda_function_proof
+            beta_quantified_proof = raw_quantified_parent_equality_rewrite_clause_proof(
+                beta_normalize_forall_body_expr(source),
+                beta_normalize_forall_body_expr(target),
+                source_proof,
+                beta_normalize_forall_body_expr(equality),
+                equality_proof,
+                variable_sorts,
+            )
+            if beta_quantified_proof is not None and not raw_tptp_replay_proof_has_synthetic_db(beta_quantified_proof):
+                return beta_quantified_proof
             quantified_proof = raw_quantified_parent_equality_rewrite_clause_proof(
                 source,
                 target,
