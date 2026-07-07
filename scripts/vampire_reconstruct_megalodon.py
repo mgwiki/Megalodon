@@ -15662,12 +15662,26 @@ def raw_literal_direct_transform_proof(
         true_proof = "(fun Q H => H)"
         if expr_key(source_sides[0]) == expr_key(true_expr) and expr_same_mod_alpha(source_sides[1], target):
             return f"({proof_head(source_proof)} (fun R:prop => R) {true_proof})"
+        if expr_key(source_sides[0]) == expr_key(true_expr):
+            proposition_proof = f"({proof_head(source_proof)} (fun R:prop => R) {true_proof})"
+            rewrite_proof = raw_split_rewrite_proof(source_sides[1], target, proposition_proof, rewrites)
+            if rewrite_proof is not None:
+                return rewrite_proof
         if expr_same_mod_alpha(source_sides[0], target) and expr_key(source_sides[1]) == expr_key(true_expr):
             return (
                 f"(({proof_head(source_proof)} "
                 f"(fun R:prop => R -> {proof_arg_text(target)}) "
                 f"(fun H => H)) {true_proof})"
             )
+        if expr_key(source_sides[1]) == expr_key(true_expr):
+            proposition_proof = (
+                f"(({proof_head(source_proof)} "
+                f"(fun R:prop => R -> {proof_arg_text(source_sides[0])}) "
+                f"(fun H => H)) {true_proof})"
+            )
+            rewrite_proof = raw_split_rewrite_proof(source_sides[0], target, proposition_proof, rewrites)
+            if rewrite_proof is not None:
+                return rewrite_proof
     if (
         source_sides is not None
         and target_sides is not None
@@ -19344,6 +19358,53 @@ def raw_tptp_avatar_split_forall_instantiation_proof(
     return raw_clause_transform_proof(instantiated, target, proof, rewrites=rewrites)
 
 
+def raw_tptp_avatar_split_component_instantiation_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rewrites: tuple[RawSplitRewrite, ...],
+) -> str | None:
+    binders, body = collect_foralls(source)
+    if not binders or len(binders) > 4:
+        return None
+    component_candidates = tuple(dict.fromkeys(expr_key(rewrite.component) for rewrite in rewrites))
+    component_by_key = {expr_key(rewrite.component): rewrite.component for rewrite in rewrites}
+    if not component_candidates:
+        return None
+    options: list[list[Expr]] = []
+    for _, sort in binders:
+        if sort != "prop":
+            return None
+        options.append([component_by_key[key] for key in component_candidates])
+    if len(options) > 4:
+        return None
+
+    def search(index: int, subst: dict[str, Expr]) -> str | None:
+        if proof_search_timed_out():
+            return None
+        if index == len(binders):
+            instantiated = substitute_expr(body, subst)
+            if not raw_clause_replay_budget_ok(instantiated, target, max_literals=16, max_literal_product=256):
+                return None
+            proof = source_proof
+            for name, _ in binders:
+                proof = f"({proof_head(proof)} {proof_arg_text(subst[name])})"
+            transformed = raw_clause_subsumption_transform_proof(instantiated, target, proof, rewrites=rewrites)
+            if transformed is not None:
+                return transformed
+            return raw_clause_transform_proof(instantiated, target, proof, rewrites=rewrites)
+        name, _ = binders[index]
+        for candidate in options[index]:
+            subst[name] = candidate
+            found = search(index + 1, subst)
+            if found is not None:
+                return found
+        subst.pop(name, None)
+        return None
+
+    return search(0, {})
+
+
 def raw_split_atom_name(expr: Expr) -> str | None:
     return raw_split_definition_name(expr)
 
@@ -19579,6 +19640,14 @@ def raw_tptp_avatar_split_clause_proof(
     )
     if instantiated is not None:
         return instantiated
+    component_instantiated = raw_tptp_avatar_split_component_instantiation_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+        rewrites,
+    )
+    if component_instantiated is not None:
+        return component_instantiated
     if len(parents) <= 3:
         direct = raw_tptp_avatar_split_direct_component_proof(
             source,
