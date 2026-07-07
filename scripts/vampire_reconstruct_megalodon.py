@@ -1037,6 +1037,8 @@ def tptp_term_to_expr(text: str, variable_sorts: dict[str, str] | None = None) -
     parts = split_tptp_application(text)
     if parts is None:
         return None
+    if not parts:
+        return None
     if len(parts) == 1:
         if parts[0] == "$true":
             return Expr("var", value="vampire_true")
@@ -2848,6 +2850,109 @@ def collect_foralls(expr: Expr) -> tuple[list[tuple[str, str]], Expr]:
         binders.append((expr.value, expr.sort))
         expr = expr.args[0]
     return binders, expr
+
+
+def raw_tptp_parent_binder_sorts(parent_propositions: list[str]) -> dict[str, str]:
+    sorts: dict[str, str] = {}
+    conflicts: set[str] = set()
+    for proposition in parent_propositions:
+        parsed = parse_expr(proposition)
+        if parsed is None:
+            continue
+        binders, _ = collect_foralls(parsed)
+        for name, sort in binders:
+            previous = sorts.get(name)
+            if previous is not None and previous != sort:
+                conflicts.add(name)
+                continue
+            sorts.setdefault(name, sort)
+    return {name: sort for name, sort in sorts.items() if name not in conflicts}
+
+
+def raw_tptp_apply_parent_binder_sorts(proposition: str, parent_sorts: dict[str, str]) -> str:
+    result = proposition
+    for name, sort in sorted(parent_sorts.items(), key=lambda item: -len(item[0])):
+        escaped = re.escape(name)
+        result = re.sub(
+            rf"\bforall\s+{escaped}\s*:\s*[^,]+,",
+            f"forall {name}:{sort},",
+            result,
+        )
+    return result
+
+
+def raw_tptp_application_binder_sort_hints(proposition: str, known_sorts: dict[str, str]) -> dict[str, str]:
+    parsed = parse_expr(proposition)
+    if parsed is None:
+        return {}
+    binders, _ = collect_foralls(parsed)
+    binder_sorts = dict(binders)
+    hints: dict[str, str] = {}
+    conflicts: set[str] = set()
+
+    def remember(name: str, sort: str) -> None:
+        if name not in binder_sorts or binder_sorts[name] == sort:
+            return
+        previous = hints.get(name)
+        if previous is not None and previous != sort:
+            conflicts.add(name)
+            return
+        hints[name] = sort
+
+    def walk(expr: Expr, local_binders: dict[str, str], expected: str | None = None) -> None:
+        if expr.kind in {"forall", "lambda"}:
+            assert expr.value is not None and expr.sort is not None
+            nested = dict(local_binders)
+            nested[expr.value] = expr.sort
+            walk(expr.args[0], nested, "prop" if expr.kind == "forall" else None)
+            return
+        if expr.kind == "arrow":
+            walk(expr.args[0], local_binders, "prop")
+            walk(expr.args[1], local_binders, "prop")
+            return
+        if expr.kind == "eq":
+            walk(expr.args[0], local_binders, "set")
+            walk(expr.args[1], local_binders, "set")
+            return
+        if expr.kind == "app" and expr.args:
+            env = {**local_binders, **known_sorts}
+            head_sort = expr_sort(expr.args[0], env)
+            if head_sort is not None and len(expr.args) - 1 >= len(split_sort_arrows(head_sort)):
+                head_sort = None
+            if (
+                head_sort is None
+                and expected is not None
+                and expr.args[0].kind == "var"
+                and expr.args[0].value is not None
+                and expr.args[0].value in local_binders
+            ):
+                arg_sorts = [expr_sort(arg, env) for arg in expr.args[1:]]
+                if arg_sorts and all(sort is not None for sort in arg_sorts):
+                    remember(
+                        expr.args[0].value,
+                        join_sort_arrows([*(sort for sort in arg_sorts if sort is not None), expected]),
+                    )
+            if head_sort is not None:
+                pieces = split_sort_arrows(head_sort)
+                for arg, expected_sort in zip(expr.args[1:], pieces[:-1]):
+                    if (
+                        arg.kind == "var"
+                        and arg.value is not None
+                        and arg.value in local_binders
+                    ):
+                        remember(arg.value, expected_sort)
+                    walk(arg, local_binders, expected_sort)
+                for arg in expr.args[len(pieces) :]:
+                    walk(arg, local_binders)
+                return
+            for arg in expr.args:
+                walk(arg, local_binders)
+            return
+        for arg in expr.args:
+            walk(arg, local_binders)
+
+    walk(parsed, binder_sorts, "prop")
+    return {name: sort for name, sort in hints.items() if name not in conflicts}
 
 
 def split_arrows(expr: Expr) -> tuple[list[Expr], Expr]:
@@ -9157,7 +9262,7 @@ def direct_proof_expr(expr: Expr) -> str | None:
             node.kind == "app"
             and len(node.args) == 3
             and node.args[0].kind == "var"
-            and node.args[0].value == "vampire_and"
+            and node.args[0].value in {"vampire_and", "and"}
         ):
             return node.args[1], node.args[2]
         return None
@@ -16996,6 +17101,10 @@ def infer_missing_raw_tptp_sorts(expr: Expr, variables: dict[str, str], local_so
         }
         left_sort = expr_sort(expr.args[0], known_sorts)
         right_sort = expr_sort(expr.args[1], known_sorts)
+        if left_sort is None and right_sort is None:
+            infer_missing_raw_tptp_sorts(expr.args[0], variables, local_sorts, "set")
+            infer_missing_raw_tptp_sorts(expr.args[1], variables, local_sorts, "set")
+            return
         infer_missing_raw_tptp_sorts(expr.args[0], variables, local_sorts, right_sort)
         infer_missing_raw_tptp_sorts(expr.args[1], variables, local_sorts, left_sort)
         return
@@ -21860,6 +21969,17 @@ def raw_tptp_fool_elimination_proof(
     PROOF_SEARCH_STATE.allow_two_sided_equality = True
     try:
         for source, target in candidate_pairs:
+            source_premises, source_conclusion = split_arrows(source)
+            target_premises, target_conclusion = split_arrows(target)
+            if (
+                len(source_premises) == 1
+                and len(target_premises) == 1
+                and false_eliminator_expr(source_conclusion)
+                and false_eliminator_expr(target_conclusion)
+            ):
+                source_premise_proof = direct_proof_expr(source_premises[0])
+                if source_premise_proof is not None:
+                    return f"(fun Htarget => {proof_head(raw_tptp_claim_name(parents[0]))} {proof_term_text(source_premise_proof)})"
             proof = raw_strip_unused_foralls_transform_proof(
                 source,
                 target,
@@ -27643,8 +27763,8 @@ def raw_tptp_safe_split_definition_body(body: Expr, variable_sorts: dict[str, st
     return body_text
 
 
-RAW_TPTP_SYNTHETIC_DB_RE = re.compile(r"\bDB[0-9]+\b")
-RAW_TPTP_SYNTHETIC_DB_BINDER_RE = re.compile(r"\b(?:fun|forall)\s+(DB[0-9]+)\s*:")
+RAW_TPTP_SYNTHETIC_DB_RE = re.compile(r"\b(?:DB|db)[0-9]+\b")
+RAW_TPTP_SYNTHETIC_DB_BINDER_RE = re.compile(r"\b(?:fun|forall)\s+((?:DB|db)[0-9]+)\s*:")
 
 
 def raw_tptp_replay_proof_has_unbound_synthetic_db(proof: str) -> bool:
@@ -27690,6 +27810,12 @@ def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: s
         return raw_tptp_replay_proof_has_unbound_synthetic_db(proof)
     if rule in {"avatar_component_clause", "avatar_split_clause"}:
         return len(proposition) > MAX_RAW_TPTP_EXACT_AVATAR_PROPOSITION or len(proof) > MAX_RAW_TPTP_EXACT_PROOF_TERM
+    if rule == "fool_elimination" and (
+        len(proof) > 20000
+        or "vampire_funext_set_set_set" in proof
+        or "vampire_eps_ext" in proof
+    ):
+        return True
     return False
 
 
@@ -27701,12 +27827,6 @@ def raw_tptp_standard_replay_proof_is_unsafe(rule: str | None, proposition: str,
     if rule in {"definition_folding", "definition_unfolding"} and re.search(
         r"\(\s*fun\s+[XY][0-9]+\s*:",
         proof,
-    ):
-        return True
-    if rule == "fool_elimination" and (
-        len(proof) > 20000
-        or "vampire_funext_set_set_set" in proof
-        or "vampire_eps_ext" in proof
     ):
         return True
     if rule in {"forward_demodulation", "backward_demodulation"} and re.search(
@@ -29459,6 +29579,30 @@ def source_declared_names(source: Path | None) -> set[str]:
     return names
 
 
+def source_active_declared_names(source: Path | None) -> set[str]:
+    if source is None:
+        return set()
+    try:
+        text = source.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return set()
+    names: set[str] = set()
+    section_depth = 0
+    for line in text.splitlines():
+        stripped = line.strip()
+        if re.match(r"^End\b", stripped):
+            section_depth = max(0, section_depth - 1)
+            continue
+        match = SOURCE_DECLARED_NAME_RE.match(line)
+        if match is not None and (
+            section_depth == 0 or not stripped.startswith(("Variable ", "Parameter "))
+        ):
+            names.add(match.group("name"))
+        if re.match(r"^Section\b", stripped):
+            section_depth += 1
+    return names
+
+
 def normalize_megalodon_sort(sort: str) -> str:
     text = sort.strip()
     text = re.sub(r"\s*->\s*", "->", text)
@@ -29498,6 +29642,15 @@ def source_definition_sorts(source: Path | None) -> dict[str, str]:
         name: sort
         for name, sort in source_declared_sorts(source).items()
         if name in definition_names
+    }
+
+
+def source_active_declared_sorts(source: Path | None) -> dict[str, str]:
+    active_names = source_active_declared_names(source)
+    return {
+        name: sort
+        for name, sort in source_declared_sorts(source).items()
+        if name in active_names
     }
 
 
@@ -29656,13 +29809,18 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             step = replay_steps[name]
             role = "axiom" if step.rule == "negated conjecture" or (step.rule in axiom_like_rules and not step.parents) else "plain"
             rule = step.rule.replace(" ", "_") if step.rule else None
-            local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(step)}
-            lambda_sort_hints = raw_tptp_step_lambda_sort_hints(step)
             parent_propositions = [
                 replay_steps[parent].proposition
                 for parent in step.parents
                 if parent in replay_steps and replay_steps[parent].proposition
             ]
+            parent_binder_sorts = raw_tptp_parent_binder_sorts(parent_propositions)
+            local_sorts = {
+                **variable_sorts,
+                **parent_binder_sorts,
+                **megalodon_replay_step_variable_sorts(step),
+            }
+            lambda_sort_hints = raw_tptp_step_lambda_sort_hints(step)
             proposition = None
             if rule == "avatar_component_clause":
                 proposition = guarded_avatar_component_extra_proposition(
@@ -29677,6 +29835,14 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 proposition = megalodon_equality_extra_proposition(list(step.extras), local_sorts)
             if proposition is None:
                 proposition = raw_tptp_normalize_step_proposition(step.proposition, local_sorts, lambda_sort_hints)
+            if proposition:
+                proposition = raw_tptp_apply_parent_binder_sorts(proposition, parent_binder_sorts)
+                application_binder_sorts = raw_tptp_application_binder_sort_hints(
+                    proposition,
+                    {**variable_sorts, **parent_binder_sorts},
+                )
+                if application_binder_sorts:
+                    proposition = raw_tptp_apply_parent_binder_sorts(proposition, application_binder_sorts)
             if not proposition:
                 for fields in megalodon_replay_extra_fields(step, "definition_rewrite"):
                     target_expr = raw_tptp_replay_extra_expr(fields, "target", local_sorts)
@@ -29776,8 +29942,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if declared_name is not None:
             declared_names.add(declared_name)
         lines.append(declaration)
-    source_names = source_declared_names(source)
-    source_sorts = source_definition_sorts(source)
+    source_names = source_active_declared_names(source)
+    source_sorts = source_active_declared_sorts(source)
     for name, sort in sorted(variable_sorts.items()):
         if name in RAW_TPTP_AMBIENT_CONSTANTS:
             continue
