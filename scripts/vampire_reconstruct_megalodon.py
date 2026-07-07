@@ -16688,7 +16688,7 @@ def raw_infer_forall_clause_substitution(
         for literal in target_literals:
             attempts += 1
             trial = dict(subst)
-            if match_expr_with_alpha_instantiation(pattern, literal, binder_names, trial):
+            if raw_match_literal_mod_equality_symmetry(pattern, literal, binder_names, trial):
                 found = search(index + 1, trial)
                 if found is not None:
                     return found
@@ -16753,7 +16753,7 @@ def raw_infer_forall_clause_substitution_candidates(
         for literal in target_literals:
             attempts += 1
             trial = dict(subst)
-            if match_expr_with_alpha_instantiation(pattern, literal, binder_names, trial):
+            if raw_match_literal_mod_equality_symmetry(pattern, literal, binder_names, trial):
                 search(index + 1, trial)
                 if len(results) >= limit or attempts > 256:
                     return
