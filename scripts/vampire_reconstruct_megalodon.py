@@ -18986,26 +18986,31 @@ def raw_negated_forall_implication_to_exists_conjunction_proof(
     if len(source_premises) != 1 or not false_eliminator_expr(source_conclusion):
         return None
     source_binders, source_body = collect_foralls(source_premises[0])
-    if len(source_binders) != 1:
+    if not source_binders:
         return None
-    source_name, source_sort = source_binders[0]
     implication_premises, implication_conclusion = split_arrows(source_body)
     if not implication_premises or len(implication_premises) > 6:
         return None
 
-    exists_parts = raw_exists_transform_parts(target)
-    if exists_parts is None:
+    target_parts = raw_nested_exists_parts(target)
+    if target_parts is None:
         return None
-    _head, target_sort, _predicate, target_name, target_body = exists_parts
-    if target_sort != source_sort:
+    target_binders, target_body = target_parts
+    if len(target_binders) != len(source_binders):
         return None
-    witness = Expr("var", value=source_name)
-    target_body_at_witness = substitute_expr(target_body, {target_name: witness})
+    for (_, source_sort), (_, target_sort) in zip(source_binders, target_binders):
+        if source_sort != target_sort:
+            return None
+    source_var_subst = {
+        target_name: Expr("var", value=source_name)
+        for (source_name, _), (target_name, _) in zip(source_binders, target_binders)
+    }
+    target_body_at_witness = substitute_expr(target_body, source_var_subst)
     target_components = raw_conjunction_components(target_body_at_witness)
     if len(target_components) != len(implication_premises) + 1:
         return None
 
-    local_sorts = {**variable_sorts, source_name: source_sort}
+    local_sorts = {**variable_sorts, **{name: sort for name, sort in source_binders}}
 
     def premise_component_proof(source_premise: Expr, component: Expr, proof_name: str) -> str | None:
         proof = raw_deep_formula_transform_proof(source_premise, component, proof_name, local_sorts)
@@ -19086,12 +19091,11 @@ def raw_negated_forall_implication_to_exists_conjunction_proof(
     used: set[int] = set()
     component_proofs: dict[int, str] = {}
     for premise_index, source_premise in enumerate(implication_premises):
-        source_premise_at_witness = substitute_expr(source_premise, {source_name: witness})
         proof_name = f"HsourcePremise{premise_index}"
         for component_index, component in enumerate(target_components):
             if component_index in used:
                 continue
-            proof = premise_component_proof(source_premise_at_witness, component, proof_name)
+            proof = premise_component_proof(source_premise, component, proof_name)
             if proof is None:
                 continue
             used.add(component_index)
@@ -19123,9 +19127,10 @@ def raw_negated_forall_implication_to_exists_conjunction_proof(
     conjunction_proof = raw_build_conjunction_from_component_proofs(target_body_at_witness, target_component_proof)
     if conjunction_proof is None:
         return None
-    exists_proof = f"(fun Q Hexists => Hexists {source_name} {proof_term_text(conjunction_proof)})"
-    source_conclusion_at_witness = substitute_expr(implication_conclusion, {source_name: witness})
-    source_conclusion_text = proof_arg_text(source_conclusion_at_witness)
+    exists_proof = proof_term_text(conjunction_proof)
+    for source_name, _source_sort in reversed(source_binders):
+        exists_proof = f"(fun Q Hexists => Hexists {source_name} {exists_proof})"
+    source_conclusion_text = proof_arg_text(implication_conclusion)
     body = (
         f"(xm {source_conclusion_text} {source_conclusion_text} "
         f"(fun HsourceConclusion => HsourceConclusion) "
@@ -19133,7 +19138,9 @@ def raw_negated_forall_implication_to_exists_conjunction_proof(
     )
     for premise_index in reversed(range(len(implication_premises))):
         body = f"(fun HsourcePremise{premise_index} => {body})"
-    implication_proof = f"(fun {source_name}:{source_sort} => {body})"
+    implication_proof = body
+    for source_name, source_sort in reversed(source_binders):
+        implication_proof = f"(fun {source_name}:{source_sort} => {implication_proof})"
     target_text = proof_arg_text(target)
     return (
         f"(xm {target_text} {target_text} "
