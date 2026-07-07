@@ -18606,6 +18606,10 @@ def raw_or_transform_proof(
     target_parts = app_args(target, "vampire_or", 2)
     if source_parts is None or target_parts is None:
         return None
+    if raw_clause_replay_budget_ok(source, target, max_literals=16, max_literal_product=256):
+        clause_transform = raw_clause_transform_proof(source, target, source_proof)
+        if clause_transform is not None:
+            return clause_transform
     left_name = fresh_identifier("HorL", expr_text(source), expr_text(target), source_proof)
     right_name = fresh_identifier("HorR", expr_text(source), expr_text(target), source_proof, left_name)
     left_proof = raw_deep_formula_transform_proof(
