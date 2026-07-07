@@ -19365,6 +19365,226 @@ def raw_tptp_equality_resolution_proof(
     )
 
 
+@dataclass(frozen=True)
+class RawSkolemRewrite:
+    binders: tuple[tuple[str, str], ...]
+    premise: Expr
+    conclusion: Expr
+    proof: str
+
+
+def raw_tptp_skolem_rewrites(
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> tuple[RawSkolemRewrite, ...]:
+    rewrites: list[RawSkolemRewrite] = []
+    for parent in parents:
+        proposition = propositions_by_name.get(parent)
+        if proposition is None:
+            continue
+        expr = parse_expr(proposition)
+        if expr is None:
+            continue
+        binders, body = collect_foralls(expr)
+        premises, conclusion = split_arrows(body)
+        if len(premises) != 1:
+            continue
+        if not any(raw_exists_transform_parts(subterm) is not None for subterm in expr_subterms(premises[0], limit=32)):
+            continue
+        rewrites.append(
+            RawSkolemRewrite(
+                tuple(binders),
+                premises[0],
+                conclusion,
+                raw_tptp_claim_name(parent),
+            )
+        )
+    return tuple(rewrites)
+
+
+def raw_skolem_rewrite_instance_proof(
+    source: Expr,
+    rewrite: RawSkolemRewrite,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    target: Expr,
+) -> tuple[Expr, str] | None:
+    binder_names = {name for name, _ in rewrite.binders}
+    subst: dict[str, Expr] = {}
+    if not match_expr_with_alpha_instantiation(rewrite.premise, source, binder_names, subst):
+        return None
+    flatten_substitution(subst)
+    local_sorts = {**variable_sorts, **{name: sort for name, sort in rewrite.binders}}
+    candidate_exprs = (source, target, rewrite.premise, rewrite.conclusion)
+    for name, sort in rewrite.binders:
+        if name in subst:
+            continue
+        if variable_sorts.get(name) == sort:
+            subst[name] = Expr("var", value=name)
+            continue
+        candidates = raw_candidate_terms_for_sort(candidate_exprs, sort, local_sorts)
+        if len(candidates) == 1:
+            subst[name] = candidates[0]
+    if any(name not in subst for name, _ in rewrite.binders):
+        return None
+    if any(expr_variables(value) & binder_names for value in subst.values()):
+        return None
+    instantiated_premise = substitute_expr(rewrite.premise, subst)
+    if not expr_same_mod_alpha(instantiated_premise, source):
+        return None
+    instantiated_conclusion = substitute_expr(rewrite.conclusion, subst)
+    proof = rewrite.proof
+    for name, _ in rewrite.binders:
+        proof = f"({proof_head(proof)} {proof_arg_text(subst[name])})"
+    proof = f"({proof_head(proof)} {proof_term_text(source_proof)})"
+    return instantiated_conclusion, proof
+
+
+def raw_skolemised_formula_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rewrites: tuple[RawSkolemRewrite, ...],
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 80 or proof_search_timed_out():
+        return None
+    if len(expr_text(source)) + len(expr_text(target)) > 18000:
+        return None
+    if expr_same_mod_alpha(source, target):
+        return source_proof
+
+    direct_clause = raw_clause_subsumption_transform_proof(source, target, source_proof)
+    if direct_clause is not None:
+        return direct_clause
+    if raw_clause_replay_budget_ok(source, target, max_literals=24, max_literal_product=512):
+        direct_clause = raw_clause_transform_proof(source, target, source_proof)
+        if direct_clause is not None:
+            return direct_clause
+
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
+        assert source.value is not None and target.value is not None and target.sort is not None
+        source_body = source.args[0]
+        if source.value != target.value:
+            source_body = rename_expr_variables(source_body, {source.value: target.value})
+        inner_source_proof = f"({proof_head(source_proof)} {target.value})"
+        inner = raw_skolemised_formula_transform_proof(
+            source_body,
+            target.args[0],
+            inner_source_proof,
+            rewrites,
+            {**variable_sorts, target.value: target.sort},
+            depth + 1,
+        )
+        if inner is not None:
+            return f"(fun {target.value}:{target.sort} => {inner})"
+
+    if target.kind == "forall" and target.value is not None and target.sort is not None:
+        inner = raw_skolemised_formula_transform_proof(
+            source,
+            target.args[0],
+            source_proof,
+            rewrites,
+            {**variable_sorts, target.value: target.sort},
+            depth + 1,
+        )
+        if inner is not None:
+            return f"(fun {target.value}:{target.sort} => {inner})"
+
+    for rewrite in rewrites:
+        instance = raw_skolem_rewrite_instance_proof(source, rewrite, source_proof, variable_sorts, target)
+        if instance is None:
+            continue
+        rewritten, rewritten_proof = instance
+        proof = raw_skolemised_formula_transform_proof(
+            rewritten,
+            target,
+            rewritten_proof,
+            rewrites,
+            variable_sorts,
+            depth + 1,
+        )
+        if proof is not None:
+            return proof
+
+    target_conjuncts = vampire_and_parts(target)
+    if target_conjuncts is not None:
+        left = raw_skolemised_formula_transform_proof(source, target_conjuncts[0], source_proof, rewrites, variable_sorts, depth + 1)
+        if left is None:
+            return None
+        right = raw_skolemised_formula_transform_proof(source, target_conjuncts[1], source_proof, rewrites, variable_sorts, depth + 1)
+        if right is None:
+            return None
+        return f"(fun P K => K {proof_term_text(left)} {proof_term_text(right)})"
+
+    source_conjuncts = vampire_and_parts(source)
+    if source_conjuncts is not None:
+        for conjunct in source_conjuncts:
+            projection = vampire_and_projection_from_proof(source_proof, source, conjunct)
+            if projection is None:
+                continue
+            proof = raw_skolemised_formula_transform_proof(conjunct, target, projection, rewrites, variable_sorts, depth + 1)
+            if proof is not None:
+                return proof
+
+    target_parts = app_args(target, "vampire_or", 2)
+    if target_parts is not None:
+        left_intro = raw_skolemised_formula_transform_proof(source, target_parts[0], source_proof, rewrites, variable_sorts, depth + 1)
+        if left_intro is not None:
+            return f"(fun P Hleft Hright => Hleft {proof_term_text(left_intro)})"
+        right_intro = raw_skolemised_formula_transform_proof(source, target_parts[1], source_proof, rewrites, variable_sorts, depth + 1)
+        if right_intro is not None:
+            return f"(fun P Hleft Hright => Hright {proof_term_text(right_intro)})"
+
+    source_parts = app_args(source, "vampire_or", 2)
+    if source_parts is not None:
+        left, right = source_parts
+        left_name = fresh_identifier("HL", expr_text(source), expr_text(target), source_proof)
+        right_name = fresh_identifier("HR", expr_text(source), expr_text(target), source_proof, left_name)
+        left_proof = raw_skolemised_formula_transform_proof(left, target, left_name, rewrites, variable_sorts, depth + 1)
+        right_proof = raw_skolemised_formula_transform_proof(right, target, right_name, rewrites, variable_sorts, depth + 1)
+        if left_proof is not None and right_proof is not None:
+            return (
+                f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                f"(fun {left_name} => {left_proof}) "
+                f"(fun {right_name} => {right_proof}))"
+            )
+
+    direct = raw_deep_formula_transform_proof(source, target, source_proof, variable_sorts, depth + 1)
+    if direct is not None:
+        return direct
+
+    return None
+
+
+def raw_tptp_skolemisation_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parents) < 2:
+        return None
+    source_proposition = propositions_by_name.get(parents[0])
+    if source_proposition is None:
+        return None
+    source = parse_expr(source_proposition)
+    target = parse_expr(proposition)
+    if source is None or target is None:
+        return None
+    rewrites = raw_tptp_skolem_rewrites(parents[1:], propositions_by_name)
+    if not rewrites:
+        return None
+    return raw_skolemised_formula_transform_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+        rewrites,
+        variable_sorts,
+    )
+
+
 def implication_sides(expr: Expr) -> tuple[Expr, Expr] | None:
     premises, conclusion = split_arrows(expr)
     if len(premises) != 1:
@@ -20022,7 +20242,6 @@ def raw_tptp_replay_proof(
         "ennf_transformation",
         "nnf_transformation",
         "cnf_transformation",
-        "skolemisation",
         "boolean_simplification",
         "true_and_false_elimination",
     }:
@@ -20044,6 +20263,18 @@ def raw_tptp_replay_proof(
                 return proof
             return raw_tptp_small_forall_permutation_transform_proof(proposition, parents, propositions_by_name)
         return None
+    if rule == "skolemisation":
+        proof = raw_tptp_skolemisation_proof(proposition, parents, propositions_by_name, variable_sorts)
+        if proof is not None:
+            return proof
+        return raw_tptp_one_parent_transform_proof(
+            proposition,
+            parents,
+            propositions_by_name,
+            variable_sorts,
+            max_literals=12,
+            max_literal_product=96,
+        )
     if rule == "unit_resulting_resolution":
         proof = raw_tptp_unit_resulting_resolution_proof(proposition, parents, propositions_by_name)
         if proof is not None:
