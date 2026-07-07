@@ -1965,6 +1965,36 @@ def megalodon_replay_steps(
             )
             break
 
+    for step, step_extras in extras.items():
+        details = step_details.get(step)
+        if details is None:
+            continue
+        _rule, parents, _step_sorts = details
+        for kind, fields in step_extras:
+            if kind != "definition_rewrite":
+                continue
+            parsed = parsed_extra_fields(fields)
+            for index, parent in enumerate(parents):
+                if parent in derived_propositions or parent in direct_propositions or parent not in placeholder_steps:
+                    continue
+                parent_details = step_details.get(parent)
+                if parent_details is None:
+                    continue
+                parent_text = parsed.get(f"parent_{index}")
+                if parent_text is None:
+                    continue
+                parent_sorts = parent_details[2]
+                parent_expr = raw_tptp_replay_extra_expr(
+                    {f"parent_{index}": parent_text},
+                    f"parent_{index}",
+                    {**variable_sorts, **parent_sorts},
+                )
+                derived_propositions[parent] = (
+                    expr_text(parent_expr)
+                    if parent_expr is not None
+                    else surface_direct_step_proposition(parent_text, {**variable_sorts, **parent_sorts})
+                )
+
     for step, (rule, parents, step_sorts) in step_details.items():
         if step in steps:
             continue
@@ -21183,7 +21213,11 @@ def raw_tptp_parent_equality_rewrite_proof(
     if target is None:
         return None
     parent_exprs: list[tuple[str, Expr, str]] = []
+    seen_parents: set[str] = set()
     for parent in parents:
+        if parent in seen_parents:
+            continue
+        seen_parents.add(parent)
         parent_proposition = propositions_by_name.get(parent)
         if parent_proposition is None:
             continue
@@ -21386,7 +21420,11 @@ def raw_tptp_parent_equality_chain_rewrite_proof(
     if target is None:
         return None
     parent_exprs: list[tuple[str, Expr, str]] = []
+    seen_parents: set[str] = set()
     for parent in parents:
+        if parent in seen_parents:
+            continue
+        seen_parents.add(parent)
         parent_proposition = propositions_by_name.get(parent)
         if parent_proposition is None:
             continue
@@ -23327,7 +23365,7 @@ def raw_tptp_definition_rewrite_proof(
     source_proposition = propositions_by_name.get(parents[0])
     source = parse_expr(source_proposition) if source_proposition is not None else None
     target = parse_expr(proposition)
-    if source is None or target is None:
+    if target is None:
         return None
     local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
     for fields in megalodon_replay_extra_fields(replay_step, "definition_rewrite"):
@@ -23369,7 +23407,7 @@ def raw_tptp_definition_rewrite_proof(
                 return proof
 
         split_definition = raw_tptp_definition_rewrite_split_definition(fields, local_sorts)
-        if split_definition is None:
+        if split_definition is None or source is None:
             continue
         name, component, _split = split_definition
         normalized_target = substitute_expr(target, {name: component})
@@ -23449,15 +23487,22 @@ def raw_tptp_replay_proof(
             return proof
         return raw_tptp_one_parent_transform_proof(proposition, parents, propositions_by_name, variable_sorts)
     if rule in {"definition_folding", "definition_unfolding"}:
-        proof = raw_tptp_definition_rewrite_proof(proposition, parents, propositions_by_name, variable_sorts, replay_step)
-        if proof is not None:
-            return proof
-        proof = raw_tptp_parent_equality_chain_rewrite_proof(proposition, parents, propositions_by_name, variable_sorts)
-        if proof is not None:
-            return proof
-        proof = raw_tptp_parent_equality_rewrite_proof(proposition, parents, propositions_by_name, variable_sorts)
-        if proof is not None:
-            return proof
+        previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+        if previous_deadline is not None and replay_step is not None:
+            PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 2.0)
+        try:
+            proof = raw_tptp_definition_rewrite_proof(proposition, parents, propositions_by_name, variable_sorts, replay_step)
+            if proof is not None:
+                return proof
+            proof = raw_tptp_parent_equality_chain_rewrite_proof(proposition, parents, propositions_by_name, variable_sorts)
+            if proof is not None:
+                return proof
+            proof = raw_tptp_parent_equality_rewrite_proof(proposition, parents, propositions_by_name, variable_sorts)
+            if proof is not None:
+                return proof
+        finally:
+            if previous_deadline is not None:
+                PROOF_SEARCH_STATE.deadline = previous_deadline
     if rule in {
         "rectify",
         "fool_elimination",
@@ -24255,14 +24300,49 @@ def write_raw_tptp_skeletons(
         return list(executor.map(write_raw_tptp_skeleton, tasks))
 
 
+def raw_tptp_problem_candidates(proof_path: Path) -> list[str]:
+    names: list[str] = []
+
+    def add(name: str) -> None:
+        if name and name not in names:
+            names.append(name)
+
+    add(proof_path.name)
+    add(proof_path.stem)
+    for suffix in (".megalodon.out", ".tptp.out", ".leancheck.out", ".out", ".proof"):
+        if proof_path.name.endswith(suffix):
+            add(proof_path.name[: -len(suffix)])
+    try:
+        prefix = proof_path.read_text(encoding="utf-8", errors="replace")[:4096]
+    except OSError:
+        prefix = ""
+    for match in re.finditer(r"\bon\s+([A-Za-z0-9_.-]+)\s+for\b", prefix):
+        add(match.group(1))
+
+    candidates: list[str] = []
+    for name in names:
+        for candidate in (name, f"{name}.p"):
+            if candidate not in candidates:
+                candidates.append(candidate)
+    return candidates
+
+
+def find_raw_tptp_problem_for_proof(proof_path: Path, repo: Path) -> Path | None:
+    search_dirs = [proof_path.parent, repo / "examples" / "hammer"]
+    for directory in search_dirs:
+        for name in raw_tptp_problem_candidates(proof_path):
+            candidate = directory / name
+            if candidate.exists():
+                return candidate
+    return None
+
+
 def write_raw_tptp_skeleton(task: tuple[Path, Path, Path, Path | None]) -> Path:
     proof, output_dir, repo, source = task
     proof_path = proof if proof.is_absolute() else (repo / proof)
     if not proof_path.exists():
         raise SystemExit(f"raw TPTP proof not found: {proof_path}")
-    problem = repo / "examples/hammer" / proof_path.name
-    if not problem.exists():
-        problem = None
+    problem = find_raw_tptp_problem_for_proof(proof_path, repo)
     output = output_dir / f"{proof_path.stem}.raw_tptp_skeleton.mg"
     output.write_text(
         "\n".join(raw_tptp_skeleton_lines(proof_path, problem, source)) + "\n",
