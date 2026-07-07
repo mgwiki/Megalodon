@@ -18719,6 +18719,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             continue
         lines.append(f"Variable {name}:{sort}.")
 
+    known_raw_propositions: dict[str, str] = {}
+
+    def remember_raw_proposition(proposition: str, proof_name: str) -> None:
+        known_raw_propositions.setdefault(canonical_proposition(proposition), proof_name)
+
     seen_claims: set[str] = set()
     for name, role, proposition, rule, source_name, parents, trusted_definition in entries:
         claim_name = raw_tptp_claim_name(name)
@@ -18737,6 +18742,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             lines.append(f"// unsupported raw vampire formula {name}.")
             continue
         lines.append(f"Axiom {claim_name}:{proposition}.")
+        remember_raw_proposition(proposition, claim_name)
 
     theorem_name = "vampire_raw_tptp_reconstruction"
     lines.append(f"Theorem {theorem_name}: {final_proposition}.")
@@ -18758,21 +18764,24 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if not proposition:
             lines.append(f"// unsupported raw vampire formula {name}.")
             continue
-        previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
-        PROOF_SEARCH_STATE.deadline = proof_search_now() + RAW_TPTP_REPLAY_SECONDS
-        try:
-            replay_proof = raw_tptp_replay_proof(rule, proposition, parents, propositions_by_name, variable_sorts)
-        finally:
-            if previous_deadline is None:
-                if hasattr(PROOF_SEARCH_STATE, "deadline"):
-                    delattr(PROOF_SEARCH_STATE, "deadline")
-            else:
-                PROOF_SEARCH_STATE.deadline = previous_deadline
+        replay_proof = known_raw_propositions.get(canonical_proposition(proposition))
+        if replay_proof is None:
+            previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+            PROOF_SEARCH_STATE.deadline = proof_search_now() + RAW_TPTP_REPLAY_SECONDS
+            try:
+                replay_proof = raw_tptp_replay_proof(rule, proposition, parents, propositions_by_name, variable_sorts)
+            finally:
+                if previous_deadline is None:
+                    if hasattr(PROOF_SEARCH_STATE, "deadline"):
+                        delattr(PROOF_SEARCH_STATE, "deadline")
+                else:
+                    PROOF_SEARCH_STATE.deadline = previous_deadline
         lines.append(f"claim {claim_name}: {proposition}.")
         if replay_proof is None:
             lines.append("{ admit. }")
         else:
             lines.append(f"{{ exact {proof_argument_text(replay_proof)}. }}")
+        remember_raw_proposition(proposition, claim_name)
 
     if final_name is None:
         lines.append("admit.")
