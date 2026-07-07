@@ -21487,7 +21487,7 @@ def raw_tptp_replay_proof(
         if proof is not None:
             return proof
         return raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name, replay_step=replay_step)
-    if rule == "forward_subsumption_resolution":
+    if rule in {"forward_subsumption_resolution", "backward_subsumption_resolution"}:
         return raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name, replay_step=replay_step)
     if rule in {"forward_demodulation", "backward_demodulation"}:
         return raw_tptp_forward_demodulation_proof(proposition, parents, propositions_by_name, variable_sorts)
