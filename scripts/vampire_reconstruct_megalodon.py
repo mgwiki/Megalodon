@@ -3708,11 +3708,19 @@ def raw_tptp_predicate_definition_infos(
             body = parse_expr(formula)
             if body is None:
                 continue
-            body = surface_direct_step_expr(body, {**variable_sorts, **megalodon_replay_step_variable_sorts(step)})
+            step_sorts = megalodon_replay_step_variable_sorts(step)
+            body_variable_sorts: dict[str, str] = {}
+            for key, value in fields.items():
+                if not key.startswith("body_variable_sort_") or ":" not in value:
+                    continue
+                variable_name, variable_sort = value.split(":", 1)
+                body_variable_sorts[variable_name] = variable_sort
+            local_sorts = {**variable_sorts, **step_sorts, **body_variable_sorts}
+            body = surface_direct_step_expr(body, local_sorts)
             target_name, target_sort, target_binders, folded_literal = raw_tptp_predicate_definition_target(
                 step,
                 body,
-                variable_sorts,
+                local_sorts,
             ) or (name, sort, (), None)
             if not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", target_name):
                 continue
@@ -3720,13 +3728,12 @@ def raw_tptp_predicate_definition_infos(
             if not pieces or pieces[-1] != "prop":
                 continue
             arg_sorts = pieces[:-1]
-            step_sorts = megalodon_replay_step_variable_sorts(step)
             free_variables = expr_variables(body)
             binders = list(target_binders)
             for arg_sort in arg_sorts[len(binders) :]:
                 candidates = [
                     candidate
-                    for candidate, candidate_sort in sorted(step_sorts.items(), key=lambda item: raw_step_variable_order(item[0]))
+                    for candidate, candidate_sort in sorted(local_sorts.items(), key=lambda item: raw_step_variable_order(item[0]))
                     if candidate in free_variables and candidate_sort == arg_sort and candidate not in binders
                 ]
                 if not candidates:
@@ -3734,6 +3741,14 @@ def raw_tptp_predicate_definition_infos(
                     break
                 binders.append(candidates[0])
             if len(binders) != len(arg_sorts):
+                continue
+            leaked_body_variables = {
+                variable
+                for variable in free_variables - set(binders)
+                if re.fullmatch(r"X[0-9]+", variable)
+                and (not body_variable_sorts or variable in body_variable_sorts)
+            }
+            if leaked_body_variables:
                 continue
             body_text = expr_text(body)
             definition_body = body_text
