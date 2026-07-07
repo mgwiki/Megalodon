@@ -21622,9 +21622,16 @@ def raw_tptp_replay_proof(
             return raw_tptp_deep_formula_transform_proof(proposition, parents, propositions_by_name, variable_sorts)
         return None
     if rule == "skolemisation":
-        proof = raw_tptp_skolemisation_proof(proposition, parents, propositions_by_name, variable_sorts)
-        if proof is not None:
-            return proof
+        previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+        if previous_deadline is not None:
+            PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 2.0)
+        try:
+            proof = raw_tptp_skolemisation_proof(proposition, parents, propositions_by_name, variable_sorts)
+            if proof is not None:
+                return proof
+        finally:
+            if previous_deadline is not None:
+                PROOF_SEARCH_STATE.deadline = previous_deadline
         return raw_tptp_one_parent_transform_proof(
             proposition,
             parents,
