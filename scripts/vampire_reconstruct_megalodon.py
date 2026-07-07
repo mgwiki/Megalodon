@@ -17205,6 +17205,14 @@ def raw_tptp_one_parent_transform_proof(
     implication_or = raw_classical_implication_to_or_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
     if implication_or is not None:
         return implication_or
+    negated_implication_chain = raw_negated_implication_chain_to_conjunction_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+        variable_sorts or {},
+    )
+    if negated_implication_chain is not None:
+        return negated_implication_chain
     classical = raw_classical_double_negation_transform_proof(
         source,
         target,
@@ -17363,6 +17371,107 @@ def raw_classical_implication_to_or_body_proof(
             f"(fun {not_name} => {negative_intro}))"
         )
     return None
+
+
+def raw_conjunction_components(expr: Expr, depth: int = 0) -> list[Expr]:
+    if depth > 32:
+        return [expr]
+    parts = vampire_and_parts(expr)
+    if parts is None:
+        return [expr]
+    return raw_conjunction_components(parts[0], depth + 1) + raw_conjunction_components(parts[1], depth + 1)
+
+
+def raw_build_conjunction_from_component_proofs(
+    target: Expr,
+    component_proof: Callable[[Expr], str | None],
+    depth: int = 0,
+) -> str | None:
+    if depth > 32 or proof_search_timed_out():
+        return None
+    parts = vampire_and_parts(target)
+    if parts is None:
+        return component_proof(target)
+    left = raw_build_conjunction_from_component_proofs(parts[0], component_proof, depth + 1)
+    if left is None:
+        return None
+    right = raw_build_conjunction_from_component_proofs(parts[1], component_proof, depth + 1)
+    if right is None:
+        return None
+    return f"(fun P K => K {proof_term_text(left)} {proof_term_text(right)})"
+
+
+def raw_negated_implication_chain_to_conjunction_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_premises, source_conclusion = split_arrows(source)
+    if len(source_premises) != 1 or not false_eliminator_expr(source_conclusion):
+        return None
+    implication_premises, implication_conclusion = split_arrows(source_premises[0])
+    if not implication_premises or len(implication_premises) > 5:
+        return None
+    if len(raw_conjunction_components(target)) > len(implication_premises) + 1:
+        return None
+
+    def contradiction_function_from_negative(index: int, negative_name: str) -> str:
+        conclusion_text = proof_arg_text(implication_conclusion)
+        body = f"(({negative_name} Hprem{index}) {conclusion_text})"
+        for premise_index in reversed(range(len(implication_premises))):
+            body = f"(fun Hprem{premise_index} => {body})"
+        return body
+
+    def implication_premise_proof(index: int) -> str:
+        premise = implication_premises[index]
+        premise_text = proof_arg_text(premise)
+        negative_name = f"HnotPrem{index}"
+        contradiction_function = contradiction_function_from_negative(index, negative_name)
+        return (
+            f"(xm {premise_text} {premise_text} "
+            f"(fun Hprem{index} => Hprem{index}) "
+            f"(fun {negative_name} => "
+            f"({proof_head(source_proof)} {proof_term_text(contradiction_function)} {premise_text})))"
+        )
+
+    def conclusion_refutation(component: Expr) -> str | None:
+        premises, conclusion = split_arrows(component)
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
+            return None
+        conclusion_proof = raw_deep_formula_transform_proof(
+            premises[0],
+            implication_conclusion,
+            "Hconclusion",
+            variable_sorts,
+        )
+        if conclusion_proof is None:
+            return None
+        body = proof_term_text(conclusion_proof)
+        for premise_index in reversed(range(len(implication_premises))):
+            body = f"(fun Hprem{premise_index} => {body})"
+        return f"(fun Hconclusion => {proof_head(source_proof)} {proof_term_text(body)})"
+
+    def component_proof(component: Expr) -> str | None:
+        negative_conclusion = conclusion_refutation(component)
+        if negative_conclusion is not None:
+            return negative_conclusion
+        for index, premise in enumerate(implication_premises):
+            premise_proof = implication_premise_proof(index)
+            transformed = raw_deep_formula_transform_proof(
+                premise,
+                component,
+                premise_proof,
+                variable_sorts,
+            )
+            if transformed is not None:
+                return transformed
+            transformed = raw_classical_implication_to_or_transform_proof(premise, component, premise_proof)
+            if transformed is not None:
+                return transformed
+        return None
+
+    return raw_build_conjunction_from_component_proofs(target, component_proof)
 
 
 def raw_predicate_application(predicate: Expr, argument: Expr) -> Expr:
