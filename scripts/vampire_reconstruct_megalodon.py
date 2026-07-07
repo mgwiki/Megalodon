@@ -2603,6 +2603,60 @@ def raw_tptp_function_definition_sorts(
     return sorts
 
 
+def raw_tptp_definition_target_sort(expr: Expr, local_sorts: dict[str, str], result_sort: str | None) -> tuple[str, str] | None:
+    if result_sort is None:
+        return None
+    if expr.kind == "var" and expr.value is not None and FRESH_SET_RE.match(expr.value):
+        return expr.value, result_sort
+    if expr.kind != "app" or not expr.args:
+        return None
+    head = expr.args[0]
+    if head.kind != "var" or head.value is None or not FRESH_SET_RE.match(head.value):
+        return None
+    arg_sorts = [expr_sort(arg, local_sorts) for arg in expr.args[1:]]
+    if any(sort is None for sort in arg_sorts):
+        return None
+    return head.value, join_sort_arrows([*(sort for sort in arg_sorts if sort is not None), result_sort])
+
+
+def raw_tptp_standard_function_definition_sorts(declarations: list[str], variable_sorts: dict[str, str]) -> dict[str, str]:
+    sorts: dict[str, str] = {}
+    for _ in range(4):
+        changed = False
+        known_sorts = {**variable_sorts, **sorts}
+        for declaration in declarations:
+            parsed_decl = tptp_decl_formula_parts(declaration)
+            if parsed_decl is None:
+                continue
+            _, role, formula, annotations = parsed_decl
+            if role != "definition" or "function_definition" not in ",".join(annotations):
+                continue
+            proposition = tptp_formula_to_megalodon_proposition(formula, known_sorts)
+            parsed = parse_expr(proposition) if proposition is not None else None
+            if parsed is None:
+                continue
+            binders, body = collect_foralls(parsed)
+            local_sorts = {**known_sorts, **{name: sort for name, sort in binders}}
+            sides = equality_like_sides(body)
+            if sides is None:
+                continue
+            for target_side, body_side in (sides, (sides[1], sides[0])):
+                body_sort = expr_sort(body_side, local_sorts)
+                inferred = raw_tptp_definition_target_sort(target_side, local_sorts, body_sort)
+                if inferred is None:
+                    continue
+                name, sort = inferred
+                if name in variable_sorts:
+                    continue
+                if sorts.get(name) == sort:
+                    continue
+                sorts[name] = sort
+                changed = True
+        if not changed:
+            break
+    return sorts
+
+
 def raw_tptp_skolem_binder_sorts(proof_text: str, variable_sorts: dict[str, str]) -> dict[str, str]:
     sorts: dict[str, str] = {}
     for line in proof_text.splitlines():
@@ -27639,6 +27693,30 @@ def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: s
     return False
 
 
+def raw_tptp_standard_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: str) -> bool:
+    if rule in {"avatar_component_clause", "avatar_split_clause"} and "forall " in proof:
+        return True
+    if rule == "cnf_transformation" and re.search(r"\(\s*forall\s+[A-Z][_A-Za-z0-9']*\s*:", proof):
+        return True
+    if rule in {"definition_folding", "definition_unfolding"} and re.search(
+        r"\(\s*fun\s+[XY][0-9]+\s*:",
+        proof,
+    ):
+        return True
+    if rule == "fool_elimination" and (
+        len(proof) > 20000
+        or "vampire_funext_set_set_set" in proof
+        or "vampire_eps_ext" in proof
+    ):
+        return True
+    if rule in {"forward_demodulation", "backward_demodulation"} and re.search(
+        r"\bR_[fs][0-9]+\s+[XY][0-9]+\b",
+        proof,
+    ):
+        return True
+    return False
+
+
 def raw_tptp_avatar_definition_proof(proposition: str) -> str | None:
     if raw_tptp_avatar_definition_parts(proposition) is None:
         return None
@@ -29509,6 +29587,7 @@ def raw_tptp_exported_source_variable_sorts(proof_text: str) -> dict[str, str]:
 def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | None = None) -> list[str]:
     text = proof.read_text(encoding="utf-8", errors="replace")
     declarations = collect_tptp_declarations(text)
+    standard_tptp_proof = bool(declarations)
     entries: list[tuple[str, str, str, str | None, str | None, list[str], bool]]
     replay_steps: dict[str, MegalodonReplayStep] = {}
     unsupported = 0
@@ -29518,6 +29597,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             **source_definition_sorts(source),
             **raw_declared_sorts,
         }
+        variable_sorts.update(raw_tptp_standard_function_definition_sorts(declarations, variable_sorts))
         variable_sorts.update(raw_tptp_skolem_binder_sorts(text, variable_sorts))
         function_definitions = tptp_function_definition_infos(text, variable_sorts)
         variable_sorts.update(raw_tptp_function_definition_sorts(function_definitions, variable_sorts))
@@ -29784,9 +29864,9 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if not proposition:
             lines.append(f"// unsupported raw vampire formula {name}.")
             continue
+        replay_parents = list(parents)
         replay_proof = known_raw_propositions.get(canonical_proposition(proposition))
         if replay_proof is None:
-            replay_parents = list(parents)
             if rule in {"definition_folding", "definition_unfolding"}:
                 for parent in parents:
                     definition_key = predicate_definition_keys_by_step.get(parent)
@@ -29813,6 +29893,12 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 else:
                     PROOF_SEARCH_STATE.deadline = previous_deadline
         if replay_proof is not None and raw_tptp_replay_proof_is_unsafe(rule, proposition, replay_proof):
+            replay_proof = None
+        if (
+            replay_proof is not None
+            and standard_tptp_proof
+            and raw_tptp_standard_replay_proof_is_unsafe(rule, proposition, replay_proof)
+        ):
             replay_proof = None
         lines.append(f"claim {claim_name}: {proposition}.")
         if replay_proof is None:
