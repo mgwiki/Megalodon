@@ -20077,6 +20077,103 @@ def raw_forall_implication_to_negated_exists_conjunction_proof(
     )
 
 
+def raw_not_exists_conjunction_to_forall_or_negated_components_proof(
+    source_exists: Expr,
+    target_forall: Expr,
+    not_exists_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    exists_parts = raw_exists_transform_parts(source_exists)
+    if exists_parts is None:
+        return None
+    _head, exists_sort, predicate, exists_name, _exists_body = exists_parts
+    target_binders, target_body = collect_foralls(target_forall)
+    if len(target_binders) != 1:
+        return None
+    target_name, target_sort = target_binders[0]
+    if target_sort != exists_sort:
+        return None
+    witness = Expr("var", value=target_name)
+    source_body = raw_predicate_application(predicate, witness)
+    source_components = raw_conjunction_components(source_body)
+    target_literals = raw_clause_literals(target_body)
+    if not source_components or len(target_literals) != len(source_components):
+        return None
+
+    matched: list[tuple[Expr, Expr, str]] = []
+    used_components: set[int] = set()
+    local_sorts = {**variable_sorts, target_name: target_sort}
+    for index, literal in enumerate(target_literals):
+        premises, conclusion = split_arrows(literal)
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
+            return None
+        for component_index, component in enumerate(source_components):
+            if component_index in used_components:
+                continue
+            target_to_component = raw_deep_formula_transform_proof(
+                premises[0],
+                component,
+                f"HnegPrem{index}",
+                local_sorts,
+            )
+            if target_to_component is None:
+                target_to_component = raw_clause_transform_proof(premises[0], component, f"HnegPrem{index}")
+            if target_to_component is None and expr_same_mod_alpha(premises[0], component):
+                target_to_component = f"HnegPrem{index}"
+            if target_to_component is None:
+                continue
+            matched.append((component, literal, target_to_component))
+            used_components.add(component_index)
+            break
+        else:
+            return None
+
+    positive_names = [f"Hpos{index}" for index in range(len(matched))]
+
+    def contradiction_from_all_positive() -> str | None:
+        def component_proof(component: Expr) -> str | None:
+            for index, (source_component, _literal, _target_to_component) in enumerate(matched):
+                if expr_same_mod_alpha(component, source_component):
+                    return positive_names[index]
+            return None
+
+        body_proof = raw_build_conjunction_from_component_proofs(source_body, component_proof)
+        if body_proof is None:
+            return None
+        exists_proof = f"(fun Q Hexists => Hexists {target_name} {proof_term_text(body_proof)})"
+        return f"({proof_head(not_exists_proof)} {proof_term_text(exists_proof)})"
+
+    def search(index: int) -> str | None:
+        if index >= len(matched):
+            false_proof = contradiction_from_all_positive()
+            if false_proof is None:
+                return None
+            return f"({false_proof} {proof_arg_text(target_body)})"
+        source_component, literal, target_to_component = matched[index]
+        positive_name = positive_names[index]
+        negative_name = f"HnotPos{index}"
+        next_proof = search(index + 1)
+        if next_proof is None:
+            return None
+        negative_literal_proof = (
+            f"(fun HnegPrem{index} :{proof_arg_text(literal.args[0])} => "
+            f"{negative_name} {proof_term_text(target_to_component)})"
+        )
+        negative_intro = raw_or_intro_literal_at(target_body, index, negative_literal_proof)
+        if negative_intro is None:
+            return None
+        return (
+            f"(xm {proof_arg_text(source_component)} {proof_arg_text(target_body)} "
+            f"(fun {positive_name} => {next_proof}) "
+            f"(fun {negative_name} => {negative_intro}))"
+        )
+
+    body = search(0)
+    if body is None:
+        return None
+    return f"(fun {target_name} :{target_sort} => {body})"
+
+
 def raw_negated_forall_implication_to_exists_conjunction_proof(
     source: Expr,
     target: Expr,
@@ -20149,6 +20246,15 @@ def raw_negated_forall_implication_to_exists_conjunction_proof(
         )
         if recursive is not None:
             return recursive
+
+        not_exists_forall = raw_not_exists_conjunction_to_forall_or_negated_components_proof(
+            implication_conclusion,
+            component,
+            "HnotSourceConclusion",
+            local_sorts,
+        )
+        if not_exists_forall is not None:
+            return not_exists_forall
 
         conclusion_binders, conclusion_body = collect_foralls(implication_conclusion)
         exists_parts = raw_exists_transform_parts(component)
@@ -26247,6 +26353,14 @@ def raw_tptp_exported_normal_form_proof(
         if proof is not None:
             return proof
         proof = raw_negated_implication_chain_to_conjunction_proof(source, target, source_proof, local_sorts)
+        if proof is not None:
+            return proof
+        proof = raw_negated_forall_implication_to_exists_conjunction_proof(
+            source,
+            target,
+            source_proof,
+            local_sorts,
+        )
         if proof is not None:
             return proof
         proof = raw_deep_formula_transform_proof(source, target, source_proof, local_sorts)
