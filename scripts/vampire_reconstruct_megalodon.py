@@ -22477,6 +22477,71 @@ def raw_boolean_tautology_proof(
     return None
 
 
+def raw_negated_conjunction_parts(expr: Expr) -> tuple[Expr, Expr] | None:
+    premises, conclusion = split_arrows(expr)
+    if len(premises) != 1 or not false_eliminator_expr(conclusion):
+        return None
+    parts = raw_church_and_parts(premises[0])
+    if parts is None:
+        return None
+    negated_parts: list[Expr] = []
+    for part in parts:
+        part_premises, part_conclusion = split_arrows(part)
+        if len(part_premises) != 1 or not false_eliminator_expr(part_conclusion):
+            return None
+        negated_parts.append(part_premises[0])
+    return negated_parts[0], negated_parts[1]
+
+
+def raw_demorgan_implication_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+) -> str | None:
+    source_or = raw_or_parts(source)
+    target_negated = raw_negated_conjunction_parts(target)
+    if source_or is not None and target_negated is not None:
+        left, right = source_or
+        neg_left, neg_right = target_negated
+        if expr_same_mod_alpha(left, neg_left) and expr_same_mod_alpha(right, neg_right):
+            not_both = fresh_identifier("HnotBoth", expr_text(source), expr_text(target), source_proof)
+            left_name = fresh_identifier("Hleft", expr_text(left), expr_text(target), not_both)
+            right_name = fresh_identifier("Hright", expr_text(right), expr_text(target), left_name)
+            left_false = f"({proof_head(not_both)} False (fun HnotLeft HnotRight => HnotLeft {left_name}))"
+            right_false = f"({proof_head(not_both)} False (fun HnotLeft HnotRight => HnotRight {right_name}))"
+            return (
+                f"(fun {not_both} :{proof_arg_text(target.args[0])} => "
+                f"({proof_head(source_proof)} False "
+                f"(fun {left_name} => {left_false}) "
+                f"(fun {right_name} => {right_false})))"
+            )
+
+    source_negated = raw_negated_conjunction_parts(source)
+    target_or = raw_or_parts(target)
+    if source_negated is not None and target_or is not None:
+        neg_left, neg_right = source_negated
+        left, right = target_or
+        if expr_same_mod_alpha(left, neg_left) and expr_same_mod_alpha(right, neg_right):
+            left_name = fresh_identifier("Hleft", expr_text(left), expr_text(target), source_proof)
+            not_left = fresh_identifier("HnotLeft", expr_text(left), expr_text(target), left_name)
+            right_name = fresh_identifier("Hright", expr_text(right), expr_text(target), not_left)
+            not_right = fresh_identifier("HnotRight", expr_text(right), expr_text(target), right_name)
+            left_branch = f"(fun P HleftCase HrightCase => HleftCase {left_name})"
+            right_branch = f"(fun P HleftCase HrightCase => HrightCase {right_name})"
+            both_negative = f"(fun P K => K {not_left} {not_right})"
+            false_proof = f"({proof_head(source_proof)} {proof_term_text(both_negative)})"
+            false_branch = raw_false_to_expr_proof(false_proof, target)
+            return (
+                f"(xm {proof_arg_text(left)} {proof_arg_text(target)} "
+                f"(fun {left_name} => {left_branch}) "
+                f"(fun {not_left} => "
+                f"(xm {proof_arg_text(right)} {proof_arg_text(target)} "
+                f"(fun {right_name} => {right_branch}) "
+                f"(fun {not_right} => {proof_term_text(false_branch)}))))"
+            )
+    return None
+
+
 def raw_basic_boolean_implication_proof(
     source: Expr,
     target: Expr,
@@ -22488,6 +22553,10 @@ def raw_basic_boolean_implication_proof(
         return raw_true_intro_proof()
     if false_eliminator_expr(source):
         return raw_false_to_expr_proof(source_proof, target)
+
+    demorgan = raw_demorgan_implication_proof(source, target, source_proof)
+    if demorgan is not None:
+        return demorgan
 
     source_premises, source_conclusion = split_arrows(source)
     if (
@@ -28601,6 +28670,38 @@ def raw_tptp_replay_proof_from_step(
         )
         if proof is not None:
             return proof
+    return raw_tptp_parent_negated_tautology_exfalso_proof(
+        proposition,
+        parents,
+        propositions_by_name,
+        variable_sorts,
+    )
+
+
+def raw_tptp_parent_negated_tautology_exfalso_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        if parent_proposition is None:
+            continue
+        parent_expr = parse_expr(parent_proposition)
+        if parent_expr is None:
+            continue
+        premises, conclusion = split_arrows(parent_expr)
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
+            continue
+        premise_proof = raw_boolean_tautology_proof(premises[0], variable_sorts)
+        if premise_proof is None:
+            continue
+        false_proof = f"({raw_tptp_claim_name(parent)} {proof_term_text(premise_proof)})"
+        return raw_false_to_expr_proof(false_proof, target)
     return None
 
 
