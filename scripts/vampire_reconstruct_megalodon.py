@@ -5566,7 +5566,11 @@ def fresh_identifier(base: str, *texts: str) -> str:
 def eq_symmetry_proof(proof: str, left: Expr) -> str:
     left_text = expr_text(left)
     name = fresh_identifier("zz", left_text)
-    return f"({proof_head(proof)} (fun {name}:set => {name} = {left_text}) (fun R Hr => Hr))"
+    return (
+        f"({proof_head(proof)} "
+        f"(fun {name}:set => {name} = {proof_arg_text(left)}) "
+        f"(fun R Hr => Hr))"
+    )
 
 
 def set_eq_symmetry_proof(proof: str, left: Expr) -> str:
@@ -5585,7 +5589,7 @@ def eq_transitivity_proof(proofs: list[str], start_text: str | None = None) -> s
         term = f"{proof_head(proof)} Q ({term})"
     if start_text is None:
         return f"(fun Q H => {term})"
-    return f"(fun Q:set->prop => fun H:Q ({start_text}) => {term})"
+    return f"(fun Q:(set->prop) => fun H:Q ({start_text}) => {term})"
 
 
 def equality_chain_proof(expr: Expr, eq_facts: list[EqFact], max_depth: int = 3) -> str | None:
@@ -19591,6 +19595,49 @@ def raw_tptp_deep_formula_transform_proof(
     return raw_deep_formula_transform_proof(source, target, raw_tptp_claim_name(parents[0]), variable_sorts or {})
 
 
+def raw_tptp_fool_elimination_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+    replay_step: MegalodonReplayStep | None,
+) -> str | None:
+    if len(parents) != 1:
+        return None
+    local_sorts = dict(variable_sorts)
+    if replay_step is not None:
+        local_sorts.update(megalodon_replay_step_variable_sorts(replay_step))
+
+    candidate_pairs: list[tuple[Expr, Expr]] = []
+    if replay_step is not None:
+        for fields in megalodon_replay_extra_fields(replay_step, "fool"):
+            exported_source = raw_tptp_replay_extra_expr(fields, "source", local_sorts)
+            exported_target = raw_tptp_replay_extra_expr(fields, "target", local_sorts)
+            if exported_source is not None and exported_target is not None:
+                candidate_pairs.append((exported_source, exported_target))
+            pair_source = raw_tptp_replay_extra_expr(fields, "pair_0_source", local_sorts)
+            pair_target = raw_tptp_replay_extra_expr(fields, "pair_0_target", local_sorts)
+            if pair_source is not None and pair_target is not None:
+                candidate_pairs.append((pair_source, pair_target))
+
+    parent_proposition = propositions_by_name.get(parents[0])
+    parsed_parent = parse_expr(parent_proposition) if parent_proposition is not None else None
+    parsed_target = parse_expr(proposition)
+    if parsed_parent is not None and parsed_target is not None:
+        candidate_pairs.append((parsed_parent, parsed_target))
+
+    previous_allow = getattr(PROOF_SEARCH_STATE, "allow_two_sided_equality", False)
+    PROOF_SEARCH_STATE.allow_two_sided_equality = True
+    try:
+        for source, target in candidate_pairs:
+            proof = raw_deep_formula_transform_proof(source, target, raw_tptp_claim_name(parents[0]), local_sorts)
+            if proof is not None:
+                return proof
+    finally:
+        PROOF_SEARCH_STATE.allow_two_sided_equality = previous_allow
+    return None
+
+
 def raw_conjunction_transform_proof(
     source: Expr,
     target: Expr,
@@ -20114,7 +20161,10 @@ def raw_set_term_equality_transform_proof(
     if depth > 24 or proof_search_timed_out():
         return None
     if expr_same_mod_alpha(source, target):
-        return "(fun Q H => H)"
+        return f"(fun Q:(set->prop) => fun H:Q ({proof_arg_text(source)}) => H)"
+    multi_argument = raw_set_application_multi_argument_equality_proof(source, target, variable_sorts, depth + 1)
+    if multi_argument is not None:
+        return multi_argument
     if source.kind != "app" or target.kind != "app" or len(source.args) != len(target.args):
         return None
     if not source.args or not expr_same_mod_alpha(source.args[0], target.args[0]):
@@ -20166,6 +20216,141 @@ def raw_set_term_equality_transform_proof(
         f"(fun {hole}:set => {proof_arg_text(source)} = {expr_text(context)}) "
         f"(fun Q H => H)"
     )
+
+
+def raw_function_argument_transport_proof(
+    source: Expr,
+    target: Expr,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 24 or proof_search_timed_out():
+        return None
+    if expr_same_mod_alpha(source, target):
+        source_sort = expr_sort(source, variable_sorts)
+        if source_sort is None:
+            return "(fun Q H => H)"
+        source_sort = join_sort_arrows(split_sort_arrows(source_sort))
+        return f"(fun Q:({source_sort})->prop => fun H:Q ({proof_arg_text(source)}) => H)"
+    source_binders, source_body = collect_lambdas(source)
+    target_binders, target_body = collect_lambdas(target)
+    if len(source_binders) != len(target_binders) or len(source_binders) not in {1, 2}:
+        return None
+    if any(sort != "set" for _name, sort in source_binders):
+        return None
+    if [sort for _name, sort in source_binders] != [sort for _name, sort in target_binders]:
+        return None
+    helper = "vampire_funext_set_set" if len(source_binders) == 1 else "vampire_funext_set_set_set"
+    local_sorts = dict(variable_sorts)
+    proof = ""
+    renamed_source_body = source_body
+    renamed_target_body = target_body
+    binder_texts: list[str] = []
+    for index, ((source_name, source_sort), (target_name, _target_sort)) in enumerate(zip(source_binders, target_binders)):
+        binder = fresh_identifier(f"X{index}", expr_text(source), expr_text(target), *[name for name, _ in source_binders])
+        renamed_source_body = rename_expr_variables(renamed_source_body, {source_name: binder})
+        renamed_target_body = rename_expr_variables(renamed_target_body, {target_name: binder})
+        local_sorts[binder] = source_sort
+        binder_texts.append(f"fun {binder}:{source_sort} => ")
+    body_proof = raw_set_term_equality_transform_proof(renamed_source_body, renamed_target_body, local_sorts, depth + 1)
+    if body_proof is None:
+        return None
+    proof = "".join(binder_texts) + proof_term_text(body_proof)
+    return f"({helper} {proof_arg_text(source)} {proof_arg_text(target)} {proof_term_text(proof)})"
+
+
+def raw_set_application_multi_argument_equality_proof(
+    source: Expr,
+    target: Expr,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 24 or proof_search_timed_out():
+        return None
+    if source.kind != "app" or target.kind != "app" or len(source.args) != len(target.args):
+        return None
+    if not source.args or not expr_same_mod_alpha(source.args[0], target.args[0]):
+        return None
+    differing = [
+        index
+        for index, (source_arg, target_arg) in enumerate(zip(source.args, target.args))
+        if index != 0 and not expr_same_mod_alpha(source_arg, target_arg)
+    ]
+    if len(differing) <= 1:
+        return None
+    current_args = list(source.args)
+    proofs: list[str] = []
+    for index in differing:
+        current_expr = Expr("app", args=tuple(current_args))
+        current_arg = current_args[index]
+        target_arg = target.args[index]
+        arg_sort = expr_sort(current_arg, variable_sorts) or expr_sort(target_arg, variable_sorts)
+        next_args = list(current_args)
+        next_args[index] = target_arg
+        hole = fresh_identifier("zz", expr_text(current_expr), expr_text(target), str(index))
+        context_args = list(current_args)
+        context_args[index] = Expr("var", value=hole)
+        context = Expr("app", args=tuple(context_args))
+        if arg_sort == "set":
+            argument_equality = raw_set_term_equality_transform_proof(current_arg, target_arg, variable_sorts, depth + 1)
+            if argument_equality is None:
+                return None
+            proof = (
+                f"{proof_term_text(argument_equality)} "
+                f"(fun {hole}:set => {expr_text(current_expr)} = {expr_text(context)}) "
+                f"(fun Q:(set->prop) => fun H:Q ({proof_arg_text(current_expr)}) => H)"
+            )
+        elif arg_sort in {"set->set", "set->set->set", "set->(set->set)"}:
+            arg_sort = join_sort_arrows(split_sort_arrows(arg_sort))
+            argument_transport = raw_function_argument_transport_proof(current_arg, target_arg, variable_sorts, depth + 1)
+            if argument_transport is None:
+                return None
+            proof = (
+                f"{proof_term_text(argument_transport)} "
+                f"(fun {hole}:{arg_sort} => {expr_text(current_expr)} = {expr_text(context)}) "
+                f"(fun Q:(set->prop) => fun H:Q ({proof_arg_text(current_expr)}) => H)"
+            )
+        else:
+            return None
+        proofs.append(proof)
+        current_args = next_args
+    return eq_transitivity_proof(proofs, expr_text(source))
+
+
+def raw_two_sided_equality_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_sides = equality_like_sides(source)
+    target_sides = equality_like_sides(target)
+    if source_sides is None or target_sides is None:
+        return None
+    equality_sort = "prop" if source.kind == "app" and source.args[0].kind == "var" and source.args[0].value == "vampire_eq_prop" else "set"
+    symmetry = eq_symmetry_proof(source_proof, source_sides[0]) if source.kind == "eq" else raw_eq_symmetry_proof(source_proof, source_sides[0], equality_sort)
+    orientations = [
+        (source_sides[0], source_sides[1], source_proof),
+        (source_sides[1], source_sides[0], symmetry),
+    ]
+    for left, right, proof in orientations:
+        left_equality = raw_set_term_equality_transform_proof(left, target_sides[0], variable_sorts)
+        right_equality = raw_set_term_equality_transform_proof(right, target_sides[1], variable_sorts)
+        if left_equality is None or right_equality is None:
+            continue
+        left_hole = fresh_identifier("zz", expr_text(source), expr_text(target), "left")
+        left_transport = (
+            f"{proof_term_text(left_equality)} "
+            f"(fun {left_hole}:set => {left_hole} = {proof_arg_text(right)}) "
+            f"{proof_term_text(proof)}"
+        )
+        right_hole = fresh_identifier("zz", expr_text(source), expr_text(target), "right")
+        return (
+            f"{proof_term_text(right_equality)} "
+            f"(fun {right_hole}:set => {proof_arg_text(target_sides[0])} = {right_hole}) "
+            f"{proof_term_text(left_transport)}"
+        )
+    return None
 
 
 def raw_equality_predicate_argument_rewrite_proof(
@@ -20248,6 +20433,11 @@ def raw_deep_formula_transform_proof(
         return None
     if expr_same_mod_alpha(source, target):
         return source_proof
+
+    if getattr(PROOF_SEARCH_STATE, "allow_two_sided_equality", False):
+        two_sided_equality = raw_two_sided_equality_transform_proof(source, target, source_proof, variable_sorts)
+        if two_sided_equality is not None:
+            return two_sided_equality
 
     predicate_argument_rewrite = raw_equality_predicate_argument_rewrite_proof(
         source,
@@ -23598,6 +23788,23 @@ def raw_tptp_replay_proof(
         "boolean_simplification",
         "true_and_false_elimination",
     }:
+        if rule == "fool_elimination":
+            previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+            if previous_deadline is not None:
+                PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 1.0)
+            try:
+                proof = raw_tptp_fool_elimination_proof(
+                    proposition,
+                    parents,
+                    propositions_by_name,
+                    variable_sorts,
+                    replay_step,
+                )
+                if proof is not None:
+                    return proof
+            finally:
+                if previous_deadline is not None:
+                    PROOF_SEARCH_STATE.deadline = previous_deadline
         if rule == "cnf_transformation":
             proof = raw_tptp_one_parent_conjunction_projection_proof(proposition, parents, propositions_by_name)
             if proof is not None:
@@ -23636,8 +23843,6 @@ def raw_tptp_replay_proof(
                 PROOF_SEARCH_STATE.deadline = previous_deadline
         if proof is not None:
             return proof
-        if rule == "fool_elimination":
-            return raw_tptp_deep_formula_transform_proof(proposition, parents, propositions_by_name, variable_sorts)
         return None
     if rule == "skolemisation":
         previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
