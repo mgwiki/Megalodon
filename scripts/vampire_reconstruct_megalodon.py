@@ -3825,6 +3825,8 @@ BOOLEAN_EXT_HELPERS = [
     "Axiom vampire_funext_prop: forall F G:prop->prop, (forall X:prop, vampire_eq_prop (F X) (G X)) -> vampire_eq_prop_fun F G.",
     "Axiom vampire_funext_prop_prop: forall F G:prop->prop->prop, (forall X:prop, vampire_eq_prop_fun (F X) (G X)) -> F = G.",
     "Axiom vampire_funext_set_set: forall F G:set->set, (forall X:set, F X = G X) -> forall Q:(set->set)->prop, Q F -> Q G.",
+    "Axiom vampire_funext_set_set_set: forall F G:set->set->set, (forall X:set, forall Y:set, F X Y = G X Y) -> forall Q:(set->set->set)->prop, Q F -> Q G.",
+    "Axiom vampire_funext_set_setfun_set: forall F G:set->(set->set)->set, (forall X:set, forall Y:set->set, F X Y = G X Y) -> forall Q:(set->(set->set)->set)->prop, Q F -> Q G.",
 ]
 
 
@@ -20821,35 +20823,44 @@ def raw_pointwise_set_function_equality(
     equality_proof: str,
 ) -> tuple[Expr, str] | None:
     binders, body = collect_foralls(equality)
-    if len(binders) != 1:
+    if len(binders) not in {1, 2}:
         return None
-    binder_name, binder_sort = binders[0]
-    if binder_sort != "set":
+    binder_sorts = [sort for _, sort in binders]
+    if binder_sorts == ["set"]:
+        helper = "vampire_funext_set_set"
+    elif binder_sorts == ["set", "set"]:
+        helper = "vampire_funext_set_set_set"
+    elif binder_sorts == ["set", "set->set"]:
+        helper = "vampire_funext_set_setfun_set"
+    else:
         return None
     sides = equality_like_sides(body)
     if sides is None:
         return None
-    binder_var = Expr("var", value=binder_name)
 
     def abstract_side(side: Expr) -> Expr | None:
         normalized = beta_normalize_expr(side)
+        binder_vars = [Expr("var", value=name) for name, _ in binders]
         if (
             normalized.kind == "app"
-            and len(normalized.args) == 2
-            and expr_same_mod_alpha(normalized.args[1], binder_var)
-            and binder_name not in expr_variables(normalized.args[0])
+            and len(normalized.args) == len(binder_vars) + 1
+            and all(expr_same_mod_alpha(arg, var) for arg, var in zip(normalized.args[1:], binder_vars))
+            and not ({name for name, _ in binders} & expr_variables(normalized.args[0]))
         ):
             return normalized.args[0]
-        return eta_reduce_unary_function(
-            Expr("lambda", value=binder_name, sort=binder_sort, args=(normalized,))
-        )
+        result = normalized
+        for name, sort in reversed(binders):
+            result = Expr("lambda", value=name, sort=sort, args=(result,))
+        if len(binders) == 1:
+            result = eta_reduce_unary_function(result)
+        return result
 
     left = abstract_side(sides[0])
     right = abstract_side(sides[1])
     if left is None or right is None:
         return None
     proof = (
-        f"(vampire_funext_set_set "
+        f"({helper} "
         f"{proof_arg_text(left)} "
         f"{proof_arg_text(right)} "
         f"{proof_term_text(equality_proof)})"
@@ -22099,7 +22110,14 @@ def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: s
     if raw_tptp_replay_proof_has_escaped_surface_variable(proposition, proof):
         return True
     if rule in {"definition_folding", "definition_unfolding"} and raw_tptp_replay_proof_has_synthetic_db(proof):
-        if "vampire_funext_set_set" not in proof:
+        if not any(
+            name in proof
+            for name in (
+                "vampire_funext_set_set",
+                "vampire_funext_set_set_set",
+                "vampire_funext_set_setfun_set",
+            )
+        ):
             return True
         return raw_tptp_replay_proof_has_unbound_synthetic_db(proof)
     if rule in {"avatar_component_clause", "avatar_split_clause"}:
