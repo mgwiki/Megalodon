@@ -3588,6 +3588,132 @@ def add_used_boolean_extensionality_helpers(lines: list[str]) -> list[str]:
     return result
 
 
+def raw_step_variable_order(name: str) -> tuple[int, str]:
+    match = re.fullmatch(r"X([0-9]+)", name)
+    if match is not None:
+        return (int(match.group(1)), name)
+    return (10**9, name)
+
+
+def raw_tptp_predicate_definition_infos(
+    replay_steps: dict[str, MegalodonReplayStep],
+    variable_sorts: dict[str, str],
+) -> dict[str, DefinitionInfo]:
+    definitions: dict[str, DefinitionInfo] = {}
+    for step in replay_steps.values():
+        for fields in megalodon_replay_extra_fields(step, "predicate_definition"):
+            name = fields.get("symbol") or fields.get("introduced_symbol")
+            sort = fields.get("sort")
+            formula = fields.get("formula")
+            if (
+                name is None
+                or sort is None
+                or formula is None
+                or not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", name)
+            ):
+                continue
+            body = parse_expr(formula)
+            if body is None:
+                continue
+            target_name, target_sort, target_binders = raw_tptp_predicate_definition_target(
+                step,
+                body,
+                variable_sorts,
+            ) or (name, sort, ())
+            if not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", target_name):
+                continue
+            pieces = split_sort_arrows(target_sort)
+            if not pieces or pieces[-1] != "prop":
+                continue
+            arg_sorts = pieces[:-1]
+            step_sorts = megalodon_replay_step_variable_sorts(step)
+            free_variables = expr_variables(body)
+            binders = list(target_binders)
+            for arg_sort in arg_sorts[len(binders) :]:
+                candidates = [
+                    candidate
+                    for candidate, candidate_sort in sorted(step_sorts.items(), key=lambda item: raw_step_variable_order(item[0]))
+                    if candidate in free_variables and candidate_sort == arg_sort and candidate not in binders
+                ]
+                if not candidates:
+                    binders = []
+                    break
+                binders.append(candidates[0])
+            if len(binders) != len(arg_sorts):
+                continue
+            body_text = expr_text(body)
+            definition_body = body_text
+            for binder_name, binder_sort in reversed(list(zip(binders, arg_sorts))):
+                definition_body = f"fun {binder_name}:{binder_sort} => {definition_body}"
+            proof_args = binders + ["Q", "H"]
+            proof = f"({' '.join(['fun'] + proof_args + ['=>', 'H'])})"
+            definitions.setdefault(
+                target_name,
+                DefinitionInfo(target_sort, definition_body, proof, tuple(binders), body),
+            )
+    return definitions
+
+
+def raw_tptp_predicate_definition_target(
+    step: MegalodonReplayStep,
+    body: Expr,
+    variable_sorts: dict[str, str],
+) -> tuple[str, str, tuple[str, ...]] | None:
+    proposition = parse_expr(step.proposition)
+    if proposition is None:
+        return None
+    step_sorts = megalodon_replay_step_variable_sorts(step)
+    binders, conclusion = collect_foralls(proposition)
+    binder_sorts = {name: sort for name, sort in binders}
+
+    def target_from(expr: Expr) -> tuple[str, str, tuple[str, ...]] | None:
+        premises, arrow_conclusion = split_arrows(expr)
+        if len(premises) == 1 and expr_text(arrow_conclusion) in {"vampire_false", "False"}:
+            expr = premises[0]
+        sides = equality_like_sides(expr)
+        if sides is not None:
+            left, right = sides
+            if expr_text(left) in {"vampire_true", "True"}:
+                expr = right
+            elif expr_text(right) in {"vampire_true", "True"}:
+                expr = left
+        if expr.kind == "var" and expr.value is not None:
+            sort = variable_sorts.get(expr.value)
+            if sort == "prop":
+                return expr.value, sort, ()
+            return None
+        if expr.kind != "app" or not expr.args or expr.args[0].kind != "var" or expr.args[0].value is None:
+            return None
+        target = expr.args[0].value
+        target_sort = variable_sorts.get(target)
+        if target_sort is None:
+            return None
+        arg_names: list[str] = []
+        for arg in expr.args[1:]:
+            if arg.kind != "var" or arg.value is None:
+                return None
+            expected_sort = binder_sorts.get(arg.value) or step_sorts.get(arg.value)
+            if expected_sort is None:
+                return None
+            arg_names.append(arg.value)
+        if len(split_sort_arrows(target_sort)) - 1 != len(arg_names):
+            return None
+        return target, target_sort, tuple(arg_names)
+
+    def visit(expr: Expr) -> tuple[str, str, tuple[str, ...]] | None:
+        parts = raw_or_parts(expr)
+        if parts is None:
+            return None
+        left, right = parts
+        if expr_key(left) == expr_key(body):
+            return target_from(right)
+        if expr_key(right) == expr_key(body):
+            return target_from(left)
+        return visit(left) or visit(right)
+
+    return visit(conclusion)
+
+
 def add_missing_basic_connective_definitions(lines: list[str]) -> list[str]:
     helper_definitions = {
         "vampire_true": "Definition vampire_true : prop := forall P:prop, P -> P.",
@@ -21100,6 +21226,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             propositions.append(proposition)
         add_missing_raw_tptp_variables(propositions, variable_sorts)
     propositions_by_name = {name: proposition for name, _, proposition, _, _, _, _ in entries if proposition}
+    predicate_definitions = raw_tptp_predicate_definition_infos(replay_steps, variable_sorts)
     avatar_split_definitions: dict[str, str] = {}
     for _, _, proposition, rule, _, _, _ in entries:
         if rule != "avatar_definition" or not proposition:
@@ -21135,7 +21262,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             continue
         if name in avatar_split_definitions or name.replace("__", "_") in avatar_split_definitions:
             continue
+        if name in predicate_definitions:
+            continue
         lines.append(f"Variable {name}:{sort}.")
+    for name, definition in ordered_definitions(predicate_definitions):
+        lines.append(f"Definition {name} : {definition.sort} := {definition.body_text}.")
     for name, body in sorted(avatar_split_definitions.items()):
         lines.append(f"Definition {name} : prop := {body}.")
 
