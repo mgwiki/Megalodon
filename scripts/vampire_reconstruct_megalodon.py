@@ -2173,9 +2173,45 @@ def megalodon_equality_extra_proposition(
         if introduced is not None and introduced_sort is not None:
             local_sorts[introduced] = introduced_sort
         proposition = parsed.get("proposition")
+        equality_sort = parsed.get("equality_sort") or introduced_sort
+        lhs = parsed.get("lhs")
+        rhs = parsed.get("rhs")
+        if lhs is not None and rhs is not None and equality_sort is not None:
+            lhs_expr = parse_expr(lhs)
+            rhs_expr = parse_expr(rhs)
+            if lhs_expr is not None and rhs_expr is not None:
+                free_db_indices = free_vampire_db_indices(lhs_expr) | free_vampire_db_indices(rhs_expr)
+                db_stack = (
+                    tuple(raw_tptp_db_binder_name(index) for index in range(max(free_db_indices) + 1))
+                    if free_db_indices
+                    else ()
+                )
+                left = surface_direct_step_expr(lhs_expr, local_sorts, db_stack, expected_sort=equality_sort)
+                right = surface_direct_step_expr(rhs_expr, local_sorts, db_stack, expected_sort=equality_sort)
+                free_db_names = {raw_tptp_db_binder_name(index) for index in free_db_indices}
+                free_db_sorts = {
+                    **infer_exported_db_sorts(left, free_db_names, local_sorts, equality_sort),
+                    **infer_exported_db_sorts(right, free_db_names, local_sorts, equality_sort),
+                }
+                local_sorts.update(free_db_sorts)
+                free_surface_names = sorted(
+                    name
+                    for name in (expr_variables(left) | expr_variables(right))
+                    if RAW_TPTP_SURFACE_VAR_RE.fullmatch(name) and name in local_sorts
+                )
+                equality_expr = Expr("eq", args=(left, right))
+                equality_text = lower_function_equality_proposition(equality_expr, local_sorts)
+                for index in sorted(free_db_indices, reverse=True):
+                    name = raw_tptp_db_binder_name(index)
+                    sort = free_db_sorts.get(name)
+                    if sort is None:
+                        break
+                    equality_text = f"forall {name}:{sort}, {equality_text}"
+                else:
+                    for name in reversed(free_surface_names):
+                        equality_text = f"forall {name}:{local_sorts[name]}, {equality_text}"
+                    return equality_text
         if proposition is None:
-            lhs = parsed.get("lhs")
-            rhs = parsed.get("rhs")
             if lhs is None or rhs is None:
                 continue
             proposition = f"{lhs} = {rhs}"
@@ -3829,6 +3865,90 @@ def infer_vampire_db_sort(
     return None
 
 
+def free_vampire_db_indices(expr: Expr, depth: int = 0) -> set[int]:
+    if expr.kind == "var" and expr.value is not None:
+        match = DB_VAR_RE.fullmatch(expr.value)
+        if match is not None:
+            index = int(match.group(1))
+            return {index - depth} if index >= depth else set()
+        return set()
+    if expr.kind == "app" and len(expr.args) >= 2 and expr.args[0].kind == "var" and expr.args[0].value == "vLAM":
+        found: set[int] = set()
+        found.update(free_vampire_db_indices(expr.args[1], depth + 1))
+        for arg in expr.args[2:]:
+            found.update(free_vampire_db_indices(arg, depth))
+        return found
+    found = set()
+    for arg in expr.args:
+        found.update(free_vampire_db_indices(arg, depth))
+    return found
+
+
+def infer_exported_db_sorts(
+    expr: Expr,
+    target_names: set[str],
+    variable_sorts: dict[str, str],
+    expected_sort: str | None = None,
+) -> dict[str, str]:
+    suggestions: dict[str, set[str]] = {name: set() for name in target_names}
+
+    def add(name: str, sort: str | None) -> None:
+        if name in suggestions and sort is not None:
+            suggestions[name].add(join_sort_arrows(split_sort_arrows(sort)))
+
+    def visit(node: Expr, expected: str | None = None) -> None:
+        if node.kind == "var" and node.value is not None:
+            add(node.value, expected)
+            return
+        if node.kind in {"forall", "lambda"}:
+            nested_sorts = variable_sorts
+            if node.value is not None and node.sort is not None:
+                nested_sorts = {**variable_sorts, node.value: node.sort}
+            for arg in node.args:
+                nested = infer_exported_db_sorts(arg, target_names, nested_sorts, None)
+                for name, sort in nested.items():
+                    add(name, sort)
+            return
+        if node.kind == "eq":
+            if expected == "prop":
+                left_sort = expr_sort(node.args[0], variable_sorts)
+                right_sort = expr_sort(node.args[1], variable_sorts)
+                visit(node.args[0], right_sort)
+                visit(node.args[1], left_sort)
+            else:
+                for arg in node.args:
+                    visit(arg, None)
+            return
+        if node.kind == "arrow":
+            for arg in node.args:
+                visit(arg, "prop")
+            return
+        if node.kind != "app" or not node.args:
+            return
+        head = node.args[0]
+        args = list(node.args[1:])
+        arg_sorts = [expr_sort(arg, variable_sorts) for arg in args]
+        if head.kind == "var" and head.value is not None and head.value in target_names and expected is not None:
+            if all(sort is not None for sort in arg_sorts):
+                add(head.value, join_sort_arrows([*(sort for sort in arg_sorts if sort is not None), expected]))
+        head_sort = expr_sort(head, variable_sorts)
+        expected_arg_sorts = split_sort_arrows(head_sort)[:-1] if head_sort is not None else []
+        visit(head, join_sort_arrows([*expected_arg_sorts, expected]) if expected is not None and expected_arg_sorts else None)
+        for index, arg in enumerate(args):
+            visit(arg, expected_arg_sorts[index] if index < len(expected_arg_sorts) else None)
+
+    visit(expr, expected_sort)
+    result: dict[str, str] = {}
+    for name, sorts in suggestions.items():
+        if len(sorts) == 1:
+            result[name] = next(iter(sorts))
+        else:
+            non_set = {sort for sort in sorts if sort != "set"}
+            if len(non_set) == 1:
+                result[name] = next(iter(non_set))
+    return result
+
+
 def surface_direct_step_expr(
     expr: Expr,
     variable_sorts: dict[str, str],
@@ -4666,6 +4786,10 @@ def lower_function_equality_proposition(expr: Expr, variable_sorts: dict[str, st
     if expr.kind == "eq":
         left_sort = expr_sort(expr.args[0], variable_sorts)
         right_sort = expr_sort(expr.args[1], variable_sorts)
+        if left_sort == "prop" or right_sort == "prop":
+            left = lower_function_equality_proposition(expr.args[0], variable_sorts)
+            right = lower_function_equality_proposition(expr.args[1], variable_sorts)
+            return f"vampire_eq_prop {proposition_argument_text(left)} {proposition_argument_text(right)}"
         if equivalent_sorts(left_sort, right_sort) and is_function_value(expr.args[0], left_sort):
             pointwise = pointwise_equality_proposition(expr.args[0], expr.args[1], left_sort)
             if pointwise is not None:
@@ -17846,6 +17970,37 @@ def raw_forall_with_renamed_binders(expr: Expr, avoid: set[str]) -> Expr:
     return body
 
 
+def raw_tptp_rename_conflicting_forall_binders(proposition: str, variable_sorts: dict[str, str]) -> str:
+    parsed = parse_expr(proposition)
+    if parsed is None:
+        return proposition
+    binders, body = collect_foralls(parsed)
+    if not binders:
+        return proposition
+    used = expr_variables(body) - {name for name, _ in binders}
+    rename: dict[str, str] = {}
+    renamed_binders: list[tuple[str, str]] = []
+    for index, (name, sort) in enumerate(binders):
+        candidate = name
+        global_sort = variable_sorts.get(name)
+        if candidate in used or (global_sort is not None and not equivalent_sorts(global_sort, sort)):
+            base = f"Q{index}"
+            suffix = 0
+            candidate = base
+            while candidate in used or candidate in variable_sorts:
+                suffix += 1
+                candidate = f"{base}_{suffix}"
+        used.add(candidate)
+        renamed_binders.append((candidate, sort))
+        if candidate != name:
+            rename[name] = candidate
+    if rename:
+        body = rename_expr_variables(body, rename)
+    for name, sort in reversed(renamed_binders):
+        body = Expr("forall", value=name, sort=sort, args=(body,))
+    return expr_text(body)
+
+
 def raw_quantified_literal_body_resolution_intro(
     source_literal: Expr,
     target_literal: Expr,
@@ -24380,6 +24535,7 @@ def raw_tptp_replay_proof_has_synthetic_db(proof: str) -> bool:
 
 RAW_TPTP_SURFACE_VAR_RE = re.compile(r"\b[XY][0-9]+\b")
 RAW_TPTP_SURFACE_BINDER_RE = re.compile(r"\b(?:fun|forall)\s+([XY][0-9]+)\s*:")
+RAW_TPTP_BAD_DEFINITION_CONTEXT_RE = re.compile(r"\bR_S[0-9]+_def\s+\(fun\b")
 
 
 def raw_tptp_replay_proof_has_escaped_surface_variable(proposition: str, proof: str) -> bool:
@@ -24397,6 +24553,8 @@ def raw_tptp_replay_proof_has_free_surface_variable(proof: str) -> bool:
 
 
 def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: str) -> bool:
+    if RAW_TPTP_BAD_DEFINITION_CONTEXT_RE.search(proof):
+        return True
     if raw_tptp_replay_proof_has_free_surface_variable(proof):
         return True
     if raw_tptp_replay_proof_has_escaped_surface_variable(proposition, proof):
@@ -25194,12 +25352,14 @@ def raw_tptp_normal_form_allows_generic_replay(
             if key in {"source", "target"} or re.fullmatch(r"pair_[0-9]+_(?:source|target)", key)
         ]
         pair_count = sum(1 for key in fields if re.fullmatch(r"pair_[0-9]+_source", key))
-        if (
-            pair_count > 1
-            and any("vampire_exists_" in text for text in formula_texts)
-            and any(len(text) > 900 for text in formula_texts)
-            and any(re.search(r"\bforall\s+[A-Za-z][A-Za-z0-9_']*\s*:\s*prop\b", text) for text in formula_texts)
-        ):
+        has_prop_continuation = any(
+            re.search(r"\bforall\s+[A-Za-z][A-Za-z0-9_']*\s*:\s*prop\b", text)
+            for text in formula_texts
+        )
+        has_large_formula = any(len(text) > 700 for text in formula_texts)
+        has_huge_formula = any(len(text) > 1500 for text in formula_texts)
+        has_exists = any("vampire_exists_" in text for text in formula_texts)
+        if has_prop_continuation and has_large_formula and (pair_count > 1 or (has_exists and has_huge_formula)):
             return False
     return True
 
@@ -26183,7 +26343,9 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             role = "axiom" if step.rule == "negated conjecture" or (step.rule in axiom_like_rules and not step.parents) else "plain"
             rule = step.rule.replace(" ", "_") if step.rule else None
             local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(step)}
-            proposition = raw_tptp_normalize_step_proposition(step.proposition, local_sorts)
+            proposition = megalodon_equality_extra_proposition(list(step.extras), local_sorts)
+            if proposition is None:
+                proposition = raw_tptp_normalize_step_proposition(step.proposition, local_sorts)
             if not proposition:
                 for fields in megalodon_replay_extra_fields(step, "definition_rewrite"):
                     target_expr = raw_tptp_replay_extra_expr(fields, "target", local_sorts)
@@ -26193,6 +26355,15 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             entries.append((name, role, proposition, rule, None, list(step.parents), False))
             propositions.append(proposition)
         add_missing_raw_tptp_variables(propositions, variable_sorts)
+    renamed_entries = []
+    renamed_propositions = []
+    for name, role, proposition, rule, source_name, parents, trusted_definition in entries:
+        if proposition:
+            proposition = raw_tptp_rename_conflicting_forall_binders(proposition, variable_sorts)
+            renamed_propositions.append(proposition)
+        renamed_entries.append((name, role, proposition, rule, source_name, parents, trusted_definition))
+    entries = renamed_entries
+    propositions = renamed_propositions
     propositions_by_name = {name: proposition for name, _, proposition, _, _, _, _ in entries if proposition}
     if "function_definitions" not in locals():
         function_definitions = tptp_function_definition_infos(text, variable_sorts)
