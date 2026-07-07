@@ -18541,6 +18541,14 @@ def raw_tptp_forward_demodulation_proof(
     proof = raw_equality_clause_resolution_proof(second, target, second_name, first, first_name, variable_sorts)
     if proof is not None:
         return proof
+    proof = raw_tptp_quantified_equality_clause_superposition_proof(
+        proposition,
+        parents,
+        propositions_by_name,
+        variable_sorts,
+    )
+    if proof is not None:
+        return proof
     proof = raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name)
     if proof is not None:
         return proof
