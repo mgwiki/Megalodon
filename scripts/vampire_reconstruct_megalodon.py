@@ -21359,6 +21359,60 @@ def raw_prop_equality_to_true_component(expr: Expr) -> tuple[Expr, bool] | None:
     return None
 
 
+def raw_equivalence_conjunction_to_prop_equality_proof(source: Expr, target: Expr, source_proof: str) -> str | None:
+    target_sides = equality_like_sides(target)
+    source_parts = raw_church_and_parts(source)
+    if target_sides is None or source_parts is None:
+        return None
+    left, right = target_sides
+    forward: str | None = None
+    backward: str | None = None
+    for component in source_parts:
+        premises, conclusion = split_arrows(component)
+        if len(premises) != 1:
+            continue
+        component_proof = raw_church_and_projection_from_proof(source_proof, source, component)
+        if component_proof is None:
+            continue
+        if expr_same_mod_alpha(premises[0], left) and expr_same_mod_alpha(conclusion, right):
+            forward = component_proof
+        if expr_same_mod_alpha(premises[0], right) and expr_same_mod_alpha(conclusion, left):
+            backward = component_proof
+    if forward is None or backward is None:
+        return None
+    return (
+        f"(vampire_prop_ext {proof_arg_text(left)} {proof_arg_text(right)} "
+        f"{proof_term_text(forward)} {proof_term_text(backward)})"
+    )
+
+
+def raw_prop_equality_to_equivalence_conjunction_proof(source: Expr, target: Expr, source_proof: str) -> str | None:
+    source_sides = equality_like_sides(source)
+    target_parts = raw_church_and_parts(target)
+    if source_sides is None or target_parts is None:
+        return None
+    left, right = source_sides
+    symmetric = raw_eq_symmetry_proof(source_proof, left, "prop")
+
+    def implication_proof(component: Expr) -> str | None:
+        premises, conclusion = split_arrows(component)
+        if len(premises) != 1:
+            return None
+        premise = premises[0]
+        premise_name = fresh_identifier("Hprem", expr_text(component), expr_text(source), source_proof)
+        if expr_same_mod_alpha(premise, left) and expr_same_mod_alpha(conclusion, right):
+            return f"(fun {premise_name} => {proof_head(source_proof)} (fun Qprop :prop => Qprop) {premise_name})"
+        if expr_same_mod_alpha(premise, right) and expr_same_mod_alpha(conclusion, left):
+            return f"(fun {premise_name} => {proof_head(symmetric)} (fun Qprop :prop => Qprop) {premise_name})"
+        return None
+
+    left_proof = implication_proof(target_parts[0])
+    right_proof = implication_proof(target_parts[1])
+    if left_proof is None or right_proof is None:
+        return None
+    return f"(fun P K => K {proof_term_text(left_proof)} {proof_term_text(right_proof)})"
+
+
 def raw_proof_from_prop_true_equality(source: Expr, target: Expr, source_proof: str) -> str | None:
     component = raw_prop_equality_to_true_component(source)
     if component is None:
@@ -21468,6 +21522,13 @@ def raw_prop_implication_transform_proof(
     true_intro = raw_proof_to_prop_true_equality(source, target, source_proof)
     if true_intro is not None:
         return true_intro
+
+    equivalence_to_equality = raw_equivalence_conjunction_to_prop_equality_proof(source, target, source_proof)
+    if equivalence_to_equality is not None:
+        return equivalence_to_equality
+    equality_to_equivalence = raw_prop_equality_to_equivalence_conjunction_proof(source, target, source_proof)
+    if equality_to_equivalence is not None:
+        return equality_to_equivalence
 
     source_sides = equality_like_sides(source)
     target_sides = equality_like_sides(target)
