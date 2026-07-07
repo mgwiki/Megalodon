@@ -19635,6 +19635,7 @@ def raw_tptp_extra_formula_expr(
         expr = parse_expr(proposition)
         if expr is None:
             return None
+        expr = surface_direct_step_expr(expr, variable_sorts)
         return parse_expr(lower_function_equality_proposition(expr, variable_sorts))
     formula = fields.get(key)
     if formula is None:
