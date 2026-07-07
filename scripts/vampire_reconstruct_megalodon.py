@@ -26377,6 +26377,14 @@ def raw_tptp_superposition_proof(
     )
     if not has_superposition_replay:
         return None
+    proof = raw_tptp_universal_unit_contradiction_proof(
+        proposition,
+        parents,
+        propositions_by_name,
+        variable_sorts,
+    )
+    if proof is not None:
+        return proof
     proof = raw_tptp_exported_two_literal_resolution_proof(
         proposition,
         parents,
@@ -26435,6 +26443,119 @@ def raw_tptp_superposition_proof(
         proof = raw_tptp_unit_resulting_resolution_proof(proposition, parents, propositions_by_name)
         if proof is not None:
             return proof
+    return None
+
+
+def raw_tptp_constant_for_sort(sort: str, variable_sorts: dict[str, str], avoid: set[str]) -> Expr | None:
+    for name, candidate_sort in sorted(variable_sorts.items()):
+        if name in avoid or name in RAW_TPTP_AMBIENT_CONSTANTS:
+            continue
+        if candidate_sort == sort and "->" not in candidate_sort:
+            return Expr("var", value=name)
+    if sort == "prop":
+        return Expr("var", value="True")
+    return None
+
+
+def raw_context_sibling_witness_for_variable(expr: Expr, variable: str) -> Expr | None:
+    if expr.kind == "app" and len(expr.args) > 2:
+        arguments = expr.args[1:]
+        if any(arg.kind == "var" and arg.value == variable for arg in arguments):
+            for arg in arguments:
+                if arg.kind != "var" or arg.value is None:
+                    continue
+                if arg.value == variable or arg.value in RAW_TPTP_AMBIENT_CONSTANTS:
+                    continue
+                return arg
+    for child in expr.args:
+        witness = raw_context_sibling_witness_for_variable(child, variable)
+        if witness is not None:
+            return witness
+    return None
+
+
+def raw_tptp_universal_unit_contradiction_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parents) != 2:
+        return None
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    target_premises, target_conclusion = split_arrows(target)
+    if len(target_premises) != 1 or not false_eliminator_expr(target_conclusion):
+        return None
+    parsed: list[tuple[Expr, str]] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+        if parent_expr is None:
+            return None
+        parsed.append((parent_expr, raw_tptp_claim_name(parent)))
+
+    for negative_index, positive_index in ((0, 1), (1, 0)):
+        negative, negative_proof = parsed[negative_index]
+        positive, positive_proof = parsed[positive_index]
+        negative_binders, negative_body = collect_foralls(negative)
+        negative_premises, negative_conclusion = split_arrows(negative_body)
+        if len(negative_premises) != 1 or not false_eliminator_expr(negative_conclusion):
+            continue
+        avoid = {name for name, _sort in negative_binders}
+        subst: dict[str, Expr] = {}
+        for name, sort in negative_binders:
+            witness = raw_tptp_constant_for_sort(sort, variable_sorts, avoid)
+            if witness is None:
+                witness = raw_context_sibling_witness_for_variable(negative_body, name)
+            if witness is None:
+                break
+            subst[name] = witness
+        if len(subst) != len(negative_binders):
+            continue
+        instantiated_negative_body = substitute_expr(negative_body, subst)
+        instantiated_negative_premises, _ = split_arrows(instantiated_negative_body)
+        if len(instantiated_negative_premises) != 1:
+            continue
+        instantiated_negative_premise = instantiated_negative_premises[0]
+        instantiated_negative_proof = negative_proof
+        for name, _sort in negative_binders:
+            instantiated_negative_proof = f"{proof_head(instantiated_negative_proof)} {proof_arg_text(subst[name])}"
+
+        positive_binders, positive_body = collect_foralls(positive)
+        if len(positive_binders) != 1 or positive_binders[0][1] != "prop":
+            continue
+        target_atom: Expr | None = None
+        sides = equality_like_sides(instantiated_negative_premise)
+        if sides is not None:
+            for side in sides:
+                if expr_key(side) not in {"True", "False", "vampire_true", "vampire_false"}:
+                    target_atom = side
+                    break
+        if target_atom is None:
+            target_atom = instantiated_negative_premise
+        positive_name, _ = positive_binders[0]
+        positive_body_inst = substitute_expr(positive_body, {positive_name: target_atom})
+        positive_inst_proof = f"{proof_head(positive_proof)} {proof_arg_text(target_atom)}"
+        premise_proof = raw_deep_formula_transform_proof(
+            positive_body_inst,
+            instantiated_negative_premise,
+            positive_inst_proof,
+            variable_sorts,
+        )
+        if premise_proof is None:
+            premise_proof = raw_clause_transform_proof(
+                positive_body_inst,
+                instantiated_negative_premise,
+                positive_inst_proof,
+            )
+        if premise_proof is None and expr_same_mod_alpha(positive_body_inst, instantiated_negative_premise):
+            premise_proof = positive_inst_proof
+        if premise_proof is None:
+            continue
+        false_proof = f"({proof_head(instantiated_negative_proof)} {proof_term_text(premise_proof)})"
+        return f"(fun HtargetPremise => {false_proof})"
     return None
 
 
