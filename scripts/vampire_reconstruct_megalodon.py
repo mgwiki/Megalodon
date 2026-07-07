@@ -3534,6 +3534,35 @@ def add_boolean_extensionality_helpers(lines: list[str]) -> list[str]:
     return result
 
 
+def add_used_boolean_extensionality_helpers(lines: list[str]) -> list[str]:
+    text = "\n".join(line for line in lines if not line.startswith("Axiom vampire_prop_ext:"))
+    if "vampire_prop_ext" not in text:
+        return list(lines)
+    existing_names = {
+        item[0]
+        for line in lines
+        for item in [proposition_after_colon(line, "Axiom ") or proposition_after_colon(line, "Definition ")]
+        if item is not None
+    }
+    helpers = [
+        line
+        for line in BOOLEAN_EXT_HELPERS[:3]
+        if (proposition_after_colon(line, "Axiom ") or proposition_after_colon(line, "Definition "))[0] not in existing_names
+    ]
+    if not helpers:
+        return list(lines)
+    result: list[str] = []
+    inserted = False
+    for line in lines:
+        if not inserted and (line.startswith("Axiom ") or line.startswith("Theorem ")):
+            result.extend(helpers)
+            inserted = True
+        result.append(line)
+    if not inserted:
+        result.extend(helpers)
+    return result
+
+
 def add_missing_basic_connective_definitions(lines: list[str]) -> list[str]:
     helper_definitions = {
         "vampire_true": "Definition vampire_true : prop := forall P:prop, P -> P.",
@@ -14670,6 +14699,7 @@ def check_megalodon_lines(
             output_lines = fill_repeated_claim_admits(output_lines)
         if should_retry_pruned_claim_fill(output_lines):
             output_lines = fill_small_remaining_claim_admits(output_lines)
+    output_lines = add_used_boolean_extensionality_helpers(output_lines)
     output_lines = annotate_remaining_admits(output_lines, proof_text)
     output_lines = annotate_source_links(output_lines, proof, proof_text, source)
     if header:
@@ -17575,6 +17605,66 @@ def raw_candidate_terms_for_sort(
     return candidates
 
 
+def raw_true_expr(expr: Expr) -> bool:
+    return expr.kind == "var" and expr.value in {"vampire_true", "True"}
+
+
+def raw_true_intro_proof() -> str:
+    return "(fun P H => H)"
+
+
+def raw_prop_equality_to_true_component(expr: Expr) -> tuple[Expr, bool] | None:
+    sides = equality_like_sides(expr)
+    if sides is None:
+        return None
+    left, right = sides
+    if raw_true_expr(left):
+        return right, True
+    if raw_true_expr(right):
+        return left, False
+    return None
+
+
+def raw_proof_from_prop_true_equality(source: Expr, target: Expr, source_proof: str) -> str | None:
+    component = raw_prop_equality_to_true_component(source)
+    if component is None:
+        return None
+    proposition, true_on_left = component
+    if not expr_same_mod_alpha(proposition, target):
+        return None
+    true_proof = raw_true_intro_proof()
+    if true_on_left:
+        return f"({proof_head(source_proof)} (fun R:prop => R) {true_proof})"
+    return (
+        f"(({proof_head(source_proof)} "
+        f"(fun R:prop => R -> {proof_arg_text(target)}) "
+        f"(fun H => H)) {true_proof})"
+    )
+
+
+def raw_proof_to_prop_true_equality(source: Expr, target: Expr, source_proof: str) -> str | None:
+    component = raw_prop_equality_to_true_component(target)
+    if component is None:
+        return None
+    proposition, true_on_left = component
+    if not expr_same_mod_alpha(source, proposition):
+        return None
+    true_proof = raw_true_intro_proof()
+    if true_on_left:
+        return (
+            f"(vampire_prop_ext {proof_arg_text(Expr('var', value='True'))} "
+            f"{proof_arg_text(proposition)} "
+            f"(fun Htrue => {proof_term_text(source_proof)}) "
+            f"(fun Hprop => {true_proof}))"
+        )
+    return (
+        f"(vampire_prop_ext {proof_arg_text(proposition)} "
+        f"{proof_arg_text(Expr('var', value='True'))} "
+        f"(fun Hprop => {true_proof}) "
+        f"(fun Htrue => {proof_term_text(source_proof)}))"
+    )
+
+
 def raw_deep_formula_transform_proof(
     source: Expr,
     target: Expr,
@@ -17589,6 +17679,13 @@ def raw_deep_formula_transform_proof(
         return None
     if expr_same_mod_alpha(source, target):
         return source_proof
+
+    true_equality_elim = raw_proof_from_prop_true_equality(source, target, source_proof)
+    if true_equality_elim is not None:
+        return true_equality_elim
+    true_equality_intro = raw_proof_to_prop_true_equality(source, target, source_proof)
+    if true_equality_intro is not None:
+        return true_equality_intro
 
     source_sides = equality_like_sides(source)
     target_sides = equality_like_sides(target)
@@ -20000,7 +20097,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     else:
         lines.append(f"exact {final_name}.")
     lines.append("Qed.")
-    return use_ambient_basic_logic(add_problem_type_variables(lines, proof, text, problem))
+    lines = use_ambient_basic_logic(add_problem_type_variables(lines, proof, text, problem))
+    return add_used_boolean_extensionality_helpers(lines)
 
 
 def write_raw_tptp_skeletons(
