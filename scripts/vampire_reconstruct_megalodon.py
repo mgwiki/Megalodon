@@ -24956,6 +24956,43 @@ def raw_tptp_avatar_split_guarded_component_proof(
     )
 
 
+def raw_tptp_definition_bridge_block(
+    claim_name: str,
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> list[str] | None:
+    if not parents:
+        return None
+    source_proposition = propositions_by_name.get(parents[0])
+    if source_proposition is None:
+        return None
+    target_expr = parse_expr(proposition)
+    source_expr = parse_expr(source_proposition)
+    if target_expr is None or source_expr is None:
+        return None
+    target_premises, target_conclusion = split_arrows(target_expr)
+    source_premises, source_conclusion = split_arrows(source_expr)
+    if (
+        len(target_premises) != 1
+        or len(source_premises) != 1
+        or not false_eliminator_expr(target_conclusion)
+        or not false_eliminator_expr(source_conclusion)
+    ):
+        return None
+    unfolded_name = f"{claim_name}_definition_unfolded"
+    target_hypothesis = f"{claim_name}_folded"
+    source_parent = raw_tptp_claim_name(parents[0])
+    return [
+        "{",
+        f"  assume {target_hypothesis}: {expr_text(target_premises[0])}.",
+        f"  claim {unfolded_name}: {expr_text(source_premises[0])}.",
+        "  { admit. }",
+        f"  exact ({source_parent} {unfolded_name}).",
+        "}",
+    ]
+
+
 def raw_tptp_replay_proof_from_step(
     step: MegalodonReplayStep,
     proposition: str,
@@ -25972,7 +26009,18 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             replay_proof = None
         lines.append(f"claim {claim_name}: {proposition}.")
         if replay_proof is None:
-            lines.append("{ admit. }")
+            bridge_block = None
+            if rule in {"definition_folding", "definition_unfolding"}:
+                bridge_block = raw_tptp_definition_bridge_block(
+                    claim_name,
+                    proposition,
+                    replay_parents,
+                    propositions_by_name,
+                )
+            if bridge_block is None:
+                lines.append("{ admit. }")
+            else:
+                lines.extend(bridge_block)
         else:
             lines.append(f"{{ exact {proof_argument_text(replay_proof)}. }}")
         remember_raw_proposition(proposition, claim_name)
