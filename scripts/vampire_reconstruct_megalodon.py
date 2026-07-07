@@ -16918,8 +16918,10 @@ def infer_missing_raw_tptp_sorts(expr: Expr, variables: dict[str, str], local_so
     if expr.kind == "var" and expr.value is not None:
         if expr.value in RAW_TPTP_AMBIENT_CONSTANTS:
             return
-        if expr.value not in variables and expr.value not in local_sorts and expected is not None:
-            variables[expr.value] = expected
+        if expected is not None and expr.value not in local_sorts:
+            current = variables.get(expr.value)
+            if current is None or (current == "SType" and expected in {"set", "prop"}):
+                variables[expr.value] = expected
         return
     if expr.kind in {"forall", "lambda"}:
         assert expr.value is not None and expr.sort is not None
@@ -29684,7 +29686,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             declared_names.add(declared_name)
         lines.append(declaration)
     source_names = source_declared_names(source)
-    source_sort_names = set(source_declared_sorts(source))
+    source_sorts = source_declared_sorts(source)
     for name, sort in sorted(variable_sorts.items()):
         if name in RAW_TPTP_AMBIENT_CONSTANTS:
             continue
@@ -29694,7 +29696,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             continue
         if name in source_names:
             continue
-        if name in source_sort_names:
+        if equivalent_sorts(sort, source_sorts.get(name)):
             continue
         if name in declared_names:
             continue
