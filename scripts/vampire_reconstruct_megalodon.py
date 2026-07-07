@@ -25421,7 +25421,7 @@ def raw_pointwise_set_function_equality(
     binder_sorts = [sort for _, sort in binders]
     prop_valued = app_args(body, "vampire_eq_prop", 2) is not None
     if binder_sorts == ["set"]:
-        helper = "vampire_funext_set_set"
+        helper = "vampire_funext_set_prop" if prop_valued else "vampire_funext_set_set"
     elif binder_sorts == ["set", "set"]:
         helper = "vampire_funext_set_set_prop" if prop_valued else "vampire_funext_set_set_set"
     elif binder_sorts == ["set", "set->set"]:
@@ -29414,6 +29414,15 @@ def source_declared_sorts(source: Path | None) -> dict[str, str]:
     return sorts
 
 
+def source_definition_sorts(source: Path | None) -> dict[str, str]:
+    definition_names = source_declared_names(source)
+    return {
+        name: sort
+        for name, sort in source_declared_sorts(source).items()
+        if name in definition_names
+    }
+
+
 def megalodon_declared_name(line: str) -> str | None:
     match = MEGALODON_DECLARED_NAME_RE.match(line)
     return match.group("name") if match is not None else None
@@ -29504,9 +29513,10 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     replay_steps: dict[str, MegalodonReplayStep] = {}
     unsupported = 0
     if declarations:
+        raw_declared_sorts = raw_tptp_type_variables(declarations)
         variable_sorts = {
-            **source_declared_sorts(source),
-            **raw_tptp_type_variables(declarations),
+            **source_definition_sorts(source),
+            **raw_declared_sorts,
         }
         variable_sorts.update(raw_tptp_skolem_binder_sorts(text, variable_sorts))
         function_definitions = tptp_function_definition_infos(text, variable_sorts)
@@ -29531,6 +29541,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             raw_entries.append((name, role, formula, proposition, rule, source_name, parents, trusted_definition))
             propositions.append(proposition)
         add_missing_raw_tptp_variables(propositions, variable_sorts)
+        variable_sorts.update(raw_declared_sorts)
 
         decoded_entries: list[tuple[str, str, str, str | None, str | None, list[str], bool]] = []
         decoded_propositions: list[str] = []
@@ -29548,7 +29559,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         propositions = decoded_propositions
     else:
         variable_sorts = {
-            **source_declared_sorts(source),
+            **source_definition_sorts(source),
             **proof_text_type_variable_sorts(text),
             **problem_type_variable_sorts(proof, problem),
             **megalodon_outline_symbol_sorts(text),
@@ -29686,7 +29697,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             declared_names.add(declared_name)
         lines.append(declaration)
     source_names = source_declared_names(source)
-    source_sorts = source_declared_sorts(source)
+    source_sorts = source_definition_sorts(source)
     for name, sort in sorted(variable_sorts.items()):
         if name in RAW_TPTP_AMBIENT_CONSTANTS:
             continue
