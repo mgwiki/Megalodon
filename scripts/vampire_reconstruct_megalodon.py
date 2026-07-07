@@ -4655,6 +4655,10 @@ def lower_function_equality_proposition(expr: Expr, variable_sorts: dict[str, st
         assert expr.value is not None and expr.sort is not None
         body = lower_function_equality_proposition(expr.args[0], {**variable_sorts, expr.value: expr.sort})
         return f"forall {expr.value}:{expr.sort}, {body}"
+    if expr.kind == "lambda":
+        assert expr.value is not None and expr.sort is not None
+        body = lower_function_equality_proposition(expr.args[0], {**variable_sorts, expr.value: expr.sort})
+        return f"fun {expr.value} :{expr.sort} => {body}"
     if expr.kind == "arrow":
         left = lower_function_equality_proposition(expr.args[0], variable_sorts)
         right = lower_function_equality_proposition(expr.args[1], variable_sorts)
@@ -4666,6 +4670,14 @@ def lower_function_equality_proposition(expr: Expr, variable_sorts: dict[str, st
             pointwise = pointwise_equality_proposition(expr.args[0], expr.args[1], left_sort)
             if pointwise is not None:
                 return pointwise
+        left = lower_function_equality_proposition(expr.args[0], variable_sorts)
+        right = lower_function_equality_proposition(expr.args[1], variable_sorts)
+        return f"{proposition_argument_text(left)} = {proposition_argument_text(right)}"
+    if expr.kind == "app" and expr.args:
+        rendered = [lower_function_equality_proposition(arg, variable_sorts) for arg in expr.args]
+        head = rendered[0] if expr.args[0].kind == "var" else proposition_argument_text(rendered[0])
+        args = [proposition_argument_text(arg) for arg in rendered[1:]]
+        return " ".join([head, *args])
     return expr_text(expr)
 
 
@@ -24343,7 +24355,10 @@ MAX_RAW_TPTP_EXACT_PROOF_TERM = 60000
 def raw_tptp_safe_split_definition_body(body: Expr, variable_sorts: dict[str, str]) -> str | None:
     if expr_sort(body, variable_sorts) != "prop":
         return None
-    body_text = expr_text(body)
+    body_text = lower_function_equality_proposition(body, variable_sorts)
+    lowered = parse_expr(body_text)
+    if lowered is None or expr_sort(lowered, variable_sorts) != "prop":
+        return None
     if len(body_text) > MAX_RAW_TPTP_SPLIT_DEFINITION_BODY:
         return None
     return body_text
@@ -25160,6 +25175,35 @@ def raw_tptp_definition_rewrite_proof(
     return None
 
 
+def raw_tptp_normal_form_allows_generic_replay(
+    rule: str | None,
+    replay_step: MegalodonReplayStep | None,
+) -> bool:
+    if rule not in {"ennf_transformation", "nnf_transformation"} or replay_step is None:
+        return True
+    fields_groups = megalodon_replay_extra_fields(replay_step, "normal_form")
+    if not fields_groups:
+        return True
+    for fields in fields_groups:
+        exported_rule = fields.get("rule", "").replace(" ", "_")
+        if exported_rule and exported_rule not in {rule, "normal_form"}:
+            continue
+        formula_texts = [
+            value
+            for key, value in fields.items()
+            if key in {"source", "target"} or re.fullmatch(r"pair_[0-9]+_(?:source|target)", key)
+        ]
+        pair_count = sum(1 for key in fields if re.fullmatch(r"pair_[0-9]+_source", key))
+        if (
+            pair_count > 1
+            and any("vampire_exists_" in text for text in formula_texts)
+            and any(len(text) > 900 for text in formula_texts)
+            and any(re.search(r"\bforall\s+[A-Za-z][A-Za-z0-9_']*\s*:\s*prop\b", text) for text in formula_texts)
+        ):
+            return False
+    return True
+
+
 def raw_tptp_avatar_split_guarded_component_proof(
     target: Expr,
     parents: list[str],
@@ -25424,14 +25468,16 @@ def raw_tptp_replay_proof(
         if rule == "flattening":
             PROOF_SEARCH_STATE.deep_clause_literals = True
         try:
-            proof = raw_tptp_one_parent_transform_proof(
-                proposition,
-                parents,
-                propositions_by_name,
-                variable_sorts,
-                max_literals=12,
-                max_literal_product=96,
-            )
+            proof = None
+            if raw_tptp_normal_form_allows_generic_replay(rule, replay_step):
+                proof = raw_tptp_one_parent_transform_proof(
+                    proposition,
+                    parents,
+                    propositions_by_name,
+                    variable_sorts,
+                    max_literals=12,
+                    max_literal_product=96,
+                )
         finally:
             PROOF_SEARCH_STATE.deep_clause_literals = previous_deep_clause_literals
             if previous_deadline is not None:
