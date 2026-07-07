@@ -3687,6 +3687,7 @@ def raw_tptp_predicate_definition_infos(
             body = parse_expr(formula)
             if body is None:
                 continue
+            body = surface_direct_step_expr(body, {**variable_sorts, **megalodon_replay_step_variable_sorts(step)})
             target_name, target_sort, target_binders, folded_literal = raw_tptp_predicate_definition_target(
                 step,
                 body,
