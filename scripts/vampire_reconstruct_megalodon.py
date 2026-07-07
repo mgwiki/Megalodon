@@ -83,6 +83,28 @@ def proof_search_timed_out() -> bool:
     return deadline is not None and proof_search_now() > deadline
 
 
+def vampire_exists_name_for_sort(sort: str) -> str:
+    suffix = re.sub(r"[^A-Za-z0-9]+", "_", sort).strip("_")
+    return f"vampire_exists_{suffix}"
+
+
+def vampire_exists_definition_for_sort(sort: str) -> str:
+    name = vampire_exists_name_for_sort(sort)
+    predicate_sort = f"({sort})->prop" if "->" in sort else f"{sort}->prop"
+    return (
+        f"Definition {name} : ({predicate_sort})->prop := "
+        f"fun P => forall Q:prop, (forall X:{sort}, P X -> Q) -> Q."
+    )
+
+
+def vampire_exists_sort_from_proposition(proposition: str, name: str) -> str | None:
+    pattern = re.compile(rf"\b{re.escape(name)}\s+\(fun\s+[_A-Za-z][_A-Za-z0-9']*\s*:\s*(?P<sort>.*?)\s*=>")
+    match = pattern.search(proposition)
+    if match is None:
+        return None
+    return match.group("sort").strip()
+
+
 @dataclass
 class Obligation:
     line: int
@@ -1174,14 +1196,8 @@ def tptp_applied_quantifier_proposition(text: str, variable_sorts: dict[str, str
     for name, sort in reversed(variables):
         if parts[0] == "!!":
             body = f"forall {name}:{sort}, {body}"
-        elif sort == "set":
-            body = f"vampire_exists_set (fun {name}:set => {body})"
-        elif sort == "prop":
-            body = f"vampire_exists_prop (fun {name}:prop => {body})"
-        elif sort == "set->prop":
-            body = f"vampire_exists_set_prop (fun {name}:set->prop => {body})"
         else:
-            return None
+            body = f"{vampire_exists_name_for_sort(sort)} (fun {name}:{sort} => {body})"
     return body
 
 
@@ -1203,14 +1219,8 @@ def tptp_formula_to_megalodon_proposition(text: str, variable_sorts: dict[str, s
         for name, sort in reversed(variables):
             if quantifier == "!":
                 body = f"forall {name}:{sort}, {body}"
-            elif sort == "set":
-                body = f"vampire_exists_set (fun {name}:set => {body})"
-            elif sort == "prop":
-                body = f"vampire_exists_prop (fun {name}:prop => {body})"
-            elif sort == "set->prop":
-                body = f"vampire_exists_set_prop (fun {name}:set->prop => {body})"
             else:
-                return None
+                body = f"{vampire_exists_name_for_sort(sort)} (fun {name}:{sort} => {body})"
         return body
 
     equivalence = split_top_level_operator(text, "<=>")
@@ -1319,12 +1329,15 @@ def reconstruction_prelude_for(propositions: list[str]) -> list[str]:
         "Definition vampire_eq_set : set->set->prop := vampire_eq.",
         "Definition vampire_eq_prop : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y.",
     ]
-    if "vampire_exists_set " in joined:
-        lines.append("Definition vampire_exists_set : (set->prop)->prop := fun P => forall Q:prop, (forall X:set, P X -> Q) -> Q.")
-    if "vampire_exists_prop " in joined:
-        lines.append("Definition vampire_exists_prop : (prop->prop)->prop := fun P => forall Q:prop, (forall X:prop, P X -> Q) -> Q.")
-    if "vampire_exists_set_prop " in joined:
-        lines.append("Definition vampire_exists_set_prop : ((set->prop)->prop)->prop := fun P => forall Q:prop, (forall X:set->prop, P X -> Q) -> Q.")
+    exists_sorts: dict[str, str] = {}
+    for name in sorted(set(re.findall(r"\bvampire_exists_[A-Za-z0-9_']+\b", joined))):
+        for proposition in propositions:
+            sort = vampire_exists_sort_from_proposition(proposition, name)
+            if sort is not None and vampire_exists_name_for_sort(sort) == name:
+                exists_sorts.setdefault(name, sort)
+                break
+    for name, sort in sorted(exists_sorts.items()):
+        lines.append(vampire_exists_definition_for_sort(sort))
     return lines
 
 
@@ -1412,6 +1425,14 @@ def expr_sort(expr: Expr, variable_sorts: dict[str, str]) -> str | None:
         }
         return variable_sorts.get(expr.value) or helper_sorts.get(expr.value)
     if expr.kind == "app" and expr.args:
+        if (
+            expr.args[0].kind == "var"
+            and expr.args[0].value is not None
+            and expr.args[0].value.startswith("vampire_exists_")
+            and len(expr.args) == 2
+            and expr.args[1].kind == "lambda"
+        ):
+            return "prop"
         head_sort = expr_sort(expr.args[0], variable_sorts)
         if head_sort is None:
             return None
@@ -3806,9 +3827,6 @@ def add_missing_basic_connective_definitions(lines: list[str]) -> list[str]:
         "vampire_true": "Definition vampire_true : prop := forall P:prop, P -> P.",
         "vampire_or": "Definition vampire_or : prop->prop->prop := fun A B:prop => forall P:prop, (A -> P) -> (B -> P) -> P.",
         "vampire_and": "Definition vampire_and : prop->prop->prop := fun A B:prop => forall P:prop, (A -> B -> P) -> P.",
-        "vampire_exists_set": "Definition vampire_exists_set : (set->prop)->prop := fun P => forall Q:prop, (forall X:set, P X -> Q) -> Q.",
-        "vampire_exists_prop": "Definition vampire_exists_prop : (prop->prop)->prop := fun P => forall Q:prop, (forall X:prop, P X -> Q) -> Q.",
-        "vampire_exists_set_prop": "Definition vampire_exists_set_prop : ((set->prop)->prop)->prop := fun P => forall Q:prop, (forall X:set->prop, P X -> Q) -> Q.",
         "vampire_eq_set": "Definition vampire_eq_set : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y.",
         "vampire_eq_prop": "Definition vampire_eq_prop : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y.",
     }
@@ -3823,31 +3841,25 @@ def add_missing_basic_connective_definitions(lines: list[str]) -> list[str]:
         helpers.append(helper_definitions["vampire_or"])
     if "vampire_and " in non_definition_text:
         helpers.append(helper_definitions["vampire_and"])
-    needs_exists_definition = "vampire_exists_set " in non_definition_text
-    if needs_exists_definition:
-        helpers.append(helper_definitions["vampire_exists_set"])
-    needs_prop_exists_definition = "vampire_exists_prop " in non_definition_text
-    if needs_prop_exists_definition:
-        helpers.append(helper_definitions["vampire_exists_prop"])
-    needs_set_prop_exists_definition = "vampire_exists_set_prop " in non_definition_text
-    if needs_set_prop_exists_definition:
-        helpers.append(helper_definitions["vampire_exists_set_prop"])
+    exists_names: set[str] = set(re.findall(r"\bvampire_exists_[A-Za-z0-9_']+\b", non_definition_text))
+    exists_definitions: dict[str, str] = {}
+    for name in sorted(exists_names):
+        sort = vampire_exists_sort_from_proposition(non_definition_text, name)
+        if sort is not None and vampire_exists_name_for_sort(sort) == name:
+            exists_definitions[name] = vampire_exists_definition_for_sort(sort)
+    helpers.extend(exists_definitions[name] for name in sorted(exists_definitions))
     if "vampire_eq_set " in non_definition_text:
         helpers.append(helper_definitions["vampire_eq_set"])
     if "vampire_eq_prop " in non_definition_text:
         helpers.append(helper_definitions["vampire_eq_prop"])
-    if not helpers and not needs_exists_definition and not needs_prop_exists_definition and not needs_set_prop_exists_definition:
+    if not helpers and not exists_names:
         return list(lines)
     result: list[str] = []
     inserted = False
     for line in lines:
         if any(line == definition for definition in helper_definitions.values()):
             continue
-        if needs_exists_definition and line.startswith("Variable vampire_exists_set:"):
-            continue
-        if needs_prop_exists_definition and line.startswith("Variable vampire_exists_prop:"):
-            continue
-        if needs_set_prop_exists_definition and line.startswith("Variable vampire_exists_set_prop:"):
+        if any(line.startswith(f"Variable {name}:") for name in exists_definitions):
             continue
         if not inserted and (line.startswith("Axiom ") or line.startswith("Theorem ")):
             result.extend(helpers)
@@ -10494,10 +10506,15 @@ def vampire_and_projection_from_proof(proof: str, node: Expr, target: Expr, dept
 
 
 def vampire_exists_body(expr: Expr) -> tuple[str, Expr] | None:
-    args = app_args(expr, "vampire_exists_set", 1)
-    if args is None:
+    if (
+        expr.kind != "app"
+        or len(expr.args) != 2
+        or expr.args[0].kind != "var"
+        or expr.args[0].value is None
+        or not expr.args[0].value.startswith("vampire_exists_")
+    ):
         return None
-    predicate = args[0]
+    predicate = expr.args[1]
     if predicate.kind != "lambda" or predicate.value is None:
         return None
     return predicate.value, predicate.args[0]
@@ -15780,6 +15797,15 @@ def infer_missing_raw_tptp_sorts(expr: Expr, variables: dict[str, str], local_so
                 "vampire_exists_set_prop": "((set->prop)->prop)->prop",
             }
             head_sort = local_sorts.get(head.value) or variables.get(head.value) or helper_sorts.get(head.value)
+            if (
+                head_sort is None
+                and head.value.startswith("vampire_exists_")
+                and len(expr.args) == 2
+                and expr.args[1].kind == "lambda"
+                and expr.args[1].sort is not None
+            ):
+                predicate_sort = f"({expr.args[1].sort})->prop" if "->" in expr.args[1].sort else f"{expr.args[1].sort}->prop"
+                head_sort = f"({predicate_sort})->prop"
             if head_sort is None and expected in {"set", "prop"} and head.value not in local_sorts:
                 arg_sorts = [expr_sort(arg, known_sorts) for arg in expr.args[1:]]
                 if arg_sorts and all(sort is not None for sort in arg_sorts):
@@ -18119,16 +18145,17 @@ def raw_not_exists_to_forall_not_transform_proof(source: Expr, target: Expr, sou
         return None
     exists_arg: Expr | None = None
     exists_sort: str | None = None
-    for head, binder_sort in (
-        ("vampire_exists_set", "set"),
-        ("vampire_exists_prop", "prop"),
-        ("vampire_exists_set_prop", "set->prop"),
+    if (
+        source_premises[0].kind == "app"
+        and len(source_premises[0].args) == 2
+        and source_premises[0].args[0].kind == "var"
+        and source_premises[0].args[0].value is not None
+        and source_premises[0].args[0].value.startswith("vampire_exists_")
     ):
-        args = app_args(source_premises[0], head, 1)
-        if args is not None:
-            exists_arg = args[0]
-            exists_sort = binder_sort
-            break
+        candidate = source_premises[0].args[1]
+        if candidate.kind == "lambda" and candidate.sort is not None:
+            exists_arg = candidate
+            exists_sort = candidate.sort
     if exists_arg is None or exists_sort is None:
         return None
     target_binders, target_body = collect_foralls(target)
@@ -18189,16 +18216,17 @@ def raw_implication_exists_to_negative_conjunction_proof(
         return None
     exists_arg: Expr | None = None
     witness_sort: str | None = None
-    for head, sort in (
-        ("vampire_exists_set", "set"),
-        ("vampire_exists_prop", "prop"),
-        ("vampire_exists_set_prop", "set->prop"),
+    if (
+        source_conclusion.kind == "app"
+        and len(source_conclusion.args) == 2
+        and source_conclusion.args[0].kind == "var"
+        and source_conclusion.args[0].value is not None
+        and source_conclusion.args[0].value.startswith("vampire_exists_")
     ):
-        args = app_args(source_conclusion, head, 1)
-        if args is not None:
-            exists_arg = args[0]
-            witness_sort = sort
-            break
+        candidate = source_conclusion.args[1]
+        if candidate.kind == "lambda" and candidate.sort is not None:
+            exists_arg = candidate
+            witness_sort = candidate.sort
     if exists_arg is None or witness_sort is None:
         return None
     target_parts = vampire_and_parts(target_premises[0])
@@ -18557,19 +18585,18 @@ def raw_conjunction_transform_proof(
 
 
 def raw_exists_transform_parts(expr: Expr) -> tuple[str, str, Expr, str, Expr] | None:
-    for head, sort in (
-        ("vampire_exists_set", "set"),
-        ("vampire_exists_prop", "prop"),
-        ("vampire_exists_set_prop", "set->prop"),
+    if (
+        expr.kind != "app"
+        or len(expr.args) != 2
+        or expr.args[0].kind != "var"
+        or expr.args[0].value is None
+        or not expr.args[0].value.startswith("vampire_exists_")
     ):
-        args = app_args(expr, head, 1)
-        if args is None:
-            continue
-        predicate = args[0]
-        if predicate.kind != "lambda" or predicate.value is None:
-            return None
-        return head, sort, predicate, predicate.value, predicate.args[0]
-    return None
+        return None
+    predicate = expr.args[1]
+    if predicate.kind != "lambda" or predicate.value is None or predicate.sort is None:
+        return None
+    return expr.args[0].value, predicate.sort, predicate, predicate.value, predicate.args[0]
 
 
 def raw_exists_transform_proof(
