@@ -20237,6 +20237,8 @@ def raw_tptp_replay_proof(
 ) -> str | None:
     if rule == "fool_exhaustiveness_axiom":
         return raw_fool_exhaustiveness_axiom_proof(proposition)
+    if rule == "fool_distinctness_axiom":
+        return raw_fool_distinctness_axiom_proof(proposition)
     if rule == "avatar_definition":
         return raw_tptp_avatar_definition_proof(proposition)
     if rule == "rat":
@@ -20349,13 +20351,104 @@ def raw_fool_exhaustiveness_axiom_proof(proposition: str) -> str | None:
     expected_left = Expr("var", value=name)
     expected_right = Expr("arrow", args=(Expr("var", value=name), Expr("var", value="vampire_false")))
     if not expr_same_mod_alpha(left, expected_left) or not expr_same_mod_alpha(right, expected_right):
-        return None
+        eq_proof = raw_fool_prop_equality_exhaustiveness_proof(name, body, left, right)
+        if eq_proof is None:
+            return None
+        return eq_proof
     return (
         f"(fun {name}:prop => "
         f"(xm {name} {proof_arg_text(body)} "
         f"(fun Htrue => (fun P Hleft Hright => Hleft Htrue)) "
         f"(fun Hfalse => (fun P Hleft Hright => Hright Hfalse))))"
     )
+
+
+def raw_fool_prop_equality_exhaustiveness_proof(name: str, body: Expr, left: Expr, right: Expr) -> str | None:
+    variable = Expr("var", value=name)
+
+    def equality_component(expr: Expr) -> str | None:
+        sides = equality_like_sides(expr)
+        if sides is None:
+            return None
+        first, second = sides
+        if raw_true_expr(first) and expr_same_mod_alpha(second, variable):
+            return "true_left"
+        if expr_same_mod_alpha(first, variable) and raw_true_expr(second):
+            return "true_right"
+        if false_eliminator_expr(first) and expr_same_mod_alpha(second, variable):
+            return "false_left"
+        if expr_same_mod_alpha(first, variable) and false_eliminator_expr(second):
+            return "false_right"
+        return None
+
+    def true_equality_proof(component: str) -> str:
+        true_proof = raw_true_intro_proof()
+        if component == "true_left":
+            return (
+                f"(vampire_prop_ext {proof_arg_text(Expr('var', value='True'))} {name} "
+                f"(fun Htrue => Htrue_case) "
+                f"(fun Hprop => {true_proof}))"
+            )
+        return (
+            f"(vampire_prop_ext {name} {proof_arg_text(Expr('var', value='True'))} "
+            f"(fun Hprop => {true_proof}) "
+            f"(fun Htrue => Htrue_case))"
+        )
+
+    def false_equality_proof(component: str) -> str:
+        if component == "false_left":
+            return (
+                f"(vampire_prop_ext {proof_arg_text(Expr('var', value='False'))} {name} "
+                f"(fun Hfalse_elim => Hfalse_elim {name}) "
+                f"Hfalse_case)"
+            )
+        return (
+            f"(vampire_prop_ext {name} {proof_arg_text(Expr('var', value='False'))} "
+            f"Hfalse_case "
+            f"(fun Hfalse_elim => Hfalse_elim {name}))"
+        )
+
+    left_component = equality_component(left)
+    right_component = equality_component(right)
+    if left_component is None or right_component is None:
+        return None
+    if left_component.startswith("true_") and right_component.startswith("false_"):
+        return (
+            f"(fun {name}:prop => "
+            f"(xm {name} {proof_arg_text(body)} "
+            f"(fun Htrue_case => (fun P Hleft Hright => Hleft {true_equality_proof(left_component)})) "
+            f"(fun Hfalse_case => (fun P Hleft Hright => Hright {false_equality_proof(right_component)}))))"
+        )
+    if left_component.startswith("false_") and right_component.startswith("true_"):
+        return (
+            f"(fun {name}:prop => "
+            f"(xm {name} {proof_arg_text(body)} "
+            f"(fun Htrue_case => (fun P Hleft Hright => Hright {true_equality_proof(right_component)})) "
+            f"(fun Hfalse_case => (fun P Hleft Hright => Hleft {false_equality_proof(left_component)}))))"
+        )
+    return None
+
+
+def raw_fool_distinctness_axiom_proof(proposition: str) -> str | None:
+    expr = parse_expr(proposition)
+    if expr is None:
+        return None
+    premises, conclusion = split_arrows(expr)
+    if len(premises) != 1 or not false_eliminator_expr(conclusion):
+        return None
+    sides = equality_like_sides(premises[0])
+    if sides is None:
+        return None
+    left, right = sides
+    true_proof = raw_true_intro_proof()
+    if raw_true_expr(left) and false_eliminator_expr(right):
+        return f"(fun Hdistinct => Hdistinct (fun R:prop => R) {true_proof})"
+    if false_eliminator_expr(left) and raw_true_expr(right):
+        return (
+            f"(fun Hdistinct => "
+            f"((Hdistinct (fun R:prop => R -> False) (fun Hfalse_elim => Hfalse_elim False)) {true_proof}))"
+        )
+    return None
 
 
 def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | None = None) -> list[str]:
