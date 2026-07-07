@@ -163,6 +163,7 @@ class DefinitionInfo:
     proof: str
     binders: tuple[str, ...]
     body: Expr
+    folded_literal: Expr | None = None
 
 
 @dataclass(frozen=True)
@@ -3598,9 +3599,10 @@ def raw_step_variable_order(name: str) -> tuple[int, str]:
 def raw_tptp_predicate_definition_infos(
     replay_steps: dict[str, MegalodonReplayStep],
     variable_sorts: dict[str, str],
-) -> dict[str, DefinitionInfo]:
+) -> tuple[dict[str, DefinitionInfo], dict[str, str]]:
     definitions: dict[str, DefinitionInfo] = {}
-    for step in replay_steps.values():
+    definition_keys_by_step: dict[str, str] = {}
+    for step_name, step in replay_steps.items():
         for fields in megalodon_replay_extra_fields(step, "predicate_definition"):
             name = fields.get("symbol") or fields.get("introduced_symbol")
             sort = fields.get("sort")
@@ -3615,11 +3617,11 @@ def raw_tptp_predicate_definition_infos(
             body = parse_expr(formula)
             if body is None:
                 continue
-            target_name, target_sort, target_binders = raw_tptp_predicate_definition_target(
+            target_name, target_sort, target_binders, folded_literal = raw_tptp_predicate_definition_target(
                 step,
                 body,
                 variable_sorts,
-            ) or (name, sort, ())
+            ) or (name, sort, (), None)
             if not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", target_name):
                 continue
             pieces = split_sort_arrows(target_sort)
@@ -3645,20 +3647,33 @@ def raw_tptp_predicate_definition_infos(
             definition_body = body_text
             for binder_name, binder_sort in reversed(list(zip(binders, arg_sorts))):
                 definition_body = f"fun {binder_name}:{binder_sort} => {definition_body}"
-            proof_args = binders + ["Q", "H"]
-            proof = f"({' '.join(['fun'] + proof_args + ['=>', 'H'])})"
+            definition_key = f"{step_name}_def"
             definitions.setdefault(
                 target_name,
-                DefinitionInfo(target_sort, definition_body, proof, tuple(binders), body),
+                DefinitionInfo(target_sort, definition_body, definition_key, tuple(binders), body, folded_literal),
             )
-    return definitions
+            definition_keys_by_step[step_name] = definition_key
+    return definitions, definition_keys_by_step
+
+
+def raw_tptp_predicate_definition_equality_proposition(name: str, definition: DefinitionInfo) -> str | None:
+    pieces = split_sort_arrows(definition.sort)
+    if not pieces or pieces[-1] != "prop" or len(pieces) - 1 != len(definition.binders):
+        return None
+    args = [Expr("var", value=binder) for binder in definition.binders]
+    target = append_application_args(Expr("var", value=name), args)
+    proposition_target = definition.folded_literal or target
+    proposition = f"vampire_eq_prop {proof_arg_text(definition.body)} {proof_arg_text(proposition_target)}"
+    for binder, sort in reversed(list(zip(definition.binders, pieces[:-1]))):
+        proposition = f"forall {binder}:{sort}, {proposition}"
+    return proposition
 
 
 def raw_tptp_predicate_definition_target(
     step: MegalodonReplayStep,
     body: Expr,
     variable_sorts: dict[str, str],
-) -> tuple[str, str, tuple[str, ...]] | None:
+) -> tuple[str, str, tuple[str, ...], Expr] | None:
     proposition = parse_expr(step.proposition)
     if proposition is None:
         return None
@@ -3666,10 +3681,11 @@ def raw_tptp_predicate_definition_target(
     binders, conclusion = collect_foralls(proposition)
     binder_sorts = {name: sort for name, sort in binders}
 
-    def target_from(expr: Expr) -> tuple[str, str, tuple[str, ...]] | None:
+    def target_from(expr: Expr) -> tuple[str, str, tuple[str, ...], Expr] | None:
         premises, arrow_conclusion = split_arrows(expr)
         if len(premises) == 1 and expr_text(arrow_conclusion) in {"vampire_false", "False"}:
             expr = premises[0]
+        folded_literal = expr
         sides = equality_like_sides(expr)
         if sides is not None:
             left, right = sides
@@ -3680,7 +3696,7 @@ def raw_tptp_predicate_definition_target(
         if expr.kind == "var" and expr.value is not None:
             sort = variable_sorts.get(expr.value)
             if sort == "prop":
-                return expr.value, sort, ()
+                return expr.value, sort, (), folded_literal
             return None
         if expr.kind != "app" or not expr.args or expr.args[0].kind != "var" or expr.args[0].value is None:
             return None
@@ -3698,9 +3714,9 @@ def raw_tptp_predicate_definition_target(
             arg_names.append(arg.value)
         if len(split_sort_arrows(target_sort)) - 1 != len(arg_names):
             return None
-        return target, target_sort, tuple(arg_names)
+        return target, target_sort, tuple(arg_names), folded_literal
 
-    def visit(expr: Expr) -> tuple[str, str, tuple[str, ...]] | None:
+    def visit(expr: Expr) -> tuple[str, str, tuple[str, ...], Expr] | None:
         parts = raw_or_parts(expr)
         if parts is None:
             return None
@@ -19174,6 +19190,16 @@ def raw_tptp_parent_equality_rewrite_proof(
         for equality_name, equality, equality_proof in parent_exprs:
             if equality_name == source_name:
                 continue
+            quantified_proof = raw_quantified_parent_equality_rewrite_clause_proof(
+                source,
+                target,
+                source_proof,
+                equality,
+                equality_proof,
+                variable_sorts,
+            )
+            if quantified_proof is not None:
+                return quantified_proof
             equality_sides = equality_like_sides(equality)
             if equality_sides is None:
                 continue
@@ -21226,7 +21252,13 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             propositions.append(proposition)
         add_missing_raw_tptp_variables(propositions, variable_sorts)
     propositions_by_name = {name: proposition for name, _, proposition, _, _, _, _ in entries if proposition}
-    predicate_definitions = raw_tptp_predicate_definition_infos(replay_steps, variable_sorts)
+    predicate_definitions, predicate_definition_keys_by_step = raw_tptp_predicate_definition_infos(replay_steps, variable_sorts)
+    predicate_definition_equalities: dict[str, str] = {}
+    for definition_name, definition in predicate_definitions.items():
+        equality_proposition = raw_tptp_predicate_definition_equality_proposition(definition_name, definition)
+        if equality_proposition is not None:
+            predicate_definition_equalities[definition.proof] = equality_proposition
+    propositions_by_name.update(predicate_definition_equalities)
     avatar_split_definitions: dict[str, str] = {}
     for _, _, proposition, rule, _, _, _ in entries:
         if rule != "avatar_definition" or not proposition:
@@ -21267,6 +21299,9 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         lines.append(f"Variable {name}:{sort}.")
     for name, definition in ordered_definitions(predicate_definitions):
         lines.append(f"Definition {name} : {definition.sort} := {definition.body_text}.")
+        equality_proposition = predicate_definition_equalities.get(definition.proof)
+        if equality_proposition is not None:
+            lines.append(f"Axiom {raw_tptp_claim_name(definition.proof)}:{equality_proposition}.")
     for name, body in sorted(avatar_split_definitions.items()):
         lines.append(f"Definition {name} : prop := {body}.")
 
@@ -21317,6 +21352,12 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             continue
         replay_proof = known_raw_propositions.get(canonical_proposition(proposition))
         if replay_proof is None:
+            replay_parents = list(parents)
+            if rule in {"definition_folding", "definition_unfolding"}:
+                for parent in parents:
+                    definition_key = predicate_definition_keys_by_step.get(parent)
+                    if definition_key is not None and definition_key not in replay_parents:
+                        replay_parents.append(definition_key)
             previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
             PROOF_SEARCH_STATE.deadline = proof_search_now() + RAW_TPTP_REPLAY_SECONDS
             try:
@@ -21325,12 +21366,12 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     replay_proof = raw_tptp_replay_proof_from_step(
                         step_info,
                         proposition,
-                        parents,
+                        replay_parents,
                         propositions_by_name,
                         variable_sorts,
                     )
                 else:
-                    replay_proof = raw_tptp_replay_proof(rule, proposition, parents, propositions_by_name, variable_sorts)
+                    replay_proof = raw_tptp_replay_proof(rule, proposition, replay_parents, propositions_by_name, variable_sorts)
             finally:
                 if previous_deadline is None:
                     if hasattr(PROOF_SEARCH_STATE, "deadline"):
