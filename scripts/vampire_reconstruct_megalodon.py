@@ -20256,6 +20256,8 @@ def raw_quantified_parent_equality_rewrite_clause_proof(
                 flatten_substitution(trial)
                 if any(name not in trial for name, _ in equality_binders):
                     continue
+                if any(raw_expr_has_synthetic_db_variable(trial[name]) for name, _ in equality_binders):
+                    continue
                 replaced, changed = replace_expr(renamed_source_body, old_subterm, new_subterm)
                 if not changed:
                     continue
@@ -20777,6 +20779,8 @@ def raw_quantified_equality_rewrite_clause_steps(
             flatten_substitution(subst)
             if any(name not in subst for name, _ in equality_binders):
                 continue
+            if any(raw_expr_has_synthetic_db_variable(subst[name]) for name, _ in equality_binders):
+                continue
             new_subterm = substitute_expr(new_pattern, subst)
             replaced_body, changed = replace_expr(source_body, old_subterm, new_subterm)
             if not changed:
@@ -20812,6 +20816,51 @@ def raw_quantified_equality_rewrite_clause_steps(
     return steps
 
 
+def raw_pointwise_set_function_equality(
+    equality: Expr,
+    equality_proof: str,
+) -> tuple[Expr, str] | None:
+    binders, body = collect_foralls(equality)
+    if len(binders) != 1:
+        return None
+    binder_name, binder_sort = binders[0]
+    if binder_sort != "set":
+        return None
+    sides = equality_like_sides(body)
+    if sides is None:
+        return None
+    binder_var = Expr("var", value=binder_name)
+
+    def abstract_side(side: Expr) -> Expr | None:
+        normalized = beta_normalize_expr(side)
+        if (
+            normalized.kind == "app"
+            and len(normalized.args) == 2
+            and expr_same_mod_alpha(normalized.args[1], binder_var)
+            and binder_name not in expr_variables(normalized.args[0])
+        ):
+            return normalized.args[0]
+        return eta_reduce_unary_function(
+            Expr("lambda", value=binder_name, sort=binder_sort, args=(normalized,))
+        )
+
+    left = abstract_side(sides[0])
+    right = abstract_side(sides[1])
+    if left is None or right is None:
+        return None
+    proof = (
+        f"(vampire_funext_set_set "
+        f"{proof_arg_text(left)} "
+        f"{proof_arg_text(right)} "
+        f"{proof_term_text(equality_proof)})"
+    )
+    return Expr("eq", args=(left, right)), proof
+
+
+def raw_expr_has_synthetic_db_variable(expr: Expr) -> bool:
+    return any(RAW_TPTP_SYNTHETIC_DB_RE.fullmatch(name) for name in expr_variables(expr))
+
+
 def raw_tptp_parent_equality_chain_rewrite_proof(
     proposition: str,
     parents: list[str],
@@ -20831,25 +20880,36 @@ def raw_tptp_parent_equality_chain_rewrite_proof(
         parent_expr = parse_expr(parent_proposition)
         if parent_expr is not None:
             parent_exprs.append((parent, parent_expr, raw_tptp_claim_name(parent)))
-    equality_parents = [
+    equality_parents: list[tuple[str, Expr, str, tuple[Expr, Expr] | None]] = []
+    for name, expr, proof in parent_exprs:
+        function_equality = raw_pointwise_set_function_equality(expr, proof)
+        if function_equality is None:
+            continue
+        equality_expr, equality_proof = function_equality
+        sides = equality_like_sides(equality_expr)
+        if sides is not None:
+            equality_parents.append((f"{name}#funext", equality_expr, equality_proof, sides))
+    equality_parents.extend([
         (name, expr, proof, equality_like_sides(collect_foralls(expr)[1]))
         for name, expr, proof in parent_exprs
         if equality_like_sides(collect_foralls(expr)[1]) is not None
-    ]
+    ])
     if len(equality_parents) < 2:
         return None
+    normalized_target = beta_normalize_expr(target)
     for source_name, source, source_proof in parent_exprs:
         states: list[tuple[Expr, str, frozenset[str]]] = [(source, source_proof, frozenset())]
         seen = {expr_key(source)}
         for _ in range(min(8, len(equality_parents))):
             next_states: list[tuple[Expr, str, frozenset[str]]] = []
             for current, current_proof, used in states:
-                if expr_key(current) == expr_key(target):
+                if expr_key(current) == expr_key(target) or expr_same_mod_alpha(current, normalized_target):
                     return current_proof
-                if raw_clause_replay_budget_ok(current, target, max_literals=16, max_literal_product=256):
-                    transformed = raw_clause_transform_proof(current, target, current_proof)
-                    if transformed is not None:
-                        return transformed
+                for comparison_target in (target, normalized_target):
+                    if raw_clause_replay_budget_ok(current, comparison_target, max_literals=16, max_literal_product=256):
+                        transformed = raw_clause_transform_proof(current, comparison_target, current_proof)
+                        if transformed is not None:
+                            return transformed
                 for equality_name, _, equality_proof, sides in equality_parents:
                     if equality_name == source_name or equality_name in used or sides is None:
                         continue
@@ -20874,17 +20934,29 @@ def raw_tptp_parent_equality_chain_rewrite_proof(
                             equality_sort,
                         )
                     for replaced, proof in rewrite_steps:
-                        key = expr_key(replaced)
-                        if key in seen:
-                            continue
-                        seen.add(key)
-                        if key == expr_key(target):
-                            return proof
-                        if raw_clause_replay_budget_ok(replaced, target, max_literals=16, max_literal_product=256):
-                            transformed = raw_clause_transform_proof(replaced, target, proof)
-                            if transformed is not None:
-                                return transformed
-                        next_states.append((replaced, proof, frozenset((*used, equality_name))))
+                        candidates = [replaced]
+                        normalized_replaced = beta_normalize_expr(replaced)
+                        if not expr_same_mod_alpha(normalized_replaced, replaced):
+                            candidates.append(normalized_replaced)
+                        for candidate in candidates:
+                            key = expr_key(candidate)
+                            if key in seen:
+                                continue
+                            seen.add(key)
+                            if (
+                                key == expr_key(target)
+                                or expr_same_mod_alpha(candidate, target)
+                                or expr_same_mod_alpha(candidate, normalized_target)
+                            ):
+                                return proof
+                            for comparison_target in (target, normalized_target):
+                                if raw_clause_replay_budget_ok(candidate, comparison_target, max_literals=16, max_literal_product=256):
+                                    transformed = raw_clause_transform_proof(candidate, comparison_target, proof)
+                                    if transformed is not None:
+                                        return transformed
+                            next_states.append((candidate, proof, frozenset((*used, equality_name))))
+                            if len(next_states) >= 64:
+                                break
                         if len(next_states) >= 64:
                             break
                     if len(next_states) >= 64:
