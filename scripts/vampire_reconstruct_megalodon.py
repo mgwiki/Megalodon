@@ -21389,6 +21389,27 @@ def raw_quantified_parent_equality_rewrite_clause_proof(
     source_binders, source_body = collect_foralls(source)
     target_binders, target_body = collect_foralls(target)
     equality_binders, equality_body = collect_foralls(equality)
+    protected_names = (
+        {name for name, _ in source_binders}
+        | {name for name, _ in target_binders}
+        | expr_bound_variables(source_body)
+        | expr_bound_variables(target_body)
+    )
+    if protected_names & {name for name, _ in equality_binders}:
+        used_names = set(protected_names) | expr_variables(source_body) | expr_variables(target_body)
+        renamed_binders: list[tuple[str, str]] = []
+        renaming: dict[str, Expr] = {}
+        for name, sort in equality_binders:
+            new_name = name
+            if new_name in used_names:
+                new_name = fresh_identifier(name, " ".join(sorted(used_names)))
+            used_names.add(new_name)
+            renamed_binders.append((new_name, sort))
+            if new_name != name:
+                renaming[name] = Expr("var", value=new_name)
+        if renaming:
+            equality_body = substitute_expr(equality_body, renaming)
+            equality_binders = renamed_binders
     equality_sides = equality_like_sides(equality_body)
     if equality_sides is None:
         return None
