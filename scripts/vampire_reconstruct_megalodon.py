@@ -22560,7 +22560,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         axiom_like_rules = {"input", "skolem symbol introduction", "predicate definition introduction", "function definition"}
         for name in sorted(replay_steps, key=lambda value: int(value[1:]) if value.startswith("S") and value[1:].isdigit() else value):
             step = replay_steps[name]
-            role = "axiom" if step.rule in axiom_like_rules and not step.parents else "plain"
+            role = "axiom" if step.rule == "negated conjecture" or (step.rule in axiom_like_rules and not step.parents) else "plain"
             rule = step.rule.replace(" ", "_") if step.rule else None
             proposition = step.proposition
             entries.append((name, role, proposition, rule, None, list(step.parents), False))
