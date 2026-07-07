@@ -1909,7 +1909,7 @@ def megalodon_replay_steps(
                 {**variable_sorts, **step_sorts},
             )
         else:
-            proposition = megalodon_function_definition_extra_proposition(
+            proposition = megalodon_equality_extra_proposition(
                 extras.get(step, []),
                 {**variable_sorts, **step_sorts},
             )
@@ -1959,7 +1959,9 @@ def megalodon_replay_steps(
             )
     for step in placeholder_steps - direct_propositions.keys():
         info = steps.get(step)
-        if info is not None and any(kind == "function_definition" for kind, _ in info.extras):
+        if info is not None and any(
+            kind in {"function_definition", "clause_equality"} for kind, _ in info.extras
+        ):
             continue
         steps.pop(step, None)
     for step, replay_kind in replay_kinds.items():
@@ -1989,12 +1991,12 @@ def megalodon_replay_steps(
     return steps
 
 
-def megalodon_function_definition_extra_proposition(
+def megalodon_equality_extra_proposition(
     extras: list[tuple[str, tuple[str, ...]]],
     variable_sorts: dict[str, str],
 ) -> str | None:
     for kind, fields in extras:
-        if kind != "function_definition":
+        if kind not in {"function_definition", "clause_equality"}:
             continue
         parsed: dict[str, str] = {}
         for field in fields:
@@ -19630,7 +19632,10 @@ def raw_tptp_extra_formula_expr(
 ) -> Expr | None:
     proposition = fields.get(f"{key}_proposition")
     if proposition is not None:
-        return parse_expr(proposition)
+        expr = parse_expr(proposition)
+        if expr is None:
+            return None
+        return parse_expr(lower_function_equality_proposition(expr, variable_sorts))
     formula = fields.get(key)
     if formula is None:
         return None
@@ -19696,6 +19701,17 @@ def raw_instantiated_clause_from_exported_literal(
                 found = complete_from_target(index + 1, trial)
                 if found is not None:
                     return found
+            source_sides = equality_like_sides(source_literal)
+            target_sides = equality_like_sides(target_literal)
+            if source_sides is not None and target_sides is not None:
+                trial = dict(current)
+                if (
+                    match_expr_with_alpha_instantiation(source_sides[0], target_sides[1], binder_names, trial)
+                    and match_expr_with_alpha_instantiation(source_sides[1], target_sides[0], binder_names, trial)
+                ):
+                    found = complete_from_target(index + 1, trial)
+                    if found is not None:
+                        return found
         return complete_from_target(index + 1, current)
 
     completed = complete_from_target(0, dict(subst))
@@ -19796,6 +19812,27 @@ def raw_tptp_exported_two_literal_resolution_proof(
             target_binders,
             target_body,
         )
+        if selected_clause is not None:
+            source, source_proof = selected_clause
+            body_proof = None
+            for replaced, transported in raw_quantified_equality_rewrite_clause_steps(
+                source,
+                source_proof,
+                parsed_parents[other_parent][0],
+                parsed_parents[other_parent][1],
+                extra_sorts,
+            ):
+                if expr_same_mod_alpha(replaced, target_body):
+                    body_proof = transported
+                    break
+                transformed = raw_clause_transform_proof(replaced, target_body, transported)
+                if transformed is not None:
+                    body_proof = transformed
+                    break
+            if body_proof is not None:
+                for name, sort in reversed(target_binders):
+                    body_proof = f"(fun {name}:{sort} => {body_proof})"
+                return body_proof
         if selected_clause is None or other_clause is None:
             continue
         source, source_proof = selected_clause
