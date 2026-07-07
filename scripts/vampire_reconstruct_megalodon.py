@@ -15678,6 +15678,22 @@ def raw_literal_direct_transform_proof(
 ) -> str | None:
     if expr_same_mod_alpha(source, target):
         return source_proof
+    source_premises, source_conclusion = split_arrows(source)
+    target_premises, target_conclusion = split_arrows(target)
+    if (
+        len(source_premises) == 1
+        and len(target_premises) == 1
+        and false_eliminator_expr(source_conclusion)
+        and false_eliminator_expr(target_conclusion)
+    ):
+        premise_name = fresh_identifier("Hprem", expr_text(source), expr_text(target), source_proof)
+        premise_proof = raw_deep_formula_transform_proof(
+            target_premises[0],
+            source_premises[0],
+            premise_name,
+        )
+        if premise_proof is not None:
+            return f"(fun {premise_name} => ({proof_head(source_proof)} {proof_term_text(premise_proof)}))"
     source_sides = equality_like_sides(source)
     target_sides = equality_like_sides(target)
     if (
@@ -18283,19 +18299,36 @@ def raw_equality_rewrite_clause_steps(
     equality_sort: str,
 ) -> list[tuple[Expr, str]]:
     steps: list[tuple[Expr, str]] = []
+    seen: set[str] = set()
     for old, new, proof in (
         (equality_left, equality_right, equality_proof),
         (equality_right, equality_left, raw_eq_symmetry_proof(equality_proof, equality_left, equality_sort)),
     ):
         if expr_text(old) not in expr_text(source):
             continue
+        hole_name = fresh_identifier("zz", expr_text(source), expr_text(old), expr_text(new))
+        hole = Expr("var", value=hole_name)
+        for replaced, context in single_replacement_contexts(source, old, new, hole, limit=16):
+            key = expr_key(replaced)
+            if key in seen:
+                continue
+            seen.add(key)
+            transported = (
+                f"{proof_term_text(proof)} "
+                f"(fun {hole_name}:{equality_sort} => {expr_text(context)}) "
+                f"{proof_term_text(source_proof)}"
+            )
+            steps.append((replaced, transported))
         replaced, changed = replace_expr(source, old, new)
         if not changed:
             continue
-        hole_name = fresh_identifier("zz", expr_text(source), expr_text(old), expr_text(new))
-        context, context_changed = replace_expr(source, old, Expr("var", value=hole_name))
+        key = expr_key(replaced)
+        if key in seen:
+            continue
+        context, context_changed = replace_expr(source, old, hole)
         if not context_changed:
             continue
+        seen.add(key)
         transported = (
             f"{proof_term_text(proof)} "
             f"(fun {hole_name}:{equality_sort} => {expr_text(context)}) "
