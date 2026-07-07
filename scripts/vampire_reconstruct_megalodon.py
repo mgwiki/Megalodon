@@ -16689,6 +16689,13 @@ def raw_tptp_one_parent_transform_proof(
     not_exists = raw_not_exists_to_forall_not_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
     if not_exists is not None:
         return not_exists
+    implication_exists = raw_implication_exists_to_negative_conjunction_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+    )
+    if implication_exists is not None:
+        return implication_exists
     implication_or = raw_classical_implication_to_or_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
     if implication_or is not None:
         return implication_or
@@ -16858,6 +16865,102 @@ def raw_not_exists_to_forall_not_transform_proof(source: Expr, target: Expr, sou
         f"(fun {target_name}:{target_sort} => fun Hprem => "
         f"{proof_head(source_proof)} (fun Q:prop => fun Hexists => Hexists {target_name} Hprem))"
     )
+
+
+def raw_or_negated_components_contradiction_proof(
+    negative: Expr,
+    negative_proof: str,
+    positive: Expr,
+    positive_proof: str,
+    depth: int = 0,
+) -> str | None:
+    if depth > 16 or proof_search_timed_out():
+        return None
+    parts = app_args(negative, "vampire_or", 2)
+    if parts is not None:
+        left_name = fresh_identifier("HnegL", expr_text(negative), negative_proof, positive_proof)
+        right_name = fresh_identifier("HnegR", expr_text(negative), negative_proof, positive_proof, left_name)
+        left = raw_or_negated_components_contradiction_proof(parts[0], left_name, positive, positive_proof, depth + 1)
+        right = raw_or_negated_components_contradiction_proof(parts[1], right_name, positive, positive_proof, depth + 1)
+        if left is None or right is None:
+            return None
+        return f"({proof_head(negative_proof)} False (fun {left_name} => {left}) (fun {right_name} => {right}))"
+    premises, conclusion = split_arrows(negative)
+    if len(premises) != 1 or not false_eliminator_expr(conclusion):
+        return None
+    component_proof = raw_clause_transform_proof(positive, premises[0], positive_proof)
+    if component_proof is None:
+        component_proof = raw_deep_formula_transform_proof(positive, premises[0], positive_proof, {})
+    if component_proof is None:
+        return None
+    return f"{proof_head(negative_proof)} {proof_term_text(component_proof)}"
+
+
+def raw_implication_exists_to_negative_conjunction_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+) -> str | None:
+    source_premises, source_conclusion = split_arrows(source)
+    target_premises, target_conclusion = split_arrows(target)
+    if len(source_premises) != 1 or len(target_premises) != 1 or not false_eliminator_expr(target_conclusion):
+        return None
+    exists_arg: Expr | None = None
+    witness_sort: str | None = None
+    for head, sort in (
+        ("vampire_exists_set", "set"),
+        ("vampire_exists_prop", "prop"),
+        ("vampire_exists_set_prop", "set->prop"),
+    ):
+        args = app_args(source_conclusion, head, 1)
+        if args is not None:
+            exists_arg = args[0]
+            witness_sort = sort
+            break
+    if exists_arg is None or witness_sort is None:
+        return None
+    target_parts = vampire_and_parts(target_premises[0])
+    if target_parts is None:
+        return None
+    for negative_forall, premise_candidate in (target_parts, (target_parts[1], target_parts[0])):
+        premise_component_proof = vampire_and_projection_from_proof("Htarget", target_premises[0], premise_candidate)
+        if premise_component_proof is None:
+            continue
+        premise_proof = raw_clause_transform_proof(premise_candidate, source_premises[0], premise_component_proof)
+        if premise_proof is None:
+            premise_proof = raw_deep_formula_transform_proof(
+                premise_candidate,
+                source_premises[0],
+                premise_component_proof,
+                {},
+            )
+        if premise_proof is None and expr_same_mod_alpha(premise_candidate, source_premises[0]):
+            premise_proof = premise_component_proof
+        if premise_proof is None:
+            continue
+        binders, negative_body = collect_foralls(negative_forall)
+        if len(binders) != 1 or binders[0][1] != witness_sort:
+            continue
+        witness_name = fresh_identifier("w", expr_text(target), expr_text(source), source_proof)
+        negative_body = rename_expr_variables(negative_body, {binders[0][0]: witness_name})
+        positive_body = raw_predicate_application(exists_arg, Expr("var", value=witness_name))
+        negative_proof = vampire_and_projection_from_proof("Htarget", target_premises[0], negative_forall)
+        if negative_proof is None:
+            continue
+        negative_proof = f"({proof_head(negative_proof)} {witness_name})"
+        contradiction = raw_or_negated_components_contradiction_proof(
+            negative_body,
+            negative_proof,
+            positive_body,
+            "Hpos",
+        )
+        if contradiction is None:
+            continue
+        return (
+            f"(fun Htarget => ({proof_head(source_proof)} {proof_term_text(premise_proof)}) "
+            f"False (fun {witness_name}:{witness_sort} => fun Hpos => {contradiction}))"
+        )
+    return None
 
 
 def raw_negated_target_from_not_target_proof(
