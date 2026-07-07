@@ -19327,9 +19327,7 @@ def raw_tptp_avatar_split_forall_instantiation_proof(
 
 
 def raw_split_atom_name(expr: Expr) -> str | None:
-    if expr.kind == "var" and expr.value is not None and expr.value.startswith("spl"):
-        return expr.value
-    return None
+    return raw_split_definition_name(expr)
 
 
 def raw_literal_refutation_from_split_assumption(
