@@ -19979,18 +19979,62 @@ def raw_tptp_fool_elimination_proof(
     parsed_parent = parse_expr(parent_proposition) if parent_proposition is not None else None
     parsed_target = parse_expr(proposition)
     if parsed_parent is not None and parsed_target is not None:
-        candidate_pairs.append((parsed_parent, parsed_target))
+        candidate_pairs.insert(0, (ambient_basic_logic_expr(parsed_parent), ambient_basic_logic_expr(parsed_target)))
 
     previous_allow = getattr(PROOF_SEARCH_STATE, "allow_two_sided_equality", False)
     PROOF_SEARCH_STATE.allow_two_sided_equality = True
     try:
         for source, target in candidate_pairs:
+            proof = raw_strip_unused_foralls_transform_proof(
+                source,
+                target,
+                raw_tptp_claim_name(parents[0]),
+                local_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_rectify_formula_transform_proof(source, target, raw_tptp_claim_name(parents[0]), local_sorts)
+            if proof is not None:
+                return proof
             proof = raw_deep_formula_transform_proof(source, target, raw_tptp_claim_name(parents[0]), local_sorts)
             if proof is not None:
                 return proof
     finally:
         PROOF_SEARCH_STATE.allow_two_sided_equality = previous_allow
     return None
+
+
+def raw_strip_unused_foralls_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    current = source
+    proof = source_proof
+    local_sorts = dict(variable_sorts)
+    stripped = False
+    while current.kind == "forall" and current.value is not None and current.sort is not None:
+        if current.value in expr_variables(current.args[0]):
+            break
+        inhabitant = raw_simple_inhabitant_for_sort(current.sort)
+        if inhabitant is None:
+            break
+        proof = f"({proof_head(proof)} {proof_arg_text(inhabitant)})"
+        local_sorts[current.value] = current.sort
+        current = current.args[0]
+        stripped = True
+    if not stripped:
+        return None
+    if expr_same_mod_alpha(current, target):
+        return proof
+    direct = raw_direct_conclusion_transform_proof(current, target, proof)
+    if direct is not None:
+        return direct
+    deep = raw_deep_formula_transform_proof(current, target, proof, local_sorts)
+    if deep is not None:
+        return deep
+    return raw_clause_transform_proof(current, target, proof)
 
 
 def raw_rectify_formula_transform_proof(
