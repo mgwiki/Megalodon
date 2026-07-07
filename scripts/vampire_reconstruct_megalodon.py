@@ -22289,6 +22289,60 @@ def raw_equality_composition_proof(
     return None
 
 
+def raw_equality_rewrite_expr_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality: Expr,
+    equality_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    equality_sides = equality_like_sides(equality)
+    if equality_sides is None:
+        return None
+    for old, new, proof in (
+        (equality_sides[0], equality_sides[1], equality_proof),
+        (
+            equality_sides[1],
+            equality_sides[0],
+            raw_eq_symmetry_proof(
+                equality_proof,
+                equality_sides[0],
+                raw_equality_transport_sort(equality_sides[0], equality_sides[1], variable_sorts),
+            ),
+        ),
+    ):
+        rewrite_sort = raw_equality_transport_sort(old, new, variable_sorts)
+        for old_subterm in expr_subterms(source, limit=192):
+            if not expr_same_mod_alpha(old_subterm, old):
+                continue
+            replaced, changed = replace_expr(source, old_subterm, new)
+            if not changed:
+                continue
+            hole_name = fresh_identifier("zz", expr_text(source), expr_text(old), expr_text(new), rewrite_sort)
+            context, context_changed = replace_expr(source, old_subterm, Expr("var", value=hole_name))
+            if not context_changed:
+                continue
+            transported = (
+                f"{proof_term_text(proof)} "
+                f"(fun {hole_name} :{rewrite_sort} => {expr_text(context)}) "
+                f"{proof_term_text(source_proof)}"
+            )
+            if expr_same_mod_alpha(replaced, target):
+                return transported
+            replaced_sides = equality_like_sides(replaced)
+            target_sides = equality_like_sides(target)
+            if (
+                replaced_sides is not None
+                and target_sides is not None
+                and expr_same_mod_alpha(replaced_sides[0], target_sides[1])
+                and expr_same_mod_alpha(replaced_sides[1], target_sides[0])
+            ):
+                equality_sort = raw_equality_transport_sort(replaced_sides[0], replaced_sides[1], variable_sorts)
+                return raw_eq_symmetry_proof(transported, replaced_sides[0], equality_sort)
+    return None
+
+
 def raw_quantified_equality_instances(
     expr: Expr,
     proof: str,
@@ -22574,6 +22628,18 @@ def raw_tptp_exported_two_literal_resolution_proof(
                     for name, sort in reversed(target_binders):
                         composed = f"(fun {name} :{sort} => {composed})"
                     return composed
+                rewritten = raw_equality_rewrite_expr_proof(
+                    selected_expr,
+                    target_body,
+                    selected_proof,
+                    other_expr,
+                    other_proof,
+                    extra_sorts,
+                )
+                if rewritten is not None:
+                    for name, sort in reversed(target_binders):
+                        rewritten = f"(fun {name} :{sort} => {rewritten})"
+                    return rewritten
         if other_clause is not None:
             other_expr, other_proof = other_clause
             candidate_exprs = (target_body, selected_substituted, other_substituted)
@@ -22595,6 +22661,18 @@ def raw_tptp_exported_two_literal_resolution_proof(
                     for name, sort in reversed(target_binders):
                         composed = f"(fun {name} :{sort} => {composed})"
                     return composed
+                rewritten = raw_equality_rewrite_expr_proof(
+                    other_expr,
+                    target_body,
+                    other_proof,
+                    selected_expr,
+                    selected_proof,
+                    extra_sorts,
+                )
+                if rewritten is not None:
+                    for name, sort in reversed(target_binders):
+                        rewritten = f"(fun {name} :{sort} => {rewritten})"
+                    return rewritten
         if selected_clause is not None:
             source, source_proof = selected_clause
             body_proof = None
