@@ -17617,6 +17617,180 @@ def raw_negated_implication_forall_to_conjunction_proof(
     return raw_build_conjunction_from_component_proofs(target, component_proof)
 
 
+def raw_forall_implication_spine(expr: Expr) -> tuple[list[tuple[str, str]], list[Expr], Expr]:
+    binders: list[tuple[str, str]] = []
+    premises: list[Expr] = []
+    current = expr
+    while True:
+        if current.kind == "forall" and current.value is not None and current.sort is not None:
+            binders.append((current.value, current.sort))
+            current = current.args[0]
+            continue
+        parts, conclusion = split_arrows(current)
+        if parts:
+            premises.extend(parts)
+            current = conclusion
+            continue
+        return binders, premises, current
+
+
+def raw_exists_head_sort(expr: Expr) -> tuple[str, str, Expr, str, Expr] | None:
+    return raw_exists_transform_parts(expr)
+
+
+def raw_exists_counterexample_component_proof(
+    component: Expr,
+    premises: list[Expr],
+    premise_names: list[str],
+    premise_index: int,
+    source_conclusion: Expr,
+    not_conclusion_name: str,
+    variable_sorts: dict[str, str],
+) -> tuple[str, int] | None:
+    component_premises, component_conclusion = split_arrows(component)
+    if len(component_premises) == 1 and false_eliminator_expr(component_conclusion):
+        target_to_source = raw_deep_formula_transform_proof(
+            component_premises[0],
+            source_conclusion,
+            "HtargetConclusion",
+            variable_sorts,
+        )
+        if target_to_source is not None:
+            return f"(fun HtargetConclusion => {not_conclusion_name} {proof_term_text(target_to_source)})", premise_index
+    if premise_index >= len(premises):
+        return None
+    proof = raw_deep_formula_transform_proof(
+        premises[premise_index],
+        component,
+        premise_names[premise_index],
+        variable_sorts,
+    )
+    if proof is None:
+        proof = raw_clause_transform_proof(premises[premise_index], component, premise_names[premise_index])
+    if proof is None:
+        return None
+    return proof, premise_index + 1
+
+
+def raw_exists_counterexample_body_proof(
+    target: Expr,
+    premises: list[Expr],
+    premise_names: list[str],
+    premise_index: int,
+    source_conclusion: Expr,
+    not_conclusion_name: str,
+    variable_sorts: dict[str, str],
+) -> tuple[str, int] | None:
+    exists_parts = raw_exists_head_sort(target)
+    if exists_parts is not None:
+        _head, sort, _predicate, witness_name, body = exists_parts
+        body_proof = raw_exists_counterexample_body_proof(
+            body,
+            premises,
+            premise_names,
+            premise_index,
+            source_conclusion,
+            not_conclusion_name,
+            {**variable_sorts, witness_name: sort},
+        )
+        if body_proof is None:
+            return None
+        proof, next_index = body_proof
+        return f"(fun Q Hexists => Hexists {witness_name} {proof_term_text(proof)})", next_index
+    parts = vampire_and_parts(target)
+    if parts is not None:
+        left = raw_exists_counterexample_body_proof(
+            parts[0],
+            premises,
+            premise_names,
+            premise_index,
+            source_conclusion,
+            not_conclusion_name,
+            variable_sorts,
+        )
+        if left is None:
+            return None
+        left_proof, next_index = left
+        right = raw_exists_counterexample_body_proof(
+            parts[1],
+            premises,
+            premise_names,
+            next_index,
+            source_conclusion,
+            not_conclusion_name,
+            variable_sorts,
+        )
+        if right is None:
+            return None
+        right_proof, final_index = right
+        return f"(fun P K => K {proof_term_text(left_proof)} {proof_term_text(right_proof)})", final_index
+    return raw_exists_counterexample_component_proof(
+        target,
+        premises,
+        premise_names,
+        premise_index,
+        source_conclusion,
+        not_conclusion_name,
+        variable_sorts,
+    )
+
+
+def raw_nested_exists_counterexample_proof(
+    source_premise: Expr,
+    target_negative: Expr,
+    negative_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    binders, premises, source_conclusion = raw_forall_implication_spine(source_premise)
+    if not binders or not premises or len(binders) > 6 or len(premises) > 8:
+        return None
+
+    target_exists_parts = raw_exists_head_sort(target_negative)
+    if target_exists_parts is None:
+        return None
+    target_text = proof_arg_text(target_negative)
+    premise_names = [f"Hprem{index}" for index in range(len(premises))]
+    not_conclusion_name = "HnotConclusion"
+
+    def source_body(expr: Expr, index_premise: int, local_sorts: dict[str, str]) -> str | None:
+        if expr.kind == "forall" and expr.value is not None and expr.sort is not None:
+            name, sort = expr.value, expr.sort
+            body = source_body(expr.args[0], index_premise, {**local_sorts, name: sort})
+            if body is None:
+                return None
+            return f"(fun {name}:{sort} => {body})"
+        if expr.kind == "arrow":
+            body = source_body(expr.args[1], index_premise + 1, local_sorts)
+            if body is None:
+                return None
+            return f"(fun {premise_names[index_premise]} => {body})"
+        exists_proof = raw_exists_counterexample_body_proof(
+            target_negative,
+            premises,
+            premise_names,
+            0,
+            source_conclusion,
+            not_conclusion_name,
+            local_sorts,
+        )
+        if exists_proof is None:
+            return None
+        proof, consumed = exists_proof
+        if consumed != len(premises):
+            return None
+        false_proof = f"(HnotTarget {proof_term_text(proof)})"
+        return f"(xm {proof_arg_text(source_conclusion)} {proof_arg_text(source_conclusion)} (fun Hconclusion => Hconclusion) (fun {not_conclusion_name} => ({false_proof} {proof_arg_text(source_conclusion)})))"
+
+    source_counterproof = source_body(source_premise, 0, variable_sorts)
+    if source_counterproof is None:
+        return None
+    return (
+        f"(xm {target_text} {target_text} "
+        f"(fun Htarget => Htarget) "
+        f"(fun HnotTarget => ({proof_head(negative_proof)} {proof_term_text(source_counterproof)} {target_text})))"
+    )
+
+
 def raw_classical_implication_to_or_body_proof(
     premises: list[Expr],
     conclusion: Expr,
@@ -17666,6 +17840,13 @@ def raw_classical_implication_to_or_body_proof(
             not_name,
             {},
         )
+        if negative_branch is None:
+            negative_branch = raw_nested_exists_counterexample_proof(
+                source_premise,
+                target_negative,
+                not_name,
+                {},
+            )
         if negative_branch is None:
             continue
         if negative_index == 1:
