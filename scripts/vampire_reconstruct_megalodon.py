@@ -16781,7 +16781,12 @@ def raw_specialize_forall_transform_proof(
     return raw_clause_subsumption_transform_proof(instantiated, target, proof) or raw_clause_transform_proof(instantiated, target, proof)
 
 
-def raw_classical_implication_to_or_transform_proof(source: Expr, target: Expr, source_proof: str) -> str | None:
+def raw_classical_implication_to_or_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    premise_offset: int = 0,
+) -> str | None:
     source_binders, source_body = collect_foralls(source)
     target_binders, target_body = collect_foralls(target)
     if len(source_binders) != len(target_binders):
@@ -16803,6 +16808,7 @@ def raw_classical_implication_to_or_transform_proof(source: Expr, target: Expr, 
         source_application,
         0,
         [],
+        premise_offset,
     )
     if proof is None:
         return None
@@ -16818,11 +16824,20 @@ def raw_classical_implication_to_or_body_proof(
     source_application: str,
     index: int,
     premise_names: list[str],
+    premise_offset: int = 0,
 ) -> str | None:
     if index == len(premises):
         source_proof = source_application
         for name in premise_names:
             source_proof = f"({proof_head(source_proof)} {name})"
+        nested = raw_classical_implication_to_or_transform_proof(
+            conclusion,
+            target,
+            source_proof,
+            premise_offset + len(premise_names),
+        )
+        if nested is not None:
+            return nested
         return raw_clause_subsumption_transform_proof(conclusion, target, source_proof) or raw_clause_transform_proof(conclusion, target, source_proof)
     target_or = app_args(target, "vampire_or", 2)
     if target_or is None:
@@ -16835,7 +16850,7 @@ def raw_classical_implication_to_or_body_proof(
     target_premise = target_negative_premises[0]
     if not expr_same_mod_alpha(source_premise, target_premise):
         return None
-    premise_name = f"Hprem{index}"
+    premise_name = f"Hprem{premise_offset + index}"
     positive_branch = raw_classical_implication_to_or_body_proof(
         premises,
         conclusion,
@@ -16843,13 +16858,15 @@ def raw_classical_implication_to_or_body_proof(
         source_application,
         index + 1,
         [*premise_names, premise_name],
+        premise_offset,
     )
     if positive_branch is None:
         return None
     return (
         f"(xm {proof_arg_text(target_premise)} {proof_arg_text(target)} "
         f"(fun {premise_name} => (fun P Hleft Hright => Hleft {proof_term_text(positive_branch)})) "
-        f"(fun HnotPrem{index} => (fun P Hleft Hright => Hright HnotPrem{index})))"
+        f"(fun HnotPrem{premise_offset + index} => "
+        f"(fun P Hleft Hright => Hright HnotPrem{premise_offset + index})))"
     )
 
 
