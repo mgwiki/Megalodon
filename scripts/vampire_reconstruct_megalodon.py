@@ -20161,12 +20161,12 @@ def raw_candidate_terms_for_sort(
         seen.add(text)
         candidates.append(candidate)
 
-    for name, candidate_sort in sorted(variable_sorts.items()):
-        if candidate_sort == sort:
-            add(Expr("var", value=name))
     for expr in exprs:
         for candidate in expr_subterms(expr, limit=128):
             add(candidate)
+    for name, candidate_sort in sorted(variable_sorts.items()):
+        if candidate_sort == sort:
+            add(Expr("var", value=name))
     return candidates
 
 
