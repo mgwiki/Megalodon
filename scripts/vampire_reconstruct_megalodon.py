@@ -18729,6 +18729,9 @@ def raw_tptp_extra_formula_expr(
     key: str,
     variable_sorts: dict[str, str],
 ) -> Expr | None:
+    proposition = fields.get(f"{key}_proposition")
+    if proposition is not None:
+        return parse_expr(proposition)
     formula = fields.get(key)
     if formula is None:
         return None
@@ -18754,12 +18757,24 @@ def raw_instantiated_clause_from_exported_literal(
     if not match_expr_with_alpha_instantiation(literals[literal_index], substituted_literal, binder_names, subst):
         literal_sides = equality_like_sides(literals[literal_index])
         substituted_sides = equality_like_sides(substituted_literal)
+        matched_symmetric_equality = False
+        if literal_sides is not None and substituted_sides is not None:
+            trial: dict[str, Expr] = {}
+            if (
+                match_expr_with_alpha_instantiation(literal_sides[0], substituted_sides[1], binder_names, trial)
+                and match_expr_with_alpha_instantiation(literal_sides[1], substituted_sides[0], binder_names, trial)
+            ):
+                subst = trial
+                matched_symmetric_equality = True
         if not (
-            not binder_names
-            and literal_sides is not None
-            and substituted_sides is not None
-            and expr_same_mod_alpha(literal_sides[0], substituted_sides[0])
-            and expr_same_mod_alpha(literal_sides[1], substituted_sides[1])
+            matched_symmetric_equality
+            or (
+                not binder_names
+                and literal_sides is not None
+                and substituted_sides is not None
+                and expr_same_mod_alpha(literal_sides[0], substituted_sides[0])
+                and expr_same_mod_alpha(literal_sides[1], substituted_sides[1])
+            )
         ):
             return None
     target_literals = raw_clause_literals(target_body)
@@ -18894,6 +18909,24 @@ def raw_tptp_exported_two_literal_resolution_proof(
             body_proof = raw_flat_clause_resolution_proof(source, target_body, source_proof, resolver, resolver_proof)
             if body_proof is None:
                 body_proof = raw_clause_resolution_proof(source, target_body, source_proof, resolver, resolver_proof)
+        if body_proof is None and raw_clause_replay_budget_ok(source, resolver, target_body, max_literals=12, max_literal_product=192):
+            body_proof = raw_equality_clause_superposition_proof(
+                source,
+                target_body,
+                source_proof,
+                resolver,
+                resolver_proof,
+                extra_sorts,
+            )
+            if body_proof is None:
+                body_proof = raw_equality_clause_superposition_proof(
+                    resolver,
+                    target_body,
+                    resolver_proof,
+                    source,
+                    source_proof,
+                    extra_sorts,
+                )
         if body_proof is None and raw_clause_replay_budget_ok(source, resolver, target_body, max_literals=12, max_literal_product=192):
             for rewritten, rewritten_proof, equality, equality_proof in (
                 (source, source_proof, resolver, resolver_proof),
