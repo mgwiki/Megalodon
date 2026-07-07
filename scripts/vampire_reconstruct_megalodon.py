@@ -21900,9 +21900,9 @@ def raw_tptp_avatar_definition_parts(proposition: str) -> tuple[str, Expr] | Non
     return None
 
 
-MAX_RAW_TPTP_SPLIT_DEFINITION_BODY = 10000
-MAX_RAW_TPTP_EXACT_AVATAR_PROPOSITION = 12000
-MAX_RAW_TPTP_EXACT_PROOF_TERM = 40000
+MAX_RAW_TPTP_SPLIT_DEFINITION_BODY = 40000
+MAX_RAW_TPTP_EXACT_AVATAR_PROPOSITION = 20000
+MAX_RAW_TPTP_EXACT_PROOF_TERM = 60000
 
 
 def raw_tptp_safe_split_definition_body(body: Expr, variable_sorts: dict[str, str]) -> str | None:
@@ -22382,9 +22382,9 @@ def raw_avatar_split_component_from_source_proof(
                 trial = dict(subst)
                 trial[source_name] = candidate
                 next_options.append((trial, f"({proof_head(proof)} {proof_arg_text(candidate)})"))
-                if len(next_options) >= 4:
+                if len(next_options) >= 16:
                     break
-            if len(next_options) >= 4:
+            if len(next_options) >= 16:
                 break
         if not next_options:
             return None
@@ -22507,6 +22507,32 @@ def raw_tptp_avatar_split_direct_component_proof(
     return None
 
 
+def raw_tptp_avatar_split_positive_atom_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rewrites: tuple[RawSplitRewrite, ...],
+) -> str | None:
+    target_name = raw_split_atom_name(target)
+    if target_name is None:
+        return None
+    for rewrite in rewrites:
+        if raw_split_atom_name(rewrite.split) != target_name:
+            continue
+        component_proof = raw_avatar_split_component_from_source_proof(
+            source,
+            source_proof,
+            rewrite.component,
+            [],
+            [],
+            rewrites,
+        )
+        if component_proof is None:
+            continue
+        return f"({proof_head(rewrite.component_to_split)} {proof_term_text(component_proof)})"
+    return None
+
+
 def raw_tptp_avatar_split_clause_proof(
     proposition: str,
     parents: list[str],
@@ -22524,6 +22550,14 @@ def raw_tptp_avatar_split_clause_proof(
     rewrites = raw_tptp_split_rewrites(parents[1:], propositions_by_name)
     if not rewrites:
         return None
+    positive_atom = raw_tptp_avatar_split_positive_atom_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+        rewrites,
+    )
+    if positive_atom is not None:
+        return positive_atom
     subsumption = raw_clause_subsumption_transform_proof(source, target, raw_tptp_claim_name(parents[0]), rewrites=rewrites)
     if subsumption is not None:
         return subsumption
@@ -22781,7 +22815,14 @@ def raw_tptp_replay_proof(
     if rule == "avatar_component_clause":
         return raw_tptp_avatar_component_clause_proof(proposition, parents, propositions_by_name)
     if rule == "avatar_split_clause":
-        return raw_tptp_avatar_split_clause_proof(proposition, parents, propositions_by_name)
+        previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+        if previous_deadline is not None:
+            PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 1.0)
+        try:
+            return raw_tptp_avatar_split_clause_proof(proposition, parents, propositions_by_name)
+        finally:
+            if previous_deadline is not None:
+                PROOF_SEARCH_STATE.deadline = previous_deadline
     return None
 
 
@@ -23441,10 +23482,6 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     PROOF_SEARCH_STATE.deadline = previous_deadline
         if replay_proof is not None and raw_tptp_replay_proof_is_unsafe(rule, proposition, replay_proof):
             replay_proof = None
-        if rule == "avatar_definition" and replay_proof is not None:
-            definition = raw_tptp_avatar_definition_parts(proposition)
-            if definition is not None and definition[0] not in avatar_split_definitions:
-                replay_proof = None
         lines.append(f"claim {claim_name}: {proposition}.")
         if replay_proof is None:
             lines.append("{ admit. }")
