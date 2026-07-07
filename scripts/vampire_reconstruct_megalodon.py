@@ -4423,10 +4423,25 @@ def raw_tptp_replay_extra_expr(
     return lowered_expr if lowered_expr is not None else surfaced
 
 
+def raw_tptp_replay_extra_surface_expr(
+    fields: dict[str, str],
+    key: str,
+    variable_sorts: dict[str, str],
+) -> Expr | None:
+    text = fields.get(key)
+    if text is None:
+        return None
+    parsed = parse_expr(text)
+    if parsed is None:
+        return None
+    return surface_direct_step_expr(parsed, variable_sorts)
+
+
 def raw_tptp_exported_definition_chain_proof(
     fields: dict[str, str],
     parents: list[str],
     variable_sorts: dict[str, str],
+    propositions_by_name: dict[str, str] | None = None,
 ) -> str | None:
     if not parents:
         return None
@@ -4437,8 +4452,21 @@ def raw_tptp_exported_definition_chain_proof(
     equalities: list[tuple[Expr, str]] = []
     for index, parent in enumerate(parents[1:], start=1):
         equality = raw_tptp_replay_extra_expr(fields, f"parent_{index}", variable_sorts)
-        if equality is not None:
-            equalities.append((equality, raw_tptp_claim_name(parent)))
+        if equality is None:
+            continue
+        equality_proof = raw_tptp_claim_name(parent)
+        surface_equality = raw_tptp_replay_extra_surface_expr(fields, f"parent_{index}", variable_sorts)
+        parent_proposition = (propositions_by_name or {}).get(parent)
+        parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+        if (
+            surface_equality is not None
+            and parent_expr is not None
+            and not expr_same_mod_alpha(surface_equality, equality)
+        ):
+            function_equality = raw_pointwise_set_function_equality(parent_expr, equality_proof)
+            if function_equality is not None and expr_same_mod_alpha(function_equality[0], surface_equality):
+                equality, equality_proof = function_equality
+        equalities.append((equality, equality_proof))
 
     def finish(states: list[tuple[Expr, str]]) -> str | None:
         for current, proof in states:
@@ -24991,7 +25019,7 @@ def raw_tptp_definition_rewrite_proof(
         exported_source = raw_tptp_replay_extra_expr(fields, "source", local_sorts)
         exported_target = raw_tptp_replay_extra_expr(fields, "target", local_sorts)
         if exported_source is not None and exported_target is not None:
-            proof = raw_tptp_exported_definition_chain_proof(fields, parents, local_sorts)
+            proof = raw_tptp_exported_definition_chain_proof(fields, parents, local_sorts, propositions_by_name)
             if proof is not None:
                 return proof
             proof = raw_deep_formula_transform_proof(
