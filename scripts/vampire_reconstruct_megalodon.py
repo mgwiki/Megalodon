@@ -3247,6 +3247,15 @@ def expr_variables(expr: Expr) -> set[str]:
     return found
 
 
+def expr_bound_variables(expr: Expr) -> set[str]:
+    found: set[str] = set()
+    if expr.kind in {"forall", "lambda"} and expr.value is not None:
+        found.add(expr.value)
+    for arg in expr.args:
+        found.update(expr_bound_variables(arg))
+    return found
+
+
 def ordered_definitions(definitions: dict[str, DefinitionInfo]) -> list[tuple[str, DefinitionInfo]]:
     remaining = dict(definitions)
     ordered: list[tuple[str, DefinitionInfo]] = []
@@ -19638,6 +19647,60 @@ def raw_tptp_fool_elimination_proof(
     return None
 
 
+def raw_tptp_rectify_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+    replay_step: MegalodonReplayStep | None,
+) -> str | None:
+    if len(parents) != 1 or replay_step is None:
+        return None
+    local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
+    parent_proof = raw_tptp_claim_name(parents[0])
+    target = parse_expr(proposition)
+    candidate_pairs: list[tuple[Expr, Expr]] = []
+
+    for fields in megalodon_replay_extra_fields(replay_step, "rectify"):
+        exported_source = raw_tptp_replay_extra_expr(fields, "source", local_sorts)
+        exported_target = raw_tptp_replay_extra_expr(fields, "target", local_sorts)
+        if exported_source is not None and exported_target is not None:
+            candidate_pairs.append((exported_source, exported_target))
+        for index in range(64):
+            source = raw_tptp_replay_extra_expr(fields, f"renaming_{index}_source", local_sorts)
+            substituted = raw_tptp_replay_extra_expr(fields, f"renaming_{index}_source_substituted", local_sorts)
+            renamed = raw_tptp_replay_extra_expr(fields, f"renaming_{index}_target", local_sorts)
+            if source is None and substituted is None and renamed is None:
+                if index > 0:
+                    break
+                continue
+            if source is not None and renamed is not None:
+                candidate_pairs.append((source, renamed))
+            if substituted is not None and renamed is not None:
+                candidate_pairs.append((substituted, renamed))
+
+    parent_proposition = propositions_by_name.get(parents[0])
+    parsed_parent = parse_expr(parent_proposition) if parent_proposition is not None else None
+    if parsed_parent is not None and target is not None:
+        candidate_pairs.append((parsed_parent, target))
+
+    previous_allow = getattr(PROOF_SEARCH_STATE, "allow_two_sided_equality", False)
+    PROOF_SEARCH_STATE.allow_two_sided_equality = True
+    try:
+        for source, candidate_target in candidate_pairs:
+            proof = raw_deep_formula_transform_proof(source, candidate_target, parent_proof, local_sorts)
+            if proof is None:
+                continue
+            if target is None or expr_same_mod_alpha(candidate_target, target):
+                return proof
+            bridge = raw_deep_formula_transform_proof(candidate_target, target, proof, local_sorts)
+            if bridge is not None:
+                return bridge
+    finally:
+        PROOF_SEARCH_STATE.allow_two_sided_equality = previous_allow
+    return None
+
+
 def raw_conjunction_transform_proof(
     source: Expr,
     target: Expr,
@@ -19956,6 +20019,17 @@ def raw_prop_implication_transform_proof(
     if true_intro is not None:
         return true_intro
 
+    source_sides = equality_like_sides(source)
+    target_sides = equality_like_sides(target)
+    if (
+        source_sides is not None
+        and target_sides is not None
+        and expr_same_mod_alpha(source_sides[0], target_sides[1])
+        and expr_same_mod_alpha(source_sides[1], target_sides[0])
+    ):
+        sort = "prop" if source.kind == "app" and source.args[0].kind == "var" and source.args[0].value == "vampire_eq_prop" else "set"
+        return raw_eq_symmetry_proof(source_proof, source_sides[0], sort)
+
     prop_argument_rewrite = raw_prop_argument_set_rewrite_proof(
         source,
         target,
@@ -20002,11 +20076,22 @@ def raw_prop_implication_transform_proof(
     ):
         binder = target.value
         source_body = source.args[0]
+        target_body = target.args[0]
+        if source.value != binder and binder in (expr_variables(source_body) | expr_bound_variables(source_body)):
+            used_names = (
+                expr_variables(source_body)
+                | expr_bound_variables(source_body)
+                | expr_variables(target_body)
+                | expr_bound_variables(target_body)
+                | {source.value, target.value}
+            )
+            binder = fresh_identifier(target.value, " ".join(sorted(used_names)))
+            target_body = rename_expr_variables(target_body, {target.value: binder})
         if source.value != binder:
             source_body = rename_expr_variables(source_body, {source.value: binder})
         body_proof = raw_prop_implication_transform_proof(
             source_body,
-            target.args[0],
+            target_body,
             f"({proof_head(source_proof)} {binder})",
             {**variable_sorts, binder: source.sort},
             depth + 1,
@@ -20060,7 +20145,7 @@ def raw_prop_implication_transform_proof(
                 depth + 1,
             )
             if target_conclusion_proof is not None:
-                return f"(fun {premise_name}:{expr_text(target_premises[0])} => {target_conclusion_proof})"
+                return f"(fun {premise_name} : {expr_text(target_premises[0])} => {target_conclusion_proof})"
 
     return None
 
@@ -20481,6 +20566,35 @@ def raw_deep_formula_transform_proof(
             sort = "prop"
         return raw_eq_symmetry_proof(source_proof, source_sides[0], sort)
 
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
+        assert source.value is not None and target.value is not None and target.sort is not None
+        binder = target.value
+        source_body = source.args[0]
+        target_body = target.args[0]
+        if source.value != binder and binder in (expr_variables(source_body) | expr_bound_variables(source_body)):
+            used_names = (
+                expr_variables(source_body)
+                | expr_bound_variables(source_body)
+                | expr_variables(target_body)
+                | expr_bound_variables(target_body)
+                | {source.value, target.value}
+            )
+            binder = fresh_identifier(target.value, " ".join(sorted(used_names)))
+            target_body = rename_expr_variables(target_body, {target.value: binder})
+        if source.value != binder:
+            source_body = rename_expr_variables(source_body, {source.value: binder})
+        inner_source = f"({proof_head(source_proof)} {binder})"
+        inner = raw_deep_formula_transform_proof(
+            source_body,
+            target_body,
+            inner_source,
+            {**variable_sorts, binder: target.sort},
+            depth + 1,
+        )
+        if inner is None:
+            return None
+        return f"(fun {binder}:{target.sort} => {inner})"
+
     if source.kind == "forall" and source.value is not None and source.sort is not None:
         source_body = source.args[0]
         if source.value not in expr_variables(source_body):
@@ -20518,23 +20632,6 @@ def raw_deep_formula_transform_proof(
             )
             if inner is not None:
                 return f"(fun {target.value}:{target.sort} => {inner})"
-
-    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
-        assert source.value is not None and target.value is not None and target.sort is not None
-        source_body = source.args[0]
-        if source.value != target.value:
-            source_body = rename_expr_variables(source_body, {source.value: target.value})
-        inner_source = f"({proof_head(source_proof)} {target.value})"
-        inner = raw_deep_formula_transform_proof(
-            source_body,
-            target.args[0],
-            inner_source,
-            {**variable_sorts, target.value: target.sort},
-            depth + 1,
-        )
-        if inner is None:
-            return None
-        return f"(fun {target.value}:{target.sort} => {inner})"
 
     if target.kind == "forall" and target.value is not None and target.sort is not None:
         inner = raw_deep_formula_transform_proof(
@@ -23822,6 +23919,8 @@ def raw_tptp_replay_proof(
             finally:
                 if previous_deadline is not None:
                     PROOF_SEARCH_STATE.deadline = previous_deadline
+        if rule == "rectify":
+            return None
         previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
         if rule == "rectify" and previous_deadline is not None:
             PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 1.0)

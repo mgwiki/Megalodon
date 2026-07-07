@@ -1437,9 +1437,27 @@ and extract_pf_r_lam bvl body polyt polyp sgtmof sgdelta sgtm sgpf cxtp cxtm cxp
 	  (PLam(b1tm,d1),Imp(b1tm,p1))
       end
   | (x::xr,Some(AscSet,a1))::bvr ->
-      raise (Failure(":e ascriptions are not allowed for proof level lambdas (for now)"))
+      begin
+	match !setIn with
+	| None -> raise (Failure(":e not declared"))
+	| Some sIn ->
+	    let a1s = check_tm_r a1 Set polyt sgtmof sgtm cxtp cxtm in
+	    let q1 = Ap(Ap(TmH(sIn),DB(0)),tmshift 0 1 a1s) in
+	    let (d1,p1) = extract_pf_r_lam ((xr,None)::bvr) body polyt polyp sgtmof sgdelta sgtm sgpf cxtp ((x,(Set,None))::cxtm) ((x,q1)::(List.map (fun (y,q) -> (y,tmshift 0 1 q)) cxpf)) in
+	    Hashtbl.add pfghyph (PLam(q1,d1)) x;
+	    (TLam(Set,PLam(q1,d1)),All(Set,Imp(q1,p1)))
+      end
   | (x::xr,Some(AscSubeq,a1))::bvr ->
-      raise (Failure("c= ascriptions are not allowed for proof level lambdas (for now)"))
+      begin
+	match !setSubeq with
+	| None -> raise (Failure("c= not declared"))
+	| Some sSubeq ->
+	    let a1s = check_tm_r a1 Set polyt sgtmof sgtm cxtp cxtm in
+	    let q1 = Ap(Ap(TmH(sSubeq),DB(0)),tmshift 0 1 a1s) in
+	    let (d1,p1) = extract_pf_r_lam ((xr,None)::bvr) body polyt polyp sgtmof sgdelta sgtm sgpf cxtp ((x,(Set,None))::cxtm) ((x,q1)::(List.map (fun (y,q) -> (y,tmshift 0 1 q)) cxpf)) in
+	    Hashtbl.add pfghyph (PLam(q1,d1)) x;
+	    (TLam(Set,PLam(q1,d1)),All(Set,Imp(q1,p1)))
+      end
 and check_pf_r a p polyt polyp sgtmof sgdelta sgtm sgpf cxtp cxtm cxpf =
   match a with
   | QString(x) ->
@@ -1545,9 +1563,61 @@ and check_pf_r_lam p bvl body polyt polyp sgtmof sgdelta sgtm sgpf cxtp cxtm cxp
 	| _ -> raise (Failure("Lambda in proof term is expected to prove something other than an implication or universal quantifier: " ^ (tm_to_str p)))
       end
   | (x::xr,Some(AscSet,a1))::bvr ->
-      raise (Failure(":e ascriptions are not allowed for proof level lambdas (for now)"))
+      begin
+	match !setIn with
+	| None -> raise (Failure(":e not declared"))
+	| Some sIn ->
+	    let (p,dl) = headnorm p sgdelta !deltaset in
+	    deltaset := dl;
+	    match p with
+	    | All(a0,Imp(p1,p2)) when a0 = Set ->
+		let a1s = check_tm_r a1 Set polyt sgtmof sgtm cxtp cxtm in
+		let q1 = Ap(Ap(TmH(sIn),DB(0)),tmshift 0 1 a1s) in
+		struct_unify (List.length cxtm + 1) p1 q1;
+		let p1 = tm_metavar_subst (List.length cxtm + 1) p1 in
+		let p2 = tm_metavar_subst (List.length cxtm + 1) p2 in
+		let q1 = tm_metavar_subst (List.length cxtm + 1) q1 in
+		begin
+		  match conv q1 p1 sgdelta !deltaset with
+		  | Some(dl) ->
+		      deltaset := dl;
+		      let d1 = check_pf_r_lam p2 ((xr,None)::bvr) body polyt polyp sgtmof sgdelta sgtm sgpf cxtp ((x,(Set,None))::cxtm) ((x,q1)::(List.map (fun (y,q) -> (y,tmshift 0 1 q)) cxpf)) in
+		      Hashtbl.add pfgpfbvarh (TLam(Set,PLam(q1,d1))) x;
+		      Hashtbl.add pfghyph (PLam(q1,d1)) x;
+		      TLam(Set,PLam(q1,d1))
+		  | None ->
+		      raise (Failure("Lambda bound variable " ^ x ^ " in proof term ascribed prop " ^ (tm_to_str q1) ^ " but expected " ^ (tm_to_str p1)))
+		end
+	    | _ -> raise (Failure("Lambda in proof term with :e ascription is expected to prove a restricted universal quantifier: " ^ (tm_to_str p)))
+      end
   | (x::xr,Some(AscSubeq,a1))::bvr ->
-      raise (Failure("c= ascriptions are not allowed for proof level lambdas (for now)"))
+      begin
+	match !setSubeq with
+	| None -> raise (Failure("c= not declared"))
+	| Some sSubeq ->
+	    let (p,dl) = headnorm p sgdelta !deltaset in
+	    deltaset := dl;
+	    match p with
+	    | All(a0,Imp(p1,p2)) when a0 = Set ->
+		let a1s = check_tm_r a1 Set polyt sgtmof sgtm cxtp cxtm in
+		let q1 = Ap(Ap(TmH(sSubeq),DB(0)),tmshift 0 1 a1s) in
+		struct_unify (List.length cxtm + 1) p1 q1;
+		let p1 = tm_metavar_subst (List.length cxtm + 1) p1 in
+		let p2 = tm_metavar_subst (List.length cxtm + 1) p2 in
+		let q1 = tm_metavar_subst (List.length cxtm + 1) q1 in
+		begin
+		  match conv q1 p1 sgdelta !deltaset with
+		  | Some(dl) ->
+		      deltaset := dl;
+		      let d1 = check_pf_r_lam p2 ((xr,None)::bvr) body polyt polyp sgtmof sgdelta sgtm sgpf cxtp ((x,(Set,None))::cxtm) ((x,q1)::(List.map (fun (y,q) -> (y,tmshift 0 1 q)) cxpf)) in
+		      Hashtbl.add pfgpfbvarh (TLam(Set,PLam(q1,d1))) x;
+		      Hashtbl.add pfghyph (PLam(q1,d1)) x;
+		      TLam(Set,PLam(q1,d1))
+		  | None ->
+		      raise (Failure("Lambda bound variable " ^ x ^ " in proof term ascribed prop " ^ (tm_to_str q1) ^ " but expected " ^ (tm_to_str p1)))
+		end
+	    | _ -> raise (Failure("Lambda in proof term with c= ascription is expected to prove a restricted universal quantifier: " ^ (tm_to_str p)))
+      end
 
 let extract_pf a polyt polyp sgtmof sgdelta sgtm sgpf cxtp cxtm cxpf =
   Hashtbl.clear metavarcx;
