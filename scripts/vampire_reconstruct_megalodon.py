@@ -17303,6 +17303,110 @@ def raw_classical_implication_to_or_transform_proof(
     return proof
 
 
+def raw_false_to_expr_proof(false_proof: str, target: Expr) -> str:
+    if target.kind == "forall" and target.value is not None and target.sort is not None:
+        inner = raw_false_to_expr_proof(false_proof, target.args[0])
+        return f"(fun {target.value}:{target.sort} => {inner})"
+    return f"({proof_head(false_proof)} {proof_arg_text(target)})"
+
+
+def raw_negated_implication_forall_to_conjunction_proof(
+    source_premise: Expr,
+    target: Expr,
+    negative_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    premise_parts, premise_conclusion = split_arrows(source_premise)
+    if len(premise_parts) != 1:
+        return None
+    positive_premise = premise_parts[0]
+    conclusion_binders, conclusion_body = collect_foralls(premise_conclusion)
+    if len(conclusion_binders) != 1:
+        return None
+    witness_source_name, witness_sort = conclusion_binders[0]
+    target_parts = vampire_and_parts(target)
+    if target_parts is None:
+        return None
+    target_components = list(target_parts)
+    positive_component: Expr | None = None
+    exists_component: Expr | None = None
+    for component in target_components:
+        if raw_deep_formula_transform_proof(positive_premise, component, "Hpositive", variable_sorts) is not None:
+            positive_component = component
+        elif raw_exists_transform_parts(component) is not None:
+            exists_component = component
+    if positive_component is None or exists_component is None:
+        return None
+    exists_parts = raw_exists_transform_parts(exists_component)
+    if exists_parts is None:
+        return None
+    _, exists_sort, _, exists_name, exists_body = exists_parts
+    if exists_sort != witness_sort:
+        return None
+    witness = Expr("var", value=exists_name)
+    source_body_at_witness = substitute_expr(conclusion_body, {witness_source_name: witness})
+    exists_body_premises, exists_body_conclusion = split_arrows(exists_body)
+    if len(exists_body_premises) != 1 or not false_eliminator_expr(exists_body_conclusion):
+        return None
+    body_to_negative_premise = raw_deep_formula_transform_proof(
+        source_body_at_witness,
+        exists_body_premises[0],
+        "Hbody",
+        {**variable_sorts, exists_name: exists_sort},
+    )
+    if body_to_negative_premise is None:
+        return None
+
+    def implication_from_false(false_proof: str) -> str:
+        body = raw_false_to_expr_proof(false_proof, premise_conclusion)
+        return f"(fun Hpositive => {body})"
+
+    positive_text = proof_arg_text(positive_premise)
+    positive_proof = (
+        f"(xm {positive_text} {positive_text} "
+        f"(fun Hpositive => Hpositive) "
+        f"(fun HnotPositive => "
+        f"({proof_head(negative_proof)} {proof_term_text(implication_from_false('(HnotPositive Hpositive)'))} {positive_text})))"
+    )
+    transformed_positive = raw_deep_formula_transform_proof(
+        positive_premise,
+        positive_component,
+        positive_proof,
+        variable_sorts,
+    )
+    if transformed_positive is None:
+        return None
+
+    exists_text = proof_arg_text(exists_component)
+    body_text = proof_arg_text(source_body_at_witness)
+    exists_intro = (
+        f"(fun Q Hexists => Hexists {exists_name} "
+        f"(fun Hbody => HnotBody {proof_term_text(body_to_negative_premise)}))"
+    )
+    forall_body = (
+        f"(fun {exists_name}:{exists_sort} => "
+        f"(xm {body_text} {body_text} "
+        f"(fun Hbody => Hbody) "
+        f"(fun HnotBody => (HnotExists {proof_term_text(exists_intro)} {body_text}))))"
+    )
+    implication_from_forall = f"(fun Hpositive => {forall_body})"
+    exists_proof = (
+        f"(xm {exists_text} {exists_text} "
+        f"(fun HexistsNegative => HexistsNegative) "
+        f"(fun HnotExists => "
+        f"({proof_head(negative_proof)} {proof_term_text(implication_from_forall)} {exists_text})))"
+    )
+
+    def component_proof(component: Expr) -> str | None:
+        if expr_same_mod_alpha(component, positive_component):
+            return transformed_positive
+        if expr_same_mod_alpha(component, exists_component):
+            return exists_proof
+        return None
+
+    return raw_build_conjunction_from_component_proofs(target, component_proof)
+
+
 def raw_classical_implication_to_or_body_proof(
     premises: list[Expr],
     conclusion: Expr,
@@ -17329,6 +17433,42 @@ def raw_classical_implication_to_or_body_proof(
     if target_or is None:
         return None
     source_premise = premises[index]
+    for negative_index, target_negative, target_positive in (
+        (1, target_or[1], target_or[0]),
+        (0, target_or[0], target_or[1]),
+    ):
+        premise_name = f"Hprem{premise_offset + index}"
+        positive_branch = raw_classical_implication_to_or_body_proof(
+            premises,
+            conclusion,
+            target_positive,
+            source_application,
+            index + 1,
+            [*premise_names, premise_name],
+            premise_offset,
+        )
+        if positive_branch is None:
+            continue
+        not_name = f"HnotPrem{premise_offset + index}"
+        negative_branch = raw_negated_implication_forall_to_conjunction_proof(
+            source_premise,
+            target_negative,
+            not_name,
+            {},
+        )
+        if negative_branch is None:
+            continue
+        if negative_index == 1:
+            positive_intro = f"(fun P Hleft Hright => Hleft {proof_term_text(positive_branch)})"
+            negative_intro = f"(fun P Hleft Hright => Hright {proof_term_text(negative_branch)})"
+        else:
+            positive_intro = f"(fun P Hleft Hright => Hright {proof_term_text(positive_branch)})"
+            negative_intro = f"(fun P Hleft Hright => Hleft {proof_term_text(negative_branch)})"
+        return (
+            f"(xm {proof_arg_text(source_premise)} {proof_arg_text(target)} "
+            f"(fun {premise_name} => {positive_intro}) "
+            f"(fun {not_name} => {negative_intro}))"
+        )
     for negative_index, target_negative, target_positive in (
         (1, target_or[1], target_or[0]),
         (0, target_or[0], target_or[1]),
