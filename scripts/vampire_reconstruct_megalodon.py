@@ -20046,6 +20046,30 @@ def raw_rectify_formula_transform_proof(
     source_sides = equality_like_sides(source)
     target_sides = equality_like_sides(target)
     if source_sides is not None and target_sides is not None:
+        if expr_same_mod_alpha(source_sides[0], target_sides[0]):
+            right_equality = raw_set_term_equality_transform_proof(
+                source_sides[1],
+                target_sides[1],
+                variable_sorts,
+                depth + 1,
+            )
+            if right_equality is not None:
+                return eq_transitivity_proof(
+                    [source_proof, right_equality],
+                    expr_text(source_sides[0]),
+                )
+        if expr_same_mod_alpha(source_sides[1], target_sides[1]):
+            left_equality = raw_set_term_equality_transform_proof(
+                target_sides[0],
+                source_sides[0],
+                variable_sorts,
+                depth + 1,
+            )
+            if left_equality is not None:
+                return eq_transitivity_proof(
+                    [left_equality, source_proof],
+                    expr_text(target_sides[0]),
+                )
         if (
             expr_same_mod_alpha(source_sides[0], target_sides[1])
             and expr_same_mod_alpha(source_sides[1], target_sides[0])
@@ -20107,9 +20131,11 @@ def raw_rectify_formula_transform_proof(
                 f"fun P K => K {proof_term_text(left_proof)} {proof_term_text(right_proof)}))"
             )
 
-    source_exists = app_args(source, "vampire_exists_set", 1)
-    target_exists = app_args(target, "vampire_exists_set", 1)
-    if source_exists is not None and target_exists is not None:
+    for exists_name in ("vampire_exists_set", "vampire_exists_set_set", "vampire_exists_set_prop", "vampire_exists_prop"):
+        source_exists = app_args(source, exists_name, 1)
+        target_exists = app_args(target, exists_name, 1)
+        if source_exists is None or target_exists is None:
+            continue
         source_binders, source_body = collect_lambdas(source_exists[0])
         target_binders, target_body = collect_lambdas(target_exists[0])
         if len(source_binders) == 1 and len(target_binders) == 1 and source_binders[0][1] == target_binders[0][1]:
@@ -20146,6 +20172,14 @@ def raw_rectify_formula_transform_proof(
             depth + 1,
         )
         if premise_proof is None:
+            premise_proof = raw_prop_implication_transform_proof(
+                target_premise,
+                source_premise,
+                premise_name,
+                variable_sorts,
+                depth + 1,
+            )
+        if premise_proof is None:
             return None
         conclusion_proof = raw_rectify_formula_transform_proof(
             source_conclusion,
@@ -20154,6 +20188,14 @@ def raw_rectify_formula_transform_proof(
             variable_sorts,
             depth + 1,
         )
+        if conclusion_proof is None:
+            conclusion_proof = raw_prop_implication_transform_proof(
+                source_conclusion,
+                target_conclusion,
+                f"({proof_head(source_proof)} {proof_term_text(premise_proof)})",
+                variable_sorts,
+                depth + 1,
+            )
         if conclusion_proof is None:
             return None
         return f"(fun {premise_name} : {expr_text(target_premise)} => {conclusion_proof})"
@@ -20696,6 +20738,11 @@ def raw_prop_argument_set_rewrite_proof(
     if len(differing) != 1 or differing[0] == 0:
         return None
     index = differing[0]
+    if (
+        expr_sort(source.args[index], variable_sorts) != "set"
+        or expr_sort(target.args[index], variable_sorts) != "set"
+    ):
+        return None
     equality = raw_set_term_equality_transform_proof(source.args[index], target.args[index], variable_sorts, depth + 1)
     if equality is None:
         return None
@@ -23573,6 +23620,15 @@ def raw_tptp_forward_subsumption_resolution_proof(
             resolver_options = raw_instantiated_forall_clause_options(resolver, resolver_name, target_expr, source)
             for source_clause, source_proof in source_options:
                 for resolver_clause, resolver_proof in resolver_options:
+                    shared_resolvent = raw_shared_resolvent_binary_or_proof(
+                        source_clause,
+                        target_expr,
+                        source_proof,
+                        resolver_clause,
+                        resolver_proof,
+                    )
+                    if shared_resolvent is not None:
+                        return shared_resolvent
                     if not raw_clause_replay_budget_ok(source_clause, resolver_clause, target_expr, max_literals=8, max_literal_product=128):
                         continue
                     if not raw_clauses_have_complement(source_clause, resolver_clause):
@@ -23612,6 +23668,72 @@ def raw_tptp_forward_subsumption_resolution_proof(
             return proof
 
     return None
+
+
+def raw_shared_resolvent_binary_or_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    resolver: Expr,
+    resolver_proof: str,
+) -> str | None:
+    source_parts = raw_or_parts(source)
+    resolver_parts = raw_or_parts(resolver)
+    if source_parts is None or resolver_parts is None:
+        return None
+
+    def target_branch(parts: tuple[Expr, Expr], prefix: str) -> tuple[int, Expr, str] | None:
+        for index, part in enumerate(parts):
+            name = fresh_identifier(prefix, expr_text(part), expr_text(target))
+            if expr_same_mod_alpha(part, target):
+                return index, parts[1 - index], f"(fun {name} => {name})"
+            converted = raw_direct_conclusion_transform_proof(part, target, name)
+            if converted is not None:
+                return index, parts[1 - index], f"(fun {name} => {proof_term_text(converted)})"
+        return None
+
+    source_target = target_branch(source_parts, "Htarget")
+    resolver_target = target_branch(resolver_parts, "Htarget")
+    if source_target is None or resolver_target is None:
+        return None
+    source_target_index, source_other, source_target_branch = source_target
+    resolver_target_index, resolver_other, resolver_target_branch = resolver_target
+    if source_target_index is None or resolver_target_index is None:
+        return None
+
+    premises, conclusion = split_arrows(resolver_other)
+    if len(premises) != 1 or not false_eliminator_expr(conclusion):
+        return None
+    if not expr_same_mod_alpha(premises[0], source_other):
+        return None
+
+    target_text = proof_arg_text(target)
+    source_other_name = fresh_identifier("Hres", expr_text(source), expr_text(resolver), expr_text(target))
+    neg_name = fresh_identifier("Hneg", expr_text(resolver_other), source_other_name)
+
+    false_to_target = raw_false_to_expr_proof(f"({neg_name} {source_other_name})", target)
+    resolver_neg_branch = f"(fun {neg_name} => {false_to_target})"
+    if resolver_target_index == 0:
+        resolver_elim = (
+            f"({proof_head(resolver_proof)} {target_text} "
+            f"{resolver_target_branch} {resolver_neg_branch})"
+        )
+    else:
+        resolver_elim = (
+            f"({proof_head(resolver_proof)} {target_text} "
+            f"{resolver_neg_branch} {resolver_target_branch})"
+        )
+
+    source_other_branch = f"(fun {source_other_name} => {resolver_elim})"
+    if source_target_index == 0:
+        return (
+            f"({proof_head(source_proof)} {target_text} "
+            f"{source_target_branch} {source_other_branch})"
+        )
+    return (
+        f"({proof_head(source_proof)} {target_text} "
+        f"{source_other_branch} {source_target_branch})"
+    )
 
 
 def raw_forall_prop_true_equality_split_proof(
