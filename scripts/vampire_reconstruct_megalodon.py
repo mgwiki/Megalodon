@@ -22939,6 +22939,26 @@ def raw_quantified_equality_instances(
     binders, body = collect_foralls(expr)
     if len(binders) > 4 or equality_like_sides(body) is None:
         return []
+    avoid_names = set().union(*(expr_variables(candidate) | expr_bound_variables(candidate) for candidate in candidate_exprs))
+    if any(name in avoid_names for name, _ in binders):
+        renames: dict[str, str] = {}
+        used_names = set(avoid_names) | expr_variables(body) | expr_bound_variables(body)
+        renamed_binders: list[tuple[str, str]] = []
+        for index, (name, sort) in enumerate(binders):
+            if name in avoid_names:
+                candidate = f"Q{index}"
+                suffix = 0
+                while candidate in used_names:
+                    suffix += 1
+                    candidate = f"Q{index}_{suffix}"
+                renames[name] = candidate
+                used_names.add(candidate)
+                renamed_binders.append((candidate, sort))
+            else:
+                used_names.add(name)
+                renamed_binders.append((name, sort))
+        body = rename_expr_variables(body, renames)
+        binders = renamed_binders
     local_sorts = {**variable_sorts, **{name: sort for name, sort in binders}}
     result: list[tuple[Expr, str]] = []
     seen: set[str] = set()
@@ -23492,7 +23512,10 @@ def raw_tptp_superposition_proof(
     variable_sorts: dict[str, str],
     replay_step: MegalodonReplayStep | None = None,
 ) -> str | None:
-    has_superposition_replay = bool(megalodon_replay_extra_fields(replay_step, "superposition"))
+    has_superposition_replay = bool(
+        megalodon_replay_extra_fields(replay_step, "superposition")
+        or megalodon_replay_extra_fields(replay_step, "two_literal_rewrite")
+    )
     if not has_superposition_replay:
         return None
     proof = raw_tptp_exported_two_literal_resolution_proof(
