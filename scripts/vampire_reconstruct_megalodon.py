@@ -16330,7 +16330,7 @@ def raw_tptp_cnf_formula_clause_proof(
         source,
         target,
         raw_tptp_claim_name(parents[0]),
-        variable_sorts,
+        {},
     )
 
 
@@ -21594,6 +21594,20 @@ def raw_tptp_replay_proof(
         "boolean_simplification",
         "true_and_false_elimination",
     }:
+        if rule == "cnf_transformation":
+            previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+            if previous_deadline is not None:
+                PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 0.5)
+            try:
+                proof = raw_tptp_cnf_formula_clause_proof(proposition, parents, propositions_by_name, variable_sorts)
+                if proof is not None:
+                    return proof
+                proof = raw_tptp_small_forall_permutation_transform_proof(proposition, parents, propositions_by_name)
+                if proof is not None:
+                    return proof
+            finally:
+                if previous_deadline is not None:
+                    PROOF_SEARCH_STATE.deadline = previous_deadline
         proof = raw_tptp_one_parent_transform_proof(
             proposition,
             parents,
@@ -21606,11 +21620,6 @@ def raw_tptp_replay_proof(
             return proof
         if rule == "fool_elimination":
             return raw_tptp_deep_formula_transform_proof(proposition, parents, propositions_by_name, variable_sorts)
-        if rule == "cnf_transformation":
-            proof = raw_tptp_cnf_formula_clause_proof(proposition, parents, propositions_by_name, variable_sorts)
-            if proof is not None:
-                return proof
-            return raw_tptp_small_forall_permutation_transform_proof(proposition, parents, propositions_by_name)
         return None
     if rule == "skolemisation":
         proof = raw_tptp_skolemisation_proof(proposition, parents, propositions_by_name, variable_sorts)
