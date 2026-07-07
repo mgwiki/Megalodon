@@ -3786,6 +3786,7 @@ BOOLEAN_EXT_HELPERS = [
     "Axiom vampire_prop_ext: forall P Q:prop, (P -> Q) -> (Q -> P) -> vampire_eq_prop P Q.",
     "Axiom vampire_funext_prop: forall F G:prop->prop, (forall X:prop, vampire_eq_prop (F X) (G X)) -> vampire_eq_prop_fun F G.",
     "Axiom vampire_funext_prop_prop: forall F G:prop->prop->prop, (forall X:prop, vampire_eq_prop_fun (F X) (G X)) -> F = G.",
+    "Axiom vampire_funext_set_set: forall F G:set->set, (forall X:set, F X = G X) -> forall Q:(set->set)->prop, Q F -> Q G.",
 ]
 
 
@@ -3875,8 +3876,17 @@ def add_boolean_extensionality_helpers(lines: list[str]) -> list[str]:
 
 
 def add_used_boolean_extensionality_helpers(lines: list[str]) -> list[str]:
-    text = "\n".join(line for line in lines if not line.startswith("Axiom vampire_prop_ext:"))
-    if "vampire_prop_ext" not in text:
+    helper_names = [
+        (proposition_after_colon(line, "Axiom ") or proposition_after_colon(line, "Definition "))[0]
+        for line in BOOLEAN_EXT_HELPERS
+    ]
+    text = "\n".join(
+        line
+        for line in lines
+        if not any(line.startswith(f"Axiom {name}:") or line.startswith(f"Definition {name} ") for name in helper_names)
+    )
+    used_names = {name for name in helper_names if name in text}
+    if not used_names:
         return list(lines)
     existing_names = {
         item[0]
@@ -3886,8 +3896,9 @@ def add_used_boolean_extensionality_helpers(lines: list[str]) -> list[str]:
     }
     helpers = [
         line
-        for line in BOOLEAN_EXT_HELPERS[:3]
-        if (proposition_after_colon(line, "Axiom ") or proposition_after_colon(line, "Definition "))[0] not in existing_names
+        for line in BOOLEAN_EXT_HELPERS
+        if (proposition_after_colon(line, "Axiom ") or proposition_after_colon(line, "Definition "))[0] in used_names
+        and (proposition_after_colon(line, "Axiom ") or proposition_after_colon(line, "Definition "))[0] not in existing_names
     ]
     if not helpers:
         return list(lines)
@@ -4243,6 +4254,30 @@ def beta_contract_full_application(expr: Expr) -> Expr:
         return expr
     subst = {name: arg for (name, _), arg in zip(binders, args)}
     return substitute_expr(body, subst)
+
+
+def beta_normalize_expr(expr: Expr, depth: int = 0) -> Expr:
+    if depth > 64:
+        return expr
+    if not expr.args:
+        return expr
+    normalized_args = tuple(beta_normalize_expr(arg, depth + 1) for arg in expr.args)
+    normalized = Expr(expr.kind, value=expr.value, args=normalized_args, sort=expr.sort)
+    if normalized.kind != "app" or not normalized.args:
+        return normalized
+    head = normalized.args[0]
+    if head.kind != "lambda":
+        return normalized
+    binders, body = collect_lambdas(head)
+    args = list(normalized.args[1:])
+    if not binders or len(args) < len(binders):
+        return normalized
+    subst = {name: arg for (name, _), arg in zip(binders, args)}
+    contracted = substitute_expr(body, subst)
+    extra_args = args[len(binders) :]
+    if extra_args:
+        contracted = append_application_args(contracted, extra_args)
+    return beta_normalize_expr(contracted, depth + 1)
 
 
 def is_or_nand_pointwise_prop_equality(expr: Expr) -> tuple[str, str] | None:
@@ -20162,6 +20197,154 @@ def raw_quantified_parent_equality_rewrite_clause_proof(
     return None
 
 
+def raw_lambda_function_parent_equality_rewrite_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality: Expr,
+    equality_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if proof_search_timed_out():
+        return None
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    equality_binders, equality_body = collect_foralls(equality)
+    equality_sides = equality_like_sides(equality_body)
+    if equality_sides is None:
+        return None
+    if len(source_binders) != len(target_binders) or len(source_binders) > 6 or len(equality_binders) > 6:
+        return None
+    if any(source_sort != target_sort for (_, source_sort), (_, target_sort) in zip(source_binders, target_binders)):
+        return None
+
+    source_rename = {
+        source_name: Expr("var", value=target_name)
+        for (source_name, _), (target_name, _) in zip(source_binders, target_binders)
+    }
+    renamed_source_body = beta_normalize_expr(substitute_expr(source_body, source_rename))
+    target_body = beta_normalize_expr(target_body)
+    source_body_proof = source_proof
+    for target_name, _ in target_binders:
+        source_body_proof = f"({proof_head(source_body_proof)} {target_name})"
+
+    equality_binder_names = {name for name, _ in equality_binders}
+    local_sorts = {
+        **variable_sorts,
+        **{name: sort for name, sort in target_binders},
+        **{name: sort for name, sort in equality_binders},
+    }
+
+    source_lambdas = [
+        expr
+        for expr in expr_subterms(renamed_source_body, limit=192)
+        if expr.kind == "lambda" and expr_sort(expr, local_sorts) == "set->set"
+    ]
+    target_lambdas = [
+        expr
+        for expr in expr_subterms(target_body, limit=192)
+        if expr.kind == "lambda" and expr_sort(expr, local_sorts) == "set->set"
+    ]
+    if not source_lambdas or not target_lambdas:
+        return None
+
+    normalized_equality_sides = (beta_normalize_expr(equality_sides[0]), beta_normalize_expr(equality_sides[1]))
+
+    for source_lambda in source_lambdas:
+        source_lambda_binders, source_lambda_body = collect_lambdas(source_lambda)
+        if len(source_lambda_binders) != 1 or source_lambda_binders[0][1] != "set":
+            continue
+        source_lambda_name, source_lambda_sort = source_lambda_binders[0]
+        source_lambda_db_variables = {name for name in expr_variables(source_lambda) if RAW_TPTP_SYNTHETIC_DB_RE.fullmatch(name)}
+        if source_lambda_db_variables - {source_lambda_name}:
+            continue
+        for target_lambda in target_lambdas:
+            target_lambda_binders, target_lambda_body = collect_lambdas(target_lambda)
+            if len(target_lambda_binders) != 1 or target_lambda_binders[0][1] != source_lambda_sort:
+                continue
+            target_lambda_name, _ = target_lambda_binders[0]
+            target_lambda_db_variables = {name for name in expr_variables(target_lambda) if RAW_TPTP_SYNTHETIC_DB_RE.fullmatch(name)}
+            if target_lambda_db_variables - {target_lambda_name}:
+                continue
+            normalized_target_lambda_body = target_lambda_body
+            if target_lambda_name != source_lambda_name:
+                normalized_target_lambda_body = rename_expr_variables(
+                    normalized_target_lambda_body,
+                    {target_lambda_name: source_lambda_name},
+                )
+            normalized_target_lambda = Expr(
+                "lambda",
+                value=source_lambda_name,
+                sort=source_lambda_sort,
+                args=(normalized_target_lambda_body,),
+            )
+            replaced_body, changed = replace_expr(renamed_source_body, source_lambda, normalized_target_lambda)
+            if not changed or not expr_same_mod_alpha(replaced_body, target_body):
+                continue
+
+            for old_pattern, new_pattern, reverse in (
+                (normalized_equality_sides[0], normalized_equality_sides[1], False),
+                (normalized_equality_sides[1], normalized_equality_sides[0], True),
+            ):
+                subst: dict[str, Expr] = {}
+                if not match_expr_with_alpha_instantiation(
+                    old_pattern,
+                    source_lambda_body,
+                    equality_binder_names,
+                    subst,
+                ):
+                    continue
+                if not match_expr_with_alpha_instantiation(
+                    new_pattern,
+                    normalized_target_lambda_body,
+                    equality_binder_names,
+                    subst,
+                ):
+                    continue
+                if any(name not in subst for name, _ in equality_binders):
+                    continue
+                equality_instance = equality_proof
+                for name, _ in equality_binders:
+                    equality_instance = f"({proof_head(equality_instance)} {proof_arg_text(subst[name])})"
+                if reverse:
+                    equality_instance = raw_eq_symmetry_proof(equality_instance, normalized_target_lambda_body, "set")
+                function_equality = (
+                    f"(vampire_funext_set_set "
+                    f"{proof_arg_text(source_lambda)} "
+                    f"{proof_arg_text(normalized_target_lambda)} "
+                    f"(fun {source_lambda_name}:{source_lambda_sort} => {proof_term_text(equality_instance)}))"
+                )
+                hole_name = fresh_identifier(
+                    "zz",
+                    expr_text(renamed_source_body),
+                    expr_text(source_lambda),
+                    expr_text(normalized_target_lambda),
+                )
+                context, context_changed = replace_expr(
+                    renamed_source_body,
+                    source_lambda,
+                    Expr("var", value=hole_name),
+                )
+                if not context_changed:
+                    continue
+                transported = (
+                    f"{proof_term_text(function_equality)} "
+                    f"(fun {hole_name}:set->set => {expr_text(context)}) "
+                    f"{proof_term_text(source_body_proof)}"
+                )
+                body_proof: str | None
+                if expr_same_mod_alpha(replaced_body, target_body):
+                    body_proof = transported
+                else:
+                    body_proof = raw_clause_transform_proof(replaced_body, target_body, transported)
+                if body_proof is None:
+                    continue
+                for name, sort in reversed(target_binders):
+                    body_proof = f"(fun {name}:{sort} => {body_proof})"
+                return body_proof
+    return None
+
+
 def raw_tptp_forward_demodulation_proof(
     proposition: str,
     parents: list[str],
@@ -20416,6 +20599,16 @@ def raw_tptp_parent_equality_rewrite_proof(
         for equality_name, equality, equality_proof in parent_exprs:
             if equality_name == source_name:
                 continue
+            lambda_function_proof = raw_lambda_function_parent_equality_rewrite_proof(
+                source,
+                target,
+                source_proof,
+                equality,
+                equality_proof,
+                variable_sorts,
+            )
+            if lambda_function_proof is not None:
+                return lambda_function_proof
             quantified_proof = raw_quantified_parent_equality_rewrite_clause_proof(
                 source,
                 target,
@@ -21703,8 +21896,18 @@ def raw_tptp_safe_split_definition_body(body: Expr, variable_sorts: dict[str, st
     return body_text
 
 
+RAW_TPTP_SYNTHETIC_DB_RE = re.compile(r"\bDB[0-9]+\b")
+RAW_TPTP_SYNTHETIC_DB_BINDER_RE = re.compile(r"\bfun\s+(DB[0-9]+)\s*:")
+
+
+def raw_tptp_replay_proof_has_unbound_synthetic_db(proof: str) -> bool:
+    proof_variables = set(RAW_TPTP_SYNTHETIC_DB_RE.findall(proof))
+    proof_binders = set(RAW_TPTP_SYNTHETIC_DB_BINDER_RE.findall(proof))
+    return bool(proof_variables - proof_binders)
+
+
 def raw_tptp_replay_proof_has_synthetic_db(proof: str) -> bool:
-    return re.search(r"\bDB[0-9]+\b", proof) is not None
+    return RAW_TPTP_SYNTHETIC_DB_RE.search(proof) is not None
 
 
 RAW_TPTP_SURFACE_VAR_RE = re.compile(r"\b[XY][0-9]+\b")
@@ -21722,7 +21925,9 @@ def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: s
     if raw_tptp_replay_proof_has_escaped_surface_variable(proposition, proof):
         return True
     if rule in {"definition_folding", "definition_unfolding"} and raw_tptp_replay_proof_has_synthetic_db(proof):
-        return True
+        if "vampire_funext_set_set" not in proof:
+            return True
+        return raw_tptp_replay_proof_has_unbound_synthetic_db(proof)
     if rule in {"avatar_component_clause", "avatar_split_clause"}:
         return len(proposition) > MAX_RAW_TPTP_EXACT_AVATAR_PROPOSITION or len(proof) > MAX_RAW_TPTP_EXACT_PROOF_TERM
     return False
