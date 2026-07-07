@@ -24101,6 +24101,52 @@ def raw_tptp_quantified_equality_clause_superposition_proof(
     return None
 
 
+def raw_tptp_selected_literal_subsumption_resolution_proof(
+    target: Expr,
+    parsed: list[tuple[Expr, str]],
+    parents: list[str],
+    replay_step: MegalodonReplayStep | None,
+) -> str | None:
+    if replay_step is None or len(parsed) != 2 or len(parents) != 2:
+        return None
+    selected_parent_index: int | None = None
+    for fields in megalodon_replay_extra_fields(replay_step, "literal"):
+        raw_index = fields.get("selected_parent_index")
+        if raw_index is None:
+            continue
+        try:
+            selected_parent_index = int(raw_index)
+        except ValueError:
+            continue
+        break
+    if selected_parent_index not in {0, 1}:
+        return None
+    resolver_parent_index = 1 - selected_parent_index
+    target_binders, target_body = collect_foralls(target)
+
+    def open_parent(expr: Expr, proof: str) -> tuple[Expr, str]:
+        opened = expr
+        opened_proof = proof
+        for target_name, target_sort in target_binders:
+            if opened.kind == "forall" and opened.sort == target_sort and opened.value is not None:
+                opened = rename_expr_variables(opened.args[0], {opened.value: target_name})
+                opened_proof = f"({proof_head(opened_proof)} {target_name})"
+        return opened, opened_proof
+
+    source, source_proof = open_parent(*parsed[selected_parent_index])
+    resolver, resolver_proof = open_parent(*parsed[resolver_parent_index])
+    if not raw_clause_replay_budget_ok(source, resolver, target_body, max_literals=16, max_literal_product=512):
+        return None
+    proof = raw_flat_clause_resolution_proof(source, target_body, source_proof, resolver, resolver_proof)
+    if proof is None:
+        proof = raw_clause_resolution_proof(source, target_body, source_proof, resolver, resolver_proof)
+    if proof is None:
+        return None
+    for target_name, target_sort in reversed(target_binders):
+        proof = f"(fun {target_name} :{target_sort} => {proof})"
+    return proof
+
+
 def raw_tptp_forward_subsumption_resolution_proof(
     proposition: str,
     parents: list[str],
@@ -24123,6 +24169,15 @@ def raw_tptp_forward_subsumption_resolution_proof(
     first_name = raw_tptp_claim_name(parents[0])
     second_name = raw_tptp_claim_name(parents[1])
     parsed = [(first, first_name), (second, second_name)]
+
+    selected_literal_proof = raw_tptp_selected_literal_subsumption_resolution_proof(
+        target,
+        parsed,
+        parents,
+        replay_step,
+    )
+    if selected_literal_proof is not None:
+        return selected_literal_proof
 
     for parent_expr, parent_proof in parsed:
         proof = raw_forall_prop_true_equality_split_proof(target, parent_expr, parent_proof)
