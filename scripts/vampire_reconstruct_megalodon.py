@@ -19437,7 +19437,8 @@ def raw_tptp_avatar_component_clause_proof(
     if parent_expr is None or target is None:
         return None
     parent_parts = app_args(parent_expr, "vampire_and", 2)
-    target_parts = app_args(target, "vampire_or", 2)
+    target_binders, target_body = collect_foralls(target)
+    target_parts = app_args(target_body, "vampire_or", 2)
     if parent_parts is None or target_parts is None:
         return None
     forward = implication_sides(parent_parts[0])
@@ -19450,22 +19451,35 @@ def raw_tptp_avatar_component_clause_proof(
         return None
     target_left, target_right = target_parts
     parent_name = raw_tptp_claim_name(parents[0])
-    target_text = proof_arg_text(target)
+    target_text = proof_arg_text(target_body)
+    local_sorts = {name: sort for name, sort in target_binders}
+
+    def wrap_target_binders(proof: str) -> str:
+        for name, sort in reversed(target_binders):
+            proof = f"(fun {name}:{sort} => {proof})"
+        return proof
+
+    def component_to_target_left(proof: str) -> str | None:
+        transformed = raw_specialize_forall_transform_proof(component, target_left, proof, local_sorts)
+        if transformed is not None:
+            return transformed
+        transformed = raw_clause_transform_proof(component, target_left, proof)
+        if transformed is not None:
+            return transformed
+        return raw_forall_clause_transform_proof(component, target_left, proof, 0, ())
 
     if expr_key(target_right) == expr_key(Expr("arrow", args=(split_atom, Expr("var", value="vampire_false")))):
-        if not raw_clause_replay_budget_ok(component, target_left):
+        if not raw_clause_replay_budget_ok(component, target_left, max_literals=24, max_literal_product=384):
             return None
-        component_proof = raw_clause_transform_proof(component, target_left, "(Hforward Hsplit)")
-        if component_proof is None:
-            component_proof = raw_forall_clause_transform_proof(component, target_left, "(Hforward Hsplit)", 0, ())
+        component_proof = component_to_target_left("(Hforward Hsplit)")
         if component_proof is None:
             return None
-        return (
+        return wrap_target_binders(
             f"({parent_name} {target_text} "
             f"(fun Hforward Hback => "
             f"(xm {proof_arg_text(split_atom)} {target_text} "
-            f"(fun Hsplit => {proof_term_text(raw_or_left_intro(target, component_proof) or '')}) "
-            f"(fun Hnotsplit => {proof_term_text(raw_or_right_intro(target, 'Hnotsplit') or '')}))))"
+            f"(fun Hsplit => {proof_term_text(raw_or_left_intro(target_body, component_proof) or '')}) "
+            f"(fun Hnotsplit => {proof_term_text(raw_or_right_intro(target_body, 'Hnotsplit') or '')}))))"
         )
 
     target_left_implication = implication_sides(target_left)
