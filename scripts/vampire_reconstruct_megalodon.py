@@ -15975,6 +15975,112 @@ def raw_tptp_small_forall_permutation_transform_proof(
     return raw_small_forall_permutation_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
 
 
+def raw_formula_entails_clause_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 80 or proof_search_timed_out():
+        return None
+    if len(expr_text(source)) + len(expr_text(target)) > 14000:
+        return None
+
+    if target.kind == "forall" and target.value is not None and target.sort is not None:
+        inner = raw_formula_entails_clause_proof(
+            source,
+            target.args[0],
+            source_proof,
+            {**variable_sorts, target.value: target.sort},
+            depth + 1,
+        )
+        if inner is not None:
+            return f"(fun {target.value}:{target.sort} => {inner})"
+
+    if source.kind == "forall" and source.value is not None and source.sort is not None:
+        source_body = source.args[0]
+        candidates = raw_candidate_terms_for_sort((target, source_body), source.sort, variable_sorts)
+        for candidate in candidates[:16]:
+            instantiated_source = substitute_expr(source_body, {source.value: candidate})
+            instantiated_proof = f"({proof_head(source_proof)} {proof_arg_text(candidate)})"
+            proof = raw_formula_entails_clause_proof(
+                instantiated_source,
+                target,
+                instantiated_proof,
+                variable_sorts,
+                depth + 1,
+            )
+            if proof is not None:
+                return proof
+        return None
+
+    target_literals = raw_clause_literals(target)
+    if len(target_literals) > 24:
+        return None
+    literal_proof = raw_literal_to_clause_proof(source, target, source_proof, target_literals, ())
+    if literal_proof is not None:
+        return literal_proof
+
+    source_parts = app_args(source, "vampire_or", 2)
+    if source_parts is not None:
+        left, right = source_parts
+        left_name = fresh_identifier("HL", expr_text(source), expr_text(target), source_proof)
+        right_name = fresh_identifier("HR", expr_text(source), expr_text(target), source_proof, left_name)
+        left_proof = raw_formula_entails_clause_proof(left, target, left_name, variable_sorts, depth + 1)
+        right_proof = raw_formula_entails_clause_proof(right, target, right_name, variable_sorts, depth + 1)
+        if left_proof is None or right_proof is None:
+            return None
+        return (
+            f"({proof_head(source_proof)} {proof_arg_text(target)} "
+            f"(fun {left_name} => {left_proof}) "
+            f"(fun {right_name} => {right_proof}))"
+        )
+
+    source_conjuncts = vampire_and_parts(source)
+    if source_conjuncts is not None:
+        for conjunct in source_conjuncts:
+            conjunct_proof = vampire_and_projection_from_proof(source_proof, source, conjunct)
+            if conjunct_proof is None:
+                continue
+            proof = raw_formula_entails_clause_proof(
+                conjunct,
+                target,
+                conjunct_proof,
+                variable_sorts,
+                depth + 1,
+            )
+            if proof is not None:
+                return proof
+
+    return None
+
+
+def raw_tptp_cnf_formula_clause_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parents) != 1:
+        return None
+    parent_proposition = propositions_by_name.get(parents[0])
+    if parent_proposition is None:
+        return None
+    source = parse_expr(parent_proposition)
+    target = parse_expr(proposition)
+    if source is None or target is None:
+        return None
+    if len(raw_clause_literals(target)) > 24:
+        return None
+    return raw_formula_entails_clause_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+        variable_sorts,
+    )
+
+
 def raw_clause_transform_proof(
     source: Expr,
     target: Expr,
@@ -19886,6 +19992,9 @@ def raw_tptp_replay_proof(
         if rule == "fool_elimination":
             return raw_tptp_deep_formula_transform_proof(proposition, parents, propositions_by_name, variable_sorts)
         if rule == "cnf_transformation":
+            proof = raw_tptp_cnf_formula_clause_proof(proposition, parents, propositions_by_name, variable_sorts)
+            if proof is not None:
+                return proof
             return raw_tptp_small_forall_permutation_transform_proof(proposition, parents, propositions_by_name)
         return None
     if rule == "unit_resulting_resolution":
