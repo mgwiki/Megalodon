@@ -22524,11 +22524,24 @@ def raw_tptp_exported_demodulation_rewrite_proof(
     local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
     for fields in megalodon_replay_extra_fields(replay_step, "rewrite"):
         redex = raw_tptp_replay_extra_expr(fields, "redex", local_sorts)
-        replacement = raw_tptp_replay_extra_expr(fields, "replacement", local_sorts)
-        if redex is None or replacement is None:
+        if redex is None:
+            redex = raw_tptp_replay_extra_expr(fields, "target", local_sorts)
+        if redex is None:
             continue
-        rule_lhs = raw_tptp_replay_extra_expr(fields, "rule_lhs", local_sorts) or redex
-        rule_rhs = raw_tptp_replay_extra_expr(fields, "rule_rhs", local_sorts) or replacement
+        replacement = raw_tptp_replay_extra_expr(fields, "replacement", local_sorts)
+        rule_lhs = raw_tptp_replay_extra_expr(fields, "rule_lhs", local_sorts)
+        rule_rhs = raw_tptp_replay_extra_expr(fields, "rule_rhs", local_sorts)
+        if rule_lhs is None:
+            rule_lhs = raw_tptp_replay_extra_expr(fields, "lhs", local_sorts)
+        if replacement is None and rule_lhs is not None and rule_rhs is not None:
+            subst: dict[str, Expr] = {}
+            rule_variables = expr_variables(rule_lhs)
+            if match_expr_with_alpha_instantiation(rule_lhs, redex, rule_variables, subst):
+                replacement = substitute_expr(rule_rhs, subst)
+        if replacement is None:
+            continue
+        rule_lhs = rule_lhs or redex
+        rule_rhs = rule_rhs or replacement
         for source_index, equality_index in ((0, 1), (1, 0)):
             source, source_proof = parents[source_index]
             equality, equality_proof = parents[equality_index]
