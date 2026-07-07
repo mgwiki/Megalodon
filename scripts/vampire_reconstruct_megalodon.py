@@ -17677,6 +17677,9 @@ def raw_tptp_superposition_proof(
         proof = raw_tptp_forward_demodulation_proof(proposition, parents, propositions_by_name, variable_sorts)
         if proof is not None:
             return proof
+        proof = raw_tptp_unit_resulting_resolution_proof(proposition, parents, propositions_by_name)
+        if proof is not None:
+            return proof
     return None
 
 
