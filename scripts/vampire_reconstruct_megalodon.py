@@ -16179,6 +16179,36 @@ def raw_complement_resolution_proof(
     right_proof: str,
     target: Expr,
 ) -> str | None:
+    def symmetric_equality_complement(
+        negative: Expr,
+        negative_proof: str,
+        positive: Expr,
+        positive_proof: str,
+    ) -> str | None:
+        negative_premises, negative_conclusion = split_arrows(negative)
+        if len(negative_premises) != 1 or not false_eliminator_expr(negative_conclusion):
+            return None
+        negative_sides = equality_like_sides(negative_premises[0])
+        positive_sides = equality_like_sides(positive)
+        if (
+            negative_sides is None
+            or positive_sides is None
+            or not expr_same_mod_alpha(negative_sides[0], positive_sides[1])
+            or not expr_same_mod_alpha(negative_sides[1], positive_sides[0])
+        ):
+            return None
+        sort = "set"
+        if (
+            negative_premises[0].kind == "app"
+            and negative_premises[0].args
+            and negative_premises[0].args[0].kind == "var"
+            and negative_premises[0].args[0].value == "vampire_eq_prop"
+        ):
+            sort = "prop"
+        positive_as_negative = raw_eq_symmetry_proof(positive_proof, positive_sides[0], sort)
+        false_proof = f"({proof_head(negative_proof)} {proof_term_text(positive_as_negative)})"
+        return raw_false_literal_elimination_proof(Expr("var", value="vampire_false"), target, false_proof)
+
     quantified = raw_quantified_complement_resolution_proof(left, left_proof, right, right_proof, target)
     if quantified is not None:
         return quantified
@@ -16193,6 +16223,9 @@ def raw_complement_resolution_proof(
         and expr_key(left_premises[0]) == expr_key(right)
     ):
         return f"(({proof_head(left_proof)} {proof_term_text(right_proof)}) {proof_arg_text(target)})"
+    symmetric = symmetric_equality_complement(left, left_proof, right, right_proof)
+    if symmetric is not None:
+        return symmetric
     if false_eliminator_expr(left) and len(right_premises) == 1 and false_eliminator_expr(right_conclusion):
         return f"(({proof_head(right_proof)} ({proof_head(left_proof)} {proof_arg_text(right_premises[0])})) {proof_arg_text(target)})"
     if (
@@ -16201,6 +16234,9 @@ def raw_complement_resolution_proof(
         and expr_key(right_premises[0]) == expr_key(left)
     ):
         return f"(({proof_head(right_proof)} {proof_term_text(left_proof)}) {proof_arg_text(target)})"
+    symmetric = symmetric_equality_complement(right, right_proof, left, left_proof)
+    if symmetric is not None:
+        return symmetric
     if false_eliminator_expr(right) and len(left_premises) == 1 and false_eliminator_expr(left_conclusion):
         return f"(({proof_head(left_proof)} ({proof_head(right_proof)} {proof_arg_text(left_premises[0])})) {proof_arg_text(target)})"
     return None
@@ -16334,16 +16370,34 @@ def raw_complementary_literals(left: Expr, right: Expr) -> bool:
     left_premises, left_conclusion = split_arrows(left)
     if len(left_premises) == 1 and false_eliminator_expr(left_conclusion) and expr_key(left_premises[0]) == expr_key(right):
         return True
+    if len(left_premises) == 1 and false_eliminator_expr(left_conclusion):
+        negative_sides = equality_like_sides(left_premises[0])
+        positive_sides = equality_like_sides(right)
+        if (
+            negative_sides is not None
+            and positive_sides is not None
+            and expr_same_mod_alpha(negative_sides[0], positive_sides[1])
+            and expr_same_mod_alpha(negative_sides[1], positive_sides[0])
+        ):
+            return True
     if false_eliminator_expr(left):
         right_premises, right_conclusion = split_arrows(right)
         if len(right_premises) == 1 and false_eliminator_expr(right_conclusion):
             return True
     right_premises, right_conclusion = split_arrows(right)
-    return (
-        len(right_premises) == 1
-        and false_eliminator_expr(right_conclusion)
-        and expr_key(right_premises[0]) == expr_key(left)
-    ) or (false_eliminator_expr(right) and len(left_premises) == 1 and false_eliminator_expr(left_conclusion))
+    if len(right_premises) == 1 and false_eliminator_expr(right_conclusion):
+        if expr_key(right_premises[0]) == expr_key(left):
+            return True
+        negative_sides = equality_like_sides(right_premises[0])
+        positive_sides = equality_like_sides(left)
+        if (
+            negative_sides is not None
+            and positive_sides is not None
+            and expr_same_mod_alpha(negative_sides[0], positive_sides[1])
+            and expr_same_mod_alpha(negative_sides[1], positive_sides[0])
+        ):
+            return True
+    return false_eliminator_expr(right) and len(left_premises) == 1 and false_eliminator_expr(left_conclusion)
 
 
 def raw_match_complementary_literals(
@@ -16354,10 +16408,36 @@ def raw_match_complementary_literals(
 ) -> bool:
     pattern_premises, pattern_conclusion = split_arrows(pattern)
     if len(pattern_premises) == 1 and false_eliminator_expr(pattern_conclusion):
-        return match_expr_with_alpha_instantiation(pattern_premises[0], concrete, variables, subst)
+        if match_expr_with_alpha_instantiation(pattern_premises[0], concrete, variables, subst):
+            return True
+        pattern_sides = equality_like_sides(pattern_premises[0])
+        concrete_sides = equality_like_sides(concrete)
+        if pattern_sides is None or concrete_sides is None:
+            return False
+        trial = dict(subst)
+        if not match_expr_with_alpha_instantiation(pattern_sides[0], concrete_sides[1], variables, trial):
+            return False
+        if not match_expr_with_alpha_instantiation(pattern_sides[1], concrete_sides[0], variables, trial):
+            return False
+        subst.clear()
+        subst.update(trial)
+        return True
     concrete_premises, concrete_conclusion = split_arrows(concrete)
     if len(concrete_premises) == 1 and false_eliminator_expr(concrete_conclusion):
-        return match_expr_with_alpha_instantiation(pattern, concrete_premises[0], variables, subst)
+        if match_expr_with_alpha_instantiation(pattern, concrete_premises[0], variables, subst):
+            return True
+        pattern_sides = equality_like_sides(pattern)
+        concrete_sides = equality_like_sides(concrete_premises[0])
+        if pattern_sides is None or concrete_sides is None:
+            return False
+        trial = dict(subst)
+        if not match_expr_with_alpha_instantiation(pattern_sides[0], concrete_sides[1], variables, trial):
+            return False
+        if not match_expr_with_alpha_instantiation(pattern_sides[1], concrete_sides[0], variables, trial):
+            return False
+        subst.clear()
+        subst.update(trial)
+        return True
     return False
 
 
