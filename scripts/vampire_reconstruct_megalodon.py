@@ -19993,15 +19993,21 @@ def raw_literal_refutation_from_split_true_assumption(
     literal: Expr,
     literal_proof: str,
     target: Expr,
-    split: Expr,
+    rewrite: RawSplitRewrite,
     split_proof_name: str,
 ) -> str | None:
     premises, conclusion = split_arrows(literal)
     if len(premises) != 1 or not false_eliminator_expr(conclusion):
         return None
-    if not expr_same_mod_alpha(premises[0], split):
+    premise_proof: str | None = None
+    if expr_same_mod_alpha(premises[0], rewrite.split):
+        premise_proof = split_proof_name
+    else:
+        component_proof = f"({proof_head(rewrite.split_to_component)} {split_proof_name})"
+        premise_proof = raw_literal_direct_transform_proof(rewrite.component, premises[0], component_proof, ())
+    if premise_proof is None:
         return None
-    false_proof = f"({proof_head(literal_proof)} {split_proof_name})"
+    false_proof = f"({proof_head(literal_proof)} {proof_term_text(premise_proof)})"
     return f"({proof_head(false_proof)} {proof_arg_text(target)})"
 
 
@@ -20012,7 +20018,7 @@ def raw_literal_to_clause_with_split_refutations(
     target_literals: list[Expr],
     rewrites: tuple[RawSplitRewrite, ...],
     refutations: list[tuple[RawSplitRewrite, str]],
-    split_true_refutations: list[tuple[Expr, str]] | None = None,
+    split_true_refutations: list[tuple[RawSplitRewrite, str]] | None = None,
 ) -> str | None:
     split_true_refutations = split_true_refutations or []
     proof = raw_literal_to_clause_proof(literal, target, literal_proof, target_literals, rewrites)
@@ -20035,7 +20041,7 @@ def raw_clause_cases_with_split_refutations(
     target_literals: list[Expr],
     rewrites: tuple[RawSplitRewrite, ...],
     refutations: list[tuple[RawSplitRewrite, str]],
-    split_true_refutations: list[tuple[Expr, str]],
+    split_true_refutations: list[tuple[RawSplitRewrite, str]],
     source_proof: str,
 ) -> str | None:
     parts = app_args(source, "vampire_or", 2)
@@ -20080,7 +20086,7 @@ def raw_avatar_split_component_from_source_proof(
     source_proof: str,
     component: Expr,
     refutations: list[tuple[RawSplitRewrite, str]],
-    split_true_refutations: list[tuple[Expr, str]],
+    split_true_refutations: list[tuple[RawSplitRewrite, str]],
     rewrites: tuple[RawSplitRewrite, ...],
 ) -> str | None:
     if proof_search_timed_out() or len(expr_text(source)) + len(expr_text(component)) > 6000:
@@ -20183,7 +20189,7 @@ def raw_tptp_avatar_split_direct_component_proof(
             else:
                 split_true_names.append(name)
         refutations: list[tuple[RawSplitRewrite, str]] = []
-        split_true_refutations: list[tuple[Expr, str]] = []
+        split_true_refutations: list[tuple[RawSplitRewrite, str]] = []
         not_iter = iter(not_names)
         split_true_iter = iter(split_true_names)
         branch_names: list[str] = []
@@ -20195,7 +20201,7 @@ def raw_tptp_avatar_split_direct_component_proof(
             else:
                 name = next(split_true_iter)
                 branch_names.append(name)
-                split_true_refutations.append((literal.args[0], name))
+                split_true_refutations.append((rewrite, name))
         component_proof = raw_avatar_split_component_from_source_proof(
             source,
             source_proof,
