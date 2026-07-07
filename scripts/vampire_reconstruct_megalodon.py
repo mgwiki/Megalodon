@@ -19087,6 +19087,42 @@ def implication_sides(expr: Expr) -> tuple[Expr, Expr] | None:
     return premises[0], conclusion
 
 
+def raw_split_definition_name(expr: Expr) -> str | None:
+    if expr.kind == "var" and expr.value is not None and (expr.value.startswith("split_") or expr.value.startswith("spl")):
+        return expr.value
+    return None
+
+
+def raw_tptp_avatar_definition_parts(proposition: str) -> tuple[str, Expr] | None:
+    expr = parse_expr(proposition)
+    if expr is None:
+        return None
+    parts = app_args(expr, "vampire_and", 2)
+    if parts is None:
+        return None
+    first = implication_sides(parts[0])
+    second = implication_sides(parts[1])
+    if first is None or second is None:
+        return None
+    left, right = first
+    right2, left2 = second
+    if expr_key(left) == expr_key(left2) and expr_key(right) == expr_key(right2):
+        split_name = raw_split_definition_name(left)
+        if split_name is not None:
+            return split_name, right
+    if expr_key(left) == expr_key(right2) and expr_key(right) == expr_key(left2):
+        split_name = raw_split_definition_name(right)
+        if split_name is not None:
+            return split_name, left
+    return None
+
+
+def raw_tptp_avatar_definition_proof(proposition: str) -> str | None:
+    if raw_tptp_avatar_definition_parts(proposition) is None:
+        return None
+    return "(fun P K => K (fun H => H) (fun H => H))"
+
+
 def raw_or_left_intro(target: Expr, proof: str) -> str | None:
     parts = app_args(target, "vampire_or", 2)
     if parts is None:
@@ -19596,6 +19632,8 @@ def raw_tptp_replay_proof(
 ) -> str | None:
     if rule == "fool_exhaustiveness_axiom":
         return raw_fool_exhaustiveness_axiom_proof(proposition)
+    if rule == "avatar_definition":
+        return raw_tptp_avatar_definition_proof(proposition)
     if rule == "rat":
         return raw_tptp_rat_proof(proposition, parents, propositions_by_name)
     if rule == "superposition":
@@ -19759,6 +19797,15 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             propositions.append(proposition)
         add_missing_raw_tptp_variables(propositions, variable_sorts)
     propositions_by_name = {name: proposition for name, _, proposition, _, _, _, _ in entries if proposition}
+    avatar_split_definitions: dict[str, str] = {}
+    for _, _, proposition, rule, _, _, _ in entries:
+        if rule != "avatar_definition" or not proposition:
+            continue
+        definition = raw_tptp_avatar_definition_parts(proposition)
+        if definition is None:
+            continue
+        split_name, body = definition
+        avatar_split_definitions.setdefault(split_name, expr_text(body))
 
     final_name = None
     final_proposition = "vampire_false"
@@ -19783,7 +19830,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     for name, sort in sorted(variable_sorts.items()):
         if name.startswith("vampire_"):
             continue
+        if name in avatar_split_definitions or name.replace("__", "_") in avatar_split_definitions:
+            continue
         lines.append(f"Variable {name}:{sort}.")
+    for name, body in sorted(avatar_split_definitions.items()):
+        lines.append(f"Definition {name} : prop := {body}.")
 
     known_raw_propositions: dict[str, str] = {}
 
