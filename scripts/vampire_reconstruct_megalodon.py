@@ -11421,20 +11421,21 @@ def rule_conjunction_component_application_proof(
         return None
 
     for rule in rules:
-        if vampire_and_parts(rule.conclusion) is None:
+        application_conclusion = rule_application_conclusion(rule)
+        if vampire_and_parts(application_conclusion) is None:
             continue
         variables = set(rule_application_binders(rule))
-        for component in flatten_vampire_and(rule.conclusion):
+        for component in flatten_vampire_and(application_conclusion):
             component_premises, component_conclusion = split_arrows(component)
             if len(component_premises) > len(target_premises):
                 continue
             residual = target_premises[len(target_premises) - len(component_premises) :] if component_premises else []
             subst: dict[str, Expr] = {}
-            if not match_expr(component_conclusion, target_conclusion, variables, subst):
+            if not match_expr_with_alpha_instantiation(component_conclusion, target_conclusion, variables, subst):
                 continue
             ok = True
             for component_premise, target_premise in zip(component_premises, residual):
-                if not match_expr(component_premise, target_premise, variables, subst):
+                if not match_expr_with_alpha_instantiation(component_premise, target_premise, variables, subst):
                     ok = False
                     break
             if not ok:
@@ -11463,7 +11464,7 @@ def rule_conjunction_component_application_proof(
                     rule_parts.append(proof_argument_text(premise_proof))
                 if not candidate_ok:
                     continue
-                instantiated_conclusion = substitute_expr(rule.conclusion, candidate)
+                instantiated_conclusion = substitute_expr(application_conclusion, candidate)
                 instantiated_component = substitute_expr(component, candidate)
                 projection = project_from_conjunction(rule_application_text(rule_parts), instantiated_conclusion, instantiated_component)
                 if projection is None:
