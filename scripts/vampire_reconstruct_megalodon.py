@@ -16101,22 +16101,38 @@ def raw_instantiated_forall_clause_options(
     resolver: Expr,
 ) -> list[tuple[Expr, str]]:
     options = [(expr, proof)]
+    seen = {expr_key(expr)}
     binders, body = collect_foralls(expr)
     if not binders:
         return options
     binder_names = {name for name, _ in binders}
-    subst = raw_infer_forall_clause_substitution(body, target, resolver, binder_names)
-    if subst is None or not binder_names <= subst.keys():
-        return options
-    instantiated = substitute_expr(body, subst)
-    instantiated_proof = proof
-    for name, _ in binders:
-        value = subst.get(name)
-        if value is None:
-            return options
-        instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(value)})"
-    if expr_key(instantiated) != expr_key(expr):
-        options.append((instantiated, instantiated_proof))
+    candidates = raw_infer_forall_clause_substitution_candidates(
+        body,
+        target,
+        resolver,
+        binder_names,
+        limit=4,
+    )
+    if not candidates:
+        subst = raw_infer_forall_clause_substitution(body, target, resolver, binder_names)
+        candidates = [subst] if subst is not None else []
+    for subst in candidates:
+        if not binder_names <= subst.keys():
+            continue
+        instantiated = substitute_expr(body, subst)
+        key = expr_key(instantiated)
+        if key in seen:
+            continue
+        instantiated_proof = proof
+        for name, _ in binders:
+            value = subst.get(name)
+            if value is None:
+                instantiated_proof = ""
+                break
+            instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(value)})"
+        if instantiated_proof:
+            seen.add(key)
+            options.append((instantiated, instantiated_proof))
     return options
 
 
@@ -16593,11 +16609,9 @@ def raw_tptp_unit_resulting_resolution_proof(
     if not raw_clause_replay_budget_ok(source, target, max_literals=16, max_literal_product=256):
         return None
 
-    resolver_options: list[list[tuple[Expr, str]]] = []
-    for _, resolver, resolver_proof in resolver_entries:
+    for _, resolver, _ in resolver_entries:
         if len(raw_clause_literals(resolver)) > 12:
             return None
-        resolver_options.append(raw_instantiated_forall_clause_options(resolver, resolver_proof, target, source)[:2])
 
     source_options: list[tuple[Expr, str]] = [(source, source_proof)]
     for _, resolver, _ in resolver_entries[:3]:
@@ -16607,29 +16621,36 @@ def raw_tptp_unit_resulting_resolution_proof(
         ]:
             if all(expr_key(option[0]) != expr_key(existing[0]) for existing in source_options):
                 source_options.append(option)
-            if len(source_options) >= 4:
+            if len(source_options) >= 6:
                 break
-        if len(source_options) >= 4:
+        if len(source_options) >= 6:
             break
 
-    def search_resolvers(index: int, current: list[tuple[Expr, str]]) -> str | None:
+    def search_resolvers(
+        source_clause: Expr,
+        source_clause_proof: str,
+        index: int,
+        current: list[tuple[Expr, str]],
+    ) -> str | None:
         if proof_search_timed_out():
             return None
-        if index >= len(resolver_options):
-            for source_clause, source_clause_proof in source_options:
-                if len(raw_clause_literals(source_clause)) > 16:
-                    continue
-                proof = raw_clause_multi_resolution_proof(source_clause, target, source_clause_proof, current)
-                if proof is not None:
-                    return proof
-            return None
-        for option in resolver_options[index]:
-            found = search_resolvers(index + 1, current + [option])
+        if index >= len(resolver_entries):
+            if len(raw_clause_literals(source_clause)) > 16:
+                return None
+            return raw_clause_multi_resolution_proof(source_clause, target, source_clause_proof, current)
+        _, resolver, resolver_proof = resolver_entries[index]
+        options = raw_instantiated_forall_clause_options(resolver, resolver_proof, target, source_clause)[:4]
+        for option in options:
+            found = search_resolvers(source_clause, source_clause_proof, index + 1, current + [option])
             if found is not None:
                 return found
         return None
 
-    return search_resolvers(0, [])
+    for source_clause, source_clause_proof in source_options:
+        proof = search_resolvers(source_clause, source_clause_proof, 0, [])
+        if proof is not None:
+            return proof
+    return None
 
 
 def raw_tptp_trivial_inequality_removal_proof(
