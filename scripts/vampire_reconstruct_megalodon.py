@@ -20262,6 +20262,9 @@ def raw_tptp_replay_proof(
     }:
         return raw_tptp_trivial_inequality_removal_proof(proposition, parents, propositions_by_name)
     if rule == "avatar_sat_refutation":
+        proof = raw_tptp_avatar_sat_refutation_proof(proposition, parents, propositions_by_name)
+        if proof is not None:
+            return proof
         return raw_tptp_one_parent_transform_proof(proposition, parents, propositions_by_name, variable_sorts)
     if rule in {"definition_folding", "definition_unfolding"}:
         proof = raw_tptp_parent_equality_chain_rewrite_proof(proposition, parents, propositions_by_name, variable_sorts)
@@ -20448,6 +20451,94 @@ def raw_fool_distinctness_axiom_proof(proposition: str) -> str | None:
             f"(fun Hdistinct => "
             f"((Hdistinct (fun R:prop => R -> False) (fun Hfalse_elim => Hfalse_elim False)) {true_proof}))"
         )
+    return None
+
+
+def raw_tptp_avatar_sat_refutation_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> str | None:
+    target = parse_expr(proposition)
+    if target is None or not false_eliminator_expr(target):
+        return None
+    parsed: list[tuple[str, Expr, str]] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        if parent_proposition is None:
+            continue
+        parent_expr = parse_expr(parent_proposition)
+        if parent_expr is None:
+            continue
+        parent_proof = raw_tptp_claim_name(parent)
+        if false_eliminator_expr(parent_expr):
+            return parent_proof
+        parsed.append((parent, parent_expr, parent_proof))
+    if len(parsed) < 2:
+        return None
+    allow_recursive_clauses = len(parsed) <= 4
+
+    def close_literal(
+        literal: Expr,
+        literal_proof: str,
+        facts: list[tuple[str, Expr, str]],
+        used_clauses: set[str],
+        depth: int,
+    ) -> str | None:
+        if depth > 16 or proof_search_timed_out():
+            return None
+        false_elim = raw_false_literal_elimination_proof(literal, target, literal_proof)
+        if false_elim is not None:
+            return false_elim
+        for _, fact, fact_proof in facts:
+            if raw_or_parts(fact) is not None:
+                continue
+            proof = raw_complement_resolution_proof(literal, literal_proof, fact, fact_proof, target)
+            if proof is not None:
+                return proof
+            proof = raw_complement_resolution_proof(fact, fact_proof, literal, literal_proof, target)
+            if proof is not None:
+                return proof
+        if not allow_recursive_clauses:
+            return None
+        branch_fact = ("__branch", literal, literal_proof)
+        for fact_name, fact, fact_proof in facts:
+            if fact_name in used_clauses or raw_or_parts(fact) is None:
+                continue
+            next_facts = [entry for entry in facts if entry[0] != fact_name] + [branch_fact]
+            proof = close_clause(fact, fact_proof, next_facts, used_clauses | {fact_name}, depth + 1)
+            if proof is not None:
+                return proof
+        return None
+
+    def close_clause(
+        clause: Expr,
+        clause_proof: str,
+        facts: list[tuple[str, Expr, str]],
+        used_clauses: set[str],
+        depth: int = 0,
+    ) -> str | None:
+        if depth > 16 or proof_search_timed_out():
+            return None
+        parts = raw_or_parts(clause)
+        if parts is None:
+            return close_literal(clause, clause_proof, facts, used_clauses, depth)
+        left, right = parts
+        left_name = fresh_identifier("HL", expr_text(clause), clause_proof, str(depth))
+        right_name = fresh_identifier("HR", expr_text(clause), clause_proof, left_name, str(depth))
+        left_proof = close_clause(left, left_name, facts, used_clauses, depth + 1)
+        right_proof = close_clause(right, right_name, facts, used_clauses, depth + 1)
+        if left_proof is None or right_proof is None:
+            return None
+        return f"({proof_head(clause_proof)} {proof_arg_text(target)} (fun {left_name} => {left_proof}) (fun {right_name} => {right_proof}))"
+
+    for index, (_, clause, clause_proof) in enumerate(parsed):
+        if raw_or_parts(clause) is None:
+            continue
+        facts = [entry for fact_index, entry in enumerate(parsed) if fact_index != index]
+        proof = close_clause(clause, clause_proof, facts, {parsed[index][0]})
+        if proof is not None:
+            return proof
     return None
 
 
