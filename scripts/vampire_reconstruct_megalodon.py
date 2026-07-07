@@ -4669,6 +4669,20 @@ def raw_tptp_exported_definition_chain_proof(
                     return proof
         return finish(states)
 
+    if fields.get("rule", "").replace(" ", "_") == "definition_folding":
+        source_proof = raw_tptp_claim_name(parents[0])
+        for equality, equality_proof in equalities:
+            proof = raw_deep_quantified_equality_rewrite_proof(
+                source,
+                target,
+                source_proof,
+                equality,
+                equality_proof,
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+
     proof = apply_sequence(equalities)
     if proof is not None:
         return proof
@@ -22728,6 +22742,194 @@ def raw_repeated_quantified_equality_rewrite_clause_proof(
         states = next_states
         if not states:
             break
+    return None
+
+
+def raw_deep_quantified_equality_rewrite_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality: Expr,
+    equality_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 40 or proof_search_timed_out():
+        return None
+    if expr_same_mod_alpha(source, target):
+        return source_proof
+    if len(expr_text(source)) + len(expr_text(target)) > 9000:
+        return None
+
+    direct = raw_repeated_quantified_equality_rewrite_clause_proof(
+        source,
+        target,
+        source_proof,
+        equality,
+        equality_proof,
+        variable_sorts,
+        max_depth=2,
+    )
+    if direct is not None:
+        return direct
+
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
+        assert source.value is not None and target.value is not None and target.sort is not None
+        binder = target.value
+        source_body = source.args[0]
+        target_body = target.args[0]
+        if source.value != binder and binder in (expr_variables(source_body) | expr_bound_variables(source_body)):
+            used_names = (
+                expr_variables(source_body)
+                | expr_bound_variables(source_body)
+                | expr_variables(target_body)
+                | expr_bound_variables(target_body)
+                | {source.value, target.value}
+            )
+            binder = fresh_identifier(target.value, " ".join(sorted(used_names)))
+            target_body = rename_expr_variables(target_body, {target.value: binder})
+        if source.value != binder:
+            source_body = rename_expr_variables(source_body, {source.value: binder})
+        inner = raw_deep_quantified_equality_rewrite_proof(
+            source_body,
+            target_body,
+            f"({proof_head(source_proof)} {binder})",
+            equality,
+            equality_proof,
+            {**variable_sorts, binder: target.sort},
+            depth + 1,
+        )
+        if inner is None:
+            return None
+        return f"(fun {binder} :{target.sort} => {inner})"
+
+    source_or = app_args(source, "vampire_or", 2)
+    target_or = app_args(target, "vampire_or", 2)
+    if source_or is not None and target_or is not None:
+        left_name = fresh_identifier("HorL", expr_text(source), expr_text(target), source_proof)
+        right_name = fresh_identifier("HorR", expr_text(source), expr_text(target), source_proof, left_name)
+        left_proof = raw_deep_quantified_equality_rewrite_proof(
+            source_or[0],
+            target_or[0],
+            left_name,
+            equality,
+            equality_proof,
+            variable_sorts,
+            depth + 1,
+        )
+        if left_proof is None:
+            return None
+        right_proof = raw_deep_quantified_equality_rewrite_proof(
+            source_or[1],
+            target_or[1],
+            right_name,
+            equality,
+            equality_proof,
+            variable_sorts,
+            depth + 1,
+        )
+        if right_proof is None:
+            return None
+        return (
+            f"({proof_head(source_proof)} {proof_arg_text(target)} "
+            f"(fun {left_name} => fun P Hleft Hright => Hleft {proof_term_text(left_proof)}) "
+            f"(fun {right_name} => fun P Hleft Hright => Hright {proof_term_text(right_proof)}))"
+        )
+
+    source_and = vampire_and_parts(source)
+    target_and = vampire_and_parts(target)
+    if source_and is not None and target_and is not None:
+        left_source = vampire_and_projection_from_proof(source_proof, source, source_and[0])
+        right_source = vampire_and_projection_from_proof(source_proof, source, source_and[1])
+        if left_source is None or right_source is None:
+            return None
+        left_proof = raw_deep_quantified_equality_rewrite_proof(
+            source_and[0],
+            target_and[0],
+            left_source,
+            equality,
+            equality_proof,
+            variable_sorts,
+            depth + 1,
+        )
+        if left_proof is None:
+            return None
+        right_proof = raw_deep_quantified_equality_rewrite_proof(
+            source_and[1],
+            target_and[1],
+            right_source,
+            equality,
+            equality_proof,
+            variable_sorts,
+            depth + 1,
+        )
+        if right_proof is None:
+            return None
+        return f"(fun P K => K {proof_term_text(left_proof)} {proof_term_text(right_proof)})"
+
+    source_exists = raw_exists_transform_parts(source)
+    target_exists = raw_exists_transform_parts(target)
+    if source_exists is not None and target_exists is not None:
+        source_head, source_sort, _source_predicate, source_name, source_body = source_exists
+        target_head, target_sort, _target_predicate, target_name, target_body = target_exists
+        if source_head != target_head or source_sort != target_sort:
+            return None
+        witness_name = fresh_identifier("w", expr_text(source), expr_text(target), source_proof)
+        source_body = rename_expr_variables(source_body, {source_name: witness_name})
+        target_body = rename_expr_variables(target_body, {target_name: witness_name})
+        body_proof = raw_deep_quantified_equality_rewrite_proof(
+            source_body,
+            target_body,
+            "Hbody",
+            equality,
+            equality_proof,
+            {**variable_sorts, witness_name: source_sort},
+            depth + 1,
+        )
+        if body_proof is None:
+            return None
+        target_intro = f"(fun Q Hexists => Hexists {witness_name} {proof_term_text(body_proof)})"
+        return (
+            f"({proof_head(source_proof)} {proof_arg_text(target)} "
+            f"(fun {witness_name} :{source_sort} => fun Hbody => {target_intro}))"
+        )
+
+    if source.kind == "arrow" and target.kind == "arrow":
+        source_premise, source_conclusion = source.args
+        target_premise, target_conclusion = target.args
+        premise_name = fresh_identifier("Hprem", expr_text(source_premise), expr_text(target_premise), source_proof)
+        source_premise_proof = raw_deep_quantified_equality_rewrite_proof(
+            target_premise,
+            source_premise,
+            premise_name,
+            equality,
+            equality_proof,
+            variable_sorts,
+            depth + 1,
+        )
+        if source_premise_proof is None:
+            source_premise_proof = raw_deep_formula_transform_proof(
+                target_premise,
+                source_premise,
+                premise_name,
+                variable_sorts,
+                depth + 1,
+            )
+        if source_premise_proof is None:
+            return None
+        conclusion = raw_deep_quantified_equality_rewrite_proof(
+            source_conclusion,
+            target_conclusion,
+            f"({proof_head(source_proof)} {proof_term_text(source_premise_proof)})",
+            equality,
+            equality_proof,
+            variable_sorts,
+            depth + 1,
+        )
+        if conclusion is None:
+            return None
+        return f"(fun {premise_name} => {conclusion})"
+
     return None
 
 
