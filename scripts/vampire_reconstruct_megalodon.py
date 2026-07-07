@@ -20248,6 +20248,11 @@ def raw_tptp_forward_subsumption_resolution_proof(
     second_name = raw_tptp_claim_name(parents[1])
     parsed = [(first, first_name), (second, second_name)]
 
+    for parent_expr, parent_proof in parsed:
+        proof = raw_forall_prop_true_equality_split_proof(target, parent_expr, parent_proof)
+        if proof is not None:
+            return proof
+
     def replay_pairs(target_expr: Expr, entries: list[tuple[Expr, str]]) -> str | None:
         for source_index, resolver_index in megalodon_replay_parent_pair_order(parents, replay_step):
             source, source_name = entries[source_index]
@@ -20301,6 +20306,57 @@ def raw_tptp_forward_subsumption_resolution_proof(
                 proof = f"(fun {target_name}:{target_sort} => {proof})"
             return proof
 
+    return None
+
+
+def raw_forall_prop_true_equality_split_proof(
+    target: Expr,
+    source: Expr,
+    source_proof: str,
+) -> str | None:
+    binders, body = collect_foralls(source)
+    if len(binders) != 1 or binders[0][1] != "prop":
+        return None
+    binder_name, _ = binders[0]
+    false_expr = Expr("var", value="False")
+    instantiated = substitute_expr(body, {binder_name: false_expr})
+    parts = raw_or_parts(instantiated)
+    if parts is None:
+        return None
+    for eq_branch, target_branch, eq_is_left in (
+        (parts[0], parts[1], True),
+        (parts[1], parts[0], False),
+    ):
+        target_proof = raw_clause_transform_proof(target_branch, target, "Htarget")
+        if target_proof is None:
+            target_proof = raw_deep_formula_transform_proof(target_branch, target, "Htarget", {})
+        if target_proof is None:
+            continue
+        sides = equality_like_sides(eq_branch)
+        if sides is None:
+            continue
+        left, right = sides
+        if raw_true_expr(left) and expr_same_mod_alpha(right, false_expr):
+            equality_to_false = "Heq"
+        elif expr_same_mod_alpha(left, false_expr) and raw_true_expr(right):
+            equality_to_false = raw_eq_symmetry_proof("Heq", false_expr, "prop")
+        else:
+            continue
+        false_proof = f"({proof_head(equality_to_false)} (fun R:prop => R) {raw_true_intro_proof()})"
+        false_to_target = raw_false_to_expr_proof(false_proof, target)
+        source_at_false = f"({proof_head(source_proof)} False)"
+        target_text = proof_arg_text(target)
+        if eq_is_left:
+            return (
+                f"({source_at_false} {target_text} "
+                f"(fun Heq => {false_to_target}) "
+                f"(fun Htarget => {proof_term_text(target_proof)}))"
+            )
+        return (
+            f"({source_at_false} {target_text} "
+            f"(fun Htarget => {proof_term_text(target_proof)}) "
+            f"(fun Heq => {false_to_target}))"
+        )
     return None
 
 
