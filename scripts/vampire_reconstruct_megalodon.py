@@ -1231,8 +1231,10 @@ def reconstruction_prelude_for(propositions: list[str]) -> list[str]:
     joined = "\n".join(propositions)
     lines = [
         "Definition vampire_false : prop := forall P:prop, P.",
-        "Definition vampire_eq : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y.",
+        "Definition vampire_eq : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y.",
         "Infix = 502 := vampire_eq.",
+        "Definition vampire_eq_set : set->set->prop := vampire_eq.",
+        "Definition vampire_eq_prop : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y.",
         "Definition vampire_true : prop := forall P:prop, P -> P.",
     ]
     if "vampire_or " in joined:
@@ -1246,10 +1248,6 @@ def reconstruction_prelude_for(propositions: list[str]) -> list[str]:
         lines.append("Definition vampire_exists_prop : (prop->prop)->prop := fun P => forall Q:prop, (forall X:prop, P X -> Q) -> Q.")
     if "vampire_exists_set_prop " in joined:
         lines.append("Definition vampire_exists_set_prop : ((set->prop)->prop)->prop := fun P => forall Q:prop, (forall X:set->prop, P X -> Q) -> Q.")
-    if "vampire_eq_set " in joined:
-        lines.append("Definition vampire_eq_set : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y.")
-    if "vampire_eq_prop " in joined:
-        lines.append("Definition vampire_eq_prop : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y.")
     return lines
 
 
@@ -18132,40 +18130,55 @@ def raw_tptp_replay_proof(
 def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | None = None) -> list[str]:
     text = proof.read_text(encoding="utf-8", errors="replace")
     declarations = collect_tptp_declarations(text)
-    variable_sorts = raw_tptp_type_variables(declarations)
-    entries: list[tuple[str, str, str, str | None, str | None, str | None, list[str], bool]] = []
-    propositions: list[str] = []
-    for declaration in declarations:
-        parsed = tptp_decl_formula_parts(declaration)
-        if parsed is None:
-            continue
-        name, role, formula, annotations = parsed
-        if role == "type":
-            continue
-        proposition = tptp_formula_to_megalodon_proposition(formula, variable_sorts)
-        rule = tptp_inference_rule(annotations)
-        parents = tptp_inference_parents(annotations)
-        source_name = tptp_formula_source_name(annotations)
-        trusted_definition = role == "plain" and not parents and tptp_introduced_definition(annotations)
-        if proposition is None:
-            entries.append((name, role, formula, None, rule, source_name, parents, trusted_definition))
-            continue
-        entries.append((name, role, formula, proposition, rule, source_name, parents, trusted_definition))
-        propositions.append(proposition)
-    add_missing_raw_tptp_variables(propositions, variable_sorts)
-
-    decoded_entries: list[tuple[str, str, str, str | None, str | None, list[str], bool]] = []
-    decoded_propositions: list[str] = []
+    entries: list[tuple[str, str, str, str | None, str | None, list[str], bool]]
     unsupported = 0
-    for name, role, formula, _, rule, source_name, parents, trusted_definition in entries:
-        proposition = tptp_formula_to_megalodon_proposition(formula, variable_sorts)
-        if proposition is None:
-            unsupported += 1
-        else:
-            decoded_propositions.append(proposition)
-        decoded_entries.append((name, role, proposition or "", rule, source_name, parents, trusted_definition))
-    entries = decoded_entries
-    propositions = decoded_propositions
+    if declarations:
+        variable_sorts = raw_tptp_type_variables(declarations)
+        raw_entries: list[tuple[str, str, str, str | None, str | None, str | None, list[str], bool]] = []
+        propositions: list[str] = []
+        for declaration in declarations:
+            parsed = tptp_decl_formula_parts(declaration)
+            if parsed is None:
+                continue
+            name, role, formula, annotations = parsed
+            if role == "type":
+                continue
+            proposition = tptp_formula_to_megalodon_proposition(formula, variable_sorts)
+            rule = tptp_inference_rule(annotations)
+            parents = tptp_inference_parents(annotations)
+            source_name = tptp_formula_source_name(annotations)
+            trusted_definition = role == "plain" and not parents and tptp_introduced_definition(annotations)
+            if proposition is None:
+                raw_entries.append((name, role, formula, None, rule, source_name, parents, trusted_definition))
+                continue
+            raw_entries.append((name, role, formula, proposition, rule, source_name, parents, trusted_definition))
+            propositions.append(proposition)
+        add_missing_raw_tptp_variables(propositions, variable_sorts)
+
+        decoded_entries: list[tuple[str, str, str, str | None, str | None, list[str], bool]] = []
+        decoded_propositions: list[str] = []
+        for name, role, formula, _, rule, source_name, parents, trusted_definition in raw_entries:
+            proposition = tptp_formula_to_megalodon_proposition(formula, variable_sorts)
+            if proposition is None:
+                unsupported += 1
+            else:
+                decoded_propositions.append(proposition)
+            decoded_entries.append((name, role, proposition or "", rule, source_name, parents, trusted_definition))
+        entries = decoded_entries
+        propositions = decoded_propositions
+    else:
+        variable_sorts = {**proof_text_type_variable_sorts(text), **problem_type_variable_sorts(proof, problem)}
+        replay_steps = megalodon_replay_steps(text, proof, problem)
+        entries = []
+        propositions = []
+        for name in sorted(replay_steps, key=lambda value: int(value[1:]) if value.startswith("S") and value[1:].isdigit() else value):
+            step = replay_steps[name]
+            role = "axiom" if step.rule == "input" and not step.parents else "plain"
+            rule = step.rule.replace(" ", "_") if step.rule else None
+            proposition = step.proposition
+            entries.append((name, role, proposition, rule, None, list(step.parents), False))
+            propositions.append(proposition)
+        add_missing_raw_tptp_variables(propositions, variable_sorts)
     propositions_by_name = {name: proposition for name, _, proposition, _, _, _, _ in entries if proposition}
 
     final_name = None
@@ -18253,7 +18266,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     else:
         lines.append(f"exact {final_name}.")
     lines.append("Qed.")
-    return lines
+    return add_problem_type_variables(lines, proof, text, problem)
 
 
 def write_raw_tptp_skeletons(
