@@ -2647,6 +2647,37 @@ def match_expr(pattern: Expr, target: Expr, variables: set[str], subst: dict[str
             subst[pattern.value] = target
             return True
         return expr_key(previous) == expr_key(target)
+    if (
+        pattern.kind == "app"
+        and pattern.args
+        and pattern.args[0].kind == "var"
+        and pattern.args[0].value in variables
+        and target.kind == "app"
+        and len(target.args) >= len(pattern.args)
+    ):
+        function_name = pattern.args[0].value
+        assert function_name is not None
+        argument_count = len(pattern.args) - 1
+        prefix_count = len(target.args) - argument_count
+        if prefix_count >= 1:
+            candidate_function = (
+                target.args[0]
+                if prefix_count == 1
+                else Expr("app", args=tuple(target.args[:prefix_count]))
+            )
+            previous = subst.get(function_name)
+            if previous is None or expr_same_mod_alpha(previous, candidate_function):
+                trial = dict(subst)
+                trial[function_name] = candidate_function
+                remaining_variables = set(variables)
+                remaining_variables.discard(function_name)
+                if all(
+                    match_expr(substitute_expr(pattern_arg, trial), target_arg, remaining_variables, trial)
+                    for pattern_arg, target_arg in zip(pattern.args[1:], target.args[prefix_count:])
+                ):
+                    subst.clear()
+                    subst.update(trial)
+                    return True
     if pattern.kind in {"forall", "lambda"}:
         if pattern.kind != target.kind or pattern.sort != target.sort or len(pattern.args) != len(target.args):
             return False
@@ -3186,6 +3217,15 @@ def substitute_expr(expr: Expr, subst: dict[str, Expr]) -> Expr:
     if expr.kind in {"forall", "lambda"} and expr.value in subst:
         subst = {name: value for name, value in subst.items() if name != expr.value}
     return Expr(expr.kind, value=expr.value, args=tuple(substitute_expr(arg, subst) for arg in expr.args), sort=expr.sort)
+
+
+def flatten_applications(expr: Expr) -> Expr:
+    if not expr.args:
+        return expr
+    args = tuple(flatten_applications(arg) for arg in expr.args)
+    if expr.kind == "app" and args and args[0].kind == "app":
+        return flatten_applications(Expr("app", args=tuple(args[0].args) + args[1:], sort=expr.sort))
+    return Expr(expr.kind, value=expr.value, args=args, sort=expr.sort)
 
 
 def replace_expr(expr: Expr, needle: Expr, replacement: Expr) -> tuple[Expr, bool]:
@@ -22665,7 +22705,7 @@ def raw_instantiated_clause_from_exported_literal(
         for source_literal in candidate_literals:
             if not (expr_variables(source_literal) & binder_names) <= current.keys():
                 continue
-            instantiated_source = substitute_expr(source_literal, current)
+            instantiated_source = flatten_applications(substitute_expr(source_literal, current))
             for target_index, target_literal in enumerate(target_literals):
                 trial: dict[str, Expr] = {}
                 if raw_match_literal_mod_equality_symmetry(instantiated_source, target_literal, set(), trial):
@@ -22744,7 +22784,7 @@ def raw_instantiated_clause_from_exported_literal(
             used_target_names.add(candidates[0])
     if any(name not in subst for name in binder_sorts):
         return None
-    instantiated = substitute_expr(body, subst)
+    instantiated = flatten_applications(substitute_expr(body, subst))
     instantiated_proof = clause_proof
     for name, _ in binders:
         value = subst.get(name)
