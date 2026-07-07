@@ -22056,20 +22056,23 @@ def raw_avatar_sat_dpll_refutation_proof(
         variable = choose_branch_variable(assignment)
         if variable is None:
             return None
+        branch_base = re.sub(r"[^_A-Za-z0-9']", "_", variable)
+        true_name = fresh_identifier(f"Htrue_{branch_base}", variable, str(depth), str(len(assignment)))
+        false_name = fresh_identifier(f"Hfalse_{branch_base}", variable, str(depth), true_name)
         true_assignment = dict(assignment)
-        true_assignment[variable] = (True, "Hsplit_true")
+        true_assignment[variable] = (True, true_name)
         true_proof = search(true_assignment, depth + 1)
         if true_proof is None:
             return None
         false_assignment = dict(assignment)
-        false_assignment[variable] = (False, "Hsplit_false")
+        false_assignment[variable] = (False, false_name)
         false_proof = search(false_assignment, depth + 1)
         if false_proof is None:
             return None
         return (
             f"(xm {variable} {proof_arg_text(target)} "
-            f"(fun Hsplit_true => {true_proof}) "
-            f"(fun Hsplit_false => {false_proof}))"
+            f"(fun {true_name} => {true_proof}) "
+            f"(fun {false_name} => {false_proof}))"
         )
 
     return search({}, 0)
