@@ -3653,6 +3653,14 @@ def surface_direct_step_proposition(proposition: str, variable_sorts: dict[str, 
     return expr_text(surface_direct_step_expr(parsed, variable_sorts)) if parsed is not None else proposition
 
 
+def raw_tptp_normalize_step_proposition(proposition: str, variable_sorts: dict[str, str]) -> str:
+    parsed = parse_expr(proposition)
+    if parsed is None:
+        return proposition
+    surfaced = surface_direct_step_expr(parsed, variable_sorts)
+    return lower_function_equality_proposition(surfaced, variable_sorts)
+
+
 def fill_replay_substitution_claims(
     lines: list[str],
     proof: Path | None,
@@ -22804,6 +22812,26 @@ def raw_avatar_sat_dpll_refutation_proof(
     return search({}, 0)
 
 
+SOURCE_DECLARED_NAME_RE = re.compile(
+    r"^\s*Definition\s+(?P<name>[_A-Za-z][_A-Za-z0-9']*)\b"
+)
+
+
+def source_declared_names(source: Path | None) -> set[str]:
+    if source is None:
+        return set()
+    try:
+        text = source.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return set()
+    names: set[str] = set()
+    for line in text.splitlines():
+        match = SOURCE_DECLARED_NAME_RE.match(line)
+        if match is not None:
+            names.add(match.group("name"))
+    return names
+
+
 def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | None = None) -> list[str]:
     text = proof.read_text(encoding="utf-8", errors="replace")
     declarations = collect_tptp_declarations(text)
@@ -22840,6 +22868,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             if proposition is None:
                 unsupported += 1
             else:
+                proposition = raw_tptp_normalize_step_proposition(proposition, variable_sorts)
                 decoded_propositions.append(proposition)
             if rule == "skolem_symbol_introduction" and not parents:
                 role = "axiom"
@@ -22860,7 +22889,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             step = replay_steps[name]
             role = "axiom" if step.rule == "negated conjecture" or (step.rule in axiom_like_rules and not step.parents) else "plain"
             rule = step.rule.replace(" ", "_") if step.rule else None
-            proposition = step.proposition
+            local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(step)}
+            proposition = raw_tptp_normalize_step_proposition(step.proposition, local_sorts)
             entries.append((name, role, proposition, rule, None, list(step.parents), False))
             propositions.append(proposition)
         add_missing_raw_tptp_variables(propositions, variable_sorts)
@@ -22914,8 +22944,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     lines.append(f"// decoded proof formulas: {len(propositions)}")
     lines.append(f"// unsupported proof formulas: {unsupported}")
     lines.extend(reconstruction_prelude_for(propositions))
+    source_names = source_declared_names(source)
     for name, sort in sorted(variable_sorts.items()):
         if name.startswith("vampire_"):
+            continue
+        if name in source_names:
             continue
         if name in avatar_split_definitions or name.replace("__", "_") in avatar_split_definitions:
             continue
