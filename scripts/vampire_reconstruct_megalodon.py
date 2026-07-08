@@ -33902,7 +33902,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if claim_name in seen_claims:
             continue
         seen_claims.add(claim_name)
-        if role not in {"axiom", "definition"} and not trusted_definition:
+        if role not in {"axiom", "definition", "negated_conjecture"} and not trusted_definition:
             continue
         rule_text = rule or "input"
         parent_text = f", parents {' '.join(parents)}" if parents else ""
@@ -33925,7 +33925,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if claim_name in seen_theorem_claims:
             continue
         seen_theorem_claims.add(claim_name)
-        if role in {"axiom", "definition"} or trusted_definition:
+        if role in {"axiom", "definition", "negated_conjecture"} or trusted_definition:
             continue
         rule_text = rule or "input"
         parent_text = f", parents {' '.join(parents)}" if parents else ""
