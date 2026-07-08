@@ -459,6 +459,8 @@ def raw_tptp_proof_has_reconstructable_content(text: str) -> bool:
         return True
     return (
         "megalodon_reconstruction_start." in text
+        and "megalodon_final_step(" in text
+        and "megalodon_reconstruction_end." in text
         and any(MEGALODON_STEP_RE.match(line) for line in text.splitlines())
     )
 
