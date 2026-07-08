@@ -18883,102 +18883,113 @@ def raw_tptp_unit_resulting_resolution_proof(
             return None
         parsed.append((parent, parent_expr, raw_tptp_claim_name(parent)))
 
-    _, source, source_proof = parsed[0]
-    resolver_entries = parsed[1:]
-    if not raw_clause_replay_budget_ok(source, target, max_literals=16, max_literal_product=256):
-        return None
+    def source_priority(item: tuple[int, tuple[str, Expr, str]]) -> tuple[int, int]:
+        index, (_name, expr, _proof) = item
+        return (0 if index == 0 else 1, -len(raw_clause_literals(expr)))
 
-    for _, resolver, _ in resolver_entries:
-        if len(raw_clause_literals(resolver)) > 12:
+    def try_source(source_index: int) -> str | None:
+        _, source, source_proof = parsed[source_index]
+        resolver_entries = [entry for index, entry in enumerate(parsed) if index != source_index]
+        if not raw_clause_replay_budget_ok(source, target, max_literals=16, max_literal_product=256):
             return None
 
-    source_options: list[tuple[Expr, str]] = [(source, source_proof)]
-    for _, resolver, _ in resolver_entries[:3]:
-        for option in [
-            *raw_instantiated_forall_clause_options(source, source_proof, target, resolver),
-            *raw_prop_false_forall_clause_options(source, source_proof, target, resolver),
-        ]:
-            if all(expr_key(option[0]) != expr_key(existing[0]) for existing in source_options):
-                source_options.append(option)
+        for _, resolver, _ in resolver_entries:
+            if len(raw_clause_literals(resolver)) > 12:
+                return None
+
+        source_options: list[tuple[Expr, str]] = [(source, source_proof)]
+        for _, resolver, _ in resolver_entries[:3]:
+            for option in [
+                *raw_instantiated_forall_clause_options(source, source_proof, target, resolver),
+                *raw_prop_false_forall_clause_options(source, source_proof, target, resolver),
+            ]:
+                if all(expr_key(option[0]) != expr_key(existing[0]) for existing in source_options):
+                    source_options.append(option)
+                if len(source_options) >= 6:
+                    break
             if len(source_options) >= 6:
                 break
-        if len(source_options) >= 6:
-            break
 
-    source_binders, source_body = collect_foralls(source)
-    if source_binders and len(source_binders) <= 4:
-        candidate_exprs = (target, *(resolver for _, resolver, _ in resolver_entries))
-        candidate_lists: list[list[Expr]] = []
-        for _name, sort in source_binders:
-            candidates = raw_candidate_terms_for_sort(candidate_exprs, sort, variable_sorts)
-            if not candidates:
-                candidate_lists = []
-                break
-            candidate_lists.append(candidates[:16])
+        source_binders, source_body = collect_foralls(source)
+        if source_binders and len(source_binders) <= 4:
+            candidate_exprs = (target, *(resolver for _, resolver, _ in resolver_entries))
+            candidate_lists: list[list[Expr]] = []
+            for _name, sort in source_binders:
+                candidates = raw_candidate_terms_for_sort(candidate_exprs, sort, variable_sorts)
+                if not candidates:
+                    candidate_lists = []
+                    break
+                candidate_lists.append(candidates[:16])
 
-        def source_instantiation_supported(instantiated_source: Expr) -> bool:
-            for source_literal in raw_clause_literals(instantiated_source):
-                found = False
-                for _resolver_name, resolver, resolver_proof in resolver_entries:
-                    for resolver_clause, _resolver_clause_proof in raw_instantiated_forall_clause_options(
-                        resolver,
-                        resolver_proof,
-                        target,
-                        instantiated_source,
-                    )[:8]:
-                        for resolver_literal in raw_clause_literals(resolver_clause):
-                            trial: dict[str, Expr] = {}
-                            if raw_match_complementary_literals(source_literal, resolver_literal, set(), trial):
-                                found = True
+            def source_instantiation_supported(instantiated_source: Expr) -> bool:
+                for source_literal in raw_clause_literals(instantiated_source):
+                    found = False
+                    for _resolver_name, resolver, resolver_proof in resolver_entries:
+                        for resolver_clause, _resolver_clause_proof in raw_instantiated_forall_clause_options(
+                            resolver,
+                            resolver_proof,
+                            target,
+                            instantiated_source,
+                        )[:8]:
+                            for resolver_literal in raw_clause_literals(resolver_clause):
+                                trial: dict[str, Expr] = {}
+                                if raw_match_complementary_literals(source_literal, resolver_literal, set(), trial):
+                                    found = True
+                                    break
+                            if found:
                                 break
                         if found:
                             break
-                    if found:
-                        break
-                if not found:
-                    return False
-            return True
+                    if not found:
+                        return False
+                return True
 
-        attempts = 0
-        candidate_products = itertools.product(*candidate_lists) if candidate_lists else ()
-        for values in candidate_products:
-            attempts += 1
-            if attempts > 4096 or len(source_options) >= 24:
-                break
-            subst = {name: value for (name, _sort), value in zip(source_binders, values)}
-            instantiated = flatten_applications(substitute_expr(source_body, subst))
-            key = expr_key(instantiated)
-            if any(expr_key(existing[0]) == key for existing in source_options):
-                continue
-            if not source_instantiation_supported(instantiated):
-                continue
-            instantiated_proof = source_proof
-            for name, _sort in source_binders:
-                instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(subst[name])})"
-            source_options.append((instantiated, instantiated_proof))
+            attempts = 0
+            candidate_products = itertools.product(*candidate_lists) if candidate_lists else ()
+            for values in candidate_products:
+                attempts += 1
+                if attempts > 4096 or len(source_options) >= 24:
+                    break
+                subst = {name: value for (name, _sort), value in zip(source_binders, values)}
+                instantiated = flatten_applications(substitute_expr(source_body, subst))
+                key = expr_key(instantiated)
+                if any(expr_key(existing[0]) == key for existing in source_options):
+                    continue
+                if not source_instantiation_supported(instantiated):
+                    continue
+                instantiated_proof = source_proof
+                for name, _sort in source_binders:
+                    instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(subst[name])})"
+                source_options.append((instantiated, instantiated_proof))
 
-    def search_resolvers(
-        source_clause: Expr,
-        source_clause_proof: str,
-        index: int,
-        current: list[tuple[Expr, str]],
-    ) -> str | None:
-        if proof_search_timed_out():
-            return None
-        if index >= len(resolver_entries):
-            if len(raw_clause_literals(source_clause)) > 16:
+        def search_resolvers(
+            source_clause: Expr,
+            source_clause_proof: str,
+            index: int,
+            current: list[tuple[Expr, str]],
+        ) -> str | None:
+            if proof_search_timed_out():
                 return None
-            return raw_clause_multi_resolution_proof(source_clause, target, source_clause_proof, current)
-        _, resolver, resolver_proof = resolver_entries[index]
-        options = raw_instantiated_forall_clause_options(resolver, resolver_proof, target, source_clause)[:4]
-        for option in options:
-            found = search_resolvers(source_clause, source_clause_proof, index + 1, current + [option])
-            if found is not None:
-                return found
+            if index >= len(resolver_entries):
+                if len(raw_clause_literals(source_clause)) > 16:
+                    return None
+                return raw_clause_multi_resolution_proof(source_clause, target, source_clause_proof, current)
+            _, resolver, resolver_proof = resolver_entries[index]
+            options = raw_instantiated_forall_clause_options(resolver, resolver_proof, target, source_clause)[:4]
+            for option in options:
+                found = search_resolvers(source_clause, source_clause_proof, index + 1, current + [option])
+                if found is not None:
+                    return found
+            return None
+
+        for source_clause, source_clause_proof in source_options:
+            proof = search_resolvers(source_clause, source_clause_proof, 0, [])
+            if proof is not None:
+                return proof
         return None
 
-    for source_clause, source_clause_proof in source_options:
-        proof = search_resolvers(source_clause, source_clause_proof, 0, [])
+    for source_index, _entry in sorted(enumerate(parsed), key=source_priority):
+        proof = try_source(source_index)
         if proof is not None:
             return proof
     return None
