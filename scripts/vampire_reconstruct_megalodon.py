@@ -3059,6 +3059,17 @@ def equality_like_sides(expr: Expr) -> tuple[Expr, Expr] | None:
     return None
 
 
+def equality_like_expr(template: Expr, left: Expr, right: Expr) -> Expr:
+    if (
+        template.kind == "app"
+        and len(template.args) == 3
+        and template.args[0].kind == "var"
+        and template.args[0].value in {"vampire_eq_set", "vampire_eq_prop"}
+    ):
+        return Expr("app", args=(template.args[0], left, right))
+    return Expr("eq", args=(left, right))
+
+
 def match_expr_with_alpha_instantiation(
     pattern: Expr,
     target: Expr,
@@ -23927,9 +23938,9 @@ def raw_equality_predicate_argument_rewrite_proof(
             context_args[predicate_index] = Expr("var", value=hole)
             context_app = Expr("app", args=tuple(context_args))
             if side_index == 0:
-                context = Expr("eq", args=(context_app, source_sides[1]))
+                context = equality_like_expr(source, context_app, source_sides[1])
             else:
-                context = Expr("eq", args=(source_sides[0], context_app))
+                context = equality_like_expr(source, source_sides[0], context_app)
             return (
                 f"{proof_term_text(predicate_equality)} "
                 f"(fun {hole} :set->prop => {expr_text(context)}) "
@@ -23940,9 +23951,9 @@ def raw_equality_predicate_argument_rewrite_proof(
             continue
         hole = fresh_identifier("zz", expr_text(source), expr_text(target), source_proof)
         if side_index == 0:
-            context = Expr("eq", args=(Expr("var", value=hole), source_sides[1]))
+            context = equality_like_expr(source, Expr("var", value=hole), source_sides[1])
         else:
-            context = Expr("eq", args=(source_sides[0], Expr("var", value=hole)))
+            context = equality_like_expr(source, source_sides[0], Expr("var", value=hole))
         return (
             f"{proof_term_text(term_equality)} "
             f"(fun {hole} :set => {expr_text(context)}) "
@@ -24856,6 +24867,181 @@ def raw_lambda_function_parent_equality_rewrite_proof(
     return None
 
 
+def raw_clause_options_with_exported_match(
+    expr: Expr,
+    proof: str,
+    target: Expr,
+    resolver: Expr,
+    rule_lhs: Expr | None,
+    redex: Expr | None,
+) -> list[tuple[Expr, str]]:
+    options = raw_instantiated_forall_clause_options(expr, proof, target, resolver)
+    binders, body = collect_foralls(expr)
+    if not binders or rule_lhs is None or redex is None:
+        return options
+    binder_names = {name for name, _ in binders}
+    subst: dict[str, Expr] = {}
+    if not match_expr_with_alpha_instantiation(rule_lhs, redex, binder_names, subst):
+        return options
+    flatten_substitution(subst)
+    if not binder_names <= subst.keys():
+        return options
+    instantiated = flatten_applications(substitute_expr(body, subst))
+    key = expr_key(instantiated)
+    if any(expr_key(existing) == key for existing, _ in options):
+        return options
+    instantiated_proof = proof
+    for name, _sort in binders:
+        instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(subst[name])})"
+    return [*options, (instantiated, instantiated_proof)]
+
+
+def raw_guarded_equality_composition_clause_proof(
+    target: Expr,
+    parents: tuple[tuple[Expr, str], tuple[Expr, str]],
+    variable_sorts: dict[str, str],
+    replay_step: MegalodonReplayStep | None,
+) -> str | None:
+    target_binders, target_body = collect_foralls(target)
+    if target_binders:
+        return None
+    target_literals = raw_clause_literals(target_body)
+    if len(target_literals) != 2:
+        return None
+    rule_lhs: Expr | None = None
+    redex: Expr | None = None
+    local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
+    for fields in megalodon_replay_extra_fields(replay_step, "rewrite"):
+        rule_lhs = raw_tptp_replay_extra_expr(fields, "rule_lhs", local_sorts)
+        redex = raw_tptp_replay_extra_expr(fields, "redex", local_sorts)
+        if rule_lhs is not None and redex is not None:
+            break
+
+    def branch_to_target(literal: Expr, target_literal: Expr, proof: str) -> str | None:
+        transformed = raw_clause_transform_proof(literal, target_literal, proof)
+        if transformed is None:
+            transformed = raw_deep_formula_transform_proof(literal, target_literal, proof, local_sorts)
+        if transformed is None and expr_same_mod_alpha(literal, target_literal):
+            transformed = proof
+        return transformed
+
+    def eliminate_binary_clause(
+        clause: Expr,
+        clause_proof: str,
+        equality_index: int,
+        equality_branch: str,
+        residual_branch: str,
+        equality_name: str,
+        residual_name: str,
+    ) -> str | None:
+        if raw_or_parts(clause) is None or len(raw_clause_literals(clause)) != 2:
+            return None
+        if equality_index == 0:
+            return (
+                f"({proof_head(clause_proof)} {proof_arg_text(target_body)} "
+                f"(fun {equality_name} => {proof_term_text(equality_branch)}) "
+                f"(fun {residual_name} => {proof_term_text(residual_branch)}))"
+            )
+        return (
+            f"({proof_head(clause_proof)} {proof_arg_text(target_body)} "
+            f"(fun {residual_name} => {proof_term_text(residual_branch)}) "
+            f"(fun {equality_name} => {proof_term_text(equality_branch)}))"
+        )
+
+    for first_index, second_index in ((0, 1), (1, 0)):
+        first, first_proof = parents[first_index]
+        second, second_proof = parents[second_index]
+        first_options = raw_clause_options_with_exported_match(
+            first,
+            first_proof,
+            target_body,
+            second,
+            rule_lhs,
+            redex,
+        )
+        for first_clause, first_clause_proof in first_options:
+            second_options = raw_clause_options_with_exported_match(
+                second,
+                second_proof,
+                target_body,
+                first_clause,
+                rule_lhs,
+                redex,
+            )
+            first_literals = raw_clause_literals(first_clause)
+            if len(first_literals) != 2:
+                continue
+            for second_clause, second_clause_proof in second_options:
+                second_literals = raw_clause_literals(second_clause)
+                if len(second_literals) != 2:
+                    continue
+                for first_eq_index, first_equality in enumerate(first_literals):
+                    if equality_like_sides(first_equality) is None:
+                        continue
+                    first_guard = first_literals[1 - first_eq_index]
+                    for second_eq_index, second_equality in enumerate(second_literals):
+                        if equality_like_sides(second_equality) is None:
+                            continue
+                        second_guard = second_literals[1 - second_eq_index]
+                        for target_eq_index, target_equality in enumerate(target_literals):
+                            if equality_like_sides(target_equality) is None:
+                                continue
+                            target_guard = target_literals[1 - target_eq_index]
+                            first_guard_branch = branch_to_target(first_guard, target_guard, "HfirstGuard")
+                            second_guard_branch = branch_to_target(second_guard, target_guard, "HsecondGuard")
+                            if first_guard_branch is None or second_guard_branch is None:
+                                continue
+                            first_guard_intro = raw_or_intro_literal_at(target_body, 1 - target_eq_index, first_guard_branch)
+                            second_guard_intro = raw_or_intro_literal_at(target_body, 1 - target_eq_index, second_guard_branch)
+                            if first_guard_intro is None or second_guard_intro is None:
+                                continue
+                            composition = raw_equality_composition_proof(
+                                first_equality,
+                                "HfirstEq",
+                                second_equality,
+                                "HsecondEq",
+                                target_equality,
+                                local_sorts,
+                            )
+                            if composition is None:
+                                composition = raw_equality_composition_proof(
+                                    second_equality,
+                                    "HsecondEq",
+                                    first_equality,
+                                    "HfirstEq",
+                                    target_equality,
+                                    local_sorts,
+                                )
+                            if composition is None:
+                                continue
+                            equality_intro = raw_or_intro_literal_at(target_body, target_eq_index, composition)
+                            if equality_intro is None:
+                                continue
+                            second_case = eliminate_binary_clause(
+                                second_clause,
+                                second_clause_proof,
+                                second_eq_index,
+                                equality_intro,
+                                second_guard_intro,
+                                "HsecondEq",
+                                "HsecondGuard",
+                            )
+                            if second_case is None:
+                                continue
+                            first_case = eliminate_binary_clause(
+                                first_clause,
+                                first_clause_proof,
+                                first_eq_index,
+                                second_case,
+                                first_guard_intro,
+                                "HfirstEq",
+                                "HfirstGuard",
+                            )
+                            if first_case is not None:
+                                return first_case
+    return None
+
+
 def raw_tptp_forward_demodulation_proof(
     proposition: str,
     parents: list[str],
@@ -24889,6 +25075,15 @@ def raw_tptp_forward_demodulation_proof(
 
     def fallback_ok(candidate: str | None) -> bool:
         return candidate is not None and not raw_tptp_replay_proof_has_synthetic_db(candidate)
+
+    proof = raw_guarded_equality_composition_clause_proof(
+        target,
+        ((first, first_name), (second, second_name)),
+        variable_sorts,
+        replay_step,
+    )
+    if fallback_ok(proof):
+        return proof
 
     proof = raw_negative_implication_quantified_equality_rewrite_proof(
         first,
@@ -26659,6 +26854,83 @@ def raw_instantiated_clause_from_exported_literal(
     return instantiated, instantiated_proof
 
 
+def raw_exported_two_literal_rewrite_branch_proof(
+    source: Expr,
+    source_proof: str,
+    resolver: Expr,
+    resolver_proof: str,
+    resolver_literal_index: int,
+    target: Expr,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    resolver_parts = raw_or_parts(resolver)
+    if resolver_parts is None:
+        return None
+    resolver_literals = raw_clause_literals(resolver)
+    if len(resolver_literals) != 2 or resolver_literal_index not in {0, 1}:
+        return None
+    equality_literal = resolver_literals[resolver_literal_index]
+    residual_literal = resolver_literals[1 - resolver_literal_index]
+    if equality_like_sides(equality_literal) is None:
+        return None
+    target_literals = raw_clause_literals(target)
+    if len(target_literals) < 2:
+        return None
+
+    for selected_target_index, selected_target in enumerate(target_literals):
+        selected_branch = raw_equality_rewrite_expr_proof(
+            source,
+            selected_target,
+            source_proof,
+            equality_literal,
+            "Heq",
+            variable_sorts,
+        )
+        if selected_branch is None:
+            selected_branch = raw_deep_formula_transform_proof(
+                source,
+                selected_target,
+                source_proof,
+                variable_sorts,
+            )
+        if selected_branch is None:
+            continue
+        selected_intro = raw_or_intro_literal_at(target, selected_target_index, selected_branch)
+        if selected_intro is None:
+            continue
+        for residual_target_index, residual_target in enumerate(target_literals):
+            if residual_target_index == selected_target_index:
+                continue
+            residual_branch = raw_clause_transform_proof(residual_literal, residual_target, "Hresidual")
+            if residual_branch is None:
+                residual_branch = raw_deep_formula_transform_proof(
+                    residual_literal,
+                    residual_target,
+                    "Hresidual",
+                    variable_sorts,
+                )
+            if residual_branch is None and expr_same_mod_alpha(residual_literal, residual_target):
+                residual_branch = "Hresidual"
+            if residual_branch is None:
+                continue
+            residual_intro = raw_or_intro_literal_at(target, residual_target_index, residual_branch)
+            if residual_intro is None:
+                continue
+            target_text = proof_arg_text(target)
+            if resolver_literal_index == 0:
+                return (
+                    f"({proof_head(resolver_proof)} {target_text} "
+                    f"(fun Heq => {proof_term_text(selected_intro)}) "
+                    f"(fun Hresidual => {proof_term_text(residual_intro)}))"
+                )
+            return (
+                f"({proof_head(resolver_proof)} {target_text} "
+                f"(fun Hresidual => {proof_term_text(residual_intro)}) "
+                f"(fun Heq => {proof_term_text(selected_intro)}))"
+            )
+    return None
+
+
 def raw_tptp_exported_two_literal_resolution_proof(
     proposition: str,
     parents: list[str],
@@ -26736,6 +27008,19 @@ def raw_tptp_exported_two_literal_resolution_proof(
         if selected_clause is not None and other_clause is not None:
             source, source_proof = selected_clause
             resolver, resolver_proof = other_clause
+            body_proof = raw_exported_two_literal_rewrite_branch_proof(
+                source,
+                source_proof,
+                resolver,
+                resolver_proof,
+                other_literal,
+                target_body,
+                extra_sorts,
+            )
+            if body_proof is not None:
+                for name, sort in reversed(target_binders):
+                    body_proof = f"(fun {name} :{sort} => {body_proof})"
+                return body_proof
             if (
                 raw_clause_replay_budget_ok(source, resolver, target_body, max_literals=16, max_literal_product=384)
                 and raw_clauses_have_complement(source, resolver)
