@@ -72,6 +72,7 @@ THF_TYPE_RE = re.compile(r"^thf\([^,]+,\s*type,\s*\((?P<name>[^:\s]+)\s*:\s*(?P<
 PROOF_SEARCH_STATE = threading.local()
 PROOF_SEARCH_SECONDS = float(os.environ.get("MEGALODON_PROOF_SEARCH_SECONDS", "8"))
 RAW_TPTP_REPLAY_SECONDS = float(os.environ.get("MEGALODON_RAW_TPTP_REPLAY_SECONDS", "0.35"))
+RAW_TPTP_FORWARD_SUBSUMPTION_REPLAY_SECONDS = float(os.environ.get("MEGALODON_RAW_TPTP_FORWARD_SUBSUMPTION_REPLAY_SECONDS", "1.0"))
 RAW_TPTP_REPLAY_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_REPLAY_CHAR_LIMIT", "12000"))
 RAW_TPTP_EXPORTED_NORMAL_FORM_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_NORMAL_FORM_CHAR_LIMIT", "60000"))
 RAW_TPTP_EXPORTED_FOOL_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_FOOL_CHAR_LIMIT", "60000"))
@@ -148,6 +149,12 @@ def raw_tptp_replay_payload_size_ok(
     ):
         return size <= RAW_TPTP_EXPORTED_RECTIFY_CHAR_LIMIT
     return False
+
+
+def raw_tptp_replay_seconds_for_rule(rule: str | None) -> float:
+    if rule in {"forward_subsumption_resolution", "backward_subsumption_resolution"}:
+        return RAW_TPTP_FORWARD_SUBSUMPTION_REPLAY_SECONDS
+    return RAW_TPTP_REPLAY_SECONDS
 
 
 def vampire_exists_name_for_sort(sort: str) -> str:
@@ -31933,7 +31940,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 step_info,
             ):
                 previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
-                PROOF_SEARCH_STATE.deadline = proof_search_now() + RAW_TPTP_REPLAY_SECONDS
+                PROOF_SEARCH_STATE.deadline = proof_search_now() + raw_tptp_replay_seconds_for_rule(rule)
                 try:
                     if step_info is not None:
                         replay_proof = raw_tptp_replay_proof_from_step(
