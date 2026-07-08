@@ -936,6 +936,11 @@ def join_sort_arrows(pieces: Iterable[str]) -> str:
     return "->".join(rendered)
 
 
+def binder_sort_text(sort: str) -> str:
+    stripped = strip_balanced_parens(sort)
+    return f"({stripped})" if len(split_sort_arrows(stripped)) > 1 else stripped
+
+
 def equivalent_sorts(left: str | None, right: str | None) -> bool:
     return left is not None and right is not None and split_sort_arrows(left) == split_sort_arrows(right)
 
@@ -5170,6 +5175,287 @@ def raw_tptp_replay_extra_surface_expr(
     if parsed is None:
         return None
     return surface_direct_step_expr(parsed, variable_sorts)
+
+
+def raw_tptp_exported_fold_step_expr(
+    fields: dict[str, str],
+    key: str,
+    variable_sorts: dict[str, str],
+) -> Expr | None:
+    parsed = raw_tptp_replay_extra_expr_with_pair_hints(fields, key, variable_sorts)
+    return ambient_basic_logic_expr(parsed) if parsed is not None else None
+
+
+def raw_tptp_exported_fold_step_instance(
+    old_term: Expr,
+    new_term: Expr,
+    equality: Expr,
+    equality_proof: str,
+    variable_sorts: dict[str, str],
+) -> tuple[Expr, str] | None:
+    equality_binders, equality_body = collect_foralls(equality)
+    sides = equality_like_sides(equality_body)
+    if sides is None or len(equality_binders) > 8:
+        return None
+    binder_names = {name for name, _ in equality_binders}
+    local_sorts = {**variable_sorts, **{name: sort for name, sort in equality_binders}}
+    for left, right, reverse in (
+        (sides[0], sides[1], False),
+        (sides[1], sides[0], True),
+    ):
+        subst: dict[str, Expr] = {}
+        if not match_expr_with_alpha_instantiation(left, old_term, binder_names, subst):
+            continue
+        if not match_expr_with_alpha_instantiation(right, new_term, binder_names, subst):
+            continue
+        flatten_substitution(subst)
+        if any(name not in subst for name, _ in equality_binders):
+            continue
+        if any(raw_expr_has_synthetic_db_variable(subst[name]) for name, _ in equality_binders):
+            continue
+        instantiated_left = substitute_expr(left, subst)
+        instantiated_right = substitute_expr(right, subst)
+        if not expr_same_mod_alpha(instantiated_left, old_term):
+            continue
+        if not expr_same_mod_alpha(instantiated_right, new_term):
+            continue
+        proof = equality_proof
+        for name, _sort in equality_binders:
+            proof = f"({proof_head(proof)} {proof_arg_text(subst[name])})"
+        equality_sort = raw_equality_transport_sort(old_term, new_term, local_sorts)
+        if reverse:
+            proof = raw_eq_symmetry_proof(proof, new_term, equality_sort)
+        equality_expr = equality_like_expr(equality_body, old_term, new_term)
+        return equality_expr, proof
+
+    for left, right, reverse in (
+        (sides[0], sides[1], False),
+        (sides[1], sides[0], True),
+    ):
+        left_args = left.args if left.kind == "app" else (left,)
+        right_args = right.args if right.kind == "app" else (right,)
+        if old_term.kind != "app" or new_term.kind != "app":
+            continue
+        if len(old_term.args) <= len(left_args) or len(new_term.args) <= len(right_args):
+            continue
+        if len(old_term.args) - len(left_args) != len(new_term.args) - len(right_args):
+            continue
+        if not all(expr_same_mod_alpha(left_arg, old_arg) for left_arg, old_arg in zip(left_args, old_term.args)):
+            continue
+        if not all(expr_same_mod_alpha(right_arg, new_arg) for right_arg, new_arg in zip(right_args, new_term.args)):
+            continue
+        old_extra_args = old_term.args[len(left_args) :]
+        new_extra_args = new_term.args[len(right_args) :]
+        if not all(expr_same_mod_alpha(old_arg, new_arg) for old_arg, new_arg in zip(old_extra_args, new_extra_args)):
+            continue
+        proof = equality_proof
+        equality_sort = raw_equality_transport_sort(sides[0], sides[1], local_sorts)
+        if reverse:
+            proof = raw_eq_symmetry_proof(proof, right, equality_sort)
+        hole_name = fresh_identifier("ff", expr_text(old_term), expr_text(new_term), expr_text(equality))
+        hole = Expr("var", value=hole_name)
+        applied = append_application_args(hole, list(old_extra_args))
+        target_sort = raw_equality_transport_sort(old_term, new_term, local_sorts)
+        target_sort_text = binder_sort_text(target_sort)
+        predicate = (
+            f"forall Q:({target_sort_text})->prop, "
+            f"Q {proof_arg_text(old_term)} -> Q {proof_arg_text(applied)}"
+        )
+        proof = (
+            f"{proof_term_text(proof)} "
+            f"(fun {hole_name} :{binder_sort_text(equality_sort)} => {predicate}) "
+            f"(fun Q H => H)"
+        )
+        return Expr("eq", args=(old_term, new_term)), proof
+    return None
+
+
+def raw_replace_expr_or_application_prefix(
+    expr: Expr,
+    needle: Expr,
+    replacement: Expr,
+    hole: Expr,
+) -> tuple[Expr, Expr, bool]:
+    if expr_same_mod_alpha(expr, needle):
+        return replacement, hole, True
+    if expr.kind == "app":
+        prefix_len: int | None = None
+        if needle.kind == "app" and 0 < len(needle.args) < len(expr.args):
+            if all(expr_same_mod_alpha(left, right) for left, right in zip(expr.args[: len(needle.args)], needle.args)):
+                prefix_len = len(needle.args)
+        elif needle.kind != "app" and expr.args and expr_same_mod_alpha(expr.args[0], needle):
+            prefix_len = 1
+        if prefix_len is not None:
+            rest = expr.args[prefix_len:]
+            replaced = flatten_applications(Expr("app", args=(replacement, *rest), sort=expr.sort))
+            context = flatten_applications(Expr("app", args=(hole, *rest), sort=expr.sort))
+            return replaced, context, True
+    if not expr.args:
+        return expr, expr, False
+    changed = False
+    replaced_args: list[Expr] = []
+    context_args: list[Expr] = []
+    for arg in expr.args:
+        if changed:
+            replaced_args.append(arg)
+            context_args.append(arg)
+            continue
+        replaced_arg, context_arg, arg_changed = raw_replace_expr_or_application_prefix(
+            arg,
+            needle,
+            replacement,
+            hole,
+        )
+        replaced_args.append(replaced_arg)
+        context_args.append(context_arg)
+        changed = arg_changed
+    if not changed:
+        return expr, expr, False
+    return (
+        Expr(expr.kind, value=expr.value, args=tuple(replaced_args), sort=expr.sort),
+        Expr(expr.kind, value=expr.value, args=tuple(context_args), sort=expr.sort),
+        True,
+    )
+
+
+def raw_tptp_exported_fold_step_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    old_term: Expr,
+    new_term: Expr,
+    equality_expr: Expr,
+    equality_proof: str,
+    variable_sorts: dict[str, str],
+) -> tuple[Expr, str] | None:
+    source_binders, source_body = collect_foralls(source)
+    source_body_proof = source_proof
+    for name, _sort in source_binders:
+        source_body_proof = f"({proof_head(source_body_proof)} {name})"
+    local_sorts = {**variable_sorts, **{name: sort for name, sort in source_binders}}
+    hole_name = fresh_identifier("zz", expr_text(source_body), expr_text(old_term), expr_text(new_term))
+    hole = Expr("var", value=hole_name)
+    replaced_body, context, changed = raw_replace_expr_or_application_prefix(
+        source_body,
+        old_term,
+        new_term,
+        hole,
+    )
+    if changed:
+        equality_sort = raw_equality_transport_sort(old_term, new_term, local_sorts)
+        transported = (
+            f"{proof_term_text(equality_proof)} "
+            f"(fun {hole_name} :{binder_sort_text(equality_sort)} => {expr_text(context)}) "
+            f"{proof_term_text(source_body_proof)}"
+        )
+        replaced = replaced_body
+        proof = transported
+        for name, sort in reversed(source_binders):
+            replaced = Expr("forall", value=name, sort=sort, args=(replaced,))
+            proof = f"(fun {name} :{binder_sort_text(sort)} => {proof})"
+        return replaced, proof
+
+    for replaced, proof in raw_quantified_equality_rewrite_clause_steps(
+        source,
+        source_proof,
+        equality_expr,
+        equality_proof,
+        variable_sorts,
+        limit=24,
+    ):
+        if expr_same_mod_alpha(replaced, source):
+            continue
+        if expr_same_mod_alpha(replaced, target):
+            return replaced, proof
+        if expr_text(new_term) in expr_text(replaced) or expr_text(old_term) not in expr_text(replaced):
+            return replaced, proof
+    return None
+
+
+def raw_tptp_exported_fold_steps_proof(
+    fields: dict[str, str],
+    parents: list[str],
+    variable_sorts: dict[str, str],
+    propositions_by_name: dict[str, str] | None = None,
+) -> str | None:
+    source = raw_tptp_exported_fold_step_expr(fields, "source", variable_sorts)
+    target = raw_tptp_exported_fold_step_expr(fields, "target", variable_sorts)
+    if source is None or target is None:
+        return None
+    parent_equalities: list[tuple[Expr, str]] = []
+    for index, parent in enumerate(parents[1:], start=1):
+        equality = raw_tptp_exported_fold_step_expr(fields, f"parent_{index}", variable_sorts)
+        if equality is not None:
+            equality_proof = raw_tptp_claim_name(parent)
+            parent_equalities.append((equality, equality_proof))
+            function_equality = raw_pointwise_set_function_equality(equality, equality_proof)
+            if function_equality is not None:
+                parent_equalities.append(function_equality)
+        synthetic_definition = (propositions_by_name or {}).get(f"{parent}_def")
+        if synthetic_definition is not None:
+            synthetic_equality = raw_tptp_exported_fold_step_expr(
+                {f"{parent}_def": synthetic_definition},
+                f"{parent}_def",
+                variable_sorts,
+            )
+            if synthetic_equality is not None:
+                synthetic_proof = raw_tptp_claim_name(f"{parent}_def")
+                parent_equalities.append((synthetic_equality, synthetic_proof))
+                function_equality = raw_pointwise_set_function_equality(synthetic_equality, synthetic_proof)
+                if function_equality is not None:
+                    parent_equalities.append(function_equality)
+
+    try:
+        fold_step_count = int(fields.get("fold_step_count", "0"))
+    except ValueError:
+        return None
+    if fold_step_count <= 0 or fold_step_count > 64 or not parent_equalities:
+        return None
+
+    current = source
+    proof = raw_tptp_claim_name(parents[0])
+    for index in range(fold_step_count):
+        old_term = raw_tptp_exported_fold_step_expr(fields, f"fold_step_{index}_lhs", variable_sorts)
+        new_term = raw_tptp_exported_fold_step_expr(fields, f"fold_step_{index}_rhs", variable_sorts)
+        if old_term is None or new_term is None:
+            return None
+        matched: tuple[Expr, str] | None = None
+        for equality, equality_proof in parent_equalities:
+            matched = raw_tptp_exported_fold_step_instance(
+                old_term,
+                new_term,
+                equality,
+                equality_proof,
+                variable_sorts,
+            )
+            if matched is not None:
+                break
+        if matched is None:
+            return None
+        equality_expr, equality_proof = matched
+        next_step = raw_tptp_exported_fold_step_proof(
+            current,
+            target,
+            proof,
+            old_term,
+            new_term,
+            equality_expr,
+            equality_proof,
+            variable_sorts,
+        )
+        if next_step is None:
+            return None
+        current, proof = next_step
+
+    if expr_same_mod_alpha(current, target):
+        return proof
+    transformed = raw_clause_transform_proof(current, target, proof)
+    if transformed is not None:
+        return transformed
+    transformed = raw_clause_subsumption_transform_proof(current, target, proof, deep_literals=True)
+    if transformed is not None:
+        return transformed
+    return raw_deep_formula_transform_proof(current, target, proof, variable_sorts)
 
 
 def raw_tptp_exported_definition_chain_proof(
@@ -13250,12 +13536,12 @@ def eta_reduce_unary_function(expr: Expr) -> Expr:
     if expr.kind != "lambda" or expr.sort != "set" or expr.value is None:
         return expr
     body = expr.args[0]
-    if body.kind != "app" or len(body.args) != 2:
+    if body.kind != "app" or len(body.args) < 2:
         return expr
-    argument = body.args[1]
+    argument = body.args[-1]
     if argument.kind != "var" or argument.value != expr.value:
         return expr
-    function = body.args[0]
+    function = body.args[0] if len(body.args) == 2 else Expr("app", args=body.args[:-1])
     if expr.value in expr_variables(function):
         return expr
     return function
@@ -23546,7 +23832,9 @@ def raw_eq_symmetry_proof(proof: str, left: Expr, sort: str) -> str:
     elif sort == "prop":
         predicate = f"vampire_eq_prop {name} {proof_arg_text(left)}"
     else:
-        predicate = f"{name} = {left_text}"
+        sort_text = binder_sort_text(sort)
+        predicate = f"forall Q:({sort_text})->prop, Q {name} -> Q {proof_arg_text(left)}"
+        return f"({proof_head(proof)} (fun {name} :{sort_text} => {predicate}) (fun Q H => H))"
     return f"({proof_head(proof)} (fun {name} :{sort} => {predicate}) (fun R Hr => Hr))"
 
 
@@ -30410,6 +30698,9 @@ def raw_tptp_definition_rewrite_proof(
         exported_source = raw_tptp_replay_extra_expr(fields, "source", local_sorts)
         exported_target = raw_tptp_replay_extra_expr(fields, "target", local_sorts)
         if exported_source is not None and exported_target is not None:
+            proof = raw_tptp_exported_fold_steps_proof(fields, parents, local_sorts, propositions_by_name)
+            if proof is not None:
+                return proof
             proof = raw_tptp_exported_definition_chain_proof(fields, parents, local_sorts, propositions_by_name)
             if proof is not None:
                 return proof
