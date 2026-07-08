@@ -23272,6 +23272,25 @@ def raw_negated_forall_implication_to_exists_conjunction_proof(
     if not implication_premises or len(implication_premises) > 6:
         return None
 
+    target_premises, target_conclusion = split_arrows(target)
+    if len(target_premises) == 1 and false_eliminator_expr(target_conclusion):
+        negated_target_premises, negated_target_conclusion = split_arrows(target_premises[0])
+        if len(negated_target_premises) == 1 and false_eliminator_expr(negated_target_conclusion):
+            positive_target = negated_target_premises[0]
+            if raw_nested_exists_parts(positive_target) is not None:
+                positive_proof = raw_negated_forall_implication_to_exists_conjunction_proof(
+                    source,
+                    positive_target,
+                    source_proof,
+                    variable_sorts,
+                )
+                if positive_proof is not None:
+                    not_target = fresh_identifier("HnotTarget", expr_text(target), source_proof)
+                    return (
+                        f"(fun {not_target} :{proof_arg_text(target_premises[0])} => "
+                        f"{not_target} {proof_term_text(positive_proof)})"
+                    )
+
     target_parts = raw_nested_exists_parts(target)
     if target_parts is None:
         return None
@@ -31017,6 +31036,56 @@ def raw_skolem_rewrite_instance_proof(
     return instantiated_conclusion, proof
 
 
+def raw_skolem_double_negated_rewrite_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rewrites: tuple[RawSkolemRewrite, ...],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_premises, source_conclusion = split_arrows(source)
+    target_premises, target_conclusion = split_arrows(target)
+    if (
+        len(source_premises) != 1
+        or len(target_premises) != 1
+        or not false_eliminator_expr(source_conclusion)
+        or not false_eliminator_expr(target_conclusion)
+    ):
+        return None
+    source_positive_premises, source_positive_conclusion = split_arrows(source_premises[0])
+    target_positive_premises, target_positive_conclusion = split_arrows(target_premises[0])
+    if (
+        len(source_positive_premises) != 1
+        or len(target_positive_premises) != 1
+        or not false_eliminator_expr(source_positive_conclusion)
+        or not false_eliminator_expr(target_positive_conclusion)
+    ):
+        return None
+    source_positive = source_positive_premises[0]
+    target_positive = target_positive_premises[0]
+    for rewrite in rewrites:
+        instance = raw_skolem_rewrite_instance_proof(
+            source_positive,
+            rewrite,
+            "HsourcePositive",
+            variable_sorts,
+            target_positive,
+        )
+        if instance is None:
+            continue
+        rewritten, rewritten_proof = instance
+        if not expr_same_mod_alpha(rewritten, target_positive):
+            continue
+        not_target = fresh_identifier("HnotTarget", expr_text(target), source_proof)
+        return (
+            f"(fun {not_target} :{proof_arg_text(target_premises[0])} => "
+            f"{proof_head(source_proof)} "
+            f"(fun HsourcePositive :{proof_arg_text(source_positive)} => "
+            f"{not_target} {proof_term_text(rewritten_proof)}))"
+        )
+    return None
+
+
 def raw_skolemised_formula_transform_proof(
     source: Expr,
     target: Expr,
@@ -31029,6 +31098,15 @@ def raw_skolemised_formula_transform_proof(
         return None
     if len(expr_text(source)) + len(expr_text(target)) > 18000:
         return None
+    double_negated = raw_skolem_double_negated_rewrite_proof(
+        source,
+        target,
+        source_proof,
+        rewrites,
+        variable_sorts,
+    )
+    if double_negated is not None:
+        return double_negated
     if expr_same_mod_alpha(source, target):
         return source_proof
 
