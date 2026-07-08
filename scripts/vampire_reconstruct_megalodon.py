@@ -72,6 +72,7 @@ THF_TYPE_RE = re.compile(r"^thf\([^,]+,\s*type,\s*\((?P<name>[^:\s]+)\s*:\s*(?P<
 PROOF_SEARCH_STATE = threading.local()
 PROOF_SEARCH_SECONDS = float(os.environ.get("MEGALODON_PROOF_SEARCH_SECONDS", "8"))
 RAW_TPTP_REPLAY_SECONDS = float(os.environ.get("MEGALODON_RAW_TPTP_REPLAY_SECONDS", "0.35"))
+RAW_TPTP_REPLAY_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_REPLAY_CHAR_LIMIT", "12000"))
 PROOF_SEARCH_CLOCK = getattr(time, "thread_time", time.monotonic)
 
 
@@ -82,6 +83,24 @@ def proof_search_now() -> float:
 def proof_search_timed_out() -> bool:
     deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
     return deadline is not None and proof_search_now() > deadline
+
+
+def raw_tptp_replay_payload_size(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    replay_step: "MegalodonReplayStep | None",
+) -> int:
+    size = len(proposition)
+    size += sum(len(propositions_by_name.get(parent, "")) for parent in parents)
+    if replay_step is not None:
+        for kind, fields in replay_step.extras:
+            size += len(kind)
+            if hasattr(fields, "items"):
+                size += sum(len(key) + len(value) for key, value in fields.items())
+            else:
+                size += sum(len(field) for field in fields)
+    return size
 
 
 def vampire_exists_name_for_sort(sort: str) -> str:
@@ -31521,26 +31540,34 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     definition_key = predicate_definition_keys_by_step.get(parent)
                     if definition_key is not None and definition_key not in replay_parents:
                         replay_parents.append(definition_key)
-            previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
-            PROOF_SEARCH_STATE.deadline = proof_search_now() + RAW_TPTP_REPLAY_SECONDS
-            try:
-                step_info = replay_steps.get(name)
-                if step_info is not None:
-                    replay_proof = raw_tptp_replay_proof_from_step(
-                        step_info,
-                        proposition,
-                        replay_parents,
-                        propositions_by_name,
-                        variable_sorts,
-                    )
-                else:
-                    replay_proof = raw_tptp_replay_proof(rule, proposition, replay_parents, propositions_by_name, variable_sorts)
-            finally:
-                if previous_deadline is None:
-                    if hasattr(PROOF_SEARCH_STATE, "deadline"):
-                        delattr(PROOF_SEARCH_STATE, "deadline")
-                else:
-                    PROOF_SEARCH_STATE.deadline = previous_deadline
+            step_info = replay_steps.get(name)
+            if raw_tptp_replay_payload_size(
+                proposition,
+                replay_parents,
+                propositions_by_name,
+                step_info,
+            ) <= RAW_TPTP_REPLAY_CHAR_LIMIT:
+                previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+                PROOF_SEARCH_STATE.deadline = proof_search_now() + RAW_TPTP_REPLAY_SECONDS
+                try:
+                    if step_info is not None:
+                        replay_proof = raw_tptp_replay_proof_from_step(
+                            step_info,
+                            proposition,
+                            replay_parents,
+                            propositions_by_name,
+                            variable_sorts,
+                        )
+                    else:
+                        replay_proof = raw_tptp_replay_proof(rule, proposition, replay_parents, propositions_by_name, variable_sorts)
+                finally:
+                    if previous_deadline is None:
+                        if hasattr(PROOF_SEARCH_STATE, "deadline"):
+                            delattr(PROOF_SEARCH_STATE, "deadline")
+                    else:
+                        PROOF_SEARCH_STATE.deadline = previous_deadline
+            else:
+                replay_proof = None
         if replay_proof is not None and raw_tptp_replay_proof_is_unsafe(rule, proposition, replay_proof):
             replay_proof = None
         if (
