@@ -15,6 +15,7 @@ import concurrent.futures
 import functools
 import heapq
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -18783,7 +18784,9 @@ def raw_tptp_unit_resulting_resolution_proof(
     proposition: str,
     parents: list[str],
     propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str] | None = None,
 ) -> str | None:
+    variable_sorts = variable_sorts or {}
     if len(parents) < 2 or len(parents) > 10:
         return None
     target = parse_expr(proposition)
@@ -18820,6 +18823,58 @@ def raw_tptp_unit_resulting_resolution_proof(
                 break
         if len(source_options) >= 6:
             break
+
+    source_binders, source_body = collect_foralls(source)
+    if source_binders and len(source_binders) <= 4:
+        candidate_exprs = (target, *(resolver for _, resolver, _ in resolver_entries))
+        candidate_lists: list[list[Expr]] = []
+        for _name, sort in source_binders:
+            candidates = raw_candidate_terms_for_sort(candidate_exprs, sort, variable_sorts)
+            if not candidates:
+                candidate_lists = []
+                break
+            candidate_lists.append(candidates[:16])
+
+        def source_instantiation_supported(instantiated_source: Expr) -> bool:
+            for source_literal in raw_clause_literals(instantiated_source):
+                found = False
+                for _resolver_name, resolver, resolver_proof in resolver_entries:
+                    for resolver_clause, _resolver_clause_proof in raw_instantiated_forall_clause_options(
+                        resolver,
+                        resolver_proof,
+                        target,
+                        instantiated_source,
+                    )[:8]:
+                        for resolver_literal in raw_clause_literals(resolver_clause):
+                            trial: dict[str, Expr] = {}
+                            if raw_match_complementary_literals(source_literal, resolver_literal, set(), trial):
+                                found = True
+                                break
+                        if found:
+                            break
+                    if found:
+                        break
+                if not found:
+                    return False
+            return True
+
+        attempts = 0
+        candidate_products = itertools.product(*candidate_lists) if candidate_lists else ()
+        for values in candidate_products:
+            attempts += 1
+            if attempts > 4096 or len(source_options) >= 24:
+                break
+            subst = {name: value for (name, _sort), value in zip(source_binders, values)}
+            instantiated = flatten_applications(substitute_expr(source_body, subst))
+            key = expr_key(instantiated)
+            if any(expr_key(existing[0]) == key for existing in source_options):
+                continue
+            if not source_instantiation_supported(instantiated):
+                continue
+            instantiated_proof = source_proof
+            for name, _sort in source_binders:
+                instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(subst[name])})"
+            source_options.append((instantiated, instantiated_proof))
 
     def search_resolvers(
         source_clause: Expr,
@@ -27374,7 +27429,7 @@ def raw_tptp_superposition_proof(
         )
         if proof is not None:
             return proof
-        proof = raw_tptp_unit_resulting_resolution_proof(proposition, parents, propositions_by_name)
+        proof = raw_tptp_unit_resulting_resolution_proof(proposition, parents, propositions_by_name, variable_sorts)
         if proof is not None:
             return proof
     return None
@@ -29721,7 +29776,7 @@ def raw_tptp_replay_proof(
             max_literal_product=96,
         )
     if rule == "unit_resulting_resolution":
-        proof = raw_tptp_unit_resulting_resolution_proof(proposition, parents, propositions_by_name)
+        proof = raw_tptp_unit_resulting_resolution_proof(proposition, parents, propositions_by_name, variable_sorts)
         if proof is not None:
             return proof
         return raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name, replay_step=replay_step)
