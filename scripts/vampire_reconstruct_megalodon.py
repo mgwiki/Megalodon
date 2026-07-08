@@ -1999,6 +1999,18 @@ def megalodon_replay_steps(
     step_details: dict[str, tuple[str, tuple[str, ...], dict[str, str]]] = {}
     for raw in proof_text.splitlines():
         line = raw.strip()
+        source_line_match = MEGALODON_SOURCE_LINE_RE.match(line)
+        if source_line_match is not None:
+            try:
+                source_line = json.loads(f'"{source_line_match.group("line")}"')
+            except json.JSONDecodeError:
+                source_line = ""
+            if source_line.startswith("claim S") and source_line.endswith(".") and ": " in source_line:
+                claim_head, claim_proposition = source_line[:-1].split(": ", 1)
+                claim_name = claim_head.removeprefix("claim ").strip()
+                if re.fullmatch(r"S[0-9]+", claim_name):
+                    direct_propositions.setdefault(claim_name, claim_proposition)
+            continue
         proposition_match = MEGALODON_STEP_PROPOSITION_RE.match(line)
         if proposition_match is not None:
             step = f"S{proposition_match.group('id')}"
@@ -18509,12 +18521,17 @@ def raw_complement_resolution_proof(
             return None
         negative_sides = equality_like_sides(negative_premises[0])
         positive_sides = equality_like_sides(positive)
-        if (
-            negative_sides is None
-            or positive_sides is None
-            or not expr_same_mod_alpha(negative_sides[0], positive_sides[1])
-            or not expr_same_mod_alpha(negative_sides[1], positive_sides[0])
-        ):
+        if negative_sides is None or positive_sides is None:
+            return None
+        same_direction = expr_same_mod_alpha(negative_sides[0], positive_sides[0]) and expr_same_mod_alpha(
+            negative_sides[1],
+            positive_sides[1],
+        )
+        reversed_direction = expr_same_mod_alpha(negative_sides[0], positive_sides[1]) and expr_same_mod_alpha(
+            negative_sides[1],
+            positive_sides[0],
+        )
+        if not same_direction and not reversed_direction:
             return None
         sort = "set"
         if (
@@ -18524,7 +18541,11 @@ def raw_complement_resolution_proof(
             and negative_premises[0].args[0].value == "vampire_eq_prop"
         ):
             sort = "prop"
-        positive_as_negative = raw_eq_symmetry_proof(positive_proof, positive_sides[0], sort)
+        positive_as_negative = (
+            positive_proof
+            if same_direction
+            else raw_eq_symmetry_proof(positive_proof, positive_sides[0], sort)
+        )
         false_proof = f"({proof_head(negative_proof)} {proof_term_text(positive_as_negative)})"
         return raw_false_literal_elimination_proof(Expr("var", value="vampire_false"), target, false_proof)
 
@@ -18615,6 +18636,15 @@ def raw_clause_literals(expr: Expr, depth: int = 0) -> list[Expr]:
     return raw_clause_literals(parts[0], depth + 1) + raw_clause_literals(parts[1], depth + 1)
 
 
+def raw_clause_from_literals(literals: list[Expr]) -> Expr | None:
+    if not literals:
+        return None
+    clause = literals[0]
+    for literal in literals[1:]:
+        clause = Expr("app", args=(Expr("var", value="vampire_or"), clause, literal))
+    return clause
+
+
 def raw_clause_replay_budget_ok(*exprs: Expr, max_literals: int = 10, max_literal_product: int = 64) -> bool:
     counts = [len(raw_clause_literals(expr)) for expr in exprs]
     if any(count > max_literals for count in counts):
@@ -18695,8 +18725,16 @@ def raw_complementary_literals(left: Expr, right: Expr) -> bool:
         if (
             negative_sides is not None
             and positive_sides is not None
-            and expr_same_mod_alpha(negative_sides[0], positive_sides[1])
-            and expr_same_mod_alpha(negative_sides[1], positive_sides[0])
+            and (
+                (
+                    expr_same_mod_alpha(negative_sides[0], positive_sides[0])
+                    and expr_same_mod_alpha(negative_sides[1], positive_sides[1])
+                )
+                or (
+                    expr_same_mod_alpha(negative_sides[0], positive_sides[1])
+                    and expr_same_mod_alpha(negative_sides[1], positive_sides[0])
+                )
+            )
         ):
             return True
     if false_eliminator_expr(left):
@@ -18712,8 +18750,16 @@ def raw_complementary_literals(left: Expr, right: Expr) -> bool:
         if (
             negative_sides is not None
             and positive_sides is not None
-            and expr_same_mod_alpha(negative_sides[0], positive_sides[1])
-            and expr_same_mod_alpha(negative_sides[1], positive_sides[0])
+            and (
+                (
+                    expr_same_mod_alpha(negative_sides[0], positive_sides[0])
+                    and expr_same_mod_alpha(negative_sides[1], positive_sides[1])
+                )
+                or (
+                    expr_same_mod_alpha(negative_sides[0], positive_sides[1])
+                    and expr_same_mod_alpha(negative_sides[1], positive_sides[0])
+                )
+            )
         ):
             return True
     return false_eliminator_expr(right) and len(left_premises) == 1 and false_eliminator_expr(left_conclusion)
@@ -19406,11 +19452,132 @@ def raw_clause_multi_resolution_proof(
     return f"({proof_head(source_proof)} {proof_arg_text(target)} (fun {left_name} => {left_target}) (fun {right_name} => {right_target}))"
 
 
+def raw_tptp_trace_literal_expr(fields: dict[str, str], key: str, variable_sorts: dict[str, str]) -> Expr | None:
+    proposition = fields.get(f"{key}_proposition")
+    if proposition:
+        parsed = parse_expr(proposition)
+        if parsed is not None:
+            return parsed
+    raw = fields.get(key)
+    if not raw:
+        return None
+    converted = tptp_formula_to_megalodon_proposition(raw, variable_sorts)
+    if converted is None:
+        return None
+    return parse_expr(converted)
+
+
+def raw_tptp_exported_urr_trace_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+    replay_step: MegalodonReplayStep | None,
+) -> str | None:
+    if replay_step is None or len(parents) < 2:
+        return None
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    for fields in megalodon_replay_extra_fields(replay_step, "unit_resulting_resolution"):
+        main_parent_unit = fields.get("trace_main_parent_unit")
+        step_count_text = fields.get("trace_step_count")
+        if main_parent_unit is None or step_count_text is None:
+            continue
+        main_parent = f"S{main_parent_unit}"
+        if main_parent not in parents:
+            continue
+        main_proposition = propositions_by_name.get(main_parent)
+        if main_proposition is None:
+            continue
+        main_expr = parse_expr(main_proposition)
+        if main_expr is None:
+            continue
+        try:
+            step_count = int(step_count_text)
+            remaining_count = int(fields.get("trace_remaining_count", "0"))
+        except ValueError:
+            continue
+        trace_literals: list[Expr] = []
+        trace_unit_parents: list[str] = []
+        for index in range(step_count):
+            literal = raw_tptp_trace_literal_expr(fields, f"trace_step_{index}_selected_substituted", variable_sorts)
+            unit_parent = fields.get(f"trace_step_{index}_unit_parent")
+            if literal is None or unit_parent is None:
+                trace_literals = []
+                break
+            trace_literals.append(literal)
+            trace_unit_parents.append(f"S{unit_parent}")
+        if not trace_literals:
+            continue
+        for index in range(remaining_count):
+            literal = raw_tptp_trace_literal_expr(fields, f"trace_remaining_{index}", variable_sorts)
+            if literal is None:
+                trace_literals = []
+                break
+            trace_literals.append(literal)
+        if not trace_literals:
+            continue
+        source_clause = raw_clause_from_literals(trace_literals)
+        if source_clause is None:
+            continue
+        if not raw_clause_replay_budget_ok(source_clause, target, max_literals=24, max_literal_product=512):
+            continue
+        source_proof = raw_specialize_forall_transform_proof(
+            main_expr,
+            source_clause,
+            raw_tptp_claim_name(main_parent),
+            variable_sorts,
+        )
+        if source_proof is None:
+            source_proof = raw_clause_transform_proof(main_expr, source_clause, raw_tptp_claim_name(main_parent))
+        if source_proof is None:
+            continue
+        resolver_entries: list[tuple[Expr, str, Expr]] = []
+        for parent in trace_unit_parents:
+            parent_proposition = propositions_by_name.get(parent)
+            parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+            if parent_expr is None:
+                resolver_entries = []
+                break
+            resolver_entries.append((parent_expr, raw_tptp_claim_name(parent), source_clause))
+        if not resolver_entries:
+            continue
+
+        def search_resolvers(
+            index: int,
+            current: list[tuple[Expr, str]],
+        ) -> str | None:
+            if proof_search_timed_out():
+                return None
+            if index >= len(resolver_entries):
+                return raw_clause_multi_resolution_proof(source_clause, target, source_proof, current)
+            resolver, resolver_proof, source_hint = resolver_entries[index]
+            options: list[tuple[Expr, str]] = [(resolver, resolver_proof)]
+            for option in raw_instantiated_forall_clause_options(resolver, resolver_proof, target, source_hint)[:8]:
+                if all(expr_key(option[0]) != expr_key(existing[0]) for existing in options):
+                    options.append(option)
+            for option in raw_prop_false_forall_clause_options(resolver, resolver_proof, target, source_hint)[:4]:
+                if all(expr_key(option[0]) != expr_key(existing[0]) for existing in options):
+                    options.append(option)
+            for option in options[:10]:
+                proof = search_resolvers(index + 1, current + [option])
+                if proof is not None:
+                    return proof
+            return None
+
+        proof = search_resolvers(0, [])
+        if proof is not None:
+            return proof
+    return None
+
+
 def raw_tptp_unit_resulting_resolution_proof(
     proposition: str,
     parents: list[str],
     propositions_by_name: dict[str, str],
     variable_sorts: dict[str, str] | None = None,
+    replay_step: MegalodonReplayStep | None = None,
 ) -> str | None:
     variable_sorts = variable_sorts or {}
     if len(parents) < 2 or len(parents) > 10:
@@ -19418,6 +19585,15 @@ def raw_tptp_unit_resulting_resolution_proof(
     target = parse_expr(proposition)
     if target is None:
         return None
+    exported_trace = raw_tptp_exported_urr_trace_proof(
+        proposition,
+        parents,
+        propositions_by_name,
+        variable_sorts,
+        replay_step,
+    )
+    if exported_trace is not None:
+        return exported_trace
     parsed: list[tuple[str, Expr, str]] = []
     for parent in parents:
         parent_proposition = propositions_by_name.get(parent)
@@ -32743,9 +32919,22 @@ def raw_tptp_replay_proof(
             max_literal_product=96,
         )
     if rule == "unit_resulting_resolution":
-        proof = raw_tptp_unit_resulting_resolution_proof(proposition, parents, propositions_by_name, variable_sorts)
-        if proof is not None:
-            return proof
+        previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+        if previous_deadline is not None and replay_step is not None:
+            PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 5.0)
+        try:
+            proof = raw_tptp_unit_resulting_resolution_proof(
+                proposition,
+                parents,
+                propositions_by_name,
+                variable_sorts,
+                replay_step,
+            )
+            if proof is not None:
+                return proof
+        finally:
+            if previous_deadline is not None:
+                PROOF_SEARCH_STATE.deadline = previous_deadline
         return raw_tptp_forward_subsumption_resolution_proof(
             proposition,
             parents,
