@@ -29716,6 +29716,10 @@ def raw_literal_refutation_from_split_assumption(
     rewrite: RawSplitRewrite,
     not_split_name: str,
 ) -> str | None:
+    split_proof = raw_literal_direct_transform_proof(literal, rewrite.split, literal_proof, ())
+    if split_proof is not None:
+        false_proof = f"({not_split_name} {proof_term_text(split_proof)})"
+        return f"({proof_head(false_proof)} {proof_arg_text(target)})"
     component_proof = raw_literal_direct_transform_proof(literal, rewrite.component, literal_proof, ())
     if component_proof is None:
         return None
