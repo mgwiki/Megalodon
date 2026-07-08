@@ -72,6 +72,7 @@ THF_TYPE_RE = re.compile(r"^thf\([^,]+,\s*type,\s*\((?P<name>[^:\s]+)\s*:\s*(?P<
 PROOF_SEARCH_STATE = threading.local()
 PROOF_SEARCH_SECONDS = float(os.environ.get("MEGALODON_PROOF_SEARCH_SECONDS", "8"))
 RAW_TPTP_REPLAY_SECONDS = float(os.environ.get("MEGALODON_RAW_TPTP_REPLAY_SECONDS", "0.35"))
+RAW_TPTP_DEFINITION_REPLAY_SECONDS = float(os.environ.get("MEGALODON_RAW_TPTP_DEFINITION_REPLAY_SECONDS", "30.0"))
 RAW_TPTP_FORWARD_SUBSUMPTION_REPLAY_SECONDS = float(os.environ.get("MEGALODON_RAW_TPTP_FORWARD_SUBSUMPTION_REPLAY_SECONDS", "1.0"))
 RAW_TPTP_REPLAY_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_REPLAY_CHAR_LIMIT", "12000"))
 RAW_TPTP_EXPORTED_NORMAL_FORM_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_NORMAL_FORM_CHAR_LIMIT", "60000"))
@@ -170,7 +171,7 @@ def raw_tptp_replay_seconds_for_rule(rule: str | None) -> float:
     if rule == "rectify":
         return max(RAW_TPTP_REPLAY_SECONDS, 1.0)
     if rule in {"definition_folding", "definition_unfolding"}:
-        return max(RAW_TPTP_REPLAY_SECONDS, 10.0)
+        return max(RAW_TPTP_REPLAY_SECONDS, RAW_TPTP_DEFINITION_REPLAY_SECONDS)
     if rule in {"forward_subsumption_resolution", "backward_subsumption_resolution"}:
         return RAW_TPTP_FORWARD_SUBSUMPTION_REPLAY_SECONDS
     return RAW_TPTP_REPLAY_SECONDS
@@ -1444,6 +1445,12 @@ def reconstruction_prelude_for(propositions: list[str]) -> list[str]:
         "Infix = 502 := vampire_eq.",
         "Definition vampire_eq_set : set->set->prop := vampire_eq.",
         "Definition vampire_eq_prop : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y.",
+        "Theorem vampire_eq_sym_set: forall x y:set, x = y -> y = x.",
+        "exact (fun x y H => H (fun z:set => z = x) (fun Q Hq => Hq)).",
+        "Qed.",
+        "Theorem vampire_eq_transport_eq_set: forall a b c d:set, a = b -> a = c -> b = d -> c = d.",
+        "exact (fun a b c d Hab Hac Hbd => Hac (fun z:set => z = d) ((vampire_eq_sym_set a b Hab) (fun z:set => z = d) Hbd)).",
+        "Qed.",
     ]
     exists_sorts: dict[str, str] = {}
     for name in sorted(set(re.findall(r"\bvampire_exists_[A-Za-z0-9_']+\b", joined))):
@@ -2599,6 +2606,7 @@ def add_problem_type_variables(
     proof: Path | None,
     proof_text: str | None,
     problem: Path | None = None,
+    source: Path | None = None,
 ) -> list[str]:
     if proof is None:
         return list(lines)
@@ -2619,6 +2627,8 @@ def add_problem_type_variables(
     used_text = "\n".join(lines)
     if proof_text is not None:
         used_text += "\n" + proof_text
+    source_names = source_active_declared_names(source)
+    source_sorts = source_active_declared_sorts(source)
     additions: list[str] = []
     type_variables = proof_text_type_variable_sorts(proof_text)
     if problem is not None:
@@ -2628,6 +2638,8 @@ def add_problem_type_variables(
     for raw_name, sort in sorted(type_variables.items()):
         name = decode_tptp_identifier(raw_name)
         if name in existing or not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", name):
+            continue
+        if name in source_names and equivalent_sorts(sort, source_sorts.get(name)):
             continue
         if name not in used_text and raw_name not in used_text:
             continue
@@ -2642,16 +2654,25 @@ def add_problem_type_variables(
             name = decode_tptp_identifier(raw_name)
             if name in existing or not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", name):
                 continue
+            sort = tptp_sort_to_megalodon(match.group("sort"))
+            if name in source_names and equivalent_sorts(sort, source_sorts.get(name)):
+                continue
             if name not in used_text and raw_name not in used_text:
                 continue
             existing.add(name)
-            additions.append(f"Variable {name}:{tptp_sort_to_megalodon(match.group('sort'))}.")
+            additions.append(f"Variable {name}:{sort}.")
     if not additions:
         return list(lines)
     result: list[str] = []
     inserted = False
     for line in lines:
-        if not inserted and (line.startswith("Variable ") or line.startswith("Axiom ") or line.startswith("Theorem ")):
+        if not inserted and (
+            line.startswith(("Variable ", "Axiom "))
+            or (
+                line.startswith("Theorem ")
+                and not line.startswith(("Theorem vampire_eq_sym_set:", "Theorem vampire_eq_transport_eq_set:"))
+            )
+        ):
             result.extend(additions)
             inserted = True
         result.append(line)
@@ -2984,10 +3005,10 @@ def expr_text(expr: Expr, context: str = "top") -> str:
         text = f"{expr_text(expr.args[0], 'arrow_left')} -> {expr_text(expr.args[1], 'arrow_right')}"
     elif expr.kind == "forall":
         assert expr.value is not None and expr.sort is not None
-        text = f"forall {expr.value}:{expr.sort}, {expr_text(expr.args[0])}"
+        text = f"forall {expr.value}:{binder_sort_text(expr.sort)}, {expr_text(expr.args[0])}"
     elif expr.kind == "lambda":
         assert expr.value is not None and expr.sort is not None
-        text = f"fun {expr.value} :{expr.sort} => {expr_text(expr.args[0])}"
+        text = f"fun {expr.value} :{binder_sort_text(expr.sort)} => {expr_text(expr.args[0])}"
     else:
         raise ValueError(f"unknown expression kind {expr.kind}")
     if context in {"app_arg", "eq_side"} and expr.kind in {"app", "eq", "arrow", "forall", "lambda"}:
@@ -4722,21 +4743,21 @@ def fill_replay_substitution_claims(
 
 
 BOOLEAN_EXT_HELPERS = [
-    "Definition vampire_eq_prop : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y.",
-    "Definition vampire_eq_prop_fun : (prop->prop)->(prop->prop)->prop := fun x y:prop->prop => forall Q:(prop->prop)->prop, Q x -> Q y.",
-    "Axiom vampire_prop_ext: forall P Q:prop, (P -> Q) -> (Q -> P) -> vampire_eq_prop P Q.",
-    "Axiom vampire_funext_prop: forall F G:prop->prop, (forall X:prop, vampire_eq_prop (F X) (G X)) -> vampire_eq_prop_fun F G.",
-    "Axiom vampire_funext_prop_prop: forall F G:prop->prop->prop, (forall X:prop, vampire_eq_prop_fun (F X) (G X)) -> F = G.",
-    "Axiom vampire_funext_set_prop: forall F G:set->prop, (forall X:set, vampire_eq_prop (F X) (G X)) -> forall Q:(set->prop)->prop, Q F -> Q G.",
-    "Axiom vampire_eps_ext: forall F G:set->prop, (forall X:set, vampire_eq_prop (F X) (G X)) -> Eps_i F = Eps_i G.",
-    "Axiom vampire_congr_set_prop: forall F G:set->prop, F = G -> forall X:set, vampire_eq_prop (F X) (G X).",
-    "Axiom vampire_congr_set_set: forall F G:set->set, F = G -> forall X:set, F X = G X.",
-    "Axiom vampire_congr_set_set_prop: forall F G:set->set->prop, F = G -> forall X:set, forall Y:set, vampire_eq_prop (F X Y) (G X Y).",
-    "Axiom vampire_congr_set_set_set: forall F G:set->set->set, F = G -> forall X:set, forall Y:set, F X Y = G X Y.",
-    "Axiom vampire_funext_set_set: forall F G:set->set, (forall X:set, F X = G X) -> forall Q:(set->set)->prop, Q F -> Q G.",
-    "Axiom vampire_funext_set_set_prop: forall F G:set->set->prop, (forall X:set, forall Y:set, vampire_eq_prop (F X Y) (G X Y)) -> forall Q:(set->set->prop)->prop, Q F -> Q G.",
-    "Axiom vampire_funext_set_set_set: forall F G:set->set->set, (forall X:set, forall Y:set, F X Y = G X Y) -> forall Q:(set->set->set)->prop, Q F -> Q G.",
-    "Axiom vampire_funext_set_setfun_set: forall F G:set->(set->set)->set, (forall X:set, forall Y:set->set, F X Y = G X Y) -> forall Q:(set->(set->set)->set)->prop, Q F -> Q G.",
+    "Definition vampire_eq_prop : prop->prop->prop := fun vx vy:prop => forall vq:prop->prop, vq vx -> vq vy.",
+    "Definition vampire_eq_prop_fun : (prop->prop)->(prop->prop)->prop := fun vf vg:prop->prop => forall vq:(prop->prop)->prop, vq vf -> vq vg.",
+    "Axiom vampire_prop_ext: forall vmp:prop, forall vmq:prop, (vmp -> vmq) -> (vmq -> vmp) -> vampire_eq_prop vmp vmq.",
+    "Axiom vampire_funext_prop: forall vmf:prop->prop, forall vmg:prop->prop, (forall vmx:prop, vampire_eq_prop (vmf vmx) (vmg vmx)) -> vampire_eq_prop_fun vmf vmg.",
+    "Axiom vampire_funext_prop_prop: forall vmf:prop->prop->prop, forall vmg:prop->prop->prop, (forall vmx:prop, vampire_eq_prop_fun (vmf vmx) (vmg vmx)) -> vmf = vmg.",
+    "Axiom vampire_funext_set_prop: forall vmf:set->prop, forall vmg:set->prop, (forall vmx:set, vampire_eq_prop (vmf vmx) (vmg vmx)) -> forall vmq:(set->prop)->prop, vmq vmf -> vmq vmg.",
+    "Axiom vampire_eps_ext: forall vmf:set->prop, forall vmg:set->prop, (forall vmx:set, vampire_eq_prop (vmf vmx) (vmg vmx)) -> Eps_i vmf = Eps_i vmg.",
+    "Axiom vampire_congr_set_prop: forall vmf:set->prop, forall vmg:set->prop, vmf = vmg -> forall vmx:set, vampire_eq_prop (vmf vmx) (vmg vmx).",
+    "Axiom vampire_congr_set_set: forall vmf:set->set, forall vmg:set->set, vmf = vmg -> forall vmx:set, vmf vmx = vmg vmx.",
+    "Axiom vampire_congr_set_set_prop: forall vmf:set->set->prop, forall vmg:set->set->prop, vmf = vmg -> forall vmx:set, forall vmy:set, vampire_eq_prop (vmf vmx vmy) (vmg vmx vmy).",
+    "Axiom vampire_congr_set_set_set: forall vmf:set->set->set, forall vmg:set->set->set, vmf = vmg -> forall vmx:set, forall vmy:set, vmf vmx vmy = vmg vmx vmy.",
+    "Axiom vampire_funext_set_set: forall vmf:set->set, forall vmg:set->set, (forall vmx:set, vmf vmx = vmg vmx) -> forall vmq:(set->set)->prop, vmq vmf -> vmq vmg.",
+    "Axiom vampire_funext_set_set_prop: forall vmf:set->set->prop, forall vmg:set->set->prop, (forall vmx:set, forall vmy:set, vampire_eq_prop (vmf vmx vmy) (vmg vmx vmy)) -> forall vmq:(set->set->prop)->prop, vmq vmf -> vmq vmg.",
+    "Axiom vampire_funext_set_set_set: forall vmf:set->set->set, forall vmg:set->set->set, (forall vmx:set, forall vmy:set, vmf vmx vmy = vmg vmx vmy) -> forall vmq:(set->set->set)->prop, vmq vmf -> vmq vmg.",
+    "Axiom vampire_funext_set_setfun_set: forall vmf:set->(set->set)->set, forall vmg:set->(set->set)->set, (forall vmx:set, forall vmy:set->set, vmf vmx vmy = vmg vmx vmy) -> forall vmq:(set->(set->set)->set)->prop, vmq vmf -> vmq vmg.",
 ]
 
 
@@ -4797,6 +4818,12 @@ def needs_boolean_ext_helpers(lines: list[str]) -> bool:
     return False
 
 
+def should_insert_boolean_helpers_before(line: str) -> bool:
+    return line.startswith(("Variable ", "Axiom ")) or (
+        line.startswith("Theorem ") and not line.startswith("Theorem vampire_eq_sym_set:")
+    )
+
+
 def add_boolean_extensionality_helpers(lines: list[str]) -> list[str]:
     if not needs_boolean_ext_helpers(lines):
         return list(lines)
@@ -4816,7 +4843,7 @@ def add_boolean_extensionality_helpers(lines: list[str]) -> list[str]:
     result: list[str] = []
     inserted = False
     for line in lines:
-        if not inserted and (line.startswith("Axiom ") or line.startswith("Theorem ")):
+        if not inserted and should_insert_boolean_helpers_before(line):
             result.extend(helpers)
             inserted = True
         result.append(line)
@@ -4855,7 +4882,7 @@ def add_used_boolean_extensionality_helpers(lines: list[str]) -> list[str]:
     result: list[str] = []
     inserted = False
     for line in lines:
-        if not inserted and (line.startswith("Axiom ") or line.startswith("Theorem ")):
+        if not inserted and should_insert_boolean_helpers_before(line):
             result.extend(helpers)
             inserted = True
         result.append(line)
@@ -6990,13 +7017,15 @@ def fresh_identifier(base: str, *texts: str) -> str:
     return name
 
 
-def eq_symmetry_proof(proof: str, left: Expr) -> str:
+def eq_symmetry_proof(proof: str, left: Expr, right: Expr | None = None) -> str:
+    if right is not None:
+        return f"(vampire_eq_sym_set {proof_arg_text(left)} {proof_arg_text(right)} {proof_term_text(proof)})"
     left_text = expr_text(left)
     name = fresh_identifier("zz", left_text)
     return (
         f"({proof_head(proof)} "
         f"(fun {name} :set => {name} = {proof_arg_text(left)}) "
-        f"(fun R Hr => Hr))"
+        f"(fun Q H => H))"
     )
 
 
@@ -25284,11 +25313,17 @@ def raw_function_argument_transport_proof(
     target_binders, target_body = collect_lambdas(target)
     if len(source_binders) != len(target_binders) or len(source_binders) not in {1, 2}:
         return None
-    if any(sort != "set" for _name, sort in source_binders):
+    if not all(equivalent_sorts(source_sort, target_sort) for (_source_name, source_sort), (_target_name, target_sort) in zip(source_binders, target_binders)):
         return None
-    if [sort for _name, sort in source_binders] != [sort for _name, sort in target_binders]:
+    binder_sorts = [strip_balanced_parens(sort) for _name, sort in source_binders]
+    if binder_sorts == ["set"]:
+        helper = "vampire_funext_set_set"
+    elif binder_sorts == ["set", "set"]:
+        helper = "vampire_funext_set_set_set"
+    elif binder_sorts == ["set", "set->set"]:
+        helper = "vampire_funext_set_setfun_set"
+    else:
         return None
-    helper = "vampire_funext_set_set" if len(source_binders) == 1 else "vampire_funext_set_set_set"
     local_sorts = dict(variable_sorts)
     proof = ""
     renamed_source_body = source_body
@@ -25299,7 +25334,7 @@ def raw_function_argument_transport_proof(
         renamed_source_body = rename_expr_variables(renamed_source_body, {source_name: binder})
         renamed_target_body = rename_expr_variables(renamed_target_body, {target_name: binder})
         local_sorts[binder] = source_sort
-        binder_texts.append(f"fun {binder} :{source_sort} => ")
+        binder_texts.append(f"fun {binder} :{binder_sort_text(source_sort)} => ")
     body_proof = raw_set_term_equality_transform_proof(renamed_source_body, renamed_target_body, local_sorts, depth + 1)
     if body_proof is None:
         return None
@@ -25348,14 +25383,14 @@ def raw_set_application_multi_argument_equality_proof(
                 f"(fun {hole} :set => {expr_text(current_expr)} = {expr_text(context)}) "
                 f"(fun Q:(set->prop) => fun H:Q ({proof_arg_text(current_expr)}) => H)"
             )
-        elif arg_sort in {"set->set", "set->set->set", "set->(set->set)"}:
+        elif arg_sort in {"set->set", "set->set->set", "set->(set->set)", "set->(set->set)->set"}:
             arg_sort = join_sort_arrows(split_sort_arrows(arg_sort))
             argument_transport = raw_function_argument_transport_proof(current_arg, target_arg, variable_sorts, depth + 1)
             if argument_transport is None:
                 return None
             proof = (
                 f"{proof_term_text(argument_transport)} "
-                f"(fun {hole} :{arg_sort} => {expr_text(current_expr)} = {expr_text(context)}) "
+                f"(fun {hole} :{binder_sort_text(arg_sort)} => {expr_text(current_expr)} = {expr_text(context)}) "
                 f"(fun Q:(set->prop) => fun H:Q ({proof_arg_text(current_expr)}) => H)"
             )
         else:
@@ -25376,7 +25411,11 @@ def raw_two_sided_equality_transform_proof(
     if source_sides is None or target_sides is None:
         return None
     equality_sort = "prop" if source.kind == "app" and source.args[0].kind == "var" and source.args[0].value == "vampire_eq_prop" else "set"
-    symmetry = eq_symmetry_proof(source_proof, source_sides[0]) if source.kind == "eq" else raw_eq_symmetry_proof(source_proof, source_sides[0], equality_sort)
+    symmetry = (
+        eq_symmetry_proof(source_proof, source_sides[0], source_sides[1])
+        if source.kind == "eq"
+        else raw_eq_symmetry_proof(source_proof, source_sides[0], equality_sort)
+    )
     orientations = [
         (source_sides[0], source_sides[1], source_proof),
         (source_sides[1], source_sides[0], symmetry),
@@ -25386,6 +25425,17 @@ def raw_two_sided_equality_transform_proof(
         right_equality = raw_set_term_equality_transform_proof(right, target_sides[1], variable_sorts)
         if left_equality is None or right_equality is None:
             continue
+        if equality_sort == "set":
+            return (
+                f"(vampire_eq_transport_eq_set "
+                f"{proof_arg_text(left)} "
+                f"{proof_arg_text(right)} "
+                f"{proof_arg_text(target_sides[0])} "
+                f"{proof_arg_text(target_sides[1])} "
+                f"{proof_term_text(proof)} "
+                f"{proof_term_text(left_equality)} "
+                f"{proof_term_text(right_equality)})"
+            )
         left_hole = fresh_identifier("zz", expr_text(source), expr_text(target), "left")
         left_transport = (
             f"{proof_term_text(left_equality)} "
@@ -27679,7 +27729,7 @@ def raw_pointwise_set_function_equality(
     binders, body = collect_foralls(equality)
     if len(binders) not in {1, 2}:
         return None
-    binder_sorts = [sort for _, sort in binders]
+    binder_sorts = [strip_balanced_parens(sort) for _, sort in binders]
     prop_valued = app_args(body, "vampire_eq_prop", 2) is not None
     if binder_sorts == ["set"]:
         helper = "vampire_funext_set_prop" if prop_valued else "vampire_funext_set_set"
@@ -33486,7 +33536,7 @@ def source_active_declared_names(source: Path | None) -> set[str]:
         if re.match(r"^End\b", stripped):
             section_depth = max(0, section_depth - 1)
             continue
-        match = SOURCE_DECLARED_NAME_RE.match(line)
+        match = MEGALODON_DECLARED_NAME_RE.match(line)
         if match is not None and (
             section_depth == 0 or not stripped.startswith(("Variable ", "Parameter "))
         ):
@@ -33831,6 +33881,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if name is not None
     }
     seen_infixes = {line for line in lines if line.startswith("Infix ")}
+    source_names = source_active_declared_names(source)
+    source_sorts = source_active_declared_sorts(source)
     source_declarations = raw_tptp_exported_source_declarations(text)
     early_source_declarations: list[str] = []
     later_source_declarations: list[str] = []
@@ -33847,13 +33899,16 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             lines.append(declaration)
             continue
         declared_name = megalodon_declared_name(declaration)
+        declared_sort = megalodon_declared_sort(declaration)
+        if declared_name is not None and declared_name in source_names and (
+            declared_sort is None or equivalent_sorts(declared_sort[1], source_sorts.get(declared_name))
+        ):
+            continue
         if declared_name is not None and declared_name in declared_names:
             continue
         if declared_name is not None:
             declared_names.add(declared_name)
         lines.append(declaration)
-    source_names = source_active_declared_names(source)
-    source_sorts = source_active_declared_sorts(source)
     for name, sort in sorted(variable_sorts.items()):
         if name in RAW_TPTP_AMBIENT_CONSTANTS:
             continue
@@ -33889,6 +33944,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         lines.append(f"Definition {name} : prop := {body}.")
     for declaration in later_source_declarations:
         declared_name = megalodon_declared_name(declaration)
+        declared_sort = megalodon_declared_sort(declaration)
+        if declared_name is not None and declared_name in source_names and (
+            declared_sort is None or equivalent_sorts(declared_sort[1], source_sorts.get(declared_name))
+        ):
+            continue
         if declared_name is not None and declared_name in declared_names:
             continue
         if declared_name is not None:
@@ -34010,7 +34070,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     else:
         lines.append(f"exact {final_name}.")
     lines.append("Qed.")
-    lines = reconcile_megalodon_declarations(use_ambient_basic_logic(add_problem_type_variables(lines, proof, text, problem)))
+    lines = reconcile_megalodon_declarations(use_ambient_basic_logic(add_problem_type_variables(lines, proof, text, problem, source)))
     lines = parenthesize_atomic_axiom_propositions(lines)
     return reconcile_megalodon_declarations(add_used_boolean_extensionality_helpers(lines))
 
@@ -34037,11 +34097,11 @@ def raw_tptp_problem_candidates(proof_path: Path) -> list[str]:
         if name and name not in names:
             names.append(name)
 
-    add(proof_path.name)
-    add(proof_path.stem)
     for suffix in (".megalodon.out", ".tptp.out", ".leancheck.out", ".out", ".proof"):
         if proof_path.name.endswith(suffix):
             add(proof_path.name[: -len(suffix)])
+    add(proof_path.name)
+    add(proof_path.stem)
     try:
         prefix = proof_path.read_text(encoding="utf-8", errors="replace")[:4096]
     except OSError:
@@ -34059,11 +34119,17 @@ def raw_tptp_problem_candidates(proof_path: Path) -> list[str]:
 
 def find_raw_tptp_problem_for_proof(proof_path: Path, repo: Path) -> Path | None:
     search_dirs = [proof_path.parent, repo / "examples" / "hammer"]
+    resolved_proof_path = proof_path.resolve()
     for directory in search_dirs:
         for name in raw_tptp_problem_candidates(proof_path):
             candidate = directory / name
-            if candidate.exists():
-                return candidate
+            if not candidate.exists():
+                continue
+            if candidate.resolve() == resolved_proof_path:
+                continue
+            if candidate.suffix in {".out", ".proof"}:
+                continue
+            return candidate
     return None
 
 
