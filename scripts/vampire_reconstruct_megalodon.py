@@ -76,6 +76,8 @@ RAW_TPTP_REPLAY_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_REPLAY_CHAR_
 RAW_TPTP_EXPORTED_NORMAL_FORM_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_NORMAL_FORM_CHAR_LIMIT", "60000"))
 RAW_TPTP_EXPORTED_FOOL_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_FOOL_CHAR_LIMIT", "60000"))
 RAW_TPTP_EXPORTED_SKOLEM_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_SKOLEM_CHAR_LIMIT", "60000"))
+RAW_TPTP_EXPORTED_RECTIFY_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_RECTIFY_CHAR_LIMIT", "60000"))
+RAW_TPTP_CLASSICAL_NORMAL_FORM_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_CLASSICAL_NORMAL_FORM_CHAR_LIMIT", "1500"))
 PROOF_SEARCH_CLOCK = getattr(time, "thread_time", time.monotonic)
 MEGALODON_ADMIT_RE = re.compile(r"\badmit\.")
 
@@ -139,6 +141,12 @@ def raw_tptp_replay_payload_size_ok(
         and any(kind == "skolemize" for kind, _fields in replay_step.extras)
     ):
         return size <= RAW_TPTP_EXPORTED_SKOLEM_CHAR_LIMIT
+    if (
+        rule == "rectify"
+        and replay_step is not None
+        and any(kind == "rectify" for kind, _fields in replay_step.extras)
+    ):
+        return size <= RAW_TPTP_EXPORTED_RECTIFY_CHAR_LIMIT
     return False
 
 
@@ -20432,6 +20440,17 @@ def raw_classical_implication_to_or_body_proof(
                 not_name,
                 {},
             )
+        if (
+            negative_branch is None
+            and not expr_contains_forall(source_premise)
+            and not expr_contains_forall(target_negative)
+        ):
+            negative_branch = raw_negated_implication_chain_to_conjunction_proof(
+                Expr("arrow", args=(source_premise, Expr("var", value="vampire_false"))),
+                target_negative,
+                not_name,
+                {},
+            )
         if negative_branch is None:
             negative_branch = raw_nested_exists_counterexample_proof(
                 source_premise,
@@ -20505,6 +20524,14 @@ def raw_conjunction_components(expr: Expr, depth: int = 0) -> list[Expr]:
     return raw_conjunction_components(parts[0], depth + 1) + raw_conjunction_components(parts[1], depth + 1)
 
 
+def expr_contains_forall(expr: Expr, depth: int = 0) -> bool:
+    if depth > 128:
+        return True
+    if expr.kind == "forall":
+        return True
+    return any(expr_contains_forall(arg, depth + 1) for arg in expr.args)
+
+
 def raw_build_conjunction_from_component_proofs(
     target: Expr,
     component_proof: Callable[[Expr], str | None],
@@ -20541,21 +20568,31 @@ def raw_negated_implication_chain_to_conjunction_proof(
     if len(raw_conjunction_components(target)) > premise_component_count + len(conclusion_components):
         return None
 
+    used_name_texts = [expr_text(source), expr_text(target), source_proof]
+    premise_names = [
+        fresh_identifier(f"HnegChainPrem{index}", *used_name_texts, str(index))
+        for index in range(len(implication_premises))
+    ]
+    negative_premise_names = [
+        fresh_identifier(f"HnotNegChainPrem{index}", *used_name_texts, premise_names[index], str(index))
+        for index in range(len(implication_premises))
+    ]
+
     def contradiction_function_from_negative(index: int, negative_name: str) -> str:
         conclusion_text = proof_arg_text(implication_conclusion)
-        body = f"(({negative_name} Hprem{index}) {conclusion_text})"
+        body = f"(({negative_name} {premise_names[index]}) {conclusion_text})"
         for premise_index in reversed(range(len(implication_premises))):
-            body = f"(fun Hprem{premise_index} => {body})"
+            body = f"(fun {premise_names[premise_index]} => {body})"
         return body
 
     def implication_premise_proof(index: int) -> str:
         premise = implication_premises[index]
         premise_text = proof_arg_text(premise)
-        negative_name = f"HnotPrem{index}"
+        negative_name = negative_premise_names[index]
         contradiction_function = contradiction_function_from_negative(index, negative_name)
         return (
             f"(xm {premise_text} {premise_text} "
-            f"(fun Hprem{index} => Hprem{index}) "
+            f"(fun {premise_names[index]} => {premise_names[index]}) "
             f"(fun {negative_name} => "
             f"({proof_head(source_proof)} {proof_term_text(contradiction_function)} {premise_text})))"
         )
@@ -20578,7 +20615,7 @@ def raw_negated_implication_chain_to_conjunction_proof(
             return None
         body = proof_term_text(conclusion_proof)
         for premise_index in reversed(range(len(implication_premises))):
-            body = f"(fun Hprem{premise_index} => {body})"
+            body = f"(fun {premise_names[premise_index]} => {body})"
         return f"(fun Hconclusion => {proof_head(source_proof)} {proof_term_text(body)})"
 
     def component_proof(component: Expr) -> str | None:
@@ -30379,11 +30416,15 @@ def raw_tptp_exported_normal_form_proof(
                 for name, sort in reversed(candidate_binders):
                     proof = f"(fun {name} :{sort} => {proof})"
                 return proof
-        proof = raw_classical_implication_to_or_transform_proof(source, target, candidate_source_proof)
-        if proof is not None:
-            for name, sort in reversed(candidate_binders):
-                proof = f"(fun {name} :{sort} => {proof})"
-            return proof
+        if (
+            rule not in {"ennf_transformation", "nnf_transformation"}
+            or len(expr_text(source)) + len(expr_text(target)) <= RAW_TPTP_CLASSICAL_NORMAL_FORM_CHAR_LIMIT
+        ):
+            proof = raw_classical_implication_to_or_transform_proof(source, target, candidate_source_proof)
+            if proof is not None:
+                for name, sort in reversed(candidate_binders):
+                    proof = f"(fun {name} :{sort} => {proof})"
+                return proof
         proof = raw_negated_conjunction_to_or_negated_components_proof(source, target, candidate_source_proof, candidate_sorts)
         if proof is not None:
             for name, sort in reversed(candidate_binders):
