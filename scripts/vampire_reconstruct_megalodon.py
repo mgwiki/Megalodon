@@ -19618,6 +19618,12 @@ def raw_tptp_unit_resulting_resolution_proof(
             if len(raw_clause_literals(resolver)) > 12:
                 return None
 
+        def instantiated_clause_priority(option: tuple[Expr, str]) -> tuple[int, int, int]:
+            expr, _proof = option
+            binders, body = collect_foralls(expr)
+            unresolved = len(expr_variables(body) & {name for name, _sort in binders})
+            return (len(binders), unresolved, len(raw_clause_literals(body)))
+
         source_options: list[tuple[Expr, str]] = [(source, source_proof)]
         for _, resolver, _ in resolver_entries[:3]:
             for option in [
@@ -19682,6 +19688,7 @@ def raw_tptp_unit_resulting_resolution_proof(
                 for name, _sort in source_binders:
                     instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(subst[name])})"
                 source_options.append((instantiated, instantiated_proof))
+        source_options.sort(key=instantiated_clause_priority)
 
         def search_resolvers(
             source_clause: Expr,
@@ -19697,6 +19704,7 @@ def raw_tptp_unit_resulting_resolution_proof(
                 return raw_clause_multi_resolution_proof(source_clause, target, source_clause_proof, current)
             _, resolver, resolver_proof = resolver_entries[index]
             options = raw_instantiated_forall_clause_options(resolver, resolver_proof, target, source_clause)[:4]
+            options.sort(key=instantiated_clause_priority)
             for option in options:
                 found = search_resolvers(source_clause, source_clause_proof, index + 1, current + [option])
                 if found is not None:
