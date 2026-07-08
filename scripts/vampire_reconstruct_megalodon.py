@@ -28504,6 +28504,13 @@ def raw_match_literal_mod_equality_symmetry(
 ) -> bool:
     if match_expr_with_alpha_instantiation(pattern, concrete, variables, subst):
         return True
+    ambient_pattern = ambient_basic_logic_expr(pattern)
+    ambient_concrete = ambient_basic_logic_expr(concrete)
+    if (
+        (expr_key(ambient_pattern) != expr_key(pattern) or expr_key(ambient_concrete) != expr_key(concrete))
+        and match_expr_with_alpha_instantiation(ambient_pattern, ambient_concrete, variables, subst)
+    ):
+        return True
     pattern_sides = equality_like_sides(pattern)
     concrete_sides = equality_like_sides(concrete)
     if pattern_sides is not None and concrete_sides is not None:
