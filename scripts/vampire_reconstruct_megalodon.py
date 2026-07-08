@@ -27517,6 +27517,11 @@ def raw_function_equality_to_pointwise_proof(
         congr_helper = "vampire_congr_set_set_prop"
     elif function_sort == "set->set->set" and len(binders) == 2 and target_body.kind == "eq":
         congr_helper = "vampire_congr_set_set_set"
+    # Megalodon does not accept native "=" at function sorts.  Use the
+    # Leibniz-style function equality proof directly instead of the congruence
+    # helper axioms whose premises are function equalities.
+    if congr_helper is not None and "->" in function_sort:
+        congr_helper = None
     if congr_helper is not None:
         args_text = " ".join(proof_arg_text(var) for var in binder_vars)
         proof = (
@@ -27570,6 +27575,273 @@ def raw_function_equality_to_pointwise_proof(
         for name, sort in reversed(binders):
             proof = f"(fun {name} :{sort} => {proof})"
     return proof
+
+
+def raw_function_equality_pointwise_body(
+    left: Expr,
+    right: Expr,
+    binders: list[tuple[str, str]],
+    function_sort: str,
+) -> Expr | None:
+    pieces = split_sort_arrows(function_sort)
+    if len(pieces) != len(binders) + 1:
+        return None
+    if [sort for _, sort in binders] != pieces[:-1]:
+        return None
+    binder_vars = [Expr("var", value=name) for name, _ in binders]
+    left_app = append_application_args(left, binder_vars)
+    right_app = append_application_args(right, binder_vars)
+    if pieces[-1] == "prop":
+        return Expr("app", args=(Expr("var", value="vampire_eq_prop"), left_app, right_app))
+    if pieces[-1] == "set":
+        return Expr("eq", args=(left_app, right_app))
+    return None
+
+
+def raw_parent_pointwise_function_equality_proof(
+    parent: Expr,
+    parent_proof: str,
+    function_equality: Expr,
+    function_sort: str,
+    target_binders: list[tuple[str, str]],
+) -> tuple[Expr, str] | None:
+    sides = equality_like_sides(function_equality)
+    if sides is None:
+        return None
+    parent_binders, parent_body = collect_foralls(parent)
+    if not parent_binders:
+        return None
+    parent_binder_names = {name for name, _ in parent_binders}
+    for left, right in (sides, (sides[1], sides[0])):
+        pointwise_body = raw_function_equality_pointwise_body(left, right, target_binders, function_sort)
+        if pointwise_body is None:
+            continue
+        subst: dict[str, Expr] = {}
+        if not match_expr_with_alpha_instantiation(parent_body, pointwise_body, parent_binder_names, subst):
+            continue
+        flatten_substitution(subst)
+        target_binder_names = {name for name, _ in target_binders}
+        if not parent_binder_names <= subst.keys() or any(
+            expr_variables(value) & (parent_binder_names - target_binder_names) for value in subst.values()
+        ):
+            continue
+        proof = parent_proof
+        for name, _sort in parent_binders:
+            proof = f"({proof_head(proof)} {proof_arg_text(subst[name])})"
+        quantified = pointwise_body
+        quantified_proof = proof
+        for name, sort in reversed(target_binders):
+            quantified = Expr("forall", value=name, sort=sort, args=(quantified,))
+            quantified_proof = f"(fun {name} :{sort} => {quantified_proof})"
+        function_proof = raw_pointwise_set_function_equality(quantified, quantified_proof)
+        if function_proof is not None:
+            return function_proof
+    return None
+
+
+def raw_leibniz_equality_proposition_text(left: Expr, right: Expr, sort: str) -> str:
+    if sort == "prop":
+        return f"vampire_eq_prop {proof_arg_text(left)} {proof_arg_text(right)}"
+    if sort == "set":
+        return f"vampire_eq_set {proof_arg_text(left)} {proof_arg_text(right)}"
+    sort_text = binder_sort_text(sort)
+    return f"forall Q:({sort_text})->prop, Q {proof_arg_text(left)} -> Q {proof_arg_text(right)}"
+
+
+def raw_function_equality_term_rewrite_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality: Expr,
+    equality_proof: str,
+    function_sort: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_sides = equality_like_sides(source)
+    target_sides = equality_like_sides(target)
+    equality_sides = equality_like_sides(equality)
+    if source_sides is None or target_sides is None or equality_sides is None:
+        return None
+    for old, new, proof in (
+        (equality_sides[0], equality_sides[1], equality_proof),
+        (
+            equality_sides[1],
+            equality_sides[0],
+            raw_eq_symmetry_proof(
+                equality_proof,
+                equality_sides[0],
+                raw_equality_transport_sort(equality_sides[0], equality_sides[1], variable_sorts),
+            ),
+        ),
+    ):
+        rewrite_sort = raw_equality_transport_sort(old, new, variable_sorts)
+        for old_subterm in expr_subterms(source, limit=192):
+            if not expr_same_mod_alpha(old_subterm, old):
+                continue
+            replaced, changed = replace_expr(source, old_subterm, new)
+            if not changed:
+                continue
+            hole_name = fresh_identifier("zz", expr_text(source), expr_text(old), expr_text(new), function_sort)
+            context, context_changed = replace_expr(source, old_subterm, Expr("var", value=hole_name))
+            context_sides = equality_like_sides(context)
+            if not context_changed or context_sides is None:
+                continue
+            transported = (
+                f"{proof_term_text(proof)} "
+                f"(fun {hole_name} :{rewrite_sort} => "
+                f"{raw_leibniz_equality_proposition_text(context_sides[0], context_sides[1], function_sort)}) "
+                f"{proof_term_text(source_proof)}"
+            )
+            if expr_same_mod_alpha(replaced, target):
+                return transported
+            replaced_sides = equality_like_sides(replaced)
+            if (
+                replaced_sides is not None
+                and expr_same_mod_alpha(replaced_sides[0], target_sides[1])
+                and expr_same_mod_alpha(replaced_sides[1], target_sides[0])
+            ):
+                return raw_eq_symmetry_proof(transported, replaced_sides[0], function_sort)
+    return None
+
+
+def raw_tptp_exported_function_superposition_pointwise_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+    replay_step: MegalodonReplayStep | None,
+) -> str | None:
+    if replay_step is None or len(parents) != 2:
+        return None
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    target_binders, _target_body = collect_foralls(target)
+    if not target_binders:
+        return None
+    clause_fields = megalodon_replay_extra_fields(replay_step, "clause_equality")
+    rewrite_fields = megalodon_replay_extra_fields(replay_step, "two_literal_rewrite")
+    if not clause_fields or not rewrite_fields:
+        return None
+    local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
+    parsed_parents: list[tuple[Expr, str]] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+        if parent_expr is None:
+            return None
+        parsed_parents.append((parent_expr, raw_tptp_claim_name(parent)))
+
+    for clause in clause_fields:
+        function_sort = clause.get("equality_sort")
+        conclusion_equality = parse_expr(clause.get("proposition", ""))
+        if function_sort is None or conclusion_equality is None or "->" not in function_sort:
+            continue
+        conclusion_sides = equality_like_sides(conclusion_equality)
+        if conclusion_sides is None:
+            continue
+        for fields in rewrite_fields:
+            selected_index = fields.get("selected_parent_index")
+            other_index = fields.get("other_parent_index")
+            selected_literal_index = fields.get("selected_literal_index")
+            other_literal_index = fields.get("other_literal_index")
+            if None in {selected_index, other_index, selected_literal_index, other_literal_index}:
+                continue
+            try:
+                selected_parent = int(selected_index)
+                other_parent = int(other_index)
+                other_literal = int(other_literal_index)
+            except ValueError:
+                continue
+            if selected_parent not in {0, 1} or other_parent not in {0, 1} or selected_parent == other_parent:
+                continue
+            lambda_sort_hints = raw_tptp_extra_lambda_sort_hints(
+                fields,
+                "selected_parent",
+                "other_parent",
+                "conclusion",
+            )
+            selected_substituted = parse_expr(fields.get("selected_substituted_proposition", ""))
+            if selected_substituted is None:
+                selected_substituted = raw_tptp_extra_formula_expr(
+                    fields,
+                    "selected_substituted",
+                    local_sorts,
+                    lambda_sort_hints,
+                )
+            other_substituted = parse_expr(fields.get("other_substituted_proposition", ""))
+            if other_substituted is None:
+                other_substituted = raw_tptp_extra_formula_expr(
+                    fields,
+                    "other_substituted",
+                    local_sorts,
+                    lambda_sort_hints,
+                )
+            if selected_substituted is None or other_substituted is None:
+                continue
+            selected_function = raw_parent_pointwise_function_equality_proof(
+                parsed_parents[selected_parent][0],
+                parsed_parents[selected_parent][1],
+                selected_substituted,
+                function_sort,
+                target_binders,
+            )
+            if selected_function is None:
+                continue
+            other_clause = raw_instantiated_clause_from_exported_literal(
+                parsed_parents[other_parent][0],
+                parsed_parents[other_parent][1],
+                other_literal,
+                other_substituted,
+                target_binders,
+                collect_foralls(target)[1],
+            )
+            if other_clause is None:
+                continue
+            selected_equality, selected_proof = selected_function
+            other_equality, other_proof = other_clause
+            for source_equality, source_proof in (
+                (selected_equality, selected_proof),
+                (
+                    Expr("eq", args=(selected_equality.args[1], selected_equality.args[0])),
+                    raw_eq_symmetry_proof(selected_proof, selected_equality.args[0], function_sort),
+                )
+                if selected_equality.kind == "eq"
+                else (selected_equality, selected_proof),
+            ):
+                rewritten = raw_function_equality_term_rewrite_proof(
+                    source_equality,
+                    conclusion_equality,
+                    source_proof,
+                    other_equality,
+                    other_proof,
+                    function_sort,
+                    local_sorts,
+                )
+                if rewritten is None and conclusion_sides is not None:
+                    reversed_conclusion = Expr("eq", args=(conclusion_sides[1], conclusion_sides[0]))
+                    reversed_proof = raw_function_equality_term_rewrite_proof(
+                        source_equality,
+                        reversed_conclusion,
+                        source_proof,
+                        other_equality,
+                        other_proof,
+                        function_sort,
+                        local_sorts,
+                    )
+                    if reversed_proof is not None:
+                        rewritten = raw_eq_symmetry_proof(reversed_proof, conclusion_sides[1], function_sort)
+                if rewritten is None:
+                    continue
+                pointwise = raw_function_equality_to_pointwise_proof(
+                    conclusion_equality,
+                    target,
+                    rewritten,
+                    local_sorts,
+                )
+                if pointwise is not None:
+                    return pointwise
+    return None
 
 
 def raw_expr_has_synthetic_db_variable(expr: Expr) -> bool:
@@ -28617,7 +28889,7 @@ def raw_tptp_equality_factoring_proof(
         return None
     target_binders, target_body = collect_foralls(target)
     target_literals = raw_clause_literals(target_body)
-    if len(target_literals) != 2:
+    if len(target_literals) < 2 or len(target_literals) > 16:
         return None
     extra_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
     parent_proof = raw_tptp_claim_name(parents[0])
@@ -28658,15 +28930,53 @@ def raw_tptp_equality_factoring_proof(
         factor_equality: Expr | None = None
         for index, literal in enumerate(target_literals):
             other_transform = raw_clause_transform_proof(other_substituted, literal, "Hother")
-            if other_transform is not None or expr_same_mod_alpha(other_substituted, literal):
+            if other_transform is None and not expr_same_mod_alpha(other_substituted, literal):
+                continue
+            for factor_index, factor_literal in enumerate(target_literals):
+                if factor_index == index:
+                    continue
+                factor_premises, factor_conclusion = split_arrows(factor_literal)
+                if len(factor_premises) != 1 or not false_eliminator_expr(factor_conclusion):
+                    continue
+                candidate_factor_equality = factor_premises[0]
+                if (
+                    raw_equality_composition_proof(
+                        candidate_factor_equality,
+                        "Hfactor",
+                        selected_substituted,
+                        "Hselected",
+                        literal,
+                        extra_sorts,
+                    )
+                    is None
+                    and raw_equality_composition_proof(
+                        selected_substituted,
+                        "Hselected",
+                        candidate_factor_equality,
+                        "Hfactor",
+                        literal,
+                        extra_sorts,
+                    )
+                    is None
+                    and raw_equality_rewrite_expr_proof(
+                        selected_substituted,
+                        literal,
+                        "Hselected",
+                        candidate_factor_equality,
+                        "Hfactor",
+                        extra_sorts,
+                    )
+                    is None
+                ):
+                    continue
                 retained_target_index = index
                 retained_target = literal
-                negated_factor_index = 1 - index
-                negated_factor = target_literals[negated_factor_index]
-                factor_premises, factor_conclusion = split_arrows(negated_factor)
-                if len(factor_premises) == 1 and false_eliminator_expr(factor_conclusion):
-                    factor_equality = factor_premises[0]
-                    break
+                negated_factor_index = factor_index
+                negated_factor = factor_literal
+                factor_equality = candidate_factor_equality
+                break
+            if factor_equality is not None:
+                break
         if (
             retained_target_index is None
             or retained_target is None
@@ -28685,7 +28995,10 @@ def raw_tptp_equality_factoring_proof(
                     return None
                 return raw_or_intro_literal_at(target_body, retained_target_index, retained)
             if not expr_same_mod_alpha(literal, selected_substituted):
-                return None
+                residual = raw_literal_to_clause_proof(literal, target_body, literal_proof, target_literals, ())
+                if residual is not None:
+                    return residual
+                return raw_clause_transform_proof(literal, target_body, literal_proof)
             retained_from_factor = raw_equality_composition_proof(
                 factor_equality,
                 "Hfactor",
@@ -28877,6 +29190,15 @@ def raw_tptp_superposition_proof(
     if proof is not None:
         return proof
     proof = raw_tptp_exported_two_literal_resolution_proof(
+        proposition,
+        parents,
+        propositions_by_name,
+        variable_sorts,
+        replay_step,
+    )
+    if proof is not None:
+        return proof
+    proof = raw_tptp_exported_function_superposition_pointwise_proof(
         proposition,
         parents,
         propositions_by_name,
@@ -30610,10 +30932,16 @@ def raw_avatar_split_component_from_source_proof(
             if component_name != source_name and component_sort == source_sort
         )
         if source_sort == "prop":
+            candidates.extend((Expr("var", value="vampire_true"), Expr("var", value="vampire_false")))
             candidates.extend(refutable_components)
         for subst, proof in source_options:
             for candidate in candidates:
-                if candidate.kind == "var" and candidate.value is not None and component_sorts.get(candidate.value) != source_sort:
+                if (
+                    candidate.kind == "var"
+                    and candidate.value is not None
+                    and candidate.value not in RAW_TPTP_AMBIENT_CONSTANTS
+                    and component_sorts.get(candidate.value) != source_sort
+                ):
                     continue
                 trial = dict(subst)
                 trial[source_name] = candidate
