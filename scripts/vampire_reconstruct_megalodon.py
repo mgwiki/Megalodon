@@ -24634,6 +24634,10 @@ def raw_tptp_forward_demodulation_proof(
     )
     if proof is not None:
         return proof
+
+    def fallback_ok(candidate: str | None) -> bool:
+        return candidate is not None and not raw_tptp_replay_proof_has_synthetic_db(candidate)
+
     proof = raw_negative_implication_quantified_equality_rewrite_proof(
         first,
         target,
@@ -24642,7 +24646,7 @@ def raw_tptp_forward_demodulation_proof(
         second_name,
         variable_sorts,
     )
-    if proof is not None:
+    if fallback_ok(proof):
         return proof
     proof = raw_negative_implication_quantified_equality_rewrite_proof(
         second,
@@ -24652,7 +24656,7 @@ def raw_tptp_forward_demodulation_proof(
         first_name,
         variable_sorts,
     )
-    if proof is not None:
+    if fallback_ok(proof):
         return proof
     proof = raw_quantified_parent_equality_rewrite_clause_proof(
         first,
@@ -24662,7 +24666,7 @@ def raw_tptp_forward_demodulation_proof(
         second_name,
         variable_sorts,
     )
-    if proof is not None:
+    if fallback_ok(proof):
         return proof
     proof = raw_quantified_parent_equality_rewrite_clause_proof(
         second,
@@ -24672,7 +24676,7 @@ def raw_tptp_forward_demodulation_proof(
         first_name,
         variable_sorts,
     )
-    if proof is not None:
+    if fallback_ok(proof):
         return proof
     pointwise_function = raw_pointwise_set_function_equality(second, second_name)
     if pointwise_function is not None:
@@ -24689,7 +24693,7 @@ def raw_tptp_forward_demodulation_proof(
                 function_equality_proof,
                 function_sort,
             )
-            if proof is not None:
+            if fallback_ok(proof):
                 return proof
             proof = raw_equality_rewrite_clause_proof(
                 first,
@@ -24700,7 +24704,7 @@ def raw_tptp_forward_demodulation_proof(
                 function_equality_proof,
                 function_sort,
             )
-            if proof is not None:
+            if fallback_ok(proof):
                 return proof
     pointwise_function = raw_pointwise_set_function_equality(first, first_name)
     if pointwise_function is not None:
@@ -24717,7 +24721,7 @@ def raw_tptp_forward_demodulation_proof(
                 function_equality_proof,
                 function_sort,
             )
-            if proof is not None:
+            if fallback_ok(proof):
                 return proof
             proof = raw_equality_rewrite_clause_proof(
                 second,
@@ -24728,7 +24732,7 @@ def raw_tptp_forward_demodulation_proof(
                 function_equality_proof,
                 function_sort,
             )
-            if proof is not None:
+            if fallback_ok(proof):
                 return proof
     if second_sides is not None:
         equality_sort = raw_equality_transport_sort(second_sides[0], second_sides[1], variable_sorts)
@@ -24741,7 +24745,7 @@ def raw_tptp_forward_demodulation_proof(
             second_name,
             equality_sort,
         )
-        if proof is not None:
+        if fallback_ok(proof):
             return proof
         proof = raw_equality_rewrite_clause_proof(
             first,
@@ -24752,7 +24756,7 @@ def raw_tptp_forward_demodulation_proof(
             second_name,
             equality_sort,
         )
-        if proof is not None:
+        if fallback_ok(proof):
             return proof
     if first_sides is not None:
         equality_sort = raw_equality_transport_sort(first_sides[0], first_sides[1], variable_sorts)
@@ -24765,7 +24769,7 @@ def raw_tptp_forward_demodulation_proof(
             first_name,
             equality_sort,
         )
-        if proof is not None:
+        if fallback_ok(proof):
             return proof
         proof = raw_equality_rewrite_clause_proof(
             second,
@@ -24776,13 +24780,13 @@ def raw_tptp_forward_demodulation_proof(
             first_name,
             equality_sort,
         )
-        if proof is not None:
+        if fallback_ok(proof):
             return proof
     proof = raw_equality_clause_resolution_proof(first, target, first_name, second, second_name, variable_sorts)
-    if proof is not None:
+    if fallback_ok(proof):
         return proof
     proof = raw_equality_clause_resolution_proof(second, target, second_name, first, first_name, variable_sorts)
-    if proof is not None:
+    if fallback_ok(proof):
         return proof
     proof = raw_tptp_quantified_equality_clause_superposition_proof(
         proposition,
@@ -24790,7 +24794,7 @@ def raw_tptp_forward_demodulation_proof(
         propositions_by_name,
         variable_sorts,
     )
-    if proof is not None:
+    if fallback_ok(proof):
         return proof
     proof = raw_tptp_guarded_parent_equality_rewrite_proof(
         proposition,
@@ -24798,10 +24802,10 @@ def raw_tptp_forward_demodulation_proof(
         propositions_by_name,
         variable_sorts,
     )
-    if proof is not None:
+    if fallback_ok(proof):
         return proof
     proof = raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name)
-    if proof is not None:
+    if fallback_ok(proof):
         return proof
     return None
 
@@ -24849,20 +24853,54 @@ def raw_tptp_exported_demodulation_rewrite_proof(
                 (redex, replacement, rule_lhs, rule_rhs),
                 (replacement, redex, rule_rhs, rule_lhs),
             ):
-                proof = raw_exported_quantified_parent_equality_rewrite_clause_proof(
-                    source,
-                    target,
-                    source_proof,
-                    equality,
-                    equality_proof,
-                    local_sorts,
-                    old_term,
-                    new_term,
-                    rule_old,
-                    rule_new,
+                replay_variants = (
+                    (source, target, equality, old_term, new_term, rule_old, rule_new),
+                    (
+                        beta_normalize_forall_body_expr(source),
+                        beta_normalize_forall_body_expr(target),
+                        beta_normalize_forall_body_expr(equality),
+                        beta_normalize_expr(old_term),
+                        beta_normalize_expr(new_term),
+                        beta_normalize_expr(rule_old),
+                        beta_normalize_expr(rule_new),
+                    ),
                 )
-                if proof is not None:
-                    return proof
+                seen_variants: set[tuple[str, str, str, str, str, str, str]] = set()
+                for (
+                    replay_source,
+                    replay_target,
+                    replay_equality,
+                    replay_old_term,
+                    replay_new_term,
+                    replay_rule_old,
+                    replay_rule_new,
+                ) in replay_variants:
+                    key = (
+                        expr_key(replay_source),
+                        expr_key(replay_target),
+                        expr_key(replay_equality),
+                        expr_key(replay_old_term),
+                        expr_key(replay_new_term),
+                        expr_key(replay_rule_old),
+                        expr_key(replay_rule_new),
+                    )
+                    if key in seen_variants:
+                        continue
+                    seen_variants.add(key)
+                    proof = raw_exported_quantified_parent_equality_rewrite_clause_proof(
+                        replay_source,
+                        replay_target,
+                        source_proof,
+                        replay_equality,
+                        equality_proof,
+                        local_sorts,
+                        replay_old_term,
+                        replay_new_term,
+                        replay_rule_old,
+                        replay_rule_new,
+                    )
+                    if proof is not None:
+                        return proof
     return None
 
 
@@ -25030,62 +25068,86 @@ def raw_exported_quantified_parent_equality_rewrite_clause_proof(
 
     equality_binder_names = {name for name, _ in equality_binders}
     for old_subterm in expr_subterms(renamed_source_body, limit=192):
-        if not expr_same_mod_alpha(old_subterm, old_term):
-            continue
-        replaced, changed = replace_expr(renamed_source_body, old_subterm, new_term)
-        if not changed:
-            continue
-        body_proof: str | None = None
-        for old_pattern, new_pattern, reverse in (
-            (equality_sides[0], equality_sides[1], False),
-            (equality_sides[1], equality_sides[0], True),
-            (rule_old, rule_new, False),
-            (rule_new, rule_old, True),
+        candidate_new_terms: list[Expr] = []
+        if expr_same_mod_alpha(old_subterm, old_term):
+            candidate_new_terms.append(new_term)
+        for old_pattern, new_pattern in (
+            (equality_sides[0], equality_sides[1]),
+            (equality_sides[1], equality_sides[0]),
+            (rule_old, rule_new),
         ):
             subst: dict[str, Expr] = {}
             if not match_expr_with_alpha_instantiation(old_pattern, old_subterm, equality_binder_names, subst):
                 continue
-            if not match_expr_with_alpha_instantiation(new_pattern, new_term, equality_binder_names, subst):
-                continue
+            flatten_substitution(subst)
             if any(name not in subst for name, _ in equality_binders):
                 continue
             if any(raw_expr_has_synthetic_db_variable(subst[name]) for name, _ in equality_binders):
                 continue
-            equality_instance = equality_proof
-            for name, _ in equality_binders:
-                equality_instance = f"({proof_head(equality_instance)} {proof_arg_text(subst[name])})"
-            equality_sort = raw_equality_transport_sort(old_subterm, new_term, local_sorts)
-            if reverse:
-                equality_instance = raw_eq_symmetry_proof(equality_instance, new_term, equality_sort)
-            hole_name = fresh_identifier(
-                "zz",
-                expr_text(renamed_source_body),
-                expr_text(old_subterm),
-                expr_text(new_term),
-            )
-            context, context_changed = replace_expr(renamed_source_body, old_subterm, Expr("var", value=hole_name))
-            if not context_changed:
+            candidate = substitute_expr(new_pattern, subst)
+            if not any(expr_same_mod_alpha(candidate, existing) for existing in candidate_new_terms):
+                candidate_new_terms.append(candidate)
+        for candidate_new_term in candidate_new_terms:
+            replaced, changed = replace_expr(renamed_source_body, old_subterm, candidate_new_term)
+            if not changed:
                 continue
-            transported = (
-                f"{proof_term_text(equality_instance)} "
-                f"(fun {hole_name} :{equality_sort} => {expr_text(context)}) "
-                f"{proof_term_text(source_body_proof)}"
-            )
-            if expr_same_mod_alpha(replaced, target_body):
-                body_proof = transported
-            else:
-                body_proof = raw_clause_subsumption_transform_proof(replaced, target_body, transported)
-                if body_proof is None and raw_clause_replay_budget_ok(
-                    replaced,
-                    target_body,
-                    max_literals=16,
-                    max_literal_product=256,
-                ):
-                    body_proof = raw_clause_transform_proof(replaced, target_body, transported)
-            if body_proof is not None:
-                for name, sort in reversed(target_binders):
-                    body_proof = f"(fun {name} :{sort} => {body_proof})"
-                return body_proof
+            if not (
+                expr_same_mod_alpha(replaced, target_body)
+                or raw_clause_replay_budget_ok(replaced, target_body, max_literals=16, max_literal_product=256)
+            ):
+                continue
+            body_proof: str | None = None
+            for old_pattern, new_pattern, reverse in (
+                (equality_sides[0], equality_sides[1], False),
+                (equality_sides[1], equality_sides[0], True),
+                (rule_old, rule_new, False),
+                (rule_new, rule_old, True),
+            ):
+                subst = {}
+                if not match_expr_with_alpha_instantiation(old_pattern, old_subterm, equality_binder_names, subst):
+                    continue
+                if not match_expr_with_alpha_instantiation(new_pattern, candidate_new_term, equality_binder_names, subst):
+                    continue
+                flatten_substitution(subst)
+                if any(name not in subst for name, _ in equality_binders):
+                    continue
+                if any(raw_expr_has_synthetic_db_variable(subst[name]) for name, _ in equality_binders):
+                    continue
+                equality_instance = equality_proof
+                for name, _ in equality_binders:
+                    equality_instance = f"({proof_head(equality_instance)} {proof_arg_text(subst[name])})"
+                equality_sort = raw_equality_transport_sort(old_subterm, candidate_new_term, local_sorts)
+                if reverse:
+                    equality_instance = raw_eq_symmetry_proof(equality_instance, candidate_new_term, equality_sort)
+                hole_name = fresh_identifier(
+                    "zz",
+                    expr_text(renamed_source_body),
+                    expr_text(old_subterm),
+                    expr_text(candidate_new_term),
+                )
+                context, context_changed = replace_expr(renamed_source_body, old_subterm, Expr("var", value=hole_name))
+                if not context_changed:
+                    continue
+                transported = (
+                    f"{proof_term_text(equality_instance)} "
+                    f"(fun {hole_name} :{equality_sort} => {expr_text(context)}) "
+                    f"{proof_term_text(source_body_proof)}"
+                )
+                if expr_same_mod_alpha(replaced, target_body):
+                    body_proof = transported
+                else:
+                    body_proof = raw_clause_subsumption_transform_proof(replaced, target_body, transported)
+                    if body_proof is None and raw_clause_replay_budget_ok(
+                        replaced,
+                        target_body,
+                        max_literals=16,
+                        max_literal_product=256,
+                    ):
+                        body_proof = raw_clause_transform_proof(replaced, target_body, transported)
+                if body_proof is not None:
+                    for name, sort in reversed(target_binders):
+                        body_proof = f"(fun {name} :{sort} => {body_proof})"
+                    return body_proof
     return None
 
 
@@ -27814,8 +27876,6 @@ def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: s
     if raw_tptp_replay_proof_has_free_synthetic_db(proof):
         return True
     if raw_tptp_replay_proof_has_escaped_surface_variable(proposition, proof):
-        return True
-    if rule in {"forward_demodulation", "backward_demodulation"} and raw_tptp_replay_proof_has_synthetic_db(proof):
         return True
     if rule in {"definition_folding", "definition_unfolding"} and raw_tptp_replay_proof_has_synthetic_db(proof):
         return raw_tptp_replay_proof_has_unbound_synthetic_db(proof)
