@@ -30028,7 +30028,7 @@ def raw_tptp_avatar_split_direct_component_proof(
     if proof_search_timed_out() or len(expr_text(source)) + len(expr_text(target)) > 7000:
         return None
     target_literals = raw_clause_literals(target)
-    if len(target_literals) < 2 or len(target_literals) > 4:
+    if len(target_literals) < 2 or len(target_literals) > 8:
         return None
     rewrite_by_split = {raw_split_atom_name(rewrite.split): rewrite for rewrite in rewrites}
     target_split_literals = [raw_split_literal_parts(literal) for literal in target_literals]
@@ -30164,6 +30164,15 @@ def raw_tptp_avatar_split_clause_proof(
     rewrites = raw_tptp_split_rewrites(parents[1:], propositions_by_name)
     if not rewrites:
         return None
+    if len(parents) <= 10 and len(raw_clause_literals(target)) <= 8:
+        direct = raw_tptp_avatar_split_direct_component_proof(
+            source,
+            target,
+            raw_tptp_claim_name(parents[0]),
+            rewrites,
+        )
+        if direct is not None:
+            return direct
     positive_atom = raw_tptp_avatar_split_positive_atom_proof(
         source,
         target,
@@ -30194,15 +30203,6 @@ def raw_tptp_avatar_split_clause_proof(
     if component_instantiated is not None:
         return component_instantiated
     if len(parents) <= 3:
-        direct = raw_tptp_avatar_split_direct_component_proof(
-            source,
-            target,
-            raw_tptp_claim_name(parents[0]),
-            rewrites,
-        )
-        if direct is not None:
-            return direct
-    if len(parents) <= 8 and len(raw_clause_literals(target)) <= 4:
         direct = raw_tptp_avatar_split_direct_component_proof(
             source,
             target,
@@ -30543,6 +30543,8 @@ def raw_tptp_exported_normal_form_proof(
                     for name, _sort in target_binders:
                         candidate_source_proof = f"({proof_head(candidate_source_proof)} {name})"
         if expr_same_mod_alpha(source, target):
+            if not candidate_is_whole_step:
+                continue
             proof = candidate_source_proof
             for name, sort in reversed(candidate_binders):
                 proof = f"(fun {name} :{sort} => {proof})"
@@ -31058,7 +31060,7 @@ def raw_tptp_replay_proof(
             PROOF_SEARCH_STATE.deep_clause_literals = previous_deep_clause_literals
             if previous_deadline is not None:
                 PROOF_SEARCH_STATE.deadline = previous_deadline
-        if proof is not None:
+        if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
             return proof
         return None
     if rule == "skolemisation":
