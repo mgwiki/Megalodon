@@ -19453,6 +19453,100 @@ def raw_quantified_flat_clause_resolution_proof(
             PROOF_SEARCH_STATE.flat_resolution_target = previous_target
 
 
+def raw_quantified_clause_literal_resolution_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    resolver: Expr,
+    resolver_proof: str,
+) -> str | None:
+    if proof_search_timed_out():
+        return None
+    source_literals = raw_clause_literals(source)
+    resolver_literals = raw_clause_literals(resolver)
+    target_literals = raw_clause_literals(target)
+    if len(source_literals) > 12 or len(resolver_literals) > 8 or len(target_literals) > 16:
+        return None
+    target_text = proof_arg_text(target)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+
+    def close_instantiated_clause(
+        quantified_literal: Expr,
+        quantified_literal_proof: str,
+        positive_literal: Expr,
+        positive_literal_proof: str,
+    ) -> str | None:
+        binders, body = collect_foralls(quantified_literal)
+        if not binders:
+            return None
+        binder_names = {name for name, _sort in binders}
+        body_literals = raw_clause_literals(body)
+        if len(body_literals) > 16:
+            return None
+        for body_literal in body_literals:
+            premises, conclusion = split_arrows(body_literal)
+            if len(premises) != 1 or not false_eliminator_expr(conclusion):
+                continue
+            subst: dict[str, Expr] = {}
+            if not match_expr_with_alpha_instantiation(premises[0], positive_literal, binder_names, subst):
+                continue
+            flatten_substitution(subst)
+            if not binder_names <= subst.keys():
+                continue
+            if any(expr_variables(value) & binder_names for value in subst.values()):
+                continue
+            instantiated_body = substitute_expr(body, subst)
+            instantiated_proof = quantified_literal_proof
+            for name, _sort in binders:
+                instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(subst[name])})"
+            resolved_key = expr_key(substitute_expr(body_literal, subst))
+
+            def body_handler(literal: Expr, literal_proof: str) -> str | None:
+                if expr_key(literal) == resolved_key:
+                    premises2, conclusion2 = split_arrows(literal)
+                    if len(premises2) != 1 or not false_eliminator_expr(conclusion2):
+                        return None
+                    false_proof = f"({proof_head(literal_proof)} {proof_term_text(positive_literal_proof)})"
+                    return raw_false_to_expr_proof(false_proof, target)
+                return raw_literal_to_clause_proof(literal, target, literal_proof, target_literals, ())
+
+            return raw_clause_cases_with_handler(instantiated_body, instantiated_proof, body_handler)
+        return None
+
+    def source_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
+        direct = raw_literal_to_clause_proof(source_literal, target, source_literal_proof, target_literals, ())
+        if direct is not None:
+            return direct
+
+        def resolver_handler(resolver_literal: Expr, resolver_literal_proof: str) -> str | None:
+            closed = close_instantiated_clause(
+                source_literal,
+                source_literal_proof,
+                resolver_literal,
+                resolver_literal_proof,
+            )
+            if closed is not None:
+                return closed
+            return raw_literal_to_clause_proof(resolver_literal, target, resolver_literal_proof, target_literals, ())
+
+        return raw_clause_cases_with_handler(
+            resolver,
+            resolver_proof,
+            resolver_handler,
+            avoid_text=source_literal_proof,
+        )
+
+    try:
+        return raw_clause_cases_with_handler(source, source_proof, source_handler)
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_clause_multi_resolution_proof(
     source: Expr,
     target: Expr,
@@ -29477,8 +29571,6 @@ def raw_tptp_superposition_proof(
         megalodon_replay_extra_fields(replay_step, "superposition")
         or megalodon_replay_extra_fields(replay_step, "two_literal_rewrite")
     )
-    if not has_superposition_replay:
-        return None
     proof = raw_tptp_universal_unit_contradiction_proof(
         proposition,
         parents,
@@ -29533,7 +29625,7 @@ def raw_tptp_superposition_proof(
             proposition,
             parents,
             propositions_by_name,
-            allow_quantified_literal=False,
+            variable_sorts,
         )
         if proof is not None:
             return proof
@@ -29946,6 +30038,9 @@ def raw_tptp_forward_subsumption_resolution_proof(
                 if proof is not None:
                     return proof
                 proof = raw_quantified_flat_clause_resolution_proof(source, target_expr, source_name, resolver, resolver_name)
+                if proof is not None:
+                    return proof
+                proof = raw_quantified_clause_literal_resolution_proof(source, target_expr, source_name, resolver, resolver_name)
                 if proof is not None:
                     return proof
             source_options = raw_instantiated_forall_clause_options(source, source_name, target_expr, resolver)
@@ -30774,8 +30869,6 @@ def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: s
 
 
 def raw_tptp_standard_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: str) -> bool:
-    if rule in {"avatar_component_clause", "avatar_split_clause"} and "forall " in proof:
-        return True
     if rule == "cnf_transformation" and re.search(r"\(\s*forall\s+[A-Z][_A-Za-z0-9']*\s*:", proof):
         return True
     if rule in {"definition_folding", "definition_unfolding"} and re.search(
@@ -30809,6 +30902,155 @@ def raw_or_right_intro(target: Expr, proof: str) -> str | None:
     if parts is None:
         return None
     return f"(fun P Hleft Hright => Hright {proof_term_text(proof)})"
+
+
+def raw_forall_prop_identity(expr: Expr) -> tuple[str, Expr] | None:
+    if expr.kind != "forall" or expr.sort != "prop" or expr.value is None:
+        return None
+    body = expr.args[0]
+    if body.kind == "var" and body.value == expr.value:
+        return expr.value, body
+    return None
+
+
+def raw_negation_expr(expr: Expr) -> Expr:
+    return Expr("arrow", args=(expr, Expr("var", value="False")))
+
+
+def raw_negation_exprs(expr: Expr) -> tuple[Expr, Expr]:
+    return (
+        Expr("arrow", args=(expr, Expr("var", value="False"))),
+        Expr("arrow", args=(expr, Expr("var", value="vampire_false"))),
+    )
+
+
+def expr_matches_any_mod_alpha(expr: Expr, candidates: Iterable[Expr]) -> bool:
+    return any(expr_same_mod_alpha(expr, candidate) for candidate in candidates)
+
+
+def raw_tptp_explosive_implication_ennf_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> str | None:
+    if len(parents) != 1:
+        return None
+    source_proposition = propositions_by_name.get(parents[0])
+    source = parse_expr(source_proposition) if source_proposition is not None else None
+    target = parse_expr(proposition)
+    if source is None or target is None:
+        return None
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if len(source_binders) != len(target_binders):
+        return None
+    source_body_open = source_body
+    proof = raw_tptp_claim_name(parents[0])
+    for (source_name, source_sort), (target_name, target_sort) in zip(source_binders, target_binders):
+        if source_sort != target_sort:
+            return None
+        if source_name != target_name:
+            source_body_open = rename_expr_variables(source_body_open, {source_name: target_name})
+        proof = f"({proof_head(proof)} {target_name})"
+
+    premises, conclusion = split_arrows(source_body_open)
+    if not (1 <= len(premises) <= 2):
+        return None
+    identity = raw_forall_prop_identity(conclusion)
+    if identity is None:
+        return None
+
+    def prove_single(
+        premise: Expr,
+        source_after_premise: str,
+        target_expr: Expr,
+        conclusion_expr: Expr,
+    ) -> str | None:
+        target_forall, target_forall_body = collect_foralls(target_expr)
+        if len(target_forall) != 1 or target_forall[0][1] != "prop":
+            return None
+        target_name, target_sort = target_forall[0]
+        instantiated_conclusion = conclusion_expr
+        if conclusion_expr.kind == "forall" and conclusion_expr.sort == target_sort and conclusion_expr.value is not None:
+            instantiated_conclusion = rename_expr_variables(conclusion_expr.args[0], {conclusion_expr.value: target_name})
+        if not (instantiated_conclusion.kind == "var" and instantiated_conclusion.value == target_name):
+            return None
+        body_parts = raw_or_parts(target_forall_body)
+        if body_parts is None:
+            return None
+        target_var = Expr("var", value=target_name)
+        neg_premises = raw_negation_exprs(premise)
+        if expr_same_mod_alpha(body_parts[0], target_var) and expr_matches_any_mod_alpha(body_parts[1], neg_premises):
+            true_branch = raw_or_left_intro(target_forall_body, f"({proof_head(source_after_premise)} {target_name})")
+            false_branch = raw_or_right_intro(target_forall_body, "HnotPrem")
+        elif expr_same_mod_alpha(body_parts[1], target_var) and expr_matches_any_mod_alpha(body_parts[0], neg_premises):
+            true_branch = raw_or_right_intro(target_forall_body, f"({proof_head(source_after_premise)} {target_name})")
+            false_branch = raw_or_left_intro(target_forall_body, "HnotPrem")
+        else:
+            return None
+        if true_branch is None or false_branch is None:
+            return None
+        body_text = proof_arg_text(target_forall_body)
+        return (
+            f"(fun {target_name} :{target_sort} => "
+            f"(xm {proof_arg_text(premise)} {body_text} "
+            f"(fun Hprem => {proof_term_text(true_branch)}) "
+            f"(fun HnotPrem => {proof_term_text(false_branch)})))"
+        )
+
+    if len(premises) == 1:
+        body_proof = prove_single(premises[0], f"({proof_head(proof)} Hprem)", target_body, conclusion)
+        if body_proof is None:
+            return None
+        # prove_single already performs the case split for Hprem; it expects the
+        # premise proof name to be bound by its generated branch.
+        result = body_proof
+    else:
+        target_parts = raw_or_parts(target_body)
+        if target_parts is None:
+            return None
+        first_negations = raw_negation_exprs(premises[0])
+        recursive_target: Expr
+        first_negative_on_left: bool
+        if expr_matches_any_mod_alpha(target_parts[0], first_negations):
+            recursive_target = target_parts[1]
+            first_negative_on_left = True
+        elif expr_matches_any_mod_alpha(target_parts[1], first_negations):
+            recursive_target = target_parts[0]
+            first_negative_on_left = False
+        else:
+            return None
+        recursive = prove_single(
+            premises[1],
+            f"({proof_head(proof)} Hprem0 Hprem)",
+            recursive_target,
+            conclusion,
+        )
+        if recursive is None:
+            return None
+        recursive_intro = (
+            raw_or_right_intro(target_body, recursive)
+            if first_negative_on_left
+            else raw_or_left_intro(target_body, recursive)
+        )
+        negative_intro = (
+            raw_or_left_intro(target_body, "HnotPrem0")
+            if first_negative_on_left
+            else raw_or_right_intro(target_body, "HnotPrem0")
+        )
+        if recursive_intro is None or negative_intro is None:
+            return None
+        target_text = proof_arg_text(target_body)
+        result = (
+            f"(xm {proof_arg_text(premises[0])} {target_text} "
+            f"(fun Hprem0 => {proof_term_text(recursive_intro)}) "
+            f"(fun HnotPrem0 => {proof_term_text(negative_intro)})"
+            f")"
+        )
+
+    for target_name, target_sort in reversed(target_binders):
+        result = f"(fun {target_name} :{target_sort} => {result})"
+    return result
 
 
 def raw_tptp_avatar_component_clause_proof(
@@ -30936,8 +31178,8 @@ def raw_tptp_split_rewrites(parents: list[str], propositions_by_name: dict[str, 
         if expr_key(split) != expr_key(split2) or expr_key(component) != expr_key(component2):
             continue
         parent_name = raw_tptp_claim_name(parent)
-        split_to_component = f"({parent_name} {proof_arg_text(parts[0])} (fun Hforward Hback => Hforward))"
-        component_to_split = f"({parent_name} {proof_arg_text(parts[1])} (fun Hforward Hback => Hback))"
+        split_to_component = f"{parent_name}_split_to_component_local"
+        component_to_split = f"{parent_name}_component_to_split_local"
         rewrites.append(RawSplitRewrite(split, component, split_to_component, component_to_split))
     return tuple(rewrites)
 
@@ -32937,14 +33179,21 @@ def raw_tptp_replay_proof(
             PROOF_SEARCH_STATE.deep_clause_literals = True
         try:
             proof = None
-            proof = raw_tptp_exported_normal_form_proof(
-                rule,
-                proposition,
-                parents,
-                propositions_by_name,
-                variable_sorts,
-                replay_step,
-            )
+            if rule in {"ennf_transformation", "nnf_transformation"}:
+                proof = raw_tptp_explosive_implication_ennf_proof(
+                    proposition,
+                    parents,
+                    propositions_by_name,
+                )
+            if proof is None:
+                proof = raw_tptp_exported_normal_form_proof(
+                    rule,
+                    proposition,
+                    parents,
+                    propositions_by_name,
+                    variable_sorts,
+                    replay_step,
+                )
             if raw_tptp_normal_form_allows_generic_replay(rule, replay_step):
                 if proof is None:
                     proof = raw_tptp_one_parent_transform_proof(
@@ -33978,10 +34227,35 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             lines.append(f"// unsupported raw vampire formula {name}.")
             continue
         lines.append(f"Axiom {claim_name}:{proposition}.")
+        avatar_definition = raw_tptp_avatar_definition_parts(proposition)
+        if avatar_definition is not None:
+            split_name, component = avatar_definition
+            component_text = proof_arg_text(component)
+            lines.append(f"Axiom {claim_name}_split_to_component:{split_name} -> {component_text}.")
+            lines.append(f"Axiom {claim_name}_component_to_split:{component_text} -> {split_name}.")
         remember_raw_proposition(proposition, claim_name)
 
     theorem_name = "vampire_raw_tptp_reconstruction"
     lines.append(f"Theorem {theorem_name}: {final_proposition}.")
+    emitted_local_avatar_projections: set[str] = set()
+    for name, role, proposition, _rule, _source_name, _parents, trusted_definition in entries:
+        if not proposition:
+            continue
+        if role not in {"axiom", "definition", "negated_conjecture"} and not trusted_definition:
+            continue
+        claim_name = raw_tptp_claim_name(name)
+        if claim_name in emitted_local_avatar_projections:
+            continue
+        avatar_definition = raw_tptp_avatar_definition_parts(proposition)
+        if avatar_definition is None:
+            continue
+        split_name, component = avatar_definition
+        component_text = proof_arg_text(component)
+        lines.append(f"claim {claim_name}_split_to_component_local: {split_name} -> {component_text}.")
+        lines.append(f"{{ exact {claim_name}_split_to_component. }}")
+        lines.append(f"claim {claim_name}_component_to_split_local: {component_text} -> {split_name}.")
+        lines.append(f"{{ exact {claim_name}_component_to_split. }}")
+        emitted_local_avatar_projections.add(claim_name)
 
     seen_theorem_claims: set[str] = set()
     for name, role, proposition, rule, source_name, parents, trusted_definition in entries:
@@ -34064,6 +34338,21 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         else:
             lines.append(f"{{ exact {proof_argument_text(replay_proof)}. }}")
         remember_raw_proposition(proposition, claim_name)
+        avatar_definition = raw_tptp_avatar_definition_parts(proposition)
+        if avatar_definition is not None and claim_name not in emitted_local_avatar_projections:
+            split_name, component = avatar_definition
+            component_text = proof_arg_text(component)
+            lines.append(f"claim {claim_name}_split_to_component_local: {split_name} -> {component_text}.")
+            lines.append(
+                f"{{ exact ({claim_name} ({split_name} -> {component_text}) "
+                f"(fun Hforward Hback => Hforward)). }}"
+            )
+            lines.append(f"claim {claim_name}_component_to_split_local: {component_text} -> {split_name}.")
+            lines.append(
+                f"{{ exact ({claim_name} ({component_text} -> {split_name}) "
+                f"(fun Hforward Hback => Hback)). }}"
+            )
+            emitted_local_avatar_projections.add(claim_name)
 
     if final_name is None:
         lines.append("admit.")
