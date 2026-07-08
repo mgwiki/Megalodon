@@ -22415,6 +22415,186 @@ def raw_tptp_deep_formula_transform_proof(
     return raw_deep_formula_transform_proof(source, target, raw_tptp_claim_name(parents[0]), variable_sorts or {})
 
 
+def raw_fool_transform_component_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if expr_same_mod_alpha(source, target):
+        return source_proof
+    direct = raw_direct_conclusion_transform_proof(source, target, source_proof)
+    if direct is not None:
+        return direct
+    true_component = raw_prop_equality_to_true_component(source)
+    if true_component is not None:
+        proposition, _true_on_left = true_component
+        proposition_proof = raw_proof_from_prop_true_equality(source, proposition, source_proof)
+        if proposition_proof is not None:
+            transformed = raw_fool_transform_component_proof(
+                proposition,
+                target,
+                proposition_proof,
+                variable_sorts,
+            )
+            if transformed is not None:
+                return transformed
+    deep = raw_deep_formula_transform_proof(source, target, source_proof, variable_sorts)
+    if deep is not None:
+        return deep
+    if raw_clause_replay_budget_ok(source, target, max_literals=12, max_literal_product=128):
+        clause = raw_clause_transform_proof(source, target, source_proof)
+        if clause is not None:
+            return clause
+    return None
+
+
+def raw_fool_source_instantiation_candidates(
+    source_binders: list[tuple[str, str]],
+    source_body: Expr,
+    target_body: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    *,
+    limit: int = 128,
+) -> list[tuple[dict[str, Expr], str, Expr]]:
+    target_binders, _ = collect_foralls(target_body)
+    target_binder_names = {name for name, _ in target_binders}
+    target_vars_by_sort: dict[str, list[Expr]] = {}
+    for name, sort in target_binders:
+        target_vars_by_sort.setdefault(sort, []).append(Expr("var", value=name))
+    for name, sort in variable_sorts.items():
+        target_vars_by_sort.setdefault(sort, []).append(Expr("var", value=name))
+
+    candidates_by_binder: list[list[Expr]] = []
+    for name, sort in source_binders:
+        candidates: list[Expr] = []
+        seen: set[str] = set()
+
+        def add(candidate: Expr | None) -> None:
+            if candidate is None:
+                return
+            key = expr_key(candidate)
+            if key in seen:
+                return
+            candidate_sort = expr_sort(candidate, variable_sorts)
+            if candidate_sort is None and candidate.kind == "var":
+                if candidate.value == "Empty":
+                    candidate_sort = "set"
+                elif candidate.value in {"True", "vampire_true"}:
+                    candidate_sort = "prop"
+            if candidate_sort != sort:
+                return
+            seen.add(key)
+            candidates.append(candidate)
+
+        same_name_sort = variable_sorts.get(name) if name in target_binder_names else None
+        if same_name_sort == sort:
+            add(Expr("var", value=name))
+        if name not in expr_variables(source_body):
+            add(raw_simple_inhabitant_for_sort(sort))
+        for candidate in target_vars_by_sort.get(sort, []):
+            add(candidate)
+        for candidate in raw_candidate_terms_for_sort((target_body, source_body), sort, variable_sorts)[:16]:
+            add(candidate)
+        add(raw_simple_inhabitant_for_sort(sort))
+        if not candidates:
+            return []
+        candidates_by_binder.append(candidates[:12])
+
+    found: list[tuple[dict[str, Expr], str, Expr]] = []
+    seen_substs: set[tuple[tuple[str, str], ...]] = set()
+    attempts = 0
+    for values in itertools.product(*candidates_by_binder):
+        attempts += 1
+        if attempts > limit or len(found) >= limit:
+            break
+        subst = {name: value for (name, _), value in zip(source_binders, values)}
+        key = tuple(sorted((name, expr_key(value)) for name, value in subst.items()))
+        if key in seen_substs:
+            continue
+        seen_substs.add(key)
+        proof = source_proof
+        instantiated = source_body
+        for name, _sort in source_binders:
+            value = subst[name]
+            proof = f"({proof_head(proof)} {proof_arg_text(value)})"
+            instantiated = substitute_expr(instantiated, {name: value})
+        found.append((subst, proof, instantiated))
+    return found
+
+
+def raw_fool_implication_replay_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if len(source_binders) > 8 or len(target_binders) > 8:
+        return None
+    local_sorts = {**variable_sorts, **{name: sort for name, sort in target_binders}}
+    source_options = (
+        raw_fool_source_instantiation_candidates(source_binders, source_body, target, source_proof, local_sorts)
+        if source_binders
+        else [({}, source_proof, source_body)]
+    )
+
+    for _subst, source_instance_proof, source_instance in source_options:
+        source_premises, source_conclusion = split_arrows(source_instance)
+        target_premises, target_conclusion = split_arrows(target_body)
+        if (
+            (not source_premises and not target_premises)
+            or len(expr_text(source_instance)) + len(expr_text(target_body)) < 5000
+        ):
+            whole = raw_fool_transform_component_proof(source_instance, target_body, source_instance_proof, local_sorts)
+            if whole is not None:
+                proof = whole
+                for name, sort in reversed(target_binders):
+                    proof = f"(fun {name} :{sort} => {proof})"
+                return proof
+        if len(source_premises) != len(target_premises) or len(source_premises) > 4:
+            continue
+        premise_names = [
+            fresh_identifier(f"Hfool{index}", expr_text(source), expr_text(target), source_instance_proof)
+            for index in range(len(target_premises))
+        ]
+        premise_proofs: list[str] = []
+        ok = True
+        for premise_name, source_premise, target_premise in zip(premise_names, source_premises, target_premises):
+            premise_proof = raw_fool_transform_component_proof(
+                target_premise,
+                source_premise,
+                premise_name,
+                local_sorts,
+            )
+            if premise_proof is None:
+                ok = False
+                break
+            premise_proofs.append(premise_proof)
+        if not ok:
+            continue
+        conclusion_source = source_instance_proof
+        for premise_proof in premise_proofs:
+            conclusion_source = f"({proof_head(conclusion_source)} {proof_term_text(premise_proof)})"
+        conclusion = raw_fool_transform_component_proof(
+            source_conclusion,
+            target_conclusion,
+            conclusion_source,
+            local_sorts,
+        )
+        if conclusion is None:
+            continue
+        proof = conclusion
+        for name, premise in reversed(list(zip(premise_names, target_premises))):
+            proof = f"(fun {name} :{proof_arg_text(premise)} => {proof})"
+        for name, sort in reversed(target_binders):
+            proof = f"(fun {name} :{sort} => {proof})"
+        return proof
+    return None
+
+
 def raw_tptp_fool_elimination_proof(
     proposition: str,
     parents: list[str],
@@ -22473,6 +22653,9 @@ def raw_tptp_fool_elimination_proof(
             if proof is not None:
                 return proof
             proof = raw_deep_formula_transform_proof(source, target, raw_tptp_claim_name(parents[0]), local_sorts)
+            if proof is not None:
+                return proof
+            proof = raw_fool_implication_replay_proof(source, target, raw_tptp_claim_name(parents[0]), local_sorts)
             if proof is not None:
                 return proof
     finally:
@@ -23942,6 +24125,19 @@ def raw_set_term_equality_transform_proof(
         return None
     if expr_same_mod_alpha(source, target):
         return f"(fun Q:(set->prop) => fun H:Q ({proof_arg_text(source)}) => H)"
+    beta_source = beta_normalize_expr(source)
+    beta_target = beta_normalize_expr(target)
+    if not (expr_same_mod_alpha(beta_source, source) and expr_same_mod_alpha(beta_target, target)):
+        if expr_same_mod_alpha(beta_source, beta_target):
+            return f"(fun Q:(set->prop) => fun H:Q ({proof_arg_text(source)}) => H)"
+        beta_proof = raw_set_term_equality_transform_proof(
+            beta_source,
+            beta_target,
+            variable_sorts,
+            depth + 1,
+        )
+        if beta_proof is not None:
+            return beta_proof
     multi_argument = raw_set_application_multi_argument_equality_proof(source, target, variable_sorts, depth + 1)
     if multi_argument is not None:
         return multi_argument
@@ -28855,11 +29051,7 @@ def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: s
         return raw_tptp_replay_proof_has_unbound_synthetic_db(proof)
     if rule in {"avatar_component_clause", "avatar_split_clause"}:
         return len(proposition) > MAX_RAW_TPTP_EXACT_AVATAR_PROPOSITION or len(proof) > MAX_RAW_TPTP_EXACT_PROOF_TERM
-    if rule == "fool_elimination" and (
-        len(proof) > 20000
-        or "vampire_funext_set_set_set" in proof
-        or "vampire_eps_ext" in proof
-    ):
+    if rule == "fool_elimination" and len(proof) > 50000:
         return True
     return False
 
