@@ -74,6 +74,8 @@ PROOF_SEARCH_SECONDS = float(os.environ.get("MEGALODON_PROOF_SEARCH_SECONDS", "8
 RAW_TPTP_REPLAY_SECONDS = float(os.environ.get("MEGALODON_RAW_TPTP_REPLAY_SECONDS", "0.35"))
 RAW_TPTP_REPLAY_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_REPLAY_CHAR_LIMIT", "12000"))
 RAW_TPTP_EXPORTED_NORMAL_FORM_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_NORMAL_FORM_CHAR_LIMIT", "60000"))
+RAW_TPTP_EXPORTED_FOOL_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_FOOL_CHAR_LIMIT", "60000"))
+RAW_TPTP_EXPORTED_SKOLEM_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_SKOLEM_CHAR_LIMIT", "60000"))
 PROOF_SEARCH_CLOCK = getattr(time, "thread_time", time.monotonic)
 MEGALODON_ADMIT_RE = re.compile(r"\badmit\.")
 
@@ -125,6 +127,18 @@ def raw_tptp_replay_payload_size_ok(
         and any(kind == "normal_form" for kind, _fields in replay_step.extras)
     ):
         return size <= RAW_TPTP_EXPORTED_NORMAL_FORM_CHAR_LIMIT
+    if (
+        rule == "fool_elimination"
+        and replay_step is not None
+        and any(kind == "fool" for kind, _fields in replay_step.extras)
+    ):
+        return size <= RAW_TPTP_EXPORTED_FOOL_CHAR_LIMIT
+    if (
+        rule == "skolemisation"
+        and replay_step is not None
+        and any(kind == "skolemize" for kind, _fields in replay_step.extras)
+    ):
+        return size <= RAW_TPTP_EXPORTED_SKOLEM_CHAR_LIMIT
     return False
 
 
