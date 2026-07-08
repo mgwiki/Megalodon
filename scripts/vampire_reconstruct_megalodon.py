@@ -5088,6 +5088,8 @@ def raw_tptp_replay_extra_expr(
     fields: dict[str, str],
     key: str,
     variable_sorts: dict[str, str],
+    lambda_sort_hints: dict[str, str] | None = None,
+    expected_sort: str | None = None,
 ) -> Expr | None:
     text = fields.get(key)
     if text is None:
@@ -5097,7 +5099,7 @@ def raw_tptp_replay_extra_expr(
         return None
     parsed = normalize_vampire_boolean_expr(parsed)
     parsed = repair_vampire_negated_premise_arrows(parsed)
-    surfaced = surface_direct_step_expr(parsed, variable_sorts)
+    surfaced = surface_direct_step_expr(parsed, variable_sorts, expected_sort=expected_sort, lambda_sort_hints=lambda_sort_hints)
     lowered = lower_function_equality_proposition(surfaced, variable_sorts)
     lowered_expr = parse_expr(lowered)
     return lowered_expr if lowered_expr is not None else surfaced
@@ -17978,7 +17980,12 @@ def raw_factored_forall_literal_transform_proof(
             if target_sort == removed_sort
         ]
         if removed_sort == "prop":
-            candidates.extend((Expr("var", value="vampire_false"), Expr("var", value="vampire_true")))
+            candidates.extend((
+                Expr("var", value="vampire_false"),
+                Expr("var", value="vampire_true"),
+                Expr("var", value="False"),
+                Expr("var", value="True"),
+            ))
         for candidate in candidates:
             subst = dict(base_subst)
             subst[removed_name] = candidate
@@ -19739,6 +19746,30 @@ def raw_tptp_one_parent_transform_proof(
     if not raw_clause_replay_budget_ok(source, target, max_literals=max_literals, max_literal_product=max_literal_product):
         return None
     return raw_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
+
+
+def raw_tptp_condensation_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> str | None:
+    if len(parents) != 1:
+        return None
+    parent_proposition = propositions_by_name.get(parents[0])
+    if parent_proposition is None:
+        return None
+    source = parse_expr(parent_proposition)
+    target = parse_expr(proposition)
+    if source is None or target is None:
+        return None
+    source = ambient_basic_logic_expr(source)
+    target = ambient_basic_logic_expr(target)
+    return raw_factored_forall_literal_transform_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+        (),
+    )
 
 
 def raw_quantified_clause_instantiation_transform_proof(
@@ -23891,6 +23922,11 @@ def raw_candidate_terms_for_sort(
     for expr in exprs:
         for candidate in expr_subterms(expr, limit=128):
             add(candidate)
+    if sort == "prop":
+        add(Expr("var", value="True"))
+        add(Expr("var", value="False"))
+        add(Expr("var", value="vampire_true"))
+        add(Expr("var", value="vampire_false"))
     for name, candidate_sort in sorted(variable_sorts.items()):
         if candidate_sort == sort:
             add(Expr("var", value=name))
@@ -26554,16 +26590,17 @@ def raw_tptp_exported_demodulation_rewrite_proof(
 ) -> str | None:
     local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
     for fields in megalodon_replay_extra_fields(replay_step, "rewrite"):
-        redex = raw_tptp_replay_extra_expr(fields, "redex", local_sorts)
+        lambda_sort_hints = raw_tptp_extra_lambda_sort_hints(fields, "main_parent", "conclusion", "step")
+        redex = raw_tptp_replay_extra_expr(fields, "redex", local_sorts, lambda_sort_hints)
         if redex is None:
-            redex = raw_tptp_replay_extra_expr(fields, "target", local_sorts)
+            redex = raw_tptp_replay_extra_expr(fields, "target", local_sorts, lambda_sort_hints)
         if redex is None:
             continue
-        replacement = raw_tptp_replay_extra_expr(fields, "replacement", local_sorts)
-        rule_lhs = raw_tptp_replay_extra_expr(fields, "rule_lhs", local_sorts)
-        rule_rhs = raw_tptp_replay_extra_expr(fields, "rule_rhs", local_sorts)
+        replacement = raw_tptp_replay_extra_expr(fields, "replacement", local_sorts, lambda_sort_hints)
+        rule_lhs = raw_tptp_replay_extra_expr(fields, "rule_lhs", local_sorts, lambda_sort_hints)
+        rule_rhs = raw_tptp_replay_extra_expr(fields, "rule_rhs", local_sorts, lambda_sort_hints)
         if rule_lhs is None:
-            rule_lhs = raw_tptp_replay_extra_expr(fields, "lhs", local_sorts)
+            rule_lhs = raw_tptp_replay_extra_expr(fields, "lhs", local_sorts, lambda_sort_hints)
         if replacement is None and rule_lhs is not None and rule_rhs is not None:
             subst: dict[str, Expr] = {}
             rule_variables = expr_variables(rule_lhs)
@@ -26637,8 +26674,20 @@ def raw_tptp_exported_demodulation_rewrite_proof(
                     )
                     if proof is not None:
                         return proof
-            exported_source_lambda = raw_tptp_replay_extra_expr(fields, "main_parent_lambda_0", local_sorts)
-            exported_target_lambda = raw_tptp_replay_extra_expr(fields, "conclusion_lambda_0", local_sorts)
+            exported_source_lambda = raw_tptp_replay_extra_expr(
+                fields,
+                "main_parent_lambda_0",
+                local_sorts,
+                lambda_sort_hints,
+                fields.get("main_parent_lambda_0_sort"),
+            )
+            exported_target_lambda = raw_tptp_replay_extra_expr(
+                fields,
+                "conclusion_lambda_0",
+                local_sorts,
+                lambda_sort_hints,
+                fields.get("conclusion_lambda_0_sort"),
+            )
             if exported_source_lambda is not None and exported_target_lambda is not None:
                 for source_index, equality_index in ((0, 1), (1, 0)):
                     source, source_proof = parents[source_index]
@@ -28028,6 +28077,7 @@ def raw_tptp_step_lambda_sort_hints(step: MegalodonReplayStep) -> dict[str, str]
                 raw_tptp_extra_lambda_sort_hints(
                     fields,
                     "step",
+                    "main_parent",
                     "selected_parent",
                     "other_parent",
                     "conclusion",
@@ -32533,10 +32583,17 @@ def raw_tptp_replay_proof(
     if rule in {
         "trivial_inequality_removal",
         "duplicate_literal_removal",
-        "condensation",
         "avatar_contradiction_clause",
     }:
         proof = raw_tptp_trivial_inequality_removal_proof(proposition, parents, propositions_by_name)
+        if proof is not None:
+            return proof
+        return raw_tptp_one_parent_transform_proof(proposition, parents, propositions_by_name, variable_sorts)
+    if rule == "condensation":
+        proof = raw_tptp_trivial_inequality_removal_proof(proposition, parents, propositions_by_name)
+        if proof is not None:
+            return proof
+        proof = raw_tptp_condensation_proof(proposition, parents, propositions_by_name)
         if proof is not None:
             return proof
         return raw_tptp_one_parent_transform_proof(proposition, parents, propositions_by_name, variable_sorts)
