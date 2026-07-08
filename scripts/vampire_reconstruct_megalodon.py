@@ -12004,7 +12004,7 @@ def raw_or_parts(expr: Expr) -> tuple[Expr, Expr] | None:
 
 
 def vampire_and_parts(expr: Expr) -> tuple[Expr, Expr] | None:
-    return app_args(expr, "vampire_and", 2)
+    return app_args(expr, "vampire_and", 2) or app_args(expr, "and", 2)
 
 
 def known_vampire_and_projection_proof(expr: Expr, known: dict[str, str]) -> str | None:
@@ -20721,6 +20721,116 @@ def raw_build_conjunction_from_component_proofs(
     if right is None:
         return None
     return f"(fun P K => K {proof_term_text(left)} {proof_term_text(right)})"
+
+
+def raw_or_components(expr: Expr, depth: int = 0) -> list[Expr]:
+    if depth > 32:
+        return [expr]
+    parts = raw_or_parts(expr)
+    if parts is None:
+        return [expr]
+    return raw_or_components(parts[0], depth + 1) + raw_or_components(parts[1], depth + 1)
+
+
+def raw_component_lists_same_mod_alpha(left: list[Expr], right: list[Expr]) -> bool:
+    return len(left) == len(right) and all(
+        expr_same_mod_alpha(left_item, right_item)
+        for left_item, right_item in zip(left, right)
+    )
+
+
+def raw_or_reassociation_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 32 or proof_search_timed_out():
+        return None
+    source_components = raw_or_components(source)
+    target_components = raw_or_components(target)
+    if len(source_components) < 2 or len(source_components) != len(target_components):
+        return None
+    next_component = 0
+
+    def branch_to_target(branch: Expr, branch_proof: str, branch_depth: int) -> str | None:
+        nonlocal next_component
+        if branch_depth > 32 or proof_search_timed_out():
+            return None
+        branch_parts = raw_or_parts(branch)
+        if branch_parts is not None:
+            left_name = fresh_identifier("HorL", expr_text(branch), expr_text(target), branch_proof)
+            right_name = fresh_identifier("HorR", expr_text(branch), expr_text(target), branch_proof, left_name)
+            left_proof = branch_to_target(branch_parts[0], left_name, branch_depth + 1)
+            right_proof = branch_to_target(branch_parts[1], right_name, branch_depth + 1)
+            if left_proof is None or right_proof is None:
+                return None
+            return (
+                f"({proof_head(branch_proof)} {proof_arg_text(target)} "
+                f"(fun {left_name} => {left_proof}) "
+                f"(fun {right_name} => {right_proof}))"
+            )
+        if next_component >= len(target_components):
+            return None
+        target_component = target_components[next_component]
+        next_component += 1
+        component_proof = raw_structural_normal_form_transform_proof(
+            branch,
+            target_component,
+            branch_proof,
+            variable_sorts,
+            branch_depth + 1,
+        )
+        if component_proof is None:
+            return None
+        return raw_or_intro_from_branch(target, target_component, component_proof)
+
+    proof = branch_to_target(source, source_proof, depth + 1)
+    if proof is None or next_component != len(target_components):
+        return None
+    return proof
+
+
+def raw_conjunction_reassociation_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 32 or proof_search_timed_out():
+        return None
+    source_components = raw_conjunction_components(source)
+    target_components = raw_conjunction_components(target)
+    if len(source_components) < 2 or len(source_components) != len(target_components):
+        return None
+    component_proofs: list[tuple[Expr, str]] = []
+    for source_component, target_component in zip(source_components, target_components):
+        projection = vampire_and_projection_from_proof(source_proof, source, source_component)
+        if projection is None:
+            return None
+        proof = raw_structural_normal_form_transform_proof(
+            source_component,
+            target_component,
+            projection,
+            variable_sorts,
+            depth + 1,
+        )
+        if proof is None:
+            return None
+        component_proofs.append((target_component, proof))
+
+    remaining = list(component_proofs)
+
+    def component_proof(target_component: Expr) -> str | None:
+        for index, (component, proof) in enumerate(remaining):
+            if expr_same_mod_alpha(component, target_component):
+                remaining.pop(index)
+                return proof
+        return None
+
+    return raw_build_conjunction_from_component_proofs(target, component_proof)
 
 
 def raw_negated_implication_chain_to_conjunction_proof(
@@ -30424,6 +30534,15 @@ def raw_structural_normal_form_transform_proof(
     source_and = vampire_and_parts(source)
     target_and = vampire_and_parts(target)
     if source_and is not None and target_and is not None:
+        reassociation = raw_conjunction_reassociation_transform_proof(
+            source,
+            target,
+            source_proof,
+            variable_sorts,
+            depth + 1,
+        )
+        if reassociation is not None:
+            return reassociation
         left_name = fresh_identifier("HL", expr_text(source), expr_text(target), source_proof)
         right_name = fresh_identifier("HR", expr_text(source), expr_text(target), source_proof, left_name)
         for left_target, right_target in (target_and, (target_and[1], target_and[0])):
@@ -30461,6 +30580,15 @@ def raw_structural_normal_form_transform_proof(
     source_or = raw_or_parts(source)
     target_or = raw_or_parts(target)
     if source_or is not None and target_or is not None:
+        reassociation = raw_or_reassociation_transform_proof(
+            source,
+            target,
+            source_proof,
+            variable_sorts,
+            depth + 1,
+        )
+        if reassociation is not None:
+            return reassociation
         if raw_clause_replay_budget_ok(source, target, max_literals=24, max_literal_product=512):
             clause_proof = raw_clause_transform_proof(source, target, source_proof)
             if clause_proof is not None:
@@ -30526,6 +30654,285 @@ def raw_structural_normal_form_transform_proof(
     return None
 
 
+NORMAL_FORM_PATH_STEP_RE = re.compile(r"^(?P<kind>and|or)\[(?P<index>[01])\]$")
+
+
+def raw_normal_form_path_steps(path: str) -> list[str] | None:
+    parts = [part for part in path.split(".") if part]
+    if not parts or parts[0] != "root":
+        return None
+    for part in parts[1:]:
+        if part in {"body", "left", "right", "not"}:
+            continue
+        if NORMAL_FORM_PATH_STEP_RE.fullmatch(part) is not None:
+            continue
+        return None
+    return parts[1:]
+
+
+def raw_normal_form_local_pair_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int,
+) -> str | None:
+    if expr_same_mod_alpha(source, target):
+        return source_proof
+    proof = raw_structural_normal_form_transform_proof(source, target, source_proof, variable_sorts, depth + 1)
+    if proof is not None:
+        return proof
+    proof = raw_deep_formula_transform_proof(source, target, source_proof, variable_sorts, depth + 1)
+    if proof is not None:
+        return proof
+    if raw_clause_replay_budget_ok(source, target, max_literals=16, max_literal_product=256):
+        proof = raw_clause_transform_proof(source, target, source_proof)
+        if proof is not None:
+            return proof
+        proof = raw_clause_subsumption_transform_proof(
+            source,
+            target,
+            source_proof,
+            deep_literals=getattr(PROOF_SEARCH_STATE, "deep_clause_literals", False),
+        )
+        if proof is not None:
+            return proof
+    return None
+
+
+def raw_normal_form_side_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int,
+) -> str | None:
+    if expr_same_mod_alpha(source, target):
+        return source_proof
+    proof = raw_structural_normal_form_transform_proof(source, target, source_proof, variable_sorts, depth + 1)
+    if proof is not None:
+        return proof
+    proof = raw_deep_formula_transform_proof(source, target, source_proof, variable_sorts, depth + 1)
+    if proof is not None:
+        return proof
+    if raw_clause_replay_budget_ok(source, target, max_literals=16, max_literal_product=256):
+        return raw_clause_transform_proof(source, target, source_proof)
+    return None
+
+
+def raw_normal_form_path_guided_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    pair_source: Expr,
+    pair_target: Expr,
+    path_steps: list[str],
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 80 or proof_search_timed_out():
+        return None
+    if not path_steps:
+        if not expr_same_mod_alpha(source, pair_source) or not expr_same_mod_alpha(target, pair_target):
+            return None
+        return raw_normal_form_local_pair_proof(source, target, source_proof, variable_sorts, depth + 1)
+
+    step = path_steps[0]
+    rest = path_steps[1:]
+
+    and_match = NORMAL_FORM_PATH_STEP_RE.fullmatch(step)
+    if and_match is not None and and_match.group("kind") == "and":
+        source_parts = vampire_and_parts(source)
+        target_parts = vampire_and_parts(target)
+        if source_parts is None or target_parts is None:
+            return None
+        selected = int(and_match.group("index"))
+        source_component_proofs = [
+            vampire_and_projection_from_proof(source_proof, source, source_parts[0]),
+            vampire_and_projection_from_proof(source_proof, source, source_parts[1]),
+        ]
+        if source_component_proofs[selected] is None:
+            return None
+        component_proofs: list[str] = []
+        for index, (source_component, target_component) in enumerate(zip(source_parts, target_parts)):
+            component_source_proof = source_component_proofs[index]
+            if component_source_proof is None:
+                return None
+            if index == selected:
+                proof = raw_normal_form_path_guided_proof(
+                    source_component,
+                    target_component,
+                    component_source_proof,
+                    pair_source,
+                    pair_target,
+                    rest,
+                    variable_sorts,
+                    depth + 1,
+                )
+            else:
+                proof = raw_normal_form_side_proof(
+                    source_component,
+                    target_component,
+                    component_source_proof,
+                    variable_sorts,
+                    depth + 1,
+                )
+            if proof is None:
+                return None
+            component_proofs.append(proof)
+        return (
+            f"(fun P K => K "
+            f"{proof_term_text(component_proofs[0])} "
+            f"{proof_term_text(component_proofs[1])})"
+        )
+
+    if and_match is not None and and_match.group("kind") == "or":
+        source_parts = raw_or_parts(source)
+        target_parts = raw_or_parts(target)
+        if source_parts is None or target_parts is None:
+            return None
+        selected = int(and_match.group("index"))
+        left_name = fresh_identifier("HorL", expr_text(source), expr_text(target), source_proof)
+        right_name = fresh_identifier("HorR", expr_text(source), expr_text(target), source_proof, left_name)
+        branch_proofs: list[str] = []
+        for index, (source_component, target_component, branch_name) in enumerate(
+            (
+                (source_parts[0], target_parts[0], left_name),
+                (source_parts[1], target_parts[1], right_name),
+            )
+        ):
+            if index == selected:
+                proof = raw_normal_form_path_guided_proof(
+                    source_component,
+                    target_component,
+                    branch_name,
+                    pair_source,
+                    pair_target,
+                    rest,
+                    variable_sorts,
+                    depth + 1,
+                )
+            else:
+                proof = raw_normal_form_side_proof(
+                    source_component,
+                    target_component,
+                    branch_name,
+                    variable_sorts,
+                    depth + 1,
+                )
+            if proof is None:
+                return None
+            branch_proofs.append(proof)
+        return (
+            f"({proof_head(source_proof)} {proof_arg_text(target)} "
+            f"(fun {left_name} => fun P Hleft Hright => Hleft {proof_term_text(branch_proofs[0])}) "
+            f"(fun {right_name} => fun P Hleft Hright => Hright {proof_term_text(branch_proofs[1])}))"
+        )
+
+    if step == "body":
+        if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
+            assert source.value is not None and target.value is not None and target.sort is not None
+            binder = target.value
+            source_body = source.args[0]
+            target_body = target.args[0]
+            if source.value != binder:
+                source_body = rename_expr_variables(source_body, {source.value: binder})
+            inner = raw_normal_form_path_guided_proof(
+                source_body,
+                target_body,
+                f"({proof_head(source_proof)} {binder})",
+                pair_source,
+                pair_target,
+                rest,
+                {**variable_sorts, binder: target.sort},
+                depth + 1,
+            )
+            if inner is None:
+                return None
+            return f"(fun {binder} :{target.sort} => {inner})"
+
+        source_exists = raw_exists_transform_parts(source)
+        target_exists = raw_exists_transform_parts(target)
+        if source_exists is not None and target_exists is not None:
+            source_head, source_sort, _source_predicate, source_name, source_body = source_exists
+            target_head, target_sort, _target_predicate, target_name, target_body = target_exists
+            if source_head != target_head or source_sort != target_sort:
+                return None
+            witness = fresh_identifier("w", expr_text(source), expr_text(target), source_proof)
+            source_body = rename_expr_variables(source_body, {source_name: witness})
+            target_body = rename_expr_variables(target_body, {target_name: witness})
+            body_proof = raw_normal_form_path_guided_proof(
+                source_body,
+                target_body,
+                "Hbody",
+                pair_source,
+                pair_target,
+                rest,
+                {**variable_sorts, witness: source_sort},
+                depth + 1,
+            )
+            if body_proof is None:
+                return None
+            target_intro = f"(fun Q Hexists => Hexists {witness} {proof_term_text(body_proof)})"
+            return (
+                f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                f"(fun {witness} :{source_sort} => fun Hbody => {target_intro}))"
+            )
+        return None
+
+    if step in {"left", "right"} and source.kind == "arrow" and target.kind == "arrow":
+        source_premise, source_conclusion = source.args
+        target_premise, target_conclusion = target.args
+        premise_name = fresh_identifier("Hprem", expr_text(source_premise), expr_text(target_premise), source_proof)
+        if step == "right":
+            source_premise_proof = raw_normal_form_side_proof(
+                target_premise,
+                source_premise,
+                premise_name,
+                variable_sorts,
+                depth + 1,
+            )
+            if source_premise_proof is None:
+                return None
+            conclusion = raw_normal_form_path_guided_proof(
+                source_conclusion,
+                target_conclusion,
+                f"({proof_head(source_proof)} {proof_term_text(source_premise_proof)})",
+                pair_source,
+                pair_target,
+                rest,
+                variable_sorts,
+                depth + 1,
+            )
+            if conclusion is None:
+                return None
+            return f"(fun {premise_name} => {conclusion})"
+        source_premise_proof = raw_normal_form_path_guided_proof(
+            target_premise,
+            source_premise,
+            premise_name,
+            pair_target,
+            pair_source,
+            rest,
+            variable_sorts,
+            depth + 1,
+        )
+        if source_premise_proof is None:
+            return None
+        conclusion = raw_normal_form_side_proof(
+            source_conclusion,
+            target_conclusion,
+            f"({proof_head(source_proof)} {proof_term_text(source_premise_proof)})",
+            variable_sorts,
+            depth + 1,
+        )
+        if conclusion is None:
+            return None
+        return f"(fun {premise_name} => {conclusion})"
+
+    return None
+
+
 def raw_tptp_exported_normal_form_proof(
     rule: str | None,
     proposition: str,
@@ -30539,6 +30946,11 @@ def raw_tptp_exported_normal_form_proof(
     local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
     source_proof = raw_tptp_claim_name(parents[0])
     candidate_pairs: list[tuple[Expr, Expr, bool]] = []
+
+    def exported_expr(fields: dict[str, str], key: str) -> Expr | None:
+        parsed = raw_tptp_replay_extra_expr_with_pair_hints(fields, key, local_sorts)
+        return ambient_basic_logic_expr(parsed) if parsed is not None else None
+
     for fields in megalodon_replay_extra_fields(replay_step, "normal_form"):
         exported_rule = fields.get("rule", "").replace(" ", "_")
         if exported_rule and rule is not None and exported_rule not in {rule, "normal_form"}:
@@ -30551,13 +30963,58 @@ def raw_tptp_exported_normal_form_proof(
                 continue
             pair_keys.append((f"pair_{index}_source", f"pair_{index}_target", False))
         for source_key, target_key, is_whole_step in pair_keys:
-            source = raw_tptp_replay_extra_expr_with_pair_hints(fields, source_key, local_sorts)
-            target = raw_tptp_replay_extra_expr_with_pair_hints(fields, target_key, local_sorts)
+            source = exported_expr(fields, source_key)
+            target = exported_expr(fields, target_key)
             if source is not None and target is not None:
                 candidate_pairs.append((source, target, is_whole_step))
 
     parsed_parent = parse_expr(propositions_by_name.get(parents[0], ""))
     parsed_target = parse_expr(proposition)
+    if parsed_parent is not None and parsed_target is not None:
+        ambient_parent = ambient_basic_logic_expr(parsed_parent)
+        ambient_target = ambient_basic_logic_expr(parsed_target)
+        for fields in megalodon_replay_extra_fields(replay_step, "normal_form"):
+            exported_rule = fields.get("rule", "").replace(" ", "_")
+            if exported_rule and rule is not None and exported_rule not in {rule, "normal_form"}:
+                continue
+            whole_source = exported_expr(fields, "source")
+            whole_target = exported_expr(fields, "target")
+            if whole_source is None or whole_target is None:
+                continue
+            if not expr_same_mod_alpha(whole_source, ambient_parent):
+                continue
+            if not expr_same_mod_alpha(whole_target, ambient_target):
+                continue
+            for index in range(64):
+                source_key = f"pair_{index}_source"
+                target_key = f"pair_{index}_target"
+                path_key = f"pair_{index}_path"
+                if source_key not in fields and target_key not in fields:
+                    if index > 0:
+                        break
+                    continue
+                path = fields.get(path_key)
+                if path is None:
+                    continue
+                path_steps = raw_normal_form_path_steps(path)
+                if path_steps is None:
+                    continue
+                pair_source = exported_expr(fields, source_key)
+                pair_target = exported_expr(fields, target_key)
+                if pair_source is None or pair_target is None:
+                    continue
+                proof = raw_normal_form_path_guided_proof(
+                    whole_source,
+                    whole_target,
+                    source_proof,
+                    pair_source,
+                    pair_target,
+                    path_steps,
+                    local_sorts,
+                )
+                if proof is not None:
+                    return proof
+
     if parsed_parent is not None and parsed_target is not None:
         candidate_pairs.append((ambient_basic_logic_expr(parsed_parent), ambient_basic_logic_expr(parsed_target), True))
 
