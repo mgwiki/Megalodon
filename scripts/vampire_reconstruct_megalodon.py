@@ -25403,6 +25403,26 @@ def raw_tptp_exported_demodulation_rewrite_proof(
                     )
                     if proof is not None:
                         return proof
+            exported_source_lambda = raw_tptp_replay_extra_expr(fields, "main_parent_lambda_0", local_sorts)
+            exported_target_lambda = raw_tptp_replay_extra_expr(fields, "conclusion_lambda_0", local_sorts)
+            if exported_source_lambda is not None and exported_target_lambda is not None:
+                for source_index, equality_index in ((0, 1), (1, 0)):
+                    source, source_proof = parents[source_index]
+                    equality, equality_proof = parents[equality_index]
+                    if not any(expr_same_mod_alpha(term, exported_source_lambda) for term in expr_subterms(source, limit=192)):
+                        continue
+                    if not any(expr_same_mod_alpha(term, exported_target_lambda) for term in expr_subterms(target, limit=192)):
+                        continue
+                    proof = raw_lambda_function_parent_equality_rewrite_proof(
+                        source,
+                        target,
+                        source_proof,
+                        equality,
+                        equality_proof,
+                        local_sorts,
+                    )
+                    if proof is not None:
+                        return proof
     return None
 
 
