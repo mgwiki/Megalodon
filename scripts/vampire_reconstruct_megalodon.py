@@ -20214,13 +20214,7 @@ def raw_classical_single_implication_to_or_by_conclusion_proof(
             proof_arg_text(target_negative),
             proof_arg_text(target_positive),
         )
-        positive_from_conclusion = raw_direct_conclusion_transform_proof(
-            source_conclusion,
-            target_positive,
-            source_conclusion_name,
-        )
-        if positive_from_conclusion is None:
-            continue
+        positive_from_conclusion = source_conclusion_name
         source_premise_name = fresh_identifier(
             f"HdirectPremise{premise_offset}",
             source_application,
