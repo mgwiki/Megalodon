@@ -167,6 +167,8 @@ def raw_tptp_replay_payload_size_ok(
 
 
 def raw_tptp_replay_seconds_for_rule(rule: str | None) -> float:
+    if rule == "rectify":
+        return max(RAW_TPTP_REPLAY_SECONDS, 1.0)
     if rule in {"forward_subsumption_resolution", "backward_subsumption_resolution"}:
         return RAW_TPTP_FORWARD_SUBSUMPTION_REPLAY_SECONDS
     return RAW_TPTP_REPLAY_SECONDS
@@ -30708,7 +30710,7 @@ def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: s
         return raw_tptp_replay_proof_has_unbound_synthetic_db(proof)
     if rule in {"avatar_component_clause", "avatar_split_clause"}:
         return len(proposition) > MAX_RAW_TPTP_EXACT_AVATAR_PROPOSITION or len(proof) > MAX_RAW_TPTP_EXACT_PROOF_TERM
-    if rule == "fool_elimination" and len(proof) > 50000:
+    if rule == "fool_elimination" and len(proof) > 100000:
         return True
     if (
         rule in {"ennf_transformation", "nnf_transformation"}
