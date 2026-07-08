@@ -79,6 +79,7 @@ RAW_TPTP_EXPORTED_FOOL_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPOR
 RAW_TPTP_EXPORTED_SKOLEM_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_SKOLEM_CHAR_LIMIT", "60000"))
 RAW_TPTP_EXPORTED_RECTIFY_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_RECTIFY_CHAR_LIMIT", "60000"))
 RAW_TPTP_EXPORTED_DEFINITION_REWRITE_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_DEFINITION_REWRITE_CHAR_LIMIT", "90000"))
+RAW_TPTP_EXPORTED_CNF_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_CNF_CHAR_LIMIT", "90000"))
 RAW_TPTP_CLASSICAL_NORMAL_FORM_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_CLASSICAL_NORMAL_FORM_CHAR_LIMIT", "1500"))
 PROOF_SEARCH_CLOCK = getattr(time, "thread_time", time.monotonic)
 MEGALODON_ADMIT_RE = re.compile(r"\badmit\.")
@@ -122,39 +123,46 @@ def raw_tptp_replay_payload_size_ok(
     propositions_by_name: dict[str, str],
     replay_step: "MegalodonReplayStep | None",
 ) -> bool:
+    rule_key = rule.replace(" ", "_") if rule is not None else None
     size = raw_tptp_replay_payload_size(proposition, parents, propositions_by_name, replay_step)
     if size <= RAW_TPTP_REPLAY_CHAR_LIMIT:
         return True
     if (
-        rule in {"flattening", "ennf_transformation", "nnf_transformation", "boolean_simplification", "true_and_false_elimination"}
+        rule_key in {"flattening", "ennf_transformation", "nnf_transformation", "boolean_simplification", "true_and_false_elimination"}
         and replay_step is not None
         and any(kind == "normal_form" for kind, _fields in replay_step.extras)
     ):
         return size <= RAW_TPTP_EXPORTED_NORMAL_FORM_CHAR_LIMIT
     if (
-        rule == "fool_elimination"
+        rule_key == "fool_elimination"
         and replay_step is not None
         and any(kind == "fool" for kind, _fields in replay_step.extras)
     ):
         return size <= RAW_TPTP_EXPORTED_FOOL_CHAR_LIMIT
     if (
-        rule == "skolemisation"
+        rule_key == "skolemisation"
         and replay_step is not None
         and any(kind == "skolemize" for kind, _fields in replay_step.extras)
     ):
         return size <= RAW_TPTP_EXPORTED_SKOLEM_CHAR_LIMIT
     if (
-        rule == "rectify"
+        rule_key == "rectify"
         and replay_step is not None
         and any(kind == "rectify" for kind, _fields in replay_step.extras)
     ):
         return size <= RAW_TPTP_EXPORTED_RECTIFY_CHAR_LIMIT
     if (
-        rule in {"definition_folding", "definition_unfolding"}
+        rule_key in {"definition_folding", "definition_unfolding"}
         and replay_step is not None
         and any(kind == "definition_rewrite" for kind, _fields in replay_step.extras)
     ):
         return size <= RAW_TPTP_EXPORTED_DEFINITION_REWRITE_CHAR_LIMIT
+    if (
+        rule_key == "cnf_transformation"
+        and replay_step is not None
+        and any(kind == "cnf" for kind, _fields in replay_step.extras)
+    ):
+        return size <= RAW_TPTP_EXPORTED_CNF_CHAR_LIMIT
     return False
 
 
@@ -17900,8 +17908,6 @@ def raw_formula_entails_clause_proof(
 ) -> str | None:
     if depth > 80 or proof_search_timed_out():
         return None
-    if len(expr_text(source)) + len(expr_text(target)) > 14000:
-        return None
 
     if target.kind == "forall" and target.value is not None and target.sort is not None:
         inner = raw_formula_entails_clause_proof(
@@ -17914,12 +17920,72 @@ def raw_formula_entails_clause_proof(
         if inner is not None:
             return f"(fun {target.value} :{target.sort} => {inner})"
 
+    source_conjuncts = vampire_and_parts(source)
+    if source_conjuncts is not None:
+        target_binders, target_body_for_score = collect_foralls(target)
+        target_binder_names = {name for name, _ in target_binders}
+        target_names = {
+            name
+            for literal in raw_clause_literals(target_body_for_score)
+            for name in expr_variables(literal)
+            if name not in target_binder_names
+            and name
+            not in {
+                "True",
+                "False",
+                "vampire_true",
+                "vampire_false",
+                "vampire_eq_prop",
+                "vampire_eq_set",
+                "or",
+                "and",
+            }
+        }
+
+        def conjunct_priority(conjunct: Expr) -> tuple[int, int]:
+            conjunct_text = expr_text(conjunct)
+            overlap = sum(1 for name in target_names if re.search(rf"\b{re.escape(name)}\b", conjunct_text))
+            return (-overlap, len(conjunct_text))
+
+        for conjunct in sorted(source_conjuncts, key=conjunct_priority):
+            conjunct_proof = vampire_and_projection_from_proof(source_proof, source, conjunct)
+            if conjunct_proof is None:
+                continue
+            proof = raw_formula_entails_clause_proof(
+                conjunct,
+                target,
+                conjunct_proof,
+                variable_sorts,
+                depth + 1,
+            )
+            if proof is not None:
+                return proof
+
+    if len(expr_text(source)) + len(expr_text(target)) > 14000:
+        return None
+
     if source.kind == "forall" and source.value is not None and source.sort is not None:
         source_body = source.args[0]
-        candidates = raw_candidate_terms_for_sort((target, source_body), source.sort, variable_sorts)
         if variable_sorts.get(source.value) == source.sort:
             preferred = Expr("var", value=source.value)
-            candidates = [preferred, *(candidate for candidate in candidates if expr_key(candidate) != expr_key(preferred))]
+            instantiated_source = substitute_expr(source_body, {source.value: preferred})
+            instantiated_proof = f"({proof_head(source_proof)} {proof_arg_text(preferred)})"
+            proof = raw_formula_entails_clause_proof(
+                instantiated_source,
+                target,
+                instantiated_proof,
+                variable_sorts,
+                depth + 1,
+            )
+            if proof is not None:
+                return proof
+            candidates = [
+                candidate
+                for candidate in raw_candidate_terms_for_sort((target, source_body), source.sort, variable_sorts)
+                if expr_key(candidate) != expr_key(preferred)
+            ]
+        else:
+            candidates = raw_candidate_terms_for_sort((target, source_body), source.sort, variable_sorts)
         for candidate in candidates[:16]:
             instantiated_source = substitute_expr(source_body, {source.value: candidate})
             instantiated_proof = f"({proof_head(source_proof)} {proof_arg_text(candidate)})"
@@ -17955,22 +18021,6 @@ def raw_formula_entails_clause_proof(
             f"(fun {left_name} => {left_proof}) "
             f"(fun {right_name} => {right_proof}))"
         )
-
-    source_conjuncts = vampire_and_parts(source)
-    if source_conjuncts is not None:
-        for conjunct in source_conjuncts:
-            conjunct_proof = vampire_and_projection_from_proof(source_proof, source, conjunct)
-            if conjunct_proof is None:
-                continue
-            proof = raw_formula_entails_clause_proof(
-                conjunct,
-                target,
-                conjunct_proof,
-                variable_sorts,
-                depth + 1,
-            )
-            if proof is not None:
-                return proof
 
     return None
 
@@ -31008,7 +31058,7 @@ def raw_tptp_replay_proof(
                 return proof
             previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
             if previous_deadline is not None:
-                PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 0.5)
+                PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 1.5)
             try:
                 proof = raw_tptp_cnf_formula_clause_proof(proposition, parents, propositions_by_name, variable_sorts)
                 if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
