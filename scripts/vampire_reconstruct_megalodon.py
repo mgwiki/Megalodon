@@ -3013,7 +3013,8 @@ def raw_tptp_apply_parent_binder_sorts(proposition: str, parent_sorts: dict[str,
     def rewrite_prefix(expr: Expr) -> Expr:
         if expr.kind != "forall" or expr.value is None:
             return expr
-        sort = parent_sorts.get(expr.value, expr.sort)
+        parent_sort = parent_sorts.get(expr.value)
+        sort = parent_sort if parent_sort is not None and equivalent_sorts(parent_sort, expr.sort) else expr.sort
         return Expr(
             "forall",
             value=expr.value,
