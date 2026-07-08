@@ -27240,6 +27240,150 @@ def raw_tptp_exported_two_literal_resolution_proof(
     return None
 
 
+def raw_tptp_equality_factoring_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+    replay_step: MegalodonReplayStep | None,
+) -> str | None:
+    if replay_step is None or len(parents) != 1:
+        return None
+    fields_groups = megalodon_replay_extra_fields(replay_step, "two_literal_rewrite")
+    if not fields_groups:
+        return None
+    parent_proposition = propositions_by_name.get(parents[0])
+    parent = parse_expr(parent_proposition) if parent_proposition is not None else None
+    target = parse_expr(proposition)
+    if parent is None or target is None:
+        return None
+    target_binders, target_body = collect_foralls(target)
+    target_literals = raw_clause_literals(target_body)
+    if len(target_literals) != 2:
+        return None
+    extra_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
+    parent_proof = raw_tptp_claim_name(parents[0])
+
+    for fields in fields_groups:
+        selected_parent = fields.get("selected_parent_index")
+        other_parent = fields.get("other_parent_index")
+        selected_literal_text = fields.get("selected_literal_index")
+        other_literal_text = fields.get("other_literal_index")
+        if selected_parent != "0" or other_parent != "0" or selected_literal_text is None or other_literal_text is None:
+            continue
+        try:
+            selected_literal_index = int(selected_literal_text)
+            other_literal_index = int(other_literal_text)
+        except ValueError:
+            continue
+        lambda_sort_hints = raw_tptp_extra_lambda_sort_hints(fields, "selected_parent", "other_parent", "conclusion")
+        selected_substituted = raw_tptp_extra_formula_expr(fields, "selected_substituted", extra_sorts, lambda_sort_hints)
+        other_substituted = raw_tptp_extra_formula_expr(fields, "other_substituted", extra_sorts, lambda_sort_hints)
+        if selected_substituted is None or other_substituted is None:
+            continue
+        selected_clause = raw_instantiated_clause_from_exported_literal(
+            parent,
+            parent_proof,
+            selected_literal_index,
+            selected_substituted,
+            target_binders,
+            target_body,
+        )
+        if selected_clause is None:
+            continue
+        source_body, source_body_proof = selected_clause
+
+        retained_target_index: int | None = None
+        retained_target: Expr | None = None
+        negated_factor_index: int | None = None
+        negated_factor: Expr | None = None
+        factor_equality: Expr | None = None
+        for index, literal in enumerate(target_literals):
+            other_transform = raw_clause_transform_proof(other_substituted, literal, "Hother")
+            if other_transform is not None or expr_same_mod_alpha(other_substituted, literal):
+                retained_target_index = index
+                retained_target = literal
+                negated_factor_index = 1 - index
+                negated_factor = target_literals[negated_factor_index]
+                factor_premises, factor_conclusion = split_arrows(negated_factor)
+                if len(factor_premises) == 1 and false_eliminator_expr(factor_conclusion):
+                    factor_equality = factor_premises[0]
+                    break
+        if (
+            retained_target_index is None
+            or retained_target is None
+            or negated_factor_index is None
+            or negated_factor is None
+            or factor_equality is None
+        ):
+            continue
+
+        def handler(literal: Expr, literal_proof: str) -> str | None:
+            if expr_same_mod_alpha(literal, other_substituted):
+                retained = raw_clause_transform_proof(literal, retained_target, literal_proof)
+                if retained is None and expr_same_mod_alpha(literal, retained_target):
+                    retained = literal_proof
+                if retained is None:
+                    return None
+                return raw_or_intro_literal_at(target_body, retained_target_index, retained)
+            if not expr_same_mod_alpha(literal, selected_substituted):
+                return None
+            retained_from_factor = raw_equality_composition_proof(
+                factor_equality,
+                "Hfactor",
+                literal,
+                literal_proof,
+                retained_target,
+                extra_sorts,
+            )
+            if retained_from_factor is None:
+                retained_from_factor = raw_equality_composition_proof(
+                    literal,
+                    literal_proof,
+                    factor_equality,
+                    "Hfactor",
+                    retained_target,
+                    extra_sorts,
+                )
+            if retained_from_factor is None:
+                retained_from_factor = raw_equality_rewrite_expr_proof(
+                    literal,
+                    retained_target,
+                    literal_proof,
+                    factor_equality,
+                    "Hfactor",
+                    extra_sorts,
+                )
+            if retained_from_factor is None:
+                return None
+            retained_intro = raw_or_intro_literal_at(target_body, retained_target_index, retained_from_factor)
+            negated_intro = raw_or_intro_literal_at(target_body, negated_factor_index, "HnotFactor")
+            if retained_intro is None or negated_intro is None:
+                return None
+            return (
+                f"(xm {proof_arg_text(factor_equality)} {proof_arg_text(target_body)} "
+                f"(fun Hfactor => {proof_term_text(retained_intro)}) "
+                f"(fun HnotFactor => {proof_term_text(negated_intro)}))"
+            )
+
+        previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+        PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+        try:
+            body_proof = raw_clause_cases_with_handler(source_body, source_body_proof, handler)
+        finally:
+            if previous_target is None:
+                if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                    delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+            else:
+                PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+        if body_proof is None:
+            continue
+        for name, sort in reversed(target_binders):
+            body_proof = f"(fun {name} :{sort} => {body_proof})"
+        return body_proof
+    return None
+
+
 def raw_tptp_guarded_parent_equality_rewrite_proof(
     proposition: str,
     parents: list[str],
@@ -29799,6 +29943,15 @@ def raw_tptp_replay_proof(
             replay_step,
         )
     if rule == "equality_factoring":
+        proof = raw_tptp_equality_factoring_proof(
+            proposition,
+            parents,
+            propositions_by_name,
+            variable_sorts,
+            replay_step,
+        )
+        if proof is not None:
+            return proof
         return raw_tptp_trivial_inequality_removal_proof(
             proposition,
             parents,
