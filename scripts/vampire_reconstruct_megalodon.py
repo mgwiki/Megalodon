@@ -28265,6 +28265,73 @@ def raw_exported_two_literal_rewrite_branch_proof(
     return None
 
 
+def raw_exported_two_literal_superposition_clause_proof(
+    source: Expr,
+    source_proof: str,
+    resolver: Expr,
+    resolver_proof: str,
+    target: Expr,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_literals = raw_clause_literals(source)
+    resolver_literals = raw_clause_literals(resolver)
+    target_literals = raw_clause_literals(target)
+    if len(source_literals) > 8 or len(resolver_literals) > 12 or len(target_literals) > 16:
+        return None
+    target_text = proof_arg_text(target)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+
+    def target_intro(literal: Expr, literal_proof: str) -> str | None:
+        direct = raw_literal_to_clause_proof(literal, target, literal_proof, target_literals, ())
+        if direct is not None:
+            return direct
+        return None
+
+    def source_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
+        direct = target_intro(source_literal, source_literal_proof)
+        if direct is not None:
+            return direct
+
+        def resolver_handler(resolver_literal: Expr, resolver_literal_proof: str) -> str | None:
+            direct = target_intro(resolver_literal, resolver_literal_proof)
+            if direct is not None:
+                return direct
+            if equality_like_sides(resolver_literal) is None:
+                return None
+            for target_index, target_literal in enumerate(target_literals):
+                rewritten = raw_equality_rewrite_expr_proof(
+                    source_literal,
+                    target_literal,
+                    source_literal_proof,
+                    resolver_literal,
+                    resolver_literal_proof,
+                    variable_sorts,
+                )
+                if rewritten is None:
+                    continue
+                proof = raw_or_intro_literal_at(target, target_index, rewritten)
+                if proof is not None:
+                    return proof
+            return None
+
+        return raw_clause_cases_with_handler(
+            resolver,
+            resolver_proof,
+            resolver_handler,
+            avoid_text=source_literal_proof,
+        )
+
+    try:
+        return raw_clause_cases_with_handler(source, source_proof, source_handler)
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_tptp_exported_two_literal_resolution_proof(
     proposition: str,
     parents: list[str],
@@ -28342,6 +28409,18 @@ def raw_tptp_exported_two_literal_resolution_proof(
         if selected_clause is not None and other_clause is not None:
             source, source_proof = selected_clause
             resolver, resolver_proof = other_clause
+            body_proof = raw_exported_two_literal_superposition_clause_proof(
+                source,
+                source_proof,
+                resolver,
+                resolver_proof,
+                target_body,
+                extra_sorts,
+            )
+            if body_proof is not None:
+                for name, sort in reversed(target_binders):
+                    body_proof = f"(fun {name} :{sort} => {body_proof})"
+                return body_proof
             body_proof = raw_exported_two_literal_rewrite_branch_proof(
                 source,
                 source_proof,
@@ -28859,7 +28938,13 @@ def raw_tptp_superposition_proof(
 
 
 def raw_tptp_constant_for_sort(sort: str, variable_sorts: dict[str, str], avoid: set[str]) -> Expr | None:
-    for name, candidate_sort in sorted(variable_sorts.items()):
+    candidates = [
+        (name, candidate_sort)
+        for name, candidate_sort in variable_sorts.items()
+        if name not in avoid and name not in RAW_TPTP_AMBIENT_CONSTANTS
+    ]
+    candidates.sort(key=lambda item: (0 if item[0][:1].islower() else 1, item[0]))
+    for name, candidate_sort in candidates:
         if name in avoid or name in RAW_TPTP_AMBIENT_CONSTANTS:
             continue
         if candidate_sort == sort and "->" not in candidate_sort:
@@ -29083,6 +29168,7 @@ def raw_tptp_selected_literal_subsumption_resolution_proof(
     target: Expr,
     parsed: list[tuple[Expr, str]],
     parents: list[str],
+    variable_sorts: dict[str, str],
     replay_step: MegalodonReplayStep | None,
 ) -> str | None:
     if replay_step is None or len(parsed) != 2 or len(parents) != 2:
@@ -29103,6 +29189,8 @@ def raw_tptp_selected_literal_subsumption_resolution_proof(
         return None
     resolver_parent_index = 1 - selected_parent_index
     target_binders, target_body = collect_foralls(target)
+    target_binder_sorts = {name: sort for name, sort in target_binders}
+    local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
 
     substitution: dict[str, Expr] = {}
     raw_substitution = selected_fields.get("selected_substitution", "")
@@ -29116,22 +29204,59 @@ def raw_tptp_selected_literal_subsumption_resolution_proof(
             continue
         substitution[left] = value
 
-    def open_parent(expr: Expr, proof: str, use_substitution: bool) -> tuple[Expr, str]:
+    shared_instantiations: dict[str, Expr] = {}
+
+    def resolved_replacement(name: str, use_substitution: bool) -> Expr | None:
+        replacement = substitution.get(name) if use_substitution else None
+        if replacement is None:
+            return shared_instantiations.get(name)
+        free = expr_variables(replacement)
+        if replacement.kind == "var" and replacement.value in shared_instantiations:
+            return shared_instantiations[replacement.value]
+        if free:
+            replacement = substitute_expr(
+                replacement,
+                {
+                    var: value
+                    for var, value in shared_instantiations.items()
+                    if var in free
+                },
+            )
+            free = expr_variables(replacement)
+        if free <= set(target_binder_sorts):
+            return replacement
+        return None
+
+    def open_parent(expr: Expr, proof: str, use_substitution: bool) -> tuple[Expr, str] | None:
         opened = expr
         opened_proof = proof
         for target_name, target_sort in target_binders:
             if opened.kind == "forall" and opened.sort == target_sort and opened.value is not None:
-                replacement = substitution.get(opened.value) if use_substitution else None
+                replacement = resolved_replacement(opened.value, use_substitution)
                 if replacement is None:
                     opened = rename_expr_variables(opened.args[0], {opened.value: target_name})
                     opened_proof = f"({proof_head(opened_proof)} {target_name})"
                 else:
                     opened = substitute_expr(opened.args[0], {opened.value: replacement})
                     opened_proof = f"({proof_head(opened_proof)} {proof_arg_text(replacement)})"
+        avoid = {name for name, _ in target_binders}
+        while opened.kind == "forall" and opened.value is not None and opened.sort is not None:
+            replacement = resolved_replacement(opened.value, use_substitution)
+            if replacement is None:
+                replacement = raw_tptp_constant_for_sort(opened.sort, local_sorts, avoid)
+            if replacement is None:
+                return None
+            shared_instantiations.setdefault(opened.value, replacement)
+            opened = substitute_expr(opened.args[0], {opened.value: replacement})
+            opened_proof = f"({proof_head(opened_proof)} {proof_arg_text(replacement)})"
         return opened, opened_proof
 
-    source, source_proof = open_parent(*parsed[selected_parent_index], use_substitution=False)
-    resolver, resolver_proof = open_parent(*parsed[resolver_parent_index], use_substitution=True)
+    source_opened = open_parent(*parsed[selected_parent_index], use_substitution=False)
+    resolver_opened = open_parent(*parsed[resolver_parent_index], use_substitution=True)
+    if source_opened is None or resolver_opened is None:
+        return None
+    source, source_proof = source_opened
+    resolver, resolver_proof = resolver_opened
     if not raw_clause_replay_budget_ok(source, resolver, target_body, max_literals=16, max_literal_product=512):
         return None
     proof = raw_flat_clause_resolution_proof(source, target_body, source_proof, resolver, resolver_proof)
@@ -29148,10 +29273,13 @@ def raw_tptp_forward_subsumption_resolution_proof(
     proposition: str,
     parents: list[str],
     propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str] | None = None,
     *,
     allow_quantified_literal: bool = True,
     replay_step: MegalodonReplayStep | None = None,
 ) -> str | None:
+    if variable_sorts is None:
+        variable_sorts = {}
     if len(parents) != 2:
         return None
     first_proposition = propositions_by_name.get(parents[0])
@@ -29171,6 +29299,7 @@ def raw_tptp_forward_subsumption_resolution_proof(
         target,
         parsed,
         parents,
+        variable_sorts,
         replay_step,
     )
     if selected_literal_proof is not None:
@@ -32058,7 +32187,13 @@ def raw_tptp_replay_proof(
     if rule == "superposition":
         return raw_tptp_superposition_proof(proposition, parents, propositions_by_name, variable_sorts, replay_step)
     if rule in {"resolution", "factoring"}:
-        return raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name, replay_step=replay_step)
+        return raw_tptp_forward_subsumption_resolution_proof(
+            proposition,
+            parents,
+            propositions_by_name,
+            variable_sorts,
+            replay_step=replay_step,
+        )
     if rule == "sat_conversion":
         return raw_tptp_trivial_inequality_removal_proof(
             proposition,
@@ -32210,9 +32345,21 @@ def raw_tptp_replay_proof(
         proof = raw_tptp_unit_resulting_resolution_proof(proposition, parents, propositions_by_name, variable_sorts)
         if proof is not None:
             return proof
-        return raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name, replay_step=replay_step)
+        return raw_tptp_forward_subsumption_resolution_proof(
+            proposition,
+            parents,
+            propositions_by_name,
+            variable_sorts,
+            replay_step=replay_step,
+        )
     if rule in {"forward_subsumption_resolution", "backward_subsumption_resolution"}:
-        return raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name, replay_step=replay_step)
+        return raw_tptp_forward_subsumption_resolution_proof(
+            proposition,
+            parents,
+            propositions_by_name,
+            variable_sorts,
+            replay_step=replay_step,
+        )
     if rule in {"forward_demodulation", "backward_demodulation"}:
         return raw_tptp_forward_demodulation_proof(
             proposition,
