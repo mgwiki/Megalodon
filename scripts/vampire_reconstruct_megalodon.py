@@ -23757,6 +23757,16 @@ def raw_prop_implication_transform_proof(
     if equality_to_equivalence is not None:
         return equality_to_equivalence
 
+    prop_equality_rewrite_symmetry = raw_prop_equality_rewrite_then_symmetry_proof(
+        source,
+        target,
+        source_proof,
+        variable_sorts,
+        depth + 1,
+    )
+    if prop_equality_rewrite_symmetry is not None:
+        return prop_equality_rewrite_symmetry
+
     source_sides = equality_like_sides(source)
     target_sides = equality_like_sides(target)
     if (
@@ -23769,6 +23779,15 @@ def raw_prop_implication_transform_proof(
         return raw_eq_symmetry_proof(source_proof, source_sides[0], sort)
 
     prop_argument_rewrite = raw_prop_argument_set_rewrite_proof(
+        source,
+        target,
+        source_proof,
+        variable_sorts,
+        depth + 1,
+    )
+    if prop_argument_rewrite is not None:
+        return prop_argument_rewrite
+    prop_argument_rewrite = raw_prop_single_argument_rewrite_then_transform_proof(
         source,
         target,
         source_proof,
@@ -24000,6 +24019,102 @@ def raw_prop_argument_prop_rewrite_proof(
         f"(fun {hole} :prop => {expr_text(context)}) "
         f"{proof_term_text(source_proof)}"
     )
+
+
+def raw_prop_single_argument_rewrite_then_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 12 or proof_search_timed_out():
+        return None
+    if source.kind != "app" or target.kind != "app" or len(source.args) != len(target.args):
+        return None
+    if not source.args or not expr_same_mod_alpha(source.args[0], target.args[0]):
+        return None
+    differing = [
+        index
+        for index, (source_arg, target_arg) in enumerate(zip(source.args, target.args))
+        if index != 0 and not expr_same_mod_alpha(source_arg, target_arg)
+    ]
+    if len(differing) <= 1:
+        return None
+    for index in differing:
+        intermediate_args = list(source.args)
+        intermediate_args[index] = target.args[index]
+        intermediate = Expr("app", args=tuple(intermediate_args))
+        first = raw_prop_argument_prop_rewrite_proof(
+            source,
+            intermediate,
+            source_proof,
+            variable_sorts,
+            depth + 1,
+        )
+        if first is None:
+            continue
+        second = raw_prop_implication_transform_proof(
+            intermediate,
+            target,
+            first,
+            variable_sorts,
+            depth + 1,
+        )
+        if second is not None:
+            return second
+    return None
+
+
+def raw_prop_equality_rewrite_then_symmetry_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 12 or proof_search_timed_out():
+        return None
+    source_sides = equality_like_sides(source)
+    target_sides = equality_like_sides(target)
+    if source_sides is None or target_sides is None:
+        return None
+    if not (
+        source.kind == "app"
+        and target.kind == "app"
+        and source.args
+        and target.args
+        and source.args[0].kind == "var"
+        and target.args[0].kind == "var"
+        and source.args[0].value == "vampire_eq_prop"
+        and target.args[0].value == "vampire_eq_prop"
+    ):
+        return None
+    source_left, source_right = source_sides
+    target_left, target_right = target_sides
+    if expr_same_mod_alpha(source_left, target_right):
+        intermediate = Expr("app", args=(source.args[0], source_left, target_left))
+        rewritten = raw_prop_argument_prop_rewrite_proof(
+            source,
+            intermediate,
+            source_proof,
+            variable_sorts,
+            depth + 1,
+        )
+        if rewritten is not None:
+            return raw_eq_symmetry_proof(rewritten, source_left, "prop")
+    if expr_same_mod_alpha(source_right, target_left):
+        intermediate = Expr("app", args=(source.args[0], target_right, source_right))
+        rewritten = raw_prop_argument_prop_rewrite_proof(
+            source,
+            intermediate,
+            source_proof,
+            variable_sorts,
+            depth + 1,
+        )
+        if rewritten is not None:
+            return raw_eq_symmetry_proof(rewritten, target_right, "prop")
+    return None
 
 
 def raw_prop_multi_argument_prop_rewrite_proof(
@@ -24433,6 +24548,15 @@ def raw_deep_formula_transform_proof(
     )
     if implication_transform is not None:
         return implication_transform
+
+    implication_to_or = raw_implication_chain_to_or_negated_premises_proof(
+        source,
+        target,
+        source_proof,
+        variable_sorts,
+    )
+    if implication_to_or is not None:
+        return implication_to_or
 
     if len(expr_text(source)) + len(expr_text(target)) > 9000:
         return None
@@ -29858,7 +29982,14 @@ def raw_tptp_exported_normal_form_proof(
         exported_rule = fields.get("rule", "").replace(" ", "_")
         if exported_rule and rule is not None and exported_rule not in {rule, "normal_form"}:
             continue
-        for source_key, target_key in [("source", "target"), ("pair_0_source", "pair_0_target")]:
+        pair_keys = [("source", "target")]
+        for index in range(64):
+            if f"pair_{index}_source" not in fields and f"pair_{index}_target" not in fields:
+                if index > 0:
+                    break
+                continue
+            pair_keys.append((f"pair_{index}_source", f"pair_{index}_target"))
+        for source_key, target_key in pair_keys:
             source = raw_tptp_replay_extra_expr_with_pair_hints(fields, source_key, local_sorts)
             target = raw_tptp_replay_extra_expr_with_pair_hints(fields, target_key, local_sorts)
             if source is not None and target is not None:
@@ -29869,96 +30000,162 @@ def raw_tptp_exported_normal_form_proof(
     if parsed_parent is not None and parsed_target is not None:
         candidate_pairs.append((ambient_basic_logic_expr(parsed_parent), ambient_basic_logic_expr(parsed_target)))
 
+    parsed_parent_for_binders = parse_expr(propositions_by_name.get(parents[0], ""))
+    parsed_target_for_binders = parse_expr(proposition)
+
     for source, target in candidate_pairs:
+        candidate_source_proof = source_proof
+        candidate_sorts = local_sorts
+        candidate_binders: list[tuple[str, str]] = []
+        if parsed_parent_for_binders is not None and parsed_target_for_binders is not None:
+            parent_binders, parent_body = collect_foralls(parsed_parent_for_binders)
+            target_binders, target_body = collect_foralls(parsed_target_for_binders)
+            if (
+                target_binders
+                and len(parent_binders) == len(target_binders)
+                and [sort for _, sort in parent_binders] == [sort for _, sort in target_binders]
+            ):
+                renamed_parent_body = parent_body
+                for (parent_name, _), (target_name, _) in zip(parent_binders, target_binders):
+                    if parent_name != target_name:
+                        renamed_parent_body = rename_expr_variables(renamed_parent_body, {parent_name: target_name})
+                if expr_same_mod_alpha(source, renamed_parent_body) and expr_same_mod_alpha(target, target_body):
+                    candidate_binders = target_binders
+                    candidate_sorts = {**local_sorts, **{name: sort for name, sort in target_binders}}
+                    for name, _sort in target_binders:
+                        candidate_source_proof = f"({proof_head(candidate_source_proof)} {name})"
         if expr_same_mod_alpha(source, target):
-            return source_proof
-        proof = raw_classical_implication_to_or_transform_proof(source, target, source_proof)
-        if proof is not None:
+            proof = candidate_source_proof
+            for name, sort in reversed(candidate_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
             return proof
-        proof = raw_negated_conjunction_to_or_negated_components_proof(source, target, source_proof, local_sorts)
+        proof = raw_classical_implication_to_or_transform_proof(source, target, candidate_source_proof)
         if proof is not None:
+            for name, sort in reversed(candidate_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
             return proof
-        proof = raw_negated_conjunction_to_or_mixed_components_proof(source, target, source_proof, local_sorts)
+        proof = raw_negated_conjunction_to_or_negated_components_proof(source, target, candidate_source_proof, candidate_sorts)
         if proof is not None:
+            for name, sort in reversed(candidate_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
+            return proof
+        proof = raw_negated_conjunction_to_or_mixed_components_proof(source, target, candidate_source_proof, candidate_sorts)
+        if proof is not None:
+            for name, sort in reversed(candidate_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
             return proof
         source_premises, source_conclusion = split_arrows(source)
         if len(source_premises) == 1 and false_eliminator_expr(source_conclusion):
             proof = raw_not_exists_conjunction_to_forall_or_negated_components_proof(
                 source_premises[0],
                 target,
-                source_proof,
-                local_sorts,
+                candidate_source_proof,
+                candidate_sorts,
             )
             if proof is not None:
+                for name, sort in reversed(candidate_binders):
+                    proof = f"(fun {name} :{sort} => {proof})"
                 return proof
             proof = raw_not_exists_negative_to_forall_positive_proof(
                 source_premises[0],
                 target,
-                source_proof,
-                local_sorts,
+                candidate_source_proof,
+                candidate_sorts,
             )
             if proof is not None:
+                for name, sort in reversed(candidate_binders):
+                    proof = f"(fun {name} :{sort} => {proof})"
                 return proof
-        proof = raw_implication_chain_to_or_negated_premises_proof(source, target, source_proof, local_sorts)
+        proof = raw_implication_chain_to_or_negated_premises_proof(source, target, candidate_source_proof, candidate_sorts)
         if proof is not None:
+            for name, sort in reversed(candidate_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
             return proof
-        proof = raw_negated_implication_chain_to_conjunction_proof(source, target, source_proof, local_sorts)
+        proof = raw_exists_implication_to_or_forall_negated_components_proof(
+            source,
+            target,
+            candidate_source_proof,
+            candidate_sorts,
+        )
         if proof is not None:
+            for name, sort in reversed(candidate_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
+            return proof
+        proof = raw_negated_implication_chain_to_conjunction_proof(source, target, candidate_source_proof, candidate_sorts)
+        if proof is not None:
+            for name, sort in reversed(candidate_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
             return proof
         proof = raw_negated_implication_to_negated_exists_conjunction_proof(
             source,
             target,
-            source_proof,
-            local_sorts,
+            candidate_source_proof,
+            candidate_sorts,
         )
         if proof is not None:
+            for name, sort in reversed(candidate_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
             return proof
         proof = raw_negated_forall_implication_to_exists_conjunction_proof(
             source,
             target,
-            source_proof,
-            local_sorts,
+            candidate_source_proof,
+            candidate_sorts,
         )
         if proof is not None:
+            for name, sort in reversed(candidate_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
             return proof
         proof = raw_negated_eliminator_implication_to_counterexample_proof(
             source,
             target,
-            source_proof,
-            local_sorts,
+            candidate_source_proof,
+            candidate_sorts,
         )
         if proof is not None:
+            for name, sort in reversed(candidate_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
             return proof
         proof = raw_prop_extensionality_cases_proof(
             source,
             target,
-            source_proof,
-            local_sorts,
+            candidate_source_proof,
+            candidate_sorts,
         )
         if proof is not None:
+            for name, sort in reversed(candidate_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
             return proof
         proof = raw_negated_implication_conjunction_to_nnf_proof(
             source,
             target,
-            source_proof,
-            local_sorts,
+            candidate_source_proof,
+            candidate_sorts,
         )
         if proof is not None:
+            for name, sort in reversed(candidate_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
             return proof
         proof = raw_conjunction_implications_to_nnf_proof(
             source,
             target,
-            source_proof,
-            local_sorts,
+            candidate_source_proof,
+            candidate_sorts,
         )
         if proof is not None:
+            for name, sort in reversed(candidate_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
             return proof
-        proof = raw_deep_formula_transform_proof(source, target, source_proof, local_sorts)
+        proof = raw_deep_formula_transform_proof(source, target, candidate_source_proof, candidate_sorts)
         if proof is not None:
+            for name, sort in reversed(candidate_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
             return proof
         if raw_clause_replay_budget_ok(source, target, max_literals=12, max_literal_product=96):
-            proof = raw_clause_transform_proof(source, target, source_proof)
+            proof = raw_clause_transform_proof(source, target, candidate_source_proof)
             if proof is not None:
+                for name, sort in reversed(candidate_binders):
+                    proof = f"(fun {name} :{sort} => {proof})"
                 return proof
     return None
 
