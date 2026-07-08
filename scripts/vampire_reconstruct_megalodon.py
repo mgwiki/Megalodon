@@ -29571,7 +29571,9 @@ def raw_tptp_selected_literal_subsumption_resolution_proof(
         right = match.group("right").strip()
         if left.isdigit():
             left = f"X{left}"
-        value = parse_expr(right)
+        value = tptp_term_to_expr(right, local_sorts)
+        if value is None:
+            value = parse_expr(right)
         if value is None:
             continue
         substitution[left] = value
@@ -29595,7 +29597,12 @@ def raw_tptp_selected_literal_subsumption_resolution_proof(
                 },
             )
             free = expr_variables(replacement)
-        if free <= set(target_binder_sorts):
+        escaping_surface_variables = {
+            variable
+            for variable in free
+            if RAW_TPTP_SURFACE_VAR_RE.fullmatch(variable) and variable not in target_binder_sorts
+        }
+        if not escaping_surface_variables:
             return replacement
         return None
 
