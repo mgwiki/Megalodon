@@ -74,6 +74,7 @@ PROOF_SEARCH_SECONDS = float(os.environ.get("MEGALODON_PROOF_SEARCH_SECONDS", "8
 RAW_TPTP_REPLAY_SECONDS = float(os.environ.get("MEGALODON_RAW_TPTP_REPLAY_SECONDS", "0.35"))
 RAW_TPTP_REPLAY_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_REPLAY_CHAR_LIMIT", "12000"))
 PROOF_SEARCH_CLOCK = getattr(time, "thread_time", time.monotonic)
+MEGALODON_ADMIT_RE = re.compile(r"\badmit\.")
 
 
 def proof_search_now() -> float:
@@ -83,6 +84,10 @@ def proof_search_now() -> float:
 def proof_search_timed_out() -> bool:
     deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
     return deadline is not None and proof_search_now() > deadline
+
+
+def has_megalodon_admit(text: str) -> bool:
+    return MEGALODON_ADMIT_RE.search(text) is not None
 
 
 def raw_tptp_replay_payload_size(
@@ -31703,23 +31708,28 @@ def check_raw_tptp_skeletons(
     repo: Path,
     jobs: int = 1,
     timeout: int = 30,
+    allow_admits: bool = False,
 ) -> list[tuple[Path, bool, Path]]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    tasks = [(skeleton, source, output_dir, megalodon, repo, timeout) for skeleton in skeletons]
+    tasks = [(skeleton, source, output_dir, megalodon, repo, timeout, allow_admits) for skeleton in skeletons]
     if jobs <= 1 or len(tasks) <= 1:
         return [check_raw_tptp_skeleton(task) for task in tasks]
     with concurrent.futures.ProcessPoolExecutor(max_workers=min(jobs, len(tasks))) as executor:
         return list(executor.map(check_raw_tptp_skeleton, tasks))
 
 
-def check_raw_tptp_skeleton(task: tuple[Path, Path, Path, Path, Path, int]) -> tuple[Path, bool, Path]:
-    skeleton, source, output_dir, megalodon, repo, timeout = task
+def check_raw_tptp_skeleton(task: tuple[Path, Path, Path, Path, Path, int, bool]) -> tuple[Path, bool, Path]:
+    skeleton, source, output_dir, megalodon, repo, timeout, allow_admits = task
     context = output_dir / f"{skeleton.stem}.source_context.mg"
     log = output_dir / f"{skeleton.stem}.source_context.log"
+    skeleton_text = skeleton.read_text(encoding="utf-8", errors="replace")
+    if not allow_admits and has_megalodon_admit(skeleton_text):
+        log.write_text("raw TPTP skeleton contains admit.\n", encoding="utf-8")
+        return skeleton, False, log
     context.write_text(
         source.read_text(encoding="utf-8", errors="replace")
         + "\n"
-        + skeleton.read_text(encoding="utf-8", errors="replace"),
+        + skeleton_text,
         encoding="utf-8",
     )
     command = [str(megalodon), "-allowincompleteqed", str(context)]
@@ -31776,6 +31786,7 @@ def main() -> int:
     parser.add_argument("--check-raw-tptp-skeletons", action="store_true")
     parser.add_argument("--raw-tptp-check-dir", type=Path)
     parser.add_argument("--raw-tptp-check-timeout", type=int, default=30)
+    parser.add_argument("--allow-raw-tptp-admits", action="store_true")
     args = parser.parse_args()
 
     repo = args.repo.resolve()
@@ -31808,6 +31819,12 @@ def main() -> int:
             print(f"raw TPTP skeleton: {path}")
         if skipped:
             print(f"raw TPTP skeletons skipped without reconstructable proof content: {skipped}")
+        admitted = [
+            path for path in written
+            if has_megalodon_admit(path.read_text(encoding="utf-8", errors="replace"))
+        ]
+        if admitted:
+            print(f"raw TPTP skeletons containing admits: {len(admitted)}")
         if args.check_raw_tptp_skeletons:
             raw_tptp_check_dir = (
                 (repo / args.raw_tptp_check_dir).resolve()
@@ -31824,6 +31841,7 @@ def main() -> int:
                 repo,
                 args.jobs,
                 args.raw_tptp_check_timeout,
+                args.allow_raw_tptp_admits,
             )
             failures = 0
             for skeleton, ok, log in results:
