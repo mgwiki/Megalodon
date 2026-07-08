@@ -19752,6 +19752,7 @@ def raw_tptp_condensation_proof(
     proposition: str,
     parents: list[str],
     propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
 ) -> str | None:
     if len(parents) != 1:
         return None
@@ -19764,11 +19765,19 @@ def raw_tptp_condensation_proof(
         return None
     source = ambient_basic_logic_expr(source)
     target = ambient_basic_logic_expr(target)
-    return raw_factored_forall_literal_transform_proof(
+    factored = raw_factored_forall_literal_transform_proof(
         source,
         target,
         raw_tptp_claim_name(parents[0]),
         (),
+    )
+    if factored is not None:
+        return factored
+    return raw_quantified_clause_instantiation_transform_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+        variable_sorts,
     )
 
 
@@ -32597,10 +32606,10 @@ def raw_tptp_replay_proof(
             return proof
         return raw_tptp_one_parent_transform_proof(proposition, parents, propositions_by_name, variable_sorts)
     if rule == "condensation":
-        proof = raw_tptp_trivial_inequality_removal_proof(proposition, parents, propositions_by_name)
+        proof = raw_tptp_condensation_proof(proposition, parents, propositions_by_name, variable_sorts)
         if proof is not None:
             return proof
-        proof = raw_tptp_condensation_proof(proposition, parents, propositions_by_name)
+        proof = raw_tptp_trivial_inequality_removal_proof(proposition, parents, propositions_by_name)
         if proof is not None:
             return proof
         return raw_tptp_one_parent_transform_proof(proposition, parents, propositions_by_name, variable_sorts)
