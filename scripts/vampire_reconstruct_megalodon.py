@@ -96,7 +96,7 @@ def proof_search_timed_out() -> bool:
 
 
 def has_megalodon_admit(text: str) -> bool:
-    return MEGALODON_ADMIT_RE.search(text) is not None
+    return any(MEGALODON_ADMIT_RE.search(line) for line in text.splitlines() if not line.lstrip().startswith("//"))
 
 
 def raw_tptp_replay_payload_size(
@@ -1901,6 +1901,11 @@ def megalodon_step_proposition(formula: str, variable_sorts: dict[str, str]) -> 
     return surface_replay_proposition(proposition) if proposition is not None else None
 
 
+def megalodon_step_formula_role(formula: str) -> str | None:
+    parsed = tptp_decl_formula_parts(formula)
+    return parsed[1] if parsed is not None else None
+
+
 def megalodon_outline_symbol_sorts(proof_text: str | None) -> dict[str, str]:
     if proof_text is None:
         return {}
@@ -1988,6 +1993,45 @@ def quantify_megalodon_step_variables(proposition: str, variable_sorts: dict[str
     return result
 
 
+def raw_tptp_negated_conjecture_proposition(proposition: str, force: bool = False) -> str:
+    parsed = parse_expr(proposition)
+    if parsed is None:
+        return f"{proposition} -> vampire_false"
+    premises, conclusion = split_arrows(parsed)
+    if not force and len(premises) == 1 and false_eliminator_expr(conclusion):
+        return proposition
+    return expr_text(Expr("arrow", args=(parsed, Expr("var", value="vampire_false"))))
+
+
+def raw_tptp_step_needs_negated_conjecture_interpretation(
+    rule: str,
+    parents: tuple[str, ...],
+    formula_role: str | None,
+) -> bool:
+    if not parents:
+        return False
+    return rule == "negated conjecture" or formula_role == "conjecture"
+
+
+def raw_tptp_step_negated_conjecture_force(
+    rule: str,
+    formula_role: str | None,
+    direct_exported_proposition: bool,
+) -> bool:
+    return formula_role == "conjecture" and rule != "negated conjecture" and not direct_exported_proposition
+
+
+def raw_tptp_step_should_apply_negated_conjecture_interpretation(
+    rule: str,
+    parents: tuple[str, ...],
+    formula_role: str | None,
+    direct_exported_proposition: bool,
+) -> bool:
+    if not raw_tptp_step_needs_negated_conjecture_interpretation(rule, parents, formula_role):
+        return False
+    return rule == "negated conjecture" or not direct_exported_proposition
+
+
 def megalodon_replay_steps(
     proof_text: str | None,
     proof: Path | None,
@@ -2014,6 +2058,7 @@ def megalodon_replay_steps(
     direct_propositions: dict[str, str] = {}
     placeholder_steps: set[str] = set()
     step_details: dict[str, tuple[str, tuple[str, ...], dict[str, str]]] = {}
+    step_formula_roles: dict[str, str | None] = {}
     for raw in proof_text.splitlines():
         line = raw.strip()
         source_line_match = MEGALODON_SOURCE_LINE_RE.match(line)
@@ -2038,6 +2083,8 @@ def megalodon_replay_steps(
         if step_match is not None:
             formula = json.loads(f'"{step_match.group("formula")}"')
             step = f"S{step_match.group('id')}"
+            formula_role = megalodon_step_formula_role(formula)
+            step_formula_roles[step] = formula_role
             is_placeholder = MEGALODON_PLACEHOLDER_FORMULA_RE.match(formula) is not None
             if is_placeholder:
                 placeholder_steps.add(step)
@@ -2071,6 +2118,21 @@ def megalodon_replay_steps(
                     step_sorts,
                     raw_tptp_nonlocal_sorts(variable_sorts),
                     "prop",
+                )
+            direct_exported_proposition = direct_proposition is not None
+            if raw_tptp_step_should_apply_negated_conjecture_interpretation(
+                step_details[step][0],
+                parents,
+                formula_role,
+                direct_exported_proposition,
+            ):
+                proposition = raw_tptp_negated_conjecture_proposition(
+                    proposition,
+                    raw_tptp_step_negated_conjecture_force(
+                        step_details[step][0],
+                        formula_role,
+                        direct_exported_proposition,
+                    ),
                 )
             proposition = quantify_megalodon_step_variables(proposition, step_sorts)
             steps[step] = MegalodonReplayStep(
@@ -2207,6 +2269,7 @@ def megalodon_replay_steps(
     for step, (rule, parents, step_sorts) in step_details.items():
         if step in steps:
             continue
+        direct_exported_proposition = step in direct_propositions
         direct_proposition = direct_propositions.get(step) or derived_propositions.get(step)
         if direct_proposition is not None:
             proposition = surface_direct_step_proposition(
@@ -2256,6 +2319,20 @@ def megalodon_replay_steps(
                     break
         if proposition is None:
             continue
+        if raw_tptp_step_should_apply_negated_conjecture_interpretation(
+            rule,
+            parents,
+            step_formula_roles.get(step),
+            direct_exported_proposition,
+        ):
+            proposition = raw_tptp_negated_conjecture_proposition(
+                proposition,
+                raw_tptp_step_negated_conjecture_force(
+                    rule,
+                    step_formula_roles.get(step),
+                    direct_exported_proposition,
+                ),
+            )
         proposition = quantify_megalodon_step_variables(proposition, step_sorts)
         steps[step] = MegalodonReplayStep(
             rule=rule,
@@ -2290,6 +2367,20 @@ def megalodon_replay_steps(
                 {**variable_sorts, **step_sorts},
                 raw_tptp_step_lambda_sort_hints(info),
             )
+            if raw_tptp_step_should_apply_negated_conjecture_interpretation(
+                info.rule,
+                info.parents,
+                step_formula_roles.get(step),
+                True,
+            ):
+                normalized = raw_tptp_negated_conjecture_proposition(
+                    normalized,
+                    raw_tptp_step_negated_conjecture_force(
+                        info.rule,
+                        step_formula_roles.get(step),
+                        True,
+                    ),
+                )
             steps[step] = MegalodonReplayStep(
                 rule=info.rule,
                 parents=info.parents,
@@ -19099,6 +19190,50 @@ def raw_instantiated_forall_clause_options(
                 if binder_names <= existing.keys()
             ):
                 candidates.append(fallback)
+        target_binders, _target_body = collect_foralls(target)
+        prop_pool: list[Expr] = [
+            Expr("var", value=name)
+            for name, sort in target_binders
+            if sort == "prop"
+        ]
+        for resolver_literal in raw_clause_literals(resolver):
+            resolver_premises, resolver_conclusion = split_arrows(resolver_literal)
+            literal = resolver_premises[0] if len(resolver_premises) == 1 and false_eliminator_expr(resolver_conclusion) else resolver_literal
+            sides = equality_like_sides(literal)
+            if sides is None:
+                continue
+            for side in sides:
+                if expr_key(side) in {"True", "False", "vampire_true", "vampire_false"}:
+                    continue
+                if not any(expr_same_mod_alpha(side, existing) for existing in prop_pool):
+                    prop_pool.append(side)
+        for truth_name in ("True", "False"):
+            truth_expr = Expr("var", value=truth_name)
+            if not any(expr_same_mod_alpha(truth_expr, existing) for existing in prop_pool):
+                prop_pool.append(truth_expr)
+        if prop_pool and len(prop_binders) <= 3:
+            generated = 0
+
+            def add_prop_combinations(index: int, current: dict[str, Expr]) -> None:
+                nonlocal generated
+                if generated >= 24:
+                    return
+                if index >= len(prop_binders):
+                    if not any(
+                        all(expr_same_mod_alpha(current[name], existing.get(name, Expr("var", value=""))) for name in prop_binders)
+                        for existing in candidates
+                        if set(prop_binders) <= existing.keys()
+                    ):
+                        candidates.append(dict(current))
+                        generated += 1
+                    return
+                name = prop_binders[index]
+                for value in prop_pool[:8]:
+                    current[name] = value
+                    add_prop_combinations(index + 1, current)
+                current.pop(name, None)
+
+            add_prop_combinations(0, {})
     for subst in candidates:
         if not binder_names <= subst.keys():
             continue
@@ -29788,6 +29923,33 @@ def raw_tptp_superposition_proof(
     )
     if proof is not None:
         return proof
+    if len(parents) == 2:
+        parent_exprs: list[tuple[Expr, str]] = []
+        for parent in parents:
+            parent_proposition = propositions_by_name.get(parent)
+            parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+            if parent_expr is not None:
+                parent_exprs.append((parent_expr, raw_tptp_claim_name(parent)))
+        target_expr = parse_expr(proposition)
+        if target_expr is not None and len(parent_exprs) == 2:
+            proof = raw_negative_equality_clause_superposition_proof(
+                parent_exprs[0][0],
+                target_expr,
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+            )
+            if proof is not None:
+                return proof
+            proof = raw_negative_equality_clause_superposition_proof(
+                parent_exprs[1][0],
+                target_expr,
+                parent_exprs[1][1],
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+            )
+            if proof is not None:
+                return proof
     if len(parents) == 2 and has_superposition_replay:
         for source_index, equality_index in megalodon_replay_parent_pair_order(parents, replay_step):
             ordered_parents = [parents[source_index], parents[equality_index]]
@@ -30003,6 +30165,87 @@ def raw_equality_clause_superposition_proof(
 
     try:
         return raw_clause_cases_with_handler(source, source_proof, source_handler)
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
+def raw_negative_equality_clause_superposition_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality_clause: Expr,
+    equality_clause_proof: str,
+) -> str | None:
+    target_binders, target_body = collect_foralls(target)
+    if len(raw_clause_literals(source)) > 8 or len(raw_clause_literals(equality_clause)) > 4 or len(raw_clause_literals(target_body)) > 12:
+        return None
+    source_options = raw_instantiated_forall_clause_options(source, source_proof, target, equality_clause)
+    equality_options = raw_instantiated_forall_clause_options(equality_clause, equality_clause_proof, target, source)
+    target_literals = raw_clause_literals(target_body)
+    target_text = proof_arg_text(target_body)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+
+    def negative_equality_premise(literal: Expr) -> Expr | None:
+        premises, conclusion = split_arrows(literal)
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
+            return None
+        return premises[0] if equality_like_sides(premises[0]) is not None else None
+
+    try:
+        for source_option, source_option_proof in source_options[:24]:
+            for equality_option, equality_option_proof in equality_options[:8]:
+
+                def source_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
+                    direct = raw_literal_to_clause_proof(source_literal, target_body, source_literal_proof, target_literals, ())
+                    if direct is not None:
+                        return direct
+
+                    def equality_handler(equality_literal: Expr, equality_literal_proof: str) -> str | None:
+                        direct_equality = raw_literal_to_clause_proof(
+                            equality_literal,
+                            target_body,
+                            equality_literal_proof,
+                            target_literals,
+                            (),
+                        )
+                        if direct_equality is not None:
+                            return direct_equality
+                        premise = negative_equality_premise(equality_literal)
+                        if premise is None:
+                            return None
+                        premise_proof = raw_literal_direct_transform_proof(
+                            source_literal,
+                            premise,
+                            source_literal_proof,
+                            (),
+                        )
+                        if premise_proof is None:
+                            return None
+                        false_proof = f"({proof_head(equality_literal_proof)} {proof_term_text(premise_proof)})"
+                        return raw_false_literal_elimination_proof(
+                            Expr("var", value="vampire_false"),
+                            target_body,
+                            false_proof,
+                        )
+
+                    return raw_clause_cases_with_handler(
+                        equality_option,
+                        equality_option_proof,
+                        equality_handler,
+                        avoid_text=source_literal_proof,
+                    )
+
+                proof = raw_clause_cases_with_handler(source_option, source_option_proof, source_handler)
+                if proof is not None:
+                    for name, sort in reversed(target_binders):
+                        proof = f"(fun {name} :{sort} => {proof})"
+                    return proof
+        return None
     finally:
         if previous_target is None:
             if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
@@ -32788,6 +33031,78 @@ def raw_normal_form_path_guided_proof(
     return None
 
 
+def raw_negated_implication_exists_to_double_negated_conjunction_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_premises, source_conclusion = split_arrows(source)
+    if len(source_premises) != 1 or not false_eliminator_expr(source_conclusion):
+        return None
+    implication_premises, implication_conclusion = split_arrows(source_premises[0])
+    if len(implication_premises) != 1 or raw_exists_transform_parts(implication_conclusion) is None:
+        return None
+    antecedent = implication_premises[0]
+    exists_expr = implication_conclusion
+
+    target_premises, target_conclusion = split_arrows(target)
+    if len(target_premises) != 1 or not false_eliminator_expr(target_conclusion):
+        return None
+    negated_conjunction_premises, negated_conjunction_conclusion = split_arrows(target_premises[0])
+    if len(negated_conjunction_premises) != 1 or not false_eliminator_expr(negated_conjunction_conclusion):
+        return None
+    conjunction = negated_conjunction_premises[0]
+    conjunction_parts = vampire_and_parts(conjunction)
+    if conjunction_parts is None:
+        return None
+    left, right = conjunction_parts
+    if expr_same_mod_alpha(left, antecedent):
+        antecedent_on_left = True
+        forall_component = right
+    elif expr_same_mod_alpha(right, antecedent):
+        antecedent_on_left = False
+        forall_component = left
+    else:
+        return None
+
+    not_exists_to_forall = raw_not_exists_conjunction_to_forall_or_negated_components_proof(
+        exists_expr,
+        forall_component,
+        "HnotExists",
+        variable_sorts,
+    )
+    if not_exists_to_forall is None:
+        not_exists_to_forall = raw_not_exists_negative_to_forall_positive_proof(
+            exists_expr,
+            forall_component,
+            "HnotExists",
+            variable_sorts,
+        )
+    if not_exists_to_forall is None:
+        return None
+
+    not_conj = fresh_identifier("HnotConj", expr_text(target), source_proof)
+    antecedent_name = fresh_identifier("Hante", expr_text(antecedent), source_proof, not_conj)
+    not_exists = "HnotExists"
+    forall_proof = proof_term_text(not_exists_to_forall)
+    if antecedent_on_left:
+        conjunction_proof = f"(fun P K => K {antecedent_name} {forall_proof})"
+    else:
+        conjunction_proof = f"(fun P K => K {forall_proof} {antecedent_name})"
+    false_from_not_conj = f"({not_conj} {proof_term_text(conjunction_proof)})"
+    exists_from_classical = (
+        f"(xm {proof_arg_text(exists_expr)} {proof_arg_text(exists_expr)} "
+        f"(fun Hexists => Hexists) "
+        f"(fun {not_exists} => ({false_from_not_conj} {proof_arg_text(exists_expr)})))"
+    )
+    implication_proof = f"(fun {antecedent_name} :{proof_arg_text(antecedent)} => {exists_from_classical})"
+    return (
+        f"(fun {not_conj} :{proof_arg_text(target_premises[0])} => "
+        f"{proof_head(source_proof)} {proof_term_text(implication_proof)})"
+    )
+
+
 def raw_tptp_exported_normal_form_proof(
     rule: str | None,
     proposition: str,
@@ -32947,6 +33262,16 @@ def raw_tptp_exported_normal_form_proof(
                 proof = f"(fun {name} :{sort} => {proof})"
             return proof
         proof = raw_negated_conjunction_to_or_mixed_components_proof(source, target, candidate_source_proof, candidate_sorts)
+        if proof is not None:
+            for name, sort in reversed(candidate_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
+            return proof
+        proof = raw_negated_implication_exists_to_double_negated_conjunction_proof(
+            source,
+            target,
+            candidate_source_proof,
+            candidate_sorts,
+        )
         if proof is not None:
             for name, sort in reversed(candidate_binders):
                 proof = f"(fun {name} :{sort} => {proof})"
