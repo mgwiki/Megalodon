@@ -164,6 +164,12 @@ def raw_tptp_replay_payload_size_ok(
         and any(kind == "cnf" for kind, _fields in replay_step.extras)
     ):
         return size <= RAW_TPTP_EXPORTED_CNF_CHAR_LIMIT
+    if (
+        rule_key == "superposition"
+        and replay_step is not None
+        and any(kind == "two_literal_rewrite" for kind, _fields in replay_step.extras)
+    ):
+        return size <= RAW_TPTP_EXPORTED_CNF_CHAR_LIMIT
     return False
 
 
@@ -3156,6 +3162,20 @@ def raw_tptp_application_binder_sort_hints(proposition: str, known_sorts: dict[s
     return {name: sort for name, sort in hints.items() if name not in conflicts}
 
 
+def raw_tptp_replay_metadata_sorts(
+    variable_sorts: dict[str, str],
+    step: "MegalodonReplayStep | None" = None,
+) -> dict[str, str]:
+    sorts = {
+        name: sort
+        for name, sort in variable_sorts.items()
+        if re.fullmatch(r"DB[0-9]+", name) is None
+    }
+    if step is not None:
+        sorts.update(megalodon_replay_step_variable_sorts(step))
+    return sorts
+
+
 def split_arrows(expr: Expr) -> tuple[list[Expr], Expr]:
     premises: list[Expr] = []
     while expr.kind == "arrow":
@@ -3758,6 +3778,22 @@ def substitute_expr(expr: Expr, subst: dict[str, Expr]) -> Expr:
         return expr
     if expr.kind in {"forall", "lambda"} and expr.value in subst:
         subst = {name: value for name, value in subst.items() if name != expr.value}
+    if expr.kind in {"forall", "lambda"} and expr.value is not None and subst:
+        body = expr.args[0]
+        substitution_free_variables: set[str] = set()
+        for value in subst.values():
+            substitution_free_variables.update(expr_variables(value))
+        if expr.value in substitution_free_variables and (expr_variables(body) & set(subst)):
+            used_names = (
+                expr_variables(body)
+                | expr_bound_variables(body)
+                | substitution_free_variables
+                | set(subst)
+                | {expr.value}
+            )
+            fresh = fresh_identifier(expr.value, " ".join(sorted(used_names)))
+            body = rename_expr_variables(body, {expr.value: fresh})
+            expr = Expr(expr.kind, value=fresh, args=(body,), sort=expr.sort)
     return Expr(expr.kind, value=expr.value, args=tuple(substitute_expr(arg, subst) for arg in expr.args), sort=expr.sort)
 
 
@@ -5524,6 +5560,13 @@ def raw_tptp_exported_definition_chain_proof(
         if equality_like_sides(equality_body) is None:
             return
         equalities.append((equality, equality_proof))
+        pointwise = raw_pointwise_set_function_equality(equality, equality_proof)
+        if pointwise is None:
+            return
+        pointwise_equality, pointwise_proof = pointwise
+        if any(expr_same_mod_alpha(pointwise_equality, existing) for existing, _ in equalities):
+            return
+        equalities.append((pointwise_equality, pointwise_proof))
 
     for index, parent in enumerate(parents[1:], start=1):
         synthetic_definition_name = f"{parent}_def"
@@ -5554,13 +5597,28 @@ def raw_tptp_exported_definition_chain_proof(
         add_equality(equality, equality_proof)
 
     def finish(states: list[tuple[Expr, str]]) -> str | None:
+        normalized_target = beta_normalize_expr(target)
         for current, proof in states:
             if expr_same_mod_alpha(current, target):
+                return proof
+            normalized_current = beta_normalize_expr(current)
+            if expr_same_mod_alpha(normalized_current, normalized_target):
                 return proof
             transformed = raw_clause_transform_proof(current, target, proof)
             if transformed is not None:
                 return transformed
+            transformed = raw_clause_subsumption_transform_proof(current, target, proof, deep_literals=True)
+            if transformed is not None:
+                return transformed
             transformed = raw_deep_formula_transform_proof(current, target, proof, variable_sorts)
+            if transformed is not None:
+                return transformed
+            transformed = raw_clause_subsumption_transform_proof(
+                normalized_current,
+                normalized_target,
+                proof,
+                deep_literals=True,
+            )
             if transformed is not None:
                 return transformed
         return None
@@ -5877,6 +5935,7 @@ def beta_normalize_expr(expr: Expr, depth: int = 0) -> Expr:
     normalized = Expr(expr.kind, value=expr.value, args=normalized_args, sort=expr.sort)
     if normalized.kind != "app" or not normalized.args:
         return normalized
+    normalized = flatten_applications(normalized)
     head = normalized.args[0]
     if head.kind != "lambda":
         return normalized
@@ -7147,6 +7206,36 @@ def rename_expr_variables(expr: Expr, renames: dict[str, str]) -> Expr:
         args=tuple(rename_expr_variables(arg, renames) for arg in expr.args),
         sort=expr.sort,
     )
+
+
+def alpha_freshen_binders(expr: Expr, avoid: set[str], prefix: str) -> Expr:
+    counter = 0
+    used = set(avoid) | expr_variables(expr)
+
+    def fresh_name() -> str:
+        nonlocal counter
+        while True:
+            candidate = f"{prefix}{counter}"
+            counter += 1
+            if candidate not in used:
+                used.add(candidate)
+                return candidate
+
+    def visit(current: Expr) -> Expr:
+        if current.kind not in {"forall", "lambda"} or current.value is None:
+            if not current.args:
+                return current
+            return Expr(
+                current.kind,
+                value=current.value,
+                args=tuple(visit(arg) for arg in current.args),
+                sort=current.sort,
+            )
+        new_name = fresh_name()
+        body = rename_expr_variables(current.args[0], {current.value: new_name})
+        return Expr(current.kind, value=new_name, sort=current.sort, args=(visit(body),))
+
+    return visit(expr)
 
 
 def replace_expr_occurrences(expr: Expr, needle: Expr, replacement: Expr) -> tuple[Expr, bool]:
@@ -17649,12 +17738,36 @@ def tptp_inference_rule(annotations: list[str]) -> str | None:
     return match.group(1) if match else None
 
 
+def tptp_annotation_call_body(text: str, name: str) -> str | None:
+    start = text.find(f"{name}(")
+    if start < 0:
+        return None
+    cursor = start + len(name) + 1
+    depth = 1
+    while cursor < len(text):
+        char = text[cursor]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return text[start + len(name) + 1 : cursor]
+        cursor += 1
+    return None
+
+
 def tptp_inference_parents(annotations: list[str]) -> list[str]:
     text = ",".join(annotations)
-    match = re.search(r"\binference\([^,]+,\[[^\]]*\],\[(?P<parents>[^\]]*)\]", text)
-    if match is None:
+    body = tptp_annotation_call_body(text, "inference")
+    if body is None:
         return []
-    return re.findall(r"[_A-Za-z][_A-Za-z0-9']*", match.group("parents"))
+    parts = split_top_level_commas(body)
+    if parts is None or len(parts) < 3:
+        return []
+    parents = parts[2].strip()
+    if parents.startswith("[") and parents.endswith("]"):
+        parents = parents[1:-1]
+    return re.findall(r"[_A-Za-z][_A-Za-z0-9']*", parents)
 
 
 def tptp_formula_source_name(annotations: list[str]) -> str | None:
@@ -24016,7 +24129,7 @@ def raw_tptp_rectify_proof(
 ) -> str | None:
     if len(parents) != 1 or replay_step is None:
         return None
-    local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
+    local_sorts = raw_tptp_replay_metadata_sorts(variable_sorts, replay_step)
     parent_proof = raw_tptp_claim_name(parents[0])
     target = parse_expr(proposition)
     parent_proposition = propositions_by_name.get(parents[0])
@@ -27858,6 +27971,10 @@ def raw_pointwise_set_function_equality(
     right = abstract_side(sides[1])
     if left is None or right is None:
         return None
+    avoid = expr_variables(left) | expr_variables(right) | {name for name, _ in binders}
+    prefix = fresh_identifier("PF", expr_text(equality), equality_proof)
+    left = alpha_freshen_binders(left, avoid, prefix)
+    right = alpha_freshen_binders(right, avoid | expr_bound_variables(left), prefix)
     proof = (
         f"({helper} "
         f"{proof_arg_text(left)} "
@@ -28929,6 +29046,11 @@ def raw_exported_two_literal_rewrite_branch_proof(
     return None
 
 
+def raw_tptp_ambient_basic_logic_expr(expr: Expr) -> Expr:
+    normalized = parse_expr(use_ambient_basic_logic([expr_text(expr)])[0])
+    return normalized if normalized is not None else expr
+
+
 def raw_exported_two_literal_superposition_clause_proof(
     source: Expr,
     source_proof: str,
@@ -29012,7 +29134,7 @@ def raw_tptp_exported_two_literal_resolution_proof(
     if target is None:
         return None
     target_binders, target_body = collect_foralls(target)
-    extra_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
+    extra_sorts = raw_tptp_replay_metadata_sorts(variable_sorts, replay_step)
     parsed_parents: list[tuple[Expr, str]] = []
     for parent in parents:
         parent_proposition = propositions_by_name.get(parent)
@@ -29049,6 +29171,12 @@ def raw_tptp_exported_two_literal_resolution_proof(
         other_substituted = raw_tptp_extra_formula_expr(fields, "other_substituted", extra_sorts, lambda_sort_hints)
         if selected_substituted is None or other_substituted is None:
             continue
+        current_logic_text = " ".join(
+            [expr_text(target), *(expr_text(parent) for parent, _proof in parsed_parents)]
+        )
+        if "vampire_true" not in current_logic_text and "vampire_false" not in current_logic_text:
+            selected_substituted = raw_tptp_ambient_basic_logic_expr(selected_substituted)
+            other_substituted = raw_tptp_ambient_basic_logic_expr(other_substituted)
         exported_lambda_exprs = (
             *raw_tptp_extra_lambda_exprs(fields, "selected_parent", extra_sorts),
             *raw_tptp_extra_lambda_exprs(fields, "other_parent", extra_sorts),
@@ -29283,7 +29411,7 @@ def raw_tptp_equality_factoring_proof(
     target_literals = raw_clause_literals(target_body)
     if len(target_literals) < 2 or len(target_literals) > 16:
         return None
-    extra_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
+    extra_sorts = raw_tptp_replay_metadata_sorts(variable_sorts, replay_step)
     parent_proof = raw_tptp_claim_name(parents[0])
 
     for fields in fields_groups:
@@ -29560,6 +29688,61 @@ def raw_parent_transform_proof(
     return raw_clause_subsumption_transform_proof(source, target, parent_proof)
 
 
+def raw_replay_substituted_parent_proof(
+    parent: Expr,
+    substituted: Expr,
+    parent_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if expr_same_mod_alpha(parent, substituted):
+        return parent_proof
+    proof = raw_specialize_forall_transform_proof(
+        parent,
+        substituted,
+        parent_proof,
+        variable_sorts,
+    )
+    if proof is not None:
+        return proof
+    proof = raw_quantified_clause_instantiation_transform_proof(
+        parent,
+        substituted,
+        parent_proof,
+        variable_sorts,
+    )
+    if proof is not None:
+        return proof
+    proof = raw_clause_subsumption_transform_proof(parent, substituted, parent_proof)
+    if proof is not None:
+        return proof
+    if raw_clause_replay_budget_ok(parent, substituted, max_literals=24, max_literal_product=384):
+        return raw_clause_transform_proof(parent, substituted, parent_proof)
+    return None
+
+
+def raw_replay_substituted_parent_options(
+    parent_index: int,
+    parent: Expr,
+    parent_proof: str,
+    replay_step: MegalodonReplayStep | None,
+    variable_sorts: dict[str, str],
+) -> list[tuple[Expr, str]]:
+    if replay_step is None or parent_index >= len(replay_step.substitutions):
+        return []
+    substituted = parse_expr(replay_step.substitutions[parent_index])
+    if substituted is None:
+        return []
+    proof = raw_replay_substituted_parent_proof(
+        parent,
+        substituted,
+        parent_proof,
+        raw_tptp_replay_metadata_sorts(variable_sorts, replay_step),
+    )
+    if proof is None:
+        return []
+    return [(substituted, proof)]
+
+
 def raw_tptp_superposition_proof(
     proposition: str,
     parents: list[str],
@@ -29613,6 +29796,7 @@ def raw_tptp_superposition_proof(
                 ordered_parents,
                 propositions_by_name,
                 variable_sorts,
+                replay_step,
             )
             if proof is not None:
                 return proof
@@ -29626,6 +29810,7 @@ def raw_tptp_superposition_proof(
             parents,
             propositions_by_name,
             variable_sorts,
+            replay_step=replay_step,
         )
         if proof is not None:
             return proof
@@ -29847,11 +30032,38 @@ def raw_tptp_quantified_equality_clause_superposition_proof(
     first_name = raw_tptp_claim_name(parents[0])
     second_name = raw_tptp_claim_name(parents[1])
 
-    def replay(source: Expr, source_proof: str, equality_clause: Expr, equality_clause_proof: str) -> str | None:
-        source_options = raw_instantiated_forall_clause_options(source, source_proof, target, equality_clause)
-        equality_options = raw_instantiated_forall_clause_options(equality_clause, equality_clause_proof, target, source)
-        for source_option, source_option_proof in source_options[:3]:
-            for equality_option, equality_option_proof in equality_options[:3]:
+    def replay(
+        source_index: int,
+        equality_index: int,
+        source: Expr,
+        source_proof: str,
+        equality_clause: Expr,
+        equality_clause_proof: str,
+    ) -> str | None:
+        source_options = [
+            *raw_replay_substituted_parent_options(source_index, source, source_proof, replay_step, variable_sorts),
+            *raw_instantiated_forall_clause_options(source, source_proof, target, equality_clause),
+        ]
+        equality_options = [
+            *raw_replay_substituted_parent_options(equality_index, equality_clause, equality_clause_proof, replay_step, variable_sorts),
+            *raw_instantiated_forall_clause_options(equality_clause, equality_clause_proof, target, source),
+        ]
+        seen_source: set[str] = set()
+        unique_source_options: list[tuple[Expr, str]] = []
+        for option in source_options:
+            key = expr_key(option[0])
+            if key not in seen_source:
+                seen_source.add(key)
+                unique_source_options.append(option)
+        seen_equality: set[str] = set()
+        unique_equality_options: list[tuple[Expr, str]] = []
+        for option in equality_options:
+            key = expr_key(option[0])
+            if key not in seen_equality:
+                seen_equality.add(key)
+                unique_equality_options.append(option)
+        for source_option, source_option_proof in unique_source_options[:6]:
+            for equality_option, equality_option_proof in unique_equality_options[:6]:
                 if not any(equality_like_sides(literal) is not None for literal in raw_clause_literals(equality_option)):
                     continue
                 proof = raw_equality_clause_superposition_proof(
@@ -29868,9 +30080,9 @@ def raw_tptp_quantified_equality_clause_superposition_proof(
 
     for source_index, equality_index in megalodon_replay_parent_pair_order(parents, replay_step):
         if source_index == 0:
-            proof = replay(first, first_name, second, second_name)
+            proof = replay(0, 1, first, first_name, second, second_name)
         else:
-            proof = replay(second, second_name, first, first_name)
+            proof = replay(1, 0, second, second_name, first, first_name)
         if proof is not None:
             return proof
     return None
@@ -30043,8 +30255,26 @@ def raw_tptp_forward_subsumption_resolution_proof(
                 proof = raw_quantified_clause_literal_resolution_proof(source, target_expr, source_name, resolver, resolver_name)
                 if proof is not None:
                     return proof
-            source_options = raw_instantiated_forall_clause_options(source, source_name, target_expr, resolver)
-            resolver_options = raw_instantiated_forall_clause_options(resolver, resolver_name, target_expr, source)
+            source_options = [
+                *raw_replay_substituted_parent_options(source_index, source, source_name, replay_step, variable_sorts),
+                *raw_instantiated_forall_clause_options(source, source_name, target_expr, resolver),
+            ]
+            resolver_options = [
+                *raw_replay_substituted_parent_options(resolver_index, resolver, resolver_name, replay_step, variable_sorts),
+                *raw_instantiated_forall_clause_options(resolver, resolver_name, target_expr, source),
+            ]
+            seen_source: set[str] = set()
+            source_options = [
+                option
+                for option in source_options
+                if not (expr_key(option[0]) in seen_source or seen_source.add(expr_key(option[0])))
+            ]
+            seen_resolver: set[str] = set()
+            resolver_options = [
+                option
+                for option in resolver_options
+                if not (expr_key(option[0]) in seen_resolver or seen_resolver.add(expr_key(option[0])))
+            ]
             for source_clause, source_proof in source_options:
                 for resolver_clause, resolver_proof in resolver_options:
                     shared_resolvent = raw_shared_resolvent_binary_or_proof(
@@ -30472,7 +30702,21 @@ def raw_tptp_skolem_rewrites(
                     rewrite_conclusion = Expr("arrow", args=(other, conclusion))
                     break
         if rewrite_premise is None or rewrite_conclusion is None:
-            continue
+            exists_parts = raw_exists_transform_parts(body)
+            if exists_parts is not None:
+                head, _sort, _predicate, witness_name, witness_body = exists_parts
+                witness_premises, witness_conclusion = split_arrows(witness_body)
+                if len(witness_premises) == 1:
+                    rewrite_premise = Expr(
+                        "app",
+                        args=(
+                            Expr("var", value=head),
+                            Expr("lambda", value=witness_name, sort=_sort, args=(witness_premises[0],)),
+                        ),
+                    )
+                    rewrite_conclusion = witness_conclusion
+            if rewrite_premise is None or rewrite_conclusion is None:
+                continue
         if not any(raw_exists_transform_parts(subterm) is not None for subterm in expr_subterms(rewrite_premise, limit=32)):
             continue
         rewrites.append(
@@ -33934,7 +34178,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     declarations = collect_tptp_declarations(text)
     standard_tptp_proof = bool(declarations)
     entries: list[tuple[str, str, str, str | None, str | None, list[str], bool]]
-    replay_steps: dict[str, MegalodonReplayStep] = {}
+    replay_steps = megalodon_replay_steps(text, proof, problem, source)
     unsupported = 0
     if declarations:
         raw_declared_sorts = raw_tptp_type_variables(declarations)
@@ -33993,7 +34237,6 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         variable_sorts.update(raw_tptp_skolem_binder_sorts(text, variable_sorts))
         function_definitions = tptp_function_definition_infos(text, variable_sorts)
         variable_sorts.update(raw_tptp_function_definition_sorts(function_definitions, variable_sorts))
-        replay_steps = megalodon_replay_steps(text, proof, problem, source)
         entries = []
         propositions = []
         axiom_like_rules = {"input", "skolem symbol introduction", "predicate definition introduction", "function definition"}
@@ -34038,6 +34281,13 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     proposition = guarded_proposition
             if proposition is None:
                 proposition = raw_tptp_normalize_step_proposition(step.proposition, local_sorts, lambda_sort_hints)
+            if rule in {"definition_folding", "definition_unfolding"}:
+                metadata_sorts = raw_tptp_replay_metadata_sorts(variable_sorts, step)
+                for fields in megalodon_replay_extra_fields(step, "definition_rewrite"):
+                    target_expr = raw_tptp_replay_extra_expr(fields, "target", metadata_sorts)
+                    if target_expr is not None:
+                        proposition = expr_text(target_expr)
+                        break
             if proposition:
                 proposition = raw_tptp_apply_parent_binder_sorts(proposition, parent_binder_sorts)
                 application_binder_sorts = raw_tptp_application_binder_sort_hints(
@@ -34048,7 +34298,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     proposition = raw_tptp_apply_parent_binder_sorts(proposition, application_binder_sorts)
             if not proposition:
                 for fields in megalodon_replay_extra_fields(step, "definition_rewrite"):
-                    target_expr = raw_tptp_replay_extra_expr(fields, "target", local_sorts)
+                    target_expr = raw_tptp_replay_extra_expr(
+                        fields,
+                        "target",
+                        raw_tptp_replay_metadata_sorts(variable_sorts, step),
+                    )
                     if target_expr is not None:
                         proposition = expr_text(target_expr)
                         break
@@ -34318,6 +34572,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if (
             replay_proof is not None
             and standard_tptp_proof
+            and step_info is None
             and raw_tptp_standard_replay_proof_is_unsafe(rule, proposition, replay_proof)
         ):
             replay_proof = None
