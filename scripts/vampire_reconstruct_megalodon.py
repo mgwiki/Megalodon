@@ -78,6 +78,7 @@ RAW_TPTP_EXPORTED_NORMAL_FORM_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPT
 RAW_TPTP_EXPORTED_FOOL_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_FOOL_CHAR_LIMIT", "60000"))
 RAW_TPTP_EXPORTED_SKOLEM_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_SKOLEM_CHAR_LIMIT", "60000"))
 RAW_TPTP_EXPORTED_RECTIFY_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_RECTIFY_CHAR_LIMIT", "60000"))
+RAW_TPTP_EXPORTED_DEFINITION_REWRITE_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_DEFINITION_REWRITE_CHAR_LIMIT", "90000"))
 RAW_TPTP_CLASSICAL_NORMAL_FORM_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_CLASSICAL_NORMAL_FORM_CHAR_LIMIT", "1500"))
 PROOF_SEARCH_CLOCK = getattr(time, "thread_time", time.monotonic)
 MEGALODON_ADMIT_RE = re.compile(r"\badmit\.")
@@ -148,6 +149,12 @@ def raw_tptp_replay_payload_size_ok(
         and any(kind == "rectify" for kind, _fields in replay_step.extras)
     ):
         return size <= RAW_TPTP_EXPORTED_RECTIFY_CHAR_LIMIT
+    if (
+        rule in {"definition_folding", "definition_unfolding"}
+        and replay_step is not None
+        and any(kind == "definition_rewrite" for kind, _fields in replay_step.extras)
+    ):
+        return size <= RAW_TPTP_EXPORTED_DEFINITION_REWRITE_CHAR_LIMIT
     return False
 
 
@@ -5151,6 +5158,7 @@ def raw_tptp_exported_definition_chain_proof(
                 equality,
                 equality_proof,
                 variable_sorts,
+                max_text_size=RAW_TPTP_EXPORTED_DEFINITION_REWRITE_CHAR_LIMIT,
             )
             if proof is not None:
                 return proof
@@ -26647,12 +26655,14 @@ def raw_deep_quantified_equality_rewrite_proof(
     equality_proof: str,
     variable_sorts: dict[str, str],
     depth: int = 0,
+    *,
+    max_text_size: int = 9000,
 ) -> str | None:
     if depth > 40 or proof_search_timed_out():
         return None
     if expr_same_mod_alpha(source, target):
         return source_proof
-    if len(expr_text(source)) + len(expr_text(target)) > 9000:
+    if len(expr_text(source)) + len(expr_text(target)) > max_text_size:
         return None
 
     direct = raw_repeated_quantified_equality_rewrite_clause_proof(
@@ -26692,6 +26702,7 @@ def raw_deep_quantified_equality_rewrite_proof(
             equality_proof,
             {**variable_sorts, binder: target.sort},
             depth + 1,
+            max_text_size=max_text_size,
         )
         if inner is None:
             return None
@@ -26710,6 +26721,7 @@ def raw_deep_quantified_equality_rewrite_proof(
             equality_proof,
             variable_sorts,
             depth + 1,
+            max_text_size=max_text_size,
         )
         if left_proof is None:
             return None
@@ -26721,6 +26733,7 @@ def raw_deep_quantified_equality_rewrite_proof(
             equality_proof,
             variable_sorts,
             depth + 1,
+            max_text_size=max_text_size,
         )
         if right_proof is None:
             return None
@@ -26745,6 +26758,7 @@ def raw_deep_quantified_equality_rewrite_proof(
             equality_proof,
             variable_sorts,
             depth + 1,
+            max_text_size=max_text_size,
         )
         if left_proof is None:
             return None
@@ -26756,6 +26770,7 @@ def raw_deep_quantified_equality_rewrite_proof(
             equality_proof,
             variable_sorts,
             depth + 1,
+            max_text_size=max_text_size,
         )
         if right_proof is None:
             return None
@@ -26779,6 +26794,7 @@ def raw_deep_quantified_equality_rewrite_proof(
             equality_proof,
             {**variable_sorts, witness_name: source_sort},
             depth + 1,
+            max_text_size=max_text_size,
         )
         if body_proof is None:
             return None
@@ -26800,6 +26816,7 @@ def raw_deep_quantified_equality_rewrite_proof(
             equality_proof,
             variable_sorts,
             depth + 1,
+            max_text_size=max_text_size,
         )
         if source_premise_proof is None:
             source_premise_proof = raw_deep_formula_transform_proof(
@@ -26819,6 +26836,7 @@ def raw_deep_quantified_equality_rewrite_proof(
             equality_proof,
             variable_sorts,
             depth + 1,
+            max_text_size=max_text_size,
         )
         if conclusion is None:
             return None
