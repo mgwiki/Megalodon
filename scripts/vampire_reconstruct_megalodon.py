@@ -2057,7 +2057,10 @@ def megalodon_replay_steps(
         for kind, fields in step_extras:
             if kind not in {"skolemize", "cnf", "normal_form"}:
                 continue
-            target = parsed_extra_fields(fields).get("target")
+            parsed = parsed_extra_fields(fields)
+            target = parsed.get("target")
+            if target is None and kind == "normal_form" and "target_conversion_failed" in parsed:
+                target = parsed.get("source")
             if target is None:
                 continue
             target_expr = raw_tptp_replay_extra_expr({"target": target}, "target", {**variable_sorts, **step_sorts})
@@ -21214,6 +21217,139 @@ def raw_conjunction_implications_to_nnf_proof(
     return proof
 
 
+def raw_negated_implication_conjunction_to_nnf_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if len(source_binders) != len(target_binders):
+        return None
+    if [sort for _, sort in source_binders] != [sort for _, sort in target_binders]:
+        return None
+    if source_binders:
+        source_body = rename_expr_variables(
+            source_body,
+            {
+                source_name: target_name
+                for (source_name, _), (target_name, _) in zip(source_binders, target_binders)
+            },
+        )
+
+    source_premises, source_conclusion = split_arrows(source_body)
+    if len(source_premises) != 1 or not false_eliminator_expr(source_conclusion):
+        return None
+    source_components = raw_conjunction_components(source_premises[0])
+    target_components = raw_conjunction_components(target_body)
+    if len(source_components) != 2 or len(target_components) != 2:
+        return None
+
+    local_sorts = {**variable_sorts, **{name: sort for name, sort in target_binders}}
+    source_application = source_proof
+    for name, _sort in target_binders:
+        source_application = f"({proof_head(source_application)} {name})"
+
+    def transform(source_expr: Expr, target_expr: Expr, proof: str) -> str | None:
+        if expr_same_mod_alpha(source_expr, target_expr):
+            return proof
+        result = raw_deep_formula_transform_proof(source_expr, target_expr, proof, local_sorts)
+        if result is not None:
+            return result
+        return raw_clause_transform_proof(source_expr, target_expr, proof)
+
+    for first_component, second_component in (
+        (source_components[0], source_components[1]),
+        (source_components[1], source_components[0]),
+    ):
+        first_premises, first_conclusion = split_arrows(first_component)
+        second_premises, second_conclusion = split_arrows(second_component)
+        if len(first_premises) != 1 or len(second_premises) != 1:
+            continue
+        left = first_premises[0]
+        right = first_conclusion
+        if not (expr_same_mod_alpha(second_premises[0], right) and expr_same_mod_alpha(second_conclusion, left)):
+            continue
+        left_negation = Expr("arrow", args=(left, Expr("var", value="False")))
+
+        for positive_index, positive_component in enumerate(target_components):
+            negative_component = target_components[1 - positive_index]
+            left_to_positive = transform(left, positive_component, "HcaseLeft")
+            right_to_positive = transform(right, positive_component, "HcaseRight")
+            left_to_right = transform(left, right, "HleftForRight")
+            neg_left_to_negative = transform(left_negation, negative_component, "HnotCaseLeft")
+            if (
+                left_to_positive is None
+                or right_to_positive is None
+                or left_to_right is None
+                or neg_left_to_negative is None
+            ):
+                continue
+
+            def contradiction_from(first_proof: str, second_proof: str) -> str | None:
+                def component_proof(component: Expr) -> str | None:
+                    if expr_same_mod_alpha(component, first_component):
+                        return first_proof
+                    if expr_same_mod_alpha(component, second_component):
+                        return second_proof
+                    return None
+
+                conjunction = raw_build_conjunction_from_component_proofs(source_premises[0], component_proof)
+                if conjunction is None:
+                    return None
+                return f"({proof_head(source_application)} {proof_term_text(conjunction)})"
+
+            first_from_not_left = (
+                f"(fun HleftForRight :{proof_arg_text(left)} => "
+                f"{raw_false_to_expr_proof('(HnotCaseLeft HleftForRight)', right)})"
+            )
+            second_from_not_right = (
+                f"(fun HrightForLeft :{proof_arg_text(right)} => "
+                f"{raw_false_to_expr_proof('(HnotCaseRight HrightForLeft)', left)})"
+            )
+            false_from_not_both = contradiction_from(first_from_not_left, second_from_not_right)
+            if false_from_not_both is None:
+                continue
+            positive_from_not_both = raw_false_to_expr_proof(false_from_not_both, positive_component)
+
+            positive_proof = (
+                f"(xm {proof_arg_text(right)} {proof_arg_text(positive_component)} "
+                f"(fun HcaseRight => {proof_term_text(right_to_positive)}) "
+                f"(fun HnotCaseRight => "
+                f"(xm {proof_arg_text(left)} {proof_arg_text(positive_component)} "
+                f"(fun HcaseLeft => {proof_term_text(left_to_positive)}) "
+                f"(fun HnotCaseLeft => {proof_term_text(positive_from_not_both)}))))"
+            )
+
+            first_from_left = f"(fun HleftForRight :{proof_arg_text(left)} => {proof_term_text(left_to_right)})"
+            second_from_left = f"(fun HrightForLeft :{proof_arg_text(right)} => HcaseLeft)"
+            false_from_left = contradiction_from(first_from_left, second_from_left)
+            if false_from_left is None:
+                continue
+            negative_from_left = raw_false_to_expr_proof(false_from_left, negative_component)
+            negative_proof = (
+                f"(xm {proof_arg_text(left)} {proof_arg_text(negative_component)} "
+                f"(fun HcaseLeft => {proof_term_text(negative_from_left)}) "
+                f"(fun HnotCaseLeft => {proof_term_text(neg_left_to_negative)}))"
+            )
+
+            def target_component_proof(component: Expr) -> str | None:
+                if expr_same_mod_alpha(component, positive_component):
+                    return positive_proof
+                if expr_same_mod_alpha(component, negative_component):
+                    return negative_proof
+                return None
+
+            proof = raw_build_conjunction_from_component_proofs(target_body, target_component_proof)
+            if proof is None:
+                continue
+            for name, sort in reversed(target_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
+            return proof
+    return None
+
+
 def raw_implication_chain_to_or_negated_premises_proof(
     source: Expr,
     target: Expr,
@@ -29539,6 +29675,14 @@ def raw_tptp_exported_normal_form_proof(
         if proof is not None:
             return proof
         proof = raw_prop_extensionality_cases_proof(
+            source,
+            target,
+            source_proof,
+            local_sorts,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_negated_implication_conjunction_to_nnf_proof(
             source,
             target,
             source_proof,
