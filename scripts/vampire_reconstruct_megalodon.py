@@ -17866,6 +17866,22 @@ def raw_literal_direct_transform_proof(
         and false_eliminator_expr(target_conclusion)
     ):
         premise_name = fresh_identifier("Hprem", expr_text(source), expr_text(target), source_proof)
+        source_premise_sides = equality_like_sides(source_premises[0])
+        target_premise_sides = equality_like_sides(target_premises[0])
+        if (
+            source_premise_sides is not None
+            and target_premise_sides is not None
+            and expr_same_mod_alpha(source_premise_sides[0], target_premise_sides[1])
+            and expr_same_mod_alpha(source_premise_sides[1], target_premise_sides[0])
+        ):
+            sort = "prop" if (
+                target_premises[0].kind == "app"
+                and target_premises[0].args
+                and target_premises[0].args[0].kind == "var"
+                and target_premises[0].args[0].value == "vampire_eq_prop"
+            ) else "set"
+            premise_proof = raw_eq_symmetry_proof(premise_name, target_premise_sides[0], sort)
+            return f"(fun {premise_name} => ({proof_head(source_proof)} {proof_term_text(premise_proof)}))"
         premise_proof = raw_deep_formula_transform_proof(
             target_premises[0],
             source_premises[0],
@@ -18038,6 +18054,23 @@ def raw_clause_subsumption_transform_proof(
     rewrites: tuple[RawSplitRewrite, ...] = (),
     deep_literals: bool = False,
 ) -> str | None:
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
+        assert source.value is not None and target.value is not None and target.sort is not None
+        binder = target.value
+        source_body = source.args[0]
+        target_body = target.args[0]
+        if source.value != binder:
+            source_body = rename_expr_variables(source_body, {source.value: binder})
+        inner = raw_clause_subsumption_transform_proof(
+            source_body,
+            target_body,
+            f"({proof_head(source_proof)} {binder})",
+            rewrites,
+            deep_literals,
+        )
+        if inner is None:
+            return None
+        return f"(fun {binder} :{binder_sort_text(target.sort)} => {inner})"
     source_literals = raw_clause_literals(source)
     target_literals = raw_clause_literals(target)
     if len(source_literals) > 24 or len(target_literals) > 24:
