@@ -29088,12 +29088,14 @@ def raw_tptp_selected_literal_subsumption_resolution_proof(
     if replay_step is None or len(parsed) != 2 or len(parents) != 2:
         return None
     selected_parent_index: int | None = None
+    selected_fields: dict[str, str] = {}
     for fields in megalodon_replay_extra_fields(replay_step, "literal"):
         raw_index = fields.get("selected_parent_index")
         if raw_index is None:
             continue
         try:
             selected_parent_index = int(raw_index)
+            selected_fields = fields
         except ValueError:
             continue
         break
@@ -29102,17 +29104,34 @@ def raw_tptp_selected_literal_subsumption_resolution_proof(
     resolver_parent_index = 1 - selected_parent_index
     target_binders, target_body = collect_foralls(target)
 
-    def open_parent(expr: Expr, proof: str) -> tuple[Expr, str]:
+    substitution: dict[str, Expr] = {}
+    raw_substitution = selected_fields.get("selected_substitution", "")
+    for match in re.finditer(r"(?P<left>[A-Za-z_]*[0-9]+)\s*->\s*(?P<right>[^,\]]+)", raw_substitution):
+        left = match.group("left").strip()
+        right = match.group("right").strip()
+        if left.isdigit():
+            left = f"X{left}"
+        value = parse_expr(right)
+        if value is None:
+            continue
+        substitution[left] = value
+
+    def open_parent(expr: Expr, proof: str, use_substitution: bool) -> tuple[Expr, str]:
         opened = expr
         opened_proof = proof
         for target_name, target_sort in target_binders:
             if opened.kind == "forall" and opened.sort == target_sort and opened.value is not None:
-                opened = rename_expr_variables(opened.args[0], {opened.value: target_name})
-                opened_proof = f"({proof_head(opened_proof)} {target_name})"
+                replacement = substitution.get(opened.value) if use_substitution else None
+                if replacement is None:
+                    opened = rename_expr_variables(opened.args[0], {opened.value: target_name})
+                    opened_proof = f"({proof_head(opened_proof)} {target_name})"
+                else:
+                    opened = substitute_expr(opened.args[0], {opened.value: replacement})
+                    opened_proof = f"({proof_head(opened_proof)} {proof_arg_text(replacement)})"
         return opened, opened_proof
 
-    source, source_proof = open_parent(*parsed[selected_parent_index])
-    resolver, resolver_proof = open_parent(*parsed[resolver_parent_index])
+    source, source_proof = open_parent(*parsed[selected_parent_index], use_substitution=False)
+    resolver, resolver_proof = open_parent(*parsed[resolver_parent_index], use_substitution=True)
     if not raw_clause_replay_budget_ok(source, resolver, target_body, max_literals=16, max_literal_product=512):
         return None
     proof = raw_flat_clause_resolution_proof(source, target_body, source_proof, resolver, resolver_proof)
