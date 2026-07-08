@@ -31005,7 +31005,16 @@ def raw_normal_form_path_steps(path: str) -> list[str] | None:
     if not parts or parts[0] != "root":
         return None
     for part in parts[1:]:
-        if part in {"body", "left", "right", "not"}:
+        if part in {
+            "body",
+            "left",
+            "right",
+            "not",
+            "ennf_imp_left",
+            "ennf_imp_right",
+            "ennf_neg_imp_left",
+            "ennf_neg_imp_right",
+        }:
             continue
         if NORMAL_FORM_PATH_STEP_RE.fullmatch(part) is not None:
             continue
@@ -31063,6 +31072,137 @@ def raw_normal_form_side_proof(
     return None
 
 
+def raw_normal_form_exported_has_path(fields: dict[str, str], path: str) -> bool:
+    return path == "root" or any(
+        value == path or value.startswith(f"{path}.")
+        for key, value in fields.items()
+        if re.fullmatch(r"pair_[0-9]+_path", key)
+    )
+
+
+def raw_ennf_exported_recursive_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    fields: dict[str, str],
+    path: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 80 or proof_search_timed_out():
+        return None
+    local = raw_normal_form_local_pair_proof(source, target, source_proof, variable_sorts, depth + 1)
+    if local is not None:
+        return local
+    if not raw_normal_form_exported_has_path(fields, path):
+        return None
+
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
+        assert source.value is not None and target.value is not None and target.sort is not None
+        binder = target.value
+        source_body = source.args[0]
+        if source.value != binder:
+            source_body = rename_expr_variables(source_body, {source.value: binder})
+        body = raw_ennf_exported_recursive_proof(
+            source_body,
+            target.args[0],
+            f"({proof_head(source_proof)} {binder})",
+            fields,
+            f"{path}.body",
+            {**variable_sorts, binder: target.sort},
+            depth + 1,
+        )
+        if body is not None:
+            return f"(fun {binder} :{target.sort} => {body})"
+
+    target_or = raw_or_parts(target)
+    if source.kind == "arrow" and target_or is not None:
+        source_premise, source_conclusion = source.args
+        negated_premise = Expr("arrow", args=(source_premise, Expr("var", value="vampire_false")))
+        left_name = fresh_identifier("HnotEnnfImp", expr_text(source_premise), expr_text(target_or[0]), source_proof)
+        right_name = fresh_identifier("HposEnnfImp", expr_text(source_premise), expr_text(source_conclusion), source_proof)
+        left = raw_ennf_exported_recursive_proof(
+            negated_premise,
+            target_or[0],
+            left_name,
+            fields,
+            f"{path}.ennf_imp_left",
+            variable_sorts,
+            depth + 1,
+        )
+        right = raw_ennf_exported_recursive_proof(
+            source_conclusion,
+            target_or[1],
+            f"({proof_head(source_proof)} {right_name})",
+            fields,
+            f"{path}.ennf_imp_right",
+            variable_sorts,
+            depth + 1,
+        )
+        if left is not None and right is not None:
+            return (
+                f"(xm {proof_arg_text(source_premise)} {proof_arg_text(target)} "
+                f"(fun {right_name} => fun P Hleft Hright => Hright {proof_term_text(right)}) "
+                f"(fun {left_name} => fun P Hleft Hright => Hleft {proof_term_text(left)}))"
+            )
+
+    source_premises, source_conclusion = split_arrows(source)
+    target_and = vampire_and_parts(target)
+    if len(source_premises) == 1 and false_eliminator_expr(source_conclusion):
+        source_negative = source_premises[0]
+        if source_negative.kind == "arrow" and target_and is not None:
+            source_left, source_right = source_negative.args
+            right_negative = Expr("arrow", args=(source_right, Expr("var", value="vampire_false")))
+            left_positive = fresh_identifier("HposEnnfNegImp", expr_text(source_left), expr_text(target_and[0]), source_proof)
+            left_negative = fresh_identifier("HnotEnnfNegImp", expr_text(source_left), expr_text(source_right), source_proof)
+            right_positive = fresh_identifier("HrightEnnfNegImp", expr_text(source_right), expr_text(target_and[1]), source_proof)
+            false_from_not_left = (
+                f"({proof_head(source_proof)} "
+                f"(fun {left_positive} :{proof_arg_text(source_left)} => "
+                f"{raw_false_to_expr_proof(f'({left_negative} {left_positive})', source_right)}))"
+            )
+            positive_left = (
+                f"(xm {proof_arg_text(source_left)} {proof_arg_text(source_left)} "
+                f"(fun {left_positive} => {left_positive}) "
+                f"(fun {left_negative} => {raw_false_to_expr_proof(false_from_not_left, source_left)}))"
+            )
+            negative_right = (
+                f"(fun {right_positive} :{proof_arg_text(source_right)} => "
+                f"{proof_head(source_proof)} (fun {left_positive} :{proof_arg_text(source_left)} => {right_positive}))"
+            )
+            left = raw_ennf_exported_recursive_proof(
+                source_left,
+                target_and[0],
+                positive_left,
+                fields,
+                f"{path}.ennf_neg_imp_left",
+                variable_sorts,
+                depth + 1,
+            )
+            right = raw_ennf_exported_recursive_proof(
+                right_negative,
+                target_and[1],
+                negative_right,
+                fields,
+                f"{path}.ennf_neg_imp_right",
+                variable_sorts,
+                depth + 1,
+            )
+            if left is not None and right is not None:
+                return f"(fun P K => K {proof_term_text(left)} {proof_term_text(right)})"
+
+        proof = raw_negated_forall_implication_to_exists_conjunction_proof(
+            source,
+            target,
+            source_proof,
+            variable_sorts,
+        )
+        if proof is not None:
+            return proof
+
+    return None
+
+
 def raw_normal_form_path_guided_proof(
     source: Expr,
     target: Expr,
@@ -31082,6 +31222,130 @@ def raw_normal_form_path_guided_proof(
 
     step = path_steps[0]
     rest = path_steps[1:]
+
+    if step in {"ennf_imp_left", "ennf_imp_right"}:
+        if source.kind != "arrow":
+            return None
+        target_parts = raw_or_parts(target)
+        if target_parts is None:
+            return None
+        source_premise, source_conclusion = source.args
+        negated_premise = Expr("arrow", args=(source_premise, Expr("var", value="vampire_false")))
+        left_name = fresh_identifier("HnotEnnfImp", expr_text(source_premise), expr_text(target_parts[0]), source_proof)
+        right_name = fresh_identifier("HposEnnfImp", expr_text(source_premise), expr_text(source_conclusion), source_proof)
+        right_source_proof = f"({proof_head(source_proof)} {right_name})"
+        if step == "ennf_imp_left":
+            left_proof = raw_normal_form_path_guided_proof(
+                negated_premise,
+                target_parts[0],
+                left_name,
+                pair_source,
+                pair_target,
+                rest,
+                variable_sorts,
+                depth + 1,
+            )
+            right_proof = raw_normal_form_side_proof(
+                source_conclusion,
+                target_parts[1],
+                right_source_proof,
+                variable_sorts,
+                depth + 1,
+            )
+        else:
+            left_proof = raw_normal_form_side_proof(
+                negated_premise,
+                target_parts[0],
+                left_name,
+                variable_sorts,
+                depth + 1,
+            )
+            right_proof = raw_normal_form_path_guided_proof(
+                source_conclusion,
+                target_parts[1],
+                right_source_proof,
+                pair_source,
+                pair_target,
+                rest,
+                variable_sorts,
+                depth + 1,
+            )
+        if left_proof is None or right_proof is None:
+            return None
+        return (
+            f"(xm {proof_arg_text(source_premise)} {proof_arg_text(target)} "
+            f"(fun {right_name} => fun P Hleft Hright => Hright {proof_term_text(right_proof)}) "
+            f"(fun {left_name} => fun P Hleft Hright => Hleft {proof_term_text(left_proof)}))"
+        )
+
+    if step in {"ennf_neg_imp_left", "ennf_neg_imp_right"}:
+        source_premises, source_conclusion = split_arrows(source)
+        if len(source_premises) != 1 or not false_eliminator_expr(source_conclusion):
+            return None
+        inner = source_premises[0]
+        if inner.kind != "arrow":
+            return None
+        target_parts = vampire_and_parts(target)
+        if target_parts is None:
+            return None
+        source_left, source_right = inner.args
+        right_negative = Expr("arrow", args=(source_right, Expr("var", value="vampire_false")))
+        left_positive = fresh_identifier("HposEnnfNegImp", expr_text(source_left), expr_text(target_parts[0]), source_proof)
+        left_negative = fresh_identifier("HnotEnnfNegImp", expr_text(source_left), expr_text(source_right), source_proof)
+        right_positive = fresh_identifier("HrightEnnfNegImp", expr_text(source_right), expr_text(target_parts[1]), source_proof)
+        false_from_not_left = f"({proof_head(source_proof)} (fun {left_positive} :{proof_arg_text(source_left)} => {raw_false_to_expr_proof(f'({left_negative} {left_positive})', source_right)}))"
+        positive_left_proof = (
+            f"(xm {proof_arg_text(source_left)} {proof_arg_text(source_left)} "
+            f"(fun {left_positive} => {left_positive}) "
+            f"(fun {left_negative} => {raw_false_to_expr_proof(false_from_not_left, source_left)}))"
+        )
+        negative_right_proof = (
+            f"(fun {right_positive} :{proof_arg_text(source_right)} => "
+            f"{proof_head(source_proof)} (fun {left_positive} :{proof_arg_text(source_left)} => {right_positive}))"
+        )
+        if step == "ennf_neg_imp_left":
+            left_proof = raw_normal_form_path_guided_proof(
+                source_left,
+                target_parts[0],
+                positive_left_proof,
+                pair_source,
+                pair_target,
+                rest,
+                variable_sorts,
+                depth + 1,
+            )
+            right_proof = raw_normal_form_side_proof(
+                right_negative,
+                target_parts[1],
+                negative_right_proof,
+                variable_sorts,
+                depth + 1,
+            )
+        else:
+            left_proof = raw_normal_form_side_proof(
+                source_left,
+                target_parts[0],
+                positive_left_proof,
+                variable_sorts,
+                depth + 1,
+            )
+            right_proof = raw_normal_form_path_guided_proof(
+                right_negative,
+                target_parts[1],
+                negative_right_proof,
+                pair_source,
+                pair_target,
+                rest,
+                variable_sorts,
+                depth + 1,
+            )
+        if left_proof is None or right_proof is None:
+            return None
+        return (
+            f"(fun P K => K "
+            f"{proof_term_text(left_proof)} "
+            f"{proof_term_text(right_proof)})"
+        )
 
     and_match = NORMAL_FORM_PATH_STEP_RE.fullmatch(step)
     if and_match is not None and and_match.group("kind") == "and":
@@ -31308,7 +31572,7 @@ def raw_tptp_exported_normal_form_proof(
         for source_key, target_key, is_whole_step in pair_keys:
             source = exported_expr(fields, source_key)
             target = exported_expr(fields, target_key)
-            if source is not None and target is not None:
+            if source is not None and target is not None and is_whole_step:
                 candidate_pairs.append((source, target, is_whole_step))
 
     parsed_parent = parse_expr(propositions_by_name.get(parents[0], ""))
@@ -31328,6 +31592,16 @@ def raw_tptp_exported_normal_form_proof(
                 continue
             if not expr_same_mod_alpha(whole_target, ambient_target):
                 continue
+            proof = raw_ennf_exported_recursive_proof(
+                whole_source,
+                whole_target,
+                source_proof,
+                fields,
+                "root",
+                local_sorts,
+            )
+            if proof is not None:
+                return proof
             for index in range(64):
                 source_key = f"pair_{index}_source"
                 target_key = f"pair_{index}_target"
