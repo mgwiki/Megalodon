@@ -33927,6 +33927,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         seen_theorem_claims.add(claim_name)
         if role in {"axiom", "definition", "negated_conjecture"} or trusted_definition:
             continue
+        if role == "conjecture":
+            continue
         rule_text = rule or "input"
         parent_text = f", parents {' '.join(parents)}" if parents else ""
         if source_name:
