@@ -22776,13 +22776,13 @@ def raw_implication_chain_to_or_negated_premises_proof(
                 target_to_source = "HtargetNegativeBody"
             if target_to_source is None:
                 continue
-            matched.append((source_premise, literal, target_to_source))
+            matched.append((premise_index, source_premise, literal, target_to_source))
             used_premises.add(premise_index)
             break
         else:
             return None
 
-    positive_names = [f"HsourcePremise{index}" for index in range(len(matched))]
+    positive_names = [f"HsourcePremise{index}" for index in range(len(source_premises))]
 
     def contradiction_from_all_positive() -> str:
         proof = source_application
@@ -22793,8 +22793,8 @@ def raw_implication_chain_to_or_negated_premises_proof(
     def search(index: int) -> str | None:
         if index >= len(matched):
             return raw_false_to_expr_proof(contradiction_from_all_positive(), target_body)
-        source_premise, literal, target_to_source = matched[index]
-        positive_name = positive_names[index]
+        source_index, source_premise, literal, target_to_source = matched[index]
+        positive_name = positive_names[source_index]
         negative_name = f"HnotSourcePremise{index}"
         positive_branch = search(index + 1)
         if positive_branch is None:
@@ -33103,6 +33103,71 @@ def raw_negated_implication_exists_to_double_negated_conjunction_proof(
     )
 
 
+def raw_negated_implication_to_double_negated_conjunction_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_premises, source_conclusion = split_arrows(source)
+    if len(source_premises) != 1 or not false_eliminator_expr(source_conclusion):
+        return None
+    implication_premises, implication_conclusion = split_arrows(source_premises[0])
+    if len(implication_premises) != 1:
+        return None
+    antecedent = implication_premises[0]
+    consequent = implication_conclusion
+
+    target_premises, target_conclusion = split_arrows(target)
+    if len(target_premises) != 1 or not false_eliminator_expr(target_conclusion):
+        return None
+    negated_conjunction_premises, negated_conjunction_conclusion = split_arrows(target_premises[0])
+    if len(negated_conjunction_premises) != 1 or not false_eliminator_expr(negated_conjunction_conclusion):
+        return None
+    conjunction = negated_conjunction_premises[0]
+    conjunction_parts = vampire_and_parts(conjunction)
+    if conjunction_parts is None:
+        return None
+    left, right = conjunction_parts
+
+    def negates_consequent(expr: Expr) -> bool:
+        premises, conclusion = split_arrows(expr)
+        return (
+            len(premises) == 1
+            and false_eliminator_expr(conclusion)
+            and expr_same_mod_alpha(premises[0], consequent)
+        )
+
+    if expr_same_mod_alpha(left, antecedent) and negates_consequent(right):
+        antecedent_on_left = True
+        not_consequent_component = right
+    elif expr_same_mod_alpha(right, antecedent) and negates_consequent(left):
+        antecedent_on_left = False
+        not_consequent_component = left
+    else:
+        return None
+
+    not_conj = fresh_identifier("HnotConj", expr_text(target), source_proof)
+    antecedent_name = fresh_identifier("Hante", expr_text(antecedent), source_proof, not_conj)
+    not_consequent = fresh_identifier("HnotCons", expr_text(consequent), source_proof, antecedent_name)
+    if antecedent_on_left:
+        conjunction_proof = f"(fun P K => K {antecedent_name} {not_consequent})"
+    else:
+        conjunction_proof = f"(fun P K => K {not_consequent} {antecedent_name})"
+    false_from_not_conj = f"({not_conj} {proof_term_text(conjunction_proof)})"
+    consequent_from_classical = (
+        f"(xm {proof_arg_text(consequent)} {proof_arg_text(consequent)} "
+        f"(fun Hconsequent => Hconsequent) "
+        f"(fun {not_consequent} :{proof_arg_text(not_consequent_component)} => "
+        f"({false_from_not_conj} {proof_arg_text(consequent)})))"
+    )
+    implication_proof = f"(fun {antecedent_name} :{proof_arg_text(antecedent)} => {consequent_from_classical})"
+    return (
+        f"(fun {not_conj} :{proof_arg_text(target_premises[0])} => "
+        f"{proof_head(source_proof)} {proof_term_text(implication_proof)})"
+    )
+
+
 def raw_tptp_exported_normal_form_proof(
     rule: str | None,
     proposition: str,
@@ -33262,6 +33327,16 @@ def raw_tptp_exported_normal_form_proof(
                 proof = f"(fun {name} :{sort} => {proof})"
             return proof
         proof = raw_negated_conjunction_to_or_mixed_components_proof(source, target, candidate_source_proof, candidate_sorts)
+        if proof is not None:
+            for name, sort in reversed(candidate_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
+            return proof
+        proof = raw_negated_implication_to_double_negated_conjunction_proof(
+            source,
+            target,
+            candidate_source_proof,
+            candidate_sorts,
+        )
         if proof is not None:
             for name, sort in reversed(candidate_binders):
                 proof = f"(fun {name} :{sort} => {proof})"
