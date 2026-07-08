@@ -454,6 +454,15 @@ def proof_has_reconstruction_payload(text: str, proof_mode: str) -> bool:
     return "inference(" in text or "SZS output start Proof" in text or "Refutation" in text
 
 
+def raw_tptp_proof_has_reconstructable_content(text: str) -> bool:
+    if collect_tptp_declarations(text):
+        return True
+    return (
+        "megalodon_reconstruction_start." in text
+        and any(MEGALODON_STEP_RE.match(line) for line in text.splitlines())
+    )
+
+
 def proof_has_fatal_output(text: str) -> bool:
     return FATAL_OUTPUT_RE.search(text) is not None
 
@@ -31614,9 +31623,9 @@ def write_raw_tptp_skeletons(
     output_dir.mkdir(parents=True, exist_ok=True)
     tasks = [(proof, output_dir, repo, source) for proof in proofs]
     if jobs <= 1 or len(tasks) <= 1:
-        return [write_raw_tptp_skeleton(task) for task in tasks]
+        return [path for path in (write_raw_tptp_skeleton(task) for task in tasks) if path is not None]
     with concurrent.futures.ProcessPoolExecutor(max_workers=min(jobs, len(tasks))) as executor:
-        return list(executor.map(write_raw_tptp_skeleton, tasks))
+        return [path for path in executor.map(write_raw_tptp_skeleton, tasks) if path is not None]
 
 
 def raw_tptp_problem_candidates(proof_path: Path) -> list[str]:
@@ -31656,11 +31665,14 @@ def find_raw_tptp_problem_for_proof(proof_path: Path, repo: Path) -> Path | None
     return None
 
 
-def write_raw_tptp_skeleton(task: tuple[Path, Path, Path, Path | None]) -> Path:
+def write_raw_tptp_skeleton(task: tuple[Path, Path, Path, Path | None]) -> Path | None:
     proof, output_dir, repo, source = task
     proof_path = proof if proof.is_absolute() else (repo / proof)
     if not proof_path.exists():
         raise SystemExit(f"raw TPTP proof not found: {proof_path}")
+    text = proof_path.read_text(encoding="utf-8", errors="replace")
+    if not raw_tptp_proof_has_reconstructable_content(text):
+        return None
     problem = find_raw_tptp_problem_for_proof(proof_path, repo)
     output = output_dir / f"{proof_path.stem}.raw_tptp_skeleton.mg"
     output.write_text(
@@ -31778,8 +31790,11 @@ def main() -> int:
             else args.raw_tptp_skeleton_dir
         )
         written = write_raw_tptp_skeletons(args.raw_tptp_proof, raw_tptp_skeleton_dir, repo, source, args.jobs)
+        skipped = len(args.raw_tptp_proof) - len(written)
         for path in written:
             print(f"raw TPTP skeleton: {path}")
+        if skipped:
+            print(f"raw TPTP skeletons skipped without reconstructable proof content: {skipped}")
         if args.check_raw_tptp_skeletons:
             raw_tptp_check_dir = (
                 (repo / args.raw_tptp_check_dir).resolve()
