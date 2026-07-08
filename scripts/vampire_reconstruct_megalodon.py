@@ -2302,6 +2302,54 @@ def guarded_avatar_component_extra_proposition(
     return expr_text(result)
 
 
+def guarded_two_literal_equality_extra_proposition(
+    extras: list[tuple[str, tuple[str, ...]]],
+    parent_propositions: list[str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    equality_proposition = megalodon_equality_extra_proposition(extras, variable_sorts)
+    if equality_proposition is None:
+        return None
+    equality_expr = parse_expr(equality_proposition)
+    if equality_expr is None:
+        return None
+    equality_binders, equality_body = collect_foralls(equality_expr)
+
+    for fields in megalodon_replay_extra_fields(
+        MegalodonReplayStep("", (), "", extras=tuple(extras)),
+        "two_literal_rewrite",
+    ):
+        other_parent_index = fields.get("other_parent_index")
+        other_literal_index = fields.get("other_literal_index")
+        if other_parent_index is None or other_literal_index is None:
+            continue
+        try:
+            parent_index = int(other_parent_index)
+            literal_index = int(other_literal_index)
+        except ValueError:
+            continue
+        if parent_index < 0 or parent_index >= len(parent_propositions):
+            continue
+        parent_expr = parse_expr(parent_propositions[parent_index])
+        if parent_expr is None:
+            continue
+        parent_binders, parent_body = collect_foralls(parent_expr)
+        if parent_binders:
+            continue
+        parent_literals = raw_clause_literals(parent_body)
+        if literal_index < 0 or literal_index >= len(parent_literals) or len(parent_literals) <= 1:
+            continue
+        residual_literals = [literal for index, literal in enumerate(parent_literals) if index != literal_index]
+        guarded_body = equality_body
+        for residual in residual_literals:
+            guarded_body = Expr("app", args=(Expr("var", value="or"), guarded_body, residual))
+        result = guarded_body
+        for name, sort in reversed(equality_binders):
+            result = Expr("forall", value=name, sort=sort, args=(result,))
+        return expr_text(result)
+    return None
+
+
 def guarded_parent_literal(parent_propositions: list[str]) -> Expr | None:
     for parent_proposition in parent_propositions:
         parent_expr = parse_expr(parent_proposition)
@@ -26929,6 +26977,21 @@ def raw_instantiated_clause_from_exported_literal(
     target_body: Expr,
 ) -> tuple[Expr, str] | None:
     binders, body = collect_foralls(clause)
+    substituted_binders, substituted_body = collect_foralls(substituted_literal)
+    if substituted_binders and len(substituted_binders) == len(binders):
+        renamed_substituted_body = substituted_body
+        compatible_binders = True
+        for (substituted_name, substituted_sort), (binder_name, binder_sort) in zip(substituted_binders, binders):
+            if substituted_sort != binder_sort:
+                compatible_binders = False
+                break
+            if substituted_name != binder_name:
+                renamed_substituted_body = rename_expr_variables(
+                    renamed_substituted_body,
+                    {substituted_name: binder_name},
+                )
+        if compatible_binders:
+            substituted_literal = renamed_substituted_body
     literals = raw_clause_literals(body)
     if literal_index < 0 or literal_index >= len(literals):
         return None
@@ -30853,6 +30916,17 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 )
             if proposition is None:
                 proposition = megalodon_equality_extra_proposition(list(step.extras), local_sorts)
+            if proposition is not None and megalodon_replay_extra_fields(step, "two_literal_rewrite"):
+                guarded_proposition = guarded_two_literal_equality_extra_proposition(
+                    list(step.extras),
+                    [
+                        raw_tptp_normalize_step_proposition(parent, local_sorts, lambda_sort_hints)
+                        for parent in parent_propositions
+                    ],
+                    local_sorts,
+                )
+                if guarded_proposition is not None:
+                    proposition = guarded_proposition
             if proposition is None:
                 proposition = raw_tptp_normalize_step_proposition(step.proposition, local_sorts, lambda_sort_hints)
             if proposition:
