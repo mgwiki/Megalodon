@@ -73,6 +73,7 @@ PROOF_SEARCH_STATE = threading.local()
 PROOF_SEARCH_SECONDS = float(os.environ.get("MEGALODON_PROOF_SEARCH_SECONDS", "8"))
 RAW_TPTP_REPLAY_SECONDS = float(os.environ.get("MEGALODON_RAW_TPTP_REPLAY_SECONDS", "0.35"))
 RAW_TPTP_REPLAY_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_REPLAY_CHAR_LIMIT", "12000"))
+RAW_TPTP_EXPORTED_NORMAL_FORM_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_NORMAL_FORM_CHAR_LIMIT", "60000"))
 PROOF_SEARCH_CLOCK = getattr(time, "thread_time", time.monotonic)
 MEGALODON_ADMIT_RE = re.compile(r"\badmit\.")
 
@@ -106,6 +107,25 @@ def raw_tptp_replay_payload_size(
             else:
                 size += sum(len(field) for field in fields)
     return size
+
+
+def raw_tptp_replay_payload_size_ok(
+    rule: str | None,
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    replay_step: "MegalodonReplayStep | None",
+) -> bool:
+    size = raw_tptp_replay_payload_size(proposition, parents, propositions_by_name, replay_step)
+    if size <= RAW_TPTP_REPLAY_CHAR_LIMIT:
+        return True
+    if (
+        rule in {"flattening", "ennf_transformation", "nnf_transformation", "boolean_simplification", "true_and_false_elimination"}
+        and replay_step is not None
+        and any(kind == "normal_form" for kind, _fields in replay_step.extras)
+    ):
+        return size <= RAW_TPTP_EXPORTED_NORMAL_FORM_CHAR_LIMIT
+    return False
 
 
 def vampire_exists_name_for_sort(sort: str) -> str:
@@ -30093,6 +30113,176 @@ def raw_tptp_definition_rewrite_proof(
     return None
 
 
+def raw_structural_normal_form_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 80 or proof_search_timed_out():
+        return None
+    if expr_same_mod_alpha(source, target):
+        return source_proof
+
+    source_exists = raw_exists_transform_parts(source)
+    target_exists = raw_exists_transform_parts(target)
+    if source_exists is not None and target_exists is not None:
+        source_head, source_sort, _source_predicate, source_name, source_body = source_exists
+        target_head, target_sort, _target_predicate, target_name, target_body = target_exists
+        if source_head != target_head or source_sort != target_sort:
+            return None
+        witness_name = fresh_identifier("w", expr_text(source), expr_text(target), source_proof)
+        source_body = rename_expr_variables(source_body, {source_name: witness_name})
+        target_body = rename_expr_variables(target_body, {target_name: witness_name})
+        body_proof = raw_structural_normal_form_transform_proof(
+            source_body,
+            target_body,
+            "Hbody",
+            {**variable_sorts, witness_name: source_sort},
+            depth + 1,
+        )
+        if body_proof is None:
+            return None
+        target_intro = f"(fun Q Hexists => Hexists {witness_name} {proof_term_text(body_proof)})"
+        return (
+            f"({proof_head(source_proof)} {proof_arg_text(target)} "
+            f"(fun {witness_name} :{source_sort} => fun Hbody => {target_intro}))"
+        )
+
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
+        assert source.value is not None and target.value is not None and target.sort is not None
+        binder = target.value
+        source_body = source.args[0]
+        target_body = target.args[0]
+        if source.value != binder and binder in (expr_variables(source_body) | expr_bound_variables(source_body)):
+            used_names = (
+                expr_variables(source_body)
+                | expr_bound_variables(source_body)
+                | expr_variables(target_body)
+                | expr_bound_variables(target_body)
+                | {source.value, target.value}
+            )
+            binder = fresh_identifier(target.value, " ".join(sorted(used_names)))
+            target_body = rename_expr_variables(target_body, {target.value: binder})
+        if source.value != binder:
+            source_body = rename_expr_variables(source_body, {source.value: binder})
+        inner = raw_structural_normal_form_transform_proof(
+            source_body,
+            target_body,
+            f"({proof_head(source_proof)} {binder})",
+            {**variable_sorts, binder: target.sort},
+            depth + 1,
+        )
+        if inner is None:
+            return None
+        return f"(fun {binder} :{target.sort} => {inner})"
+
+    source_and = vampire_and_parts(source)
+    target_and = vampire_and_parts(target)
+    if source_and is not None and target_and is not None:
+        left_name = fresh_identifier("HL", expr_text(source), expr_text(target), source_proof)
+        right_name = fresh_identifier("HR", expr_text(source), expr_text(target), source_proof, left_name)
+        for left_target, right_target in (target_and, (target_and[1], target_and[0])):
+            left_proof = raw_structural_normal_form_transform_proof(
+                source_and[0],
+                left_target,
+                left_name,
+                variable_sorts,
+                depth + 1,
+            )
+            if left_proof is None:
+                continue
+            right_proof = raw_structural_normal_form_transform_proof(
+                source_and[1],
+                right_target,
+                right_name,
+                variable_sorts,
+                depth + 1,
+            )
+            if right_proof is None:
+                continue
+            if expr_same_mod_alpha(left_target, target_and[0]):
+                return (
+                    f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                    f"(fun {left_name} {right_name} => "
+                    f"(fun P K => K {proof_term_text(left_proof)} {proof_term_text(right_proof)})))"
+                )
+            return (
+                f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                f"(fun {left_name} {right_name} => "
+                f"(fun P K => K {proof_term_text(right_proof)} {proof_term_text(left_proof)})))"
+            )
+        return None
+
+    source_or = raw_or_parts(source)
+    target_or = raw_or_parts(target)
+    if source_or is not None and target_or is not None:
+        if raw_clause_replay_budget_ok(source, target, max_literals=24, max_literal_product=512):
+            clause_proof = raw_clause_transform_proof(source, target, source_proof)
+            if clause_proof is not None:
+                return clause_proof
+        left_name = fresh_identifier("HorL", expr_text(source), expr_text(target), source_proof)
+        right_name = fresh_identifier("HorR", expr_text(source), expr_text(target), source_proof, left_name)
+        for left_target, right_target in (target_or, (target_or[1], target_or[0])):
+            left_proof = raw_structural_normal_form_transform_proof(
+                source_or[0],
+                left_target,
+                left_name,
+                variable_sorts,
+                depth + 1,
+            )
+            if left_proof is None:
+                continue
+            right_proof = raw_structural_normal_form_transform_proof(
+                source_or[1],
+                right_target,
+                right_name,
+                variable_sorts,
+                depth + 1,
+            )
+            if right_proof is None:
+                continue
+            if expr_same_mod_alpha(left_target, target_or[0]):
+                left_intro = f"(fun P Hleft Hright => Hleft {proof_term_text(left_proof)})"
+                right_intro = f"(fun P Hleft Hright => Hright {proof_term_text(right_proof)})"
+            else:
+                left_intro = f"(fun P Hleft Hright => Hright {proof_term_text(left_proof)})"
+                right_intro = f"(fun P Hleft Hright => Hleft {proof_term_text(right_proof)})"
+            return (
+                f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                f"(fun {left_name} => {left_intro}) "
+                f"(fun {right_name} => {right_intro}))"
+            )
+        return None
+
+    if source.kind == "arrow" and target.kind == "arrow":
+        source_premise, source_conclusion = source.args
+        target_premise, target_conclusion = target.args
+        premise_name = fresh_identifier("Hprem", expr_text(source_premise), expr_text(target_premise), source_proof)
+        premise_proof = raw_structural_normal_form_transform_proof(
+            target_premise,
+            source_premise,
+            premise_name,
+            variable_sorts,
+            depth + 1,
+        )
+        if premise_proof is None:
+            return None
+        conclusion_proof = raw_structural_normal_form_transform_proof(
+            source_conclusion,
+            target_conclusion,
+            f"({proof_head(source_proof)} {proof_term_text(premise_proof)})",
+            variable_sorts,
+            depth + 1,
+        )
+        if conclusion_proof is None:
+            return None
+        return f"(fun {premise_name} :{proof_arg_text(target_premise)} => {conclusion_proof})"
+
+    return None
+
+
 def raw_tptp_exported_normal_form_proof(
     rule: str | None,
     proposition: str,
@@ -30105,36 +30295,42 @@ def raw_tptp_exported_normal_form_proof(
         return None
     local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
     source_proof = raw_tptp_claim_name(parents[0])
-    candidate_pairs: list[tuple[Expr, Expr]] = []
+    candidate_pairs: list[tuple[Expr, Expr, bool]] = []
     for fields in megalodon_replay_extra_fields(replay_step, "normal_form"):
         exported_rule = fields.get("rule", "").replace(" ", "_")
         if exported_rule and rule is not None and exported_rule not in {rule, "normal_form"}:
             continue
-        pair_keys = [("source", "target")]
+        pair_keys = [("source", "target", True)]
         for index in range(64):
             if f"pair_{index}_source" not in fields and f"pair_{index}_target" not in fields:
                 if index > 0:
                     break
                 continue
-            pair_keys.append((f"pair_{index}_source", f"pair_{index}_target"))
-        for source_key, target_key in pair_keys:
+            pair_keys.append((f"pair_{index}_source", f"pair_{index}_target", False))
+        for source_key, target_key, is_whole_step in pair_keys:
             source = raw_tptp_replay_extra_expr_with_pair_hints(fields, source_key, local_sorts)
             target = raw_tptp_replay_extra_expr_with_pair_hints(fields, target_key, local_sorts)
             if source is not None and target is not None:
-                candidate_pairs.append((source, target))
+                candidate_pairs.append((source, target, is_whole_step))
 
     parsed_parent = parse_expr(propositions_by_name.get(parents[0], ""))
     parsed_target = parse_expr(proposition)
     if parsed_parent is not None and parsed_target is not None:
-        candidate_pairs.append((ambient_basic_logic_expr(parsed_parent), ambient_basic_logic_expr(parsed_target)))
+        candidate_pairs.append((ambient_basic_logic_expr(parsed_parent), ambient_basic_logic_expr(parsed_target), True))
 
     parsed_parent_for_binders = parse_expr(propositions_by_name.get(parents[0], ""))
     parsed_target_for_binders = parse_expr(proposition)
 
-    for source, target in candidate_pairs:
+    for source, target, exported_whole_step in candidate_pairs:
         candidate_source_proof = source_proof
         candidate_sorts = local_sorts
         candidate_binders: list[tuple[str, str]] = []
+        candidate_is_whole_step = exported_whole_step or (
+            parsed_parent is not None
+            and parsed_target is not None
+            and expr_same_mod_alpha(source, ambient_basic_logic_expr(parsed_parent))
+            and expr_same_mod_alpha(target, ambient_basic_logic_expr(parsed_target))
+        )
         if parsed_parent_for_binders is not None and parsed_target_for_binders is not None:
             parent_binders, parent_body = collect_foralls(parsed_parent_for_binders)
             target_binders, target_body = collect_foralls(parsed_target_for_binders)
@@ -30149,6 +30345,7 @@ def raw_tptp_exported_normal_form_proof(
                         renamed_parent_body = rename_expr_variables(renamed_parent_body, {parent_name: target_name})
                 if expr_same_mod_alpha(source, renamed_parent_body) and expr_same_mod_alpha(target, target_body):
                     candidate_binders = target_binders
+                    candidate_is_whole_step = True
                     candidate_sorts = {**local_sorts, **{name: sort for name, sort in target_binders}}
                     for name, _sort in target_binders:
                         candidate_source_proof = f"({proof_head(candidate_source_proof)} {name})"
@@ -30157,6 +30354,17 @@ def raw_tptp_exported_normal_form_proof(
             for name, sort in reversed(candidate_binders):
                 proof = f"(fun {name} :{sort} => {proof})"
             return proof
+        if candidate_is_whole_step:
+            proof = raw_structural_normal_form_transform_proof(
+                source,
+                target,
+                candidate_source_proof,
+                candidate_sorts,
+            )
+            if proof is not None:
+                for name, sort in reversed(candidate_binders):
+                    proof = f"(fun {name} :{sort} => {proof})"
+                return proof
         proof = raw_classical_implication_to_or_transform_proof(source, target, candidate_source_proof)
         if proof is not None:
             for name, sort in reversed(candidate_binders):
@@ -31662,12 +31870,13 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     if definition_key is not None and definition_key not in replay_parents:
                         replay_parents.append(definition_key)
             step_info = replay_steps.get(name)
-            if raw_tptp_replay_payload_size(
+            if raw_tptp_replay_payload_size_ok(
+                rule,
                 proposition,
                 replay_parents,
                 propositions_by_name,
                 step_info,
-            ) <= RAW_TPTP_REPLAY_CHAR_LIMIT:
+            ):
                 previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
                 PROOF_SEARCH_STATE.deadline = proof_search_now() + RAW_TPTP_REPLAY_SECONDS
                 try:
