@@ -19177,6 +19177,16 @@ def raw_tptp_one_parent_transform_proof(
     )
     if negated_implication_chain is not None:
         return negated_implication_chain
+    source_premises, source_conclusion = split_arrows(source)
+    if len(source_premises) == 1 and false_eliminator_expr(source_conclusion):
+        negated_implication_forall = raw_negated_implication_forall_to_conjunction_proof(
+            source_premises[0],
+            target,
+            raw_tptp_claim_name(parents[0]),
+            variable_sorts or {},
+        )
+        if negated_implication_forall is not None:
+            return negated_implication_forall
     classical = raw_classical_double_negation_transform_proof(
         source,
         target,
@@ -29034,7 +29044,44 @@ def raw_skolemised_formula_transform_proof(
         if proof is not None:
             return proof
 
+    source_conjuncts = vampire_and_parts(source)
     target_conjuncts = vampire_and_parts(target)
+    if source_conjuncts is not None and target_conjuncts is not None:
+        for left_target, right_target in (target_conjuncts, (target_conjuncts[1], target_conjuncts[0])):
+            left_name = fresh_identifier("HL", expr_text(source), expr_text(target), source_proof)
+            right_name = fresh_identifier("HR", expr_text(source), expr_text(target), source_proof, left_name)
+            left_proof = raw_skolemised_formula_transform_proof(
+                source_conjuncts[0],
+                left_target,
+                left_name,
+                rewrites,
+                variable_sorts,
+                depth + 1,
+            )
+            if left_proof is None:
+                continue
+            right_proof = raw_skolemised_formula_transform_proof(
+                source_conjuncts[1],
+                right_target,
+                right_name,
+                rewrites,
+                variable_sorts,
+                depth + 1,
+            )
+            if right_proof is None:
+                continue
+            if expr_same_mod_alpha(left_target, target_conjuncts[0]):
+                return (
+                    f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                    f"(fun {left_name} {right_name} => "
+                    f"(fun P K => K {proof_term_text(left_proof)} {proof_term_text(right_proof)})))"
+                )
+            return (
+                f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                f"(fun {left_name} {right_name} => "
+                f"(fun P K => K {proof_term_text(right_proof)} {proof_term_text(left_proof)})))"
+            )
+
     if target_conjuncts is not None:
         left = raw_skolemised_formula_transform_proof(source, target_conjuncts[0], source_proof, rewrites, variable_sorts, depth + 1)
         if left is None:
@@ -29044,7 +29091,6 @@ def raw_skolemised_formula_transform_proof(
             return None
         return f"(fun P K => K {proof_term_text(left)} {proof_term_text(right)})"
 
-    source_conjuncts = vampire_and_parts(source)
     if source_conjuncts is not None:
         for conjunct in source_conjuncts:
             projection = vampire_and_projection_from_proof(source_proof, source, conjunct)
@@ -29054,7 +29100,44 @@ def raw_skolemised_formula_transform_proof(
             if proof is not None:
                 return proof
 
-    target_parts = app_args(target, "vampire_or", 2)
+    source_parts = app_args(source, "vampire_or", 2)
+    target_parts = raw_or_parts(target)
+    if source_parts is not None and target_parts is not None:
+        for left_target, right_target in (target_parts, (target_parts[1], target_parts[0])):
+            left_name = fresh_identifier("HL", expr_text(source), expr_text(target), source_proof)
+            right_name = fresh_identifier("HR", expr_text(source), expr_text(target), source_proof, left_name)
+            left_proof = raw_skolemised_formula_transform_proof(
+                source_parts[0],
+                left_target,
+                left_name,
+                rewrites,
+                variable_sorts,
+                depth + 1,
+            )
+            if left_proof is None:
+                continue
+            right_proof = raw_skolemised_formula_transform_proof(
+                source_parts[1],
+                right_target,
+                right_name,
+                rewrites,
+                variable_sorts,
+                depth + 1,
+            )
+            if right_proof is None:
+                continue
+            if expr_same_mod_alpha(left_target, target_parts[0]):
+                left_intro = f"(fun P Hleft Hright => Hleft {proof_term_text(left_proof)})"
+                right_intro = f"(fun P Hleft Hright => Hright {proof_term_text(right_proof)})"
+            else:
+                left_intro = f"(fun P Hleft Hright => Hright {proof_term_text(left_proof)})"
+                right_intro = f"(fun P Hleft Hright => Hleft {proof_term_text(right_proof)})"
+            return (
+                f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                f"(fun {left_name} => {left_intro}) "
+                f"(fun {right_name} => {right_intro}))"
+            )
+
     if target_parts is not None:
         left_intro = raw_skolemised_formula_transform_proof(source, target_parts[0], source_proof, rewrites, variable_sorts, depth + 1)
         if left_intro is not None:
@@ -29063,7 +29146,6 @@ def raw_skolemised_formula_transform_proof(
         if right_intro is not None:
             return f"(fun P Hleft Hright => Hright {proof_term_text(right_intro)})"
 
-    source_parts = app_args(source, "vampire_or", 2)
     if source_parts is not None:
         left, right = source_parts
         left_name = fresh_identifier("HL", expr_text(source), expr_text(target), source_proof)
@@ -30132,6 +30214,18 @@ def raw_tptp_exported_normal_form_proof(
             for name, sort in reversed(candidate_binders):
                 proof = f"(fun {name} :{sort} => {proof})"
             return proof
+        source_premises, source_conclusion = split_arrows(source)
+        if len(source_premises) == 1 and false_eliminator_expr(source_conclusion):
+            proof = raw_negated_implication_forall_to_conjunction_proof(
+                source_premises[0],
+                target,
+                candidate_source_proof,
+                candidate_sorts,
+            )
+            if proof is not None:
+                for name, sort in reversed(candidate_binders):
+                    proof = f"(fun {name} :{sort} => {proof})"
+                return proof
         proof = raw_negated_implication_to_negated_exists_conjunction_proof(
             source,
             target,
