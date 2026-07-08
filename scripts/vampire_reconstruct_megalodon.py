@@ -169,6 +169,8 @@ def raw_tptp_replay_payload_size_ok(
 def raw_tptp_replay_seconds_for_rule(rule: str | None) -> float:
     if rule == "rectify":
         return max(RAW_TPTP_REPLAY_SECONDS, 1.0)
+    if rule in {"definition_folding", "definition_unfolding"}:
+        return max(RAW_TPTP_REPLAY_SECONDS, 10.0)
     if rule in {"forward_subsumption_resolution", "backward_subsumption_resolution"}:
         return RAW_TPTP_FORWARD_SUBSUMPTION_REPLAY_SECONDS
     return RAW_TPTP_REPLAY_SECONDS
