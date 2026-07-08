@@ -4872,11 +4872,14 @@ def raw_tptp_predicate_definition_infos(
                 body_variable_sorts[variable_name] = variable_sort
             local_sorts = {**variable_sorts, **step_sorts, **body_variable_sorts}
             body = surface_direct_step_expr(body, local_sorts)
-            target_name, target_sort, target_binders, folded_literal = raw_tptp_predicate_definition_target(
+            target = raw_tptp_predicate_definition_target(
                 step,
                 body,
                 local_sorts,
-            ) or (name, sort, (), None)
+            )
+            if target is None:
+                continue
+            target_name, target_sort, target_binders, folded_literal = target
             if not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", target_name):
                 continue
             pieces = split_sort_arrows(target_sort)
@@ -4929,6 +4932,109 @@ def raw_tptp_predicate_definition_equality_proposition(name: str, definition: De
     for binder, sort in reversed(list(zip(definition.binders, pieces[:-1]))):
         proposition = f"forall {binder}:{sort}, {proposition}"
     return proposition
+
+
+def raw_tptp_definition_clause_info(
+    definition_text: str,
+    proof: str,
+    variable_sorts: dict[str, str],
+) -> tuple[str, DefinitionInfo] | None:
+    definition = parse_expr(definition_text)
+    if definition is None:
+        return None
+    definition = raw_replay_extra_expr_from_parsed(definition, variable_sorts)
+    if definition is None:
+        return None
+    binders, conclusion = collect_foralls(definition)
+    local_sorts = {**variable_sorts, **{name: sort for name, sort in binders}}
+    parts = raw_or_parts(conclusion)
+    if parts is None:
+        return None
+    left, right = parts
+    split: Expr
+    body: Expr
+    left_premises, left_conclusion = split_arrows(left)
+    right_premises, right_conclusion = split_arrows(right)
+    if len(left_premises) == 1 and false_eliminator_expr(left_conclusion):
+        split, body = left_premises[0], right
+    elif len(right_premises) == 1 and false_eliminator_expr(right_conclusion):
+        split, body = right_premises[0], left
+    else:
+        return None
+
+    target = split
+    sides = equality_like_sides(split)
+    if sides is not None:
+        non_truth_sides = [side for side in sides if expr_text(side) not in {"True", "vampire_true"}]
+        if len(non_truth_sides) != 1:
+            return None
+        target = non_truth_sides[0]
+
+    if target.kind == "var" and target.value is not None:
+        target_name = target.value
+        target_binders: tuple[str, ...] = ()
+    elif target.kind == "app" and target.args and target.args[0].kind == "var" and target.args[0].value is not None:
+        target_name = target.args[0].value
+        target_args = target.args[1:]
+        if not all(arg.kind == "var" and arg.value is not None for arg in target_args):
+            return None
+        target_binders = tuple(arg.value for arg in target_args if arg.value is not None)
+    else:
+        return None
+
+    if not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", target_name):
+        return None
+    arg_sorts: list[str] = []
+    for binder in target_binders:
+        binder_sort = local_sorts.get(binder)
+        if binder_sort is None:
+            return None
+        arg_sorts.append(binder_sort)
+    target_sort = variable_sorts.get(target_name)
+    if target_sort is None:
+        target_sort = "->".join([*arg_sorts, "prop"]) if arg_sorts else "prop"
+    pieces = split_sort_arrows(target_sort)
+    if not pieces or pieces[-1] != "prop" or pieces[:-1] != arg_sorts:
+        return None
+
+    free_variables = expr_variables(body)
+    leaked_variables = {
+        variable
+        for variable in free_variables - set(target_binders)
+        if re.fullmatch(r"X[0-9]+", variable) and variable in local_sorts
+    }
+    if leaked_variables:
+        return None
+
+    definition_body = expr_text(body)
+    for binder_name, binder_sort in reversed(list(zip(target_binders, arg_sorts))):
+        definition_body = f"fun {binder_name} :{binder_sort} => {definition_body}"
+    return target_name, DefinitionInfo(target_sort, definition_body, proof, target_binders, body, split)
+
+
+def raw_tptp_definition_rewrite_definition_infos(
+    replay_steps: dict[str, MegalodonReplayStep],
+    variable_sorts: dict[str, str],
+) -> tuple[dict[str, DefinitionInfo], dict[str, str]]:
+    definitions: dict[str, DefinitionInfo] = {}
+    definition_keys_by_step: dict[str, str] = {}
+    for step in replay_steps.values():
+        if step.rule.replace(" ", "_") not in {"definition_folding", "definition_unfolding"}:
+            continue
+        local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(step)}
+        for fields in megalodon_replay_extra_fields(step, "definition_rewrite"):
+            for index, parent in enumerate(step.parents[1:], start=1):
+                definition_text = fields.get(f"parent_{index}")
+                if definition_text is None:
+                    continue
+                definition_key = f"{parent}_def"
+                definition = raw_tptp_definition_clause_info(definition_text, definition_key, local_sorts)
+                if definition is None:
+                    continue
+                target_name, definition_info = definition
+                definitions[target_name] = definition_info
+                definition_keys_by_step[parent] = definition_key
+    return definitions, definition_keys_by_step
 
 
 def raw_tptp_definition_rewrite_split_definition(
@@ -29402,6 +29508,12 @@ def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: s
         return len(proposition) > MAX_RAW_TPTP_EXACT_AVATAR_PROPOSITION or len(proof) > MAX_RAW_TPTP_EXACT_PROOF_TERM
     if rule == "fool_elimination" and len(proof) > 50000:
         return True
+    if (
+        rule in {"ennf_transformation", "nnf_transformation"}
+        and re.search(r"\bHnotPrem[0-9]+\s+\(\(fun\s+X[0-9]+\s+:set->prop\b", proof)
+        and "(fun Q Hexists => Hexists" in proof
+    ):
+        return True
     return False
 
 
@@ -31782,6 +31894,12 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         function_definitions = tptp_function_definition_infos(text, variable_sorts)
         variable_sorts.update(raw_tptp_function_definition_sorts(function_definitions, variable_sorts))
     predicate_definitions, predicate_definition_keys_by_step = raw_tptp_predicate_definition_infos(replay_steps, variable_sorts)
+    rewrite_predicate_definitions, rewrite_definition_keys_by_step = raw_tptp_definition_rewrite_definition_infos(
+        replay_steps,
+        variable_sorts,
+    )
+    predicate_definitions.update(rewrite_predicate_definitions)
+    predicate_definition_keys_by_step.update(rewrite_definition_keys_by_step)
     predicate_definition_equalities: dict[str, str] = {}
     for definition_name, definition in predicate_definitions.items():
         equality_proposition = raw_tptp_predicate_definition_equality_proposition(definition_name, definition)
