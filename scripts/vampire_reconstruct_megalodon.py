@@ -2782,6 +2782,10 @@ def megalodon_replay_steps(
                 source_text = parsed_extra_fields(fields).get("source")
                 if source_text is None:
                     continue
+                surface_source = surface_direct_step_proposition(source_text, local_sorts)
+                surface_expr = parse_expr(surface_source) if surface_source is not None else None
+                if surface_expr is not None and expr_same_mod_alpha(proposition_expr, surface_expr):
+                    return True
                 source_expr = raw_tptp_replay_extra_expr({"source": source_text}, "source", local_sorts)
                 if source_expr is not None and expr_same_mod_alpha(proposition_expr, source_expr):
                     return True
@@ -21675,6 +21679,53 @@ def raw_tptp_parent_complement_false_proof(
     return None
 
 
+def raw_direct_classical_double_negation_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if source.kind != "arrow" or len(source.args) != 2:
+        return None
+    negative, source_conclusion = source.args
+    if not false_eliminator_expr(source_conclusion):
+        return None
+    if negative.kind != "arrow" or len(negative.args) != 2:
+        return None
+    positive, negative_conclusion = negative.args
+    if not false_eliminator_expr(negative_conclusion):
+        return None
+    if len(expr_text(positive)) + len(expr_text(target)) > 12000:
+        return None
+    positive_to_target = raw_deep_formula_transform_proof(
+        positive,
+        target,
+        "Hpositive",
+        variable_sorts,
+    )
+    if positive_to_target is None:
+        positive_to_target = raw_rectify_formula_transform_proof(
+            positive,
+            target,
+            "Hpositive",
+            variable_sorts,
+        )
+    if positive_to_target is None:
+        positive_to_target = raw_clause_transform_proof(positive, target, "Hpositive")
+    if positive_to_target is None and expr_same_mod_alpha(positive, target):
+        positive_to_target = "Hpositive"
+    if positive_to_target is None:
+        return None
+    target_text = proof_arg_text(target)
+    return (
+        f"(xm {target_text} {target_text} "
+        f"(fun Htarget => Htarget) "
+        f"(fun HnotTarget => ({proof_head(source_proof)} "
+        f"(fun Hpositive => HnotTarget {proof_term_text(positive_to_target)}) "
+        f"{target_text})))"
+    )
+
+
 def raw_tptp_dne_implication_parent_proof(
     proposition: str,
     parents: list[str],
@@ -21760,6 +21811,36 @@ def raw_tptp_dne_implication_parent_proof(
     return None
 
 
+def raw_trivial_quantified_equality_proof(expr: Expr) -> str | None:
+    binders, body = collect_foralls(expr)
+    sides = equality_like_sides(body)
+    if sides is not None and expr_same_mod_alpha(sides[0], sides[1]):
+        proof = "(fun Q H => H)"
+    else:
+        proof = direct_proof_expr(body)
+        if proof is None:
+            return None
+    for name, sort in reversed(binders):
+        proof = f"(fun {name} :{sort} => {proof})"
+    return proof
+
+
+def raw_trivial_quantified_equality_false_elim_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+) -> str | None:
+    if not false_eliminator_expr(target):
+        return None
+    premises, conclusion = split_arrows(source)
+    if len(premises) != 1 or not false_eliminator_expr(conclusion):
+        return None
+    premise_proof = raw_trivial_quantified_equality_proof(premises[0])
+    if premise_proof is None:
+        return None
+    return f"({proof_head(source_proof)} {proof_term_text(premise_proof)})"
+
+
 def raw_tptp_trivial_inequality_removal_proof(
     proposition: str,
     parents: list[str],
@@ -21779,6 +21860,13 @@ def raw_tptp_trivial_inequality_removal_proof(
         return None
     ambient_source = ambient_basic_logic_expr(source)
     ambient_target = ambient_basic_logic_expr(target)
+    trivial_quantified = raw_trivial_quantified_equality_false_elim_proof(
+        ambient_source,
+        ambient_target,
+        raw_tptp_claim_name(parents[0]),
+    )
+    if trivial_quantified is not None:
+        return trivial_quantified
     false_clause = raw_quantified_false_clause_elimination_proof(
         ambient_source,
         ambient_target,
@@ -41164,6 +41252,19 @@ def raw_tptp_replay_proof(
     proof = raw_tptp_parent_complement_false_proof(proposition, parents, propositions_by_name, variable_sorts)
     if proof is not None:
         return proof
+    if len(parents) == 1:
+        parent_proposition = propositions_by_name.get(parents[0])
+        parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+        target_expr = parse_expr(proposition)
+        if parent_expr is not None and target_expr is not None:
+            proof = raw_direct_classical_double_negation_proof(
+                ambient_basic_logic_expr(parent_expr),
+                ambient_basic_logic_expr(target_expr),
+                raw_tptp_claim_name(parents[0]),
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
     proof = raw_tptp_dne_implication_parent_proof(proposition, parents, propositions_by_name, variable_sorts)
     if proof is not None:
         return proof
