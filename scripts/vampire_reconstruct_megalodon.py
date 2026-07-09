@@ -39318,6 +39318,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             declared_sort is None or equivalent_sorts(declared_sort[1], source_sorts.get(declared_name))
         ):
             continue
+        if declared_name is not None and declared_name in local_set_definition_names:
+            continue
         if declared_name is not None and declared_name in declared_names:
             continue
         if declared_name is not None:
@@ -39373,6 +39375,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if declared_name is not None and declared_name in source_names and (
             declared_sort is None or equivalent_sorts(declared_sort[1], source_sorts.get(declared_name))
         ):
+            continue
+        if declared_name is not None and declared_name in local_set_definition_names:
             continue
         if declared_name is not None and declared_name in declared_names:
             continue
