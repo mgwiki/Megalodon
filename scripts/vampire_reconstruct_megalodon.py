@@ -2018,6 +2018,8 @@ def raw_tptp_step_negated_conjecture_force(
     formula_role: str | None,
     direct_exported_proposition: bool,
 ) -> bool:
+    if rule == "negated conjecture" and formula_role == "conjecture":
+        return True
     return formula_role == "conjecture" and rule != "negated conjecture" and not direct_exported_proposition
 
 
