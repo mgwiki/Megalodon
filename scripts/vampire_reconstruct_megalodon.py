@@ -5146,6 +5146,7 @@ BOOLEAN_EXT_HELPERS = [
     "Axiom vampire_funext_set_set: forall vmf:set->set, forall vmg:set->set, (forall vmx:set, vmf vmx = vmg vmx) -> forall vmq:(set->set)->prop, vmq vmf -> vmq vmg.",
     "Axiom vampire_funext_set_set_prop: forall vmf:set->set->prop, forall vmg:set->set->prop, (forall vmx:set, forall vmy:set, vampire_eq_prop (vmf vmx vmy) (vmg vmx vmy)) -> forall vmq:(set->set->prop)->prop, vmq vmf -> vmq vmg.",
     "Axiom vampire_funext_set_set_set: forall vmf:set->set->set, forall vmg:set->set->set, (forall vmx:set, forall vmy:set, vmf vmx vmy = vmg vmx vmy) -> forall vmq:(set->set->set)->prop, vmq vmf -> vmq vmg.",
+    "Axiom vampire_funext_set_setprop_prop: forall vmf:set->(set->prop)->prop, forall vmg:set->(set->prop)->prop, (forall vmx:set, forall vmy:set->prop, vampire_eq_prop (vmf vmx vmy) (vmg vmx vmy)) -> forall vmq:(set->(set->prop)->prop)->prop, vmq vmf -> vmq vmg.",
     "Axiom vampire_funext_set_setfun_set: forall vmf:set->(set->set)->set, forall vmg:set->(set->set)->set, (forall vmx:set, forall vmy:set->set, vmf vmx vmy = vmg vmx vmy) -> forall vmq:(set->(set->set)->set)->prop, vmq vmf -> vmq vmg.",
 ]
 
@@ -7638,6 +7639,41 @@ def single_replacement_contexts(
     found: list[tuple[Expr, Expr]] = []
     for index, arg in enumerate(expr.args):
         for replaced_arg, context_arg in single_replacement_contexts(arg, needle, replacement, hole, limit):
+            replaced_args = list(expr.args)
+            replaced_args[index] = replaced_arg
+            context_args = list(expr.args)
+            context_args[index] = context_arg
+            found.append(
+                (
+                    Expr(expr.kind, value=expr.value, args=tuple(replaced_args), sort=expr.sort),
+                    Expr(expr.kind, value=expr.value, args=tuple(context_args), sort=expr.sort),
+                )
+            )
+            if len(found) >= limit:
+                return found
+    return found
+
+
+def single_replacement_contexts_mod_alpha(
+    expr: Expr,
+    needle: Expr,
+    replacement: Expr,
+    hole: Expr,
+    limit: int = 8,
+) -> list[tuple[Expr, Expr]]:
+    if expr_same_mod_alpha(expr, needle):
+        return [(replacement, hole)]
+    if not expr.args:
+        return []
+    if (
+        expr.kind in {"forall", "lambda"}
+        and needle.kind == "var"
+        and expr.value == needle.value
+    ):
+        return []
+    found: list[tuple[Expr, Expr]] = []
+    for index, arg in enumerate(expr.args):
+        for replaced_arg, context_arg in single_replacement_contexts_mod_alpha(arg, needle, replacement, hole, limit):
             replaced_args = list(expr.args)
             replaced_args[index] = replaced_arg
             context_args = list(expr.args)
@@ -28328,11 +28364,20 @@ def raw_equality_rewrite_clause_steps(
         (equality_left, equality_right, equality_proof),
         (equality_right, equality_left, raw_eq_symmetry_proof(equality_proof, equality_left, equality_sort)),
     ):
-        if expr_text(old) not in expr_text(source):
+        allow_alpha_context = "->" in equality_sort or old.kind == "lambda" or new.kind == "lambda"
+        if expr_text(old) not in expr_text(source) and not (allow_alpha_context and any(
+            expr_same_mod_alpha(subterm, old)
+            for subterm in expr_subterms(source, limit=128)
+        )):
             continue
         hole_name = fresh_identifier("zz", expr_text(source), expr_text(old), expr_text(new))
         hole = Expr("var", value=hole_name)
-        for replaced, context in single_replacement_contexts(source, old, new, hole, limit=16):
+        replacement_contexts = [
+            *single_replacement_contexts(source, old, new, hole, limit=16),
+        ]
+        if allow_alpha_context:
+            replacement_contexts.extend(single_replacement_contexts_mod_alpha(source, old, new, hole, limit=16))
+        for replaced, context in replacement_contexts:
             key = expr_key(replaced)
             if key in seen:
                 continue
@@ -30144,6 +30189,8 @@ def raw_pointwise_set_function_equality(
         helper = "vampire_funext_set_prop" if prop_valued else "vampire_funext_set_set"
     elif binder_sorts == ["set", "set"]:
         helper = "vampire_funext_set_set_prop" if prop_valued else "vampire_funext_set_set_set"
+    elif binder_sorts == ["set", "set->prop"] and prop_valued:
+        helper = "vampire_funext_set_setprop_prop"
     elif binder_sorts == ["set", "set->set"]:
         helper = "vampire_funext_set_setfun_set"
     else:
