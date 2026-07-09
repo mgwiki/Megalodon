@@ -33128,6 +33128,93 @@ def raw_quantified_equality_unit_context_superposition_proof(
     return None
 
 
+def raw_negative_reflexive_equality_parent_contradiction_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if not source_binders or len(source_binders) > 4 or len(target_binders) > 8:
+        return None
+    source_premises, source_conclusion = split_arrows(source_body)
+    target_premises, target_conclusion = split_arrows(target_body)
+    if (
+        len(source_premises) != 1
+        or len(target_premises) != 1
+        or not false_eliminator_expr(source_conclusion)
+        or not false_eliminator_expr(target_conclusion)
+    ):
+        return None
+    target_premise = target_premises[0]
+    target_sides = equality_like_sides(target_premise)
+    if target_sides is None:
+        return None
+    local_sorts = {**variable_sorts, **{name: sort for name, sort in target_binders}}
+    candidate_terms: dict[str, list[Expr]] = {sort: [] for _name, sort in source_binders}
+    seen_by_sort: dict[str, set[str]] = {sort: set() for _name, sort in source_binders}
+
+    def add_candidate(term: Expr, preferred_sort: str | None = None) -> None:
+        term_sort = preferred_sort or expr_sort(term, local_sorts)
+        for _name, binder_sort in source_binders:
+            if not equivalent_sorts(binder_sort, term_sort):
+                continue
+            key = expr_key(term)
+            if key in seen_by_sort[binder_sort]:
+                continue
+            seen_by_sort[binder_sort].add(key)
+            candidate_terms[binder_sort].append(term)
+
+    for name, sort in target_binders:
+        add_candidate(Expr("var", value=name), sort)
+    for side in target_sides:
+        add_candidate(side, "set")
+    for term in expr_subterms(target_premise, limit=64):
+        add_candidate(term)
+    for sort, terms in candidate_terms.items():
+        terms.sort(key=candidate_term_priority)
+        candidate_terms[sort] = terms[:12]
+    if any(not candidate_terms[sort] for _name, sort in source_binders):
+        return None
+
+    def beta_reflexive_equality(expr: Expr) -> bool:
+        normalized = beta_normalize_expr(flatten_applications(expr))
+        sides = equality_like_sides(normalized)
+        if sides is None:
+            return False
+        left = beta_normalize_expr(flatten_applications(sides[0]))
+        right = beta_normalize_expr(flatten_applications(sides[1]))
+        return expr_same_mod_alpha(left, right)
+
+    source_binder_names = {name for name, _sort in source_binders}
+    candidate_lists = [candidate_terms[sort] for _name, sort in source_binders]
+    attempts = 0
+    for values in itertools.product(*candidate_lists):
+        attempts += 1
+        if attempts > 2048 or proof_search_timed_out():
+            return None
+        subst = {
+            name: value
+            for (name, _sort), value in zip(source_binders, values)
+        }
+        if any(expr_variables(value) & source_binder_names for value in subst.values()):
+            continue
+        instantiated_premise = substitute_expr(source_premises[0], subst)
+        if not beta_reflexive_equality(instantiated_premise):
+            continue
+        false_proof = source_proof
+        for name, _sort in source_binders:
+            false_proof = f"({proof_head(false_proof)} {proof_arg_text(subst[name])})"
+        false_proof = f"({proof_head(false_proof)} (fun Q H => H))"
+        proof = f"(fun Htarget :{proof_arg_text(target_premise)} => {proof_term_text(false_proof)})"
+        for name, sort in reversed(target_binders):
+            proof = f"(fun {name} :{sort} => {proof})"
+        if not raw_tptp_replay_proof_is_unsafe("superposition", expr_text(target), proof):
+            return proof
+    return None
+
+
 def raw_tptp_superposition_proof(
     proposition: str,
     parents: list[str],
@@ -33164,6 +33251,15 @@ def raw_tptp_superposition_proof(
                 early_parent_exprs.append((parent_expr, raw_tptp_canonical_parent_proof_name(parent, propositions_by_name)))
         early_target_expr = parse_expr(proposition)
         if early_target_expr is not None and len(early_parent_exprs) == 2:
+            for parent_expr, parent_proof in early_parent_exprs:
+                proof = raw_negative_reflexive_equality_parent_contradiction_proof(
+                    parent_expr,
+                    early_target_expr,
+                    parent_proof,
+                    variable_sorts,
+                )
+                if proof is not None:
+                    return proof
             positive_orders = [(0, 1), (1, 0)]
 
             def positive_order_priority(order: tuple[int, int]) -> tuple[int, int]:
