@@ -690,8 +690,66 @@ def vampire_step_contexts(proof_text: str | None) -> dict[str, str]:
     return contexts
 
 
+def vampire_step_exported_lambda_capture_contexts(proof_text: str | None) -> dict[str, str]:
+    if proof_text is None:
+        return {}
+    contexts: dict[str, str] = {}
+    for line in proof_text.splitlines():
+        match = MEGALODON_STEP_EXTRA_RE.match(line.strip())
+        if match is None:
+            continue
+        kind = json.loads(f'"{match.group("kind")}"')
+        if kind not in {"rewrite", "two_literal_rewrite"}:
+            continue
+        try:
+            fields = json.loads(f'[{match.group("fields")}]')
+        except json.JSONDecodeError:
+            continue
+        joined = "\n".join(str(field) for field in fields)
+        if "vLAM" not in joined and "^[Y" not in joined:
+            continue
+        has_synthetic_db = RAW_TPTP_SYNTHETIC_DB_RE.search(joined) is not None
+        has_exported_substitution = "parent_" in joined and "_substitution=" in joined
+        has_exported_lambda = "_lambda_" in joined or "_lambda_count=" in joined
+        if not (has_synthetic_db or (has_exported_substitution and has_exported_lambda)):
+            continue
+        step = "S" + match.group("id")
+        contexts[step] = (
+            "exported lambda/synthetic-db substitution: Vampire's metadata uses "
+            "de-Bruijn-style lambda opening here; replay must preserve that "
+            "capturing substitution instead of treating dbN as an ordinary "
+            "Megalodon constant."
+        )
+    return contexts
+
+
+RAW_TPTP_EXPORTED_LAMBDA_CAPTURE_COMMENT = (
+    "replay blocker: exported lambda/synthetic-db substitution: Vampire's metadata "
+    "uses de-Bruijn-style lambda opening here; replay must preserve that capturing "
+    "substitution instead of treating dbN as an ordinary Megalodon constant."
+)
+
+
+def raw_tptp_replay_step_has_exported_lambda_capture(replay_step: MegalodonReplayStep | None) -> bool:
+    if replay_step is None:
+        return False
+    for kind, fields in replay_step.extras:
+        if kind not in {"rewrite", "two_literal_rewrite"}:
+            continue
+        joined = "\n".join(fields)
+        if "vLAM" not in joined and "^[Y" not in joined:
+            continue
+        has_synthetic_db = RAW_TPTP_SYNTHETIC_DB_RE.search(joined) is not None
+        has_exported_substitution = "parent_" in joined and "_substitution=" in joined
+        has_exported_lambda = "_lambda_" in joined or "_lambda_count=" in joined
+        if has_synthetic_db or (has_exported_substitution and has_exported_lambda):
+            return True
+    return False
+
+
 def annotate_remaining_admits(lines: list[str], proof_text: str | None) -> list[str]:
     contexts = vampire_step_contexts(proof_text)
+    lambda_capture_contexts = vampire_step_exported_lambda_capture_contexts(proof_text)
     theorem = None
     for line in lines:
         theorem_match = proposition_after_colon(line, "Theorem ")
@@ -702,6 +760,7 @@ def annotate_remaining_admits(lines: list[str], proof_text: str | None) -> list[
     for index, line in enumerate(lines):
         claim = proposition_after_colon(line, "claim ")
         if claim is not None and index + 1 < len(lines) and lines[index + 1] == "{ admit. }":
+            step_name = claim[0][2:] if claim[0].startswith("R_S") else claim[0]
             already_annotated = any(
                 cursor >= 0
                 and lines[cursor].startswith("// ")
@@ -715,9 +774,12 @@ def annotate_remaining_admits(lines: list[str], proof_text: str | None) -> list[
             if already_annotated:
                 result.append(line)
                 continue
-            context = contexts.get(claim[0])
+            context = contexts.get(step_name)
+            lambda_capture_context = lambda_capture_contexts.get(step_name)
             if context is not None:
-                result.append(f"// vampire step {claim[0]}: {comment_text(context)}")
+                result.append(f"// vampire step {step_name}: {comment_text(context)}")
+                if lambda_capture_context is not None:
+                    result.append(f"// replay blocker: {comment_text(lambda_capture_context)}")
                 if "negated_conjecture" in context and claim[1].endswith("-> vampire_false"):
                     result.append(
                         "// refutation boundary: Vampire proves this negated-conjecture edge; "
@@ -739,6 +801,8 @@ def annotate_remaining_admits(lines: list[str], proof_text: str | None) -> list[
                         "// conjecture anchor: this is the original Megalodon obligation used "
                         "as the theorem proof target."
                     )
+            elif lambda_capture_context is not None:
+                result.append(f"// replay blocker: {comment_text(lambda_capture_context)}")
             elif theorem is not None and canonical_proposition(claim[1]) == canonical_proposition(theorem):
                 result.append(
                     "// conjecture anchor: this is the original Megalodon obligation used "
@@ -30115,7 +30179,24 @@ def raw_tptp_exported_guarded_demodulation_rewrite_proof(
             equality_branch = prove_equality_branch(literal, literal_proof)
             if equality_branch is not None:
                 return equality_branch
-            return raw_literal_to_clause_proof(literal, target_body, literal_proof, target_literals, ())
+            direct = raw_literal_to_clause_proof(literal, target_body, literal_proof, target_literals, ())
+            if direct is not None:
+                return direct
+            for target_index, target_literal in enumerate(target_literals):
+                transformed = raw_clause_transform_proof(literal, target_literal, literal_proof)
+                if transformed is None:
+                    transformed = raw_deep_formula_transform_proof(
+                        literal,
+                        target_literal,
+                        literal_proof,
+                        local_sorts,
+                    )
+                if transformed is None:
+                    continue
+                intro = raw_or_intro_literal_at(target_body, target_index, transformed)
+                if intro is not None:
+                    return intro
+            return None
 
         def prove_clause_branch(clause: Expr, clause_proof: str) -> str | None:
             parts = raw_or_parts(clause)
@@ -41861,6 +41942,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     variable_sorts,
                 )
             if bridge_block is None:
+                if raw_tptp_replay_step_has_exported_lambda_capture(step_info):
+                    lines.append(f"// {RAW_TPTP_EXPORTED_LAMBDA_CAPTURE_COMMENT}")
                 lines.append("{ admit. }")
             else:
                 lines.extend(bridge_block)
