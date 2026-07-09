@@ -41613,6 +41613,15 @@ def raw_tptp_replay_proof(
     proof = raw_prop_eq_middle_clause_proof(proposition)
     if proof is not None:
         return proof
+    if rule == "superposition":
+        proof = raw_prop_guarded_equality_superposition_proof(
+            proposition,
+            parents,
+            propositions_by_name,
+            variable_sorts,
+        )
+        if proof is not None:
+            return proof
     proof = raw_tptp_parent_complement_false_proof(proposition, parents, propositions_by_name, variable_sorts)
     if proof is not None:
         return proof
@@ -41926,6 +41935,102 @@ def raw_tptp_relaxed_superposition_sorts(variable_sorts: dict[str, str], text: s
         if name.startswith(("sK", "sF", "db", "vampire_")):
             relaxed[name] = sort
     return relaxed
+
+
+def raw_prop_guarded_equality_superposition_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parents) != 2:
+        return None
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    target_binders, target_body = collect_foralls(target)
+    if len(target_binders) != 1 or target_binders[0][1] != "prop":
+        return None
+    target_var = Expr("var", value=target_binders[0][0])
+    target_parts = raw_or_parts(target_body)
+    if target_parts is None:
+        return None
+    target_main, target_guard_clause = target_parts
+    target_guard_parts = raw_or_parts(target_guard_clause)
+    if (
+        target_guard_parts is None
+        or not expr_same_mod_alpha(target_guard_parts[0], target_var)
+        or not expr_same_mod_alpha(target_guard_parts[1], target_var)
+    ):
+        return None
+
+    parsed_parents: list[tuple[str, Expr, str, Expr, Expr]] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+        if parent_expr is None:
+            return None
+        binders, body = collect_foralls(parent_expr)
+        if len(binders) != 1 or binders[0][1] != "prop":
+            return None
+        parts = raw_or_parts(body)
+        if parts is None:
+            return None
+        main = substitute_expr(parts[0], {binders[0][0]: target_var})
+        guard = substitute_expr(parts[1], {binders[0][0]: target_var})
+        if not expr_same_mod_alpha(guard, target_var):
+            return None
+        parsed_parents.append((parent, parent_expr, raw_tptp_claim_name(parent), main, guard))
+
+    def guard_intro(guard_proof: str) -> str:
+        return (
+            f"(fun P Hleft Hright => Hright "
+            f"((fun P2 Hleft2 Hright2 => Hleft2 {proof_term_text(guard_proof)})))"
+        )
+
+    def main_intro(main_proof: str) -> str:
+        return f"(fun P Hleft Hright => Hleft {proof_term_text(main_proof)})"
+
+    for predicate_parent, equality_parent in ((parsed_parents[0], parsed_parents[1]), (parsed_parents[1], parsed_parents[0])):
+        _pred_parent_name, _pred_parent_expr, pred_parent_proof, pred_main, _pred_guard = predicate_parent
+        _eq_parent_name, _eq_parent_expr, eq_parent_proof, eq_main, _eq_guard = equality_parent
+        equality_sides = equality_like_sides(eq_main)
+        if equality_sides is None:
+            continue
+        for source_side, target_side, reverse in (
+            (equality_sides[0], equality_sides[1], False),
+            (equality_sides[1], equality_sides[0], True),
+        ):
+            replaced, changed = replace_expr(pred_main, source_side, target_side)
+            if not changed or not expr_same_mod_alpha(replaced, target_main):
+                continue
+            hole_name = fresh_identifier("zz", expr_text(target_main), expr_text(source_side), expr_text(target_side))
+            context, context_changed = replace_expr(target_main, target_side, Expr("var", value=hole_name))
+            if not context_changed:
+                continue
+            equality_sort = raw_equality_transport_sort(source_side, target_side, variable_sorts)
+            equality_instance = "Heq"
+            if reverse:
+                equality_instance = raw_eq_symmetry_proof(equality_instance, target_side, equality_sort)
+            transported = (
+                f"{proof_term_text(equality_instance)} "
+                f"(fun {hole_name} :{equality_sort} => {expr_text(context)}) "
+                f"Hpred"
+            )
+            pred_case = (
+                f"(({proof_head(pred_parent_proof)} {target_binders[0][0]}) "
+                f"{proof_arg_text(target_body)} "
+                f"(fun Hpred => {main_intro(transported)}) "
+                f"(fun HguardPred => {guard_intro('HguardPred')}))"
+            )
+            body_proof = (
+                f"(({proof_head(eq_parent_proof)} {target_binders[0][0]}) "
+                f"{proof_arg_text(target_body)} "
+                f"(fun Heq => {pred_case}) "
+                f"(fun HguardEq => {guard_intro('HguardEq')}))"
+            )
+            return f"(fun {target_binders[0][0]} :prop => {body_proof})"
+    return None
 
 
 def raw_prop_eq_middle_clause_proof(proposition: str) -> str | None:
