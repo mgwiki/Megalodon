@@ -2120,6 +2120,79 @@ def raw_tptp_step_should_apply_negated_conjecture_interpretation(
     return rule == "negated conjecture" or not direct_exported_proposition
 
 
+def raw_tptp_two_literal_rewrite_substitution_proposition(substitutions: tuple[str, ...]) -> str | None:
+    if len(substitutions) != 2:
+        return None
+    clauses = [parse_expr(proposition) for proposition in substitutions]
+    if any(clause is None for clause in clauses):
+        return None
+    assert clauses[0] is not None and clauses[1] is not None
+    first_literals = raw_clause_literals(clauses[0])
+    second_literals = raw_clause_literals(clauses[1])
+    if len(first_literals) > 8 or len(second_literals) > 8:
+        return None
+
+    def equality_orientations(literal: Expr) -> list[tuple[Expr, Expr, str]]:
+        sides = equality_like_sides(literal)
+        if sides is None:
+            return []
+        sort = "prop" if (
+            literal.kind == "app"
+            and literal.args
+            and literal.args[0].kind == "var"
+            and literal.args[0].value == "vampire_eq_prop"
+        ) else "set"
+        return [(sides[0], sides[1], sort), (sides[1], sides[0], sort)]
+
+    for first_index, first_literal in enumerate(first_literals):
+        for first_outer, first_shared, first_sort in equality_orientations(first_literal):
+            for second_index, second_literal in enumerate(second_literals):
+                for second_outer, second_shared, second_sort in equality_orientations(second_literal):
+                    if first_sort != second_sort:
+                        continue
+                    if not expr_same_mod_alpha(
+                        beta_normalize_expr(first_shared),
+                        beta_normalize_expr(second_shared),
+                    ):
+                        continue
+                    equality = raw_equality_goal_expr(first_outer, second_outer, first_sort)
+                    literals = [
+                        equality,
+                        *(literal for index, literal in enumerate(first_literals) if index != first_index),
+                        *(literal for index, literal in enumerate(second_literals) if index != second_index),
+                    ]
+                    clause = raw_clause_from_literals(literals)
+                    if clause is not None:
+                        return expr_text(clause)
+    return None
+
+
+def raw_tptp_rewrite_substitution_proposition(
+    substitutions: tuple[str, ...],
+    step_extras: list[tuple[str, tuple[str, ...]]],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if not substitutions:
+        return None
+    replay_stub = MegalodonReplayStep("", (), "", extras=tuple(step_extras))
+    for fields in megalodon_replay_extra_fields(replay_stub, "rewrite"):
+        lambda_sort_hints = raw_tptp_extra_lambda_sort_hints(fields, "main_parent", "conclusion", "step")
+        redex = raw_tptp_replay_extra_expr(fields, "redex", variable_sorts, lambda_sort_hints)
+        replacement = raw_tptp_replay_extra_expr(fields, "replacement", variable_sorts, lambda_sort_hints)
+        if replacement is None:
+            replacement = raw_tptp_replay_extra_expr(fields, "rule_rhs", variable_sorts, lambda_sort_hints)
+        if redex is None or replacement is None:
+            continue
+        for source_text in substitutions:
+            source = parse_expr(source_text)
+            if source is None:
+                continue
+            replaced, changed = replace_expr(source, redex, replacement)
+            if changed:
+                return expr_text(replaced)
+    return None
+
+
 def megalodon_replay_steps(
     proof_text: str | None,
     proof: Path | None,
@@ -2398,6 +2471,33 @@ def megalodon_replay_steps(
                 else surface_direct_step_proposition(target, {**variable_sorts, **step_sorts})
             )
             break
+
+    for step, step_extras in extras.items():
+        if step in derived_propositions or step in direct_propositions or step not in placeholder_steps:
+            continue
+        details = step_details.get(step)
+        if details is None or details[0] not in {"forward demodulation", "backward demodulation"}:
+            continue
+        _rule, _parents, step_sorts = details
+        proposition = raw_tptp_rewrite_substitution_proposition(
+            substitutions.get(step, ()),
+            step_extras,
+            {**variable_sorts, **step_sorts},
+        )
+        if proposition is not None:
+            derived_propositions[step] = proposition
+
+    for step, step_extras in extras.items():
+        if step in derived_propositions or step in direct_propositions or step not in placeholder_steps:
+            continue
+        details = step_details.get(step)
+        if details is None or details[0] not in {"superposition", "equality factoring"}:
+            continue
+        if not any(kind == "two_literal_rewrite" for kind, _fields in step_extras):
+            continue
+        proposition = raw_tptp_two_literal_rewrite_substitution_proposition(substitutions.get(step, ()))
+        if proposition is not None:
+            derived_propositions[step] = proposition
 
     for step, (rule, parents, step_sorts) in step_details.items():
         if step in steps:
