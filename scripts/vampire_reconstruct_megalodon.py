@@ -18796,6 +18796,66 @@ def raw_reflexivity_proof_for_proposition(
     return raw_reflexivity_proof_for_expr(expr, local_definition_names)
 
 
+def expand_local_definition_expr(
+    expr: Expr,
+    definitions: dict[str, tuple[str, str]],
+    depth: int = 0,
+) -> Expr | None:
+    if depth > 32:
+        return None
+    if expr.kind == "var" and expr.value in definitions:
+        body = parse_expr(definitions[expr.value][1])
+        if body is None:
+            return expr
+        return expand_local_definition_expr(body, definitions, depth + 1)
+    if not expr.args:
+        return expr
+    expanded_args: list[Expr] = []
+    changed = False
+    for arg in expr.args:
+        expanded = expand_local_definition_expr(arg, definitions, depth + 1)
+        if expanded is None:
+            return None
+        expanded_args.append(expanded)
+        changed = changed or expanded != arg
+    if not changed:
+        return expr
+    return Expr(expr.kind, value=expr.value, sort=expr.sort, args=tuple(expanded_args))
+
+
+def raw_local_definition_reflexivity_proof_for_expr(
+    expr: Expr,
+    definitions: dict[str, tuple[str, str]],
+) -> str | None:
+    if expr.kind == "forall" and expr.value is not None and expr.sort is not None and expr.args:
+        body = raw_local_definition_reflexivity_proof_for_expr(expr.args[0], definitions)
+        if body is None:
+            return None
+        return f"(fun {expr.value} :{expr.sort} => {body})"
+    sides = equality_like_sides(expr)
+    if sides is None:
+        return None
+    left = expand_local_definition_expr(sides[0], definitions)
+    right = expand_local_definition_expr(sides[1], definitions)
+    if left is None or right is None:
+        return None
+    if expr_same_mod_alpha(beta_normalize_expr(left), beta_normalize_expr(right)):
+        return "(fun Q H => H)"
+    return None
+
+
+def raw_local_definition_reflexivity_proof_for_proposition(
+    proposition: str,
+    definitions: dict[str, tuple[str, str]],
+) -> str | None:
+    if not definitions:
+        return None
+    expr = parse_expr(proposition)
+    if expr is None:
+        return None
+    return raw_local_definition_reflexivity_proof_for_expr(expr, definitions)
+
+
 @dataclass(frozen=True)
 class RawSplitRewrite:
     split: Expr
@@ -42709,6 +42769,41 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             early_source_declarations.append(declaration)
         else:
             later_source_declarations.append(declaration)
+
+    known_raw_propositions: dict[str, str] = {}
+    axiom_claim_instantiations: dict[str, str] = {}
+    local_skolem_axiom_aliases: list[tuple[str, str, str]] = []
+
+    def remember_raw_proposition(proposition: str, proof_name: str) -> None:
+        known_raw_propositions.setdefault(canonical_proposition(proposition), proof_name)
+
+    def instantiate_global_axiom_proofs(proof: str) -> str:
+        for claim_name, instantiated in sorted(axiom_claim_instantiations.items(), key=lambda item: -len(item[0])):
+            proof = re.sub(
+                rf"(?<![A-Za-z0-9_']){re.escape(claim_name)}(?![A-Za-z0-9_'])",
+                instantiated,
+                proof,
+            )
+        return proof
+
+    def emitted_reflexive_source_axiom(declaration: str) -> bool:
+        axiom = proposition_after_colon(declaration, "Axiom ")
+        if axiom is None:
+            return False
+        axiom_name, proposition = axiom
+        proof = raw_local_definition_reflexivity_proof_for_proposition(
+            proposition,
+            local_set_definitions,
+        )
+        if proof is None:
+            return False
+        lines.append(f"Theorem {axiom_name}: {proposition}.")
+        lines.append(f"exact {proof}.")
+        lines.append("Qed.")
+        declared_names.add(axiom_name)
+        remember_raw_proposition(proposition, axiom_name)
+        return True
+
     for declaration in early_source_declarations:
         if declaration.startswith("Infix "):
             if declaration in seen_infixes:
@@ -42722,12 +42817,18 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             declared_sort is None or equivalent_sorts(declared_sort[1], source_sorts.get(declared_name))
         ):
             continue
-        if declared_name is not None and declared_name in source_local_set_names:
+        if (
+            declared_name is not None
+            and declared_name in source_local_set_names
+            and not (declaration.startswith("Definition ") and declared_name in local_set_definition_names)
+        ):
             continue
         if declared_name is not None and declared_name in declared_names:
             continue
         if declared_name is not None:
             declared_names.add(declared_name)
+        if emitted_reflexive_source_axiom(declaration):
+            continue
         lines.append(declaration)
     for name, sort in sorted(variable_sorts.items()):
         if sort == "SType":
@@ -42757,8 +42858,6 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         lines.append(f"Variable {name}:{sort}.")
         declared_names.add(name)
     for name, (sort, body) in local_set_definitions.items():
-        if name in source_local_set_names:
-            continue
         if name in declared_names:
             continue
         lines.append(f"Definition {name} : {sort} := {body}.")
@@ -42788,23 +42887,9 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             continue
         if declared_name is not None:
             declared_names.add(declared_name)
+        if emitted_reflexive_source_axiom(declaration):
+            continue
         lines.append(declaration)
-
-    known_raw_propositions: dict[str, str] = {}
-    axiom_claim_instantiations: dict[str, str] = {}
-    local_skolem_axiom_aliases: list[tuple[str, str, str]] = []
-
-    def remember_raw_proposition(proposition: str, proof_name: str) -> None:
-        known_raw_propositions.setdefault(canonical_proposition(proposition), proof_name)
-
-    def instantiate_global_axiom_proofs(proof: str) -> str:
-        for claim_name, instantiated in sorted(axiom_claim_instantiations.items(), key=lambda item: -len(item[0])):
-            proof = re.sub(
-                rf"(?<![A-Za-z0-9_']){re.escape(claim_name)}(?![A-Za-z0-9_'])",
-                instantiated,
-                proof,
-            )
-        return proof
 
     seen_claims: set[str] = set()
     for name, role, proposition, rule, source_name, parents, trusted_definition in entries:
@@ -42828,6 +42913,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             proposition,
             local_set_definition_names,
         )
+        if reflexivity_proof is None:
+            reflexivity_proof = raw_local_definition_reflexivity_proof_for_proposition(
+                proposition,
+                local_set_definitions,
+            )
         if reflexivity_proof is not None:
             lines.append(f"Theorem {claim_name}: {proposition}.")
             lines.append(f"exact {reflexivity_proof}.")
