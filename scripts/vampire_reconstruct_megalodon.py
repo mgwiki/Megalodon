@@ -2246,6 +2246,111 @@ def raw_tptp_two_literal_rewrite_substitution_proposition(
         ) else "set"
         return [(sides[0], sides[1], sort), (sides[1], sides[0], sort)]
 
+    if step_extras is not None:
+        local_sorts = variable_sorts or {}
+        replay_stub = MegalodonReplayStep("", (), "", extras=tuple(step_extras))
+        for fields in megalodon_replay_extra_fields(replay_stub, "two_literal_rewrite"):
+            try:
+                selected_parent_index = int(fields.get("selected_parent_index", "-1"))
+                selected_literal_index = int(fields.get("selected_literal_index", "-1"))
+                other_parent_index = int(fields.get("other_parent_index", str(1 - selected_parent_index)))
+                other_literal_index = int(fields.get("other_literal_index", "-1"))
+            except ValueError:
+                continue
+            if selected_parent_index not in range(len(clauses)) or other_parent_index not in range(len(clauses)):
+                continue
+            selected_parent_literals = raw_clause_literals(clauses[selected_parent_index])
+            other_parent_literals = raw_clause_literals(clauses[other_parent_index])
+            if selected_literal_index not in range(len(selected_parent_literals)):
+                continue
+            if other_literal_index not in range(len(other_parent_literals)):
+                continue
+            lambda_sort_hints = raw_tptp_extra_lambda_sort_hints(
+                fields,
+                "selected_parent",
+                "other_parent",
+                "conclusion",
+                "step",
+            )
+            proposition = raw_tptp_replay_extra_expr(
+                fields,
+                "selected_substituted_proposition",
+                local_sorts,
+                lambda_sort_hints,
+            )
+            if proposition is None:
+                proposition = selected_parent_literals[selected_literal_index]
+            if negative_core(proposition) is None:
+                continue
+            replaced = proposition
+            changed = False
+            for index in range(16):
+                source_key = f"selected_parent_lambda_{index}"
+                target_key = f"conclusion_lambda_{index}"
+                if source_key not in fields or target_key not in fields:
+                    continue
+                source_lambda = raw_tptp_replay_extra_expr(fields, source_key, local_sorts, lambda_sort_hints)
+                target_lambda = raw_tptp_replay_extra_expr(fields, target_key, local_sorts, lambda_sort_hints)
+                if source_lambda is None or target_lambda is None:
+                    continue
+                if expr_same_mod_alpha(source_lambda, target_lambda):
+                    continue
+                exact_replaced, exact_changed = replace_expr(replaced, source_lambda, target_lambda)
+                if exact_changed:
+                    replaced = exact_replaced
+                    changed = True
+                    continue
+                hole = Expr("var", value=fresh_identifier("zz", expr_text(replaced), expr_text(source_lambda)))
+                contexts = single_replacement_contexts_mod_alpha(
+                    replaced,
+                    source_lambda,
+                    target_lambda,
+                    hole,
+                    limit=1,
+                )
+                if contexts:
+                    replaced = contexts[0][0]
+                    changed = True
+            other_literal = raw_tptp_replay_extra_expr(
+                fields,
+                "other_substituted_proposition",
+                local_sorts,
+                lambda_sort_hints,
+            )
+            if other_literal is None:
+                other_literal = other_parent_literals[other_literal_index]
+            candidates: list[tuple[Expr, bool]] = []
+            for left, right, _sort in equality_orientations(other_literal):
+                exact_replaced, exact_changed = replace_expr(replaced, left, right)
+                if exact_changed:
+                    candidates.append((exact_replaced, True))
+                hole = Expr("var", value=fresh_identifier("zz", expr_text(replaced), expr_text(left)))
+                contexts = single_replacement_contexts_mod_alpha(replaced, left, right, hole, limit=1)
+                if contexts:
+                    candidates.append((contexts[0][0], True))
+            candidates.append((replaced, changed))
+            selected_residuals = [
+                literal
+                for index, literal in enumerate(selected_parent_literals)
+                if index != selected_literal_index
+            ]
+            other_residuals = [
+                literal
+                for index, literal in enumerate(other_parent_literals)
+                if index != other_literal_index
+            ]
+            seen_candidates: set[str] = set()
+            for candidate, candidate_changed in candidates:
+                if not candidate_changed:
+                    continue
+                key = alpha_expr_key(candidate)
+                if key in seen_candidates:
+                    continue
+                seen_candidates.add(key)
+                clause = raw_clause_from_literals([candidate, *selected_residuals, *other_residuals])
+                if clause is not None:
+                    return expr_text(clause)
+
     for first_index, first_literal in enumerate(first_literals):
         for first_outer, first_shared, first_sort in negative_equality_orientations(first_literal):
             for second_index, second_literal in enumerate(second_literals):
@@ -2336,6 +2441,8 @@ def raw_tptp_two_literal_rewrite_substitution_proposition(
                 source_lambda = raw_tptp_replay_extra_expr(fields, source_key, local_sorts, lambda_sort_hints)
                 target_lambda = raw_tptp_replay_extra_expr(fields, target_key, local_sorts, lambda_sort_hints)
                 if source_lambda is None or target_lambda is None:
+                    continue
+                if expr_same_mod_alpha(source_lambda, target_lambda):
                     continue
                 hole = Expr("var", value=fresh_identifier("zz", expr_text(replaced), expr_text(source_lambda)))
                 contexts = single_replacement_contexts_mod_alpha(
@@ -2462,6 +2569,8 @@ def raw_tptp_rewrite_substitution_proposition(
                 source_lambda = raw_tptp_replay_extra_expr(fields, source_key, variable_sorts, lambda_sort_hints)
                 target_lambda = raw_tptp_replay_extra_expr(fields, target_key, variable_sorts, lambda_sort_hints)
                 if source_lambda is None or target_lambda is None:
+                    continue
+                if expr_same_mod_alpha(source_lambda, target_lambda):
                     continue
                 replaced, changed = replace_expr(source, source_lambda, target_lambda)
                 if changed:
