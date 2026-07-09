@@ -711,14 +711,21 @@ def vampire_step_exported_lambda_capture_contexts(proof_text: str | None) -> dic
         has_synthetic_db = RAW_TPTP_SYNTHETIC_DB_RE.search(joined) is not None
         has_exported_substitution = "parent_" in joined and "_substitution=" in joined
         has_exported_lambda = "_lambda_" in joined or "_lambda_count=" in joined
+        has_explicit_db_metadata = "_binder_db=" in joined or "_body_has_db=true" in joined
         if not (has_synthetic_db or (has_exported_substitution and has_exported_lambda)):
             continue
         step = "S" + match.group("id")
+        detail = (
+            " Vampire also exported explicit binder-db metadata for this lambda."
+            if has_explicit_db_metadata
+            else ""
+        )
         contexts[step] = (
             "exported lambda/synthetic-db substitution: Vampire's metadata uses "
             "de-Bruijn-style lambda opening here; replay must preserve that "
             "capturing substitution instead of treating dbN as an ordinary "
             "Megalodon constant."
+            + detail
         )
     return contexts
 
@@ -18103,6 +18110,10 @@ def summarize_claim_skeleton(path: Path) -> dict[str, object]:
     constructive_admits = 0
     constructive_non_anchor_admits = 0
     admitted_roles: dict[str, int] = {}
+    synthetic_db_claims = 0
+    synthetic_db_admits = 0
+    exported_lambda_db_metadata = 0
+    exported_lambda_capture_comments = 0
 
     def preceding_vampire_role(index: int) -> str | None:
         cursor = index - 2
@@ -18112,12 +18123,23 @@ def summarize_claim_skeleton(path: Path) -> dict[str, object]:
             cursor -= 1
         return None
 
+    for line in lines:
+        if "_binder_db=" in line or "_body_has_db=true" in line:
+            exported_lambda_db_metadata += 1
+        if line.startswith("// replay blocker: exported lambda/synthetic-db substitution"):
+            exported_lambda_capture_comments += 1
+        claim = proposition_after_colon(line, "claim ")
+        if claim is not None and RAW_TPTP_SYNTHETIC_DB_RE.search(claim[1]):
+            synthetic_db_claims += 1
+
     for index, line in enumerate(lines):
         if line != "{ admit. }" or index == 0:
             continue
         claim_admits += 1
         claim = proposition_after_colon(lines[index - 1], "claim ")
         proposition = claim[1] if claim is not None else ""
+        if RAW_TPTP_SYNTHETIC_DB_RE.search(proposition):
+            synthetic_db_admits += 1
         role = preceding_vampire_role(index)
         is_negated_conjecture = role is not None and "negated_conjecture" in role
         if role is not None:
@@ -18155,6 +18177,10 @@ def summarize_claim_skeleton(path: Path) -> dict[str, object]:
         "conjecture_anchor_admits": conjecture_anchor_admits,
         "false_claim_admits": false_admits,
         "admitted_vampire_roles": admitted_roles,
+        "synthetic_db_claims": synthetic_db_claims,
+        "synthetic_db_admits": synthetic_db_admits,
+        "exported_lambda_db_metadata": exported_lambda_db_metadata,
+        "exported_lambda_capture_comments": exported_lambda_capture_comments,
         "final_admits": sum(1 for line in lines if line == "admit."),
         "aby_commands": sum(1 for line in lines if ABY_COMMAND_RE.match(line) and not line.lstrip().startswith("//")),
         "filled_claims": sum(1 for line in lines if line.startswith("{ exact ")),
