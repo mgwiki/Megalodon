@@ -33834,43 +33834,77 @@ def raw_quantified_common_side_equality_composition_proof(
     ):
         return None
     target_sort_by_name = {name: sort for name, sort in target_binders}
+    source_target_sorts = {**variable_sorts, **target_sort_by_name}
 
     def instance_options(source: Expr, source_proof: str, target_side: Expr) -> list[tuple[Expr, str]]:
         source_binders, source_body = collect_foralls(source)
         source_sides = equality_like_sides(source_body)
         if source_sides is None or len(source_binders) > 6:
             return []
-        binder_names = {name for name, _sort in source_binders}
+        binder_sort_by_name = {name: sort for name, sort in source_binders}
+        binder_names = set(binder_sort_by_name)
         options: list[tuple[Expr, str]] = []
-        for match_index, common_index in ((0, 1), (1, 0)):
+
+        def initial_substitutions(pattern: Expr) -> list[dict[str, Expr]]:
             subst: dict[str, Expr] = {}
-            if not match_expr_with_target_binder_instantiation(source_sides[match_index], target_side, binder_names, subst):
-                continue
-            if any((expr_variables(value) & binder_names) - target_sort_by_name.keys() for value in subst.values()):
-                continue
-            ok = True
-            for name, sort in source_binders:
-                if name in subst:
-                    value = subst[name]
-                    if value.kind == "var" and value.value in target_sort_by_name and target_sort_by_name[value.value] != sort:
+            if match_expr_with_target_binder_instantiation(pattern, target_side, binder_names, subst):
+                return [subst]
+            if (
+                pattern.kind == "app"
+                and len(pattern.args) == 2
+                and pattern.args[0].kind == "var"
+                and pattern.args[0].value in binder_sort_by_name
+                and pattern.args[1].kind == "var"
+                and pattern.args[1].value in binder_sort_by_name
+            ):
+                function_name = pattern.args[0].value
+                argument_name = pattern.args[1].value
+                argument_sort = binder_sort_by_name[argument_name]
+                pieces = split_sort_arrows(binder_sort_by_name[function_name])
+                target_side_sort = expr_sort(target_side, source_target_sorts)
+                if (
+                    len(pieces) == 2
+                    and pieces[0] == argument_sort
+                    and target_sort_by_name.get(argument_name) == argument_sort
+                    and (target_side_sort is None or equivalent_sorts(target_side_sort, pieces[1]))
+                ):
+                    lambda_name = fresh_identifier("zz", expr_text(target_side), function_name, argument_name)
+                    lambda_body = substitute_expr(target_side, {argument_name: Expr("var", value=lambda_name)})
+                    return [
+                        {
+                            function_name: Expr("lambda", value=lambda_name, sort=argument_sort, args=(lambda_body,)),
+                            argument_name: Expr("var", value=argument_name),
+                        }
+                    ]
+            return []
+
+        for match_index, common_index in ((0, 1), (1, 0)):
+            for subst in initial_substitutions(source_sides[match_index]):
+                if any((expr_variables(value) & binder_names) - target_sort_by_name.keys() for value in subst.values()):
+                    continue
+                ok = True
+                for name, sort in source_binders:
+                    if name in subst:
+                        value = subst[name]
+                        if value.kind == "var" and value.value in target_sort_by_name and target_sort_by_name[value.value] != sort:
+                            ok = False
+                            break
+                        continue
+                    if name in target_sort_by_name and target_sort_by_name[name] == sort:
+                        subst[name] = Expr("var", value=name)
+                    else:
                         ok = False
                         break
+                if not ok or not binder_names <= subst.keys():
                     continue
-                if name in target_sort_by_name and target_sort_by_name[name] == sort:
-                    subst[name] = Expr("var", value=name)
-                else:
-                    ok = False
-                    break
-            if not ok or not binder_names <= subst.keys():
-                continue
-            common = substitute_expr(source_sides[common_index], subst)
-            proof = source_proof
-            for name, _sort in source_binders:
-                proof = f"({proof_head(proof)} {proof_arg_text(subst[name])})"
-            equality_sort = raw_equality_transport_sort(target_side, common, variable_sorts)
-            if match_index == 1:
-                proof = raw_eq_symmetry_proof(proof, common, equality_sort)
-            options.append((common, proof))
+                common = beta_normalize_expr(substitute_expr(source_sides[common_index], subst))
+                proof = source_proof
+                for name, _sort in source_binders:
+                    proof = f"({proof_head(proof)} {proof_arg_text(subst[name])})"
+                equality_sort = raw_equality_transport_sort(target_side, common, variable_sorts)
+                if match_index == 1:
+                    proof = raw_eq_symmetry_proof(proof, common, equality_sort)
+                options.append((common, proof))
         return options
 
     parent_pairs = ((first, first_proof, second, second_proof), (second, second_proof, first, first_proof))
