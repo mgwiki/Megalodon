@@ -2111,6 +2111,16 @@ def megalodon_replay_steps(
                 for parent in step_match.group("parents").split(",")
                 if parent
             )
+            if len(parents) == 1 and parents[0] in steps:
+                inherited_sorts = megalodon_replay_step_variable_sorts(steps[parents[0]])
+                parent_expr = parse_expr(steps[parents[0]].proposition)
+                if parent_expr is not None:
+                    parent_binders, _parent_body = collect_foralls(parent_expr)
+                    inherited_sorts = {
+                        **{name: sort for name, sort in parent_binders},
+                        **inherited_sorts,
+                    }
+                step_sorts = {**inherited_sorts, **step_sorts}
             step_details[step] = (
                 json.loads(f'"{step_match.group("rule")}"'),
                 parents,
@@ -26008,6 +26018,40 @@ def raw_basic_boolean_implication_proof(
                 return f"(fun P Hleft Hright => Hleft {proof_term_text(left_proof)})"
 
     source_or = raw_or_parts(source)
+    if source_or is not None and target_or is not None:
+        source_left, source_right = source_or
+        target_left, target_right = target_or
+        target_text = proof_arg_text(target)
+        left_name = fresh_identifier("HorLeft", expr_text(source), expr_text(target), source_proof)
+        right_name = fresh_identifier("HorRight", expr_text(source), expr_text(target), source_proof, left_name)
+        for left_target, right_target, left_elim, right_elim in (
+            (target_left, target_right, "Hleft", "Hright"),
+            (target_right, target_left, "Hright", "Hleft"),
+        ):
+            left_proof = raw_prop_implication_transform_proof(
+                source_left,
+                left_target,
+                left_name,
+                variable_sorts,
+                depth + 1,
+            )
+            if left_proof is None:
+                continue
+            right_proof = raw_prop_implication_transform_proof(
+                source_right,
+                right_target,
+                right_name,
+                variable_sorts,
+                depth + 1,
+            )
+            if right_proof is None:
+                continue
+            return (
+                f"({proof_head(source_proof)} {target_text} "
+                f"(fun {left_name} => fun P Hleft Hright => {left_elim} {proof_term_text(left_proof)}) "
+                f"(fun {right_name} => fun P Hleft Hright => {right_elim} {proof_term_text(right_proof)}))"
+            )
+
     if source_or is not None:
         source_left, source_right = source_or
         left_false = raw_negated_tautology_false_proof(
@@ -31500,6 +31544,14 @@ def raw_tptp_superposition_proof(
     )
     if proof is not None:
         return proof
+    proof = raw_tptp_parent_negated_tautology_exfalso_proof(
+        proposition,
+        parents,
+        propositions_by_name,
+        variable_sorts,
+    )
+    if proof is not None:
+        return proof
     if len(parents) == 2:
         early_parent_exprs: list[tuple[Expr, str]] = []
         for parent in parents:
@@ -31678,6 +31730,26 @@ def raw_tptp_superposition_proof(
             if proof is not None:
                 return proof
             proof = raw_negative_equality_clause_superposition_proof(
+                parent_exprs[1][0],
+                target_expr,
+                parent_exprs[1][1],
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_negative_prop_argument_superposition_proof(
+                parent_exprs[0][0],
+                target_expr,
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_negative_prop_argument_superposition_proof(
                 parent_exprs[1][0],
                 target_expr,
                 parent_exprs[1][1],
@@ -31928,6 +32000,91 @@ def raw_equality_clause_superposition_proof(
                 delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
         else:
             PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
+def raw_known_false_prop_equality_proof(left: Expr, right: Expr, known_false_proofs: dict[str, str]) -> str | None:
+    if expr_same_mod_alpha(left, right):
+        return "(fun Q H => H)"
+    left_key = expr_text(left)
+    right_key = expr_text(right)
+    if false_eliminator_expr(left) and right_key in known_false_proofs:
+        false_name = fresh_identifier("Hfalse", expr_text(left), expr_text(right))
+        return (
+            f"(vampire_prop_ext {proof_arg_text(left)} {proof_arg_text(right)} "
+            f"(fun {false_name} => {raw_false_to_expr_proof(false_name, right)}) "
+            f"(fun Hright => {proof_head(known_false_proofs[right_key])} Hright))"
+        )
+    if false_eliminator_expr(right) and left_key in known_false_proofs:
+        false_name = fresh_identifier("Hfalse", expr_text(left), expr_text(right))
+        return (
+            f"(vampire_prop_ext {proof_arg_text(left)} {proof_arg_text(right)} "
+            f"(fun Hleft => {proof_head(known_false_proofs[left_key])} Hleft) "
+            f"(fun {false_name} => {raw_false_to_expr_proof(false_name, left)}))"
+        )
+    return None
+
+
+def raw_known_false_prop_proofs(expr: Expr, proof: str) -> dict[str, str]:
+    binders, body = collect_foralls(expr)
+    if binders:
+        return {}
+    premises, conclusion = split_arrows(body)
+    if len(premises) != 1 or not false_eliminator_expr(conclusion):
+        return {}
+    return {expr_text(premises[0]): proof}
+
+
+def raw_negative_prop_argument_superposition_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    false_clause: Expr,
+    false_clause_proof: str,
+    variable_sorts: dict[str, str] | None = None,
+) -> str | None:
+    variable_sorts = variable_sorts or {}
+    known_false_proofs = raw_known_false_prop_proofs(false_clause, false_clause_proof)
+    if not known_false_proofs:
+        return None
+    target_binders, target_body = collect_foralls(target)
+    target_premises, target_conclusion = split_arrows(target_body)
+    if len(target_premises) != 1 or not false_eliminator_expr(target_conclusion):
+        return None
+    target_sides = equality_like_sides(target_premises[0])
+    if target_sides is None:
+        return None
+    source_options = raw_instantiated_forall_clause_options(source, source_proof, target, false_clause)
+    for source_option, source_option_proof in source_options[:24]:
+        source_premises, source_conclusion = split_arrows(source_option)
+        if len(source_premises) != 1 or not false_eliminator_expr(source_conclusion):
+            continue
+        source_sides = equality_like_sides(source_premises[0])
+        if source_sides is None or not expr_same_mod_alpha(source_sides[0], target_sides[0]):
+            continue
+
+        def prop_equality_for(left: Expr, right: Expr) -> str | None:
+            return raw_known_false_prop_equality_proof(left, right, known_false_proofs)
+
+        target_to_source_rhs = raw_set_app_prop_argument_equality_with_prop_equality_proof(
+            target_sides[1],
+            source_sides[1],
+            prop_equality_for,
+            variable_sorts,
+        )
+        if target_to_source_rhs is None:
+            continue
+        target_hypothesis = fresh_identifier("Htarget", expr_text(target_body), expr_text(source_option))
+        source_premise_proof = eq_transitivity_proof(
+            [target_hypothesis, target_to_source_rhs],
+            expr_text(target_sides[0]),
+        )
+        if source_premise_proof is None:
+            continue
+        proof = f"(fun {target_hypothesis} :{proof_arg_text(target_premises[0])} => {proof_head(source_option_proof)} {proof_term_text(source_premise_proof)})"
+        for name, sort in reversed(target_binders):
+            proof = f"(fun {name} :{sort} => {proof})"
+        return proof
+    return None
 
 
 def raw_negative_equality_clause_superposition_proof(
@@ -33180,13 +33337,38 @@ def raw_negative_equality_instantiations(body: Expr, binder_names: set[str]) -> 
 
 def raw_negative_prop_instantiations(body: Expr, binder_sorts: dict[str, str]) -> list[tuple[str, Expr]]:
     instantiations: list[tuple[str, Expr]] = []
+    seen: set[tuple[str, str]] = set()
     for literal in raw_clause_literals(body):
         premises, conclusion = split_arrows(literal)
         if len(premises) != 1 or not false_eliminator_expr(conclusion):
             continue
         premise = premises[0]
         if premise.kind == "var" and premise.value is not None and binder_sorts.get(premise.value) == "prop":
-            instantiations.append((premise.value, Expr("var", value="vampire_true")))
+            for true_name in ("True", "vampire_true"):
+                key = (premise.value, true_name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                instantiations.append((premise.value, Expr("var", value=true_name)))
+    return instantiations
+
+
+def raw_false_target_prop_instantiations(
+    parent_body: Expr,
+    target_body: Expr,
+    binder_sorts: dict[str, str],
+) -> list[tuple[str, Expr]]:
+    if not false_eliminator_expr(target_body):
+        return []
+    instantiations: list[tuple[str, Expr]] = []
+    seen: set[str] = set()
+    for literal in raw_clause_literals(parent_body):
+        if literal.kind != "var" or literal.value is None:
+            continue
+        if binder_sorts.get(literal.value) != "prop" or literal.value in seen:
+            continue
+        seen.add(literal.value)
+        instantiations.append((literal.value, Expr("var", value="False")))
     return instantiations
 
 
@@ -33224,6 +33406,8 @@ def raw_tptp_equality_resolution_with_instantiations_proof(
         body_proof = raw_clause_subsumption_transform_proof(instantiated_parent_body, target_body, source_proof)
         if body_proof is None and raw_clause_replay_budget_ok(instantiated_parent_body, target_body, max_literals=12, max_literal_product=96):
             body_proof = raw_clause_transform_proof(instantiated_parent_body, target_body, source_proof)
+        if body_proof is None and len(expr_text(instantiated_parent_body)) + len(expr_text(target_body)) <= 6000:
+            body_proof = raw_deep_formula_transform_proof(instantiated_parent_body, target_body, source_proof, {})
         if body_proof is None:
             continue
         for name, sort in reversed(target_binders):
@@ -33407,6 +33591,17 @@ def raw_tptp_equality_resolution_proof(
             variable_sorts,
             replay_step,
         ),
+    )
+    if proof is not None:
+        return proof
+    proof = raw_tptp_equality_resolution_with_instantiations_proof(
+        target,
+        parent_binders,
+        parent_body,
+        target_binders,
+        target_body,
+        parent_proof,
+        raw_false_target_prop_instantiations(parent_body, target_body, parent_binder_sorts),
     )
     if proof is not None:
         return proof
@@ -36600,11 +36795,212 @@ def raw_tptp_avatar_split_guarded_component_proof(
     )
 
 
+def raw_tptp_known_true_prop_proofs(
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> dict[str, str]:
+    known: dict[str, str] = {}
+    known_sorts = {
+        **variable_sorts,
+        "True": "prop",
+        "False": "prop",
+        "vampire_true": "prop",
+        "vampire_false": "prop",
+    }
+    for parent in parents:
+        proposition = propositions_by_name.get(parent)
+        expr = parse_expr(proposition) if proposition is not None else None
+        if expr is None:
+            continue
+        proof = raw_tptp_claim_name(parent)
+        true_component = raw_prop_equality_to_true_component(expr)
+        if true_component is not None:
+            component, _ = true_component
+            component_proof = raw_proof_from_prop_true_equality(expr, component, proof)
+            if component_proof is not None:
+                known[expr_text(component)] = component_proof
+        if expr_sort(expr, known_sorts) == "prop" and not false_eliminator_expr(expr):
+            known.setdefault(expr_text(expr), proof)
+    return known
+
+
+def raw_known_prop_equality_proof(left: Expr, right: Expr, known_true_proofs: dict[str, str]) -> str | None:
+    if expr_same_mod_alpha(left, right):
+        return "(fun Q H => H)"
+    left_key = expr_text(left)
+    right_key = expr_text(right)
+    if raw_true_expr(left) and right_key in known_true_proofs:
+        return (
+            f"(vampire_prop_ext {proof_arg_text(left)} {proof_arg_text(right)} "
+            f"(fun Htrue => {proof_term_text(known_true_proofs[right_key])}) "
+            f"(fun Hright => {raw_true_intro_proof()}))"
+        )
+    if raw_true_expr(right) and left_key in known_true_proofs:
+        return (
+            f"(vampire_prop_ext {proof_arg_text(left)} {proof_arg_text(right)} "
+            f"(fun Hleft => {raw_true_intro_proof()}) "
+            f"(fun Htrue => {proof_term_text(known_true_proofs[left_key])}))"
+        )
+    return None
+
+
+def raw_set_app_prop_argument_equality_with_known_truth_proof(
+    source: Expr,
+    target: Expr,
+    known_true_proofs: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    def prop_equality_for(left: Expr, right: Expr) -> str | None:
+        return raw_known_prop_equality_proof(left, right, known_true_proofs)
+
+    return raw_set_app_prop_argument_equality_with_prop_equality_proof(
+        source,
+        target,
+        prop_equality_for,
+        variable_sorts,
+    )
+
+
+def raw_set_app_prop_argument_equality_with_prop_equality_proof(
+    source: Expr,
+    target: Expr,
+    prop_equality_for: Callable[[Expr, Expr], str | None],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if expr_same_mod_alpha(source, target):
+        return "(fun Q H => H)"
+    if source.kind != "app" or target.kind != "app" or len(source.args) != len(target.args):
+        return None
+    if not source.args or not expr_same_mod_alpha(source.args[0], target.args[0]):
+        return None
+    differing = [
+        index
+        for index, (source_arg, target_arg) in enumerate(zip(source.args, target.args))
+        if index != 0 and not expr_same_mod_alpha(source_arg, target_arg)
+    ]
+    if len(differing) != 1:
+        return None
+    index = differing[0]
+    known_sorts = {
+        **variable_sorts,
+        "True": "prop",
+        "False": "prop",
+        "vampire_true": "prop",
+        "vampire_false": "prop",
+    }
+    source_sort = expr_sort(source.args[index], known_sorts) or expr_sort(beta_normalize_expr(source.args[index]), known_sorts)
+    target_sort = expr_sort(target.args[index], known_sorts) or expr_sort(beta_normalize_expr(target.args[index]), known_sorts)
+    if source_sort != "prop" or target_sort != "prop":
+        return None
+    prop_equality = prop_equality_for(source.args[index], target.args[index])
+    if prop_equality is None:
+        return None
+    hole = fresh_identifier("Qprop", expr_text(source), expr_text(target))
+    context_args = list(source.args)
+    context_args[index] = Expr("var", value=hole)
+    context = Expr("app", args=tuple(context_args))
+    return (
+        f"{proof_term_text(prop_equality)} "
+        f"(fun {hole} :prop => {proof_arg_text(source)} = {expr_text(context)}) "
+        f"(fun Q H => H)"
+    )
+
+
+def raw_instantiated_parent_equality_from_term(
+    term: Expr,
+    equality: Expr,
+    equality_proof: str,
+    variable_sorts: dict[str, str],
+) -> tuple[Expr, str] | None:
+    binders, body = collect_foralls(equality)
+    sides = equality_like_sides(body)
+    if sides is None or len(binders) > 8:
+        return None
+    binder_names = {name for name, _ in binders}
+    for left, right, reverse in (
+        (sides[0], sides[1], False),
+        (sides[1], sides[0], True),
+    ):
+        subst: dict[str, Expr] = {}
+        if not match_expr_with_alpha_instantiation(left, term, binder_names, subst):
+            continue
+        flatten_substitution(subst)
+        if any(name not in subst for name, _sort in binders):
+            continue
+        instantiated_left = substitute_expr(left, subst)
+        instantiated_right = substitute_expr(right, subst)
+        if not expr_same_mod_alpha(instantiated_left, term):
+            continue
+        proof = equality_proof
+        for name, _sort in binders:
+            proof = f"({proof_head(proof)} {proof_arg_text(subst[name])})"
+        if reverse:
+            equality_sort = raw_equality_transport_sort(sides[0], sides[1], variable_sorts)
+            proof = raw_eq_symmetry_proof(proof, instantiated_right, equality_sort)
+        return instantiated_right, proof
+    return None
+
+
+def raw_tptp_definition_bridge_unfolded_premise_proof(
+    source_premise: Expr,
+    target_premise: Expr,
+    target_premise_proof: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_sides = equality_like_sides(source_premise)
+    target_sides = equality_like_sides(target_premise)
+    if source_sides is None or target_sides is None:
+        return None
+    if not expr_same_mod_alpha(source_sides[0], target_sides[0]):
+        return None
+    known_true_proofs = raw_tptp_known_true_prop_proofs(parents[1:], propositions_by_name, variable_sorts)
+    if not known_true_proofs:
+        return None
+    target_rhs = target_sides[1]
+    source_rhs = source_sides[1]
+    for parent in parents[1:]:
+        proposition = propositions_by_name.get(parent)
+        equality = parse_expr(proposition) if proposition is not None else None
+        if equality is None:
+            continue
+        instantiated = raw_instantiated_parent_equality_from_term(
+            source_rhs,
+            equality,
+            raw_tptp_claim_name(parent),
+            variable_sorts,
+        )
+        if instantiated is None:
+            continue
+        definition_rhs, source_to_definition = instantiated
+        target_to_definition = raw_set_app_prop_argument_equality_with_known_truth_proof(
+            target_rhs,
+            definition_rhs,
+            known_true_proofs,
+            variable_sorts,
+        )
+        if target_to_definition is None:
+            continue
+        definition_to_source = raw_eq_symmetry_proof(
+            source_to_definition,
+            source_rhs,
+            raw_equality_transport_sort(source_rhs, definition_rhs, variable_sorts),
+        )
+        return eq_transitivity_proof(
+            [target_premise_proof, target_to_definition, definition_to_source],
+            expr_text(target_sides[0]),
+        )
+    return None
+
+
 def raw_tptp_definition_bridge_block(
     claim_name: str,
     proposition: str,
     parents: list[str],
     propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
 ) -> list[str] | None:
     if not parents:
         return None
@@ -36627,11 +37023,19 @@ def raw_tptp_definition_bridge_block(
     unfolded_name = f"{claim_name}_definition_unfolded"
     target_hypothesis = f"{claim_name}_folded"
     source_parent = raw_tptp_claim_name(parents[0])
+    unfolded_proof = raw_tptp_definition_bridge_unfolded_premise_proof(
+        source_premises[0],
+        target_premises[0],
+        target_hypothesis,
+        parents,
+        propositions_by_name,
+        variable_sorts,
+    )
     return [
         "{",
         f"  assume {target_hypothesis}: {expr_text(target_premises[0])}.",
         f"  claim {unfolded_name}: {expr_text(source_premises[0])}.",
-        "  { admit. }",
+        f"  {{ exact {proof_argument_text(unfolded_proof)}. }}" if unfolded_proof is not None else "  { admit. }",
         f"  exact ({source_parent} {unfolded_name}).",
         "}",
     ]
@@ -38125,6 +38529,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     proposition,
                     replay_parents,
                     propositions_by_name,
+                    variable_sorts,
                 )
             if bridge_block is None:
                 lines.append("{ admit. }")
