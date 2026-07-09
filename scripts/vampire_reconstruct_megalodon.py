@@ -34540,13 +34540,15 @@ def raw_fast_skolemised_formula_transform_proof(
             if expr_same_mod_alpha(left_target, target_conjuncts[0]):
                 return (
                     f"({proof_head(source_proof)} {proof_arg_text(target)} "
-                    f"(fun {left_name} {right_name} => "
-                    f"(fun P K => K {proof_term_text(left_proof)} {proof_term_text(right_proof)})))"
+                    f"(fun {left_name} :{proof_arg_text(source_conjuncts[0])} => "
+                    f"fun {right_name} :{proof_arg_text(source_conjuncts[1])} => "
+                    f"(fun Psk K => K {proof_term_text(left_proof)} {proof_term_text(right_proof)})))"
                 )
             return (
                 f"({proof_head(source_proof)} {proof_arg_text(target)} "
-                f"(fun {left_name} {right_name} => "
-                f"(fun P K => K {proof_term_text(right_proof)} {proof_term_text(left_proof)})))"
+                f"(fun {left_name} :{proof_arg_text(source_conjuncts[0])} => "
+                f"fun {right_name} :{proof_arg_text(source_conjuncts[1])} => "
+                f"(fun Psk K => K {proof_term_text(right_proof)} {proof_term_text(left_proof)})))"
             )
     if target_conjuncts is not None:
         left_proof = raw_fast_skolemised_formula_transform_proof(
@@ -34567,7 +34569,7 @@ def raw_fast_skolemised_formula_transform_proof(
                 depth + 1,
             )
             if right_proof is not None:
-                return f"(fun P K => K {proof_term_text(left_proof)} {proof_term_text(right_proof)})"
+                return f"(fun Psk K => K {proof_term_text(left_proof)} {proof_term_text(right_proof)})"
     if source_conjuncts is not None:
         for conjunct in source_conjuncts:
             projection = vampire_and_projection_from_proof(source_proof, source, conjunct)
@@ -34834,13 +34836,15 @@ def raw_skolemised_formula_transform_proof(
             if expr_same_mod_alpha(left_target, target_conjuncts[0]):
                 return (
                     f"({proof_head(source_proof)} {proof_arg_text(target)} "
-                    f"(fun {left_name} {right_name} => "
-                    f"(fun P K => K {proof_term_text(left_proof)} {proof_term_text(right_proof)})))"
+                    f"(fun {left_name} :{proof_arg_text(source_conjuncts[0])} => "
+                    f"fun {right_name} :{proof_arg_text(source_conjuncts[1])} => "
+                    f"(fun Psk K => K {proof_term_text(left_proof)} {proof_term_text(right_proof)})))"
                 )
             return (
                 f"({proof_head(source_proof)} {proof_arg_text(target)} "
-                f"(fun {left_name} {right_name} => "
-                f"(fun P K => K {proof_term_text(right_proof)} {proof_term_text(left_proof)})))"
+                f"(fun {left_name} :{proof_arg_text(source_conjuncts[0])} => "
+                f"fun {right_name} :{proof_arg_text(source_conjuncts[1])} => "
+                f"(fun Psk K => K {proof_term_text(right_proof)} {proof_term_text(left_proof)})))"
             )
 
     if target_conjuncts is not None:
@@ -34850,7 +34854,7 @@ def raw_skolemised_formula_transform_proof(
         right = raw_skolemised_formula_transform_proof(source, target_conjuncts[1], source_proof, rewrites, variable_sorts, depth + 1)
         if right is None:
             return None
-        return f"(fun P K => K {proof_term_text(left)} {proof_term_text(right)})"
+        return f"(fun Psk K => K {proof_term_text(left)} {proof_term_text(right)})"
 
     if source_conjuncts is not None:
         for conjunct in source_conjuncts:
@@ -35342,6 +35346,37 @@ def raw_tptp_explosive_implication_ennf_proof(
     for target_name, target_sort in reversed(target_binders):
         result = f"(fun {target_name} :{target_sort} => {result})"
     return result
+
+
+def raw_tptp_quantified_eq_prop_disjunction_ennf_needs_fallback(proposition: str) -> bool:
+    if "vampire_eq_prop" not in proposition:
+        return False
+    expr = parse_expr(proposition)
+    if expr is None:
+        return False
+    binders, body = collect_foralls(expr)
+    return bool(binders) and raw_or_parts(body) is not None
+
+
+def raw_tptp_eq_prop_true_clause_needs_fallback(proposition: str) -> bool:
+    if "vampire_eq_prop True" not in proposition:
+        return False
+    expr = parse_expr(proposition)
+    if expr is None:
+        return False
+    _binders, body = collect_foralls(expr)
+    return raw_or_parts(body) is not None
+
+
+def raw_tptp_entry_is_fallback_axiom(rule: str | None, proposition: str | None) -> bool:
+    if proposition is None:
+        return False
+    if (
+        rule in {"ennf_transformation", "nnf_transformation", "flattening"}
+        and raw_tptp_quantified_eq_prop_disjunction_ennf_needs_fallback(proposition)
+    ):
+        return True
+    return rule in {"superposition", "trivial_inequality_removal"} and raw_tptp_eq_prop_true_clause_needs_fallback(proposition)
 
 
 def raw_tptp_avatar_component_clause_proof(
@@ -38211,6 +38246,10 @@ def raw_tptp_replay_proof(
             if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
                 return proof
             return None
+        if rule in {"ennf_transformation", "nnf_transformation"} and raw_tptp_quantified_eq_prop_disjunction_ennf_needs_fallback(
+            proposition
+        ):
+            return None
         previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
         if rule == "rectify" and previous_deadline is not None:
             PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 1.0)
@@ -38220,20 +38259,27 @@ def raw_tptp_replay_proof(
         try:
             proof = None
             if rule in {"ennf_transformation", "nnf_transformation"}:
-                proof = raw_tptp_explosive_implication_ennf_proof(
-                    proposition,
-                    parents,
-                    propositions_by_name,
-                )
+                if raw_tptp_quantified_eq_prop_disjunction_ennf_needs_fallback(proposition):
+                    proof = None
+                else:
+                    proof = raw_tptp_explosive_implication_ennf_proof(
+                        proposition,
+                        parents,
+                        propositions_by_name,
+                    )
             if proof is None:
-                proof = raw_tptp_exported_normal_form_proof(
-                    rule,
-                    proposition,
-                    parents,
-                    propositions_by_name,
-                    variable_sorts,
-                    replay_step,
-                )
+                if not (
+                    rule in {"ennf_transformation", "nnf_transformation"}
+                    and raw_tptp_quantified_eq_prop_disjunction_ennf_needs_fallback(proposition)
+                ):
+                    proof = raw_tptp_exported_normal_form_proof(
+                        rule,
+                        proposition,
+                        parents,
+                        propositions_by_name,
+                        variable_sorts,
+                        replay_step,
+                    )
             if raw_tptp_normal_form_allows_generic_replay(rule, replay_step):
                 if proof is None:
                     proof = raw_tptp_one_parent_transform_proof(
@@ -39385,9 +39431,20 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         lines.append(declaration)
 
     known_raw_propositions: dict[str, str] = {}
+    axiom_claim_instantiations: dict[str, str] = {}
+    local_skolem_axiom_aliases: list[tuple[str, str, str]] = []
 
     def remember_raw_proposition(proposition: str, proof_name: str) -> None:
         known_raw_propositions.setdefault(canonical_proposition(proposition), proof_name)
+
+    def instantiate_global_axiom_proofs(proof: str) -> str:
+        for claim_name, instantiated in sorted(axiom_claim_instantiations.items(), key=lambda item: -len(item[0])):
+            proof = re.sub(
+                rf"(?<![A-Za-z0-9_']){re.escape(claim_name)}(?![A-Za-z0-9_'])",
+                instantiated,
+                proof,
+            )
+        return proof
 
     seen_claims: set[str] = set()
     for name, role, proposition, rule, source_name, parents, trusted_definition in entries:
@@ -39395,7 +39452,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if claim_name in seen_claims:
             continue
         seen_claims.add(claim_name)
-        if role not in {"axiom", "definition", "negated_conjecture"} and not trusted_definition:
+        fallback_axiom = raw_tptp_entry_is_fallback_axiom(rule, proposition)
+        if role not in {"axiom", "definition", "negated_conjecture"} and not trusted_definition and not fallback_axiom:
             continue
         rule_text = rule or "input"
         parent_text = f", parents {' '.join(parents)}" if parents else ""
@@ -39416,6 +39474,10 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             lines.append("Qed.")
         else:
             lines.append(f"Axiom {claim_name}:{proposition}.")
+            if rule == "skolem_symbol_introduction":
+                local_alias = f"{claim_name}_local"
+                axiom_claim_instantiations[claim_name] = local_alias
+                local_skolem_axiom_aliases.append((local_alias, claim_name, proposition))
         avatar_definition = raw_tptp_avatar_definition_parts(proposition)
         if avatar_definition is not None:
             split_name, component = avatar_definition
@@ -39426,6 +39488,9 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
 
     theorem_name = "vampire_raw_tptp_reconstruction"
     lines.append(f"Theorem {theorem_name}: {final_proposition}.")
+    for local_alias, global_name, proposition in local_skolem_axiom_aliases:
+        lines.append(f"claim {local_alias}: {proposition}.")
+        lines.append(f"{{ exact {global_name}. }}")
     emitted_local_avatar_projections: set[str] = set()
     for name, role, proposition, _rule, _source_name, _parents, trusted_definition in entries:
         if not proposition:
@@ -39452,7 +39517,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if claim_name in seen_theorem_claims:
             continue
         seen_theorem_claims.add(claim_name)
-        if role in {"axiom", "definition", "negated_conjecture"} or trusted_definition:
+        if (
+            role in {"axiom", "definition", "negated_conjecture"}
+            or trusted_definition
+            or raw_tptp_entry_is_fallback_axiom(rule, proposition)
+        ):
             continue
         if role == "conjecture":
             continue
@@ -39511,6 +39580,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             and raw_tptp_standard_replay_proof_is_unsafe(rule, proposition, replay_proof)
         ):
             replay_proof = None
+        if replay_proof is not None:
+            replay_proof = instantiate_global_axiom_proofs(replay_proof)
         lines.append(f"claim {claim_name}: {proposition}.")
         if replay_proof is None:
             bridge_block = None
