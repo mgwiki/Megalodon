@@ -2120,7 +2120,11 @@ def raw_tptp_step_should_apply_negated_conjecture_interpretation(
     return rule == "negated conjecture" or not direct_exported_proposition
 
 
-def raw_tptp_two_literal_rewrite_substitution_proposition(substitutions: tuple[str, ...]) -> str | None:
+def raw_tptp_two_literal_rewrite_substitution_proposition(
+    substitutions: tuple[str, ...],
+    step_extras: list[tuple[str, tuple[str, ...]]] | None = None,
+    variable_sorts: dict[str, str] | None = None,
+) -> str | None:
     if len(substitutions) != 2:
         return None
     clauses = [parse_expr(proposition) for proposition in substitutions]
@@ -2230,6 +2234,64 @@ def raw_tptp_two_literal_rewrite_substitution_proposition(substitutions: tuple[s
                     if clause is not None:
                         return expr_text(clause)
 
+    if step_extras is not None:
+        local_sorts = variable_sorts or {}
+        replay_stub = MegalodonReplayStep("", (), "", extras=tuple(step_extras))
+        for fields in megalodon_replay_extra_fields(replay_stub, "two_literal_rewrite"):
+            try:
+                selected_parent_index = int(fields.get("selected_parent_index", "-1"))
+                selected_literal_index = int(fields.get("selected_literal_index", "-1"))
+            except ValueError:
+                continue
+            if selected_parent_index not in range(len(clauses)):
+                continue
+            selected_parent_literals = raw_clause_literals(clauses[selected_parent_index])
+            if selected_literal_index not in range(len(selected_parent_literals)):
+                continue
+            residual_literals = [
+                literal
+                for index, literal in enumerate(selected_parent_literals)
+                if index != selected_literal_index
+            ]
+            if not residual_literals:
+                continue
+            proposition = raw_tptp_replay_extra_expr(
+                fields,
+                "selected_substituted_proposition",
+                local_sorts,
+                raw_tptp_extra_lambda_sort_hints(fields, "selected_parent", "conclusion", "step"),
+            )
+            if proposition is None:
+                continue
+            replaced = proposition
+            changed = False
+            lambda_sort_hints = raw_tptp_extra_lambda_sort_hints(fields, "selected_parent", "conclusion", "step")
+            for index in range(16):
+                source_key = f"selected_parent_lambda_{index}"
+                target_key = f"conclusion_lambda_{index}"
+                if source_key not in fields or target_key not in fields:
+                    continue
+                source_lambda = raw_tptp_replay_extra_expr(fields, source_key, local_sorts, lambda_sort_hints)
+                target_lambda = raw_tptp_replay_extra_expr(fields, target_key, local_sorts, lambda_sort_hints)
+                if source_lambda is None or target_lambda is None:
+                    continue
+                hole = Expr("var", value=fresh_identifier("zz", expr_text(replaced), expr_text(source_lambda)))
+                contexts = single_replacement_contexts_mod_alpha(
+                    replaced,
+                    source_lambda,
+                    target_lambda,
+                    hole,
+                    limit=1,
+                )
+                if not contexts:
+                    continue
+                replaced = contexts[0][0]
+                changed = True
+            if changed:
+                clause = raw_clause_from_literals([replaced, *residual_literals])
+                if clause is not None:
+                    return expr_text(clause)
+
     for first_index, first_literal in enumerate(first_literals):
         for first_outer, first_shared, first_sort in equality_orientations(first_literal):
             for second_index, second_literal in enumerate(second_literals):
@@ -2333,6 +2395,10 @@ def raw_tptp_rewrite_substitution_proposition(
             replaced, changed = replace_expr(source, redex, replacement)
             if changed:
                 return expr_text(replaced)
+            hole = Expr("var", value=fresh_identifier("zz", expr_text(source), expr_text(redex), expr_text(replacement)))
+            contexts = single_replacement_contexts_mod_alpha(source, redex, replacement, hole, limit=1)
+            if contexts:
+                return expr_text(contexts[0][0])
     return None
 
 
@@ -2638,7 +2704,11 @@ def megalodon_replay_steps(
             continue
         if not any(kind == "two_literal_rewrite" for kind, _fields in step_extras):
             continue
-        proposition = raw_tptp_two_literal_rewrite_substitution_proposition(substitutions.get(step, ()))
+        proposition = raw_tptp_two_literal_rewrite_substitution_proposition(
+            substitutions.get(step, ()),
+            step_extras,
+            {**variable_sorts, **details[2]},
+        )
         if proposition is not None:
             derived_propositions[step] = proposition
 
@@ -28376,6 +28446,8 @@ def raw_equality_rewrite_clause_proof(
         if not raw_clause_replay_budget_ok(replaced, target, max_literals=12, max_literal_product=96):
             continue
         transformed = raw_clause_transform_proof(replaced, target, transported)
+        if transformed is None:
+            transformed = raw_clause_subsumption_transform_proof(replaced, target, transported)
         if transformed is not None:
             return transformed
     return None
@@ -32564,6 +32636,106 @@ def raw_exported_two_literal_superposition_clause_proof(
             PROOF_SEARCH_STATE.flat_resolution_target = previous_target
 
 
+def raw_exported_pointwise_lambda_clause_rewrite_proof(
+    selected_clause: Expr,
+    selected_clause_proof: str,
+    pointwise_parent: Expr,
+    pointwise_parent_proof: str,
+    target: Expr,
+    fields: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    lambda_sort_hints = raw_tptp_extra_lambda_sort_hints(fields, "selected_parent", "conclusion", "step")
+    old_lambda = raw_tptp_replay_extra_expr(
+        fields,
+        "selected_parent_lambda_0",
+        variable_sorts,
+        lambda_sort_hints,
+        fields.get("selected_parent_lambda_0_sort"),
+    )
+    new_lambda = raw_tptp_replay_extra_expr(
+        fields,
+        "conclusion_lambda_0",
+        variable_sorts,
+        lambda_sort_hints,
+        fields.get("conclusion_lambda_0_sort"),
+    )
+    if old_lambda is None or new_lambda is None:
+        return None
+    if old_lambda.kind != "lambda" or new_lambda.kind != "lambda" or old_lambda.sort != new_lambda.sort:
+        return None
+    current_logic_text = " ".join(
+        expr_text(expr) for expr in (selected_clause, pointwise_parent, target)
+    )
+    if "vampire_true" not in current_logic_text and "vampire_false" not in current_logic_text:
+        old_lambda = raw_tptp_ambient_basic_logic_expr(old_lambda)
+        new_lambda = raw_tptp_ambient_basic_logic_expr(new_lambda)
+    if old_lambda.sort != "set":
+        return None
+    old_body = old_lambda.args[0]
+    new_body = new_lambda.args[0]
+    parent_binders, parent_body = collect_foralls(pointwise_parent)
+    parent_sides = equality_like_sides(parent_body)
+    if parent_sides is None or len(parent_binders) > 4:
+        return None
+    parent_binder_names = {name for name, _sort in parent_binders}
+    for index, (binder_name, binder_sort) in enumerate(parent_binders):
+        if binder_sort != old_lambda.sort or index != len(parent_binders) - 1:
+            continue
+        old_open = rename_expr_variables(old_body, {old_lambda.value: binder_name} if old_lambda.value else {})
+        new_open = rename_expr_variables(new_body, {new_lambda.value: binder_name} if new_lambda.value else {})
+        for target_left, target_right, reverse in (
+            (old_open, new_open, False),
+            (new_open, old_open, True),
+        ):
+            subst: dict[str, Expr] = {}
+            match_variables = set(parent_binder_names)
+            match_variables.discard(binder_name)
+            if not (
+                match_expr_with_alpha_instantiation(parent_sides[0], target_left, match_variables, subst)
+                and match_expr_with_alpha_instantiation(parent_sides[1], target_right, match_variables, subst)
+            ):
+                continue
+            flatten_substitution(subst)
+            if any(name not in subst for name, _sort in parent_binders[:index]):
+                continue
+            if any(expr_variables(value) & parent_binder_names for value in subst.values()):
+                continue
+            pointwise_proof = pointwise_parent_proof
+            ok = True
+            for name, _sort in parent_binders[:index]:
+                value = subst.get(name)
+                if value is None:
+                    ok = False
+                    break
+                pointwise_proof = f"({proof_head(pointwise_proof)} {proof_arg_text(value)})"
+            if not ok:
+                continue
+            if reverse:
+                equality_sort = raw_equality_transport_sort(
+                    old_open,
+                    new_open,
+                    {**variable_sorts, binder_name: binder_sort},
+                )
+                pointwise_proof = raw_eq_symmetry_proof(pointwise_proof, new_open, equality_sort)
+            equality_proof = (
+                f"(vampire_funext_set_set {proof_arg_text(old_lambda)} "
+                f"{proof_arg_text(new_lambda)} {proof_term_text(pointwise_proof)})"
+            )
+            proof = raw_equality_rewrite_clause_proof(
+                selected_clause,
+                target,
+                selected_clause_proof,
+                old_lambda,
+                new_lambda,
+                equality_proof,
+                "set->set",
+            )
+            if proof is not None:
+                return proof
+    return None
+
+
 def raw_tptp_exported_two_literal_resolution_proof(
     proposition: str,
     parents: list[str],
@@ -32649,6 +32821,19 @@ def raw_tptp_exported_two_literal_resolution_proof(
         if selected_clause is not None and other_clause is not None:
             source, source_proof = selected_clause
             resolver, resolver_proof = other_clause
+            body_proof = raw_exported_pointwise_lambda_clause_rewrite_proof(
+                source,
+                source_proof,
+                parsed_parents[other_parent][0],
+                parsed_parents[other_parent][1],
+                target_body,
+                fields,
+                extra_sorts,
+            )
+            if body_proof is not None:
+                for name, sort in reversed(target_binders):
+                    body_proof = f"(fun {name} :{sort} => {body_proof})"
+                return body_proof
             body_proof = raw_exported_two_literal_superposition_clause_proof(
                 source,
                 source_proof,
