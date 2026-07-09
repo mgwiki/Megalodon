@@ -20036,7 +20036,10 @@ def raw_tptp_unit_resulting_resolution_proof(
                 candidate_lists.append(candidates[:16])
 
             def source_instantiation_supported(instantiated_source: Expr) -> bool:
+                target_literals = raw_clause_literals(target)
                 for source_literal in raw_clause_literals(instantiated_source):
+                    if raw_literal_to_clause_proof(source_literal, target, "HsourceLiteral", target_literals, ()) is not None:
+                        continue
                     found = False
                     for _resolver_name, resolver, resolver_proof in resolver_entries:
                         for resolver_clause, _resolver_clause_proof in raw_instantiated_forall_clause_options(
@@ -34420,7 +34423,7 @@ def raw_tptp_replay_proof(
     if rule == "unit_resulting_resolution":
         previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
         if previous_deadline is not None and replay_step is not None:
-            PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 5.0)
+            PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 8.0)
         try:
             proof = raw_tptp_unit_resulting_resolution_proof(
                 proposition,
