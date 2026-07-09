@@ -24106,6 +24106,137 @@ def raw_negated_forall_to_double_negated_exists_negation_proof(
     )
 
 
+def raw_explosive_implication_double_negated_exists_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_premises, source_conclusion = split_arrows(source)
+    if len(source_premises) != 1 or not false_eliminator_expr(source_conclusion):
+        return None
+    source_binders, source_body = collect_foralls(source_premises[0])
+    if len(source_binders) != 2 or any(sort != "set" for _name, sort in source_binders):
+        return None
+    implication_premises, implication_conclusion = split_arrows(source_body)
+    if len(implication_premises) != 2 or not forall_prop_identity(implication_conclusion):
+        return None
+    implication_to_explosion_premises, implication_to_explosion_conclusion = split_arrows(implication_premises[0])
+    if len(implication_to_explosion_premises) != 1 or not forall_prop_identity(implication_to_explosion_conclusion):
+        return None
+    source_atom = implication_premises[1]
+    if not expr_same_mod_alpha(source_atom, implication_to_explosion_premises[0]):
+        return None
+
+    target_premises, target_conclusion = split_arrows(target)
+    if len(target_premises) != 1 or not false_eliminator_expr(target_conclusion):
+        return None
+    not_exists_premises, not_exists_conclusion = split_arrows(target_premises[0])
+    if len(not_exists_premises) != 1 or not false_eliminator_expr(not_exists_conclusion):
+        return None
+    exists_target = not_exists_premises[0]
+    target_parts = raw_nested_exists_parts(exists_target)
+    if target_parts is None:
+        return None
+    target_binders, target_body = target_parts
+    if len(target_binders) != len(source_binders):
+        return None
+    for (_source_name, source_sort), (_target_name, target_sort) in zip(source_binders, target_binders):
+        if source_sort != target_sort:
+            return None
+    target_to_source = {
+        target_name: Expr("var", value=source_name)
+        for (source_name, _), (target_name, _) in zip(source_binders, target_binders)
+    }
+    target_body_at_source = substitute_expr(target_body, target_to_source)
+    local_sorts = {**variable_sorts, **{name: sort for name, sort in source_binders}}
+    all_prop = implication_conclusion
+    atom_text = proof_arg_text(source_atom)
+    all_text = proof_arg_text(all_prop)
+    prop_name = fresh_identifier("Pnnf", expr_text(source), expr_text(target), "P Q K Hexists Hleft Hright")
+    prop_var = Expr("var", value=prop_name)
+
+    def exists_negative_prop_proof(component: Expr) -> str | None:
+        exists = vampire_exists_body(component)
+        if exists is None:
+            return None
+        witness_name, body = exists
+        if component.kind != "app" or component.args[0].kind != "var" or component.args[0].value != "vampire_exists_prop":
+            return None
+        body_at_prop = substitute_expr(body, {witness_name: prop_var})
+        premises, conclusion = split_arrows(body_at_prop)
+        if len(premises) == 1 and false_eliminator_expr(conclusion) and expr_same_mod_alpha(premises[0], prop_var):
+            return f"(fun Q Hexists => Hexists {prop_name} HnotProp)"
+        return None
+
+    def source_atom_proof(component: Expr) -> str | None:
+        if expr_same_mod_alpha(component, source_atom):
+            return "Hatom"
+        transformed = raw_deep_formula_transform_proof(source_atom, component, "Hatom", local_sorts)
+        if transformed is None:
+            transformed = raw_clause_transform_proof(source_atom, component, "Hatom")
+        return transformed
+
+    def or_component_proof(component: Expr) -> str | None:
+        parts = raw_or_parts(component)
+        if parts is None:
+            return None
+        not_atom = Expr("arrow", args=(source_atom, Expr("var", value="False")))
+        not_atom_proof = f"(fun Hatom2 :{atom_text} => HnotProp (Himp Hatom2 {prop_name}))"
+        for left, right, use_left in (
+            (parts[0], parts[1], False),
+            (parts[1], parts[0], True),
+        ):
+            if not forall_prop_identity(left):
+                continue
+            if not expr_same_mod_alpha(right, not_atom):
+                transformed_not_atom = raw_deep_formula_transform_proof(not_atom, right, not_atom_proof, local_sorts)
+                if transformed_not_atom is None:
+                    transformed_not_atom = raw_clause_transform_proof(not_atom, right, not_atom_proof)
+                if transformed_not_atom is None:
+                    continue
+            else:
+                transformed_not_atom = not_atom_proof
+            if use_left:
+                return f"(fun Q Hleft Hright => Hleft {proof_term_text(transformed_not_atom)})"
+            return f"(fun Q Hleft Hright => Hright {proof_term_text(transformed_not_atom)})"
+        return None
+
+    def component_proof(component: Expr) -> str | None:
+        proof = exists_negative_prop_proof(component)
+        if proof is not None:
+            return proof
+        proof = source_atom_proof(component)
+        if proof is not None:
+            return proof
+        return or_component_proof(component)
+
+    body_proof = raw_build_conjunction_from_component_proofs(target_body_at_source, component_proof)
+    if body_proof is None:
+        return None
+    exists_proof = body_proof
+    for source_name, _sort in reversed(source_binders):
+        exists_proof = f"(fun Q Hexists => Hexists {source_name} {proof_term_text(exists_proof)})"
+    false_from_not_exists = f"(HnotExists {proof_term_text(exists_proof)})"
+    prop_from_false = raw_false_to_expr_proof(false_from_not_exists, prop_var)
+    negative_branch = f"(fun HnotProp :{prop_name} -> False => {prop_from_false})"
+    positive_branch = f"(fun Hprop :{prop_name} => Hprop)"
+    arbitrary_prop_proof = (
+        f"(xm {prop_name} {prop_name} "
+        f"{positive_branch} "
+        f"{negative_branch})"
+    )
+    forall_proof = f"(fun {prop_name} :prop => {arbitrary_prop_proof})"
+    body = (
+        f"(fun {source_binders[0][0]} :{source_binders[0][1]} => "
+        f"fun {source_binders[1][0]} :{source_binders[1][1]} => "
+        f"fun Himp :{atom_text} -> {all_text} => "
+        f"fun Hatom :{atom_text} => "
+        f"{forall_proof})"
+    )
+    return f"(fun HnotExists :{proof_arg_text(target_premises[0])} => {proof_head(source_proof)} {proof_term_text(body)})"
+
+
 def raw_or_negated_components_contradiction_proof(
     negative: Expr,
     negative_proof: str,
@@ -41970,6 +42101,15 @@ def raw_tptp_replay_proof(
             )
             if proof is not None:
                 return proof
+            if rule in {"ennf_transformation", "nnf_transformation"}:
+                proof = raw_explosive_implication_double_negated_exists_proof(
+                    ambient_basic_logic_expr(parent_expr),
+                    ambient_basic_logic_expr(target_expr),
+                    raw_tptp_claim_name(parents[0]),
+                    variable_sorts,
+                )
+                if proof is not None:
+                    return proof
     proof = raw_tptp_dne_implication_parent_proof(proposition, parents, propositions_by_name, variable_sorts)
     if proof is not None:
         return proof
