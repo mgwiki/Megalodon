@@ -39743,6 +39743,9 @@ def raw_tptp_replay_proof_from_step(
     propositions_by_name: dict[str, str],
     variable_sorts: dict[str, str],
 ) -> str | None:
+    reflexivity_proof = raw_reflexivity_proof_for_proposition(proposition)
+    if reflexivity_proof is not None:
+        return reflexivity_proof
     for rule in raw_tptp_replay_rule_candidates(step):
         proof = raw_tptp_replay_proof(
             rule,
