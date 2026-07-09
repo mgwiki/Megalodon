@@ -34774,6 +34774,26 @@ def raw_tptp_superposition_proof(
             )
             if proof is not None:
                 return proof
+            proof = raw_instantiated_parent_clause_resolution_proof(
+                early_parent_exprs[0][0],
+                early_target_expr,
+                early_parent_exprs[0][1],
+                early_parent_exprs[1][0],
+                early_parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_instantiated_parent_clause_resolution_proof(
+                early_parent_exprs[1][0],
+                early_target_expr,
+                early_parent_exprs[1][1],
+                early_parent_exprs[0][0],
+                early_parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
             proof = raw_quantified_equality_unit_context_superposition_proof(
                 early_parent_exprs[0][0],
                 early_target_expr,
@@ -36445,10 +36465,16 @@ def raw_instantiated_binary_clause_resolution_proof(
     first_renamed_literals = raw_clause_literals(first_renamed)
     second_renamed_literals = raw_clause_literals(second_renamed)
     binder_names = {name for name, _sort in first_renamed_binders + second_renamed_binders}
+    local_sorts = {
+        **variable_sorts,
+        **{name: sort for name, sort in target_binders},
+        **{name: sort for name, sort in first_renamed_binders},
+        **{name: sort for name, sort in second_renamed_binders},
+    }
 
     def unify_literal_with_target(pattern: Expr, target_literal: Expr, subst: dict[str, Expr]) -> bool:
         original = dict(subst)
-        if unify_expr_variables(pattern, target_literal, binder_names, subst):
+        if match_expr_with_eta_instantiation(pattern, target_literal, binder_names, subst, local_sorts):
             return True
         subst.clear()
         subst.update(original)
@@ -36457,9 +36483,9 @@ def raw_instantiated_binary_clause_resolution_proof(
         if pattern_sides is None or target_sides is None:
             return False
         trial = dict(original)
-        if not unify_expr_variables(pattern_sides[0], target_sides[1], binder_names, trial):
+        if not match_expr_with_eta_instantiation(pattern_sides[0], target_sides[1], binder_names, trial, local_sorts):
             return False
-        if not unify_expr_variables(pattern_sides[1], target_sides[0], binder_names, trial):
+        if not match_expr_with_eta_instantiation(pattern_sides[1], target_sides[0], binder_names, trial, local_sorts):
             return False
         subst.clear()
         subst.update(trial)
@@ -36469,16 +36495,40 @@ def raw_instantiated_binary_clause_resolution_proof(
         original = dict(subst)
         left_premises, left_conclusion = split_arrows(left)
         if len(left_premises) == 1 and false_eliminator_expr(left_conclusion):
-            if unify_expr_variables(left_premises[0], right, binder_names, subst):
+            if match_expr_with_eta_instantiation(left_premises[0], right, binder_names, subst, local_sorts):
                 return True
             subst.clear()
             subst.update(original)
+            left_sides = equality_like_sides(left_premises[0])
+            right_sides = equality_like_sides(right)
+            if left_sides is not None and right_sides is not None:
+                for right_first, right_second in (right_sides, (right_sides[1], right_sides[0])):
+                    trial = dict(original)
+                    if not match_expr_with_eta_instantiation(left_sides[0], right_first, binder_names, trial, local_sorts):
+                        continue
+                    if not match_expr_with_eta_instantiation(left_sides[1], right_second, binder_names, trial, local_sorts):
+                        continue
+                    subst.clear()
+                    subst.update(trial)
+                    return True
         right_premises, right_conclusion = split_arrows(right)
         if len(right_premises) == 1 and false_eliminator_expr(right_conclusion):
-            if unify_expr_variables(left, right_premises[0], binder_names, subst):
+            if match_expr_with_eta_instantiation(left, right_premises[0], binder_names, subst, local_sorts):
                 return True
             subst.clear()
             subst.update(original)
+            left_sides = equality_like_sides(left)
+            right_sides = equality_like_sides(right_premises[0])
+            if left_sides is not None and right_sides is not None:
+                for right_first, right_second in (right_sides, (right_sides[1], right_sides[0])):
+                    trial = dict(original)
+                    if not match_expr_with_eta_instantiation(left_sides[0], right_first, binder_names, trial, local_sorts):
+                        continue
+                    if not match_expr_with_eta_instantiation(left_sides[1], right_second, binder_names, trial, local_sorts):
+                        continue
+                    subst.clear()
+                    subst.update(trial)
+                    return True
         return False
 
     def complete_substitution(subst: dict[str, Expr]) -> dict[str, Expr] | None:
@@ -36583,6 +36633,101 @@ def raw_instantiated_binary_clause_resolution_proof(
                 for name, sort in reversed(target_binders):
                     proof = f"(fun {name} :{sort} => {proof})"
                 return proof
+    return None
+
+
+def raw_instantiated_parent_clause_resolution_proof(
+    first: Expr,
+    target: Expr,
+    first_proof: str,
+    second: Expr,
+    second_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    target_binders, target_body = collect_foralls(target)
+    if len(target_binders) > 8:
+        return None
+    if len(raw_clause_literals(target_body)) > 16:
+        return None
+
+    def unique_options(options: Iterable[tuple[Expr, str]], limit: int) -> list[tuple[Expr, str]]:
+        result: list[tuple[Expr, str]] = []
+        seen: set[str] = set()
+        for expr, proof in options:
+            if proof_search_timed_out():
+                break
+            key = expr_key(expr)
+            if key in seen:
+                continue
+            if len(raw_clause_literals(collect_foralls(expr)[1])) > 16:
+                continue
+            seen.add(key)
+            result.append((expr, proof))
+            if len(result) >= limit:
+                break
+        return result
+
+    first_options = unique_options(
+        (
+            (first, first_proof),
+            *raw_instantiated_forall_clause_options(first, first_proof, target_body, second),
+            *raw_sort_instantiated_forall_clause_options(
+                first,
+                first_proof,
+                target_body,
+                second,
+                (target_body, second),
+                variable_sorts,
+                limit=8,
+            ),
+        ),
+        16,
+    )
+    second_options = unique_options(
+        (
+            (second, second_proof),
+            *raw_instantiated_forall_clause_options(second, second_proof, target_body, first),
+            *raw_sort_instantiated_forall_clause_options(
+                second,
+                second_proof,
+                target_body,
+                first,
+                (target_body, first),
+                variable_sorts,
+                limit=8,
+            ),
+        ),
+        16,
+    )
+
+    for first_clause, first_clause_proof in first_options:
+        if proof_search_timed_out():
+            return None
+        for second_clause, second_clause_proof in second_options:
+            if not raw_clauses_have_complement(first_clause, second_clause):
+                continue
+            proof = raw_flat_clause_resolution_proof(
+                first_clause,
+                target_body,
+                first_clause_proof,
+                second_clause,
+                second_clause_proof,
+                avoid_text=f"{first_proof} {second_proof}",
+            )
+            if proof is None:
+                proof = raw_flat_clause_resolution_proof(
+                    second_clause,
+                    target_body,
+                    second_clause_proof,
+                    first_clause,
+                    first_clause_proof,
+                    avoid_text=f"{second_proof} {first_proof}",
+                )
+            if proof is None:
+                continue
+            for name, sort in reversed(target_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
+            return proof
     return None
 
 
