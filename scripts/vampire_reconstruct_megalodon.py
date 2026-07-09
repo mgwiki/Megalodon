@@ -41646,9 +41646,6 @@ def raw_tptp_replay_proof(
         if previous_deadline is not None:
             PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 1.0)
         try:
-            proof = raw_tptp_superposition_proof(proposition, parents, propositions_by_name, variable_sorts, replay_step)
-            if proof is not None:
-                return proof
             relaxed_sorts = raw_tptp_relaxed_superposition_sorts(
                 variable_sorts,
                 " ".join([proposition, *(propositions_by_name.get(parent, "") for parent in parents)]),
@@ -41656,8 +41653,12 @@ def raw_tptp_replay_proof(
             if relaxed_sorts != variable_sorts:
                 if previous_deadline is not None:
                     PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 1.0)
-                return raw_tptp_superposition_proof(proposition, parents, propositions_by_name, relaxed_sorts, None)
-            return None
+                proof = raw_tptp_superposition_proof(proposition, parents, propositions_by_name, relaxed_sorts, None)
+                if proof is not None:
+                    return proof
+            if previous_deadline is not None:
+                PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 1.0)
+            return raw_tptp_superposition_proof(proposition, parents, propositions_by_name, variable_sorts, replay_step)
         finally:
             if previous_deadline is not None:
                 PROOF_SEARCH_STATE.deadline = previous_deadline
@@ -43306,6 +43307,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             replay_proof = None
         if replay_proof is not None:
             replay_proof = instantiate_global_axiom_proofs(replay_proof)
+            replay_proof = use_ambient_basic_logic_text(replay_proof)
         lines.append(f"claim {claim_name}: {proposition}.")
         if replay_proof is None:
             bridge_block = None
