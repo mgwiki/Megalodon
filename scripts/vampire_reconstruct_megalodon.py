@@ -1579,6 +1579,7 @@ def expr_sort(expr: Expr, variable_sorts: dict[str, str]) -> str | None:
             "vampire_false": "prop",
             "True": "prop",
             "False": "prop",
+            "Empty": "set",
             "vampire_eq_set": "set->set->prop",
             "vampire_eq_prop": "prop->prop->prop",
             "vampire_or": "prop->prop->prop",
@@ -29143,6 +29144,13 @@ def raw_tptp_forward_demodulation_proof(
             and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, candidate)
         )
 
+    proof = raw_source_prefix_instantiated_forall_proof(first, target, first_name, (second, target), variable_sorts)
+    if fallback_ok(proof):
+        return proof
+    proof = raw_source_prefix_instantiated_forall_proof(second, target, second_name, (first, target), variable_sorts)
+    if fallback_ok(proof):
+        return proof
+
     proof = raw_lambda_function_parent_equality_rewrite_proof(
         first,
         target,
@@ -29990,6 +29998,74 @@ def raw_target_extended_quantified_parent_equality_rewrite_clause_proof(
     for name, sort in reversed(target_binders):
         body_proof = f"(fun {name} :{sort} => {body_proof})"
     return body_proof
+
+
+def raw_source_prefix_instantiated_forall_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    candidate_exprs: tuple[Expr, ...],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if len(source_binders) <= len(target_binders) or len(source_binders) > 8:
+        return None
+    if any(source_sort != target_sort for (_, source_sort), (_, target_sort) in zip(source_binders, target_binders)):
+        return None
+    prefix_subst = {
+        source_name: Expr("var", value=target_name)
+        for (source_name, _), (target_name, _) in zip(source_binders, target_binders)
+    }
+    renamed_source_body = substitute_expr(source_body, prefix_subst)
+    extra_binders = source_binders[len(target_binders) :]
+    local_sorts = {
+        **variable_sorts,
+        **{name: sort for name, sort in target_binders},
+        **{name: sort for name, sort in extra_binders},
+    }
+    candidate_lists: list[list[Expr]] = []
+    for name, sort in extra_binders:
+        candidates = raw_candidate_terms_for_sort(
+            (target_body, renamed_source_body, *candidate_exprs),
+            sort,
+            local_sorts,
+        )
+        candidates = [candidate for candidate in candidates if name not in expr_variables(candidate)]
+        candidates.sort(key=lambda candidate: (0 if candidate.kind == "var" else 1, len(expr_text(candidate)), expr_text(candidate)))
+        if not candidates:
+            return None
+        candidate_lists.append(candidates[:16])
+    attempts = 0
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    for values in itertools.product(*candidate_lists):
+        attempts += 1
+        if attempts > 256 or proof_search_timed_out():
+            return None
+        subst = {name: value for (name, _), value in zip(extra_binders, values)}
+        key = tuple(sorted((name, expr_key(value)) for name, value in subst.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        instantiated_body = beta_normalize_expr(substitute_expr(renamed_source_body, subst))
+        proof = source_proof
+        for target_name, _ in target_binders:
+            proof = f"({proof_head(proof)} {target_name})"
+        for name, _ in extra_binders:
+            proof = f"({proof_head(proof)} {proof_arg_text(subst[name])})"
+        body_proof: str | None
+        if expr_same_mod_alpha(instantiated_body, target_body):
+            body_proof = proof
+        else:
+            body_proof = raw_deep_formula_transform_proof(instantiated_body, target_body, proof, local_sorts)
+            if body_proof is None and raw_clause_replay_budget_ok(instantiated_body, target_body):
+                body_proof = raw_clause_transform_proof(instantiated_body, target_body, proof)
+        if body_proof is None:
+            continue
+        for name, sort in reversed(target_binders):
+            body_proof = f"(fun {name} :{sort} => {body_proof})"
+        return body_proof
+    return None
 
 
 def raw_negative_implication_equality_rewrite_proof(
