@@ -20322,6 +20322,91 @@ def raw_tptp_parent_complement_false_proof(
     return None
 
 
+def raw_tptp_dne_implication_parent_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    target = ambient_basic_logic_expr(target)
+    parsed: list[tuple[str, Expr, str]] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        if parent_proposition is None:
+            continue
+        parent_expr = parse_expr(parent_proposition)
+        if parent_expr is not None:
+            parsed.append((parent, ambient_basic_logic_expr(parent_expr), raw_tptp_claim_name(parent)))
+    if len(parsed) > 8:
+        return None
+
+    def dne_witness(expr: Expr) -> Expr | None:
+        premises, conclusion = split_arrows(expr)
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
+            return None
+        neg_premises, neg_conclusion = split_arrows(premises[0])
+        if len(neg_premises) != 1 or not false_eliminator_expr(neg_conclusion):
+            return None
+        return neg_premises[0]
+
+    for _dne_parent, dne_expr, dne_proof in parsed:
+        witness = dne_witness(dne_expr)
+        if witness is None:
+            continue
+        for _imp_parent, implication, implication_proof in parsed:
+            implication_premises, implication_conclusion = split_arrows(implication)
+            if not implication_premises or not expr_same_mod_alpha(implication_premises[0], witness):
+                continue
+            rebuilt_conclusion = implication_conclusion
+            for premise in reversed(implication_premises[1:]):
+                rebuilt_conclusion = Expr("arrow", args=(premise, rebuilt_conclusion))
+            if len(expr_text(witness)) + len(expr_text(implication_conclusion)) + len(expr_text(target)) > 12000:
+                continue
+            consequent_text = proof_arg_text(rebuilt_conclusion)
+            witness_text = proof_arg_text(witness)
+            witness_name = fresh_identifier("Hwitness", witness_text, consequent_text, implication_proof, dne_proof)
+            not_witness_name = fresh_identifier("HnotWitness", witness_text, consequent_text, witness_name)
+            false_proof = f"({proof_head(dne_proof)} {not_witness_name})"
+            consequent_proof = (
+                f"(xm {witness_text} {consequent_text} "
+                f"(fun {witness_name} :{witness_text} => {proof_head(implication_proof)} {witness_name}) "
+                f"(fun {not_witness_name} :{witness_text} -> False => {false_proof} {consequent_text}))"
+            )
+            if expr_same_mod_alpha(rebuilt_conclusion, target):
+                return consequent_proof
+            transformed = raw_prop_implication_transform_proof(
+                rebuilt_conclusion,
+                target,
+                consequent_proof,
+                variable_sorts,
+            )
+            if transformed is not None:
+                return transformed
+            transformed = raw_fool_transform_component_proof(
+                rebuilt_conclusion,
+                target,
+                consequent_proof,
+                variable_sorts,
+            )
+            if transformed is not None:
+                return transformed
+            transformed = raw_deep_formula_transform_proof(
+                rebuilt_conclusion,
+                target,
+                consequent_proof,
+                variable_sorts,
+            )
+            if transformed is not None:
+                return transformed
+            transformed = raw_clause_transform_proof(rebuilt_conclusion, target, consequent_proof)
+            if transformed is not None:
+                return transformed
+    return None
+
+
 def raw_tptp_trivial_inequality_removal_proof(
     proposition: str,
     parents: list[str],
@@ -35943,6 +36028,9 @@ def raw_tptp_replay_proof(
     if rule == "rat":
         return raw_tptp_rat_proof(proposition, parents, propositions_by_name)
     proof = raw_tptp_parent_complement_false_proof(proposition, parents, propositions_by_name)
+    if proof is not None:
+        return proof
+    proof = raw_tptp_dne_implication_parent_proof(proposition, parents, propositions_by_name, variable_sorts)
     if proof is not None:
         return proof
     if rule == "superposition":
