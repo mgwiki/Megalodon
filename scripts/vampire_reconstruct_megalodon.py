@@ -5695,7 +5695,7 @@ def raw_tptp_exported_definition_chain_proof(
                 equality, equality_proof = function_equality
         add_equality(equality, equality_proof)
 
-    def finish(states: list[tuple[Expr, str]]) -> str | None:
+    def finish(states: list[tuple[Expr, str]], *, expensive: bool = True) -> str | None:
         normalized_target = beta_normalize_expr(target)
         for current, proof in states:
             if expr_same_mod_alpha(current, target):
@@ -5703,6 +5703,8 @@ def raw_tptp_exported_definition_chain_proof(
             normalized_current = beta_normalize_expr(current)
             if expr_same_mod_alpha(normalized_current, normalized_target):
                 return proof
+            if not expensive:
+                continue
             transformed = raw_clause_transform_proof(current, target, proof)
             if transformed is not None:
                 return transformed
@@ -5745,10 +5747,17 @@ def raw_tptp_exported_definition_chain_proof(
                     break
             if next_states:
                 states = next_states
-                proof = finish(states)
+                proof = finish(states, expensive=False)
                 if proof is not None:
                     return proof
         return finish(states)
+
+    proof = apply_sequence(equalities)
+    if proof is not None:
+        return proof
+    proof = apply_sequence(list(reversed(equalities)))
+    if proof is not None:
+        return proof
 
     if fields.get("rule", "").replace(" ", "_") == "definition_folding":
         source_proof = raw_tptp_claim_name(parents[0])
@@ -5764,13 +5773,6 @@ def raw_tptp_exported_definition_chain_proof(
             )
             if proof is not None:
                 return proof
-
-    proof = apply_sequence(equalities)
-    if proof is not None:
-        return proof
-    proof = apply_sequence(list(reversed(equalities)))
-    if proof is not None:
-        return proof
 
     states: list[tuple[Expr, str]] = [(source, raw_tptp_claim_name(parents[0]))]
     for equality, equality_proof in equalities:
