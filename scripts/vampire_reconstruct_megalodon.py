@@ -2132,6 +2132,33 @@ def raw_tptp_two_literal_rewrite_substitution_proposition(substitutions: tuple[s
     if len(first_literals) > 8 or len(second_literals) > 8:
         return None
 
+    def negative_core(literal: Expr) -> Expr | None:
+        premises, conclusion = split_arrows(literal)
+        if len(premises) == 1 and false_eliminator_expr(conclusion):
+            return premises[0]
+        return None
+
+    for first_index, first_literal in enumerate(first_literals):
+        for second_index, second_literal in enumerate(second_literals):
+            first_negative = negative_core(first_literal)
+            second_negative = negative_core(second_literal)
+            complementary = (
+                first_negative is not None
+                and expr_same_mod_alpha(beta_normalize_expr(first_negative), beta_normalize_expr(second_literal))
+            ) or (
+                second_negative is not None
+                and expr_same_mod_alpha(beta_normalize_expr(second_negative), beta_normalize_expr(first_literal))
+            )
+            if not complementary:
+                continue
+            literals = [
+                *(literal for index, literal in enumerate(first_literals) if index != first_index),
+                *(literal for index, literal in enumerate(second_literals) if index != second_index),
+            ]
+            clause = raw_clause_from_literals(literals)
+            if clause is not None:
+                return expr_text(clause)
+
     def equality_orientations(literal: Expr) -> list[tuple[Expr, Expr, str]]:
         sides = equality_like_sides(literal)
         if sides is None:
@@ -2165,6 +2192,61 @@ def raw_tptp_two_literal_rewrite_substitution_proposition(substitutions: tuple[s
                     if clause is not None:
                         return expr_text(clause)
     return None
+
+
+def raw_rewrap_foralls(binders: list[tuple[str, str]], body: Expr) -> Expr:
+    result = body
+    for name, sort in reversed(binders):
+        result = Expr("forall", value=name, sort=sort, args=(result,))
+    return result
+
+
+def raw_false_clause_literal(literal: Expr) -> bool:
+    if false_eliminator_expr(literal):
+        return True
+    premises, conclusion = split_arrows(literal)
+    if len(premises) != 1 or not false_eliminator_expr(conclusion):
+        return False
+    sides = equality_like_sides(premises[0])
+    if sides is None:
+        return false_eliminator_expr(premises[0])
+    return expr_same_mod_alpha(beta_normalize_expr(sides[0]), beta_normalize_expr(sides[1]))
+
+
+def raw_placeholder_simplification_proposition(
+    rule: str,
+    parent_proposition: str,
+) -> str | None:
+    parent = parse_expr(parent_proposition)
+    if parent is None:
+        return None
+    binders, body = collect_foralls(parent)
+    literals = raw_clause_literals(body)
+    simplified: list[Expr] = []
+    changed = False
+    if rule == "duplicate literal removal":
+        seen: set[str] = set()
+        for literal in literals:
+            key = alpha_expr_key(beta_normalize_expr(literal))
+            if key in seen:
+                changed = True
+                continue
+            seen.add(key)
+            simplified.append(literal)
+    elif rule in {"trivial inequality removal", "equality resolution"}:
+        for literal in literals:
+            if raw_false_clause_literal(literal):
+                changed = True
+                continue
+            simplified.append(literal)
+    else:
+        return None
+    clause = raw_clause_from_literals(simplified)
+    if clause is None:
+        clause = Expr("var", value="vampire_false")
+    if not changed:
+        return parent_proposition
+    return expr_text(raw_rewrap_foralls(binders, clause))
 
 
 def raw_tptp_rewrite_substitution_proposition(
@@ -2498,6 +2580,37 @@ def megalodon_replay_steps(
         proposition = raw_tptp_two_literal_rewrite_substitution_proposition(substitutions.get(step, ()))
         if proposition is not None:
             derived_propositions[step] = proposition
+
+    for step, proposition_candidates in substitutions.items():
+        if step in derived_propositions or step in direct_propositions or step not in placeholder_steps:
+            continue
+        details = step_details.get(step)
+        if details is None or details[0] not in {"trivial inequality removal", "equality resolution"}:
+            continue
+        rule, _parents, _step_sorts = details
+        for candidate in proposition_candidates:
+            proposition = raw_placeholder_simplification_proposition(rule, candidate)
+            if proposition is not None and proposition != candidate:
+                derived_propositions[step] = proposition
+                break
+
+    changed_placeholder_simplification = True
+    while changed_placeholder_simplification:
+        changed_placeholder_simplification = False
+        for step, details in step_details.items():
+            if step in derived_propositions or step in direct_propositions or step not in placeholder_steps:
+                continue
+            rule, parents, _step_sorts = details
+            if len(parents) != 1:
+                continue
+            parent_proposition = direct_propositions.get(parents[0]) or derived_propositions.get(parents[0])
+            if parent_proposition is None:
+                continue
+            proposition = raw_placeholder_simplification_proposition(rule, parent_proposition)
+            if proposition is None:
+                continue
+            derived_propositions[step] = proposition
+            changed_placeholder_simplification = True
 
     for step, (rule, parents, step_sorts) in step_details.items():
         if step in steps:
@@ -31830,8 +31943,37 @@ def raw_match_literal_mod_equality_symmetry(
     variables: set[str],
     subst: dict[str, Expr],
 ) -> bool:
+    def prop_true_component(expr: Expr) -> Expr | None:
+        if (
+            expr.kind != "app"
+            or len(expr.args) != 3
+            or expr.args[0].kind != "var"
+            or expr.args[0].value != "vampire_eq_prop"
+        ):
+            return None
+        left, right = expr.args[1], expr.args[2]
+        if expr_key(left) in {"True", "vampire_true"}:
+            return right
+        if expr_key(right) in {"True", "vampire_true"}:
+            return left
+        return None
+
     if match_expr_with_alpha_instantiation(pattern, concrete, variables, subst):
         return True
+    pattern_prop = prop_true_component(pattern)
+    if pattern_prop is not None:
+        trial = dict(subst)
+        if match_expr_with_alpha_instantiation(pattern_prop, concrete, variables, trial):
+            subst.clear()
+            subst.update(trial)
+            return True
+    concrete_prop = prop_true_component(concrete)
+    if concrete_prop is not None:
+        trial = dict(subst)
+        if match_expr_with_alpha_instantiation(pattern, concrete_prop, variables, trial):
+            subst.clear()
+            subst.update(trial)
+            return True
     ambient_pattern = ambient_basic_logic_expr(pattern)
     ambient_concrete = ambient_basic_logic_expr(concrete)
     if (
@@ -31860,6 +32002,20 @@ def raw_match_literal_mod_equality_symmetry(
     ):
         pattern_sides = equality_like_sides(pattern_premises[0])
         concrete_sides = equality_like_sides(concrete_premises[0])
+        pattern_prop = prop_true_component(pattern_premises[0])
+        if pattern_prop is not None:
+            trial = dict(subst)
+            if match_expr_with_alpha_instantiation(pattern_prop, concrete_premises[0], variables, trial):
+                subst.clear()
+                subst.update(trial)
+                return True
+        concrete_prop = prop_true_component(concrete_premises[0])
+        if concrete_prop is not None:
+            trial = dict(subst)
+            if match_expr_with_alpha_instantiation(pattern_premises[0], concrete_prop, variables, trial):
+                subst.clear()
+                subst.update(trial)
+                return True
         if pattern_sides is not None and concrete_sides is not None:
             trial = dict(subst)
             if (
