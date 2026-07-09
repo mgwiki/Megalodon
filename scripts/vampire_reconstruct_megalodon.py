@@ -29064,6 +29064,16 @@ def raw_tptp_forward_demodulation_proof(
     )
     if fallback_ok(proof):
         return proof
+    proof = raw_quantified_common_side_equality_composition_proof(
+        first,
+        first_name,
+        second,
+        second_name,
+        target,
+        variable_sorts,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
 
     proof = raw_negative_implication_quantified_equality_rewrite_proof(
         first,
