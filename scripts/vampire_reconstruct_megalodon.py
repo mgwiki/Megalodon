@@ -980,6 +980,30 @@ def split_tptp_application(text: str) -> list[str] | None:
     return [part for part in parts if part]
 
 
+def split_tptp_call_application(text: str) -> list[str] | None:
+    text = strip_balanced_parens(text)
+    match = re.match(r"^(?P<head>[$_A-Za-z][$_A-Za-z0-9']*)\s*\(", text)
+    if match is None:
+        return None
+    paren_start = match.end() - 1
+    depth = 0
+    end = None
+    for index, char in enumerate(text[paren_start:], start=paren_start):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                end = index
+                break
+    if end is None or text[end + 1 :].strip():
+        return None
+    args = split_top_level_commas(text[paren_start + 1 : end])
+    if args is None:
+        return None
+    return [match.group("head").strip(), *args]
+
+
 def decode_tptp_identifier(name: str) -> str:
     name = name.strip()
     if name.startswith("c_"):
@@ -1150,7 +1174,9 @@ def tptp_term_to_expr(text: str, variable_sorts: dict[str, str] | None = None) -
         for name, sort in reversed(variables):
             body = Expr("lambda", value=name, sort=sort, args=(body,))
         return body
-    parts = split_tptp_application(text)
+    parts = split_tptp_call_application(text)
+    if parts is None:
+        parts = split_tptp_application(text)
     if parts is None:
         return None
     if not parts:
@@ -20120,6 +20146,186 @@ def raw_tptp_exported_urr_trace_proof(
     return None
 
 
+def raw_prop_false_from_prop_equality_proof(
+    equality_literal: Expr,
+    equality_proof: str,
+    premise: Expr,
+    premise_proof: str,
+    target_false: Expr,
+) -> str | None:
+    sides = app_args(equality_literal, "vampire_eq_prop", 2)
+    if sides is None:
+        return None
+    left, right = sides
+    if expr_same_mod_alpha(left, premise) and false_eliminator_expr(right):
+        false_proof = f"({proof_head(equality_proof)} (fun Qprop :prop => Qprop) {proof_term_text(premise_proof)})"
+        return raw_false_to_expr_proof(false_proof, target_false)
+    if false_eliminator_expr(left) and expr_same_mod_alpha(right, premise):
+        symmetric = raw_eq_symmetry_proof(equality_proof, left, "prop")
+        false_proof = f"({proof_head(symmetric)} (fun Qprop :prop => Qprop) {proof_term_text(premise_proof)})"
+        return raw_false_to_expr_proof(false_proof, target_false)
+    return None
+
+
+def raw_prop_false_unit_resulting_resolution_proof(
+    target_body: Expr,
+    source: Expr,
+    source_proof: str,
+    resolver_option_lists: list[list[tuple[Expr, str]]],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    target_premises, target_conclusion = split_arrows(target_body)
+    if len(target_premises) != 1 or not false_eliminator_expr(target_conclusion):
+        return None
+    target_premise = target_premises[0]
+    source_binders, source_body = collect_foralls(source)
+    if not source_binders or len(source_binders) > 6:
+        return None
+    binder_sorts = {name: sort for name, sort in source_binders}
+    binder_names = set(binder_sorts)
+    source_literals = raw_clause_literals(source_body)
+    if not source_literals or len(source_literals) > 16:
+        return None
+
+    resolver_units: list[tuple[Expr, str]] = []
+    for options in resolver_option_lists:
+        for resolver_clause, resolver_clause_proof in options[:16]:
+            if collect_foralls(resolver_clause)[0]:
+                continue
+            resolver_literals = raw_clause_literals(resolver_clause)
+            if len(resolver_literals) != 1:
+                continue
+            resolver_units.append((resolver_clause, resolver_clause_proof))
+    if not resolver_units:
+        return None
+
+    def prop_false_substitutions() -> list[dict[str, Expr]]:
+        substitutions: list[dict[str, Expr]] = []
+        seen: set[tuple[tuple[str, str], ...]] = set()
+        false_expr = Expr("var", value="False")
+        for literal in source_literals:
+            sides = app_args(literal, "vampire_eq_prop", 2)
+            if sides is None:
+                continue
+            for pattern_side, prop_side in ((sides[0], sides[1]), (sides[1], sides[0])):
+                if prop_side.kind != "var" or prop_side.value not in binder_names:
+                    continue
+                assert prop_side.value is not None
+                if not equivalent_sorts(binder_sorts.get(prop_side.value), "prop"):
+                    continue
+                trial: dict[str, Expr] = {prop_side.value: false_expr}
+                if not match_expr_with_alpha_instantiation(pattern_side, target_premise, binder_names, trial):
+                    continue
+                flatten_substitution(trial)
+                key = tuple(sorted((name, expr_key(value)) for name, value in trial.items() if name in binder_names))
+                if key in seen:
+                    continue
+                seen.add(key)
+                substitutions.append(trial)
+        return substitutions
+
+    def complete_substitution(seed: dict[str, Expr]) -> dict[str, Expr] | None:
+        literal_order = sorted(
+            range(len(source_literals)),
+            key=lambda index: -len(expr_variables(source_literals[index]) & binder_names),
+        )
+        attempts = 0
+
+        def search(order_index: int, subst: dict[str, Expr]) -> dict[str, Expr] | None:
+            nonlocal attempts
+            if proof_search_timed_out() or attempts > 512:
+                return None
+            flatten_substitution(subst)
+            if binder_names <= subst.keys():
+                if any(expr_variables(value) & binder_names for value in subst.values()):
+                    return None
+                return subst
+            if order_index >= len(literal_order):
+                return None
+            literal = substitute_expr(source_literals[literal_order[order_index]], subst)
+            if not (expr_variables(literal) & binder_names):
+                return search(order_index + 1, subst)
+            for resolver_clause, _resolver_clause_proof in resolver_units:
+                for resolver_literal in raw_clause_literals(resolver_clause):
+                    attempts += 1
+                    trial = dict(subst)
+                    if raw_match_complementary_literals(literal, resolver_literal, binder_names, trial):
+                        found = search(order_index + 1, trial)
+                        if found is not None:
+                            return found
+            return search(order_index + 1, subst)
+
+        return search(0, dict(seed))
+
+    target_false = target_conclusion
+    target_premise_name = fresh_identifier(
+        "HurrPrem",
+        expr_text(target_body),
+        expr_text(source),
+        source_proof,
+    )
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_false)
+    try:
+        for seed in prop_false_substitutions():
+            subst = complete_substitution(seed)
+            if subst is None or not binder_names <= subst.keys():
+                continue
+            instantiated_source = flatten_applications(substitute_expr(source_body, subst))
+            instantiated_source_proof = source_proof
+            for name, _sort in source_binders:
+                instantiated_source_proof = f"({proof_head(instantiated_source_proof)} {proof_arg_text(subst[name])})"
+
+            def branch_handler(literal: Expr, literal_proof: str) -> str | None:
+                if false_eliminator_expr(literal):
+                    return raw_false_to_expr_proof(literal_proof, target_false)
+                prop_false = raw_prop_false_from_prop_equality_proof(
+                    literal,
+                    literal_proof,
+                    target_premise,
+                    target_premise_name,
+                    target_false,
+                )
+                if prop_false is not None:
+                    return prop_false
+                for resolver_clause, resolver_clause_proof in resolver_units:
+                    proof = raw_complement_resolution_proof(
+                        literal,
+                        literal_proof,
+                        resolver_clause,
+                        resolver_clause_proof,
+                        target_false,
+                    )
+                    if proof is not None:
+                        return proof
+                    proof = raw_complement_resolution_proof(
+                        resolver_clause,
+                        resolver_clause_proof,
+                        literal,
+                        literal_proof,
+                        target_false,
+                    )
+                    if proof is not None:
+                        return proof
+                return None
+
+            body_proof = raw_clause_cases_with_handler(
+                instantiated_source,
+                instantiated_source_proof,
+                branch_handler,
+                avoid_text=target_premise_name,
+            )
+            if body_proof is not None:
+                return f"(fun {target_premise_name} :{proof_arg_text(target_premise)} => {body_proof})"
+        return None
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_tptp_unit_resulting_resolution_proof(
     proposition: str,
     parents: list[str],
@@ -20219,6 +20425,18 @@ def raw_tptp_unit_resulting_resolution_proof(
             options.sort(key=instantiated_clause_priority)
             resolver_option_lists[index] = options[:16]
         resolver_candidate_exprs = [option[0] for options in resolver_option_lists for option in options[:16]]
+
+        prop_false_proof = raw_prop_false_unit_resulting_resolution_proof(
+            target_body,
+            source,
+            source_proof,
+            resolver_option_lists,
+            variable_sorts,
+        )
+        if prop_false_proof is not None:
+            for name, sort in reversed(target_binders):
+                prop_false_proof = f"(fun {name} :{sort} => {prop_false_proof})"
+            return prop_false_proof
 
         def direct_unit_resulting_resolution_proof() -> str | None:
             source_binders, source_body = collect_foralls(source)
@@ -23011,28 +23229,64 @@ def raw_not_exists_conjunction_to_forall_or_negated_components_proof(
     if not source_components or len(target_literals) != len(source_components):
         return None
 
-    matched: list[tuple[Expr, Expr, str]] = []
+    matched: list[tuple[Expr, Expr, str | None]] = []
     used_components: set[int] = set()
     local_sorts = {**variable_sorts, target_name: target_sort}
+
+    def negative_component_to_literal(component: Expr, literal: Expr, negative_proof: str) -> str | None:
+        negative_component = Expr("arrow", args=(component, Expr("var", value="False")))
+        proof = raw_negated_forall_implication_to_exists_conjunction_proof(
+            negative_component,
+            literal,
+            negative_proof,
+            local_sorts,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_not_exists_conjunction_to_forall_or_negated_components_proof(
+            component,
+            literal,
+            negative_proof,
+            local_sorts,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_not_exists_negative_to_forall_positive_proof(
+            component,
+            literal,
+            negative_proof,
+            local_sorts,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_deep_formula_transform_proof(negative_component, literal, negative_proof, local_sorts)
+        if proof is not None:
+            return proof
+        return raw_clause_transform_proof(negative_component, literal, negative_proof)
+
     for index, literal in enumerate(target_literals):
         premises, conclusion = split_arrows(literal)
-        if len(premises) != 1 or not false_eliminator_expr(conclusion):
-            return None
         for component_index, component in enumerate(source_components):
             if component_index in used_components:
                 continue
-            target_to_component = raw_deep_formula_transform_proof(
-                premises[0],
-                component,
-                f"HnegPrem{index}",
-                local_sorts,
-            )
-            if target_to_component is None:
-                target_to_component = raw_clause_transform_proof(premises[0], component, f"HnegPrem{index}")
-            if target_to_component is None and expr_same_mod_alpha(premises[0], component):
-                target_to_component = f"HnegPrem{index}"
-            if target_to_component is None:
-                continue
+            target_to_component: str | None = None
+            if len(premises) == 1 and false_eliminator_expr(conclusion):
+                target_to_component = raw_deep_formula_transform_proof(
+                    premises[0],
+                    component,
+                    f"HnegPrem{index}",
+                    local_sorts,
+                )
+                if target_to_component is None:
+                    target_to_component = raw_clause_transform_proof(premises[0], component, f"HnegPrem{index}")
+                if target_to_component is None and expr_same_mod_alpha(premises[0], component):
+                    target_to_component = f"HnegPrem{index}"
+                if target_to_component is None:
+                    continue
+            else:
+                negative_literal = negative_component_to_literal(component, literal, f"HnotPos{index}")
+                if negative_literal is None:
+                    continue
             matched.append((component, literal, target_to_component))
             used_components.add(component_index)
             break
@@ -23066,10 +23320,15 @@ def raw_not_exists_conjunction_to_forall_or_negated_components_proof(
         next_proof = search(index + 1)
         if next_proof is None:
             return None
-        negative_literal_proof = (
-            f"(fun HnegPrem{index} :{proof_arg_text(literal.args[0])} => "
-            f"{negative_name} {proof_term_text(target_to_component)})"
-        )
+        if target_to_component is None:
+            negative_literal_proof = negative_component_to_literal(source_component, literal, negative_name)
+            if negative_literal_proof is None:
+                return None
+        else:
+            negative_literal_proof = (
+                f"(fun HnegPrem{index} :{proof_arg_text(literal.args[0])} => "
+                f"{negative_name} {proof_term_text(target_to_component)})"
+            )
         negative_intro = raw_or_intro_literal_at(target_body, index, negative_literal_proof)
         if negative_intro is None:
             return None
@@ -34133,6 +34392,81 @@ def raw_skolem_double_negated_rewrite_proof(
     return None
 
 
+def raw_fast_skolemised_formula_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rewrites: tuple[RawSkolemRewrite, ...],
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 16 or proof_search_timed_out():
+        return None
+    if expr_same_mod_alpha(source, target):
+        return source_proof
+
+    for rewrite in rewrites:
+        instance = raw_skolem_rewrite_instance_proof(
+            source,
+            rewrite,
+            source_proof,
+            variable_sorts,
+            target,
+        )
+        if instance is None:
+            continue
+        rewritten, rewritten_proof = instance
+        proof = raw_fast_skolemised_formula_transform_proof(
+            rewritten,
+            target,
+            rewritten_proof,
+            rewrites,
+            variable_sorts,
+            depth + 1,
+        )
+        if proof is not None:
+            return proof
+
+    source_conjuncts = vampire_and_parts(source)
+    target_conjuncts = vampire_and_parts(target)
+    if source_conjuncts is not None and target_conjuncts is not None:
+        for left_target, right_target in (target_conjuncts, (target_conjuncts[1], target_conjuncts[0])):
+            left_name = fresh_identifier("HLsk", expr_text(source), expr_text(target), source_proof, str(depth))
+            right_name = fresh_identifier("HRsk", expr_text(source), expr_text(target), source_proof, left_name, str(depth))
+            left_proof = raw_fast_skolemised_formula_transform_proof(
+                source_conjuncts[0],
+                left_target,
+                left_name,
+                rewrites,
+                variable_sorts,
+                depth + 1,
+            )
+            if left_proof is None:
+                continue
+            right_proof = raw_fast_skolemised_formula_transform_proof(
+                source_conjuncts[1],
+                right_target,
+                right_name,
+                rewrites,
+                variable_sorts,
+                depth + 1,
+            )
+            if right_proof is None:
+                continue
+            if expr_same_mod_alpha(left_target, target_conjuncts[0]):
+                return (
+                    f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                    f"(fun {left_name} {right_name} => "
+                    f"(fun P K => K {proof_term_text(left_proof)} {proof_term_text(right_proof)})))"
+                )
+            return (
+                f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                f"(fun {left_name} {right_name} => "
+                f"(fun P K => K {proof_term_text(right_proof)} {proof_term_text(left_proof)})))"
+            )
+    return None
+
+
 def raw_skolemised_formula_transform_proof(
     source: Expr,
     target: Expr,
@@ -34145,6 +34479,15 @@ def raw_skolemised_formula_transform_proof(
         return None
     if len(expr_text(source)) + len(expr_text(target)) > 18000:
         return None
+    fast = raw_fast_skolemised_formula_transform_proof(
+        source,
+        target,
+        source_proof,
+        rewrites,
+        variable_sorts,
+    )
+    if fast is not None:
+        return fast
     double_negated = raw_skolem_double_negated_rewrite_proof(
         source,
         target,
@@ -34411,6 +34754,15 @@ def raw_tptp_skolemisation_proof(
     rewrites = raw_tptp_skolem_rewrites(parents[1:], propositions_by_name)
     if not rewrites:
         return None
+    proof = raw_skolem_double_negated_rewrite_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+        rewrites,
+        variable_sorts,
+    )
+    if proof is not None:
+        return proof
     proof = raw_double_negated_skolemised_target_proof(
         source,
         target,
@@ -37703,7 +38055,7 @@ def raw_tptp_replay_proof(
     if rule == "skolemisation":
         previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
         if previous_deadline is not None:
-            PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 2.0)
+            PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 5.0)
         try:
             proof = raw_tptp_skolemisation_proof(proposition, parents, propositions_by_name, variable_sorts)
             if proof is not None:
