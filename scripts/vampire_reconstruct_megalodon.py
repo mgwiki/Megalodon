@@ -21423,7 +21423,7 @@ def raw_ennf_positive_consequent_transform_proof(
             (0, target_or[0], target_or[1]),
             (1, target_or[1], target_or[0]),
         ):
-            premise_name = fresh_identifier("HennfPrem", expr_text(source), expr_text(target), str(depth))
+            premise_name = fresh_identifier(f"HennfPrem{depth}", expr_text(source), expr_text(target), str(depth))
             positive_source = f"({proof_head(source_proof)} {premise_name})"
             positive_branch = raw_ennf_positive_consequent_transform_proof(
                 source_conclusion,
@@ -21436,7 +21436,7 @@ def raw_ennf_positive_consequent_transform_proof(
                 positive_branch = raw_clause_transform_proof(source_conclusion, target_positive, positive_source)
             if positive_branch is None:
                 continue
-            not_name = fresh_identifier("HnotEnnfPrem", expr_text(source), expr_text(target), premise_name)
+            not_name = fresh_identifier(f"HnotEnnfPrem{depth}", expr_text(source), expr_text(target), premise_name)
             negative_branch = raw_negative_formula_transform_proof(
                 source_premise,
                 target_negative,
@@ -29160,6 +29160,20 @@ def raw_negative_implication_equality_rewrite_proof(
                 f"(fun Htarget :{proof_arg_text(target_premises[0])} => "
                 f"{proof_head(source_proof)} {proof_term_text(transported)})"
             )
+        rewritten_sides = equality_like_sides(rewritten)
+        source_sides = equality_like_sides(source_premises[0])
+        if (
+            rewritten_sides is not None
+            and source_sides is not None
+            and expr_same_mod_alpha(rewritten_sides[0], source_sides[1])
+            and expr_same_mod_alpha(rewritten_sides[1], source_sides[0])
+        ):
+            symmetry_sort = raw_equality_transport_sort(rewritten_sides[0], rewritten_sides[1], {})
+            symmetric = raw_eq_symmetry_proof(transported, rewritten_sides[0], symmetry_sort)
+            return (
+                f"(fun Htarget :{proof_arg_text(target_premises[0])} => "
+                f"{proof_head(source_proof)} {proof_term_text(symmetric)})"
+            )
     return None
 
 
@@ -32175,6 +32189,239 @@ def raw_negative_prop_argument_superposition_proof(
     return None
 
 
+def raw_guarded_negative_equality_superposition_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality_clause: Expr,
+    equality_clause_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    target_binders, target_body = collect_foralls(target)
+    source_binders, source_body = collect_foralls(source)
+    equality_binders, equality_body = collect_foralls(equality_clause)
+    if len(source_binders) > 6 or len(equality_binders) > 6 or len(target_binders) > 8:
+        return None
+    target_literals = raw_clause_literals(target_body)
+    equality_literals = raw_clause_literals(equality_body)
+    if len(target_literals) > 8 or len(equality_literals) != 2:
+        return None
+
+    equality_binder_names = {name for name, _sort in equality_binders}
+    target_sort_by_name = {name: sort for name, sort in target_binders}
+    used_names = (
+        set(target_sort_by_name)
+        | equality_binder_names
+        | expr_variables(target_body)
+        | expr_bound_variables(target_body)
+        | expr_variables(equality_body)
+        | expr_bound_variables(equality_body)
+    )
+    source_renames: dict[str, str] = {}
+    renamed_source_binders: list[tuple[str, str]] = []
+    for name, sort in source_binders:
+        replacement = name
+        if replacement in used_names:
+            replacement = fresh_identifier(f"S_{name}", expr_text(source), expr_text(target), expr_text(equality_clause))
+            while replacement in used_names:
+                replacement = fresh_identifier(replacement, expr_text(source), expr_text(target), expr_text(equality_clause))
+        used_names.add(replacement)
+        source_renames[name] = replacement
+        renamed_source_binders.append((replacement, sort))
+    if any(source_renames[name] != name for name, _sort in source_binders):
+        source_body = rename_expr_variables(source_body, source_renames)
+    source_binders = renamed_source_binders
+    source_binder_names = {name for name, _sort in source_binders}
+
+    def negative_premise(literal: Expr) -> Expr | None:
+        premises, conclusion = split_arrows(literal)
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
+            return None
+        return premises[0]
+
+    target_negative_literals = [
+        (literal, premise)
+        for literal in target_literals
+        for premise in [negative_premise(literal)]
+        if premise is not None
+    ]
+    source_negative_literals = [
+        (literal, premise)
+        for literal in raw_clause_literals(source_body)
+        for premise in [negative_premise(literal)]
+        if premise is not None
+    ]
+    if not target_negative_literals or not source_negative_literals:
+        return None
+
+    def complete_substitution(subst: dict[str, Expr]) -> dict[str, Expr] | None:
+        completed = dict(subst)
+        flatten_substitution(completed)
+        for name, sort in equality_binders:
+            if name in completed:
+                continue
+            if name in target_sort_by_name and equivalent_sorts(sort, target_sort_by_name[name]):
+                completed[name] = Expr("var", value=name)
+        if not (equality_binder_names | source_binder_names) <= completed.keys():
+            return None
+        for name, value in completed.items():
+            if name in equality_binder_names | source_binder_names and expr_variables(value) & source_binder_names:
+                return None
+        return completed
+
+    for equality_index, equality_literal in enumerate(equality_literals):
+        equality_sides = equality_like_sides(equality_literal)
+        if equality_sides is None:
+            continue
+        guard_literal = equality_literals[1 - equality_index]
+        for target_negative, _target_premise in target_negative_literals:
+            for target_guard in target_literals:
+                if expr_same_mod_alpha(target_guard, target_negative):
+                    continue
+                guard_subst: dict[str, Expr] = {}
+                if not match_expr_with_alpha_instantiation(
+                    guard_literal,
+                    target_guard,
+                    equality_binder_names,
+                    guard_subst,
+                ):
+                    continue
+                for old_pattern, new_pattern in (
+                    (equality_sides[0], equality_sides[1]),
+                    (equality_sides[1], equality_sides[0]),
+                ):
+                    old_inst = substitute_expr(old_pattern, guard_subst)
+                    new_inst = substitute_expr(new_pattern, guard_subst)
+                    for source_negative, source_premise in source_negative_literals:
+                        for source_subterm in expr_subterms(source_premise, limit=128):
+                            trial = dict(guard_subst)
+                            if not unify_expr_variables(
+                                old_inst,
+                                source_subterm,
+                                equality_binder_names | source_binder_names,
+                                trial,
+                            ):
+                                continue
+                            completed = complete_substitution(trial)
+                            if completed is None:
+                                continue
+                            instantiated_new = substitute_expr(new_inst, completed)
+                            if not any(
+                                expr_same_mod_alpha(instantiated_new, target_subterm)
+                                for target_subterm in expr_subterms(_target_premise, limit=128)
+                            ):
+                                continue
+                            source_inst = flatten_applications(substitute_expr(source_body, completed))
+                            equality_inst = flatten_applications(substitute_expr(equality_body, completed))
+                            source_inst_proof = source_proof
+                            ok = True
+                            for renamed_name, _sort in source_binders:
+                                value = completed.get(renamed_name)
+                                if value is None:
+                                    ok = False
+                                    break
+                                source_inst_proof = f"({proof_head(source_inst_proof)} {proof_arg_text(value)})"
+                            if not ok:
+                                continue
+                            equality_inst_proof = equality_clause_proof
+                            for name, _sort in equality_binders:
+                                value = completed.get(name)
+                                if value is None:
+                                    ok = False
+                                    break
+                                equality_inst_proof = f"({proof_head(equality_inst_proof)} {proof_arg_text(value)})"
+                            if not ok:
+                                continue
+                            proof = raw_guarded_negative_equality_superposition_instantiated_proof(
+                                source_inst,
+                                target_body,
+                                source_inst_proof,
+                                equality_inst,
+                                equality_inst_proof,
+                                variable_sorts,
+                            )
+                            if proof is None:
+                                continue
+                            for name, sort in reversed(target_binders):
+                                proof = f"(fun {name} :{sort} => {proof})"
+                            return proof
+    return None
+
+
+def raw_guarded_negative_equality_superposition_instantiated_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality_clause: Expr,
+    equality_clause_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    target_literals = raw_clause_literals(target)
+    target_text = proof_arg_text(target)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+
+    def negative_premise(literal: Expr) -> Expr | None:
+        premises, conclusion = split_arrows(literal)
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
+            return None
+        return premises[0]
+
+    def source_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
+        source_negative = negative_premise(source_literal)
+        if source_negative is None:
+            return raw_literal_to_clause_proof(source_literal, target, source_literal_proof, target_literals, ())
+
+        def equality_handler(equality_literal: Expr, equality_literal_proof: str) -> str | None:
+            direct = raw_literal_to_clause_proof(equality_literal, target, equality_literal_proof, target_literals, ())
+            if direct is not None:
+                return direct
+            equality_sides = equality_like_sides(equality_literal)
+            if equality_sides is None:
+                return None
+            equality_sort = raw_equality_transport_sort(equality_sides[0], equality_sides[1], variable_sorts)
+            for target_literal in target_literals:
+                if negative_premise(target_literal) is None:
+                    continue
+                rewritten_negative = raw_negative_implication_equality_rewrite_proof(
+                    source_literal,
+                    target_literal,
+                    source_literal_proof,
+                    equality_sides[0],
+                    equality_sides[1],
+                    equality_literal_proof,
+                    equality_sort,
+                )
+                if rewritten_negative is None:
+                    continue
+                proof = raw_literal_to_clause_proof(
+                    target_literal,
+                    target,
+                    rewritten_negative,
+                    target_literals,
+                    (),
+                )
+                if proof is not None:
+                    return proof
+            return None
+
+        return raw_clause_cases_with_handler(
+            equality_clause,
+            equality_clause_proof,
+            equality_handler,
+            avoid_text=source_literal_proof,
+        )
+
+    try:
+        return raw_clause_cases_with_handler(source, source_proof, source_handler)
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_negative_equality_clause_superposition_proof(
     source: Expr,
     target: Expr,
@@ -32184,6 +32431,16 @@ def raw_negative_equality_clause_superposition_proof(
     variable_sorts: dict[str, str] | None = None,
 ) -> str | None:
     variable_sorts = variable_sorts or {}
+    guarded_proof = raw_guarded_negative_equality_superposition_proof(
+        source,
+        target,
+        source_proof,
+        equality_clause,
+        equality_clause_proof,
+        variable_sorts,
+    )
+    if guarded_proof is not None:
+        return guarded_proof
     target_binders, target_body = collect_foralls(target)
     if len(raw_clause_literals(source)) > 8 or len(raw_clause_literals(equality_clause)) > 4 or len(raw_clause_literals(target_body)) > 12:
         return None
@@ -37105,6 +37362,22 @@ def raw_tptp_definition_bridge_unfolded_premise_proof(
     target_sides = equality_like_sides(target_premise)
     if source_sides is None or target_sides is None:
         return None
+    synthetic_parent = (
+        target_premise_proof[2:]
+        if target_premise_proof.startswith("R_")
+        else target_premise_proof
+    )
+    if raw_tptp_claim_name(synthetic_parent) == target_premise_proof:
+        augmented_propositions = dict(propositions_by_name)
+        augmented_propositions[synthetic_parent] = expr_text(target_premise)
+        chain_proof = raw_tptp_parent_equality_chain_rewrite_proof(
+            expr_text(source_premise),
+            [synthetic_parent, *parents[1:]],
+            augmented_propositions,
+            variable_sorts,
+        )
+        if chain_proof is not None:
+            return chain_proof
     if not expr_same_mod_alpha(source_sides[0], target_sides[0]):
         return None
     known_true_proofs = raw_tptp_known_true_prop_proofs(parents[1:], propositions_by_name, variable_sorts)
