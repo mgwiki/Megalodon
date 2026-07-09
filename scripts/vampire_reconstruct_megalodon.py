@@ -1144,6 +1144,25 @@ def tptp_sort_to_megalodon(sort: str) -> str:
 
 def parse_tptp_lambda(text: str) -> tuple[list[tuple[str, str]], str] | None:
     text = strip_balanced_parens(text)
+    db_match = re.match(r"^\^\s*(?P<name>db(?P<index>[0-9]+))\s*:", text)
+    if db_match is not None:
+        depth = 0
+        end = None
+        for index, char in enumerate(text[db_match.end() :], start=db_match.end()):
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth < 0:
+                    return None
+            elif char == "." and depth == 0:
+                end = index
+                break
+        if end is None:
+            return None
+        sort = tptp_sort_to_megalodon(text[db_match.end() : end])
+        binder = f"{db_match.group('name')}_{db_match.group('index')}"
+        return [(binder, sort)], text[end + 1 :].strip()
     match = re.match(r"^\^\s*\[", text)
     if match is None:
         return None
@@ -32201,6 +32220,15 @@ def raw_tptp_extra_formula_expr(
     variable_sorts: dict[str, str],
     lambda_sort_hints: dict[str, str] | None = None,
 ) -> Expr | None:
+    db_formula = fields.get(f"{key}_db_indices")
+    if db_formula is not None:
+        db_proposition = tptp_formula_to_megalodon_proposition(db_formula, variable_sorts)
+        if db_proposition is not None:
+            expr = parse_expr(db_proposition)
+            if expr is not None:
+                expr = surface_direct_step_expr(expr, variable_sorts, lambda_sort_hints=lambda_sort_hints)
+                lowered = parse_expr(lower_function_equality_proposition(expr, variable_sorts))
+                return lowered if lowered is not None else expr
     proposition = fields.get(f"{key}_proposition")
     if proposition is not None:
         expr = parse_expr(proposition)
@@ -32233,6 +32261,13 @@ def raw_tptp_extra_lambda_sort_hints(
             sort = fields.get(f"{prefix}_lambda_{index}_sort")
             if not text or not sort:
                 continue
+            db_text = fields.get(f"{prefix}_lambda_{index}_db_indices")
+            if db_text:
+                db_expr = tptp_term_to_expr(db_text, {})
+                if db_expr is not None:
+                    result[expr_key(db_expr)] = sort
+                    result[expr_text(db_expr)] = sort
+                result[db_text] = sort
             expr = parse_expr(text)
             if expr is not None:
                 result[expr_key(expr)] = sort
@@ -32273,13 +32308,22 @@ def raw_tptp_extra_lambda_exprs(
     result: list[Expr] = []
     seen: set[str] = set()
     for index in range(max(0, count)):
+        db_text = fields.get(f"{prefix}_lambda_{index}_db_indices")
         text = fields.get(f"{prefix}_lambda_{index}")
+        expr = tptp_term_to_expr(db_text, variable_sorts) if db_text else None
+        if expr is None and db_text:
+            proposition = tptp_formula_to_megalodon_proposition(db_text, variable_sorts)
+            expr = parse_expr(proposition) if proposition is not None else None
         if not text:
-            continue
-        expr = parse_expr(text)
-        if expr is None:
-            continue
-        lambda_sort = fields.get(f"{prefix}_lambda_{index}_sort")
+            if expr is None:
+                continue
+            lambda_sort = fields.get(f"{prefix}_lambda_{index}_sort")
+        else:
+            if expr is None:
+                expr = parse_expr(text)
+            if expr is None:
+                continue
+            lambda_sort = fields.get(f"{prefix}_lambda_{index}_sort")
         lambda_sort_hints = raw_tptp_extra_lambda_sort_hints(fields, prefix)
         expr = surface_direct_step_expr(expr, variable_sorts, expected_sort=lambda_sort, lambda_sort_hints=lambda_sort_hints)
         lowered = parse_expr(lower_function_equality_proposition(expr, variable_sorts))
@@ -42488,6 +42532,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         local_set_reflexivity_roots(entries, set(all_local_set_definitions)),
     )
     local_set_definition_names = set(local_set_definitions)
+    source_local_set_names = set(all_local_set_definitions)
 
     lines = [
         "// Raw Vampire TPTP reconstruction skeleton.",
@@ -42532,7 +42577,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             declared_sort is None or equivalent_sorts(declared_sort[1], source_sorts.get(declared_name))
         ):
             continue
-        if declared_name is not None and declared_name in local_set_definition_names:
+        if declared_name is not None and declared_name in source_local_set_names:
             continue
         if declared_name is not None and declared_name in declared_names:
             continue
@@ -42552,7 +42597,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             continue
         if name in source_declared_sort_names:
             continue
-        if name in local_set_definition_names:
+        if name in source_local_set_names:
             continue
         if equivalent_sorts(sort, source_sorts.get(name)):
             continue
@@ -42567,6 +42612,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         lines.append(f"Variable {name}:{sort}.")
         declared_names.add(name)
     for name, (sort, body) in local_set_definitions.items():
+        if name in source_local_set_names:
+            continue
         if name in declared_names:
             continue
         lines.append(f"Definition {name} : {sort} := {body}.")
@@ -42590,7 +42637,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             declared_sort is None or equivalent_sorts(declared_sort[1], source_sorts.get(declared_name))
         ):
             continue
-        if declared_name is not None and declared_name in local_set_definition_names:
+        if declared_name is not None and declared_name in source_local_set_names:
             continue
         if declared_name is not None and declared_name in declared_names:
             continue
