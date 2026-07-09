@@ -2138,6 +2138,13 @@ def raw_tptp_two_literal_rewrite_substitution_proposition(substitutions: tuple[s
             return premises[0]
         return None
 
+    def negative_equality_orientations(literal: Expr) -> list[tuple[Expr, Expr, str]]:
+        core = negative_core(literal)
+        if core is None:
+            return []
+        orientations = equality_orientations(core)
+        return orientations
+
     for first_index, first_literal in enumerate(first_literals):
         for second_index, second_literal in enumerate(second_literals):
             first_negative = negative_core(first_literal)
@@ -2170,6 +2177,58 @@ def raw_tptp_two_literal_rewrite_substitution_proposition(substitutions: tuple[s
             and literal.args[0].value == "vampire_eq_prop"
         ) else "set"
         return [(sides[0], sides[1], sort), (sides[1], sides[0], sort)]
+
+    for first_index, first_literal in enumerate(first_literals):
+        for first_outer, first_shared, first_sort in negative_equality_orientations(first_literal):
+            for second_index, second_literal in enumerate(second_literals):
+                for second_outer, second_shared, second_sort in equality_orientations(second_literal):
+                    if first_sort != second_sort:
+                        continue
+                    if not expr_same_mod_alpha(
+                        beta_normalize_expr(first_shared),
+                        beta_normalize_expr(second_shared),
+                    ):
+                        continue
+                    negative_equality = Expr(
+                        "arrow",
+                        args=(
+                            raw_equality_goal_expr(second_outer, first_outer, first_sort),
+                            Expr("var", value="vampire_false"),
+                        ),
+                    )
+                    literals = [
+                        negative_equality,
+                        *(literal for index, literal in enumerate(first_literals) if index != first_index),
+                        *(literal for index, literal in enumerate(second_literals) if index != second_index),
+                    ]
+                    clause = raw_clause_from_literals(literals)
+                    if clause is not None:
+                        return expr_text(clause)
+        for first_outer, first_shared, first_sort in equality_orientations(first_literal):
+            for second_index, second_literal in enumerate(second_literals):
+                for second_outer, second_shared, second_sort in negative_equality_orientations(second_literal):
+                    if first_sort != second_sort:
+                        continue
+                    if not expr_same_mod_alpha(
+                        beta_normalize_expr(first_shared),
+                        beta_normalize_expr(second_shared),
+                    ):
+                        continue
+                    negative_equality = Expr(
+                        "arrow",
+                        args=(
+                            raw_equality_goal_expr(first_outer, second_outer, first_sort),
+                            Expr("var", value="vampire_false"),
+                        ),
+                    )
+                    literals = [
+                        negative_equality,
+                        *(literal for index, literal in enumerate(first_literals) if index != first_index),
+                        *(literal for index, literal in enumerate(second_literals) if index != second_index),
+                    ]
+                    clause = raw_clause_from_literals(literals)
+                    if clause is not None:
+                        return expr_text(clause)
 
     for first_index, first_literal in enumerate(first_literals):
         for first_outer, first_shared, first_sort in equality_orientations(first_literal):
@@ -2207,6 +2266,8 @@ def raw_false_clause_literal(literal: Expr) -> bool:
     premises, conclusion = split_arrows(literal)
     if len(premises) != 1 or not false_eliminator_expr(conclusion):
         return False
+    if premises[0].kind == "var" and premises[0].value in {"True", "vampire_true"}:
+        return True
     sides = equality_like_sides(premises[0])
     if sides is None:
         return false_eliminator_expr(premises[0])
@@ -10560,7 +10621,11 @@ def direct_proof_expr(expr: Expr) -> str | None:
     premises, conclusion = split_arrows(body)
     binder_names = [name for name, _ in binders]
     equality_sides = equality_like_sides(conclusion)
-    if not premises and equality_sides is not None and expr_key(equality_sides[0]) == expr_key(equality_sides[1]):
+    if (
+        not premises
+        and equality_sides is not None
+        and expr_same_mod_alpha(beta_normalize_expr(equality_sides[0]), beta_normalize_expr(equality_sides[1]))
+    ):
         args = binder_names + ["Q", "H"]
         return f"({' '.join(['fun'] + args + ['=>', 'H'])})"
 
@@ -18570,7 +18635,7 @@ def raw_false_literal_elimination_proof(branch: Expr, target: Expr, branch_proof
     premises, conclusion = split_arrows(branch)
     if len(premises) != 1 or not false_eliminator_expr(conclusion):
         return None
-    if premises[0].kind == "var" and premises[0].value == "vampire_true":
+    if raw_true_expr(premises[0]):
         premise_proof = "(fun P H => H)"
     else:
         premise_proof = direct_proof_expr(premises[0])
@@ -21457,6 +21522,14 @@ def raw_tptp_trivial_inequality_removal_proof(
         return None
     ambient_source = ambient_basic_logic_expr(source)
     ambient_target = ambient_basic_logic_expr(target)
+    false_clause = raw_quantified_false_clause_elimination_proof(
+        ambient_source,
+        ambient_target,
+        raw_tptp_claim_name(parents[0]),
+        {},
+    )
+    if false_clause is not None:
+        return false_clause
     impossible_disjunct = raw_impossible_prop_equality_disjunct_elimination_proof(
         ambient_source,
         ambient_target,
@@ -21476,6 +21549,59 @@ def raw_tptp_trivial_inequality_removal_proof(
     if not raw_clause_replay_budget_ok(source, target, max_literals=max_literals, max_literal_product=max_literal_product):
         return None
     return raw_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
+
+
+def raw_quantified_false_clause_elimination_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if not false_eliminator_expr(target):
+        return None
+    binders, body = collect_foralls(source)
+    if not binders or len(binders) > 4:
+        return raw_clause_transform_proof(source, target, source_proof)
+    local_sorts = {**variable_sorts, **{name: sort for name, sort in binders}}
+    candidate_exprs = (body, target)
+    candidate_lists: list[list[Expr]] = []
+    for name, sort in binders:
+        candidates: list[Expr] = []
+        inhabitant = raw_simple_inhabitant_for_sort(sort)
+        if inhabitant is not None:
+            candidates.append(inhabitant)
+        candidates.extend(raw_candidate_terms_for_sort(candidate_exprs, sort, local_sorts))
+        deduped: list[Expr] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            if name in expr_variables(candidate):
+                continue
+            key = expr_key(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(candidate)
+            if len(deduped) >= 8:
+                break
+        if not deduped:
+            return None
+        candidate_lists.append(deduped)
+    attempts = 0
+    for values in itertools.product(*candidate_lists):
+        attempts += 1
+        if attempts > 256 or proof_search_timed_out():
+            return None
+        subst = {name: value for (name, _sort), value in zip(binders, values)}
+        instantiated = beta_normalize_expr(substitute_expr(body, subst))
+        if not raw_clause_replay_budget_ok(instantiated, target, max_literals=16, max_literal_product=256):
+            continue
+        proof = source_proof
+        for name, _sort in binders:
+            proof = f"({proof_head(proof)} {proof_arg_text(subst[name])})"
+        transformed = raw_clause_transform_proof(instantiated, target, proof)
+        if transformed is not None:
+            return transformed
+    return None
 
 
 def raw_vampire_eq_set_to_native_equality_proof(source: Expr, target: Expr, source_proof: str) -> str | None:
@@ -29350,10 +29476,14 @@ def raw_tptp_forward_demodulation_proof(
     if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
         return proof
 
+    allowed_synthetic_db = set(
+        RAW_TPTP_SYNTHETIC_DB_RE.findall(" ".join((proposition, first_proposition, second_proposition)))
+    )
+
     def fallback_ok(candidate: str | None) -> bool:
         return (
             candidate is not None
-            and not raw_tptp_replay_proof_has_synthetic_db(candidate)
+            and not (set(RAW_TPTP_SYNTHETIC_DB_RE.findall(candidate)) - allowed_synthetic_db)
             and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, candidate)
         )
 
@@ -33492,20 +33622,13 @@ def raw_negative_reflexive_equality_parent_contradiction_proof(
 ) -> str | None:
     source_binders, source_body = collect_foralls(source)
     target_binders, target_body = collect_foralls(target)
-    if not source_binders or len(source_binders) > 4 or len(target_binders) > 8:
+    if len(source_binders) > 4 or len(target_binders) > 8:
         return None
     source_premises, source_conclusion = split_arrows(source_body)
-    target_premises, target_conclusion = split_arrows(target_body)
     if (
         len(source_premises) != 1
-        or len(target_premises) != 1
         or not false_eliminator_expr(source_conclusion)
-        or not false_eliminator_expr(target_conclusion)
     ):
-        return None
-    target_premise = target_premises[0]
-    target_sides = equality_like_sides(target_premise)
-    if target_sides is None:
         return None
     local_sorts = {**variable_sorts, **{name: sort for name, sort in target_binders}}
     candidate_terms: dict[str, list[Expr]] = {sort: [] for _name, sort in source_binders}
@@ -33522,11 +33645,13 @@ def raw_negative_reflexive_equality_parent_contradiction_proof(
             seen_by_sort[binder_sort].add(key)
             candidate_terms[binder_sort].append(term)
 
+    for _name, sort in source_binders:
+        inhabitant = raw_simple_inhabitant_for_sort(sort)
+        if inhabitant is not None:
+            add_candidate(inhabitant, sort)
     for name, sort in target_binders:
         add_candidate(Expr("var", value=name), sort)
-    for side in target_sides:
-        add_candidate(side, "set")
-    for term in expr_subterms(target_premise, limit=64):
+    for term in expr_subterms(target_body, limit=96):
         add_candidate(term)
     for sort, terms in candidate_terms.items():
         terms.sort(key=candidate_term_priority)
@@ -33563,7 +33688,7 @@ def raw_negative_reflexive_equality_parent_contradiction_proof(
         for name, _sort in source_binders:
             false_proof = f"({proof_head(false_proof)} {proof_arg_text(subst[name])})"
         false_proof = f"({proof_head(false_proof)} (fun Q H => H))"
-        proof = f"(fun Htarget :{proof_arg_text(target_premise)} => {proof_term_text(false_proof)})"
+        proof = raw_false_to_expr_proof(false_proof, target_body)
         for name, sort in reversed(target_binders):
             proof = f"(fun {name} :{sort} => {proof})"
         if not raw_tptp_replay_proof_is_unsafe("superposition", expr_text(target), proof):
