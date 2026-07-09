@@ -35367,6 +35367,33 @@ def raw_tptp_superposition_proof(
             )
             if proof is not None:
                 return proof
+            _early_target_binders, early_target_body = collect_foralls(early_target_expr)
+            early_target_literals = raw_clause_literals(early_target_body)
+            early_parent_literal_counts = [
+                len(raw_clause_literals(collect_foralls(parent_expr)[1]))
+                for parent_expr, _parent_proof in early_parent_exprs
+            ]
+            if (
+                any(raw_false_clause_literal(literal) for literal in early_target_literals)
+                and len(early_target_literals) <= 4
+                and max(early_parent_literal_counts, default=0) <= 3
+                and raw_clause_replay_budget_ok(
+                    early_parent_exprs[0][0],
+                    early_parent_exprs[1][0],
+                    early_target_expr,
+                    max_literals=8,
+                    max_literal_product=96,
+                )
+            ):
+                proof = raw_tptp_unit_resulting_resolution_proof(
+                    proposition,
+                    parents,
+                    propositions_by_name,
+                    variable_sorts,
+                    replay_step,
+                )
+                if proof is not None:
+                    return proof
             proof = raw_quantified_equality_unit_context_superposition_proof(
                 early_parent_exprs[0][0],
                 early_target_expr,
@@ -35675,6 +35702,66 @@ def raw_tptp_superposition_proof(
         if proof is not None:
             return proof
     return None
+
+
+def raw_superposition_false_literal_unit_resolution_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+    replay_step: MegalodonReplayStep | None = None,
+) -> str | None:
+    if len(parents) != 2:
+        return None
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    _target_binders, target_body = collect_foralls(target)
+    target_literals = raw_clause_literals(target_body)
+    if (
+        len(target_literals) > 4
+        or not any(raw_false_clause_literal(literal) for literal in target_literals)
+    ):
+        return None
+    parent_exprs: list[Expr] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+        if parent_expr is None:
+            return None
+        parent_exprs.append(parent_expr)
+    parent_literal_counts = [
+        len(raw_clause_literals(collect_foralls(parent_expr)[1]))
+        for parent_expr in parent_exprs
+    ]
+    if (
+        max(parent_literal_counts, default=0) > 3
+        or not raw_clause_replay_budget_ok(
+            parent_exprs[0],
+            parent_exprs[1],
+            target,
+            max_literals=8,
+            max_literal_product=96,
+        )
+    ):
+        return None
+    previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+    if previous_deadline is not None:
+        PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 4.0)
+    try:
+        return raw_tptp_unit_resulting_resolution_proof(
+            proposition,
+            parents,
+            propositions_by_name,
+            variable_sorts,
+            replay_step,
+        )
+    finally:
+        if previous_deadline is None:
+            if hasattr(PROOF_SEARCH_STATE, "deadline"):
+                delattr(PROOF_SEARCH_STATE, "deadline")
+        else:
+            PROOF_SEARCH_STATE.deadline = previous_deadline
 
 
 def raw_tptp_constant_for_sort(sort: str, variable_sorts: dict[str, str], avoid: set[str]) -> Expr | None:
@@ -41980,6 +42067,164 @@ def raw_tptp_definition_bridge_block(
     ]
 
 
+def raw_tptp_pointwise_function_clause_definition_rewrite_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parents) < 2:
+        return None
+    source_proposition = propositions_by_name.get(parents[0])
+    source = parse_expr(source_proposition) if source_proposition is not None else None
+    target = parse_expr(proposition)
+    if source is None or target is None:
+        return None
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if len(source_binders) != len(target_binders):
+        return None
+    if any(source_sort != target_sort for (_source_name, source_sort), (_target_name, target_sort) in zip(source_binders, target_binders)):
+        return None
+    target_literals = raw_clause_literals(target_body)
+    if len(target_literals) > 8 or len(raw_clause_literals(source_body)) > 8:
+        return None
+    source_subst = {
+        source_name: Expr("var", value=target_name)
+        for (source_name, _source_sort), (target_name, _target_sort) in zip(source_binders, target_binders)
+    }
+    source_body = substitute_expr(source_body, source_subst)
+    source_proof = raw_tptp_claim_name(parents[0])
+    for target_name, _target_sort in target_binders:
+        source_proof = f"({proof_head(source_proof)} {target_name})"
+
+    def function_application(expr: Expr, function: Expr) -> tuple[Expr, ...] | None:
+        flattened = flatten_applications(expr)
+        if flattened.kind != "app" or len(flattened.args) < 2:
+            return None
+        if not expr_same_mod_alpha(flattened.args[0], function):
+            return None
+        return flattened.args[1:]
+
+    def rewrite_function_applications(expr: Expr, old_function: Expr, new_function: Expr) -> tuple[Expr, bool]:
+        args = function_application(expr, old_function)
+        if args is not None:
+            return append_application_args(new_function, list(args)), True
+        if not expr.args:
+            return expr, False
+        changed = False
+        rewritten_args: list[Expr] = []
+        for arg in expr.args:
+            rewritten_arg, arg_changed = rewrite_function_applications(arg, old_function, new_function)
+            rewritten_args.append(rewritten_arg)
+            changed = changed or arg_changed
+        if not changed:
+            return expr, False
+        return Expr(expr.kind, value=expr.value, args=tuple(rewritten_args), sort=expr.sort), True
+
+    def function_context(expr: Expr, function: Expr, hole: Expr) -> tuple[Expr, bool]:
+        args = function_application(expr, function)
+        if args is not None:
+            return append_application_args(hole, list(args)), True
+        if not expr.args:
+            return expr, False
+        changed = False
+        rewritten_args: list[Expr] = []
+        for arg in expr.args:
+            rewritten_arg, arg_changed = function_context(arg, function, hole)
+            rewritten_args.append(rewritten_arg)
+            changed = changed or arg_changed
+        if not changed:
+            return expr, False
+        return Expr(expr.kind, value=expr.value, args=tuple(rewritten_args), sort=expr.sort), True
+
+    function_equalities: list[tuple[Expr, str, str]] = []
+    seen_equalities: set[str] = set()
+    for parent in parents[1:]:
+        equality_proposition = propositions_by_name.get(parent)
+        equality = parse_expr(equality_proposition) if equality_proposition is not None else None
+        if equality is None:
+            continue
+        pointwise = raw_pointwise_set_function_equality(equality, raw_tptp_claim_name(parent))
+        if pointwise is None:
+            continue
+        equality_expr, equality_proof = pointwise
+        sides = equality_like_sides(equality_expr)
+        if sides is None:
+            continue
+        for left, right, proof in (
+            (sides[0], sides[1], equality_proof),
+            (
+                sides[1],
+                sides[0],
+                raw_eq_symmetry_proof(
+                    equality_proof,
+                    sides[0],
+                    expr_sort(sides[0], variable_sorts) or raw_equality_transport_sort(sides[0], sides[1], variable_sorts),
+                ),
+            ),
+        ):
+            function_sort = expr_sort(left, variable_sorts) or expr_sort(right, variable_sorts)
+            if function_sort is None or "->" not in function_sort:
+                continue
+            key = f"{expr_key(left)}->{expr_key(right)}"
+            if key in seen_equalities:
+                continue
+            seen_equalities.add(key)
+            function_equalities.append((Expr("eq", args=(left, right)), proof, function_sort))
+    if not function_equalities:
+        return None
+
+    def transported_literal_proof(source_literal: Expr, target_literal: Expr, source_literal_proof: str) -> str | None:
+        for equality_expr, equality_proof, function_sort in function_equalities:
+            sides = equality_like_sides(equality_expr)
+            if sides is None:
+                continue
+            rewritten, changed = rewrite_function_applications(source_literal, sides[0], sides[1])
+            if not changed or not expr_same_mod_alpha(beta_normalize_expr(rewritten), beta_normalize_expr(target_literal)):
+                continue
+            hole_name = fresh_identifier("zz", expr_text(source_literal), expr_text(target_literal), expr_text(equality_expr))
+            hole = Expr("var", value=hole_name)
+            context, context_changed = function_context(source_literal, sides[0], hole)
+            if not context_changed:
+                continue
+            return (
+                f"{proof_term_text(equality_proof)} "
+                f"(fun {hole_name} :{binder_sort_text(function_sort)} => {proof_arg_text(context)}) "
+                f"{proof_term_text(source_literal_proof)}"
+            )
+        return None
+
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+    try:
+        def handler(source_literal: Expr, source_literal_proof: str) -> str | None:
+            direct = raw_literal_to_clause_proof(source_literal, target_body, source_literal_proof, target_literals, ())
+            if direct is not None:
+                return direct
+            for index, target_literal in enumerate(target_literals):
+                transported = transported_literal_proof(source_literal, target_literal, source_literal_proof)
+                if transported is None:
+                    continue
+                introduced = raw_or_intro_literal_at(target_body, index, transported)
+                if introduced is not None:
+                    return introduced
+            return None
+
+        body_proof = raw_clause_cases_with_handler(source_body, source_proof, handler)
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+    if body_proof is None:
+        return None
+    for name, sort in reversed(target_binders):
+        body_proof = f"(fun {name} :{sort} => {body_proof})"
+    return body_proof
+
+
 def raw_tptp_replay_proof_from_step(
     step: MegalodonReplayStep,
     proposition: str,
@@ -42085,6 +42330,15 @@ def raw_tptp_replay_proof(
         )
         if proof is not None:
             return proof
+        proof = raw_superposition_false_literal_unit_resolution_proof(
+            proposition,
+            parents,
+            propositions_by_name,
+            variable_sorts,
+            replay_step,
+        )
+        if proof is not None:
+            return proof
     proof = raw_tptp_parent_complement_false_proof(proposition, parents, propositions_by_name, variable_sorts)
     if proof is not None:
         return proof
@@ -42181,6 +42435,14 @@ def raw_tptp_replay_proof(
             if proof is not None:
                 return proof
             proof = raw_tptp_definition_rewrite_proof(proposition, parents, propositions_by_name, variable_sorts, replay_step)
+            if proof is not None:
+                return proof
+            proof = raw_tptp_pointwise_function_clause_definition_rewrite_proof(
+                proposition,
+                parents,
+                propositions_by_name,
+                variable_sorts,
+            )
             if proof is not None:
                 return proof
             proof = raw_tptp_parent_equality_chain_rewrite_proof(proposition, parents, propositions_by_name, variable_sorts)
@@ -43768,6 +44030,22 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                         PROOF_SEARCH_STATE.deadline = previous_deadline
             else:
                 replay_proof = None
+                if rule in {"definition_folding", "definition_unfolding"}:
+                    previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+                    PROOF_SEARCH_STATE.deadline = proof_search_now() + 3.0
+                    try:
+                        replay_proof = raw_tptp_pointwise_function_clause_definition_rewrite_proof(
+                            proposition,
+                            replay_parents,
+                            propositions_by_name,
+                            variable_sorts,
+                        )
+                    finally:
+                        if previous_deadline is None:
+                            if hasattr(PROOF_SEARCH_STATE, "deadline"):
+                                delattr(PROOF_SEARCH_STATE, "deadline")
+                        else:
+                            PROOF_SEARCH_STATE.deadline = previous_deadline
         if replay_proof is not None and raw_tptp_replay_proof_is_unsafe(rule, proposition, replay_proof):
             replay_proof = None
         if (
@@ -43781,6 +44059,27 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             replay_proof = instantiate_global_axiom_proofs(replay_proof)
             replay_proof = use_ambient_basic_logic_text(replay_proof)
         lines.append(f"claim {claim_name}: {proposition}.")
+        if replay_proof is None and rule in {"definition_folding", "definition_unfolding"}:
+            previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+            PROOF_SEARCH_STATE.deadline = proof_search_now() + 3.0
+            try:
+                replay_proof = raw_tptp_pointwise_function_clause_definition_rewrite_proof(
+                    proposition,
+                    replay_parents,
+                    propositions_by_name,
+                    variable_sorts,
+                )
+            finally:
+                if previous_deadline is None:
+                    if hasattr(PROOF_SEARCH_STATE, "deadline"):
+                        delattr(PROOF_SEARCH_STATE, "deadline")
+                else:
+                    PROOF_SEARCH_STATE.deadline = previous_deadline
+            if replay_proof is not None and raw_tptp_replay_proof_is_unsafe(rule, proposition, replay_proof):
+                replay_proof = None
+            if replay_proof is not None:
+                replay_proof = instantiate_global_axiom_proofs(replay_proof)
+                replay_proof = use_ambient_basic_logic_text(replay_proof)
         if replay_proof is None:
             bridge_block = None
             if rule in {"definition_folding", "definition_unfolding"}:
