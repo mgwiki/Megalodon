@@ -29095,6 +29095,26 @@ def raw_tptp_forward_demodulation_proof(
     )
     if fallback_ok(proof):
         return proof
+    proof = raw_forall_negative_implication_quantified_equality_rewrite_proof(
+        first,
+        target,
+        first_name,
+        second,
+        second_name,
+        variable_sorts,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_forall_negative_implication_quantified_equality_rewrite_proof(
+        second,
+        target,
+        second_name,
+        first,
+        first_name,
+        variable_sorts,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
     proof = raw_quantified_parent_equality_rewrite_clause_proof(
         first,
         target,
@@ -29685,6 +29705,7 @@ def raw_negative_implication_quantified_equality_rewrite_proof(
     local_sorts = {**variable_sorts, **{name: sort for name, sort in binders}}
     source_subterms = expr_subterms(source_premises[0], limit=128)
     target_subterms = expr_subterms(target_premises[0], limit=128)
+    context_bound_names = expr_bound_variables(source_premises[0]) | expr_bound_variables(target_premises[0])
     for old_pattern, new_pattern, reverse in (
         (sides[0], sides[1], False),
         (sides[1], sides[0], True),
@@ -29706,6 +29727,8 @@ def raw_negative_implication_quantified_equality_rewrite_proof(
                     if name not in subst:
                         break
                 if any(name not in subst for name, _ in binders):
+                    continue
+                if any(expr_variables(subst[name]) & context_bound_names for name, _ in binders):
                     continue
                 replaced, changed = replace_expr(target_premises[0], old_subterm, new_subterm)
                 if not changed or not expr_same_mod_alpha(replaced, source_premises[0]):
@@ -29730,6 +29753,43 @@ def raw_negative_implication_quantified_equality_rewrite_proof(
                     f"{proof_head(source_proof)} {proof_term_text(transported)})"
                 )
     return None
+
+
+def raw_forall_negative_implication_quantified_equality_rewrite_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality: Expr,
+    equality_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if not source_binders or len(source_binders) != len(target_binders) or len(source_binders) > 6:
+        return None
+    if any(source_sort != target_sort for (_, source_sort), (_, target_sort) in zip(source_binders, target_binders)):
+        return None
+    source_renaming = {
+        source_name: Expr("var", value=target_name)
+        for (source_name, _), (target_name, _) in zip(source_binders, target_binders)
+    }
+    opened_source_body = substitute_expr(source_body, source_renaming)
+    opened_source_proof = source_proof
+    for target_name, _ in target_binders:
+        opened_source_proof = f"({proof_head(opened_source_proof)} {target_name})"
+    body_proof = raw_negative_implication_quantified_equality_rewrite_proof(
+        opened_source_body,
+        target_body,
+        opened_source_proof,
+        equality,
+        equality_proof,
+        {**variable_sorts, **{name: sort for name, sort in target_binders}},
+    )
+    if body_proof is None:
+        return None
+    for name, sort in reversed(target_binders):
+        body_proof = f"(fun {name} :{sort} => {body_proof})"
+    return body_proof
 
 
 def raw_negative_implication_equality_rewrite_proof(
