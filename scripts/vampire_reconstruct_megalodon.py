@@ -18800,6 +18800,12 @@ def raw_complement_resolution_proof(
         and expr_key(left_premises[0]) == expr_key(right)
     ):
         return f"(({proof_head(left_proof)} {proof_term_text(right_proof)}) {proof_arg_text(target)})"
+    if len(left_premises) == 1 and false_eliminator_expr(left_conclusion):
+        premise_proof = raw_literal_direct_transform_proof(right, left_premises[0], right_proof, ())
+        if premise_proof is None:
+            premise_proof = raw_deep_formula_transform_proof(right, left_premises[0], right_proof, {})
+        if premise_proof is not None:
+            return f"(({proof_head(left_proof)} {proof_term_text(premise_proof)}) {proof_arg_text(target)})"
     symmetric = symmetric_equality_complement(left, left_proof, right, right_proof)
     if symmetric is not None:
         return symmetric
@@ -18811,6 +18817,12 @@ def raw_complement_resolution_proof(
         and expr_key(right_premises[0]) == expr_key(left)
     ):
         return f"(({proof_head(right_proof)} {proof_term_text(left_proof)}) {proof_arg_text(target)})"
+    if len(right_premises) == 1 and false_eliminator_expr(right_conclusion):
+        premise_proof = raw_literal_direct_transform_proof(left, right_premises[0], left_proof, ())
+        if premise_proof is None:
+            premise_proof = raw_deep_formula_transform_proof(left, right_premises[0], left_proof, {})
+        if premise_proof is not None:
+            return f"(({proof_head(right_proof)} {proof_term_text(premise_proof)}) {proof_arg_text(target)})"
     symmetric = symmetric_equality_complement(right, right_proof, left, left_proof)
     if symmetric is not None:
         return symmetric
@@ -29822,6 +29834,27 @@ def raw_tptp_fast_parent_transform_proof(
     return raw_parent_transform_proof(parent_proposition, proposition, parent_proof)
 
 
+def raw_tptp_canonical_parent_proof_name(parent: str, propositions_by_name: dict[str, str]) -> str:
+    parent_proposition = propositions_by_name.get(parent)
+    if parent_proposition is None:
+        return raw_tptp_claim_name(parent)
+    parent_key = canonical_proposition(parent_proposition)
+
+    def step_number(name: str) -> int:
+        match = re.fullmatch(r"S([0-9]+)", name)
+        return int(match.group(1)) if match is not None else 10**12
+
+    candidates = [
+        name
+        for name, proposition in propositions_by_name.items()
+        if name != parent and step_number(name) < step_number(parent) and canonical_proposition(proposition) == parent_key
+    ]
+    if not candidates:
+        return raw_tptp_claim_name(parent)
+    candidates.sort(key=step_number)
+    return raw_tptp_claim_name(candidates[0])
+
+
 def raw_parent_transform_proof(
     parent_proposition: str,
     proposition: str,
@@ -29948,9 +29981,40 @@ def raw_tptp_superposition_proof(
             parent_proposition = propositions_by_name.get(parent)
             parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
             if parent_expr is not None:
-                parent_exprs.append((parent_expr, raw_tptp_claim_name(parent)))
+                parent_exprs.append((parent_expr, raw_tptp_canonical_parent_proof_name(parent, propositions_by_name)))
         target_expr = parse_expr(proposition)
+        if target_expr is not None and len(parent_exprs) < 2:
+            for candidate_name, candidate_proposition in sorted(
+                propositions_by_name.items(),
+                key=lambda item: int(item[0][1:]) if re.fullmatch(r"S[0-9]+", item[0]) else 10**12,
+            ):
+                if candidate_proposition == proposition:
+                    continue
+                candidate_expr = parse_expr(candidate_proposition)
+                if candidate_expr is None:
+                    continue
+                proof = raw_common_rhs_equality_superposition_proof(
+                    candidate_expr,
+                    target_expr,
+                    raw_tptp_claim_name(candidate_name),
+                )
+                if proof is not None:
+                    return proof
         if target_expr is not None and len(parent_exprs) == 2:
+            proof = raw_common_rhs_equality_superposition_proof(
+                parent_exprs[0][0],
+                target_expr,
+                parent_exprs[0][1],
+            )
+            if proof is not None:
+                return proof
+            proof = raw_common_rhs_equality_superposition_proof(
+                parent_exprs[1][0],
+                target_expr,
+                parent_exprs[1][1],
+            )
+            if proof is not None:
+                return proof
             proof = raw_negative_equality_clause_superposition_proof(
                 parent_exprs[0][0],
                 target_expr,
@@ -29966,6 +30030,26 @@ def raw_tptp_superposition_proof(
                 parent_exprs[1][1],
                 parent_exprs[0][0],
                 parent_exprs[0][1],
+            )
+            if proof is not None:
+                return proof
+            proof = raw_positive_unit_clause_resolution_proof(
+                parent_exprs[0][0],
+                target_expr,
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_positive_unit_clause_resolution_proof(
+                parent_exprs[1][0],
+                target_expr,
+                parent_exprs[1][1],
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                variable_sorts,
             )
             if proof is not None:
                 return proof
@@ -30264,6 +30348,242 @@ def raw_negative_equality_clause_superposition_proof(
                     for name, sort in reversed(target_binders):
                         proof = f"(fun {name} :{sort} => {proof})"
                     return proof
+        return None
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
+def raw_common_rhs_equality_superposition_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+) -> str | None:
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    source_sides = equality_like_sides(source_body)
+    target_sides = equality_like_sides(target_body)
+    if source_sides is None or target_sides is None:
+        return None
+    if len(source_binders) > 6 or len(target_binders) > 8:
+        return None
+    binder_names = {name for name, _sort in source_binders}
+    target_sort_by_name = {name: sort for name, sort in target_binders}
+
+    def instance_for_side(side: Expr) -> list[tuple[Expr, str]]:
+        options: list[tuple[Expr, str]] = []
+        for match_index, common_index in ((0, 1), (1, 0)):
+            subst: dict[str, Expr] = {}
+            if not match_expr_with_target_binder_instantiation(source_sides[match_index], side, binder_names, subst):
+                continue
+            if any((expr_variables(value) & binder_names) - target_sort_by_name.keys() for value in subst.values()):
+                continue
+            ok = True
+            for name, sort in source_binders:
+                if name in subst:
+                    value = subst[name]
+                    if value.kind == "var" and value.value in target_sort_by_name and target_sort_by_name[value.value] != sort:
+                        ok = False
+                        break
+                    continue
+                if name in target_sort_by_name and target_sort_by_name[name] == sort:
+                    subst[name] = Expr("var", value=name)
+                else:
+                    ok = False
+                    break
+            if not ok or not binder_names <= subst.keys():
+                continue
+            instantiated_common = substitute_expr(source_sides[common_index], subst)
+            instantiated_proof = source_proof
+            for name, _sort in source_binders:
+                instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(subst[name])})"
+            if match_index == 1:
+                instantiated_proof = raw_eq_symmetry_proof(instantiated_proof, instantiated_common, "set")
+            options.append((instantiated_common, instantiated_proof))
+        return options
+
+    left_options = instance_for_side(target_sides[0])
+    right_options = instance_for_side(target_sides[1])
+    for common_left, left_proof in left_options:
+        for common_right, right_proof in right_options:
+            if not expr_same_mod_alpha(common_left, common_right):
+                continue
+            right_to_common = raw_eq_symmetry_proof(right_proof, target_sides[1], "set")
+            proof = eq_transitivity_proof([left_proof, right_to_common], expr_text(target_sides[0]))
+            if proof is None:
+                continue
+            for name, sort in reversed(target_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
+            return proof
+    return None
+
+
+def raw_positive_unit_clause_resolution_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    unit: Expr,
+    unit_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    target_binders, target_body = collect_foralls(target)
+    source_binders, source_body = collect_foralls(source)
+    unit_literals = raw_clause_literals(unit)
+    if len(unit_literals) != 1:
+        return None
+    unit_literal = unit_literals[0]
+    if (
+        len(raw_clause_literals(source_body)) > 12
+        or len(raw_clause_literals(target_body)) > 16
+        or len(expr_text(source)) + len(expr_text(target)) + len(expr_text(unit)) > 12000
+    ):
+        return None
+    target_literals = raw_clause_literals(target_body)
+    source_options = raw_instantiated_forall_clause_options(source, source_proof, target, unit)
+    target_text = proof_arg_text(target_body)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+
+    def negative_premise(literal: Expr) -> Expr | None:
+        premises, conclusion = split_arrows(literal)
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
+            return None
+        return premises[0]
+
+    unit_negative_premise = negative_premise(unit_literal)
+
+    def match_literal_against_concrete(pattern: Expr, concrete: Expr, subst: dict[str, Expr], binder_names: set[str]) -> bool:
+        if match_expr_with_target_binder_instantiation(pattern, concrete, binder_names, subst):
+            return True
+        subst.clear()
+        if raw_match_literal_mod_equality_symmetry(pattern, concrete, binder_names, subst):
+            return True
+        subst.clear()
+        component = raw_prop_equality_to_true_component(pattern)
+        if component is not None and match_expr_with_target_binder_instantiation(
+            component[0],
+            concrete,
+            binder_names,
+            subst,
+        ):
+            return True
+        subst.clear()
+        return False
+
+    def unit_literal_proves(premise: Expr) -> str | None:
+        proof = raw_literal_direct_transform_proof(unit_literal, premise, unit_proof, ())
+        if proof is not None:
+            return proof
+        proof = raw_deep_formula_transform_proof(unit_literal, premise, unit_proof, variable_sorts)
+        if proof is not None:
+            return proof
+        if expr_same_mod_alpha(unit_literal, premise):
+            return unit_proof
+        return None
+
+    def source_literal_proves(source_literal: Expr, premise: Expr, source_literal_proof: str) -> str | None:
+        proof = raw_literal_direct_transform_proof(source_literal, premise, source_literal_proof, ())
+        if proof is not None:
+            return proof
+        proof = raw_deep_formula_transform_proof(source_literal, premise, source_literal_proof, variable_sorts)
+        if proof is not None:
+            return proof
+        if expr_same_mod_alpha(source_literal, premise):
+            return source_literal_proof
+        return None
+
+    def unit_resolution_source_options() -> list[tuple[Expr, str]]:
+        if not source_binders:
+            return []
+        binder_names = {name for name, _ in source_binders}
+        target_binders_by_sort: dict[str, list[str]] = {}
+        for name, sort in target_binders:
+            target_binders_by_sort.setdefault(sort, []).append(name)
+        options: list[tuple[Expr, str]] = []
+        seen: set[str] = set()
+        for literal in raw_clause_literals(source_body):
+            premise = negative_premise(literal)
+            if premise is None and unit_negative_premise is None:
+                continue
+            pattern = premise if premise is not None else literal
+            concrete = unit_literal if premise is not None else unit_negative_premise
+            assert concrete is not None
+            subst: dict[str, Expr] = {}
+            if not match_literal_against_concrete(pattern, concrete, subst, binder_names):
+                continue
+            if not all(expr_variables(value).isdisjoint(binder_names - {name}) for name, value in subst.items()):
+                continue
+            ok = True
+            for name, sort in source_binders:
+                if name in subst:
+                    continue
+                target_name = name if any(target_name == name for target_name in target_binders_by_sort.get(sort, [])) else None
+                if target_name is None and target_binders_by_sort.get(sort):
+                    target_name = target_binders_by_sort[sort][0]
+                if target_name is None:
+                    ok = False
+                    break
+                subst[name] = Expr("var", value=target_name)
+            if not ok or not binder_names <= subst.keys():
+                continue
+            instantiated = substitute_expr(source_body, subst)
+            key = expr_key(instantiated)
+            if key in seen:
+                continue
+            instantiated_proof = source_proof
+            for name, _sort in source_binders:
+                instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(subst[name])})"
+            seen.add(key)
+            options.append((instantiated, instantiated_proof))
+        return options
+
+    try:
+        all_source_options: list[tuple[Expr, str]] = []
+        seen_options: set[str] = set()
+        for option in [*unit_resolution_source_options(), *source_options]:
+            key = expr_key(option[0])
+            if key in seen_options:
+                continue
+            seen_options.add(key)
+            all_source_options.append(option)
+        for source_option, source_option_proof in all_source_options[:16]:
+
+            def source_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
+                direct = raw_literal_to_clause_proof(source_literal, target_body, source_literal_proof, target_literals, ())
+                if direct is not None:
+                    return direct
+                premise = negative_premise(source_literal)
+                if premise is not None:
+                    premise_proof = unit_literal_proves(premise)
+                    if premise_proof is None:
+                        return None
+                    false_proof = f"({proof_head(source_literal_proof)} {proof_term_text(premise_proof)})"
+                    return raw_false_literal_elimination_proof(
+                        Expr("var", value="vampire_false"),
+                        target_body,
+                        false_proof,
+                    )
+                if unit_negative_premise is None:
+                    return None
+                premise_proof = source_literal_proves(source_literal, unit_negative_premise, source_literal_proof)
+                if premise_proof is None:
+                    return None
+                false_proof = f"({proof_head(unit_proof)} {proof_term_text(premise_proof)})"
+                return raw_false_literal_elimination_proof(
+                    Expr("var", value="vampire_false"),
+                    target_body,
+                    false_proof,
+                )
+
+            proof = raw_clause_cases_with_handler(source_option, source_option_proof, source_handler)
+            if proof is None:
+                continue
+            for name, sort in reversed(target_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
+            return proof
         return None
     finally:
         if previous_target is None:
