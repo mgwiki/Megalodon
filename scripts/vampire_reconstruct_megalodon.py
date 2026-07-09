@@ -1164,9 +1164,15 @@ def tptp_term_to_expr(text: str, variable_sorts: dict[str, str] | None = None) -
         if not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", name):
             return None
         return Expr("var", value=name)
-    args = [tptp_term_to_expr(part, variable_sorts) for part in parts]
-    if any(arg is None for arg in args):
-        return None
+    args: list[Expr] = []
+    for index, part in enumerate(parts):
+        arg = tptp_term_to_expr(part, variable_sorts)
+        if arg is None and index > 0:
+            proposition = tptp_formula_to_megalodon_proposition(part, variable_sorts)
+            arg = parse_expr(proposition) if proposition is not None else None
+        if arg is None:
+            return None
+        args.append(arg)
     head = args[0]
     assert head is not None
     return append_tptp_application_args(head, [arg for arg in args[1:] if arg is not None], variable_sorts)
@@ -20629,6 +20635,13 @@ def raw_classical_single_implication_to_or_by_conclusion_proof(
             source_conclusion_from_premise,
         )
         if positive_from_source is None:
+            positive_from_source = raw_ennf_positive_consequent_transform_proof(
+                source_conclusion,
+                target_positive,
+                source_conclusion_from_premise,
+                variable_sorts,
+            )
+        if positive_from_source is None:
             continue
         not_premise_proof = (
             f"(fun {source_premise_name} :{proof_arg_text(source_premise)} => "
@@ -20675,6 +20688,135 @@ def raw_direct_conclusion_transform_proof(source: Expr, target: Expr, source_pro
     ):
         sort = "prop" if source.kind == "app" and source.args[0].kind == "var" and source.args[0].value == "vampire_eq_prop" else "set"
         return raw_eq_symmetry_proof(source_proof, source_sides[0], sort)
+    return None
+
+
+def raw_ennf_positive_consequent_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 48 or proof_search_timed_out():
+        return None
+    direct = raw_direct_conclusion_transform_proof(source, target, source_proof)
+    if direct is not None:
+        return direct
+
+    source_parts = vampire_and_parts(source)
+    target_parts = vampire_and_parts(target)
+    if source_parts is not None and target_parts is not None:
+        source_components = raw_conjunction_components(source)
+        target_components = raw_conjunction_components(target)
+        if len(source_components) == len(target_components) and len(source_components) <= 16:
+            component_proofs: list[tuple[Expr, str]] = []
+            used: set[int] = set()
+            for target_component in target_components:
+                found: tuple[Expr, str] | None = None
+                for index, source_component in enumerate(source_components):
+                    if index in used:
+                        continue
+                    projection = vampire_and_projection_from_proof(source_proof, source, source_component)
+                    if projection is None and expr_same_mod_alpha(source, source_component):
+                        projection = source_proof
+                    if projection is None:
+                        continue
+                    transformed = raw_ennf_positive_consequent_transform_proof(
+                        source_component,
+                        target_component,
+                        projection,
+                        variable_sorts,
+                        depth + 1,
+                    )
+                    if transformed is None:
+                        transformed = raw_clause_transform_proof(source_component, target_component, projection)
+                    if transformed is None:
+                        continue
+                    found = (target_component, transformed)
+                    used.add(index)
+                    break
+                if found is None:
+                    return None
+                component_proofs.append(found)
+
+            def component_proof(component: Expr) -> str | None:
+                for candidate, proof in component_proofs:
+                    if expr_same_mod_alpha(component, candidate):
+                        return proof
+                return None
+
+            return raw_build_conjunction_from_component_proofs(target, component_proof)
+
+    if (
+        source.kind == "forall"
+        and target.kind == "forall"
+        and source.value is not None
+        and target.value is not None
+        and source.sort == target.sort
+        and target.sort is not None
+    ):
+        source_body = source.args[0]
+        target_body = target.args[0]
+        binder = target.value
+        if source.value != binder:
+            source_body = rename_expr_variables(source_body, {source.value: binder})
+        body_proof = raw_ennf_positive_consequent_transform_proof(
+            source_body,
+            target_body,
+            f"({proof_head(source_proof)} {binder})",
+            {**variable_sorts, binder: target.sort},
+            depth + 1,
+        )
+        if body_proof is not None:
+            return f"(fun {binder} :{target.sort} => {body_proof})"
+
+    source_premises, source_conclusion = split_arrows(source)
+    target_or = app_args(target, "vampire_or", 2)
+    if len(source_premises) == 1 and target_or is not None:
+        source_premise = source_premises[0]
+        for positive_index, target_positive, target_negative in (
+            (0, target_or[0], target_or[1]),
+            (1, target_or[1], target_or[0]),
+        ):
+            premise_name = fresh_identifier("HennfPrem", expr_text(source), expr_text(target), str(depth))
+            positive_source = f"({proof_head(source_proof)} {premise_name})"
+            positive_branch = raw_ennf_positive_consequent_transform_proof(
+                source_conclusion,
+                target_positive,
+                positive_source,
+                variable_sorts,
+                depth + 1,
+            )
+            if positive_branch is None:
+                positive_branch = raw_clause_transform_proof(source_conclusion, target_positive, positive_source)
+            if positive_branch is None:
+                continue
+            not_name = fresh_identifier("HnotEnnfPrem", expr_text(source), expr_text(target), premise_name)
+            negative_branch = raw_negative_formula_transform_proof(
+                source_premise,
+                target_negative,
+                not_name,
+                variable_sorts,
+                depth + 1,
+            )
+            if negative_branch is None:
+                continue
+            if positive_index == 0:
+                positive_intro = f"(fun P Hleft Hright => Hleft {proof_term_text(positive_branch)})"
+                negative_intro = f"(fun P Hleft Hright => Hright {proof_term_text(negative_branch)})"
+            else:
+                positive_intro = f"(fun P Hleft Hright => Hright {proof_term_text(positive_branch)})"
+                negative_intro = f"(fun P Hleft Hright => Hleft {proof_term_text(negative_branch)})"
+            return (
+                f"(xm {proof_arg_text(source_premise)} {proof_arg_text(target)} "
+                f"(fun {premise_name} => {positive_intro}) "
+                f"(fun {not_name} => {negative_intro}))"
+            )
+
+    transformed = raw_prop_implication_transform_proof(source, target, source_proof, variable_sorts, depth + 1)
+    if transformed is not None:
+        return transformed
     return None
 
 
@@ -21456,6 +21598,14 @@ def raw_classical_implication_to_or_body_proof(
         )
         if nested is not None:
             return nested
+        transformed = raw_ennf_positive_consequent_transform_proof(
+            conclusion,
+            target,
+            source_proof,
+            {},
+        )
+        if transformed is not None:
+            return transformed
         return raw_clause_subsumption_transform_proof(conclusion, target, source_proof) or raw_clause_transform_proof(conclusion, target, source_proof)
     target_or = app_args(target, "vampire_or", 2)
     if target_or is None:
@@ -31088,6 +31238,17 @@ def raw_tptp_rat_proof(
 
 def raw_negative_equality_instantiations(body: Expr, binder_names: set[str]) -> list[tuple[str, Expr]]:
     instantiations: list[tuple[str, Expr]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add_instantiation(name: str, replacement: Expr) -> None:
+        if name not in binder_names or name in expr_variables(replacement):
+            return
+        key = (name, expr_key(replacement))
+        if key in seen:
+            return
+        seen.add(key)
+        instantiations.append((name, replacement))
+
     for literal in raw_clause_literals(body):
         premises, conclusion = split_arrows(literal)
         if len(premises) != 1 or not false_eliminator_expr(conclusion):
@@ -31097,9 +31258,18 @@ def raw_negative_equality_instantiations(body: Expr, binder_names: set[str]) -> 
             continue
         left, right = sides
         if left.kind == "var" and left.value in binder_names:
-            instantiations.append((left.value, right))
+            add_instantiation(left.value, right)
         if right.kind == "var" and right.value in binder_names:
-            instantiations.append((right.value, left))
+            add_instantiation(right.value, left)
+        for source, target in ((left, right), (right, left)):
+            subst: dict[str, Expr] = {}
+            if not match_expr_with_alpha_instantiation(source, target, binder_names, subst):
+                continue
+            flatten_substitution(subst)
+            if len(subst) != 1:
+                continue
+            name, replacement = next(iter(subst.items()))
+            add_instantiation(name, replacement)
     return instantiations
 
 
@@ -31183,7 +31353,7 @@ def raw_tptp_exported_equality_resolution_instantiations(
             if len(subst) != 1:
                 continue
             name, replacement = next(iter(subst.items()))
-            if name not in binder_names or expr_variables(replacement) & binder_names:
+            if name not in binder_names or name in expr_variables(replacement):
                 continue
             key = (name, expr_key(replacement))
             if key in seen:
