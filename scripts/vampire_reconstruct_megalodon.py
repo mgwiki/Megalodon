@@ -30057,6 +30057,26 @@ def raw_tptp_forward_demodulation_proof(
     )
     if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
         return proof
+    proof = raw_true_prop_parent_demodulation_proof(
+        first,
+        target,
+        first_name,
+        second,
+        second_name,
+        variable_sorts,
+    )
+    if fallback_ok(proof):
+        return proof
+    proof = raw_true_prop_parent_demodulation_proof(
+        second,
+        target,
+        second_name,
+        first,
+        first_name,
+        variable_sorts,
+    )
+    if fallback_ok(proof):
+        return proof
     proof = raw_quantified_parent_equality_rewrite_clause_proof(
         first,
         target,
@@ -31110,6 +31130,70 @@ def raw_negative_implication_equality_rewrite_proof(
                 f"(fun Htarget :{proof_arg_text(target_premises[0])} => "
                 f"{proof_head(source_proof)} {proof_term_text(symmetric)})"
             )
+    return None
+
+
+def raw_true_prop_parent_demodulation_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    true_parent: Expr,
+    true_parent_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    parent_binders, parent_body = collect_foralls(true_parent)
+    if equality_like_sides(parent_body) is not None:
+        return None
+    if false_eliminator_expr(parent_body):
+        return None
+    parent_binder_names = {name for name, _sort in parent_binders}
+    local_sorts = {**variable_sorts, **{name: sort for name, sort in parent_binders}}
+    true_expr = Expr("var", value="True")
+    for subterm in expr_subterms(source, limit=192):
+        if proof_search_timed_out():
+            return None
+        if raw_true_expr(subterm):
+            continue
+        if expr_sort(subterm, local_sorts) != "prop":
+            continue
+        subst: dict[str, Expr] = {}
+        if not match_expr_with_eta_instantiation(parent_body, subterm, parent_binder_names, subst, local_sorts):
+            continue
+        flatten_substitution(subst)
+        if any(name not in subst for name, _sort in parent_binders):
+            continue
+        if any(raw_expr_has_synthetic_db_variable(subst[name]) for name, _sort in parent_binders):
+            continue
+        parent_instance = true_parent_proof
+        for name, _sort in parent_binders:
+            parent_instance = f"({proof_head(parent_instance)} {proof_arg_text(subst[name])})"
+        equality_proof = (
+            f"(vampire_prop_ext {proof_arg_text(subterm)} True "
+            f"(fun Hprop => {raw_true_intro_proof()}) "
+            f"(fun Htrue => {proof_term_text(parent_instance)}))"
+        )
+        proof = raw_negative_implication_equality_rewrite_proof(
+            source,
+            target,
+            source_proof,
+            subterm,
+            true_expr,
+            equality_proof,
+            "prop",
+        )
+        if proof is not None:
+            return proof
+        proof = raw_equality_rewrite_clause_proof(
+            source,
+            target,
+            source_proof,
+            subterm,
+            true_expr,
+            equality_proof,
+            "prop",
+        )
+        if proof is not None:
+            return proof
     return None
 
 
