@@ -33436,6 +33436,45 @@ def raw_skolemised_formula_transform_proof(
     if expr_same_mod_alpha(source, target):
         return source_proof
 
+    source_premises, source_conclusion = split_arrows(source)
+    if len(source_premises) == 1 and false_eliminator_expr(source_conclusion):
+        positive_premises, positive_conclusion = split_arrows(source_premises[0])
+        if len(positive_premises) == 1 and false_eliminator_expr(positive_conclusion):
+            source_positive = positive_premises[0]
+            for rewrite in rewrites:
+                instance = raw_skolem_rewrite_instance_proof(
+                    source_positive,
+                    rewrite,
+                    "HsourcePositive",
+                    variable_sorts,
+                    rewrite.conclusion,
+                )
+                if instance is None:
+                    continue
+                rewritten, rewritten_proof = instance
+                false_proof = (
+                    f"({proof_head(source_proof)} "
+                    f"(fun HsourcePositive => HnotTarget {proof_term_text(rewritten_proof)}))"
+                )
+                contradiction_branch = raw_false_to_expr_proof(false_proof, rewritten)
+                if contradiction_branch is None:
+                    continue
+                positive_proof = (
+                    f"(xm {proof_arg_text(rewritten)} {proof_arg_text(rewritten)} "
+                    f"(fun Htarget => Htarget) "
+                    f"(fun HnotTarget => {contradiction_branch}))"
+                )
+                proof = raw_skolemised_formula_transform_proof(
+                    rewritten,
+                    target,
+                    positive_proof,
+                    rewrites,
+                    variable_sorts,
+                    depth + 1,
+                )
+                if proof is not None:
+                    return proof
+
     direct_clause = raw_clause_subsumption_transform_proof(source, target, source_proof)
     if direct_clause is not None:
         return direct_clause
@@ -33476,7 +33515,29 @@ def raw_skolemised_formula_transform_proof(
     for rewrite in rewrites:
         instance = raw_skolem_rewrite_instance_proof(source, rewrite, source_proof, variable_sorts, target)
         if instance is None:
-            continue
+            if not rewrite.binders:
+                premise_proof = raw_prop_implication_transform_proof(
+                    source,
+                    rewrite.premise,
+                    source_proof,
+                    variable_sorts,
+                    depth + 1,
+                )
+                if premise_proof is None:
+                    premise_proof = raw_deep_formula_transform_proof(
+                        source,
+                        rewrite.premise,
+                        source_proof,
+                        variable_sorts,
+                        depth + 1,
+                    )
+                if premise_proof is not None:
+                    instance = (
+                        rewrite.conclusion,
+                        f"({proof_head(rewrite.proof)} {proof_term_text(premise_proof)})",
+                    )
+            if instance is None:
+                continue
         rewritten, rewritten_proof = instance
         proof = raw_skolemised_formula_transform_proof(
             rewritten,
