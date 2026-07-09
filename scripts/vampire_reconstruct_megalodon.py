@@ -179,6 +179,8 @@ def raw_tptp_replay_seconds_for_rule(rule: str | None) -> float:
         return max(RAW_TPTP_REPLAY_SECONDS, 1.0)
     if rule in {"definition_folding", "definition_unfolding"}:
         return max(RAW_TPTP_REPLAY_SECONDS, RAW_TPTP_DEFINITION_REPLAY_SECONDS)
+    if rule == "superposition":
+        return max(RAW_TPTP_REPLAY_SECONDS, 1.0)
     if rule in {"forward_subsumption_resolution", "backward_subsumption_resolution"}:
         return RAW_TPTP_FORWARD_SUBSUMPTION_REPLAY_SECONDS
     return RAW_TPTP_REPLAY_SECONDS
@@ -41631,7 +41633,25 @@ def raw_tptp_replay_proof(
     if proof is not None:
         return proof
     if rule == "superposition":
-        return raw_tptp_superposition_proof(proposition, parents, propositions_by_name, variable_sorts, replay_step)
+        previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+        if previous_deadline is not None:
+            PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 1.0)
+        try:
+            proof = raw_tptp_superposition_proof(proposition, parents, propositions_by_name, variable_sorts, replay_step)
+            if proof is not None:
+                return proof
+            relaxed_sorts = raw_tptp_relaxed_superposition_sorts(
+                variable_sorts,
+                " ".join([proposition, *(propositions_by_name.get(parent, "") for parent in parents)]),
+            )
+            if relaxed_sorts != variable_sorts:
+                if previous_deadline is not None:
+                    PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 1.0)
+                return raw_tptp_superposition_proof(proposition, parents, propositions_by_name, relaxed_sorts, None)
+            return None
+        finally:
+            if previous_deadline is not None:
+                PROOF_SEARCH_STATE.deadline = previous_deadline
     if rule in {"resolution", "factoring"}:
         return raw_tptp_forward_subsumption_resolution_proof(
             proposition,
@@ -41892,6 +41912,20 @@ def raw_tptp_replay_proof(
             if previous_deadline is not None:
                 PROOF_SEARCH_STATE.deadline = previous_deadline
     return None
+
+
+def raw_tptp_relaxed_superposition_sorts(variable_sorts: dict[str, str], text: str) -> dict[str, str]:
+    relevant_names = set(SOURCE_IDENTIFIER_RE.findall(text))
+    relaxed: dict[str, str] = {}
+    for name, sort in variable_sorts.items():
+        if name not in relevant_names:
+            continue
+        if "->" not in sort:
+            relaxed[name] = sort
+            continue
+        if name.startswith(("sK", "sF", "db", "vampire_")):
+            relaxed[name] = sort
+    return relaxed
 
 
 def raw_prop_eq_middle_clause_proof(proposition: str) -> str | None:
