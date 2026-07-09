@@ -33173,6 +33173,90 @@ def raw_db_collapse_set_equality_proof(
     return None
 
 
+def raw_positive_db_opening_rewrite_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if len(source_binders) > len(target_binders) or len(target_binders) > 6:
+        return None
+    if any(source_sort != target_sort for (_, source_sort), (_, target_sort) in zip(source_binders, target_binders)):
+        return None
+    source_renaming = {
+        source_name: Expr("var", value=target_name)
+        for (source_name, _), (target_name, _) in zip(source_binders, target_binders)
+    }
+    opened_source = substitute_expr(source_body, source_renaming)
+    opened_proof = source_proof
+    for target_name, _sort in target_binders[: len(source_binders)]:
+        opened_proof = f"({proof_head(opened_proof)} {target_name})"
+    opened_source = beta_normalize_expr(flatten_applications(opened_source))
+    target_body = beta_normalize_expr(flatten_applications(target_body))
+    local_sorts = {
+        **variable_sorts,
+        **{name: sort for name, sort in target_binders},
+    }
+    if expr_same_mod_alpha(opened_source, target_body):
+        proof = opened_proof
+        for name, sort in reversed(target_binders):
+            proof = f"(fun {name} :{sort} => {proof})"
+        return proof
+    if len(expr_text(opened_source)) + len(expr_text(target_body)) > 5000:
+        return None
+    seen_pairs: set[tuple[str, str]] = set()
+    for old_term in expr_subterms(opened_source, limit=160):
+        for new_term in expr_subterms(target_body, limit=160):
+            pair_key = (alpha_expr_key(old_term), alpha_expr_key(new_term))
+            if pair_key in seen_pairs:
+                continue
+            seen_pairs.add(pair_key)
+            if expr_same_mod_alpha(old_term, new_term):
+                continue
+            hole_name = fresh_identifier("zz", expr_text(opened_source), expr_text(target_body), expr_text(old_term))
+            hole = Expr("var", value=hole_name)
+            contexts = single_replacement_contexts_mod_alpha(
+                opened_source,
+                old_term,
+                new_term,
+                hole,
+                limit=1,
+            )
+            if not contexts:
+                continue
+            replaced, context = contexts[0]
+            if not expr_same_mod_alpha(replaced, target_body):
+                continue
+            equality_proof = raw_db_opening_equality_proof(
+                old_term,
+                new_term,
+                propositions_by_name,
+                local_sorts,
+            )
+            if equality_proof is None:
+                reverse_proof = raw_db_opening_equality_proof(
+                    new_term,
+                    old_term,
+                    propositions_by_name,
+                    local_sorts,
+                )
+                if reverse_proof is None:
+                    continue
+                equality_proof = raw_eq_symmetry_proof(reverse_proof, new_term, "set")
+            body_proof = (
+                f"{proof_term_text(equality_proof)} "
+                f"(fun {hole_name} :set => {expr_text(context)}) "
+                f"{proof_term_text(opened_proof)}"
+            )
+            for name, sort in reversed(target_binders):
+                body_proof = f"(fun {name} :{sort} => {body_proof})"
+            return body_proof
+    return None
+
+
 def raw_exported_lambda_negative_rewrite_body_proof(
     source_body: Expr,
     target_body: Expr,
@@ -34660,6 +34744,28 @@ def raw_tptp_superposition_proof(
                 parent_exprs[1][0],
                 parent_exprs[1][1],
                 target_expr,
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            if proof_search_timed_out():
+                return None
+            proof = raw_positive_db_opening_rewrite_proof(
+                parent_exprs[0][0],
+                target_expr,
+                parent_exprs[0][1],
+                propositions_by_name,
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            if proof_search_timed_out():
+                return None
+            proof = raw_positive_db_opening_rewrite_proof(
+                parent_exprs[1][0],
+                target_expr,
+                parent_exprs[1][1],
+                propositions_by_name,
                 variable_sorts,
             )
             if proof is not None:
