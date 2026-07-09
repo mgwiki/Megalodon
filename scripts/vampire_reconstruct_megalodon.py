@@ -3528,6 +3528,136 @@ def match_expr_with_alpha_instantiation(
     return True
 
 
+def beta_reduce_expr(expr: Expr, depth: int = 0) -> Expr:
+    if depth > 64 or not expr.args:
+        return expr
+    args = tuple(beta_reduce_expr(arg, depth + 1) for arg in expr.args)
+    if expr.kind == "app" and args and args[0].kind == "lambda":
+        lambda_expr = args[0]
+        assert lambda_expr.value is not None
+        reduced = substitute_expr(lambda_expr.args[0], {lambda_expr.value: args[1]})
+        if len(args) > 2:
+            reduced = Expr("app", args=(reduced, *args[2:]))
+        return beta_reduce_expr(flatten_applications(reduced), depth + 1)
+    return Expr(expr.kind, value=expr.value, args=args, sort=expr.sort)
+
+
+def raw_abstract_target_for_function_application(
+    function_name: str,
+    pattern_args: tuple[Expr, ...],
+    target: Expr,
+    variable_sorts: dict[str, str],
+) -> Expr | None:
+    function_sort = variable_sorts.get(function_name)
+    if function_sort is None:
+        return None
+    pieces = split_sort_arrows(function_sort)
+    if len(pieces) <= len(pattern_args):
+        return None
+    body = target
+    binders: list[tuple[str, str]] = []
+    used = expr_variables(target) | expr_bound_variables(target) | {function_name}
+    for index, pattern_arg in enumerate(pattern_args):
+        if pattern_arg.kind != "var" or pattern_arg.value is None:
+            return None
+        arg_sort = pieces[index]
+        binder = fresh_identifier(f"Eta{index}", expr_text(target), function_name, " ".join(sorted(used)))
+        while binder in used:
+            binder = fresh_identifier(binder, expr_text(target), function_name, " ".join(sorted(used)))
+        used.add(binder)
+        body = substitute_expr(body, {pattern_arg.value: Expr("var", value=binder)})
+        binders.append((binder, arg_sort))
+    candidate = body
+    for binder, sort in reversed(binders):
+        candidate = Expr("lambda", value=binder, sort=sort, args=(candidate,))
+    if not equivalent_sorts(expr_sort(candidate, variable_sorts), function_sort):
+        return None
+    return candidate
+
+
+def match_expr_with_eta_instantiation(
+    pattern: Expr,
+    target: Expr,
+    variables: set[str],
+    subst: dict[str, Expr],
+    variable_sorts: dict[str, str],
+) -> bool:
+    trial = dict(subst)
+    if match_expr_with_alpha_instantiation(pattern, target, variables, trial):
+        subst.clear()
+        subst.update(trial)
+        return True
+
+    def match(pattern_expr: Expr, target_expr: Expr, local_variables: set[str], local_subst: dict[str, Expr]) -> bool:
+        pattern_expr = beta_reduce_expr(flatten_applications(substitute_expr(pattern_expr, local_subst)))
+        target_expr = beta_reduce_expr(flatten_applications(target_expr))
+        if expr_same_mod_alpha(pattern_expr, target_expr):
+            return True
+        if pattern_expr.kind == "var" and pattern_expr.value in local_variables:
+            assert pattern_expr.value is not None
+            previous = local_subst.get(pattern_expr.value)
+            if previous is None:
+                local_subst[pattern_expr.value] = target_expr
+                return True
+            return expr_same_mod_alpha(beta_reduce_expr(substitute_expr(previous, local_subst)), target_expr)
+        if (
+            pattern_expr.kind == "app"
+            and pattern_expr.args
+            and pattern_expr.args[0].kind == "var"
+            and pattern_expr.args[0].value in local_variables
+        ):
+            function_name = pattern_expr.args[0].value
+            assert function_name is not None
+            previous = local_subst.get(function_name)
+            if previous is not None:
+                reduced = beta_reduce_expr(flatten_applications(substitute_expr(pattern_expr, local_subst)))
+                if expr_same_mod_alpha(reduced, target_expr):
+                    return True
+            else:
+                candidate = raw_abstract_target_for_function_application(
+                    function_name,
+                    pattern_expr.args[1:],
+                    target_expr,
+                    variable_sorts,
+                )
+                if candidate is not None:
+                    eta_trial = dict(local_subst)
+                    eta_trial[function_name] = candidate
+                    reduced = beta_reduce_expr(flatten_applications(substitute_expr(pattern_expr, eta_trial)))
+                    if expr_same_mod_alpha(reduced, target_expr):
+                        local_subst.clear()
+                        local_subst.update(eta_trial)
+                        return True
+        if pattern_expr.kind in {"forall", "lambda"}:
+            if pattern_expr.kind != target_expr.kind or pattern_expr.sort != target_expr.sort or len(pattern_expr.args) != len(target_expr.args):
+                return False
+            assert pattern_expr.value is not None and target_expr.value is not None
+            nested_variables = set(local_variables)
+            nested_variables.discard(pattern_expr.value)
+            nested_variables.discard(target_expr.value)
+            target_body = target_expr.args[0]
+            if pattern_expr.value != target_expr.value:
+                target_body = rename_expr_variables(target_body, {target_expr.value: pattern_expr.value})
+            return match(pattern_expr.args[0], target_body, nested_variables, local_subst)
+        if pattern_expr.kind != target_expr.kind or pattern_expr.value != target_expr.value or pattern_expr.sort != target_expr.sort:
+            return False
+        if len(pattern_expr.args) != len(target_expr.args):
+            return False
+        return all(
+            match(left, right, local_variables, local_subst)
+            for left, right in zip(pattern_expr.args, target_expr.args)
+        )
+
+    if not match(pattern, target, variables, trial):
+        return False
+    instantiated = beta_reduce_expr(flatten_applications(substitute_expr(pattern, trial)))
+    if not expr_same_mod_alpha(instantiated, beta_reduce_expr(flatten_applications(target))):
+        return False
+    subst.clear()
+    subst.update(trial)
+    return True
+
+
 def match_expr_preserving_target_binder_variables(
     pattern: Expr,
     target: Expr,
@@ -18126,9 +18256,9 @@ def infer_missing_raw_tptp_sorts(expr: Expr, variables: dict[str, str], local_so
             if head_sort is not None and len(expr.args) - 1 >= len(split_sort_arrows(head_sort)):
                 stale_head_sort = True
                 head_sort = None
-            if head_sort is None and expected in {"set", "prop"} and (head.value not in local_sorts or stale_head_sort):
+            if head_sort is None and expected is not None and (head.value not in local_sorts or stale_head_sort):
                 arg_sorts = [expr_sort(arg, known_sorts) for arg in expr.args[1:]]
-                if any(sort is None for sort in arg_sorts):
+                if expected in {"set", "prop"} and any(sort is None for sort in arg_sorts):
                     inferred_arg_sorts: list[str | None] = []
                     for arg, arg_sort in zip(expr.args[1:], arg_sorts):
                         if (
@@ -32153,6 +32283,194 @@ def raw_superposition_target_residual_instantiated_options(
     return options
 
 
+def raw_freshen_quantified_binders(
+    expr: Expr,
+    avoid: set[str],
+    prefix: str,
+) -> tuple[list[tuple[str, str]], Expr]:
+    binders, body = collect_foralls(expr)
+    if not binders:
+        return [], body
+    used = set(avoid) | expr_variables(body) | expr_bound_variables(body)
+    renames: dict[str, str] = {}
+    freshened: list[tuple[str, str]] = []
+    for name, sort in binders:
+        replacement = name
+        if replacement in used:
+            replacement = fresh_identifier(f"{prefix}_{name}", " ".join(sorted(used)), expr_text(body))
+            while replacement in used:
+                replacement = fresh_identifier(replacement, " ".join(sorted(used)), expr_text(body))
+        used.add(replacement)
+        renames[name] = replacement
+        freshened.append((replacement, sort))
+    if any(name != replacement for name, replacement in renames.items()):
+        body = rename_expr_variables(body, renames)
+    return freshened, body
+
+
+def raw_clause_unit_equality_superposition_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality: Expr,
+    equality_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if proof_search_timed_out():
+        return None
+    target_binders, target_body = collect_foralls(target)
+    if len(target_binders) > 8:
+        return None
+    avoid = (
+        {name for name, _sort in target_binders}
+        | expr_variables(target_body)
+        | expr_bound_variables(target_body)
+    )
+    source_binders, source_body = raw_freshen_quantified_binders(source, avoid, "SP")
+    if len(source_binders) > 7:
+        return None
+    avoid |= {name for name, _sort in source_binders} | expr_variables(source_body) | expr_bound_variables(source_body)
+    equality_binders, equality_body = raw_freshen_quantified_binders(equality, avoid, "EQ")
+    if len(equality_binders) > 5:
+        return None
+    source_literals = raw_clause_literals(source_body)
+    target_literals = raw_clause_literals(target_body)
+    equality_literals = raw_clause_literals(equality_body)
+    if len(source_literals) > 10 or len(target_literals) > 14 or len(equality_literals) != 1:
+        return None
+    equality_sides = equality_like_sides(equality_literals[0])
+    if equality_sides is None:
+        return None
+    source_binder_names = {name for name, _sort in source_binders}
+    equality_binder_names = {name for name, _sort in equality_binders}
+    all_binder_names = source_binder_names | equality_binder_names
+    local_sorts = {
+        **variable_sorts,
+        **{name: sort for name, sort in target_binders},
+        **{name: sort for name, sort in source_binders},
+        **{name: sort for name, sort in equality_binders},
+    }
+    target_sort_by_name = {name: sort for name, sort in target_binders}
+
+    def match_pattern(pattern: Expr, concrete: Expr, subst: dict[str, Expr]) -> bool:
+        return match_expr_with_eta_instantiation(pattern, concrete, all_binder_names, subst, local_sorts)
+
+    def complete_substitution(subst: dict[str, Expr]) -> dict[str, Expr] | None:
+        completed = dict(subst)
+        flatten_substitution(completed)
+        for name in list(completed):
+            completed[name] = beta_reduce_expr(flatten_applications(completed[name]))
+        for name, sort in source_binders + equality_binders:
+            if name in completed:
+                continue
+            if name in target_sort_by_name and equivalent_sorts(sort, target_sort_by_name[name]):
+                completed[name] = Expr("var", value=name)
+        if not all_binder_names <= completed.keys():
+            return None
+        for name, value in completed.items():
+            if name in all_binder_names and expr_variables(value) & all_binder_names:
+                return None
+        return completed
+
+    def instantiate_proof(proof: str, binders: list[tuple[str, str]], subst: dict[str, Expr]) -> str | None:
+        result = proof
+        for name, _sort in binders:
+            value = subst.get(name)
+            if value is None:
+                return None
+            result = f"({proof_head(result)} {proof_arg_text(value)})"
+        return result
+
+    def residual_match(
+        residuals: list[Expr],
+        candidate_targets: list[tuple[int, Expr]],
+        subst: dict[str, Expr],
+        index: int = 0,
+        used: frozenset[int] = frozenset(),
+    ) -> list[dict[str, Expr]]:
+        if proof_search_timed_out() or index >= len(residuals):
+            return [subst]
+        if len(residuals) - index > len(candidate_targets) - len(used):
+            return []
+        results: list[dict[str, Expr]] = []
+        literal = residuals[index]
+        for target_index, target_literal in candidate_targets:
+            if target_index in used:
+                continue
+            trial = dict(subst)
+            if match_pattern(literal, target_literal, trial):
+                results.extend(residual_match(residuals, candidate_targets, trial, index + 1, used | {target_index}))
+                if len(results) >= 8:
+                    break
+        return results
+
+    attempted = 0
+    for source_index, source_literal in enumerate(source_literals):
+        if proof_search_timed_out():
+            return None
+        residuals = [literal for index, literal in enumerate(source_literals) if index != source_index]
+        if len(residuals) > len(target_literals) - 1:
+            continue
+        source_subterms = expr_subterms(source_literal, limit=96)
+        for target_index, target_literal in enumerate(target_literals):
+            candidate_targets = [
+                (index, literal)
+                for index, literal in enumerate(target_literals)
+                if index != target_index
+            ]
+            for old_pattern, new_pattern in ((equality_sides[0], equality_sides[1]), (equality_sides[1], equality_sides[0])):
+                for old_subterm in source_subterms:
+                    attempted += 1
+                    if attempted > 4096:
+                        return None
+                    trial: dict[str, Expr] = {}
+                    if not match_pattern(old_pattern, old_subterm, trial):
+                        continue
+                    rewritten_pattern, changed = replace_expr(source_literal, old_subterm, new_pattern)
+                    if not changed:
+                        continue
+                    rewritten_pattern = substitute_expr(rewritten_pattern, trial)
+                    if not match_pattern(rewritten_pattern, target_literal, trial):
+                        continue
+                    for residual_subst in residual_match(residuals, candidate_targets, trial):
+                        completed = complete_substitution(residual_subst)
+                        if completed is None:
+                            continue
+                        source_inst = beta_reduce_expr(flatten_applications(substitute_expr(source_body, completed)))
+                        equality_inst = beta_reduce_expr(flatten_applications(substitute_expr(equality_body, completed)))
+                        instantiated_equality_sides = equality_like_sides(equality_inst)
+                        if instantiated_equality_sides is None:
+                            continue
+                        source_inst_proof = instantiate_proof(source_proof, source_binders, completed)
+                        equality_inst_proof = instantiate_proof(equality_proof, equality_binders, completed)
+                        if source_inst_proof is None or equality_inst_proof is None:
+                            continue
+                        equality_sort = raw_equality_transport_sort(
+                            instantiated_equality_sides[0],
+                            instantiated_equality_sides[1],
+                            local_sorts,
+                        )
+                        for replaced, transported in raw_equality_rewrite_clause_steps(
+                            source_inst,
+                            source_inst_proof,
+                            instantiated_equality_sides[0],
+                            instantiated_equality_sides[1],
+                            equality_inst_proof,
+                            equality_sort,
+                        ):
+                            proof = raw_clause_subsumption_transform_proof(replaced, target_body, transported, deep_literals=True)
+                            if proof is None:
+                                proof = raw_clause_transform_proof(replaced, target_body, transported)
+                            if proof is None:
+                                continue
+                            if raw_tptp_replay_proof_is_unsafe("superposition", expr_text(target_body), proof):
+                                continue
+                            for name, sort in reversed(target_binders):
+                                proof = f"(fun {name} :{sort} => {proof})"
+                            return proof
+    return None
+
+
 def raw_quantified_equality_unit_context_superposition_proof(
     quantified: Expr,
     target: Expr,
@@ -32337,6 +32655,26 @@ def raw_tptp_superposition_proof(
             if proof is not None:
                 return proof
             proof = raw_quantified_equality_unit_context_superposition_proof(
+                early_parent_exprs[1][0],
+                early_target_expr,
+                early_parent_exprs[1][1],
+                early_parent_exprs[0][0],
+                early_parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_clause_unit_equality_superposition_proof(
+                early_parent_exprs[0][0],
+                early_target_expr,
+                early_parent_exprs[0][1],
+                early_parent_exprs[1][0],
+                early_parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_clause_unit_equality_superposition_proof(
                 early_parent_exprs[1][0],
                 early_target_expr,
                 early_parent_exprs[1][1],
@@ -35656,8 +35994,26 @@ def raw_tptp_replay_proof_has_free_surface_variable(proposition: str, proof: str
 
 
 def raw_tptp_replay_proof_has_escaped_bound_surface_variable(proposition: str, proof: str) -> bool:
-    proposition_binders = set(RAW_TPTP_SURFACE_BINDER_RE.findall(proposition))
+    proposition_expr = parse_expr(proposition)
+    if proposition_expr is not None:
+        proposition_binders = {
+            name
+            for name, _sort in collect_foralls(proposition_expr)[0]
+            if RAW_TPTP_SURFACE_VAR_RE.fullmatch(name)
+        }
+    else:
+        proposition_binders = set(RAW_TPTP_SURFACE_BINDER_RE.findall(proposition))
     if not proposition_binders:
+        return False
+    parsed = parse_expr(proof)
+    if parsed is not None:
+        return bool(expr_variables(parsed) & proposition_binders)
+    first_parent = re.search(r"\bR_S[0-9]+\b", proof)
+    if first_parent is not None and all(
+        (binder_match := re.search(rf"\bfun\s+{re.escape(name)}\s*:", proof)) is not None
+        and binder_match.start() < first_parent.start()
+        for name in proposition_binders
+    ):
         return False
     for name in proposition_binders:
         escaped = re.compile(
