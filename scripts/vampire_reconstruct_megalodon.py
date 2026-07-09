@@ -2055,6 +2055,15 @@ def megalodon_replay_steps(
         **megalodon_outline_symbol_sorts(proof_text),
         **raw_tptp_exported_source_variable_sorts(proof_text),
     }
+    variable_sorts.update(
+        {
+            name: sort
+            for name, (sort, _body) in source_local_set_definitions(
+                source,
+                proof_or_problem_obligation_line(proof, problem),
+            ).items()
+        }
+    )
     variable_sorts.update(raw_tptp_skolem_binder_sorts(proof_text, variable_sorts))
     function_definitions = tptp_function_definition_infos(proof_text, variable_sorts)
     variable_sorts.update(raw_tptp_function_definition_sorts(function_definitions, variable_sorts))
@@ -17918,6 +17927,32 @@ def raw_tptp_claim_name(name: str) -> str:
     if not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", sanitized):
         sanitized = f"R_{sanitized}"
     return f"R_{sanitized}"
+
+
+def raw_reflexivity_proof_for_expr(expr: Expr, local_definition_names: set[str] | None = None) -> str | None:
+    if expr.kind == "forall" and expr.value is not None and expr.sort is not None and expr.args:
+        body = raw_reflexivity_proof_for_expr(expr.args[0], local_definition_names)
+        if body is None:
+            return None
+        return f"(fun {expr.value} :{expr.sort} => {body})"
+    sides = equality_like_sides(expr)
+    if sides is None:
+        return None
+    if expr_same_mod_alpha(beta_normalize_expr(sides[0]), beta_normalize_expr(sides[1])):
+        return "(fun Q H => H)"
+    if local_definition_names and (expr_variables(sides[0]) | expr_variables(sides[1])) & local_definition_names:
+        return "(fun Q H => H)"
+    return None
+
+
+def raw_reflexivity_proof_for_proposition(
+    proposition: str,
+    local_definition_names: set[str] | None = None,
+) -> str | None:
+    expr = parse_expr(proposition)
+    if expr is None:
+        return None
+    return raw_reflexivity_proof_for_expr(expr, local_definition_names)
 
 
 @dataclass(frozen=True)
@@ -36998,6 +37033,103 @@ def source_active_declared_sorts(source: Path | None) -> dict[str, str]:
     }
 
 
+LOCAL_SET_DECL_RE = re.compile(
+    r"^\s*set\s+(?P<name>[_A-Za-z][_A-Za-z0-9']*)"
+    r"(?:\s*:\s*(?P<sort>.*?))?\s*:=\s*(?P<body>.*?)\s*\.\s*$"
+)
+
+
+def proof_or_problem_obligation_line(proof: Path | None, problem: Path | None) -> int | None:
+    for path in (problem, proof):
+        if path is None:
+            continue
+        match = re.search(r"(?:^|[./])(?:admit|hammer)\.(?P<line>[0-9]+)(?:\.|$)", str(path))
+        if match is not None:
+            return int(match.group("line"))
+    return None
+
+
+def source_enclosing_theorem_line(source: Path | None, line: int | None) -> int | None:
+    if source is None or line is None or not source.exists():
+        return None
+    rows = source.read_text(encoding="utf-8", errors="replace").splitlines()
+    for index in range(min(line, len(rows)), 0, -1):
+        if THEOREM_RE.match(rows[index - 1]):
+            return index
+    return None
+
+
+def source_local_set_definitions(source: Path | None, line: int | None) -> dict[str, tuple[str, str]]:
+    if source is None or line is None or not source.exists():
+        return {}
+    theorem_line = source_enclosing_theorem_line(source, line)
+    if theorem_line is None:
+        return {}
+    rows = source.read_text(encoding="utf-8", errors="replace").splitlines()
+    definitions: dict[str, tuple[str, str]] = {}
+    for row in rows[theorem_line - 1 : min(line, len(rows))]:
+        match = LOCAL_SET_DECL_RE.match(row)
+        if match is None:
+            continue
+        sort = normalize_megalodon_sort(match.group("sort") or "set")
+        body = match.group("body").strip()
+        if not sort or not body:
+            continue
+        definitions[match.group("name")] = (sort, body)
+    return definitions
+
+
+def local_set_definition_body_is_safe(body: str) -> bool:
+    return not any(token in body for token in ("+", "*", ":/:", " -", "- "))
+
+
+def local_set_definition_closure(
+    definitions: dict[str, tuple[str, str]],
+    roots: set[str],
+) -> dict[str, tuple[str, str]]:
+    if not definitions or not roots:
+        return {}
+    safe_definitions = {
+        name: value
+        for name, value in definitions.items()
+        if local_set_definition_body_is_safe(value[1])
+    }
+    needed = set(roots) & safe_definitions.keys()
+    changed = True
+    while changed:
+        changed = False
+        for name in list(needed):
+            _sort, body = safe_definitions[name]
+            for token in SOURCE_IDENTIFIER_RE.findall(body):
+                if token in safe_definitions and token not in needed:
+                    needed.add(token)
+                    changed = True
+    return {name: value for name, value in definitions.items() if name in needed}
+
+
+def local_set_reflexivity_roots(
+    entries: list[tuple[str, str, str, str | None, str | None, list[str], bool]],
+    local_definition_names: set[str],
+) -> set[str]:
+    roots: set[str] = set()
+    if not local_definition_names:
+        return roots
+    for _name, role, proposition, _rule, _source_name, _parents, trusted_definition in entries:
+        if role not in {"axiom", "definition", "negated_conjecture"} and not trusted_definition:
+            continue
+        if not proposition:
+            continue
+        expr = parse_expr(proposition)
+        if expr is None:
+            continue
+        _binders, body = collect_foralls(expr)
+        sides = equality_like_sides(body)
+        if sides is None:
+            continue
+        roots.update((expr_variables(sides[0]) | expr_variables(sides[1])) & local_definition_names)
+    return roots
+
+
 def megalodon_declared_name(line: str) -> str | None:
     match = MEGALODON_DECLARED_NAME_RE.match(line)
     return match.group("name") if match is not None else None
@@ -37084,6 +37216,10 @@ def raw_tptp_exported_source_variable_sorts(proof_text: str) -> dict[str, str]:
 def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | None = None) -> list[str]:
     text = proof.read_text(encoding="utf-8", errors="replace")
     declarations = collect_tptp_declarations(text)
+    all_local_set_definitions = source_local_set_definitions(
+        source,
+        proof_or_problem_obligation_line(proof, problem),
+    )
     standard_tptp_proof = bool(declarations)
     entries: list[tuple[str, str, str, str | None, str | None, list[str], bool]]
     replay_steps = megalodon_replay_steps(text, proof, problem, source)
@@ -37093,6 +37229,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         variable_sorts = {
             **source_definition_sorts(source),
             **raw_declared_sorts,
+            **{name: sort for name, (sort, _body) in all_local_set_definitions.items()},
         }
         variable_sorts.update(raw_tptp_standard_function_definition_sorts(declarations, variable_sorts))
         variable_sorts.update(raw_tptp_skolem_binder_sorts(text, variable_sorts))
@@ -37141,6 +37278,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             **problem_type_variable_sorts(proof, problem),
             **megalodon_outline_symbol_sorts(text),
             **raw_tptp_exported_source_variable_sorts(text),
+            **{name: sort for name, (sort, _body) in all_local_set_definitions.items()},
         }
         variable_sorts.update(raw_tptp_skolem_binder_sorts(text, variable_sorts))
         function_definitions = tptp_function_definition_infos(text, variable_sorts)
@@ -37274,6 +37412,12 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             final_proposition = proposition
             break
 
+    local_set_definitions = local_set_definition_closure(
+        all_local_set_definitions,
+        local_set_reflexivity_roots(entries, set(all_local_set_definitions)),
+    )
+    local_set_definition_names = set(local_set_definitions)
+
     lines = [
         "// Raw Vampire TPTP reconstruction skeleton.",
         f"// proof: {proof}",
@@ -37330,6 +37474,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             continue
         if name in source_names:
             continue
+        if name in local_set_definition_names:
+            continue
         if equivalent_sorts(sort, source_sorts.get(name)):
             continue
         if name in declared_names:
@@ -37341,6 +37487,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if name in predicate_definitions:
             continue
         lines.append(f"Variable {name}:{sort}.")
+        declared_names.add(name)
+    for name, (sort, body) in local_set_definitions.items():
+        if name in declared_names:
+            continue
+        lines.append(f"Definition {name} : {sort} := {body}.")
         declared_names.add(name)
     for name, definition in ordered_definitions(function_definitions):
         if name in declared_names:
@@ -37389,7 +37540,16 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if not proposition:
             lines.append(f"// unsupported raw vampire formula {name}.")
             continue
-        lines.append(f"Axiom {claim_name}:{proposition}.")
+        reflexivity_proof = raw_reflexivity_proof_for_proposition(
+            proposition,
+            local_set_definition_names,
+        )
+        if reflexivity_proof is not None:
+            lines.append(f"Theorem {claim_name}: {proposition}.")
+            lines.append(f"exact {reflexivity_proof}.")
+            lines.append("Qed.")
+        else:
+            lines.append(f"Axiom {claim_name}:{proposition}.")
         avatar_definition = raw_tptp_avatar_definition_parts(proposition)
         if avatar_definition is not None:
             split_name, component = avatar_definition
