@@ -34768,6 +34768,190 @@ def raw_clause_unit_equality_superposition_proof(
     return None
 
 
+def raw_residual_equality_clause_superposition_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality_clause: Expr,
+    equality_clause_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if proof_search_timed_out():
+        return None
+    target_binders, target_body = collect_foralls(target)
+    if len(target_binders) > 8:
+        return None
+    avoid = (
+        {name for name, _sort in target_binders}
+        | expr_variables(target_body)
+        | expr_bound_variables(target_body)
+    )
+    source_binders, source_body = raw_freshen_quantified_binders(source, avoid, "SP")
+    avoid |= {name for name, _sort in source_binders} | expr_variables(source_body) | expr_bound_variables(source_body)
+    equality_binders, equality_body = raw_freshen_quantified_binders(equality_clause, avoid, "EQ")
+    if len(source_binders) > 7 or len(equality_binders) > 5:
+        return None
+    source_literals = raw_clause_literals(source_body)
+    equality_literals = raw_clause_literals(equality_body)
+    target_literals = raw_clause_literals(target_body)
+    if len(source_literals) > 8 or len(equality_literals) > 4 or len(target_literals) > 12:
+        return None
+    source_binder_names = {name for name, _sort in source_binders}
+    equality_binder_names = {name for name, _sort in equality_binders}
+    all_binder_names = source_binder_names | equality_binder_names
+    local_sorts = {
+        **variable_sorts,
+        **{name: sort for name, sort in target_binders},
+        **{name: sort for name, sort in source_binders},
+        **{name: sort for name, sort in equality_binders},
+    }
+
+    def match_residuals(
+        residuals: list[Expr],
+        candidates: list[tuple[int, Expr]],
+        subst: dict[str, Expr],
+        variables: set[str],
+        index: int = 0,
+        used: frozenset[int] = frozenset(),
+    ) -> list[tuple[dict[str, Expr], frozenset[int]]]:
+        if proof_search_timed_out():
+            return []
+        if index >= len(residuals):
+            return [(subst, used)]
+        if len(residuals) - index > len(candidates) - len(used):
+            return []
+        results: list[tuple[dict[str, Expr], frozenset[int]]] = []
+        residual = residuals[index]
+        for target_index, target_literal in candidates:
+            if target_index in used:
+                continue
+            trial = dict(subst)
+            if not match_expr_with_alpha_instantiation(residual, target_literal, variables, trial):
+                continue
+            results.extend(match_residuals(residuals, candidates, trial, variables, index + 1, used | {target_index}))
+            if len(results) >= 16:
+                break
+        return results
+
+    def complete_substitution(subst: dict[str, Expr]) -> dict[str, Expr] | None:
+        completed = dict(subst)
+        flatten_substitution(completed)
+        if not all_binder_names <= completed.keys():
+            return None
+        for name, value in completed.items():
+            if name in all_binder_names and expr_variables(value) & all_binder_names:
+                return None
+        return completed
+
+    def instantiate_proof(proof: str, binders: list[tuple[str, str]], subst: dict[str, Expr]) -> str | None:
+        result = proof
+        for name, _sort in binders:
+            value = subst.get(name)
+            if value is None:
+                return None
+            result = f"({proof_head(result)} {proof_arg_text(value)})"
+        return result
+
+    target_candidates = list(enumerate(target_literals))
+    attempts = 0
+    for equality_index, equality_literal in enumerate(equality_literals):
+        equality_sides = equality_like_sides(equality_literal)
+        if equality_sides is None:
+            continue
+        equality_residuals = [
+            literal
+            for index, literal in enumerate(equality_literals)
+            if index != equality_index
+        ]
+        equality_matches = match_residuals(
+            equality_residuals,
+            target_candidates,
+            {},
+            equality_binder_names,
+        )
+        for equality_subst, equality_used_targets in equality_matches:
+            for source_index, source_literal in enumerate(source_literals):
+                source_residuals = [
+                    literal
+                    for index, literal in enumerate(source_literals)
+                    if index != source_index
+                ]
+                source_candidates = [
+                    candidate
+                    for candidate in target_candidates
+                    if candidate[0] not in equality_used_targets
+                ]
+                source_matches = match_residuals(
+                    source_residuals,
+                    source_candidates,
+                    dict(equality_subst),
+                    source_binder_names,
+                )
+                for source_subst, source_used_targets in source_matches:
+                    remaining_targets = [
+                        (index, literal)
+                        for index, literal in target_candidates
+                        if index not in equality_used_targets | source_used_targets
+                    ]
+                    if not remaining_targets:
+                        continue
+                    for target_index, target_literal in remaining_targets:
+                        for old_pattern, new_pattern in (
+                            (equality_sides[0], equality_sides[1]),
+                            (equality_sides[1], equality_sides[0]),
+                        ):
+                            old_inst = substitute_expr(old_pattern, source_subst)
+                            new_inst = substitute_expr(new_pattern, source_subst)
+                            for source_subterm in expr_subterms(source_literal, limit=128):
+                                attempts += 1
+                                if attempts > 4096 or proof_search_timed_out():
+                                    return None
+                                trial = dict(source_subst)
+                                if not match_expr_with_alpha_instantiation(
+                                    source_subterm,
+                                    old_inst,
+                                    all_binder_names,
+                                    trial,
+                                ):
+                                    continue
+                                rewritten_source, changed = replace_expr(source_literal, source_subterm, new_inst)
+                                if not changed:
+                                    continue
+                                rewritten_source = beta_reduce_expr(flatten_applications(substitute_expr(rewritten_source, trial)))
+                                if not match_expr_with_alpha_instantiation(
+                                    rewritten_source,
+                                    target_literal,
+                                    all_binder_names,
+                                    trial,
+                                ):
+                                    continue
+                                completed = complete_substitution(trial)
+                                if completed is None:
+                                    continue
+                                source_inst = beta_reduce_expr(flatten_applications(substitute_expr(source_body, completed)))
+                                equality_inst = beta_reduce_expr(flatten_applications(substitute_expr(equality_body, completed)))
+                                source_inst_proof = instantiate_proof(source_proof, source_binders, completed)
+                                equality_inst_proof = instantiate_proof(equality_clause_proof, equality_binders, completed)
+                                if source_inst_proof is None or equality_inst_proof is None:
+                                    continue
+                                body_proof = raw_equality_clause_superposition_proof(
+                                    source_inst,
+                                    target_body,
+                                    source_inst_proof,
+                                    equality_inst,
+                                    equality_inst_proof,
+                                    local_sorts,
+                                )
+                                if body_proof is None:
+                                    continue
+                                for name, sort in reversed(target_binders):
+                                    body_proof = f"(fun {name} :{sort} => {body_proof})"
+                                if raw_tptp_replay_proof_is_unsafe("superposition", expr_text(target), body_proof):
+                                    continue
+                                return body_proof
+    return None
+
+
 def raw_quantified_equality_unit_context_superposition_proof(
     quantified: Expr,
     target: Expr,
@@ -35083,6 +35267,26 @@ def raw_tptp_superposition_proof(
             if proof is not None:
                 return proof
             proof = raw_clause_unit_equality_superposition_proof(
+                early_parent_exprs[1][0],
+                early_target_expr,
+                early_parent_exprs[1][1],
+                early_parent_exprs[0][0],
+                early_parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_residual_equality_clause_superposition_proof(
+                early_parent_exprs[0][0],
+                early_target_expr,
+                early_parent_exprs[0][1],
+                early_parent_exprs[1][0],
+                early_parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_residual_equality_clause_superposition_proof(
                 early_parent_exprs[1][0],
                 early_target_expr,
                 early_parent_exprs[1][1],
