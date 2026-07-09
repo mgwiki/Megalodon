@@ -29135,6 +29135,35 @@ def raw_tptp_forward_demodulation_proof(
     )
     if fallback_ok(proof):
         return proof
+    if len(expr_text(first)) + len(expr_text(second)) + len(expr_text(target)) <= 3000:
+        target_binders, _target_body = collect_foralls(target)
+        if not target_binders:
+            first_binders, _first_body = collect_foralls(first)
+            if not first_binders:
+                proof = raw_deep_quantified_equality_rewrite_proof(
+                    first,
+                    target,
+                    first_name,
+                    second,
+                    second_name,
+                    variable_sorts,
+                    max_text_size=3000,
+                )
+                if fallback_ok(proof):
+                    return proof
+            second_binders, _second_body = collect_foralls(second)
+            if not second_binders:
+                proof = raw_deep_quantified_equality_rewrite_proof(
+                    second,
+                    target,
+                    second_name,
+                    first,
+                    first_name,
+                    variable_sorts,
+                    max_text_size=3000,
+                )
+                if fallback_ok(proof):
+                    return proof
     proof = raw_partial_pointwise_function_demodulation_proof(
         first,
         target,
