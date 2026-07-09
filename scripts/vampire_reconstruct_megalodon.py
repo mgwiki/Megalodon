@@ -2317,8 +2317,6 @@ def raw_tptp_two_literal_rewrite_substitution_proposition(
                 for index, literal in enumerate(selected_parent_literals)
                 if index != selected_literal_index
             ]
-            if not residual_literals:
-                continue
             proposition = raw_tptp_replay_extra_expr(
                 fields,
                 "selected_substituted_proposition",
@@ -2456,6 +2454,22 @@ def raw_tptp_rewrite_substitution_proposition(
             source = parse_expr(source_text)
             if source is None:
                 continue
+            for index in range(16):
+                source_key = f"main_parent_lambda_{index}"
+                target_key = f"conclusion_lambda_{index}"
+                if source_key not in fields or target_key not in fields:
+                    continue
+                source_lambda = raw_tptp_replay_extra_expr(fields, source_key, variable_sorts, lambda_sort_hints)
+                target_lambda = raw_tptp_replay_extra_expr(fields, target_key, variable_sorts, lambda_sort_hints)
+                if source_lambda is None or target_lambda is None:
+                    continue
+                replaced, changed = replace_expr(source, source_lambda, target_lambda)
+                if changed:
+                    return expr_text(replaced)
+                hole = Expr("var", value=fresh_identifier("zz", expr_text(source), expr_text(source_lambda), expr_text(target_lambda)))
+                contexts = single_replacement_contexts_mod_alpha(source, source_lambda, target_lambda, hole, limit=1)
+                if contexts:
+                    return expr_text(contexts[0][0])
             replaced, changed = replace_expr(source, redex, replacement)
             if changed:
                 return expr_text(replaced)
@@ -29603,11 +29617,22 @@ def raw_tptp_forward_demodulation_proof(
     second_sides = equality_like_sides(second)
     first_name = raw_tptp_claim_name(parents[0])
     second_name = raw_tptp_claim_name(parents[1])
+    for source, source_name in ((first, first_name), (second, second_name)):
+        proof = raw_or_negative_equality_collapse_transform_proof(
+            source,
+            target,
+            source_name,
+            propositions_by_name,
+            variable_sorts,
+        )
+        if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+            return proof
     proof = raw_tptp_exported_demodulation_rewrite_proof(
         target,
         ((first, first_name), (second, second_name)),
         variable_sorts,
         replay_step,
+        propositions_by_name,
     )
     if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
         return proof
@@ -29956,6 +29981,7 @@ def raw_tptp_exported_demodulation_rewrite_proof(
     parents: tuple[tuple[Expr, str], tuple[Expr, str]],
     variable_sorts: dict[str, str],
     replay_step: MegalodonReplayStep | None,
+    propositions_by_name: dict[str, str] | None = None,
 ) -> str | None:
     local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
     for fields in megalodon_replay_extra_fields(replay_step, "rewrite"):
@@ -29988,6 +30014,17 @@ def raw_tptp_exported_demodulation_rewrite_proof(
         )
         if guarded is not None:
             return guarded
+        if propositions_by_name is not None:
+            for source, source_proof in parents:
+                lambda_negative = raw_exported_lambda_negative_rewrite_proof(
+                    source,
+                    target,
+                    source_proof,
+                    propositions_by_name,
+                    local_sorts,
+                )
+                if lambda_negative is not None:
+                    return lambda_negative
         for source_index, equality_index in ((0, 1), (1, 0)):
             source, source_proof = parents[source_index]
             equality, equality_proof = parents[equality_index]
@@ -32817,6 +32854,332 @@ def raw_exported_pointwise_lambda_clause_rewrite_proof(
     return None
 
 
+def raw_unary_final_application_parts(expr: Expr) -> tuple[Expr, Expr] | None:
+    if expr.kind != "app" or len(expr.args) < 2:
+        return None
+    function = expr.args[0] if len(expr.args) == 2 else Expr("app", args=expr.args[:-1])
+    return function, expr.args[-1]
+
+
+def raw_application_of(function: Expr, argument: Expr) -> Expr:
+    if function.kind == "app":
+        return Expr("app", args=(*function.args, argument))
+    return Expr("app", args=(function, argument))
+
+
+def raw_db_application_schema_proof(
+    proposition: str,
+    proof_name: str,
+) -> tuple[list[tuple[str, str]], str, str, bool] | None:
+    expr = parse_expr(proposition)
+    if expr is None:
+        return None
+    binders, body = collect_foralls(expr)
+    sides = equality_like_sides(body)
+    if sides is None:
+        return None
+    binder_sorts = dict(binders)
+    for left, right, reverse in ((sides[0], sides[1], False), (sides[1], sides[0], True)):
+        left_parts = raw_unary_final_application_parts(left)
+        right_parts = raw_unary_final_application_parts(right)
+        if left_parts is None or right_parts is None:
+            continue
+        left_function, left_arg = left_parts
+        right_function, right_arg = right_parts
+        if (
+            left_function.kind != "var"
+            or right_function.kind != "var"
+            or left_function.value is None
+            or left_function.value != right_function.value
+            or not equivalent_sorts(binder_sorts.get(left_function.value), "set->set")
+        ):
+            continue
+        if left_arg.kind != "var" or right_arg.kind != "var" or left_arg.value is None or right_arg.value is None:
+            continue
+        if binder_sorts.get(left_arg.value) == "set" and RAW_TPTP_SYNTHETIC_DB_RE.fullmatch(right_arg.value):
+            return binders, left_arg.value, left_function.value, reverse
+    return None
+
+
+def raw_db_constant_schema_proof(
+    proposition: str,
+    proof_name: str,
+) -> tuple[list[tuple[str, str]], str, Expr, bool] | None:
+    expr = parse_expr(proposition)
+    if expr is None:
+        return None
+    binders, body = collect_foralls(expr)
+    sides = equality_like_sides(body)
+    if sides is None:
+        return None
+    binder_sorts = dict(binders)
+    for left, right, reverse in ((sides[0], sides[1], False), (sides[1], sides[0], True)):
+        left_parts = raw_unary_final_application_parts(left)
+        right_parts = raw_unary_final_application_parts(right)
+        if left_parts is None or right_parts is None:
+            continue
+        left_function, left_arg = left_parts
+        right_function, right_arg = right_parts
+        if (
+            left_function.kind != "var"
+            or right_function.kind != "var"
+            or left_function.value is None
+            or left_function.value != right_function.value
+            or not equivalent_sorts(binder_sorts.get(left_function.value), "set->set")
+            or left_arg.kind != "var"
+            or left_arg.value is None
+            or not RAW_TPTP_SYNTHETIC_DB_RE.fullmatch(left_arg.value)
+        ):
+            continue
+        if expr_variables(right_arg) & set(binder_sorts):
+            continue
+        return binders, left_function.value, right_arg, reverse
+    return None
+
+
+def raw_instantiate_schema_proof(
+    proof_name: str,
+    binders: list[tuple[str, str]],
+    values: dict[str, Expr],
+) -> str | None:
+    proof = proof_name
+    for name, _sort in binders:
+        value = values.get(name)
+        if value is None:
+            return None
+        proof = f"({proof_head(proof)} {proof_arg_text(value)})"
+    return proof
+
+
+def raw_db_opening_equality_proof(
+    target: Expr,
+    source: Expr,
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    target_parts = raw_unary_final_application_parts(target)
+    source_parts = raw_unary_final_application_parts(source)
+    if target_parts is None or source_parts is None:
+        return None
+    target_function, target_arg = target_parts
+    source_function, source_arg = source_parts
+    if not expr_same_mod_alpha(target_function, source_function):
+        return None
+    if source_arg.kind != "var" or source_arg.value is None or variable_sorts.get(source_arg.value) != "set":
+        return None
+
+    db_application_schemas: list[tuple[str, list[tuple[str, str]], str, str, bool]] = []
+    db_constant_schemas: list[tuple[str, list[tuple[str, str]], str, Expr, bool]] = []
+    for name, proposition in propositions_by_name.items():
+        proof_name = raw_tptp_claim_name(name)
+        db_application = raw_db_application_schema_proof(proposition, proof_name)
+        if db_application is not None:
+            binders, argument_name, function_name, reverse = db_application
+            db_application_schemas.append((proof_name, binders, argument_name, function_name, reverse))
+        db_constant = raw_db_constant_schema_proof(proposition, proof_name)
+        if db_constant is not None:
+            binders, function_name, constant, reverse = db_constant
+            db_constant_schemas.append((proof_name, binders, function_name, constant, reverse))
+
+    for const_proof_name, const_binders, const_function_name, constant, const_reverse in db_constant_schemas:
+        if not expr_same_mod_alpha(target_arg, constant):
+            continue
+        const_proof = raw_instantiate_schema_proof(
+            const_proof_name,
+            const_binders,
+            {const_function_name: target_function},
+        )
+        if const_proof is None:
+            continue
+        db_term = raw_application_of(target_function, Expr("var", value="db0"))
+        if const_reverse:
+            # Schema was F c = F db0; use it directly for F c = F db0.
+            target_to_db = const_proof
+        else:
+            # Schema was F db0 = F c; reverse it.
+            target_to_db = raw_eq_symmetry_proof(const_proof, db_term, "set")
+        for app_proof_name, app_binders, argument_name, function_name, app_reverse in db_application_schemas:
+            app_proof = raw_instantiate_schema_proof(
+                app_proof_name,
+                app_binders,
+                {
+                    argument_name: source_arg,
+                    function_name: target_function,
+                },
+            )
+            if app_proof is None:
+                continue
+            source_term = raw_application_of(target_function, source_arg)
+            if app_reverse:
+                # Schema was F db0 = F x; use it directly.
+                db_to_source = app_proof
+            else:
+                # Schema was F x = F db0; reverse it.
+                db_to_source = raw_eq_symmetry_proof(app_proof, source_term, "set")
+            return eq_transitivity_proof([target_to_db, db_to_source], expr_text(target))
+    return None
+
+
+def raw_db_collapse_set_equality_proof(
+    target: Expr,
+    source: Expr,
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if not equivalent_sorts(expr_sort(target, variable_sorts), "set") or not equivalent_sorts(expr_sort(source, variable_sorts), "set"):
+        return None
+    identity = Expr("lambda", value="Eta0", sort="set", args=(Expr("var", value="Eta0"),))
+    target_db = Expr("var", value="db0")
+    for name, proposition in propositions_by_name.items():
+        proof_name = raw_tptp_claim_name(name)
+        db_application = raw_db_application_schema_proof(proposition, proof_name)
+        if db_application is None:
+            continue
+        binders, argument_name, function_name, reverse = db_application
+        target_proof = raw_instantiate_schema_proof(
+            proof_name,
+            binders,
+            {
+                argument_name: target,
+                function_name: identity,
+            },
+        )
+        source_proof = raw_instantiate_schema_proof(
+            proof_name,
+            binders,
+            {
+                argument_name: source,
+                function_name: identity,
+            },
+        )
+        if target_proof is None or source_proof is None:
+            continue
+        if reverse:
+            target_to_db = raw_eq_symmetry_proof(target_proof, target_db, "set")
+            db_to_source = source_proof
+        else:
+            target_to_db = target_proof
+            db_to_source = raw_eq_symmetry_proof(source_proof, source, "set")
+        return eq_transitivity_proof([target_to_db, db_to_source], expr_text(target))
+    return None
+
+
+def raw_exported_lambda_negative_rewrite_body_proof(
+    source_body: Expr,
+    target_body: Expr,
+    source_proof: str,
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_premises, source_conclusion = split_arrows(source_body)
+    target_premises, target_conclusion = split_arrows(target_body)
+    if (
+        len(source_premises) != 1
+        or len(target_premises) != 1
+        or not false_eliminator_expr(source_conclusion)
+        or not false_eliminator_expr(target_conclusion)
+    ):
+        return None
+    source_premise = beta_normalize_expr(source_premises[0])
+    target_premise = beta_normalize_expr(target_premises[0])
+    if expr_same_mod_alpha(source_premise, target_premise):
+        premise_proof = "Hprem"
+    else:
+        premise_proof = None
+        for target_subterm in expr_subterms(target_premise, limit=128):
+            if premise_proof is not None:
+                break
+            for source_subterm in expr_subterms(source_premise, limit=128):
+                equality_proof = raw_db_opening_equality_proof(
+                    target_subterm,
+                    source_subterm,
+                    propositions_by_name,
+                    variable_sorts,
+                )
+                if equality_proof is None:
+                    equality_proof = raw_db_collapse_set_equality_proof(
+                        target_subterm,
+                        source_subterm,
+                        propositions_by_name,
+                        variable_sorts,
+                    )
+                if equality_proof is None:
+                    continue
+                equality = Expr("eq", args=(target_subterm, source_subterm))
+                candidate = raw_equality_rewrite_expr_proof(
+                    target_premise,
+                    source_premise,
+                    "Hprem",
+                    equality,
+                    equality_proof,
+                    variable_sorts,
+                )
+                if candidate is None:
+                    rewrite_sort = raw_equality_transport_sort(target_subterm, source_subterm, variable_sorts)
+                    hole_name = fresh_identifier(
+                        "zz",
+                        expr_text(target_premise),
+                        expr_text(target_subterm),
+                        expr_text(source_subterm),
+                    )
+                    hole = Expr("var", value=hole_name)
+                    for replaced, context in single_replacement_contexts_mod_alpha(
+                        target_premise,
+                        target_subterm,
+                        source_subterm,
+                        hole,
+                        limit=8,
+                    ):
+                        if not expr_same_mod_alpha(replaced, source_premise):
+                            continue
+                        candidate = (
+                            f"{proof_term_text(equality_proof)} "
+                            f"(fun {hole_name} :{rewrite_sort} => {expr_text(context)}) "
+                            "Hprem"
+                        )
+                        break
+                if candidate is not None:
+                    premise_proof = candidate
+                    break
+        if premise_proof is None:
+            return None
+    return f"(fun Hprem => {proof_head(source_proof)} {proof_term_text(premise_proof)})"
+
+
+def raw_exported_lambda_negative_rewrite_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if len(source_binders) != len(target_binders) or len(source_binders) > 6:
+        return None
+    local_sorts = dict(variable_sorts)
+    opened_source = source_body
+    opened_proof = source_proof
+    for (source_name, source_sort), (target_name, target_sort) in zip(source_binders, target_binders):
+        if source_sort != target_sort:
+            return None
+        opened_source = rename_expr_variables(opened_source, {source_name: target_name})
+        opened_proof = f"({proof_head(opened_proof)} {target_name})"
+        local_sorts[target_name] = target_sort
+    body_proof = raw_exported_lambda_negative_rewrite_body_proof(
+        opened_source,
+        target_body,
+        opened_proof,
+        propositions_by_name,
+        local_sorts,
+    )
+    if body_proof is None:
+        return None
+    for name, sort in reversed(target_binders):
+        body_proof = f"(fun {name} :{sort} => {body_proof})"
+    return body_proof
+
+
 def raw_tptp_exported_two_literal_resolution_proof(
     proposition: str,
     parents: list[str],
@@ -32902,6 +33265,17 @@ def raw_tptp_exported_two_literal_resolution_proof(
         if selected_clause is not None and other_clause is not None:
             source, source_proof = selected_clause
             resolver, resolver_proof = other_clause
+            body_proof = raw_exported_lambda_negative_rewrite_body_proof(
+                source,
+                target_body,
+                source_proof,
+                propositions_by_name,
+                extra_sorts,
+            )
+            if body_proof is not None:
+                for name, sort in reversed(target_binders):
+                    body_proof = f"(fun {name} :{sort} => {body_proof})"
+                return body_proof
             body_proof = raw_exported_pointwise_lambda_clause_rewrite_proof(
                 source,
                 source_proof,
@@ -34433,6 +34807,110 @@ def raw_tptp_universal_unit_contradiction_proof(
             continue
         false_proof = f"({proof_head(instantiated_negative_proof)} {proof_term_text(premise_proof)})"
         return f"(fun HtargetPremise => {false_proof})"
+    return None
+
+
+def raw_or_negative_equality_collapse_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if len(source_binders) > len(target_binders) or len(target_binders) > 6:
+        return None
+    local_sorts = dict(variable_sorts)
+    opened_source = source_body
+    opened_proof = source_proof
+    for (source_name, source_sort), (target_name, target_sort) in zip(source_binders, target_binders):
+        if source_sort != target_sort:
+            return None
+        opened_source = rename_expr_variables(opened_source, {source_name: target_name})
+        opened_proof = f"({proof_head(opened_proof)} {target_name})"
+        local_sorts[target_name] = target_sort
+    for target_name, target_sort in target_binders:
+        local_sorts[target_name] = target_sort
+
+    source_literals = raw_clause_literals(opened_source)
+    target_literals = raw_clause_literals(target_body)
+    if len(source_literals) != 2 or len(target_literals) != 2:
+        return None
+
+    for source_index, source_literal in enumerate(source_literals):
+        source_premises, source_conclusion = split_arrows(source_literal)
+        if len(source_premises) != 1 or not false_eliminator_expr(source_conclusion):
+            continue
+        source_sides = equality_like_sides(source_premises[0])
+        if source_sides is None:
+            continue
+        premise_proof = raw_db_collapse_set_equality_proof(
+            source_sides[0],
+            source_sides[1],
+            propositions_by_name,
+            local_sorts,
+        )
+        if premise_proof is None and expr_same_mod_alpha(source_sides[0], source_sides[1]):
+            premise_proof = "(fun Q H => H)"
+        if premise_proof is None:
+            continue
+        residual_literal = source_literals[1 - source_index]
+        residual_target_index = None
+        for target_index, target_literal in enumerate(target_literals):
+            transformed = raw_clause_transform_proof(residual_literal, target_literal, "Hresidual")
+            if transformed is None:
+                transformed = raw_deep_formula_transform_proof(
+                    residual_literal,
+                    target_literal,
+                    "Hresidual",
+                    local_sorts,
+                )
+            if transformed is None and expr_same_mod_alpha(residual_literal, target_literal):
+                transformed = "Hresidual"
+            if transformed is None:
+                continue
+            residual_target_index = target_index
+            break
+        if residual_target_index is None:
+            continue
+
+        def handler(literal: Expr, literal_proof: str) -> str | None:
+            if expr_same_mod_alpha(literal, source_literal):
+                false_proof = f"({proof_head(literal_proof)} {proof_term_text(premise_proof)})"
+                return raw_false_to_expr_proof(false_proof, target_body)
+            if expr_same_mod_alpha(literal, residual_literal):
+                residual_target = target_literals[residual_target_index]
+                transformed = raw_clause_transform_proof(literal, residual_target, literal_proof)
+                if transformed is None:
+                    transformed = raw_deep_formula_transform_proof(
+                        literal,
+                        residual_target,
+                        literal_proof,
+                        local_sorts,
+                    )
+                if transformed is None and expr_same_mod_alpha(literal, residual_target):
+                    transformed = literal_proof
+                if transformed is None:
+                    return None
+                return raw_or_intro_literal_at(target_body, residual_target_index, transformed)
+            return None
+
+        previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+        PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+        try:
+            body_proof = raw_clause_cases_with_handler(opened_source, opened_proof, handler)
+        finally:
+            if previous_target is None:
+                if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                    delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+            else:
+                PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+        if body_proof is None:
+            continue
+        for name, sort in reversed(target_binders):
+            body_proof = f"(fun {name} :{sort} => {body_proof})"
+        return body_proof
     return None
 
 
