@@ -20013,11 +20013,14 @@ def raw_tptp_unit_resulting_resolution_proof(
     replay_step: MegalodonReplayStep | None = None,
 ) -> str | None:
     variable_sorts = variable_sorts or {}
+    if replay_step is not None:
+        variable_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
     if len(parents) < 2 or len(parents) > 10:
         return None
     target = parse_expr(proposition)
     if target is None:
         return None
+    target_binders, target_body = collect_foralls(target)
     exported_trace = raw_tptp_exported_urr_trace_proof(
         proposition,
         parents,
@@ -20044,7 +20047,7 @@ def raw_tptp_unit_resulting_resolution_proof(
     def try_source(source_index: int) -> str | None:
         _, source, source_proof = parsed[source_index]
         resolver_entries = [entry for index, entry in enumerate(parsed) if index != source_index]
-        if not raw_clause_replay_budget_ok(source, target, max_literals=16, max_literal_product=256):
+        if not raw_clause_replay_budget_ok(source, target_body, max_literals=16, max_literal_product=256):
             return None
 
         for _, resolver, _ in resolver_entries:
@@ -20072,7 +20075,7 @@ def raw_tptp_unit_resulting_resolution_proof(
 
         source_binders, source_body = collect_foralls(source)
         if source_binders and len(source_binders) <= 4:
-            candidate_exprs = (target, *(resolver for _, resolver, _ in resolver_entries))
+            candidate_exprs = (target_body, *(resolver for _, resolver, _ in resolver_entries))
             candidate_lists: list[list[Expr]] = []
             for _name, sort in source_binders:
                 candidates = raw_candidate_terms_for_sort(candidate_exprs, sort, variable_sorts)
@@ -20082,16 +20085,16 @@ def raw_tptp_unit_resulting_resolution_proof(
                 candidate_lists.append(candidates[:16])
 
             def source_instantiation_supported(instantiated_source: Expr) -> bool:
-                target_literals = raw_clause_literals(target)
+                target_literals = raw_clause_literals(target_body)
                 for source_literal in raw_clause_literals(instantiated_source):
-                    if raw_literal_to_clause_proof(source_literal, target, "HsourceLiteral", target_literals, ()) is not None:
+                    if raw_literal_to_clause_proof(source_literal, target_body, "HsourceLiteral", target_literals, ()) is not None:
                         continue
                     found = False
                     for _resolver_name, resolver, resolver_proof in resolver_entries:
                         for resolver_clause, _resolver_clause_proof in raw_instantiated_forall_clause_options(
                             resolver,
                             resolver_proof,
-                            target,
+                            target_body,
                             instantiated_source,
                         )[:8]:
                             for resolver_literal in raw_clause_literals(resolver_clause):
@@ -20137,9 +20140,14 @@ def raw_tptp_unit_resulting_resolution_proof(
             if index >= len(resolver_entries):
                 if len(raw_clause_literals(source_clause)) > 16:
                     return None
-                return raw_clause_multi_resolution_proof(source_clause, target, source_clause_proof, current)
+                proof = raw_clause_multi_resolution_proof(source_clause, target_body, source_clause_proof, current)
+                if proof is None:
+                    return None
+                for name, sort in reversed(target_binders):
+                    proof = f"(fun {name} :{sort} => {proof})"
+                return proof
             _, resolver, resolver_proof = resolver_entries[index]
-            options = raw_instantiated_forall_clause_options(resolver, resolver_proof, target, source_clause)[:4]
+            options = raw_instantiated_forall_clause_options(resolver, resolver_proof, target_body, source_clause)[:4]
             options.sort(key=instantiated_clause_priority)
             for option in options:
                 found = search_resolvers(source_clause, source_clause_proof, index + 1, current + [option])
@@ -20302,7 +20310,9 @@ def raw_tptp_parent_complement_false_proof(
     proposition: str,
     parents: list[str],
     propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str] | None = None,
 ) -> str | None:
+    variable_sorts = variable_sorts or {}
     target = parse_expr(proposition)
     if target is None or not false_eliminator_expr(target):
         return None
@@ -20316,14 +20326,64 @@ def raw_tptp_parent_complement_false_proof(
             parsed.append((ambient_basic_logic_expr(parent_expr), raw_tptp_claim_name(parent)))
     if len(parsed) > 8:
         return None
+    candidate_exprs = tuple(expr for expr, _proof in parsed) + (target,)
+
+    def quantified_options(expr: Expr, proof: str) -> list[tuple[Expr, str]]:
+        binders, body = collect_foralls(expr)
+        if not binders:
+            return [(expr, proof)]
+        if len(binders) > 4:
+            return []
+        candidate_lists: list[list[Expr]] = []
+        for _name, sort in binders:
+            candidates = raw_candidate_terms_for_sort(candidate_exprs, sort, variable_sorts)
+            inhabitant = raw_simple_inhabitant_for_sort(sort)
+            if inhabitant is not None and all(expr_key(inhabitant) != expr_key(candidate) for candidate in candidates):
+                candidates.append(inhabitant)
+            if not candidates:
+                return []
+            candidate_lists.append(candidates[:12])
+        options: list[tuple[Expr, str]] = []
+        seen: set[str] = set()
+        attempts = 0
+        for values in itertools.product(*candidate_lists):
+            attempts += 1
+            if attempts > 1024 or len(options) >= 32:
+                break
+            subst = {name: value for (name, _sort), value in zip(binders, values)}
+            instantiated = flatten_applications(substitute_expr(body, subst))
+            key = expr_key(instantiated)
+            if key in seen:
+                continue
+            instantiated_proof = proof
+            for name, _sort in binders:
+                instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(subst[name])})"
+            seen.add(key)
+            options.append((instantiated, instantiated_proof))
+        return options
+
     for index, (left, left_proof) in enumerate(parsed):
         for right, right_proof in parsed[index + 1 :]:
-            proof = raw_complement_resolution_proof(left, left_proof, right, right_proof, target)
-            if proof is not None:
-                return proof
-            proof = raw_complement_resolution_proof(right, right_proof, left, left_proof, target)
-            if proof is not None:
-                return proof
+            for left_option, left_option_proof in quantified_options(left, left_proof):
+                for right_option, right_option_proof in quantified_options(right, right_proof):
+                    proof = raw_complement_resolution_proof(
+                        left_option,
+                        left_option_proof,
+                        right_option,
+                        right_option_proof,
+                        target,
+                    )
+                    if proof is not None:
+                        return proof
+                    proof = raw_complement_resolution_proof(
+                        right_option,
+                        right_option_proof,
+                        left_option,
+                        left_option_proof,
+                        target,
+                    )
+                    if proof is not None:
+                        return proof
     return None
 
 
@@ -36036,7 +36096,7 @@ def raw_tptp_replay_proof(
         return raw_tptp_avatar_definition_proof(proposition)
     if rule == "rat":
         return raw_tptp_rat_proof(proposition, parents, propositions_by_name)
-    proof = raw_tptp_parent_complement_false_proof(proposition, parents, propositions_by_name)
+    proof = raw_tptp_parent_complement_false_proof(proposition, parents, propositions_by_name, variable_sorts)
     if proof is not None:
         return proof
     proof = raw_tptp_dne_implication_parent_proof(proposition, parents, propositions_by_name, variable_sorts)
