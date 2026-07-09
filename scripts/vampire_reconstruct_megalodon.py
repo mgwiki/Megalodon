@@ -25590,22 +25590,44 @@ def raw_or_transform_proof(
         variable_sorts,
         depth + 1,
     )
-    if left_proof is None:
-        return None
-    right_proof = raw_deep_formula_transform_proof(
-        source_parts[1],
+    target_text = proof_arg_text(target)
+    if left_proof is not None:
+        right_proof = raw_deep_formula_transform_proof(
+            source_parts[1],
+            target_parts[1],
+            right_name,
+            variable_sorts,
+            depth + 1,
+        )
+        if right_proof is not None:
+            return (
+                f"({proof_head(source_proof)} {target_text} "
+                f"(fun {left_name} => fun P Hleft Hright => Hleft {proof_term_text(left_proof)}) "
+                f"(fun {right_name} => fun P Hleft Hright => Hright {proof_term_text(right_proof)}))"
+            )
+
+    swapped_left = raw_deep_formula_transform_proof(
+        source_parts[0],
         target_parts[1],
+        left_name,
+        variable_sorts,
+        depth + 1,
+    )
+    if swapped_left is None:
+        return None
+    swapped_right = raw_deep_formula_transform_proof(
+        source_parts[1],
+        target_parts[0],
         right_name,
         variable_sorts,
         depth + 1,
     )
-    if right_proof is None:
+    if swapped_right is None:
         return None
-    target_text = proof_arg_text(target)
     return (
         f"({proof_head(source_proof)} {target_text} "
-        f"(fun {left_name} => fun P Hleft Hright => Hleft {proof_term_text(left_proof)}) "
-        f"(fun {right_name} => fun P Hleft Hright => Hright {proof_term_text(right_proof)}))"
+        f"(fun {left_name} => fun P Hleft Hright => Hright {proof_term_text(swapped_left)}) "
+        f"(fun {right_name} => fun P Hleft Hright => Hleft {proof_term_text(swapped_right)}))"
     )
 
 
