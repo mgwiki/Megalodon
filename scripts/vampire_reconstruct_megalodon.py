@@ -1613,6 +1613,58 @@ def expr_sort(expr: Expr, variable_sorts: dict[str, str]) -> str | None:
     return None
 
 
+def raw_expr_well_sorted(
+    expr: Expr,
+    variable_sorts: dict[str, str],
+    expected_sort: str | None = None,
+) -> bool:
+    if expr.kind == "var":
+        actual_sort = expr_sort(expr, variable_sorts)
+        return expected_sort is None or actual_sort is None or equivalent_sorts(actual_sort, expected_sort)
+    if expr.kind == "app" and expr.args:
+        head_sort = expr_sort(expr.args[0], variable_sorts)
+        if head_sort is not None:
+            pieces = split_sort_arrows(head_sort)
+            if len(expr.args) > len(pieces):
+                return False
+            for arg, arg_sort in zip(expr.args[1:], pieces[:-1]):
+                if not raw_expr_well_sorted(arg, variable_sorts, arg_sort):
+                    return False
+            result_sort = join_sort_arrows(pieces[len(expr.args) - 1 :])
+            if expected_sort is not None and not equivalent_sorts(result_sort, expected_sort):
+                return False
+        return all(raw_expr_well_sorted(arg, variable_sorts) for arg in expr.args)
+    if expr.kind == "eq" and len(expr.args) == 2:
+        left_sort = expr_sort(expr.args[0], variable_sorts)
+        right_sort = expr_sort(expr.args[1], variable_sorts)
+        if left_sort is not None and right_sort is not None and not equivalent_sorts(left_sort, right_sort):
+            return False
+        if not raw_expr_well_sorted(expr.args[0], variable_sorts, right_sort):
+            return False
+        if not raw_expr_well_sorted(expr.args[1], variable_sorts, left_sort):
+            return False
+        return expected_sort is None or equivalent_sorts(expected_sort, "prop")
+    if expr.kind == "arrow" and len(expr.args) == 2:
+        return (
+            (expected_sort is None or equivalent_sorts(expected_sort, "prop"))
+            and raw_expr_well_sorted(expr.args[0], variable_sorts, "prop")
+            and raw_expr_well_sorted(expr.args[1], variable_sorts, "prop")
+        )
+    if expr.kind == "forall" and expr.value is not None and expr.sort is not None and expr.args:
+        return (
+            (expected_sort is None or equivalent_sorts(expected_sort, "prop"))
+            and raw_expr_well_sorted(expr.args[0], {**variable_sorts, expr.value: expr.sort}, "prop")
+        )
+    if expr.kind == "lambda" and expr.value is not None and expr.sort is not None and expr.args:
+        body_sort = None
+        if expected_sort is not None:
+            pieces = split_sort_arrows(expected_sort)
+            if len(pieces) >= 2 and equivalent_sorts(pieces[0], expr.sort):
+                body_sort = join_sort_arrows(pieces[1:])
+        return raw_expr_well_sorted(expr.args[0], {**variable_sorts, expr.value: expr.sort}, body_sort)
+    return all(raw_expr_well_sorted(arg, variable_sorts) for arg in expr.args)
+
+
 def is_function_value(expr: Expr, sort: str | None) -> bool:
     return expr.kind == "lambda" or (sort is not None and "->" in sort)
 
@@ -17980,8 +18032,6 @@ def raw_reflexivity_proof_for_expr(expr: Expr, local_definition_names: set[str] 
         return None
     if expr_same_mod_alpha(beta_normalize_expr(sides[0]), beta_normalize_expr(sides[1])):
         return "(fun Q H => H)"
-    if local_definition_names and (expr_variables(sides[0]) | expr_variables(sides[1])) & local_definition_names:
-        return "(fun Q H => H)"
     return None
 
 
@@ -25965,7 +26015,7 @@ def raw_eq_symmetry_proof(proof: str, left: Expr, sort: str) -> str:
         sort_text = binder_sort_text(sort)
         predicate = f"forall Q:({sort_text})->prop, Q {name} -> Q {proof_arg_text(left)}"
         return f"({proof_head(proof)} (fun {name} :{sort_text} => {predicate}) (fun Q H => H))"
-    return f"({proof_head(proof)} (fun {name} :{sort} => {predicate}) (fun R Hr => Hr))"
+    return f"({proof_head(proof)} (fun {name} :{sort} => {predicate}) (fun Q H => H))"
 
 
 def raw_candidate_terms_for_sort(
@@ -28242,16 +28292,21 @@ def raw_quantified_parent_equality_rewrite_clause_proof(
         **{name: sort for name, sort in target_binders},
         **{name: sort for name, sort in equality_binders},
     }
+    context_bound_names = expr_bound_variables(renamed_source_body) | expr_bound_variables(target_body)
 
     for old_pattern, new_pattern, reverse in (
         (equality_left_body, equality_right_body, False),
         (equality_right_body, equality_left_body, True),
     ):
         for old_subterm in expr_subterms(renamed_source_body, limit=192):
+            if expr_variables(old_subterm) & context_bound_names:
+                continue
             subst: dict[str, Expr] = {}
             if not match_expr_with_alpha_instantiation(old_pattern, old_subterm, equality_binder_names, subst):
                 continue
             for new_subterm in expr_subterms(target_body, limit=192):
+                if expr_variables(new_subterm) & context_bound_names:
+                    continue
                 trial = dict(subst)
                 if not match_expr_with_alpha_instantiation(new_pattern, new_subterm, equality_binder_names, trial):
                     continue
@@ -28259,6 +28314,11 @@ def raw_quantified_parent_equality_rewrite_clause_proof(
                 if any(name not in trial for name, _ in equality_binders):
                     continue
                 if any(raw_expr_has_synthetic_db_variable(trial[name]) for name, _ in equality_binders):
+                    continue
+                if any(
+                    context_bound_names & (expr_variables(trial[name]) | expr_bound_variables(trial[name]))
+                    for name, _ in equality_binders
+                ):
                     continue
                 replaced, changed = replace_expr(renamed_source_body, old_subterm, new_subterm)
                 if not changed:
@@ -28861,6 +28921,26 @@ def raw_tptp_forward_demodulation_proof(
     if fallback_ok(proof):
         return proof
     proof = raw_quantified_parent_equality_rewrite_clause_proof(
+        second,
+        target,
+        second_name,
+        first,
+        first_name,
+        variable_sorts,
+    )
+    if fallback_ok(proof):
+        return proof
+    proof = raw_partial_pointwise_function_demodulation_proof(
+        first,
+        target,
+        first_name,
+        second,
+        second_name,
+        variable_sorts,
+    )
+    if fallback_ok(proof):
+        return proof
+    proof = raw_partial_pointwise_function_demodulation_proof(
         second,
         target,
         second_name,
@@ -29974,6 +30054,205 @@ def raw_pointwise_set_function_equality(
         f"{proof_term_text(equality_proof)})"
     )
     return Expr("eq", args=(left, right)), proof
+
+
+def raw_partial_pointwise_set_function_equality_options(
+    equality: Expr,
+    equality_proof: str,
+    old_function: Expr,
+    variable_sorts: dict[str, str],
+    *,
+    limit: int = 8,
+) -> list[tuple[Expr, str]]:
+    binders, body = collect_foralls(equality)
+    sides = equality_like_sides(body)
+    if sides is None or len(binders) < 2 or len(binders) > 8:
+        return []
+    local_sorts = {**variable_sorts, **{name: sort for name, sort in binders}}
+    options: list[tuple[Expr, str]] = []
+    seen: set[str] = set()
+
+    def abstract_suffix_side(side: Expr, suffix_binders: list[tuple[str, str]]) -> Expr:
+        normalized = beta_normalize_expr(side)
+        suffix_vars = [Expr("var", value=name) for name, _sort in suffix_binders]
+        if (
+            normalized.kind == "app"
+            and len(normalized.args) > len(suffix_vars)
+            and all(expr_same_mod_alpha(arg, var) for arg, var in zip(normalized.args[-len(suffix_vars):], suffix_vars))
+        ):
+            prefix_args = normalized.args[: -len(suffix_vars)]
+            prefix = prefix_args[0] if len(prefix_args) == 1 else Expr("app", args=tuple(prefix_args))
+            if not ({name for name, _sort in suffix_binders} & expr_variables(prefix)):
+                return prefix
+        result = normalized
+        for name, sort in reversed(suffix_binders):
+            result = Expr("lambda", value=name, sort=sort, args=(result,))
+        if len(suffix_binders) == 1:
+            result = eta_reduce_unary_function(result)
+        return result
+
+    old_local_names = expr_bound_variables(old_function)
+
+    def leaks_old_locals(expr: Expr) -> bool:
+        return bool(old_local_names & (expr_variables(expr) | expr_bound_variables(expr)))
+
+    for suffix_len in (2, 1):
+        if suffix_len >= len(binders):
+            continue
+        suffix_binders = binders[-suffix_len:]
+        suffix_sorts = [strip_balanced_parens(sort) for _name, sort in suffix_binders]
+        if suffix_sorts == ["set"]:
+            helper = "vampire_funext_set_set"
+        elif suffix_sorts == ["set", "set"]:
+            helper = "vampire_funext_set_set_set"
+        elif suffix_sorts == ["set", "set->set"]:
+            helper = "vampire_funext_set_setfun_set"
+        else:
+            continue
+        prefix_binders = binders[:-suffix_len]
+        prefix_names = {name for name, _sort in prefix_binders}
+        suffix_names = {name for name, _sort in suffix_binders}
+        suffix_vars = [Expr("var", value=name) for name, _sort in suffix_binders]
+        old_app = append_application_args(old_function, suffix_vars)
+
+        for old_pattern, new_pattern, reverse in (
+            (sides[0], sides[1], False),
+            (sides[1], sides[0], True),
+        ):
+            subst: dict[str, Expr] = {}
+            if not match_expr_with_alpha_instantiation(old_pattern, old_app, prefix_names, subst):
+                continue
+            flatten_substitution(subst)
+            if any(name not in subst for name, _sort in prefix_binders):
+                continue
+            if any(expr_variables(subst[name]) & prefix_names for name, _sort in prefix_binders):
+                continue
+            if any(suffix_names & (expr_variables(subst[name]) | expr_bound_variables(subst[name])) for name, _sort in prefix_binders):
+                continue
+            if old_local_names and any(leaks_old_locals(subst[name]) for name, _sort in prefix_binders):
+                continue
+            new_app = substitute_expr(new_pattern, subst)
+            new_function = abstract_suffix_side(new_app, suffix_binders)
+            if old_local_names and leaks_old_locals(new_function):
+                continue
+            if expr_same_mod_alpha(old_function, new_function):
+                continue
+
+            pointwise_left = append_application_args(old_function, suffix_vars)
+            pointwise_right = append_application_args(new_function, suffix_vars)
+            pointwise_proof = equality_proof
+            ok = True
+            for name, _sort in binders:
+                if name in subst:
+                    argument = subst[name]
+                elif name in suffix_names:
+                    argument = Expr("var", value=name)
+                else:
+                    ok = False
+                    break
+                pointwise_proof = f"({proof_head(pointwise_proof)} {proof_arg_text(argument)})"
+            if not ok:
+                continue
+            if reverse:
+                result_sort = raw_equality_transport_sort(pointwise_right, pointwise_left, local_sorts)
+                pointwise_proof = raw_eq_symmetry_proof(pointwise_proof, pointwise_right, result_sort)
+            quantified_proof = pointwise_proof
+            for name, sort in reversed(suffix_binders):
+                quantified_proof = f"(fun {name} :{sort} => {quantified_proof})"
+            equality_expr = Expr("eq", args=(old_function, new_function))
+            equality_term = (
+                f"({helper} "
+                f"{proof_arg_text(old_function)} "
+                f"{proof_arg_text(new_function)} "
+                f"{proof_term_text(quantified_proof)})"
+            )
+            key = expr_key(equality_expr)
+            if key in seen:
+                continue
+            seen.add(key)
+            options.append((equality_expr, equality_term))
+            if len(options) >= limit:
+                return options
+    return options
+
+
+def raw_partial_pointwise_function_demodulation_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality: Expr,
+    equality_proof: str,
+    variable_sorts: dict[str, str],
+    *,
+    max_depth: int = 4,
+) -> str | None:
+    if proof_search_timed_out():
+        return None
+    if len(expr_text(source)) + len(expr_text(target)) + len(expr_text(equality)) > 60000:
+        return None
+    states: list[tuple[Expr, str]] = [(source, source_proof)]
+    seen_states: set[str] = {expr_key(source)}
+    for _depth in range(max_depth):
+        next_states: list[tuple[Expr, str]] = []
+        for current, current_proof in states:
+            if proof_search_timed_out():
+                return None
+            for old_subterm in expr_subterms(current, limit=256):
+                if proof_search_timed_out():
+                    return None
+                options = raw_partial_pointwise_set_function_equality_options(
+                    equality,
+                    equality_proof,
+                    old_subterm,
+                    variable_sorts,
+                    limit=4,
+                )
+                for function_equality, function_equality_proof in options:
+                    function_sides = equality_like_sides(function_equality)
+                    if function_sides is None:
+                        continue
+                    function_sort = raw_equality_transport_sort(function_sides[0], function_sides[1], variable_sorts)
+                    for replaced, transported in raw_equality_rewrite_clause_steps(
+                        current,
+                        current_proof,
+                        function_sides[0],
+                        function_sides[1],
+                        function_equality_proof,
+                        function_sort,
+                    ):
+                        candidates = [replaced]
+                        normalized = beta_normalize_expr(replaced)
+                        if not expr_same_mod_alpha(normalized, replaced):
+                            candidates.append(normalized)
+                        for candidate in candidates:
+                            if expr_same_mod_alpha(candidate, target):
+                                return transported
+                            transformed = raw_clause_transform_proof(candidate, target, transported)
+                            if transformed is not None:
+                                return transformed
+                            if raw_clause_replay_budget_ok(candidate, target, max_literals=24, max_literal_product=512):
+                                transformed = raw_deep_formula_transform_proof(candidate, target, transported, variable_sorts)
+                                if transformed is not None:
+                                    return transformed
+                            key = expr_key(candidate)
+                            if key in seen_states:
+                                continue
+                            seen_states.add(key)
+                            next_states.append((candidate, transported))
+                            if len(next_states) >= 48:
+                                break
+                        if len(next_states) >= 48:
+                            break
+                    if len(next_states) >= 48:
+                        break
+                if len(next_states) >= 48:
+                    break
+            if len(next_states) >= 48:
+                break
+        if not next_states:
+            break
+        states = next_states
+    return None
 
 
 def raw_function_equality_to_pointwise_proof(
@@ -35376,6 +35655,20 @@ def raw_tptp_replay_proof_has_free_surface_variable(proposition: str, proof: str
     )
 
 
+def raw_tptp_replay_proof_has_escaped_bound_surface_variable(proposition: str, proof: str) -> bool:
+    proposition_binders = set(RAW_TPTP_SURFACE_BINDER_RE.findall(proposition))
+    if not proposition_binders:
+        return False
+    for name in proposition_binders:
+        escaped = re.compile(
+            rf"\bR_S[0-9]+\b(?:(?!\b(?:fun|forall)\s+{re.escape(name)}\s*:).){{0,3000}}\b{re.escape(name)}\b",
+            re.S,
+        )
+        if escaped.search(proof):
+            return True
+    return False
+
+
 def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: str) -> bool:
     if rule in {"definition_folding", "definition_unfolding"} and RAW_TPTP_NESTED_BAD_DEFINITION_CONTEXT_RE.search(proof):
         return True
@@ -35386,6 +35679,11 @@ def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: s
     if raw_tptp_replay_proof_has_free_synthetic_db(proof):
         return True
     if raw_tptp_replay_proof_has_escaped_surface_variable(proposition, proof):
+        return True
+    if rule in {"forward_demodulation", "superposition"} and raw_tptp_replay_proof_has_escaped_bound_surface_variable(
+        proposition,
+        proof,
+    ):
         return True
     if rule in {"definition_folding", "definition_unfolding"} and raw_tptp_replay_proof_has_synthetic_db(proof):
         return raw_tptp_replay_proof_has_unbound_synthetic_db(proof)
@@ -39503,7 +39801,12 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if proposition:
             proposition = raw_tptp_rename_conflicting_forall_binders(proposition, variable_sorts)
             proposition = use_ambient_basic_logic_text(proposition)
-            renamed_propositions.append(proposition)
+            parsed_proposition = parse_expr(proposition)
+            if parsed_proposition is not None and not raw_expr_well_sorted(parsed_proposition, variable_sorts, "prop"):
+                proposition = None
+                unsupported += 1
+            else:
+                renamed_propositions.append(proposition)
         renamed_entries.append((name, role, proposition, rule, source_name, parents, trusted_definition))
     entries = renamed_entries
     propositions = renamed_propositions
@@ -39962,29 +40265,65 @@ def check_raw_tptp_skeleton(task: tuple[Path, Path, Path, Path, Path, int, bool]
     skeleton, source, output_dir, megalodon, repo, timeout, allow_admits = task
     context = output_dir / f"{skeleton.stem}.source_context.mg"
     log = output_dir / f"{skeleton.stem}.source_context.log"
-    skeleton_text = skeleton.read_text(encoding="utf-8", errors="replace")
+    source_lines = source.read_text(encoding="utf-8", errors="replace").splitlines()
+    skeleton_lines = skeleton.read_text(encoding="utf-8", errors="replace").splitlines()
+    skeleton_text = "\n".join(skeleton_lines)
     if not allow_admits and has_megalodon_admit(skeleton_text):
         log.write_text("raw TPTP skeleton contains admit.\n", encoding="utf-8")
         return skeleton, False, log
-    context.write_text(
-        source.read_text(encoding="utf-8", errors="replace")
-        + "\n"
-        + skeleton_text,
-        encoding="utf-8",
-    )
+
+    def write_context() -> None:
+        skeleton.write_text("\n".join(skeleton_lines) + "\n", encoding="utf-8")
+        context.write_text("\n".join(source_lines + [""] + skeleton_lines) + "\n", encoding="utf-8")
+
+    def demote_failed_exact(stdout: str) -> bool:
+        if not allow_admits:
+            return False
+        match = re.search(r"Failure at line (?P<line>[0-9]+) char [0-9]+:", stdout)
+        if match is None:
+            return False
+        skeleton_index = int(match.group("line")) - len(source_lines) - 2
+        candidates = [skeleton_index]
+        if skeleton_index + 1 < len(skeleton_lines):
+            candidates.append(skeleton_index + 1)
+        for index in candidates:
+            if (
+                0 <= index < len(skeleton_lines)
+                and skeleton_lines[index].startswith("{ exact ")
+                and index > 0
+                and skeleton_lines[index - 1].startswith("claim ")
+            ):
+                skeleton_lines[index] = "{ admit. }"
+                write_context()
+                return True
+        claim_index = skeleton_index
+        while claim_index >= 0 and not skeleton_lines[claim_index].startswith("claim "):
+            claim_index -= 1
+        if claim_index >= 0 and claim_index + 1 < len(skeleton_lines) and skeleton_lines[claim_index + 1].startswith("{ exact "):
+            skeleton_lines[claim_index + 1] = "{ admit. }"
+            write_context()
+            return True
+        return False
+
+    write_context()
     command = [str(megalodon), "-allowincompleteqed", str(context)]
     try:
-        result = subprocess.run(
-            command,
-            cwd=str(repo),
-            timeout=timeout,
-            check=False,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-        log.write_text(result.stdout, encoding="utf-8")
-        return skeleton, result.returncode == 0, log
+        for _attempt in range(16):
+            result = subprocess.run(
+                command,
+                cwd=str(repo),
+                timeout=timeout,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            log.write_text(result.stdout, encoding="utf-8")
+            if result.returncode == 0:
+                return skeleton, True, log
+            if not demote_failed_exact(result.stdout):
+                return skeleton, False, log
+        return skeleton, False, log
     except subprocess.TimeoutExpired as exc:
         output = exc.stdout or ""
         if isinstance(output, bytes):
