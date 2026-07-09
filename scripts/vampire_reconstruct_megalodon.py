@@ -20210,6 +20210,118 @@ def raw_impossible_prop_equality_disjunct_elimination_proof(
     return None
 
 
+def raw_quantified_parent_instantiation_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_binders, source_body = collect_foralls(source)
+    if not source_binders:
+        return None
+    target_binders, target_body = collect_foralls(target)
+    if len(source_binders) > 8 or len(target_binders) > 8:
+        return None
+    if len(expr_text(source)) + len(expr_text(target)) > 12000:
+        return None
+    used = expr_variables(target_body) | {name for name, _sort in target_binders} | set(variable_sorts)
+    rename: dict[str, str] = {}
+    renamed_binders: list[tuple[str, str]] = []
+    for index, (name, sort) in enumerate(source_binders):
+        candidate = f"Q_{name}"
+        while candidate in used or candidate in rename.values():
+            candidate = f"Q{index}_{candidate}"
+        rename[name] = candidate
+        renamed_binders.append((candidate, sort))
+        used.add(candidate)
+    renamed_source_body = rename_expr_variables(source_body, rename)
+    binder_names = {name for name, _sort in renamed_binders}
+    subst: dict[str, Expr] = {}
+    if not match_expr_with_alpha_instantiation(renamed_source_body, target_body, binder_names, subst):
+        subst.clear()
+        if not raw_match_literal_mod_equality_symmetry(renamed_source_body, target_body, binder_names, subst):
+            return None
+    flatten_substitution(subst)
+    if not binder_names <= subst.keys():
+        return None
+    if any(expr_variables(value) & binder_names for value in subst.values()):
+        return None
+    original_subst = {name: subst[renamed] for name, renamed in rename.items()}
+    instantiated_body = substitute_expr(source_body, original_subst)
+    proof = source_proof
+    for name, _sort in source_binders:
+        proof = f"({proof_head(proof)} {proof_arg_text(original_subst[name])})"
+    if not expr_same_mod_alpha(instantiated_body, target_body):
+        transformed = raw_simple_clause_transform_proof(instantiated_body, target_body, proof)
+        if transformed is None:
+            transformed = raw_clause_transform_proof(instantiated_body, target_body, proof)
+        if transformed is None:
+            transformed = raw_deep_formula_transform_proof(instantiated_body, target_body, proof, variable_sorts)
+        if transformed is None:
+            return None
+        proof = transformed
+    for name, sort in reversed(target_binders):
+        proof = f"(fun {name} :{sort} => {proof})"
+    return proof
+
+
+def raw_tptp_parent_instantiation_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    target = ambient_basic_logic_expr(target)
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        if parent_proposition is None:
+            continue
+        source = parse_expr(parent_proposition)
+        if source is None:
+            continue
+        proof = raw_quantified_parent_instantiation_proof(
+            ambient_basic_logic_expr(source),
+            target,
+            raw_tptp_claim_name(parent),
+            variable_sorts,
+        )
+        if proof is not None:
+            return proof
+    return None
+
+
+def raw_tptp_parent_complement_false_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> str | None:
+    target = parse_expr(proposition)
+    if target is None or not false_eliminator_expr(target):
+        return None
+    parsed: list[tuple[Expr, str]] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        if parent_proposition is None:
+            continue
+        parent_expr = parse_expr(parent_proposition)
+        if parent_expr is not None:
+            parsed.append((ambient_basic_logic_expr(parent_expr), raw_tptp_claim_name(parent)))
+    if len(parsed) > 8:
+        return None
+    for index, (left, left_proof) in enumerate(parsed):
+        for right, right_proof in parsed[index + 1 :]:
+            proof = raw_complement_resolution_proof(left, left_proof, right, right_proof, target)
+            if proof is not None:
+                return proof
+            proof = raw_complement_resolution_proof(right, right_proof, left, left_proof, target)
+            if proof is not None:
+                return proof
+    return None
+
+
 def raw_tptp_trivial_inequality_removal_proof(
     proposition: str,
     parents: list[str],
@@ -20320,6 +20432,14 @@ def raw_tptp_one_parent_transform_proof(
     set_equality_bridge = raw_vampire_eq_set_to_native_equality_proof(source, target, raw_tptp_claim_name(parents[0]))
     if set_equality_bridge is not None:
         return set_equality_bridge
+    quantified_parent = raw_quantified_parent_instantiation_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+        variable_sorts or {},
+    )
+    if quantified_parent is not None:
+        return quantified_parent
     impossible_disjunct = raw_impossible_prop_equality_disjunct_elimination_proof(
         source,
         target,
@@ -35707,6 +35827,9 @@ def raw_tptp_replay_proof(
         return raw_tptp_avatar_definition_proof(proposition)
     if rule == "rat":
         return raw_tptp_rat_proof(proposition, parents, propositions_by_name)
+    proof = raw_tptp_parent_complement_false_proof(proposition, parents, propositions_by_name)
+    if proof is not None:
+        return proof
     if rule == "superposition":
         return raw_tptp_superposition_proof(proposition, parents, propositions_by_name, variable_sorts, replay_step)
     if rule in {"resolution", "factoring"}:
@@ -35752,6 +35875,9 @@ def raw_tptp_replay_proof(
         if previous_deadline is not None and replay_step is not None:
             PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 2.0)
         try:
+            proof = raw_tptp_parent_instantiation_proof(proposition, parents, propositions_by_name, variable_sorts)
+            if proof is not None:
+                return proof
             proof = raw_tptp_definition_rewrite_proof(proposition, parents, propositions_by_name, variable_sorts, replay_step)
             if proof is not None:
                 return proof
@@ -36054,6 +36180,8 @@ def raw_fool_distinctness_axiom_proof(proposition: str) -> str | None:
     expr = parse_expr(proposition)
     if expr is None:
         return None
+    if raw_true_expr(expr):
+        return raw_true_intro_proof()
     premises, conclusion = split_arrows(expr)
     if len(premises) != 1 or not false_eliminator_expr(conclusion):
         return None
