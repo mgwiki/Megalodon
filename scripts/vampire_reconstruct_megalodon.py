@@ -25828,6 +25828,15 @@ def raw_boolean_tautology_proof(
         )
         if conclusion_proof is not None:
             return f"(fun {premise_name} :{proof_arg_text(premises[0])} => {conclusion_proof})"
+        conclusion_proof = raw_prop_implication_transform_proof(
+            premises[0],
+            conclusion,
+            premise_name,
+            variable_sorts,
+            depth + 1,
+        )
+        if conclusion_proof is not None:
+            return f"(fun {premise_name} :{proof_arg_text(premises[0])} => {proof_term_text(conclusion_proof)})"
         if false_eliminator_expr(premises[0]):
             return (
                 f"(fun {premise_name} :{proof_arg_text(premises[0])} => "
@@ -26235,6 +26244,64 @@ def raw_church_and_projection_from_proof(proof: str, node: Expr, target: Expr, d
     return raw_church_and_projection_from_proof(right_projection, right, target, depth + 1)
 
 
+def raw_apply_target_implication_premise_from_source_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 16 or proof_search_timed_out():
+        return None
+    target_premises, target_conclusion = split_arrows(target)
+    if not target_premises:
+        return None
+    for premise_index, target_premise in enumerate(target_premises):
+        function_premises, function_conclusion = split_arrows(target_premise)
+        if not function_premises:
+            continue
+        argument_proofs: list[str] = []
+        for function_premise in function_premises:
+            argument_proof = raw_prop_implication_transform_proof(
+                source,
+                function_premise,
+                source_proof,
+                variable_sorts,
+                depth + 1,
+            )
+            if argument_proof is None:
+                break
+            argument_proofs.append(argument_proof)
+        if len(argument_proofs) != len(function_premises):
+            continue
+        premise_name = fresh_identifier("Hprem", expr_text(target_premise), expr_text(source), source_proof)
+        applied = premise_name
+        for argument_proof in argument_proofs:
+            applied = f"({proof_head(applied)} {proof_term_text(argument_proof)})"
+        conclusion_proof = raw_prop_implication_transform_proof(
+            function_conclusion,
+            target_conclusion,
+            applied,
+            variable_sorts,
+            depth + 1,
+        )
+        if conclusion_proof is None:
+            continue
+        proof = conclusion_proof
+        for index in reversed(range(len(target_premises))):
+            premise = target_premises[index]
+            name = premise_name if index == premise_index else fresh_identifier(
+                "Hprem",
+                expr_text(premise),
+                expr_text(target),
+                proof,
+                str(index),
+            )
+            proof = f"(fun {name} :{proof_arg_text(premise)} => {proof})"
+        return proof
+    return None
+
+
 def raw_prop_implication_transform_proof(
     source: Expr,
     target: Expr,
@@ -26377,6 +26444,16 @@ def raw_prop_implication_transform_proof(
     if prop_argument_rewrite is not None:
         return prop_argument_rewrite
 
+    applied_premise = raw_apply_target_implication_premise_from_source_proof(
+        source,
+        target,
+        source_proof,
+        variable_sorts,
+        depth + 1,
+    )
+    if applied_premise is not None:
+        return applied_premise
+
     target_and = raw_church_and_parts(target)
     if target_and is not None:
         left = raw_prop_implication_transform_proof(source, target_and[0], source_proof, variable_sorts, depth + 1)
@@ -26435,6 +26512,17 @@ def raw_prop_implication_transform_proof(
         )
         if body_proof is not None:
             return f"(fun {binder} :{source.sort} => {body_proof})"
+
+    if target.kind == "forall" and target.value is not None and target.sort is not None:
+        body_proof = raw_prop_implication_transform_proof(
+            source,
+            target.args[0],
+            source_proof,
+            {**variable_sorts, target.value: target.sort},
+            depth + 1,
+        )
+        if body_proof is not None:
+            return f"(fun {target.value} :{target.sort} => {body_proof})"
 
     source_exists = raw_exists_transform_parts(source)
     target_exists = raw_exists_transform_parts(target)
@@ -34066,6 +34154,15 @@ def raw_tptp_skolemisation_proof(
     rewrites = raw_tptp_skolem_rewrites(parents[1:], propositions_by_name)
     if not rewrites:
         return None
+    proof = raw_double_negated_skolemised_target_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+        rewrites,
+        variable_sorts,
+    )
+    if proof is not None:
+        return proof
     return raw_skolemised_formula_transform_proof(
         source,
         target,
@@ -34073,6 +34170,60 @@ def raw_tptp_skolemisation_proof(
         rewrites,
         variable_sorts,
     )
+
+
+def raw_double_negated_skolemised_target_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rewrites: tuple[RawSkolemRewrite, ...],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if len(source_binders) != len(target_binders):
+        return None
+    local_sorts = {**variable_sorts}
+    opened_source = source_body
+    opened_source_proof = source_proof
+    for (source_name, source_sort), (target_name, target_sort) in zip(source_binders, target_binders):
+        if source_sort != target_sort:
+            return None
+        if source_name != target_name:
+            opened_source = rename_expr_variables(opened_source, {source_name: target_name})
+        local_sorts[target_name] = target_sort
+        opened_source_proof = f"({proof_head(opened_source_proof)} {target_name})"
+    source_premises, source_conclusion = split_arrows(opened_source)
+    if len(source_premises) != 1 or not false_eliminator_expr(source_conclusion):
+        return None
+    positive_premises, positive_conclusion = split_arrows(source_premises[0])
+    if len(positive_premises) != 1 or not false_eliminator_expr(positive_conclusion):
+        return None
+    positive_source = positive_premises[0]
+    positive_to_target = raw_skolemised_formula_transform_proof(
+        positive_source,
+        target_body,
+        "Hpositive",
+        rewrites,
+        local_sorts,
+    )
+    if positive_to_target is None:
+        return None
+    not_target = fresh_identifier("HnotTarget", expr_text(target_body), expr_text(source))
+    false_proof = (
+        f"({proof_head(opened_source_proof)} "
+        f"(fun Hpositive :{proof_arg_text(positive_source)} => "
+        f"{not_target} {proof_term_text(positive_to_target)}))"
+    )
+    negative_branch = raw_false_to_expr_proof(false_proof, target_body)
+    proof = (
+        f"(xm {proof_arg_text(target_body)} {proof_arg_text(target_body)} "
+        f"(fun Htarget => Htarget) "
+        f"(fun {not_target} => {proof_term_text(negative_branch)}))"
+    )
+    for name, sort in reversed(target_binders):
+        proof = f"(fun {name} :{sort} => {proof})"
+    return proof
 
 
 def implication_sides(expr: Expr) -> tuple[Expr, Expr] | None:
@@ -37083,13 +37234,18 @@ def raw_tptp_parent_negated_tautology_exfalso_proof(
         parent_expr = parse_expr(parent_proposition)
         if parent_expr is None:
             continue
-        premises, conclusion = split_arrows(parent_expr)
+        parent_binders, parent_body = collect_foralls(parent_expr)
+        premises, conclusion = split_arrows(parent_body)
         if len(premises) != 1 or not false_eliminator_expr(conclusion):
             continue
-        premise_proof = raw_boolean_tautology_proof(premises[0], variable_sorts)
+        local_sorts = {**variable_sorts, **{name: sort for name, sort in parent_binders}}
+        premise_proof = raw_boolean_tautology_proof(premises[0], local_sorts)
         if premise_proof is None:
             continue
-        false_proof = f"({raw_tptp_claim_name(parent)} {proof_term_text(premise_proof)})"
+        parent_proof = raw_tptp_claim_name(parent)
+        for name, _sort in parent_binders:
+            parent_proof = f"({proof_head(parent_proof)} {name})"
+        false_proof = f"({proof_head(parent_proof)} {proof_term_text(premise_proof)})"
         return raw_false_to_expr_proof(false_proof, target)
     return None
 
