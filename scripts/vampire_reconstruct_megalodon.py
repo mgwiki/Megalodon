@@ -23813,6 +23813,106 @@ def raw_negated_forall_implication_to_exists_conjunction_proof(
     )
 
 
+def raw_negated_conjunction_to_ennf_disjunction_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_premises, source_conclusion = split_arrows(source)
+    if len(source_premises) != 1 or not false_eliminator_expr(source_conclusion):
+        return None
+    source_components = raw_conjunction_components(source_premises[0])
+    target_disjuncts = raw_or_components(target)
+    if len(source_components) < 2 or len(source_components) != len(target_disjuncts):
+        return None
+
+    def negative_component_to_disjunct(negative: Expr, disjunct: Expr, negative_proof: str) -> str | None:
+        if expr_same_mod_alpha(negative, disjunct):
+            return negative_proof
+        proof = raw_negated_forall_implication_to_exists_conjunction_proof(
+            negative,
+            disjunct,
+            negative_proof,
+            variable_sorts,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_negated_forall_to_exists_negation_proof(
+            negative,
+            disjunct,
+            negative_proof,
+            variable_sorts,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_negated_forall_negative_to_exists_positive_proof(
+            negative,
+            disjunct,
+            negative_proof,
+            variable_sorts,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_deep_formula_transform_proof(negative, disjunct, negative_proof, variable_sorts)
+        if proof is not None:
+            return proof
+        return raw_clause_transform_proof(negative, disjunct, negative_proof)
+
+    used_disjuncts: set[int] = set()
+    component_entries: list[tuple[Expr, str]] = []
+    not_target = fresh_identifier("HnotTarget", expr_text(source), expr_text(target), source_proof)
+    for component_index, component in enumerate(source_components):
+        negative = Expr("arrow", args=(component, Expr("var", value="False")))
+        negative_name = fresh_identifier(
+            f"HnotConj{component_index}",
+            expr_text(component),
+            expr_text(target),
+            source_proof,
+        )
+        matched: tuple[int, str] | None = None
+        for disjunct_index, disjunct in enumerate(target_disjuncts):
+            if disjunct_index in used_disjuncts:
+                continue
+            disjunct_proof = negative_component_to_disjunct(negative, disjunct, negative_name)
+            if disjunct_proof is None:
+                continue
+            target_intro = raw_or_intro_literal_at(target, disjunct_index, disjunct_proof)
+            if target_intro is None:
+                continue
+            contradiction = f"({not_target} {proof_term_text(target_intro)})"
+            component_proof = (
+                f"(xm {proof_arg_text(component)} {proof_arg_text(component)} "
+                f"(fun Hcomponent => Hcomponent) "
+                f"(fun {negative_name} :{proof_arg_text(negative)} => "
+                f"{raw_false_to_expr_proof(contradiction, component)}))"
+            )
+            matched = (disjunct_index, component_proof)
+            break
+        if matched is None:
+            return None
+        used_disjuncts.add(matched[0])
+        component_entries.append((component, matched[1]))
+
+    def component_proof(component: Expr) -> str | None:
+        for candidate, proof in component_entries:
+            if expr_same_mod_alpha(candidate, component):
+                return proof
+        return None
+
+    conjunction_proof = raw_build_conjunction_from_component_proofs(source_premises[0], component_proof)
+    if conjunction_proof is None:
+        return None
+    false_from_source = f"({proof_head(source_proof)} {proof_term_text(conjunction_proof)})"
+    not_target_type = Expr("arrow", args=(target, Expr("var", value="False")))
+    return (
+        f"(xm {proof_arg_text(target)} {proof_arg_text(target)} "
+        f"(fun Htarget => Htarget) "
+        f"(fun {not_target} :{proof_arg_text(not_target_type)} => "
+        f"{raw_false_to_expr_proof(false_from_source, target)}))"
+    )
+
+
 def raw_negated_target_from_not_target_proof(
     negative: Expr,
     target: Expr,
@@ -33323,6 +33423,9 @@ def raw_normal_form_local_pair_proof(
     if expr_same_mod_alpha(source, target):
         return source_proof
     proof = raw_structural_normal_form_transform_proof(source, target, source_proof, variable_sorts, depth + 1)
+    if proof is not None:
+        return proof
+    proof = raw_negated_conjunction_to_ennf_disjunction_proof(source, target, source_proof, variable_sorts)
     if proof is not None:
         return proof
     proof = raw_deep_formula_transform_proof(source, target, source_proof, variable_sorts, depth + 1)
