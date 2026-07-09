@@ -30816,6 +30816,101 @@ def raw_replay_substituted_parent_options(
     return [(substituted, proof)]
 
 
+def raw_quantified_equality_unit_context_superposition_proof(
+    quantified: Expr,
+    target: Expr,
+    quantified_proof: str,
+    unit: Expr,
+    unit_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    binders, body = collect_foralls(quantified)
+    if not binders or len(binders) > 6:
+        return None
+    body_sides = equality_like_sides(body)
+    target_sides = equality_like_sides(target)
+    unit_sides = equality_like_sides(unit)
+    if body_sides is None or target_sides is None or unit_sides is None:
+        return None
+    if body.kind != "eq" or target.kind != "eq" or unit.kind != "eq":
+        return None
+    if len(expr_text(quantified)) + len(expr_text(unit)) + len(expr_text(target)) > 10000:
+        return None
+    binder_names = {name for name, _sort in binders}
+
+    def instantiate_quantified_proof(subst: dict[str, Expr], reverse: bool) -> tuple[Expr, Expr, str] | None:
+        if not binder_names <= subst.keys():
+            return None
+        if any(expr_variables(value) & binder_names for value in subst.values()):
+            return None
+        instantiated_body = substitute_expr(body, subst)
+        instantiated_sides = equality_like_sides(instantiated_body)
+        if instantiated_sides is None:
+            return None
+        proof = quantified_proof
+        for name, _sort in binders:
+            proof = f"({proof_head(proof)} {proof_arg_text(subst[name])})"
+        if reverse:
+            proof = eq_symmetry_proof(proof, instantiated_sides[0])
+            return instantiated_sides[1], instantiated_sides[0], proof
+        return instantiated_sides[0], instantiated_sides[1], proof
+
+    target_orientations = (
+        (target_sides[0], target_sides[1], False),
+        (target_sides[1], target_sides[0], True),
+    )
+    quantified_orientations = (
+        (body_sides[0], body_sides[1], False),
+        (body_sides[1], body_sides[0], True),
+    )
+    unit_orientations = (
+        (unit_sides[0], unit_sides[1], unit_proof),
+        (unit_sides[1], unit_sides[0], eq_symmetry_proof(unit_proof, unit_sides[0])),
+    )
+
+    for context_side, other_side, quantified_reversed in quantified_orientations:
+        for target_other, target_context, target_reversed in target_orientations:
+            for old_term, new_term, oriented_unit_proof in unit_orientations:
+                context_before_rewrite, target_has_new = replace_expr(target_context, new_term, old_term)
+                if not target_has_new:
+                    continue
+                subst: dict[str, Expr] = {}
+                if not match_expr_with_alpha_instantiation(other_side, target_other, binder_names, subst):
+                    continue
+                if not match_expr_with_alpha_instantiation(context_side, context_before_rewrite, binder_names, subst):
+                    continue
+                flatten_substitution(subst)
+                instantiated = instantiate_quantified_proof(subst, quantified_reversed)
+                if instantiated is None:
+                    continue
+                context_inst, other_inst, context_to_other = instantiated
+                if not expr_same_mod_alpha(other_inst, target_other):
+                    continue
+                if not expr_same_mod_alpha(context_inst, context_before_rewrite):
+                    continue
+                rewritten_context, did_rewrite = replace_expr(context_inst, old_term, new_term)
+                if not did_rewrite or not expr_same_mod_alpha(rewritten_context, target_context):
+                    continue
+                hole = fresh_identifier("zz", expr_text(context_inst), expr_text(target_context), expr_text(old_term))
+                context_with_hole, hole_replaced = replace_expr(context_inst, old_term, Expr("var", value=hole))
+                if not hole_replaced:
+                    continue
+                context_rewrite = (
+                    f"{proof_term_text(oriented_unit_proof)} "
+                    f"(fun {hole} :set => {proof_arg_text(context_inst)} = {expr_text(context_with_hole)}) "
+                    f"(fun Q H => H)"
+                )
+                other_to_context = eq_symmetry_proof(context_to_other, context_inst)
+                proof = eq_transitivity_proof([other_to_context, context_rewrite], expr_text(target_other))
+                if proof is None:
+                    continue
+                if target_reversed:
+                    proof = eq_symmetry_proof(proof, target_other)
+                if not raw_tptp_replay_proof_is_unsafe("superposition", expr_text(target), proof):
+                    return proof
+    return None
+
+
 def raw_tptp_superposition_proof(
     proposition: str,
     parents: list[str],
@@ -30877,6 +30972,26 @@ def raw_tptp_superposition_proof(
             if proof is not None:
                 return proof
             proof = raw_instantiated_binary_clause_resolution_proof(
+                early_parent_exprs[1][0],
+                early_target_expr,
+                early_parent_exprs[1][1],
+                early_parent_exprs[0][0],
+                early_parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_quantified_equality_unit_context_superposition_proof(
+                early_parent_exprs[0][0],
+                early_target_expr,
+                early_parent_exprs[0][1],
+                early_parent_exprs[1][0],
+                early_parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_quantified_equality_unit_context_superposition_proof(
                 early_parent_exprs[1][0],
                 early_target_expr,
                 early_parent_exprs[1][1],
