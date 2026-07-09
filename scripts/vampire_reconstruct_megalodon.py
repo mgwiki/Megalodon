@@ -41524,6 +41524,9 @@ def raw_tptp_replay_proof(
         return raw_tptp_avatar_definition_proof(proposition)
     if rule == "rat":
         return raw_tptp_rat_proof(proposition, parents, propositions_by_name)
+    proof = raw_prop_eq_middle_clause_proof(proposition)
+    if proof is not None:
+        return proof
     proof = raw_tptp_parent_complement_false_proof(proposition, parents, propositions_by_name, variable_sorts)
     if proof is not None:
         return proof
@@ -41807,6 +41810,47 @@ def raw_tptp_replay_proof(
     return None
 
 
+def raw_prop_eq_middle_clause_proof(proposition: str) -> str | None:
+    expr = parse_expr(proposition)
+    if expr is None:
+        return None
+    binders, body = collect_foralls(expr)
+    if len(binders) != 2 or any(sort != "prop" for _name, sort in binders):
+        return None
+    left_name, right_name = binders[0][0], binders[1][0]
+    disjuncts = raw_or_parts(body)
+    if disjuncts is None:
+        return None
+    left, right = disjuncts
+    right_disjuncts = raw_or_parts(right)
+    if right_disjuncts is None:
+        return None
+    equality, final = right_disjuncts
+    equality_sides = app_args(equality, "vampire_eq_prop", 2)
+    if equality_sides is None:
+        return None
+    left_var = Expr("var", value=left_name)
+    right_var = Expr("var", value=right_name)
+    if not expr_same_mod_alpha(left, right_var):
+        return None
+    if not expr_same_mod_alpha(final, left_var):
+        return None
+    if not expr_same_mod_alpha(equality_sides[0], left_var) or not expr_same_mod_alpha(equality_sides[1], right_var):
+        return None
+    return (
+        f"(fun {left_name} :prop => fun {right_name} :prop => "
+        f"(xm {right_name} {proof_arg_text(body)} "
+        f"(fun HrightTrue => (fun P Hleft Hright => Hleft HrightTrue)) "
+        f"(fun HrightFalse => "
+        f"(xm {left_name} {proof_arg_text(body)} "
+        f"(fun HleftTrue => (fun P Hleft Hright => Hright ((fun P2 Hleft2 Hright2 => Hright2 HleftTrue)))) "
+        f"(fun HleftFalse => (fun P Hleft Hright => Hright ((fun P2 Hleft2 Hright2 => "
+        f"Hleft2 (vampire_prop_ext {left_name} {right_name} "
+        f"(fun HleftProof => (HleftFalse HleftProof) {right_name}) "
+        f"(fun HrightProof => (HrightFalse HrightProof) {left_name}))))))))))"
+    )
+
+
 def raw_fool_exhaustiveness_axiom_proof(proposition: str) -> str | None:
     expr = parse_expr(proposition)
     if expr is None:
@@ -41821,17 +41865,24 @@ def raw_fool_exhaustiveness_axiom_proof(proposition: str) -> str | None:
     left, right = disjuncts
     expected_left = Expr("var", value=name)
     expected_right = Expr("arrow", args=(Expr("var", value=name), Expr("var", value="False")))
-    if not expr_same_mod_alpha(left, expected_left) or not expr_same_mod_alpha(right, expected_right):
-        eq_proof = raw_fool_prop_equality_exhaustiveness_proof(name, body, left, right)
-        if eq_proof is None:
-            return None
-        return eq_proof
-    return (
-        f"(fun {name} :prop => "
-        f"(xm {name} {proof_arg_text(body)} "
-        f"(fun Htrue => (fun P Hleft Hright => Hleft Htrue)) "
-        f"(fun Hfalse => (fun P Hleft Hright => Hright Hfalse))))"
-    )
+    if expr_same_mod_alpha(left, expected_left) and expr_same_mod_alpha(right, expected_right):
+        return (
+            f"(fun {name} :prop => "
+            f"(xm {name} {proof_arg_text(body)} "
+            f"(fun Htrue => (fun P Hleft Hright => Hleft Htrue)) "
+            f"(fun Hfalse => (fun P Hleft Hright => Hright Hfalse))))"
+        )
+    if expr_same_mod_alpha(left, expected_right) and expr_same_mod_alpha(right, expected_left):
+        return (
+            f"(fun {name} :prop => "
+            f"(xm {name} {proof_arg_text(body)} "
+            f"(fun Htrue => (fun P Hleft Hright => Hright Htrue)) "
+            f"(fun Hfalse => (fun P Hleft Hright => Hleft Hfalse))))"
+        )
+    eq_proof = raw_fool_prop_equality_exhaustiveness_proof(name, body, left, right)
+    if eq_proof is None:
+        return None
+    return eq_proof
 
 
 def raw_fool_prop_equality_exhaustiveness_proof(name: str, body: Expr, left: Expr, right: Expr) -> str | None:
