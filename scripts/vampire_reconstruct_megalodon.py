@@ -81,6 +81,7 @@ RAW_TPTP_FOOL_PROOF_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_FOOL_PRO
 RAW_TPTP_EXPORTED_SKOLEM_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_SKOLEM_CHAR_LIMIT", "60000"))
 RAW_TPTP_EXPORTED_RECTIFY_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_RECTIFY_CHAR_LIMIT", "60000"))
 RAW_TPTP_EXPORTED_DEFINITION_REWRITE_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_DEFINITION_REWRITE_CHAR_LIMIT", "90000"))
+RAW_TPTP_MINIMAL_DEFINITION_REPLAY_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_MINIMAL_DEFINITION_REPLAY_CHAR_LIMIT", "2000"))
 RAW_TPTP_EXPORTED_CNF_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_CNF_CHAR_LIMIT", "90000"))
 RAW_TPTP_CLASSICAL_NORMAL_FORM_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_CLASSICAL_NORMAL_FORM_CHAR_LIMIT", "1500"))
 PROOF_SEARCH_CLOCK = getattr(time, "thread_time", time.monotonic)
@@ -41610,6 +41611,22 @@ def raw_tptp_replay_proof(
         return raw_tptp_avatar_definition_proof(proposition)
     if rule == "rat":
         return raw_tptp_rat_proof(proposition, parents, propositions_by_name)
+    if (
+        rule in {"definition_folding", "definition_unfolding"}
+        and variable_sorts
+        and raw_tptp_replay_payload_size(proposition, parents, propositions_by_name, replay_step)
+        >= RAW_TPTP_MINIMAL_DEFINITION_REPLAY_CHAR_LIMIT
+    ):
+        proof = raw_tptp_replay_proof(
+            rule,
+            proposition,
+            parents,
+            propositions_by_name,
+            {},
+            replay_step,
+        )
+        if proof is not None:
+            return proof
     proof = raw_prop_eq_middle_clause_proof(proposition)
     if proof is not None:
         return proof
