@@ -27198,6 +27198,116 @@ def raw_quantified_parent_equality_rewrite_clause_proof(
     return None
 
 
+def raw_instantiated_quantified_equality_rewrite_clause_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality: Expr,
+    equality_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if proof_search_timed_out():
+        return None
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    equality_binders, equality_body = collect_foralls(equality)
+    equality_sides = equality_like_sides(equality_body)
+    if (
+        not source_binders
+        or target_binders
+        or equality_sides is None
+        or len(source_binders) > 4
+        or len(equality_binders) > 4
+    ):
+        return None
+    if len(raw_clause_literals(source_body)) > 12 or len(raw_clause_literals(target_body)) > 12:
+        return None
+
+    local_sorts = {
+        **variable_sorts,
+        **{name: sort for name, sort in source_binders},
+        **{name: sort for name, sort in equality_binders},
+    }
+    candidate_lists: list[list[Expr]] = []
+    for name, sort in source_binders:
+        candidates = raw_candidate_terms_for_sort(
+            (target_body, equality_sides[0], equality_sides[1], source_body),
+            sort,
+            local_sorts,
+        )
+        candidates = [candidate for candidate in candidates if name not in expr_variables(candidate)]
+        candidates.sort(
+            key=lambda candidate: (
+                0 if candidate.kind == "var" else 1,
+                len(expr_text(candidate)),
+                expr_text(candidate),
+            )
+        )
+        if not candidates:
+            return None
+        candidate_lists.append(candidates[:24])
+
+    attempts = 0
+    seen_substitutions: set[tuple[tuple[str, str], ...]] = set()
+    for values in itertools.product(*candidate_lists):
+        if proof_search_timed_out():
+            return None
+        attempts += 1
+        if attempts > 256:
+            break
+        subst = {name: value for (name, _), value in zip(source_binders, values)}
+        key = tuple(sorted((name, expr_key(value)) for name, value in subst.items()))
+        if key in seen_substitutions:
+            continue
+        seen_substitutions.add(key)
+        instantiated_source = substitute_expr(source_body, subst)
+        if not raw_clause_replay_budget_ok(instantiated_source, target_body, max_literals=12, max_literal_product=192):
+            continue
+        instantiated_source_proof = source_proof
+        for name, _sort in source_binders:
+            instantiated_source_proof = f"({proof_head(instantiated_source_proof)} {proof_arg_text(subst[name])})"
+        if equality_binders:
+            for replaced, transported in raw_quantified_equality_rewrite_clause_steps(
+                instantiated_source,
+                instantiated_source_proof,
+                equality,
+                equality_proof,
+                variable_sorts,
+                limit=16,
+            ):
+                if expr_same_mod_alpha(replaced, target_body):
+                    return transported
+                transformed = raw_clause_subsumption_transform_proof(replaced, target_body, transported)
+                if transformed is not None:
+                    return transformed
+                if raw_clause_replay_budget_ok(replaced, target_body, max_literals=16, max_literal_product=256):
+                    transformed = raw_clause_transform_proof(replaced, target_body, transported)
+                    if transformed is not None:
+                        return transformed
+            continue
+        equality_sort = raw_equality_transport_sort(equality_sides[0], equality_sides[1], variable_sorts)
+        for old_side, new_side, side_proof in (
+            (equality_sides[0], equality_sides[1], equality_proof),
+            (
+                equality_sides[1],
+                equality_sides[0],
+                raw_eq_symmetry_proof(equality_proof, equality_sides[1], equality_sort),
+            ),
+        ):
+            proof = raw_equality_rewrite_clause_proof(
+                instantiated_source,
+                target_body,
+                instantiated_source_proof,
+                old_side,
+                new_side,
+                side_proof,
+                equality_sort,
+            )
+            if proof is not None:
+                return proof
+    return None
+
+
 def raw_lambda_function_parent_equality_rewrite_proof(
     source: Expr,
     target: Expr,
@@ -30618,6 +30728,26 @@ def raw_tptp_superposition_proof(
             if proof is not None:
                 return proof
             proof = raw_negative_equality_clause_superposition_proof(
+                parent_exprs[1][0],
+                target_expr,
+                parent_exprs[1][1],
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_instantiated_quantified_equality_rewrite_clause_proof(
+                parent_exprs[0][0],
+                target_expr,
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_instantiated_quantified_equality_rewrite_clause_proof(
                 parent_exprs[1][0],
                 target_expr,
                 parent_exprs[1][1],
