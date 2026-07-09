@@ -35743,7 +35743,19 @@ def raw_tptp_exported_normal_form_proof(
                 for (parent_name, _), (target_name, _) in zip(parent_binders, target_binders):
                     if parent_name != target_name:
                         renamed_parent_body = rename_expr_variables(renamed_parent_body, {parent_name: target_name})
-                if expr_same_mod_alpha(source, renamed_parent_body) and expr_same_mod_alpha(target, target_body):
+                opened_whole_formula = (
+                    parsed_parent is not None
+                    and parsed_target is not None
+                    and expr_same_mod_alpha(source, ambient_basic_logic_expr(parsed_parent_for_binders))
+                    and expr_same_mod_alpha(target, ambient_basic_logic_expr(parsed_target_for_binders))
+                )
+                if (
+                    expr_same_mod_alpha(source, renamed_parent_body)
+                    and expr_same_mod_alpha(target, target_body)
+                ) or opened_whole_formula:
+                    if opened_whole_formula:
+                        source = renamed_parent_body
+                        target = target_body
                     candidate_binders = target_binders
                     candidate_is_whole_step = True
                     candidate_sorts = {**local_sorts, **{name: sort for name, sort in target_binders}}
