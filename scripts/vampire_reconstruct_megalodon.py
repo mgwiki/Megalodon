@@ -77,6 +77,7 @@ RAW_TPTP_FORWARD_SUBSUMPTION_REPLAY_SECONDS = float(os.environ.get("MEGALODON_RA
 RAW_TPTP_REPLAY_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_REPLAY_CHAR_LIMIT", "12000"))
 RAW_TPTP_EXPORTED_NORMAL_FORM_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_NORMAL_FORM_CHAR_LIMIT", "60000"))
 RAW_TPTP_EXPORTED_FOOL_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_FOOL_CHAR_LIMIT", "60000"))
+RAW_TPTP_FOOL_PROOF_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_FOOL_PROOF_CHAR_LIMIT", "200000"))
 RAW_TPTP_EXPORTED_SKOLEM_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_SKOLEM_CHAR_LIMIT", "60000"))
 RAW_TPTP_EXPORTED_RECTIFY_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_RECTIFY_CHAR_LIMIT", "60000"))
 RAW_TPTP_EXPORTED_DEFINITION_REWRITE_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_DEFINITION_REWRITE_CHAR_LIMIT", "90000"))
@@ -18615,6 +18616,32 @@ def raw_formula_entails_clause_proof(
         if inner is not None:
             return f"(fun {target.value} :{target.sort} => {inner})"
 
+    source_premises, source_conclusion = split_arrows(source)
+    if len(source_premises) == 1 and false_eliminator_expr(source_conclusion):
+        positive_premises, positive_conclusion = split_arrows(source_premises[0])
+        if len(positive_premises) == 1 and false_eliminator_expr(positive_conclusion):
+            positive = positive_premises[0]
+            positive_proof = raw_formula_entails_clause_proof(
+                positive,
+                target,
+                "Hpositive",
+                variable_sorts,
+                depth + 1,
+            )
+            if positive_proof is not None:
+                not_target = fresh_identifier("HnotTarget", expr_text(target), source_proof, str(depth))
+                false_proof = (
+                    f"({proof_head(source_proof)} "
+                    f"(fun Hpositive :{proof_arg_text(positive)} => "
+                    f"{not_target} {proof_term_text(positive_proof)}))"
+                )
+                contradiction = raw_false_to_expr_proof(false_proof, target)
+                return (
+                    f"(xm {proof_arg_text(target)} {proof_arg_text(target)} "
+                    f"(fun Htarget => Htarget) "
+                    f"(fun {not_target} => {proof_term_text(contradiction)}))"
+                )
+
     source_conjuncts = vampire_and_parts(source)
     if source_conjuncts is not None:
         target_binders, target_body_for_score = collect_foralls(target)
@@ -34405,6 +34432,35 @@ def raw_fast_skolemised_formula_transform_proof(
     if expr_same_mod_alpha(source, target):
         return source_proof
 
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
+        assert source.value is not None and target.value is not None and target.sort is not None
+        source_body = source.args[0]
+        if source.value != target.value:
+            source_body = rename_expr_variables(source_body, {source.value: target.value})
+        inner_source_proof = f"({proof_head(source_proof)} {target.value})"
+        inner = raw_fast_skolemised_formula_transform_proof(
+            source_body,
+            target.args[0],
+            inner_source_proof,
+            rewrites,
+            {**variable_sorts, target.value: target.sort},
+            depth + 1,
+        )
+        if inner is not None:
+            return f"(fun {target.value} :{target.sort} => {inner})"
+
+    if target.kind == "forall" and target.value is not None and target.sort is not None:
+        inner = raw_fast_skolemised_formula_transform_proof(
+            source,
+            target.args[0],
+            source_proof,
+            rewrites,
+            {**variable_sorts, target.value: target.sort},
+            depth + 1,
+        )
+        if inner is not None:
+            return f"(fun {target.value} :{target.sort} => {inner})"
+
     for rewrite in rewrites:
         instance = raw_skolem_rewrite_instance_proof(
             source,
@@ -34463,6 +34519,113 @@ def raw_fast_skolemised_formula_transform_proof(
                 f"({proof_head(source_proof)} {proof_arg_text(target)} "
                 f"(fun {left_name} {right_name} => "
                 f"(fun P K => K {proof_term_text(right_proof)} {proof_term_text(left_proof)})))"
+            )
+    if target_conjuncts is not None:
+        left_proof = raw_fast_skolemised_formula_transform_proof(
+            source,
+            target_conjuncts[0],
+            source_proof,
+            rewrites,
+            variable_sorts,
+            depth + 1,
+        )
+        if left_proof is not None:
+            right_proof = raw_fast_skolemised_formula_transform_proof(
+                source,
+                target_conjuncts[1],
+                source_proof,
+                rewrites,
+                variable_sorts,
+                depth + 1,
+            )
+            if right_proof is not None:
+                return f"(fun P K => K {proof_term_text(left_proof)} {proof_term_text(right_proof)})"
+    if source_conjuncts is not None:
+        for conjunct in source_conjuncts:
+            projection = vampire_and_projection_from_proof(source_proof, source, conjunct)
+            if projection is None:
+                continue
+            proof = raw_fast_skolemised_formula_transform_proof(
+                conjunct,
+                target,
+                projection,
+                rewrites,
+                variable_sorts,
+                depth + 1,
+            )
+            if proof is not None:
+                return proof
+    source_parts = raw_or_parts(source)
+    target_parts = raw_or_parts(target)
+    if source_parts is not None and target_parts is not None:
+        for left_target, right_target in (target_parts, (target_parts[1], target_parts[0])):
+            left_name = fresh_identifier("HLskOr", expr_text(source), expr_text(target), source_proof, str(depth))
+            right_name = fresh_identifier("HRskOr", expr_text(source), expr_text(target), source_proof, left_name, str(depth))
+            left_proof = raw_fast_skolemised_formula_transform_proof(
+                source_parts[0],
+                left_target,
+                left_name,
+                rewrites,
+                variable_sorts,
+                depth + 1,
+            )
+            if left_proof is None:
+                continue
+            right_proof = raw_fast_skolemised_formula_transform_proof(
+                source_parts[1],
+                right_target,
+                right_name,
+                rewrites,
+                variable_sorts,
+                depth + 1,
+            )
+            if right_proof is None:
+                continue
+            if expr_same_mod_alpha(left_target, target_parts[0]):
+                left_intro = f"(fun P Hleft Hright => Hleft {proof_term_text(left_proof)})"
+                right_intro = f"(fun P Hleft Hright => Hright {proof_term_text(right_proof)})"
+            else:
+                left_intro = f"(fun P Hleft Hright => Hright {proof_term_text(left_proof)})"
+                right_intro = f"(fun P Hleft Hright => Hleft {proof_term_text(right_proof)})"
+            return (
+                f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                f"(fun {left_name} => {left_intro}) "
+                f"(fun {right_name} => {right_intro}))"
+            )
+
+    if target_parts is not None:
+        left_intro = raw_fast_skolemised_formula_transform_proof(
+            source,
+            target_parts[0],
+            source_proof,
+            rewrites,
+            variable_sorts,
+            depth + 1,
+        )
+        if left_intro is not None:
+            return f"(fun P Hleft Hright => Hleft {proof_term_text(left_intro)})"
+        right_intro = raw_fast_skolemised_formula_transform_proof(
+            source,
+            target_parts[1],
+            source_proof,
+            rewrites,
+            variable_sorts,
+            depth + 1,
+        )
+        if right_intro is not None:
+            return f"(fun P Hleft Hright => Hright {proof_term_text(right_intro)})"
+
+    if source_parts is not None:
+        left, right = source_parts
+        left_name = fresh_identifier("HLskOr", expr_text(source), expr_text(target), source_proof, str(depth))
+        right_name = fresh_identifier("HRskOr", expr_text(source), expr_text(target), source_proof, left_name, str(depth))
+        left_proof = raw_fast_skolemised_formula_transform_proof(left, target, left_name, rewrites, variable_sorts, depth + 1)
+        right_proof = raw_fast_skolemised_formula_transform_proof(right, target, right_name, rewrites, variable_sorts, depth + 1)
+        if left_proof is not None and right_proof is not None:
+            return (
+                f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                f"(fun {left_name} => {left_proof}) "
+                f"(fun {right_name} => {right_proof}))"
             )
     return None
 
@@ -34949,7 +35112,7 @@ def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: s
         return raw_tptp_replay_proof_has_unbound_synthetic_db(proof)
     if rule in {"avatar_component_clause", "avatar_split_clause"}:
         return len(proposition) > MAX_RAW_TPTP_EXACT_AVATAR_PROPOSITION or len(proof) > MAX_RAW_TPTP_EXACT_PROOF_TERM
-    if rule == "fool_elimination" and len(proof) > 100000:
+    if rule == "fool_elimination" and len(proof) > RAW_TPTP_FOOL_PROOF_CHAR_LIMIT:
         return True
     if (
         rule in {"ennf_transformation", "nnf_transformation"}
@@ -37970,7 +38133,7 @@ def raw_tptp_replay_proof(
         if rule == "fool_elimination":
             previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
             if previous_deadline is not None:
-                PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 1.0)
+                PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 3.0)
             try:
                 proof = raw_tptp_fool_elimination_proof(
                     proposition,
@@ -38883,6 +39046,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     if declarations:
         raw_declared_sorts = raw_tptp_type_variables(declarations)
         variable_sorts = {
+            **source_declared_sorts(source),
             **source_definition_sorts(source),
             **raw_declared_sorts,
             **{name: sort for name, (sort, _body) in all_local_set_definitions.items()},
@@ -38929,6 +39093,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         propositions = decoded_propositions
     else:
         variable_sorts = {
+            **source_declared_sorts(source),
             **source_definition_sorts(source),
             **proof_text_type_variable_sorts(text),
             **problem_type_variable_sorts(proof, problem),
@@ -39095,6 +39260,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     seen_infixes = {line for line in lines if line.startswith("Infix ")}
     source_names = source_active_declared_names(source)
     source_sorts = source_active_declared_sorts(source)
+    source_declared_sort_names = set(source_declared_sorts(source))
     source_declarations = raw_tptp_exported_source_declarations(text)
     early_source_declarations: list[str] = []
     later_source_declarations: list[str] = []
@@ -39122,6 +39288,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             declared_names.add(declared_name)
         lines.append(declaration)
     for name, sort in sorted(variable_sorts.items()):
+        if sort == "SType":
+            continue
         if name in RAW_TPTP_AMBIENT_CONSTANTS:
             continue
         if name.startswith("vampire_"):
@@ -39129,6 +39297,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if name in {"vAND", "vOR", "vIMP", "vNOT"}:
             continue
         if name in source_names:
+            continue
+        if name in source_declared_sort_names:
             continue
         if name in local_set_definition_names:
             continue
