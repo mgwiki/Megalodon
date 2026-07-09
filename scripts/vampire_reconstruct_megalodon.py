@@ -29231,6 +29231,26 @@ def raw_tptp_forward_demodulation_proof(
     )
     if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
         return proof
+    proof = raw_or_negative_branch_prop_equality_rewrite_proof(
+        first,
+        target,
+        first_name,
+        second,
+        second_name,
+        variable_sorts,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_or_negative_branch_prop_equality_rewrite_proof(
+        second,
+        target,
+        second_name,
+        first,
+        first_name,
+        variable_sorts,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
     proof = raw_quantified_parent_equality_rewrite_clause_proof(
         first,
         target,
@@ -29998,6 +30018,148 @@ def raw_target_extended_quantified_parent_equality_rewrite_clause_proof(
     for name, sort in reversed(target_binders):
         body_proof = f"(fun {name} :{sort} => {body_proof})"
     return body_proof
+
+
+def raw_or_negative_branch_prop_equality_rewrite_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality: Expr,
+    equality_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if len(source_binders) > len(target_binders) or len(target_binders) > 6:
+        return None
+    if any(source_sort != target_sort for (_, source_sort), (_, target_sort) in zip(source_binders, target_binders)):
+        return None
+    source_renaming = {
+        source_name: Expr("var", value=target_name)
+        for (source_name, _), (target_name, _) in zip(source_binders, target_binders)
+    }
+    source_body = substitute_expr(source_body, source_renaming)
+    source_or = app_args(source_body, "or", 2) or app_args(source_body, "vampire_or", 2)
+    target_or = app_args(target_body, "or", 2) or app_args(target_body, "vampire_or", 2)
+    if source_or is None or target_or is None:
+        return None
+    equality_binders, equality_body = collect_foralls(equality)
+    protected_names = (
+        {name for name, _ in source_binders}
+        | {name for name, _ in target_binders}
+        | expr_bound_variables(source_body)
+        | expr_bound_variables(target_body)
+    )
+    if protected_names & {name for name, _ in equality_binders}:
+        used_names = set(protected_names) | expr_variables(source_body) | expr_variables(target_body)
+        renamed_binders: list[tuple[str, str]] = []
+        renaming: dict[str, Expr] = {}
+        for name, sort in equality_binders:
+            new_name = name
+            if new_name in used_names:
+                new_name = fresh_identifier(name, " ".join(sorted(used_names)))
+            used_names.add(new_name)
+            renamed_binders.append((new_name, sort))
+            if new_name != name:
+                renaming[name] = Expr("var", value=new_name)
+        if renaming:
+            equality_body = substitute_expr(equality_body, renaming)
+            equality_binders = renamed_binders
+    equality_sides = app_args(equality_body, "vampire_eq_prop", 2)
+    if equality_sides is None or len(equality_binders) > 6:
+        return None
+    local_sorts = {
+        **variable_sorts,
+        **{name: sort for name, sort in target_binders},
+        **{name: sort for name, sort in equality_binders},
+    }
+    equality_binder_sort_by_name = {name: sort for name, sort in equality_binders}
+    source_body_proof = source_proof
+    for target_name, _ in target_binders[: len(source_binders)]:
+        source_body_proof = f"({proof_head(source_body_proof)} {target_name})"
+
+    def negative_premise(branch: Expr) -> Expr | None:
+        premises, conclusion = split_arrows(branch)
+        if len(premises) == 1 and false_eliminator_expr(conclusion):
+            return premises[0]
+        return None
+
+    source_premises = [negative_premise(branch) for branch in source_or]
+    target_premises = [negative_premise(branch) for branch in target_or]
+    if any(premise is None for premise in source_premises + target_premises):
+        return None
+    assert all(premise is not None for premise in source_premises + target_premises)
+
+    def instantiate_equality(target_premise: Expr, source_premise: Expr) -> tuple[str, Expr] | None:
+        for left, right, reverse in (
+            (equality_sides[0], equality_sides[1], False),
+            (equality_sides[1], equality_sides[0], True),
+        ):
+            subst = raw_match_expr_pair_with_unary_function_binder_instantiation(
+                left,
+                target_premise,
+                right,
+                source_premise,
+                equality_binder_sort_by_name,
+                local_sorts,
+            )
+            if subst is None:
+                continue
+            flatten_substitution(subst)
+            if any(name not in subst for name, _ in equality_binders):
+                continue
+            proof = equality_proof
+            for name, _ in equality_binders:
+                proof = f"({proof_head(proof)} {proof_arg_text(subst[name])})"
+            if reverse:
+                proof = raw_eq_symmetry_proof(proof, source_premise, "prop")
+            return proof, target_premise
+        return None
+
+    for unchanged_source_index in (0, 1):
+        rewritten_source_index = 1 - unchanged_source_index
+        for unchanged_target_index in (0, 1):
+            rewritten_target_index = 1 - unchanged_target_index
+            source_unchanged = source_premises[unchanged_source_index]
+            target_unchanged = target_premises[unchanged_target_index]
+            source_rewritten = source_premises[rewritten_source_index]
+            target_rewritten = target_premises[rewritten_target_index]
+            assert source_unchanged is not None and target_unchanged is not None
+            assert source_rewritten is not None and target_rewritten is not None
+            if not expr_same_mod_alpha(beta_normalize_expr(source_unchanged), beta_normalize_expr(target_unchanged)):
+                continue
+            equality_instance = instantiate_equality(target_rewritten, source_rewritten)
+            if equality_instance is None:
+                continue
+            equality_instance_proof, target_rewritten_premise = equality_instance
+            unchanged_name = fresh_identifier("Hunchanged", expr_text(source_body), expr_text(target_body))
+            rewritten_name = fresh_identifier("Hrewritten", expr_text(source_body), expr_text(target_body), unchanged_name)
+            target_text = proof_arg_text(target_body)
+            rewritten_branch = (
+                f"(fun Htarget :{proof_arg_text(target_rewritten_premise)} => "
+                f"{rewritten_name} ({proof_term_text(equality_instance_proof)} (fun zz :prop => zz) Htarget))"
+            )
+
+            def target_intro(target_index: int, proof_term: str) -> str:
+                if target_index == 0:
+                    return f"(fun P Hleft Hright => Hleft {proof_term_text(proof_term)})"
+                return f"(fun P Hleft Hright => Hright {proof_term_text(proof_term)})"
+
+            source_branches = ["", ""]
+            source_branches[unchanged_source_index] = (
+                f"(fun {unchanged_name} => {target_intro(unchanged_target_index, unchanged_name)})"
+            )
+            source_branches[rewritten_source_index] = (
+                f"(fun {rewritten_name} => {target_intro(rewritten_target_index, rewritten_branch)})"
+            )
+            proof = (
+                f"({proof_head(source_body_proof)} {target_text} "
+                f"{source_branches[0]} {source_branches[1]})"
+            )
+            for name, sort in reversed(target_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
+            return proof
+    return None
 
 
 def raw_source_prefix_instantiated_forall_proof(
