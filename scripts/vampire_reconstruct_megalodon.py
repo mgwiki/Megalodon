@@ -17941,7 +17941,12 @@ def infer_missing_raw_tptp_sorts(expr: Expr, variables: dict[str, str], local_so
         assert expr.value is not None and expr.sort is not None
         nested_sorts = dict(local_sorts)
         nested_sorts[expr.value] = expr.sort
-        infer_missing_raw_tptp_sorts(expr.args[0], variables, nested_sorts, "prop" if expr.kind == "forall" else None)
+        body_expected = "prop" if expr.kind == "forall" else None
+        if expr.kind == "lambda" and expected is not None:
+            pieces = split_sort_arrows(expected)
+            if len(pieces) >= 2 and normalize_megalodon_sort(pieces[0]) == normalize_megalodon_sort(expr.sort):
+                body_expected = join_sort_arrows(pieces[1:]) if len(pieces) > 2 else pieces[1]
+        infer_missing_raw_tptp_sorts(expr.args[0], variables, nested_sorts, body_expected)
         return
     if expr.kind == "arrow":
         infer_missing_raw_tptp_sorts(expr.args[0], variables, local_sorts, "prop")
@@ -33315,11 +33320,15 @@ def raw_tptp_replay_proof_has_escaped_surface_variable(proposition: str, proof: 
     return bool(proof_variables - proposition_variables - proof_binders)
 
 
-def raw_tptp_replay_proof_has_free_surface_variable(proof: str) -> bool:
+def raw_tptp_replay_proof_has_free_surface_variable(proposition: str, proof: str) -> bool:
     parsed = parse_expr(proof)
     if parsed is None:
         return False
-    return any(RAW_TPTP_SURFACE_VAR_RE.fullmatch(name) for name in expr_variables(parsed))
+    proposition_variables = set(RAW_TPTP_SURFACE_VAR_RE.findall(proposition))
+    return any(
+        RAW_TPTP_SURFACE_VAR_RE.fullmatch(name) and name not in proposition_variables
+        for name in expr_variables(parsed)
+    )
 
 
 def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: str) -> bool:
@@ -33327,7 +33336,7 @@ def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: s
         return True
     if rule not in {"definition_folding", "definition_unfolding"} and RAW_TPTP_BAD_DEFINITION_CONTEXT_RE.search(proof):
         return True
-    if raw_tptp_replay_proof_has_free_surface_variable(proof):
+    if raw_tptp_replay_proof_has_free_surface_variable(proposition, proof):
         return True
     if raw_tptp_replay_proof_has_free_synthetic_db(proof):
         return True
