@@ -27809,7 +27809,10 @@ def raw_negative_implication_quantified_equality_rewrite_proof(
                     f"(fun {hole_name} :{equality_sort} => {expr_text(context)}) "
                     f"Htarget"
                 )
-                return f"(fun Htarget => {proof_head(source_proof)} {proof_term_text(transported)})"
+                return (
+                    f"(fun Htarget :{proof_arg_text(target_premises[0])} => "
+                    f"{proof_head(source_proof)} {proof_term_text(transported)})"
+                )
     return None
 
 
@@ -27840,7 +27843,10 @@ def raw_negative_implication_equality_rewrite_proof(
         equality_sort,
     ):
         if expr_same_mod_alpha(rewritten, source_premises[0]):
-            return f"(fun Htarget => {proof_head(source_proof)} {proof_term_text(transported)})"
+            return (
+                f"(fun Htarget :{proof_arg_text(target_premises[0])} => "
+                f"{proof_head(source_proof)} {proof_term_text(transported)})"
+            )
     return None
 
 
@@ -30156,6 +30162,16 @@ def raw_tptp_superposition_proof(
                 if proof is not None:
                     return proof
         if target_expr is not None and len(parent_exprs) == 2:
+            proof = raw_quantified_common_side_equality_composition_proof(
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                target_expr,
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
             proof = raw_common_rhs_equality_superposition_proof(
                 parent_exprs[0][0],
                 target_expr,
@@ -30176,6 +30192,7 @@ def raw_tptp_superposition_proof(
                 parent_exprs[0][1],
                 parent_exprs[1][0],
                 parent_exprs[1][1],
+                variable_sorts,
             )
             if proof is not None:
                 return proof
@@ -30185,6 +30202,7 @@ def raw_tptp_superposition_proof(
                 parent_exprs[1][1],
                 parent_exprs[0][0],
                 parent_exprs[0][1],
+                variable_sorts,
             )
             if proof is not None:
                 return proof
@@ -30437,7 +30455,9 @@ def raw_negative_equality_clause_superposition_proof(
     source_proof: str,
     equality_clause: Expr,
     equality_clause_proof: str,
+    variable_sorts: dict[str, str] | None = None,
 ) -> str | None:
+    variable_sorts = variable_sorts or {}
     target_binders, target_body = collect_foralls(target)
     if len(raw_clause_literals(source)) > 8 or len(raw_clause_literals(equality_clause)) > 4 or len(raw_clause_literals(target_body)) > 12:
         return None
@@ -30447,6 +30467,7 @@ def raw_negative_equality_clause_superposition_proof(
     target_text = proof_arg_text(target_body)
     previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
     PROOF_SEARCH_STATE.flat_resolution_target = target_text
+    target_sort_by_name = {name: sort for name, sort in target_binders}
 
     def negative_equality_premise(literal: Expr) -> Expr | None:
         premises, conclusion = split_arrows(literal)
@@ -30454,9 +30475,74 @@ def raw_negative_equality_clause_superposition_proof(
             return None
         return premises[0] if equality_like_sides(premises[0]) is not None else None
 
+    def guided_equality_options(source_option: Expr) -> list[tuple[Expr, str]]:
+        binders, body = collect_foralls(equality_clause)
+        if not binders:
+            return []
+        binder_names = {name for name, _sort in binders}
+        body_literals = raw_clause_literals(body)
+        source_negative_premises = [
+            premise
+            for literal in raw_clause_literals(source_option)
+            for premise in [negative_equality_premise(literal)]
+            if premise is not None
+        ]
+        target_negative_premises = [
+            premise
+            for literal in target_literals
+            for premise in [negative_equality_premise(literal)]
+            if premise is not None
+        ]
+        options: list[tuple[Expr, str]] = []
+        seen: set[str] = set()
+        for equality_literal in body_literals:
+            equality_sides = equality_like_sides(equality_literal)
+            if equality_sides is None:
+                continue
+            for old_pattern, new_pattern in ((equality_sides[0], equality_sides[1]), (equality_sides[1], equality_sides[0])):
+                for source_negative in source_negative_premises:
+                    for source_subterm in expr_subterms(source_negative, limit=96):
+                        subst: dict[str, Expr] = {}
+                        if not match_expr_with_alpha_instantiation(old_pattern, source_subterm, binder_names, subst):
+                            continue
+                        for target_negative in target_negative_premises:
+                            for target_subterm in expr_subterms(target_negative, limit=96):
+                                trial = dict(subst)
+                                if not match_expr_with_alpha_instantiation(new_pattern, target_subterm, binder_names, trial):
+                                    continue
+                                flatten_substitution(trial)
+                                if not binder_names <= trial.keys():
+                                    continue
+                                if any((expr_variables(value) & binder_names) - target_sort_by_name.keys() for value in trial.values()):
+                                    continue
+                                instantiated = flatten_applications(substitute_expr(body, trial))
+                                key = expr_key(instantiated)
+                                if key in seen:
+                                    continue
+                                proof = equality_clause_proof
+                                ok = True
+                                for name, sort in binders:
+                                    value = trial[name]
+                                    if value.kind == "var" and value.value in target_sort_by_name and target_sort_by_name[value.value] != sort:
+                                        ok = False
+                                        break
+                                    proof = f"({proof_head(proof)} {proof_arg_text(value)})"
+                                if ok:
+                                    seen.add(key)
+                                    options.append((instantiated, proof))
+        return options
+
     try:
         for source_option, source_option_proof in source_options[:24]:
-            for equality_option, equality_option_proof in equality_options[:8]:
+            local_equality_options = list(equality_options[:8])
+            seen_equality_options = {expr_key(expr) for expr, _proof in local_equality_options}
+            for equality_option in guided_equality_options(source_option):
+                key = expr_key(equality_option[0])
+                if key in seen_equality_options:
+                    continue
+                seen_equality_options.add(key)
+                local_equality_options.append(equality_option)
+            for equality_option, equality_option_proof in local_equality_options[:24]:
 
                 def source_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
                     direct = raw_literal_to_clause_proof(source_literal, target_body, source_literal_proof, target_literals, ())
@@ -30473,6 +30559,41 @@ def raw_negative_equality_clause_superposition_proof(
                         )
                         if direct_equality is not None:
                             return direct_equality
+                        equality_sides = equality_like_sides(equality_literal)
+                        if equality_sides is not None and negative_equality_premise(source_literal) is not None:
+                            equality_sort = raw_equality_transport_sort(equality_sides[0], equality_sides[1], variable_sorts)
+                            orientations = (
+                                (equality_sides[0], equality_sides[1], equality_literal_proof),
+                                (
+                                    equality_sides[1],
+                                    equality_sides[0],
+                                    raw_eq_symmetry_proof(equality_literal_proof, equality_sides[0], equality_sort),
+                                ),
+                            )
+                            for equality_left, equality_right, oriented_equality_proof in orientations:
+                                for target_literal in target_literals:
+                                    if negative_equality_premise(target_literal) is None:
+                                        continue
+                                    rewritten_negative = raw_negative_implication_equality_rewrite_proof(
+                                        source_literal,
+                                        target_literal,
+                                        source_literal_proof,
+                                        equality_left,
+                                        equality_right,
+                                        oriented_equality_proof,
+                                        equality_sort,
+                                    )
+                                    if rewritten_negative is None:
+                                        continue
+                                    target_proof = raw_literal_to_clause_proof(
+                                        target_literal,
+                                        target_body,
+                                        rewritten_negative,
+                                        target_literals,
+                                        (),
+                                    )
+                                    if target_proof is not None:
+                                        return target_proof
                         premise = negative_equality_premise(equality_literal)
                         if premise is None:
                             return None
@@ -30573,6 +30694,87 @@ def raw_common_rhs_equality_superposition_proof(
             for name, sort in reversed(target_binders):
                 proof = f"(fun {name} :{sort} => {proof})"
             return proof
+    return None
+
+
+def raw_quantified_common_side_equality_composition_proof(
+    first: Expr,
+    first_proof: str,
+    second: Expr,
+    second_proof: str,
+    target: Expr,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    target_binders, target_body = collect_foralls(target)
+    target_sides = equality_like_sides(target_body)
+    if target_sides is None or len(target_binders) > 8:
+        return None
+    if not (
+        target_body.kind == "eq"
+        or (
+            target_body.kind == "app"
+            and target_body.args
+            and target_body.args[0].kind == "var"
+            and target_body.args[0].value in {"vampire_eq", "vampire_eq_set"}
+        )
+    ):
+        return None
+    target_sort_by_name = {name: sort for name, sort in target_binders}
+
+    def instance_options(source: Expr, source_proof: str, target_side: Expr) -> list[tuple[Expr, str]]:
+        source_binders, source_body = collect_foralls(source)
+        source_sides = equality_like_sides(source_body)
+        if source_sides is None or len(source_binders) > 6:
+            return []
+        binder_names = {name for name, _sort in source_binders}
+        options: list[tuple[Expr, str]] = []
+        for match_index, common_index in ((0, 1), (1, 0)):
+            subst: dict[str, Expr] = {}
+            if not match_expr_with_target_binder_instantiation(source_sides[match_index], target_side, binder_names, subst):
+                continue
+            if any((expr_variables(value) & binder_names) - target_sort_by_name.keys() for value in subst.values()):
+                continue
+            ok = True
+            for name, sort in source_binders:
+                if name in subst:
+                    value = subst[name]
+                    if value.kind == "var" and value.value in target_sort_by_name and target_sort_by_name[value.value] != sort:
+                        ok = False
+                        break
+                    continue
+                if name in target_sort_by_name and target_sort_by_name[name] == sort:
+                    subst[name] = Expr("var", value=name)
+                else:
+                    ok = False
+                    break
+            if not ok or not binder_names <= subst.keys():
+                continue
+            common = substitute_expr(source_sides[common_index], subst)
+            proof = source_proof
+            for name, _sort in source_binders:
+                proof = f"({proof_head(proof)} {proof_arg_text(subst[name])})"
+            equality_sort = raw_equality_transport_sort(target_side, common, variable_sorts)
+            if match_index == 1:
+                proof = raw_eq_symmetry_proof(proof, common, equality_sort)
+            options.append((common, proof))
+        return options
+
+    parent_pairs = ((first, first_proof, second, second_proof), (second, second_proof, first, first_proof))
+    for left_source, left_source_proof, right_source, right_source_proof in parent_pairs:
+        left_options = instance_options(left_source, left_source_proof, target_sides[0])
+        right_options = instance_options(right_source, right_source_proof, target_sides[1])
+        for common_left, left_proof in left_options:
+            for common_right, right_proof in right_options:
+                if not expr_same_mod_alpha(common_left, common_right):
+                    continue
+                equality_sort = raw_equality_transport_sort(target_sides[0], common_left, variable_sorts)
+                right_to_common = raw_eq_symmetry_proof(right_proof, target_sides[1], equality_sort)
+                proof = eq_transitivity_proof([left_proof, right_to_common], expr_text(target_sides[0]))
+                if proof is None:
+                    continue
+                for name, sort in reversed(target_binders):
+                    proof = f"(fun {name} :{sort} => {proof})"
+                return proof
     return None
 
 
