@@ -28222,6 +28222,89 @@ def raw_prop_equivalence_proof(
     )
 
 
+def raw_exists_equality_symmetry_equivalence_proof(
+    source: Expr,
+    target: Expr,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if source.kind != "app" or target.kind != "app" or len(source.args) != 2 or len(target.args) != 2:
+        return None
+    if not (
+        source.args[0].kind == "var"
+        and target.args[0].kind == "var"
+        and source.args[0].value == target.args[0].value
+        and source.args[0].value is not None
+        and source.args[0].value.startswith("vampire_exists_")
+    ):
+        return None
+    source_predicate = source.args[1]
+    target_predicate = target.args[1]
+    if (
+        source_predicate.kind != "lambda"
+        or target_predicate.kind != "lambda"
+        or source_predicate.value is None
+        or target_predicate.value is None
+        or source_predicate.sort is None
+        or target_predicate.sort is None
+        or source_predicate.sort != target_predicate.sort
+    ):
+        return None
+    binder_sort = source_predicate.sort
+    binder = fresh_identifier("X", expr_text(source), expr_text(target))
+    source_body = rename_expr_variables(source_predicate.args[0], {source_predicate.value: binder})
+    target_body = rename_expr_variables(target_predicate.args[0], {target_predicate.value: binder})
+    source_sides = equality_like_sides(source_body)
+    target_sides = equality_like_sides(target_body)
+    if source_sides is None or target_sides is None:
+        return None
+    if not (
+        expr_same_mod_alpha(source_sides[0], target_sides[1])
+        and expr_same_mod_alpha(source_sides[1], target_sides[0])
+    ):
+        return None
+    equality_sort = raw_equality_transport_sort(
+        source_sides[0],
+        source_sides[1],
+        {**variable_sorts, binder: binder_sort},
+    )
+    forward_eq = raw_eq_symmetry_proof("Heq", source_sides[0], equality_sort)
+    backward_eq = raw_eq_symmetry_proof("Heq", target_sides[0], equality_sort)
+    return (
+        f"(vampire_prop_ext {proof_arg_text(source)} {proof_arg_text(target)} "
+        f"(fun Hsrc => fun Q K => Hsrc Q (fun {binder} :{binder_sort} => fun Heq => K {binder} {proof_term_text(forward_eq)})) "
+        f"(fun Htgt => fun Q K => Htgt Q (fun {binder} :{binder_sort} => fun Heq => K {binder} {proof_term_text(backward_eq)})))"
+    )
+
+
+def raw_fast_set_predicate_extensionality_proof(
+    source_predicate: Expr,
+    target_predicate: Expr,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_binders, source_body = collect_lambdas(source_predicate)
+    target_binders, target_body = collect_lambdas(target_predicate)
+    if len(source_binders) != 1 or len(target_binders) != 1:
+        return None
+    source_name, source_sort = source_binders[0]
+    target_name, target_sort = target_binders[0]
+    if source_sort != "set" or target_sort != "set":
+        return None
+    binder = fresh_identifier("X", expr_text(source_predicate), expr_text(target_predicate))
+    source_body = rename_expr_variables(source_body, {source_name: binder})
+    target_body = rename_expr_variables(target_body, {target_name: binder})
+    body_proof = raw_exists_equality_symmetry_equivalence_proof(
+        source_body,
+        target_body,
+        {**variable_sorts, binder: "set"},
+    )
+    if body_proof is None:
+        return None
+    return (
+        f"(vampire_funext_set_prop {proof_arg_text(source_predicate)} {proof_arg_text(target_predicate)} "
+        f"(fun {binder} :set => {proof_term_text(body_proof)}))"
+    )
+
+
 def raw_set_predicate_extensionality_proof(
     source_predicate: Expr,
     target_predicate: Expr,
@@ -28345,6 +28428,21 @@ def raw_set_term_equality_transform_proof(
             f"(fun {hole} :{binder_sort_text(normalized_sort)} => {proof_arg_text(source)} = {expr_text(context)}) "
             f"(fun Q H => H)"
         )
+    if arg_sort == "set->prop":
+        if len(expr_text(source)) + len(expr_text(target)) > 3000:
+            return None
+        predicate_equality = raw_fast_set_predicate_extensionality_proof(
+            source.args[index],
+            target.args[index],
+            variable_sorts,
+        )
+        if predicate_equality is None:
+            return None
+        return (
+            f"{proof_term_text(predicate_equality)} "
+            f"(fun {hole} :set->prop => {proof_arg_text(source)} = {expr_text(context)}) "
+            f"(fun Q H => H)"
+        )
     return None
 
 
@@ -28444,6 +28542,19 @@ def raw_set_application_multi_argument_equality_proof(
             proof = (
                 f"{proof_term_text(argument_transport)} "
                 f"(fun {hole} :{binder_sort_text(arg_sort)} => {expr_text(current_expr)} = {expr_text(context)}) "
+                f"(fun Q:(set->prop) => fun H:Q ({proof_arg_text(current_expr)}) => H)"
+            )
+        elif arg_sort == "set->prop":
+            predicate_equality = raw_fast_set_predicate_extensionality_proof(
+                current_arg,
+                target_arg,
+                variable_sorts,
+            )
+            if predicate_equality is None:
+                return None
+            proof = (
+                f"{proof_term_text(predicate_equality)} "
+                f"(fun {hole} :set->prop => {expr_text(current_expr)} = {expr_text(context)}) "
                 f"(fun Q:(set->prop) => fun H:Q ({proof_arg_text(current_expr)}) => H)"
             )
         else:
