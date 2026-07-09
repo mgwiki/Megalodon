@@ -16888,14 +16888,19 @@ AMBIENT_BASIC_LOGIC_REPLACEMENTS = (
 )
 
 
+def use_ambient_basic_logic_text(text: str) -> str:
+    for name, replacement in AMBIENT_BASIC_LOGIC_REPLACEMENTS:
+        text = replace_identifier(text, name, replacement)
+    return text
+
+
 def use_ambient_basic_logic(lines: list[str]) -> list[str]:
     result: list[str] = []
     for line in lines:
         if any(line.startswith(f"Definition {name} ") for name, _ in AMBIENT_BASIC_LOGIC_REPLACEMENTS):
             continue
         if not line.lstrip().startswith("//"):
-            for name, replacement in AMBIENT_BASIC_LOGIC_REPLACEMENTS:
-                line = replace_identifier(line, name, replacement)
+            line = use_ambient_basic_logic_text(line)
         result.append(line)
     return result
 
@@ -20150,6 +20155,61 @@ def raw_tptp_unit_resulting_resolution_proof(
     return None
 
 
+def raw_false_from_prop_true_false_equality(literal: Expr, literal_proof: str) -> str | None:
+    sides = equality_like_sides(literal)
+    if sides is None:
+        return None
+    left, right = sides
+    true_proof = raw_true_intro_proof()
+    if raw_true_expr(left) and false_eliminator_expr(right):
+        return f"({proof_head(literal_proof)} (fun P:prop => P) {true_proof})"
+    if false_eliminator_expr(left) and raw_true_expr(right):
+        return (
+            f"(({proof_head(literal_proof)} "
+            f"(fun P:prop => P -> False) "
+            f"(fun Hfalse => Hfalse)) {true_proof})"
+        )
+    return None
+
+
+def raw_impossible_prop_equality_disjunct_elimination_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+) -> str | None:
+    parts = raw_or_parts(source)
+    if parts is None:
+        return None
+    target_text = proof_arg_text(target)
+    for impossible, retained, impossible_on_left in (
+        (parts[0], parts[1], True),
+        (parts[1], parts[0], False),
+    ):
+        impossible_false = raw_false_from_prop_true_false_equality(impossible, "Himpossible")
+        if impossible_false is None:
+            continue
+        retained_proof = raw_simple_clause_transform_proof(retained, target, "Hretained")
+        if retained_proof is None:
+            retained_proof = raw_clause_transform_proof(retained, target, "Hretained")
+        if retained_proof is None:
+            continue
+        impossible_branch = raw_false_to_expr_proof(impossible_false, target)
+        if impossible_branch is None:
+            continue
+        if impossible_on_left:
+            return (
+                f"({proof_head(source_proof)} {target_text} "
+                f"(fun Himpossible => {impossible_branch}) "
+                f"(fun Hretained => {retained_proof}))"
+            )
+        return (
+            f"({proof_head(source_proof)} {target_text} "
+            f"(fun Hretained => {retained_proof}) "
+            f"(fun Himpossible => {impossible_branch}))"
+        )
+    return None
+
+
 def raw_tptp_trivial_inequality_removal_proof(
     proposition: str,
     parents: list[str],
@@ -20169,6 +20229,13 @@ def raw_tptp_trivial_inequality_removal_proof(
         return None
     ambient_source = ambient_basic_logic_expr(source)
     ambient_target = ambient_basic_logic_expr(target)
+    impossible_disjunct = raw_impossible_prop_equality_disjunct_elimination_proof(
+        ambient_source,
+        ambient_target,
+        raw_tptp_claim_name(parents[0]),
+    )
+    if impossible_disjunct is not None:
+        return impossible_disjunct
     deep = raw_deep_formula_transform_proof(ambient_source, ambient_target, raw_tptp_claim_name(parents[0]))
     if deep is not None:
         return deep
@@ -20253,6 +20320,13 @@ def raw_tptp_one_parent_transform_proof(
     set_equality_bridge = raw_vampire_eq_set_to_native_equality_proof(source, target, raw_tptp_claim_name(parents[0]))
     if set_equality_bridge is not None:
         return set_equality_bridge
+    impossible_disjunct = raw_impossible_prop_equality_disjunct_elimination_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+    )
+    if impossible_disjunct is not None:
+        return impossible_disjunct
     simple = raw_simple_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
     if simple is not None:
         return simple
@@ -30641,6 +30715,57 @@ def raw_tptp_superposition_proof(
     )
     if proof is not None:
         return proof
+    if len(parents) == 2:
+        early_parent_exprs: list[tuple[Expr, str]] = []
+        for parent in parents:
+            parent_proposition = propositions_by_name.get(parent)
+            parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+            if parent_expr is not None:
+                early_parent_exprs.append((parent_expr, raw_tptp_canonical_parent_proof_name(parent, propositions_by_name)))
+        early_target_expr = parse_expr(proposition)
+        if early_target_expr is not None and len(early_parent_exprs) == 2:
+            positive_orders = [(0, 1), (1, 0)]
+
+            def positive_order_priority(order: tuple[int, int]) -> tuple[int, int]:
+                source_expr, _source_proof = early_parent_exprs[order[0]]
+                unit_expr, _unit_proof = early_parent_exprs[order[1]]
+                _source_binders, source_body = collect_foralls(source_expr)
+                _unit_binders, unit_body = collect_foralls(unit_expr)
+                unit_literal_count = len(raw_clause_literals(unit_body))
+                source_literal_count = len(raw_clause_literals(source_body))
+                return (0 if unit_literal_count == 1 and source_literal_count != 1 else 1, unit_literal_count)
+
+            for source_index, unit_index in sorted(positive_orders, key=positive_order_priority):
+                proof = raw_positive_unit_clause_resolution_proof(
+                    early_parent_exprs[source_index][0],
+                    early_target_expr,
+                    early_parent_exprs[source_index][1],
+                    early_parent_exprs[unit_index][0],
+                    early_parent_exprs[unit_index][1],
+                    variable_sorts,
+                )
+                if proof is not None:
+                    return proof
+            proof = raw_instantiated_binary_clause_resolution_proof(
+                early_parent_exprs[0][0],
+                early_target_expr,
+                early_parent_exprs[0][1],
+                early_parent_exprs[1][0],
+                early_parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_instantiated_binary_clause_resolution_proof(
+                early_parent_exprs[1][0],
+                early_target_expr,
+                early_parent_exprs[1][1],
+                early_parent_exprs[0][0],
+                early_parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
     proof = raw_tptp_exported_two_literal_resolution_proof(
         proposition,
         parents,
@@ -30693,6 +30818,26 @@ def raw_tptp_superposition_proof(
                 if proof is not None:
                     return proof
         if target_expr is not None and len(parent_exprs) == 2:
+            proof = raw_positive_unit_clause_resolution_proof(
+                parent_exprs[0][0],
+                target_expr,
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_positive_unit_clause_resolution_proof(
+                parent_exprs[1][0],
+                target_expr,
+                parent_exprs[1][1],
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
             proof = raw_quantified_common_side_equality_composition_proof(
                 parent_exprs[0][0],
                 parent_exprs[0][1],
@@ -30748,26 +30893,6 @@ def raw_tptp_superposition_proof(
             if proof is not None:
                 return proof
             proof = raw_instantiated_quantified_equality_rewrite_clause_proof(
-                parent_exprs[1][0],
-                target_expr,
-                parent_exprs[1][1],
-                parent_exprs[0][0],
-                parent_exprs[0][1],
-                variable_sorts,
-            )
-            if proof is not None:
-                return proof
-            proof = raw_positive_unit_clause_resolution_proof(
-                parent_exprs[0][0],
-                target_expr,
-                parent_exprs[0][1],
-                parent_exprs[1][0],
-                parent_exprs[1][1],
-                variable_sorts,
-            )
-            if proof is not None:
-                return proof
-            proof = raw_positive_unit_clause_resolution_proof(
                 parent_exprs[1][0],
                 target_expr,
                 parent_exprs[1][1],
@@ -31379,9 +31504,25 @@ def raw_positive_unit_clause_resolution_proof(
         ):
             return True
         subst.clear()
+        component = raw_prop_equality_to_true_component(concrete)
+        if component is not None and match_expr_with_target_binder_instantiation(
+            pattern,
+            component[0],
+            binder_names,
+            subst,
+        ):
+            return True
+        subst.clear()
         return False
 
     def unit_literal_proves(premise: Expr) -> str | None:
+        true_component = raw_prop_equality_to_true_component(unit_literal)
+        if true_component is not None:
+            proposition, _true_on_left = true_component
+            if expr_same_mod_alpha(proposition, premise):
+                proof = raw_proof_from_prop_true_equality(unit_literal, premise, unit_proof)
+                if proof is not None:
+                    return proof
         proof = raw_literal_direct_transform_proof(unit_literal, premise, unit_proof, ())
         if proof is not None:
             return proof
@@ -31393,6 +31534,13 @@ def raw_positive_unit_clause_resolution_proof(
         return None
 
     def source_literal_proves(source_literal: Expr, premise: Expr, source_literal_proof: str) -> str | None:
+        true_component = raw_prop_equality_to_true_component(source_literal)
+        if true_component is not None:
+            proposition, _true_on_left = true_component
+            if expr_same_mod_alpha(proposition, premise):
+                proof = raw_proof_from_prop_true_equality(source_literal, premise, source_literal_proof)
+                if proof is not None:
+                    return proof
         proof = raw_literal_direct_transform_proof(source_literal, premise, source_literal_proof, ())
         if proof is not None:
             return proof
@@ -31499,6 +31647,190 @@ def raw_positive_unit_clause_resolution_proof(
                 delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
         else:
             PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
+def raw_instantiated_binary_clause_resolution_proof(
+    first: Expr,
+    target: Expr,
+    first_proof: str,
+    second: Expr,
+    second_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    target_binders, target_body = collect_foralls(target)
+    first_binders, first_body = collect_foralls(first)
+    second_binders, second_body = collect_foralls(second)
+    if not first_binders or not second_binders:
+        return None
+    first_literals = raw_clause_literals(first_body)
+    second_literals = raw_clause_literals(second_body)
+    target_literals = raw_clause_literals(target_body)
+    if len(first_literals) > 8 or len(second_literals) > 8 or len(target_literals) > 16:
+        return None
+    if len(expr_text(first)) + len(expr_text(second)) + len(expr_text(target)) > 12000:
+        return None
+
+    def renamed_clause(
+        body: Expr,
+        binders: list[tuple[str, str]],
+        prefix: str,
+    ) -> tuple[Expr, list[tuple[str, str]], dict[str, str]]:
+        used = expr_variables(target_body) | set(variable_sorts)
+        mapping: dict[str, str] = {}
+        renamed_binders: list[tuple[str, str]] = []
+        for index, (name, sort) in enumerate(binders):
+            candidate = f"{prefix}_{name}"
+            while candidate in used or candidate in mapping.values():
+                candidate = f"{prefix}_{index}_{candidate}"
+            mapping[name] = candidate
+            renamed_binders.append((candidate, sort))
+            used.add(candidate)
+        return rename_expr_variables(body, mapping), renamed_binders, mapping
+
+    first_renamed, first_renamed_binders, first_mapping = renamed_clause(first_body, first_binders, "R0")
+    second_renamed, second_renamed_binders, second_mapping = renamed_clause(second_body, second_binders, "R1")
+    first_renamed_literals = raw_clause_literals(first_renamed)
+    second_renamed_literals = raw_clause_literals(second_renamed)
+    binder_names = {name for name, _sort in first_renamed_binders + second_renamed_binders}
+
+    def unify_literal_with_target(pattern: Expr, target_literal: Expr, subst: dict[str, Expr]) -> bool:
+        original = dict(subst)
+        if unify_expr_variables(pattern, target_literal, binder_names, subst):
+            return True
+        subst.clear()
+        subst.update(original)
+        pattern_sides = equality_like_sides(pattern)
+        target_sides = equality_like_sides(target_literal)
+        if pattern_sides is None or target_sides is None:
+            return False
+        trial = dict(original)
+        if not unify_expr_variables(pattern_sides[0], target_sides[1], binder_names, trial):
+            return False
+        if not unify_expr_variables(pattern_sides[1], target_sides[0], binder_names, trial):
+            return False
+        subst.clear()
+        subst.update(trial)
+        return True
+
+    def unify_complementary_literals(left: Expr, right: Expr, subst: dict[str, Expr]) -> bool:
+        original = dict(subst)
+        left_premises, left_conclusion = split_arrows(left)
+        if len(left_premises) == 1 and false_eliminator_expr(left_conclusion):
+            if unify_expr_variables(left_premises[0], right, binder_names, subst):
+                return True
+            subst.clear()
+            subst.update(original)
+        right_premises, right_conclusion = split_arrows(right)
+        if len(right_premises) == 1 and false_eliminator_expr(right_conclusion):
+            if unify_expr_variables(left, right_premises[0], binder_names, subst):
+                return True
+            subst.clear()
+            subst.update(original)
+        return False
+
+    def complete_substitution(subst: dict[str, Expr]) -> dict[str, Expr] | None:
+        subst = dict(subst)
+        flatten_substitution(subst)
+        if not binder_names <= subst.keys():
+            return None
+        if any(expr_variables(value) & binder_names for value in subst.values()):
+            return None
+        return {name: subst[name] for name in binder_names}
+
+    def match_residuals(residuals: list[Expr], subst: dict[str, Expr]) -> dict[str, Expr] | None:
+        attempts = 0
+
+        def search(index: int, current: dict[str, Expr]) -> dict[str, Expr] | None:
+            nonlocal attempts
+            if proof_search_timed_out() or attempts > 512:
+                return None
+            if index >= len(residuals):
+                return complete_substitution(current)
+            residual = residuals[index]
+            for target_literal in target_literals:
+                attempts += 1
+                trial = dict(current)
+                if unify_literal_with_target(residual, target_literal, trial):
+                    found = search(index + 1, trial)
+                    if found is not None:
+                        return found
+                trial = dict(current)
+                if raw_match_literal_mod_equality_symmetry(residual, target_literal, binder_names, trial):
+                    found = search(index + 1, trial)
+                    if found is not None:
+                        return found
+            return None
+
+        return search(0, dict(subst))
+
+    def instantiate_parent(
+        proof: str,
+        body: Expr,
+        binders: list[tuple[str, str]],
+        mapping: dict[str, str],
+        subst: dict[str, Expr],
+    ) -> tuple[Expr, str] | None:
+        original_subst: dict[str, Expr] = {}
+        for name, _sort in binders:
+            renamed = mapping[name]
+            value = subst.get(renamed)
+            if value is None:
+                return None
+            original_subst[name] = value
+        instantiated_body = substitute_expr(body, original_subst)
+        instantiated_proof = proof
+        for name, _sort in binders:
+            instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(original_subst[name])})"
+        return instantiated_body, instantiated_proof
+
+    for first_index, first_literal in enumerate(first_renamed_literals):
+        for second_index, second_literal in enumerate(second_renamed_literals):
+            for left, right in ((first_literal, second_literal), (second_literal, first_literal)):
+                subst: dict[str, Expr] = {}
+                if not unify_complementary_literals(left, right, subst):
+                    continue
+                residuals = [
+                    literal
+                    for index, literal in enumerate(first_renamed_literals)
+                    if index != first_index
+                ] + [
+                    literal
+                    for index, literal in enumerate(second_renamed_literals)
+                    if index != second_index
+                ]
+                completed = match_residuals(residuals, subst)
+                if completed is None:
+                    continue
+                instantiated_first = instantiate_parent(first_proof, first_body, first_binders, first_mapping, completed)
+                instantiated_second = instantiate_parent(second_proof, second_body, second_binders, second_mapping, completed)
+                if instantiated_first is None or instantiated_second is None:
+                    continue
+                first_instantiated_body, first_instantiated_proof = instantiated_first
+                second_instantiated_body, second_instantiated_proof = instantiated_second
+                body_proof = raw_flat_clause_resolution_proof(
+                    first_instantiated_body,
+                    target_body,
+                    first_instantiated_proof,
+                    second_instantiated_body,
+                    second_instantiated_proof,
+                    avoid_text=f"{first_proof} {second_proof}",
+                )
+                if body_proof is None:
+                    body_proof = raw_flat_clause_resolution_proof(
+                        second_instantiated_body,
+                        target_body,
+                        second_instantiated_proof,
+                        first_instantiated_body,
+                        first_instantiated_proof,
+                        avoid_text=f"{second_proof} {first_proof}",
+                    )
+                if body_proof is None:
+                    continue
+                proof = body_proof
+                for name, sort in reversed(target_binders):
+                    proof = f"(fun {name} :{sort} => {proof})"
+                return proof
+    return None
 
 
 def raw_tptp_quantified_equality_clause_superposition_proof(
@@ -35633,12 +35965,12 @@ def raw_fool_exhaustiveness_axiom_proof(proposition: str) -> str | None:
     if len(binders) != 1 or binders[0][1] != "prop":
         return None
     name = binders[0][0]
-    disjuncts = app_args(body, "vampire_or", 2)
+    disjuncts = raw_or_parts(body)
     if disjuncts is None:
         return None
     left, right = disjuncts
     expected_left = Expr("var", value=name)
-    expected_right = Expr("arrow", args=(Expr("var", value=name), Expr("var", value="vampire_false")))
+    expected_right = Expr("arrow", args=(Expr("var", value=name), Expr("var", value="False")))
     if not expr_same_mod_alpha(left, expected_left) or not expr_same_mod_alpha(right, expected_right):
         eq_proof = raw_fool_prop_equality_exhaustiveness_proof(name, body, left, right)
         if eq_proof is None:
@@ -36386,6 +36718,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     for name, role, proposition, rule, source_name, parents, trusted_definition in entries:
         if proposition:
             proposition = raw_tptp_rename_conflicting_forall_binders(proposition, variable_sorts)
+            proposition = use_ambient_basic_logic_text(proposition)
             renamed_propositions.append(proposition)
         renamed_entries.append((name, role, proposition, rule, source_name, parents, trusted_definition))
     entries = renamed_entries
