@@ -19347,6 +19347,73 @@ def raw_instantiated_forall_clause_options(
     return options
 
 
+def raw_sort_instantiated_forall_clause_options(
+    expr: Expr,
+    proof: str,
+    target: Expr,
+    resolver: Expr,
+    candidate_exprs: tuple[Expr, ...],
+    variable_sorts: dict[str, str],
+    *,
+    limit: int = 12,
+) -> list[tuple[Expr, str]]:
+    binders, body = collect_foralls(expr)
+    if not binders or len(binders) > 4:
+        return []
+    candidate_lists: list[list[Expr]] = []
+    for _name, sort in binders:
+        candidates = raw_candidate_terms_for_sort(candidate_exprs, sort, variable_sorts)
+        inhabitant = raw_simple_inhabitant_for_sort(sort)
+        if inhabitant is not None and equivalent_sorts(expr_sort(inhabitant, variable_sorts), sort):
+            candidates.append(inhabitant)
+        deduped: list[Expr] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            key = expr_key(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(candidate)
+        if not deduped:
+            return []
+        candidate_lists.append(deduped[:10])
+
+    target_literals = raw_clause_literals(target)
+    resolver_literals = raw_clause_literals(resolver)
+    require_support = not collect_foralls(resolver)[0]
+
+    def option_supported(instantiated: Expr) -> bool:
+        for literal in raw_clause_literals(instantiated):
+            if raw_literal_to_clause_proof(literal, target, "HsortInst", target_literals, ()) is not None:
+                return True
+            for resolver_literal in resolver_literals:
+                trial: dict[str, Expr] = {}
+                if raw_match_complementary_literals(literal, resolver_literal, set(), trial):
+                    return True
+        return False
+
+    options: list[tuple[Expr, str]] = []
+    seen_options: set[str] = set()
+    attempts = 0
+    for values in itertools.product(*candidate_lists):
+        attempts += 1
+        if attempts > 2048 or len(options) >= limit or proof_search_timed_out():
+            break
+        subst = {name: value for (name, _sort), value in zip(binders, values)}
+        instantiated = flatten_applications(substitute_expr(body, subst))
+        key = expr_key(instantiated)
+        if key in seen_options:
+            continue
+        if require_support and not option_supported(instantiated):
+            continue
+        instantiated_proof = proof
+        for name, _sort in binders:
+            instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(subst[name])})"
+        seen_options.add(key)
+        options.append((instantiated, instantiated_proof))
+    return options
+
+
 def raw_prop_false_forall_clause_options(
     expr: Expr,
     proof: str,
@@ -20095,8 +20162,121 @@ def raw_tptp_unit_resulting_resolution_proof(
             unresolved = len(expr_variables(body) & {name for name, _sort in binders})
             return (len(binders), unresolved, len(raw_clause_literals(body)))
 
+        all_resolver_exprs = tuple(resolver for _, resolver, _ in resolver_entries)
+        resolver_option_lists: list[list[tuple[Expr, str]]] = []
+        resolver_candidate_exprs: list[Expr] = []
+        resolver_candidate_base = (target_body, source, *all_resolver_exprs)
+        for _resolver_name, resolver, resolver_proof in resolver_entries:
+            options: list[tuple[Expr, str]] = [(resolver, resolver_proof)]
+            for option in [
+                *raw_instantiated_forall_clause_options(resolver, resolver_proof, target_body, source),
+                *raw_prop_false_forall_clause_options(resolver, resolver_proof, target_body, source),
+                *raw_sort_instantiated_forall_clause_options(
+                    resolver,
+                    resolver_proof,
+                    target_body,
+                    source,
+                    resolver_candidate_base,
+                    variable_sorts,
+                    limit=8,
+                ),
+            ]:
+                if all(expr_key(option[0]) != expr_key(existing[0]) for existing in options):
+                    options.append(option)
+                if len(options) >= 12:
+                    break
+            options.sort(key=instantiated_clause_priority)
+            resolver_option_lists.append(options[:12])
+            resolver_candidate_exprs.extend(option[0] for option in options[:12])
+
+        enriched_candidate_base = (target_body, source, *resolver_candidate_exprs)
+        for index, (_resolver_name, resolver, resolver_proof) in enumerate(resolver_entries):
+            options = list(resolver_option_lists[index])
+            for option in raw_sort_instantiated_forall_clause_options(
+                resolver,
+                resolver_proof,
+                target_body,
+                source,
+                enriched_candidate_base,
+                variable_sorts,
+                limit=8,
+            ):
+                if all(expr_key(option[0]) != expr_key(existing[0]) for existing in options):
+                    options.append(option)
+            options.sort(key=instantiated_clause_priority)
+            resolver_option_lists[index] = options[:16]
+        resolver_candidate_exprs = [option[0] for options in resolver_option_lists for option in options[:16]]
+
+        def direct_unit_resulting_resolution_proof() -> str | None:
+            source_binders, source_body = collect_foralls(source)
+            if len(source_binders) > 4:
+                return None
+            binder_names = {name for name, _sort in source_binders}
+            source_literals = raw_clause_literals(source_body)
+            if not source_literals or len(source_literals) > 16:
+                return None
+            resolver_units: list[tuple[Expr, str]] = []
+            for options in resolver_option_lists:
+                for resolver_clause, resolver_clause_proof in options[:16]:
+                    if collect_foralls(resolver_clause)[0]:
+                        continue
+                    if len(raw_clause_literals(resolver_clause)) != 1:
+                        continue
+                    resolver_units.append((resolver_clause, resolver_clause_proof))
+            if not resolver_units:
+                return None
+            literal_order = sorted(
+                range(len(source_literals)),
+                key=lambda index: -len(expr_variables(source_literals[index]) & binder_names),
+            )
+            attempts = 0
+
+            def search(
+                order_index: int,
+                subst: dict[str, Expr],
+                selected: list[tuple[Expr, str]],
+            ) -> str | None:
+                nonlocal attempts
+                if proof_search_timed_out() or attempts > 4096:
+                    return None
+                if order_index >= len(literal_order):
+                    if not binder_names <= subst.keys():
+                        return None
+                    instantiated_source = flatten_applications(substitute_expr(source_body, subst))
+                    instantiated_source_proof = source_proof
+                    for name, _sort in source_binders:
+                        instantiated_source_proof = f"({proof_head(instantiated_source_proof)} {proof_arg_text(subst[name])})"
+                    proof = raw_clause_multi_resolution_proof(
+                        instantiated_source,
+                        target_body,
+                        instantiated_source_proof,
+                        selected,
+                    )
+                    if proof is None:
+                        return None
+                    for name, sort in reversed(target_binders):
+                        proof = f"(fun {name} :{sort} => {proof})"
+                    return proof
+                literal = substitute_expr(source_literals[literal_order[order_index]], subst)
+                for resolver_clause, resolver_clause_proof in resolver_units:
+                    for resolver_literal in raw_clause_literals(resolver_clause):
+                        attempts += 1
+                        trial = dict(subst)
+                        if not raw_match_complementary_literals(literal, resolver_literal, binder_names, trial):
+                            continue
+                        proof = search(order_index + 1, trial, selected + [(resolver_clause, resolver_clause_proof)])
+                        if proof is not None:
+                            return proof
+                return None
+
+            return search(0, {}, [])
+
+        direct_proof = direct_unit_resulting_resolution_proof()
+        if direct_proof is not None:
+            return direct_proof
+
         source_options: list[tuple[Expr, str]] = [(source, source_proof)]
-        for _, resolver, _ in resolver_entries[:3]:
+        for resolver in resolver_candidate_exprs[:12]:
             for option in [
                 *raw_instantiated_forall_clause_options(source, source_proof, target, resolver),
                 *raw_prop_false_forall_clause_options(source, source_proof, target, resolver),
@@ -20110,10 +20290,20 @@ def raw_tptp_unit_resulting_resolution_proof(
 
         source_binders, source_body = collect_foralls(source)
         if source_binders and len(source_binders) <= 4:
-            candidate_exprs = (target_body, *(resolver for _, resolver, _ in resolver_entries))
+            candidate_exprs = (target_body, *resolver_candidate_exprs)
             candidate_lists: list[list[Expr]] = []
             for _name, sort in source_binders:
                 candidates = raw_candidate_terms_for_sort(candidate_exprs, sort, variable_sorts)
+                inhabitant = raw_simple_inhabitant_for_sort(sort)
+                if inhabitant is not None and equivalent_sorts(expr_sort(inhabitant, variable_sorts), sort):
+                    candidates.append(inhabitant)
+                seen_candidate_terms: set[str] = set()
+                candidates = [
+                    candidate
+                    for candidate in candidates
+                    if not (expr_key(candidate) in seen_candidate_terms or seen_candidate_terms.add(expr_key(candidate)))
+                ]
+                candidates.sort(key=candidate_term_priority)
                 if not candidates:
                     candidate_lists = []
                     break
@@ -20125,13 +20315,28 @@ def raw_tptp_unit_resulting_resolution_proof(
                     if raw_literal_to_clause_proof(source_literal, target_body, "HsourceLiteral", target_literals, ()) is not None:
                         continue
                     found = False
-                    for _resolver_name, resolver, resolver_proof in resolver_entries:
-                        for resolver_clause, _resolver_clause_proof in raw_instantiated_forall_clause_options(
-                            resolver,
-                            resolver_proof,
-                            target_body,
-                            instantiated_source,
-                        )[:8]:
+                    for (resolver_name, resolver, resolver_proof), options in zip(resolver_entries, resolver_option_lists):
+                        dynamic_options = list(options[:8])
+                        for option in [
+                            *raw_instantiated_forall_clause_options(
+                                resolver,
+                                resolver_proof,
+                                target_body,
+                                instantiated_source,
+                            )[:4],
+                            *raw_sort_instantiated_forall_clause_options(
+                                resolver,
+                                resolver_proof,
+                                target_body,
+                                instantiated_source,
+                                (target_body, instantiated_source, *resolver_candidate_exprs),
+                                variable_sorts,
+                                limit=4,
+                            ),
+                        ]:
+                            if all(expr_key(option[0]) != expr_key(existing[0]) for existing in dynamic_options):
+                                dynamic_options.append(option)
+                        for resolver_clause, _resolver_clause_proof in dynamic_options[:12]:
                             for resolver_literal in raw_clause_literals(resolver_clause):
                                 trial: dict[str, Expr] = {}
                                 if raw_match_complementary_literals(source_literal, resolver_literal, set(), trial):
@@ -20181,8 +20386,19 @@ def raw_tptp_unit_resulting_resolution_proof(
                 for name, sort in reversed(target_binders):
                     proof = f"(fun {name} :{sort} => {proof})"
                 return proof
-            _, resolver, resolver_proof = resolver_entries[index]
-            options = raw_instantiated_forall_clause_options(resolver, resolver_proof, target_body, source_clause)[:4]
+            options = list(resolver_option_lists[index])
+            _resolver_name, resolver, resolver_proof = resolver_entries[index]
+            for option in raw_sort_instantiated_forall_clause_options(
+                resolver,
+                resolver_proof,
+                target_body,
+                source_clause,
+                (target_body, source_clause, *resolver_candidate_exprs),
+                variable_sorts,
+                limit=8,
+            ):
+                if all(expr_key(option[0]) != expr_key(existing[0]) for existing in options):
+                    options.append(option)
             options.sort(key=instantiated_clause_priority)
             for option in options:
                 found = search_resolvers(source_clause, source_clause_proof, index + 1, current + [option])
@@ -25386,7 +25602,7 @@ def raw_candidate_terms_for_sort(
         text = expr_text(candidate)
         if text in seen:
             return
-        if expr_sort(candidate, variable_sorts) != sort:
+        if not equivalent_sorts(expr_sort(candidate, variable_sorts), sort):
             return
         seen.add(text)
         candidates.append(candidate)
@@ -25400,7 +25616,7 @@ def raw_candidate_terms_for_sort(
         add(Expr("var", value="vampire_true"))
         add(Expr("var", value="vampire_false"))
     for name, candidate_sort in sorted(variable_sorts.items()):
-        if candidate_sort == sort:
+        if equivalent_sorts(candidate_sort, sort):
             add(Expr("var", value=name))
     return candidates
 
