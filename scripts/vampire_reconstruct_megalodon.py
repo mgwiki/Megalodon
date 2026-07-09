@@ -31383,6 +31383,21 @@ def raw_skolem_double_negated_rewrite_proof(
         return None
     source_positive = source_positive_premises[0]
     target_positive = target_positive_premises[0]
+    rewritten_positive_proof = raw_skolemised_formula_transform_proof(
+        source_positive,
+        target_positive,
+        "HsourcePositive",
+        rewrites,
+        variable_sorts,
+    )
+    if rewritten_positive_proof is not None:
+        not_target = fresh_identifier("HnotTarget", expr_text(target), source_proof)
+        return (
+            f"(fun {not_target} :{proof_arg_text(target_premises[0])} => "
+            f"{proof_head(source_proof)} "
+            f"(fun HsourcePositive :{proof_arg_text(source_positive)} => "
+            f"{not_target} {proof_term_text(rewritten_positive_proof)}))"
+        )
     for rewrite in rewrites:
         instance = raw_skolem_rewrite_instance_proof(
             source_positive,
@@ -33501,6 +33516,126 @@ def raw_negated_implication_exists_to_double_negated_conjunction_proof(
     )
 
 
+def raw_negated_implication_conjunctive_consequent_to_double_negated_conjunction_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_premises, source_conclusion = split_arrows(source)
+    if len(source_premises) != 1 or not false_eliminator_expr(source_conclusion):
+        return None
+    implication_premises, implication_conclusion = split_arrows(source_premises[0])
+    if len(implication_premises) != 1:
+        return None
+    antecedent = implication_premises[0]
+    consequent_parts = vampire_and_parts(implication_conclusion)
+    if consequent_parts is None:
+        return None
+
+    target_premises, target_conclusion = split_arrows(target)
+    if len(target_premises) != 1 or not false_eliminator_expr(target_conclusion):
+        return None
+    negated_conjunction_premises, negated_conjunction_conclusion = split_arrows(target_premises[0])
+    if len(negated_conjunction_premises) != 1 or not false_eliminator_expr(negated_conjunction_conclusion):
+        return None
+    conjunction = negated_conjunction_premises[0]
+    conjunction_parts = vampire_and_parts(conjunction)
+    if conjunction_parts is None:
+        return None
+    if expr_same_mod_alpha(conjunction_parts[0], antecedent):
+        antecedent_on_left = True
+        disjunction = conjunction_parts[1]
+    elif expr_same_mod_alpha(conjunction_parts[1], antecedent):
+        antecedent_on_left = False
+        disjunction = conjunction_parts[0]
+    else:
+        return None
+    disjunct_parts = raw_or_parts(disjunction)
+    if disjunct_parts is None:
+        return None
+
+    def negative_component_to_disjunct(component: Expr, disjunct: Expr, not_component: str) -> str | None:
+        negative_component = Expr("arrow", args=(component, Expr("var", value="False")))
+        if expr_same_mod_alpha(negative_component, disjunct):
+            return not_component
+        proof = raw_negated_forall_implication_to_exists_conjunction_proof(
+            negative_component,
+            disjunct,
+            not_component,
+            variable_sorts,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_negated_forall_to_exists_negation_proof(
+            negative_component,
+            disjunct,
+            not_component,
+            variable_sorts,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_negated_forall_negative_to_exists_positive_proof(
+            negative_component,
+            disjunct,
+            not_component,
+            variable_sorts,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_deep_formula_transform_proof(negative_component, disjunct, not_component, variable_sorts)
+        if proof is not None:
+            return proof
+        return raw_clause_transform_proof(negative_component, disjunct, not_component)
+
+    for first_disjunct, second_disjunct, first_on_left in (
+        (disjunct_parts[0], disjunct_parts[1], True),
+        (disjunct_parts[1], disjunct_parts[0], False),
+    ):
+        first_not_name = fresh_identifier("HnotConseq", expr_text(consequent_parts[0]), expr_text(first_disjunct), source_proof)
+        second_not_name = fresh_identifier("HnotConseq", expr_text(consequent_parts[1]), expr_text(second_disjunct), first_not_name)
+        first_disjunct_proof = negative_component_to_disjunct(consequent_parts[0], first_disjunct, first_not_name)
+        second_disjunct_proof = negative_component_to_disjunct(consequent_parts[1], second_disjunct, second_not_name)
+        if first_disjunct_proof is None or second_disjunct_proof is None:
+            continue
+
+        not_conj = fresh_identifier("HnotConj", expr_text(target), source_proof)
+        antecedent_name = fresh_identifier("Hante", expr_text(antecedent), source_proof, not_conj)
+
+        def contradiction_from_disjunct(disjunct_proof: str, component: Expr, disjunct_is_left: bool) -> str:
+            disjunction_proof = (
+                raw_or_left_intro(disjunction, disjunct_proof)
+                if disjunct_is_left
+                else raw_or_right_intro(disjunction, disjunct_proof)
+            )
+            assert disjunction_proof is not None
+            if antecedent_on_left:
+                conjunction_proof = f"(fun P K => K {antecedent_name} {proof_term_text(disjunction_proof)})"
+            else:
+                conjunction_proof = f"(fun P K => K {proof_term_text(disjunction_proof)} {antecedent_name})"
+            return raw_false_to_expr_proof(f"({not_conj} {proof_term_text(conjunction_proof)})", component)
+
+        first_component = (
+            f"(xm {proof_arg_text(consequent_parts[0])} {proof_arg_text(consequent_parts[0])} "
+            f"(fun Hconseq => Hconseq) "
+            f"(fun {first_not_name} :{proof_arg_text(Expr('arrow', args=(consequent_parts[0], Expr('var', value='False'))))} => "
+            f"{contradiction_from_disjunct(first_disjunct_proof, consequent_parts[0], first_on_left)}))"
+        )
+        second_component = (
+            f"(xm {proof_arg_text(consequent_parts[1])} {proof_arg_text(consequent_parts[1])} "
+            f"(fun Hconseq => Hconseq) "
+            f"(fun {second_not_name} :{proof_arg_text(Expr('arrow', args=(consequent_parts[1], Expr('var', value='False'))))} => "
+            f"{contradiction_from_disjunct(second_disjunct_proof, consequent_parts[1], not first_on_left)}))"
+        )
+        consequent_proof = f"(fun P K => K {proof_term_text(first_component)} {proof_term_text(second_component)})"
+        implication_proof = f"(fun {antecedent_name} :{proof_arg_text(antecedent)} => {consequent_proof})"
+        return (
+            f"(fun {not_conj} :{proof_arg_text(target_premises[0])} => "
+            f"{proof_head(source_proof)} {proof_term_text(implication_proof)})"
+        )
+    return None
+
+
 def raw_negated_implication_to_double_negated_conjunction_proof(
     source: Expr,
     target: Expr,
@@ -33740,6 +33875,16 @@ def raw_tptp_exported_normal_form_proof(
                 proof = f"(fun {name} :{sort} => {proof})"
             return proof
         proof = raw_negated_implication_exists_to_double_negated_conjunction_proof(
+            source,
+            target,
+            candidate_source_proof,
+            candidate_sorts,
+        )
+        if proof is not None:
+            for name, sort in reversed(candidate_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
+            return proof
+        proof = raw_negated_implication_conjunctive_consequent_to_double_negated_conjunction_proof(
             source,
             target,
             candidate_source_proof,
