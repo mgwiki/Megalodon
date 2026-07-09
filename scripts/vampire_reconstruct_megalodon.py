@@ -28491,7 +28491,7 @@ def raw_quantified_parent_equality_rewrite_clause_proof(
                 if any(raw_expr_has_synthetic_db_variable(trial[name]) for name, _ in equality_binders):
                     continue
                 if any(
-                    context_bound_names & (expr_variables(trial[name]) | expr_bound_variables(trial[name]))
+                    context_bound_names & expr_variables(trial[name])
                     for name, _ in equality_binders
                 ):
                     continue
