@@ -31250,6 +31250,120 @@ def raw_replay_substituted_parent_options(
     return [(substituted, proof)]
 
 
+def raw_superposition_target_residual_instantiated_options(
+    parent: Expr,
+    parent_proof: str,
+    target: Expr,
+    *,
+    max_options: int = 12,
+) -> list[tuple[Expr, str]]:
+    binders, body = collect_foralls(parent)
+    if not binders or len(binders) > 6:
+        return []
+    target_binders, target_body = collect_foralls(target)
+    target_binder_names = {name for name, _sort in target_binders}
+    renamed_target_defaults: dict[str, str] = {}
+    if target_binder_names & {name for name, _sort in binders}:
+        used_names = target_binder_names | expr_variables(body) | expr_variables(target_body)
+        renamed_binders: list[tuple[str, str]] = []
+        renames: dict[str, str] = {}
+        for name, sort in binders:
+            if name not in target_binder_names:
+                renamed_binders.append((name, sort))
+                continue
+            replacement = fresh_identifier(name, expr_text(parent), expr_text(target), "superposition")
+            while replacement in used_names:
+                replacement = fresh_identifier(replacement, expr_text(parent), expr_text(target), "superposition")
+            used_names.add(replacement)
+            renames[name] = replacement
+            if equivalent_sorts(sort, dict(target_binders).get(name)):
+                renamed_target_defaults[replacement] = name
+            renamed_binders.append((replacement, sort))
+        body = rename_expr_variables(body, renames)
+        binders = renamed_binders
+    parent_literals = raw_clause_literals(body)
+    target_literals = raw_clause_literals(target_body)
+    if len(parent_literals) > 8 or len(target_literals) > 12:
+        return []
+    binder_names = {name for name, _sort in binders}
+    target_sort_by_name = {name: sort for name, sort in target_binders}
+    seen: set[str] = set()
+    options: list[tuple[Expr, str]] = []
+
+    def complete_substitution(subst: dict[str, Expr]) -> dict[str, Expr] | None:
+        completed = dict(subst)
+        for name, sort in binders:
+            if name in completed:
+                continue
+            default_name = renamed_target_defaults.get(name)
+            if default_name is not None:
+                completed[name] = Expr("var", value=default_name)
+                continue
+            if equivalent_sorts(sort, target_sort_by_name.get(name)):
+                completed[name] = Expr("var", value=name)
+        if not binder_names <= completed.keys():
+            return None
+        flatten_substitution(completed)
+        for name, value in completed.items():
+            if name in binder_names and expr_variables(value) & binder_names:
+                return None
+        return completed
+
+    def add_option(subst: dict[str, Expr]) -> None:
+        if len(options) >= max_options:
+            return
+        completed = complete_substitution(subst)
+        if completed is None:
+            return
+        instantiated = flatten_applications(substitute_expr(body, completed))
+        key = expr_key(instantiated)
+        if key in seen:
+            return
+        seen.add(key)
+        proof = parent_proof
+        for name, _sort in binders:
+            proof = f"({proof_head(proof)} {proof_arg_text(completed[name])})"
+        options.append((instantiated, proof))
+
+    def search(
+        residuals: list[Expr],
+        index: int,
+        used_targets: set[int],
+        subst: dict[str, Expr],
+    ) -> None:
+        if len(options) >= max_options:
+            return
+        if index >= len(residuals):
+            add_option(subst)
+            return
+        literal = residuals[index]
+        for target_index, target_literal in enumerate(target_literals):
+            if target_index in used_targets:
+                continue
+            trial = dict(subst)
+            if not match_expr_with_alpha_instantiation(literal, target_literal, binder_names, trial):
+                continue
+            search(residuals, index + 1, used_targets | {target_index}, trial)
+            if len(options) >= max_options:
+                return
+
+    for skipped_index in range(len(parent_literals)):
+        residuals = [
+            literal
+            for index, literal in enumerate(parent_literals)
+            if index != skipped_index
+        ]
+        if len(residuals) > len(target_literals):
+            continue
+        if not residuals:
+            add_option({})
+            continue
+        search(residuals, 0, set(), {})
+        if len(options) >= max_options:
+            break
+    return options
+
+
 def raw_quantified_equality_unit_context_superposition_proof(
     quantified: Expr,
     target: Expr,
@@ -32522,6 +32636,7 @@ def raw_tptp_quantified_equality_clause_superposition_proof(
         return None
     first_name = raw_tptp_claim_name(parents[0])
     second_name = raw_tptp_claim_name(parents[1])
+    target_binders, target_body = collect_foralls(target)
 
     def replay(
         source_index: int,
@@ -32534,10 +32649,12 @@ def raw_tptp_quantified_equality_clause_superposition_proof(
         source_options = [
             *raw_replay_substituted_parent_options(source_index, source, source_proof, replay_step, variable_sorts),
             *raw_instantiated_forall_clause_options(source, source_proof, target, equality_clause),
+            *raw_superposition_target_residual_instantiated_options(source, source_proof, target),
         ]
         equality_options = [
             *raw_replay_substituted_parent_options(equality_index, equality_clause, equality_clause_proof, replay_step, variable_sorts),
             *raw_instantiated_forall_clause_options(equality_clause, equality_clause_proof, target, source),
+            *raw_superposition_target_residual_instantiated_options(equality_clause, equality_clause_proof, target),
         ]
         seen_source: set[str] = set()
         unique_source_options: list[tuple[Expr, str]] = []
@@ -32557,6 +32674,18 @@ def raw_tptp_quantified_equality_clause_superposition_proof(
             for equality_option, equality_option_proof in unique_equality_options[:6]:
                 if not any(equality_like_sides(literal) is not None for literal in raw_clause_literals(equality_option)):
                     continue
+                proof = raw_equality_clause_superposition_proof(
+                    source_option,
+                    target_body,
+                    source_option_proof,
+                    equality_option,
+                    equality_option_proof,
+                    variable_sorts,
+                )
+                if proof is not None:
+                    for name, sort in reversed(target_binders):
+                        proof = f"(fun {name} :{sort} => {proof})"
+                    return proof
                 proof = raw_equality_clause_superposition_proof(
                     source_option,
                     target,
