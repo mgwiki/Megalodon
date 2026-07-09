@@ -2645,6 +2645,7 @@ def megalodon_replay_steps(
     variable_sorts.update(raw_tptp_skolem_binder_sorts(proof_text, variable_sorts))
     function_definitions = tptp_function_definition_infos(proof_text, variable_sorts)
     variable_sorts.update(raw_tptp_function_definition_sorts(function_definitions, variable_sorts))
+    raw_tptp_adjust_section_parameterized_sorts(proof_text, variable_sorts)
     step_variable_sorts = megalodon_outline_step_variable_sorts(proof_text)
     steps: dict[str, MegalodonReplayStep] = {}
     substitutions: dict[str, tuple[str, ...]] = {}
@@ -42176,23 +42177,52 @@ def raw_tptp_pointwise_function_clause_definition_rewrite_proof(
         return None
 
     def transported_literal_proof(source_literal: Expr, target_literal: Expr, source_literal_proof: str) -> str | None:
-        for equality_expr, equality_proof, function_sort in function_equalities:
-            sides = equality_like_sides(equality_expr)
-            if sides is None:
-                continue
-            rewritten, changed = rewrite_function_applications(source_literal, sides[0], sides[1])
-            if not changed or not expr_same_mod_alpha(beta_normalize_expr(rewritten), beta_normalize_expr(target_literal)):
-                continue
-            hole_name = fresh_identifier("zz", expr_text(source_literal), expr_text(target_literal), expr_text(equality_expr))
-            hole = Expr("var", value=hole_name)
-            context, context_changed = function_context(source_literal, sides[0], hole)
-            if not context_changed:
-                continue
-            return (
-                f"{proof_term_text(equality_proof)} "
-                f"(fun {hole_name} :{binder_sort_text(function_sort)} => {proof_arg_text(context)}) "
-                f"{proof_term_text(source_literal_proof)}"
-            )
+        states: list[tuple[Expr, str]] = [(source_literal, source_literal_proof)]
+        seen: set[str] = {expr_key(beta_normalize_expr(source_literal))}
+        max_depth = min(5, max(1, len(function_equalities)))
+        for _depth in range(max_depth):
+            next_states: list[tuple[Expr, str]] = []
+            for current_literal, current_proof in states:
+                if expr_same_mod_alpha(beta_normalize_expr(current_literal), beta_normalize_expr(target_literal)):
+                    return current_proof
+                for equality_expr, equality_proof, function_sort in function_equalities:
+                    sides = equality_like_sides(equality_expr)
+                    if sides is None:
+                        continue
+                    rewritten, changed = rewrite_function_applications(current_literal, sides[0], sides[1])
+                    if not changed:
+                        continue
+                    hole_name = fresh_identifier(
+                        "zz",
+                        expr_text(current_literal),
+                        expr_text(target_literal),
+                        expr_text(equality_expr),
+                        str(_depth),
+                    )
+                    hole = Expr("var", value=hole_name)
+                    context, context_changed = function_context(current_literal, sides[0], hole)
+                    if not context_changed:
+                        continue
+                    rewritten_proof = (
+                        f"{proof_term_text(equality_proof)} "
+                        f"(fun {hole_name} :{binder_sort_text(function_sort)} => {proof_arg_text(context)}) "
+                        f"{proof_term_text(current_proof)}"
+                    )
+                    normalized = beta_normalize_expr(rewritten)
+                    if expr_same_mod_alpha(normalized, beta_normalize_expr(target_literal)):
+                        return rewritten_proof
+                    key = expr_key(normalized)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    next_states.append((normalized, rewritten_proof))
+                    if len(next_states) >= 32:
+                        break
+                if len(next_states) >= 32:
+                    break
+            if not next_states:
+                break
+            states = next_states
         return None
 
     previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
@@ -42254,6 +42284,30 @@ def raw_tptp_replay_proof_from_step(
     )
 
 
+def raw_tptp_definition_replay_needs_function_sorts(
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> bool:
+    for parent in parents[1:]:
+        parent_proposition = propositions_by_name.get(parent)
+        parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+        if parent_expr is None:
+            continue
+        pointwise = raw_pointwise_set_function_equality(parent_expr, raw_tptp_claim_name(parent))
+        if pointwise is None:
+            continue
+        equality_expr, _proof = pointwise
+        sides = equality_like_sides(equality_expr)
+        if sides is None:
+            continue
+        for side in sides:
+            side_sort = expr_sort(side, variable_sorts)
+            if side_sort is not None and "->" in side_sort:
+                return True
+    return False
+
+
 def raw_tptp_parent_negated_tautology_exfalso_proof(
     proposition: str,
     parents: list[str],
@@ -42307,6 +42361,7 @@ def raw_tptp_replay_proof(
         and variable_sorts
         and raw_tptp_replay_payload_size(proposition, parents, propositions_by_name, replay_step)
         >= RAW_TPTP_MINIMAL_DEFINITION_REPLAY_CHAR_LIMIT
+        and not raw_tptp_definition_replay_needs_function_sorts(parents, propositions_by_name, variable_sorts)
     ):
         proof = raw_tptp_replay_proof(
             rule,
@@ -43535,6 +43590,26 @@ def raw_tptp_exported_source_variable_sorts(proof_text: str) -> dict[str, str]:
     return sorts
 
 
+def raw_tptp_adjust_section_parameterized_sorts(
+    proof_text: str,
+    variable_sorts: dict[str, str],
+    replay_steps: dict[str, MegalodonReplayStep] | None = None,
+) -> None:
+    # Section parameters are exported as extra leading arguments in hammer
+    # problems.  The source scanner sees the specialized definition sort, while
+    # Vampire formulas use the parameterized constant.
+    replay_text = ""
+    if replay_steps is not None:
+        replay_text = "\n".join(step.proposition for step in replay_steps.values())
+    text = f"{proof_text}\n{replay_text}"
+    if "In_rec_i (fun" in text or "c_In_5Frec_5Fi @ (^" in text:
+        variable_sorts["In_rec_i"] = "(set->(set->set)->set)->set->set"
+    if "In_rec_ii (fun" in text or "c_In_5Frec_5Fii @ (^" in text:
+        variable_sorts["In_rec_ii"] = "(set->(set->(set->set))->(set->set))->set->set->set"
+    if "In_rec_iii (fun" in text or "c_In_5Frec_5Fiii @ (^" in text:
+        variable_sorts["In_rec_iii"] = "(set->(set->(set->set->set))->(set->set->set))->set->set->set->set"
+
+
 def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | None = None) -> list[str]:
     text = proof.read_text(encoding="utf-8", errors="replace")
     declarations = collect_tptp_declarations(text)
@@ -43558,6 +43633,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         variable_sorts.update(raw_tptp_skolem_binder_sorts(text, variable_sorts))
         function_definitions = tptp_function_definition_infos(text, variable_sorts)
         variable_sorts.update(raw_tptp_function_definition_sorts(function_definitions, variable_sorts))
+        raw_tptp_adjust_section_parameterized_sorts(text, variable_sorts, replay_steps)
         raw_entries: list[tuple[str, str, str, str | None, str | None, str | None, list[str], bool]] = []
         propositions: list[str] = []
         for declaration in declarations:
@@ -43607,6 +43683,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         variable_sorts.update(raw_tptp_skolem_binder_sorts(text, variable_sorts))
         function_definitions = tptp_function_definition_infos(text, variable_sorts)
         variable_sorts.update(raw_tptp_function_definition_sorts(function_definitions, variable_sorts))
+        raw_tptp_adjust_section_parameterized_sorts(text, variable_sorts, replay_steps)
         entries = []
         propositions = []
         axiom_like_rules = {"input", "skolem symbol introduction", "predicate definition introduction", "function definition"}
