@@ -31472,6 +31472,7 @@ def raw_tptp_exported_function_superposition_pointwise_proof(
                 other_substituted,
                 target_binders,
                 collect_foralls(target)[1],
+                local_sorts,
             )
             if other_clause is None:
                 continue
@@ -32035,8 +32036,34 @@ def raw_instantiated_clause_from_exported_literal(
     substituted_literal: Expr,
     target_binders: list[tuple[str, str]],
     target_body: Expr,
+    variable_sorts: dict[str, str] | None = None,
 ) -> tuple[Expr, str] | None:
     binders, body = collect_foralls(clause)
+    target_by_name = {name: sort for name, sort in target_binders}
+    local_sorts = raw_tptp_nonlocal_sorts(variable_sorts or {})
+    local_sorts.update(target_by_name)
+    substituted_sorts: dict[str, str] = {}
+    infer_missing_raw_tptp_sorts(substituted_literal, substituted_sorts, local_sorts, "prop")
+    renaming: dict[str, Expr] = {}
+    used_names = expr_variables(body) | expr_variables(substituted_literal) | expr_bound_variables(body) | set(target_by_name)
+    for name, sort in binders:
+        target_sort = target_by_name.get(name)
+        substituted_sort = substituted_sorts.get(name)
+        if (
+            (target_sort is not None and not equivalent_sorts(target_sort, sort))
+            or (substituted_sort is not None and not equivalent_sorts(substituted_sort, sort))
+        ):
+            new_name = fresh_identifier(f"{name}_src", expr_text(body), expr_text(substituted_literal))
+            while new_name in used_names:
+                new_name = fresh_identifier(new_name, " ".join(sorted(used_names)))
+            used_names.add(new_name)
+            renaming[name] = Expr("var", value=new_name)
+    if renaming:
+        body = substitute_expr(body, renaming)
+        binders = [
+            (renaming[name].value if name in renaming and renaming[name].value is not None else name, sort)
+            for name, sort in binders
+        ]
     substituted_binders, substituted_body = collect_foralls(substituted_literal)
     if substituted_binders and len(substituted_binders) == len(binders):
         renamed_substituted_body = substituted_body
@@ -32057,32 +32084,45 @@ def raw_instantiated_clause_from_exported_literal(
         return None
     binder_sorts = {name: sort for name, sort in binders}
     binder_names = set(binder_sorts)
-    subst: dict[str, Expr] = {}
-    if not raw_match_literal_mod_equality_symmetry(literals[literal_index], substituted_literal, binder_names, subst):
-        literal_sides = equality_like_sides(literals[literal_index])
+    matched_literal_index: int | None = None
+    matched_subst: dict[str, Expr] | None = None
+    for candidate_literal_index in [literal_index, *(index for index in range(len(literals)) if index != literal_index)]:
+        subst: dict[str, Expr] = {}
+        if raw_match_literal_mod_equality_symmetry(
+            literals[candidate_literal_index],
+            substituted_literal,
+            binder_names,
+            subst,
+        ):
+            matched_literal_index = candidate_literal_index
+            matched_subst = subst
+            break
+        literal_sides = equality_like_sides(literals[candidate_literal_index])
         substituted_sides = equality_like_sides(substituted_literal)
-        matched_symmetric_equality = False
         if literal_sides is not None and substituted_sides is not None:
             trial: dict[str, Expr] = {}
             if (
                 match_expr_with_alpha_instantiation(literal_sides[0], substituted_sides[1], binder_names, trial)
                 and match_expr_with_alpha_instantiation(literal_sides[1], substituted_sides[0], binder_names, trial)
             ):
-                subst = trial
-                matched_symmetric_equality = True
-        if not (
-            matched_symmetric_equality
-            or (
-                not binder_names
-                and literal_sides is not None
-                and substituted_sides is not None
-                and expr_same_mod_alpha(literal_sides[0], substituted_sides[0])
-                and expr_same_mod_alpha(literal_sides[1], substituted_sides[1])
-            )
+                matched_literal_index = candidate_literal_index
+                matched_subst = trial
+                break
+        if (
+            not binder_names
+            and literal_sides is not None
+            and substituted_sides is not None
+            and expr_same_mod_alpha(literal_sides[0], substituted_sides[0])
+            and expr_same_mod_alpha(literal_sides[1], substituted_sides[1])
         ):
-            return None
+            matched_literal_index = candidate_literal_index
+            matched_subst = {}
+            break
+    if matched_literal_index is None or matched_subst is None:
+        return None
+    literal_index = matched_literal_index
+    subst = matched_subst
     target_literals = raw_clause_literals(target_body)
-    target_by_name = {name: sort for name, sort in target_binders}
     target_by_sort: dict[str, list[str]] = {}
     for name, sort in target_binders:
         target_by_sort.setdefault(sort, []).append(name)
@@ -32160,6 +32200,31 @@ def raw_instantiated_clause_from_exported_literal(
     completed = complete_from_target(0, dict(subst))
     if completed is not None:
         subst = completed
+    if variable_sorts is not None:
+        replacement_sorts = {
+            **variable_sorts,
+            **substituted_sorts,
+            **target_by_name,
+            **binder_sorts,
+        }
+        dangling_replacements: dict[str, Expr] = {}
+        for value in subst.values():
+            for variable in expr_variables(value):
+                if variable in target_by_name or variable in RAW_TPTP_AMBIENT_CONSTANTS:
+                    continue
+                if variable not in substituted_sorts and variable not in binder_sorts:
+                    continue
+                sort = replacement_sorts.get(variable)
+                if sort is None:
+                    continue
+                replacement = raw_tptp_constant_for_sort(sort, replacement_sorts, set(target_by_name) | set(binder_sorts))
+                if replacement is not None:
+                    dangling_replacements[variable] = replacement
+        if dangling_replacements:
+            subst = {
+                name: flatten_applications(substitute_expr(value, dangling_replacements))
+                for name, value in subst.items()
+            }
     used_target_names = {
         value.value
         for value in subst.values()
@@ -32167,6 +32232,16 @@ def raw_instantiated_clause_from_exported_literal(
     }
     for name, sort in binders:
         if name in subst:
+            value = subst[name]
+            if (
+                variable_sorts is not None
+                and value.kind == "var"
+                and value.value == name
+                and name not in target_by_name
+            ):
+                replacement = raw_tptp_constant_for_sort(sort, {**variable_sorts, **binder_sorts}, set(target_by_name) | set(binder_sorts))
+                if replacement is not None:
+                    subst[name] = replacement
             continue
         if target_by_name.get(name) == sort:
             subst[name] = Expr("var", value=name)
@@ -32302,6 +32377,28 @@ def raw_exported_two_literal_superposition_clause_proof(
             direct = target_intro(resolver_literal, resolver_literal_proof)
             if direct is not None:
                 return direct
+            source_premises, source_conclusion = split_arrows(source_literal)
+            if len(source_premises) == 1 and false_eliminator_expr(source_conclusion):
+                premise_proof = raw_literal_direct_transform_proof(
+                    resolver_literal,
+                    source_premises[0],
+                    resolver_literal_proof,
+                    (),
+                )
+                if premise_proof is not None:
+                    false_proof = f"({proof_head(source_literal_proof)} {proof_term_text(premise_proof)})"
+                    return raw_false_literal_elimination_proof(Expr("var", value="vampire_false"), target, false_proof)
+            resolver_premises, resolver_conclusion = split_arrows(resolver_literal)
+            if len(resolver_premises) == 1 and false_eliminator_expr(resolver_conclusion):
+                premise_proof = raw_literal_direct_transform_proof(
+                    source_literal,
+                    resolver_premises[0],
+                    source_literal_proof,
+                    (),
+                )
+                if premise_proof is not None:
+                    false_proof = f"({proof_head(resolver_literal_proof)} {proof_term_text(premise_proof)})"
+                    return raw_false_literal_elimination_proof(Expr("var", value="vampire_false"), target, false_proof)
             if equality_like_sides(resolver_literal) is None:
                 return None
             for target_index, target_literal in enumerate(target_literals):
@@ -32408,6 +32505,7 @@ def raw_tptp_exported_two_literal_resolution_proof(
             selected_substituted,
             target_binders,
             target_body,
+            extra_sorts,
         )
         other_clause = raw_instantiated_clause_from_exported_literal(
             parsed_parents[other_parent][0],
@@ -32416,6 +32514,7 @@ def raw_tptp_exported_two_literal_resolution_proof(
             other_substituted,
             target_binders,
             target_body,
+            extra_sorts,
         )
         if selected_clause is not None and other_clause is not None:
             source, source_proof = selected_clause
@@ -32657,6 +32756,7 @@ def raw_tptp_equality_factoring_proof(
             selected_substituted,
             target_binders,
             target_body,
+            extra_sorts,
         )
         if selected_clause is None:
             continue
@@ -36902,11 +37002,19 @@ def raw_tptp_replay_proof_has_synthetic_db(proof: str) -> bool:
     return RAW_TPTP_SYNTHETIC_DB_RE.search(proof) is not None
 
 
-def raw_tptp_replay_proof_has_free_synthetic_db(proof: str) -> bool:
+def raw_tptp_replay_proof_has_free_synthetic_db(proof: str, proposition: str | None = None) -> bool:
     parsed = parse_expr(proof)
     if parsed is None:
         return False
-    return any(RAW_TPTP_SYNTHETIC_DB_RE.fullmatch(name) for name in expr_variables(parsed))
+    allowed: set[str] = set()
+    if proposition is not None:
+        parsed_proposition = parse_expr(proposition)
+        if parsed_proposition is not None:
+            allowed = expr_variables(parsed_proposition)
+    return any(
+        RAW_TPTP_SYNTHETIC_DB_RE.fullmatch(name) and name not in allowed
+        for name in expr_variables(parsed)
+    )
 
 
 RAW_TPTP_SURFACE_VAR_RE = re.compile(r"\b[XY][0-9]+\b")
@@ -36980,7 +37088,7 @@ def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: s
         return True
     if raw_tptp_replay_proof_has_free_surface_variable(proposition, proof):
         return True
-    if raw_tptp_replay_proof_has_free_synthetic_db(proof):
+    if raw_tptp_replay_proof_has_free_synthetic_db(proof, proposition):
         return True
     if raw_tptp_replay_proof_has_escaped_surface_variable(proposition, proof):
         return True
