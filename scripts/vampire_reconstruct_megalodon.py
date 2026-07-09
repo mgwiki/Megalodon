@@ -18189,6 +18189,9 @@ def raw_literal_direct_transform_proof(
 ) -> str | None:
     if expr_same_mod_alpha(source, target):
         return source_proof
+    direct_conclusion = raw_direct_conclusion_transform_proof(source, target, source_proof)
+    if direct_conclusion is not None:
+        return direct_conclusion
     source_premises, source_conclusion = split_arrows(source)
     target_premises, target_conclusion = split_arrows(target)
     if (
