@@ -28444,6 +28444,7 @@ def raw_quantified_parent_equality_rewrite_clause_proof(
     equality_sides = equality_like_sides(equality_body)
     if equality_sides is None:
         return None
+    equality_rewrites_propositions = app_args(equality_body, "vampire_eq_prop", 2) is not None
     equality_left_body, equality_right_body = equality_sides
     if len(source_binders) != len(target_binders):
         return None
@@ -28468,27 +28469,44 @@ def raw_quantified_parent_equality_rewrite_clause_proof(
         **{name: sort for name, sort in equality_binders},
     }
     context_bound_names = expr_bound_variables(renamed_source_body) | expr_bound_variables(target_body)
+    allowed_synthetic_variables = set(variable_sorts) | {name for name, _ in target_binders}
 
     for old_pattern, new_pattern, reverse in (
         (equality_left_body, equality_right_body, False),
         (equality_right_body, equality_left_body, True),
     ):
         for old_subterm in expr_subterms(renamed_source_body, limit=192):
+            if not equality_rewrites_propositions and expr_same_mod_alpha(old_subterm, renamed_source_body):
+                continue
             if expr_variables(old_subterm) & context_bound_names:
                 continue
-            subst: dict[str, Expr] = {}
-            if not match_expr_with_alpha_instantiation(old_pattern, old_subterm, equality_binder_names, subst):
-                continue
             for new_subterm in expr_subterms(target_body, limit=192):
+                if not equality_rewrites_propositions and expr_same_mod_alpha(new_subterm, target_body):
+                    continue
                 if expr_variables(new_subterm) & context_bound_names:
                     continue
-                trial = dict(subst)
-                if not match_expr_with_alpha_instantiation(new_pattern, new_subterm, equality_binder_names, trial):
+                trial = raw_match_expr_pair_with_unary_function_binder_instantiation(
+                    old_pattern,
+                    old_subterm,
+                    new_pattern,
+                    new_subterm,
+                    {name: sort for name, sort in equality_binders},
+                    local_sorts,
+                )
+                if trial is None:
                     continue
                 flatten_substitution(trial)
                 if any(name not in trial for name, _ in equality_binders):
                     continue
-                if any(raw_expr_has_synthetic_db_variable(trial[name]) for name, _ in equality_binders):
+                if any(
+                    {
+                        variable
+                        for variable in expr_variables(trial[name])
+                        if RAW_TPTP_SYNTHETIC_DB_RE.fullmatch(variable)
+                    }
+                    - allowed_synthetic_variables
+                    for name, _ in equality_binders
+                ):
                     continue
                 if any(
                     context_bound_names & expr_variables(trial[name])
@@ -28525,6 +28543,96 @@ def raw_quantified_parent_equality_rewrite_clause_proof(
                 for name, sort in reversed(target_binders):
                     body_proof = f"(fun {name} :{sort} => {body_proof})"
                 return body_proof
+    return None
+
+
+def raw_match_expr_with_unary_function_binder_instantiation(
+    pattern: Expr,
+    target: Expr,
+    binder_sort_by_name: dict[str, str],
+    local_sorts: dict[str, str],
+    subst: dict[str, Expr],
+) -> bool:
+    remaining_binders = set(binder_sort_by_name) - set(subst)
+    normalized_target = beta_normalize_expr(target)
+    normalized_pattern = beta_normalize_expr(substitute_expr(pattern, subst))
+    trial = dict(subst)
+    if match_expr_with_alpha_instantiation(normalized_pattern, normalized_target, remaining_binders, trial):
+        subst.clear()
+        subst.update(trial)
+        return True
+    if (
+        pattern.kind != "app"
+        or len(pattern.args) != 2
+        or pattern.args[0].kind != "var"
+        or pattern.args[0].value not in binder_sort_by_name
+        or pattern.args[0].value in subst
+    ):
+        return False
+    function_name = pattern.args[0].value
+    pieces = split_sort_arrows(binder_sort_by_name[function_name])
+    if len(pieces) != 2:
+        return False
+    argument = beta_normalize_expr(substitute_expr(pattern.args[1], subst))
+    argument_sort = expr_sort(argument, {**local_sorts, **binder_sort_by_name})
+    target_sort = expr_sort(target, {**local_sorts, **binder_sort_by_name})
+    if argument_sort is not None and not equivalent_sorts(argument_sort, pieces[0]):
+        return False
+    if target_sort is not None and not equivalent_sorts(target_sort, pieces[1]):
+        return False
+    lambda_name = fresh_identifier("zz", expr_text(target), expr_text(pattern), function_name)
+    lambda_body, changed = replace_expr(normalized_target, argument, Expr("var", value=lambda_name))
+    if not changed:
+        return False
+    trial = dict(subst)
+    trial[function_name] = Expr("lambda", value=lambda_name, sort=pieces[0], args=(lambda_body,))
+    normalized_pattern = beta_normalize_expr(substitute_expr(pattern, trial))
+    remaining_binders = set(binder_sort_by_name) - set(trial)
+    if not match_expr_with_alpha_instantiation(normalized_pattern, normalized_target, remaining_binders, trial):
+        return False
+    subst.clear()
+    subst.update(trial)
+    return True
+
+
+def raw_match_expr_pair_with_unary_function_binder_instantiation(
+    first_pattern: Expr,
+    first_target: Expr,
+    second_pattern: Expr,
+    second_target: Expr,
+    binder_sort_by_name: dict[str, str],
+    local_sorts: dict[str, str],
+) -> dict[str, Expr] | None:
+    trial: dict[str, Expr] = {}
+    if raw_match_expr_with_unary_function_binder_instantiation(
+        first_pattern,
+        first_target,
+        binder_sort_by_name,
+        local_sorts,
+        trial,
+    ) and raw_match_expr_with_unary_function_binder_instantiation(
+        second_pattern,
+        second_target,
+        binder_sort_by_name,
+        local_sorts,
+        trial,
+    ):
+        return trial
+    trial = {}
+    if raw_match_expr_with_unary_function_binder_instantiation(
+        second_pattern,
+        second_target,
+        binder_sort_by_name,
+        local_sorts,
+        trial,
+    ) and raw_match_expr_with_unary_function_binder_instantiation(
+        first_pattern,
+        first_target,
+        binder_sort_by_name,
+        local_sorts,
+        trial,
+    ):
+        return trial
     return None
 
 
@@ -29135,6 +29243,26 @@ def raw_tptp_forward_demodulation_proof(
     )
     if fallback_ok(proof):
         return proof
+    proof = raw_target_extended_quantified_parent_equality_rewrite_clause_proof(
+        first,
+        target,
+        first_name,
+        second,
+        second_name,
+        variable_sorts,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_target_extended_quantified_parent_equality_rewrite_clause_proof(
+        second,
+        target,
+        second_name,
+        first,
+        first_name,
+        variable_sorts,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
     if len(expr_text(first)) + len(expr_text(second)) + len(expr_text(target)) <= 3000:
         target_binders, _target_body = collect_foralls(target)
         if not target_binders:
@@ -29731,6 +29859,7 @@ def raw_negative_implication_quantified_equality_rewrite_proof(
     if sides is None:
         return None
     binder_names = {name for name, _ in binders}
+    binder_sort_by_name = {name: sort for name, sort in binders}
     local_sorts = {**variable_sorts, **{name: sort for name, sort in binders}}
     source_subterms = expr_subterms(source_premises[0], limit=128)
     target_subterms = expr_subterms(target_premises[0], limit=128)
@@ -29741,10 +29870,15 @@ def raw_negative_implication_quantified_equality_rewrite_proof(
     ):
         for old_subterm in target_subterms:
             for new_subterm in source_subterms:
-                subst: dict[str, Expr] = {}
-                if not match_expr_with_alpha_instantiation(old_pattern, old_subterm, binder_names, subst):
-                    continue
-                if not match_expr_with_alpha_instantiation(new_pattern, new_subterm, binder_names, subst):
+                subst = raw_match_expr_pair_with_unary_function_binder_instantiation(
+                    old_pattern,
+                    old_subterm,
+                    new_pattern,
+                    new_subterm,
+                    binder_sort_by_name,
+                    local_sorts,
+                )
+                if subst is None:
                     continue
                 for name, sort in binders:
                     if name in subst:
@@ -29807,6 +29941,43 @@ def raw_forall_negative_implication_quantified_equality_rewrite_proof(
     for target_name, _ in target_binders:
         opened_source_proof = f"({proof_head(opened_source_proof)} {target_name})"
     body_proof = raw_negative_implication_quantified_equality_rewrite_proof(
+        opened_source_body,
+        target_body,
+        opened_source_proof,
+        equality,
+        equality_proof,
+        {**variable_sorts, **{name: sort for name, sort in target_binders}},
+    )
+    if body_proof is None:
+        return None
+    for name, sort in reversed(target_binders):
+        body_proof = f"(fun {name} :{sort} => {body_proof})"
+    return body_proof
+
+
+def raw_target_extended_quantified_parent_equality_rewrite_clause_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality: Expr,
+    equality_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if not target_binders or len(source_binders) > len(target_binders) or len(target_binders) > 6:
+        return None
+    if any(source_sort != target_sort for (_, source_sort), (_, target_sort) in zip(source_binders, target_binders)):
+        return None
+    source_renaming = {
+        source_name: Expr("var", value=target_name)
+        for (source_name, _), (target_name, _) in zip(source_binders, target_binders)
+    }
+    opened_source_body = substitute_expr(source_body, source_renaming)
+    opened_source_proof = source_proof
+    for target_name, _ in target_binders[: len(source_binders)]:
+        opened_source_proof = f"({proof_head(opened_source_proof)} {target_name})"
+    body_proof = raw_quantified_parent_equality_rewrite_clause_proof(
         opened_source_body,
         target_body,
         opened_source_proof,
@@ -29966,6 +30137,7 @@ def raw_quantified_equality_rewrite_clause_steps(
     for source_name, _ in source_binders:
         source_body_proof = f"({proof_head(source_body_proof)} {source_name})"
     equality_binder_names = {name for name, _ in equality_binders}
+    equality_binder_sort_by_name = {name: sort for name, sort in equality_binders}
     leading_source_binder_names = {name for name, _ in source_binders}
     inner_source_binder_names = expr_bound_variables(source_body) - leading_source_binder_names
     local_sorts = {
@@ -29981,7 +30153,13 @@ def raw_quantified_equality_rewrite_clause_steps(
     ):
         for old_subterm in expr_subterms(source_body, limit=192):
             subst: dict[str, Expr] = {}
-            if not match_expr_with_alpha_instantiation(old_pattern, old_subterm, equality_binder_names, subst):
+            if not raw_match_expr_with_unary_function_binder_instantiation(
+                old_pattern,
+                old_subterm,
+                equality_binder_sort_by_name,
+                local_sorts,
+                subst,
+            ):
                 continue
             flatten_substitution(subst)
             if any(name not in subst for name, _ in equality_binders):
