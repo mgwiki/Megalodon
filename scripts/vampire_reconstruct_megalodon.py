@@ -34441,7 +34441,7 @@ def raw_tptp_replay_proof(
             variable_sorts,
             replay_step=replay_step,
         )
-    if rule in {"forward_subsumption_resolution", "backward_subsumption_resolution"}:
+    if rule in {"forward_subsumption_resolution", "backward_subsumption_resolution", "forward_literal_rewriting"}:
         return raw_tptp_forward_subsumption_resolution_proof(
             proposition,
             parents,
