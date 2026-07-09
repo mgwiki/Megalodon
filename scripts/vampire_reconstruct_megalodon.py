@@ -6015,8 +6015,11 @@ def lower_function_equality_proposition(expr: Expr, variable_sorts: dict[str, st
     return expr_text(expr)
 
 
-def parenthesize_atomic_axiom_propositions(lines: list[str]) -> list[str]:
-    variable_sorts: dict[str, str] = {}
+def parenthesize_atomic_axiom_propositions(
+    lines: list[str],
+    initial_variable_sorts: dict[str, str] | None = None,
+) -> list[str]:
+    variable_sorts: dict[str, str] = dict(initial_variable_sorts or {})
     variable_re = re.compile(r"^Variable (?P<name>[_A-Za-z][_A-Za-z0-9']*):(?P<sort>[^.]+)\.$")
     for line in lines:
         match = variable_re.match(line)
@@ -28763,11 +28766,36 @@ def raw_tptp_forward_demodulation_proof(
         variable_sorts,
         replay_step,
     )
-    if proof is not None:
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
         return proof
 
     def fallback_ok(candidate: str | None) -> bool:
-        return candidate is not None and not raw_tptp_replay_proof_has_synthetic_db(candidate)
+        return (
+            candidate is not None
+            and not raw_tptp_replay_proof_has_synthetic_db(candidate)
+            and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, candidate)
+        )
+
+    proof = raw_lambda_function_parent_equality_rewrite_proof(
+        first,
+        target,
+        first_name,
+        second,
+        second_name,
+        variable_sorts,
+    )
+    if fallback_ok(proof):
+        return proof
+    proof = raw_lambda_function_parent_equality_rewrite_proof(
+        second,
+        target,
+        second_name,
+        first,
+        first_name,
+        variable_sorts,
+    )
+    if fallback_ok(proof):
+        return proof
 
     proof = raw_guarded_equality_composition_clause_proof(
         target,
@@ -35090,7 +35118,15 @@ def raw_tptp_replay_proof_has_free_surface_variable(proposition: str, proof: str
     parsed = parse_expr(proof)
     if parsed is None:
         return False
-    proposition_variables = set(RAW_TPTP_SURFACE_VAR_RE.findall(proposition))
+    proposition_expr = parse_expr(proposition)
+    if proposition_expr is None:
+        proposition_variables = set(RAW_TPTP_SURFACE_VAR_RE.findall(proposition))
+    else:
+        proposition_variables = {
+            name
+            for name in expr_variables(proposition_expr)
+            if RAW_TPTP_SURFACE_VAR_RE.fullmatch(name)
+        }
     return any(
         RAW_TPTP_SURFACE_VAR_RE.fullmatch(name) and name not in proposition_variables
         for name in expr_variables(parsed)
@@ -39511,7 +39547,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         lines.append(f"exact {final_name}.")
     lines.append("Qed.")
     lines = reconcile_megalodon_declarations(use_ambient_basic_logic(add_problem_type_variables(lines, proof, text, problem, source)))
-    lines = parenthesize_atomic_axiom_propositions(lines)
+    lines = parenthesize_atomic_axiom_propositions(lines, variable_sorts)
     return reconcile_megalodon_declarations(add_used_boolean_extensionality_helpers(lines))
 
 
