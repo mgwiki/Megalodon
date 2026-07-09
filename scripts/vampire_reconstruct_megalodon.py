@@ -32797,6 +32797,88 @@ def raw_tptp_equality_resolution_with_instantiations_proof(
     return None
 
 
+def raw_tptp_reflexive_equality_resolution_proof(
+    parent_binders: list[tuple[str, str]],
+    parent_body: Expr,
+    target_binders: list[tuple[str, str]],
+    target_body: Expr,
+    parent_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    binder_names = {name for name, _sort in parent_binders}
+    if not binder_names or len(parent_binders) > 5:
+        return None
+    if not raw_clause_replay_budget_ok(parent_body, target_body, max_literals=16, max_literal_product=256):
+        return None
+    target_vars = {name: Expr("var", value=name) for name, _sort in target_binders}
+    candidate_exprs = (parent_body, target_body)
+
+    def complete_substitutions(initial: dict[str, Expr]) -> list[dict[str, Expr]]:
+        subst = dict(initial)
+        flatten_substitution(subst)
+        if any(expr_variables(value) & binder_names for value in subst.values()):
+            return []
+        unresolved = [(name, sort) for name, sort in parent_binders if name not in subst]
+        if len(unresolved) > 2:
+            return []
+        candidate_lists: list[list[Expr]] = []
+        for name, sort in unresolved:
+            candidates: list[Expr] = []
+            target_var = target_vars.get(name)
+            if target_var is not None:
+                candidates.append(target_var)
+            for candidate in raw_candidate_terms_for_sort(candidate_exprs, sort, variable_sorts):
+                if all(expr_key(candidate) != expr_key(existing) for existing in candidates):
+                    candidates.append(candidate)
+            inhabitant = raw_simple_inhabitant_for_sort(sort)
+            if inhabitant is not None and all(expr_key(inhabitant) != expr_key(candidate) for candidate in candidates):
+                candidates.append(inhabitant)
+            if not candidates:
+                return []
+            candidate_lists.append(candidates[:10])
+        completions: list[dict[str, Expr]] = []
+        for values in itertools.product(*candidate_lists) if candidate_lists else [()]:
+            completed = dict(subst)
+            for (name, _sort), value in zip(unresolved, values):
+                completed[name] = value
+            completions.append(completed)
+            if len(completions) >= 64:
+                break
+        return completions
+
+    for literal in raw_clause_literals(parent_body):
+        premises, conclusion = split_arrows(literal)
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
+            continue
+        sides = equality_like_sides(premises[0])
+        if sides is None:
+            continue
+        initial: dict[str, Expr] = {}
+        if not unify_expr_variables(sides[0], sides[1], binder_names, initial):
+            continue
+        for subst in complete_substitutions(initial):
+            instantiated_parent_body = flatten_applications(substitute_expr(parent_body, subst))
+            source_proof = parent_proof
+            ok = True
+            for name, _sort in parent_binders:
+                value = subst.get(name)
+                if value is None:
+                    ok = False
+                    break
+                source_proof = f"({proof_head(source_proof)} {proof_arg_text(value)})"
+            if not ok:
+                continue
+            body_proof = raw_clause_subsumption_transform_proof(instantiated_parent_body, target_body, source_proof)
+            if body_proof is None:
+                body_proof = raw_clause_transform_proof(instantiated_parent_body, target_body, source_proof)
+            if body_proof is None:
+                continue
+            for name, sort in reversed(target_binders):
+                body_proof = f"(fun {name} :{sort} => {body_proof})"
+            return body_proof
+    return None
+
+
 def raw_tptp_exported_equality_resolution_instantiations(
     parent_body: Expr,
     parent_binders: list[tuple[str, str]],
@@ -32851,11 +32933,21 @@ def raw_tptp_equality_resolution_proof(
         return None
     parent_binders, parent_body = collect_foralls(parent)
     target_binders, target_body = collect_foralls(target)
+    parent_proof = raw_tptp_claim_name(parents[0])
+    proof = raw_tptp_reflexive_equality_resolution_proof(
+        parent_binders,
+        parent_body,
+        target_binders,
+        target_body,
+        parent_proof,
+        variable_sorts,
+    )
+    if proof is not None:
+        return proof
     if len(target_binders) + 1 != len(parent_binders):
         return None
     parent_binder_sorts = {name: sort for name, sort in parent_binders}
     parent_binder_names = set(parent_binder_sorts)
-    parent_proof = raw_tptp_claim_name(parents[0])
     proof = raw_tptp_equality_resolution_with_instantiations_proof(
         target,
         parent_binders,
