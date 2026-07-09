@@ -22785,6 +22785,36 @@ def raw_negated_forall_to_exists_negation_proof(
     )
 
 
+def raw_negated_forall_to_double_negated_exists_negation_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    target_premises, target_conclusion = split_arrows(target)
+    if len(target_premises) != 1 or not false_eliminator_expr(target_conclusion):
+        return None
+    not_exists_premises, not_exists_conclusion = split_arrows(target_premises[0])
+    if len(not_exists_premises) != 1 or not false_eliminator_expr(not_exists_conclusion):
+        return None
+    exists_target = not_exists_premises[0]
+    if raw_nested_exists_parts(exists_target) is None:
+        return None
+    exists_proof = raw_negated_forall_to_exists_negation_proof(
+        source,
+        exists_target,
+        source_proof,
+        variable_sorts,
+    )
+    if exists_proof is None:
+        return None
+    not_exists_name = fresh_identifier("HnotTarget", expr_text(target), source_proof)
+    return (
+        f"(fun {not_exists_name} :{proof_arg_text(target_premises[0])} => "
+        f"{not_exists_name} {proof_term_text(exists_proof)})"
+    )
+
+
 def raw_or_negated_components_contradiction_proof(
     negative: Expr,
     negative_proof: str,
@@ -36144,6 +36174,16 @@ def raw_tptp_exported_normal_form_proof(
                 proof = f"(fun {name} :{sort} => {proof})"
             return proof
         proof = raw_negated_implication_exists_to_double_negated_conjunction_proof(
+            source,
+            target,
+            candidate_source_proof,
+            candidate_sorts,
+        )
+        if proof is not None:
+            for name, sort in reversed(candidate_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
+            return proof
+        proof = raw_negated_forall_to_double_negated_exists_negation_proof(
             source,
             target,
             candidate_source_proof,
