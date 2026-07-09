@@ -20363,6 +20363,8 @@ def raw_tptp_unit_resulting_resolution_proof(
     variable_sorts: dict[str, str] | None = None,
     replay_step: MegalodonReplayStep | None = None,
 ) -> str | None:
+    if proof_search_timed_out():
+        return None
     variable_sorts = variable_sorts or {}
     if replay_step is not None:
         variable_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
@@ -20416,6 +20418,8 @@ def raw_tptp_unit_resulting_resolution_proof(
         resolver_candidate_exprs: list[Expr] = []
         resolver_candidate_base = (target_body, source, *all_resolver_exprs)
         for _resolver_name, resolver, resolver_proof in resolver_entries:
+            if proof_search_timed_out():
+                return None
             options: list[tuple[Expr, str]] = [(resolver, resolver_proof)]
             for option in [
                 *raw_instantiated_forall_clause_options(resolver, resolver_proof, target_body, source),
@@ -20440,6 +20444,8 @@ def raw_tptp_unit_resulting_resolution_proof(
 
         enriched_candidate_base = (target_body, source, *resolver_candidate_exprs)
         for index, (_resolver_name, resolver, resolver_proof) in enumerate(resolver_entries):
+            if proof_search_timed_out():
+                return None
             options = list(resolver_option_lists[index])
             for option in raw_sort_instantiated_forall_clause_options(
                 resolver,
@@ -20554,6 +20560,8 @@ def raw_tptp_unit_resulting_resolution_proof(
             candidate_exprs = (target_body, *resolver_candidate_exprs)
             candidate_lists: list[list[Expr]] = []
             for _name, sort in source_binders:
+                if proof_search_timed_out():
+                    return None
                 candidates = raw_candidate_terms_for_sort(candidate_exprs, sort, variable_sorts)
                 inhabitant = raw_simple_inhabitant_for_sort(sort)
                 if inhabitant is not None and equivalent_sorts(expr_sort(inhabitant, variable_sorts), sort):
@@ -20571,12 +20579,18 @@ def raw_tptp_unit_resulting_resolution_proof(
                 candidate_lists.append(candidates[:16])
 
             def source_instantiation_supported(instantiated_source: Expr) -> bool:
+                if proof_search_timed_out():
+                    return False
                 target_literals = raw_clause_literals(target_body)
                 for source_literal in raw_clause_literals(instantiated_source):
+                    if proof_search_timed_out():
+                        return False
                     if raw_literal_to_clause_proof(source_literal, target_body, "HsourceLiteral", target_literals, ()) is not None:
                         continue
                     found = False
                     for (resolver_name, resolver, resolver_proof), options in zip(resolver_entries, resolver_option_lists):
+                        if proof_search_timed_out():
+                            return False
                         dynamic_options = list(options[:8])
                         for option in [
                             *raw_instantiated_forall_clause_options(
@@ -20614,6 +20628,8 @@ def raw_tptp_unit_resulting_resolution_proof(
             attempts = 0
             candidate_products = itertools.product(*candidate_lists) if candidate_lists else ()
             for values in candidate_products:
+                if proof_search_timed_out():
+                    return None
                 attempts += 1
                 if attempts > 4096 or len(source_options) >= 24:
                     break
@@ -20649,6 +20665,8 @@ def raw_tptp_unit_resulting_resolution_proof(
                 return proof
             options = list(resolver_option_lists[index])
             _resolver_name, resolver, resolver_proof = resolver_entries[index]
+            if proof_search_timed_out():
+                return None
             for option in raw_sort_instantiated_forall_clause_options(
                 resolver,
                 resolver_proof,
@@ -20662,18 +20680,24 @@ def raw_tptp_unit_resulting_resolution_proof(
                     options.append(option)
             options.sort(key=instantiated_clause_priority)
             for option in options:
+                if proof_search_timed_out():
+                    return None
                 found = search_resolvers(source_clause, source_clause_proof, index + 1, current + [option])
                 if found is not None:
                     return found
             return None
 
         for source_clause, source_clause_proof in source_options:
+            if proof_search_timed_out():
+                return None
             proof = search_resolvers(source_clause, source_clause_proof, 0, [])
             if proof is not None:
                 return proof
         return None
 
     for source_index, _entry in sorted(enumerate(parsed), key=source_priority):
+        if proof_search_timed_out():
+            return None
         proof = try_source(source_index)
         if proof is not None:
             return proof
@@ -31739,6 +31763,8 @@ def raw_superposition_target_residual_instantiated_options(
     *,
     max_options: int = 12,
 ) -> list[tuple[Expr, str]]:
+    if proof_search_timed_out():
+        return []
     binders, body = collect_foralls(parent)
     if not binders or len(binders) > 6:
         return []
@@ -31792,7 +31818,7 @@ def raw_superposition_target_residual_instantiated_options(
         return completed
 
     def add_option(subst: dict[str, Expr]) -> None:
-        if len(options) >= max_options:
+        if len(options) >= max_options or proof_search_timed_out():
             return
         completed = complete_substitution(subst)
         if completed is None:
@@ -31813,7 +31839,7 @@ def raw_superposition_target_residual_instantiated_options(
         used_targets: set[int],
         subst: dict[str, Expr],
     ) -> None:
-        if len(options) >= max_options:
+        if len(options) >= max_options or proof_search_timed_out():
             return
         if index >= len(residuals):
             add_option(subst)
@@ -31830,6 +31856,8 @@ def raw_superposition_target_residual_instantiated_options(
                 return
 
     for skipped_index in range(len(parent_literals)):
+        if proof_search_timed_out():
+            break
         residuals = [
             literal
             for index, literal in enumerate(parent_literals)
@@ -32065,6 +32093,8 @@ def raw_tptp_superposition_proof(
     )
     if proof is not None:
         return proof
+    if proof_search_timed_out():
+        return None
     if len(parents) == 2:
         parent_exprs: list[tuple[Expr, str]] = []
         for parent in parents:
@@ -32083,6 +32113,8 @@ def raw_tptp_superposition_proof(
                 candidate_expr = parse_expr(candidate_proposition)
                 if candidate_expr is None:
                     continue
+                if proof_search_timed_out():
+                    return None
                 proof = raw_common_rhs_equality_superposition_proof(
                     candidate_expr,
                     target_expr,
@@ -32091,6 +32123,8 @@ def raw_tptp_superposition_proof(
                 if proof is not None:
                     return proof
         if target_expr is not None and len(parent_exprs) == 2:
+            if proof_search_timed_out():
+                return None
             proof = raw_positive_unit_clause_resolution_proof(
                 parent_exprs[0][0],
                 target_expr,
@@ -32101,6 +32135,8 @@ def raw_tptp_superposition_proof(
             )
             if proof is not None:
                 return proof
+            if proof_search_timed_out():
+                return None
             proof = raw_positive_unit_clause_resolution_proof(
                 parent_exprs[1][0],
                 target_expr,
@@ -32111,6 +32147,8 @@ def raw_tptp_superposition_proof(
             )
             if proof is not None:
                 return proof
+            if proof_search_timed_out():
+                return None
             proof = raw_quantified_common_side_equality_composition_proof(
                 parent_exprs[0][0],
                 parent_exprs[0][1],
@@ -32121,6 +32159,8 @@ def raw_tptp_superposition_proof(
             )
             if proof is not None:
                 return proof
+            if proof_search_timed_out():
+                return None
             proof = raw_common_rhs_equality_superposition_proof(
                 parent_exprs[0][0],
                 target_expr,
@@ -32128,6 +32168,8 @@ def raw_tptp_superposition_proof(
             )
             if proof is not None:
                 return proof
+            if proof_search_timed_out():
+                return None
             proof = raw_common_rhs_equality_superposition_proof(
                 parent_exprs[1][0],
                 target_expr,
@@ -32135,6 +32177,8 @@ def raw_tptp_superposition_proof(
             )
             if proof is not None:
                 return proof
+            if proof_search_timed_out():
+                return None
             proof = raw_negative_equality_clause_superposition_proof(
                 parent_exprs[0][0],
                 target_expr,
@@ -32145,6 +32189,8 @@ def raw_tptp_superposition_proof(
             )
             if proof is not None:
                 return proof
+            if proof_search_timed_out():
+                return None
             proof = raw_negative_equality_clause_superposition_proof(
                 parent_exprs[1][0],
                 target_expr,
@@ -32155,6 +32201,8 @@ def raw_tptp_superposition_proof(
             )
             if proof is not None:
                 return proof
+            if proof_search_timed_out():
+                return None
             proof = raw_negative_prop_argument_superposition_proof(
                 parent_exprs[0][0],
                 target_expr,
@@ -32165,6 +32213,8 @@ def raw_tptp_superposition_proof(
             )
             if proof is not None:
                 return proof
+            if proof_search_timed_out():
+                return None
             proof = raw_negative_prop_argument_superposition_proof(
                 parent_exprs[1][0],
                 target_expr,
@@ -32175,6 +32225,8 @@ def raw_tptp_superposition_proof(
             )
             if proof is not None:
                 return proof
+            if proof_search_timed_out():
+                return None
             proof = raw_instantiated_quantified_equality_rewrite_clause_proof(
                 parent_exprs[0][0],
                 target_expr,
@@ -32185,6 +32237,8 @@ def raw_tptp_superposition_proof(
             )
             if proof is not None:
                 return proof
+            if proof_search_timed_out():
+                return None
             proof = raw_instantiated_quantified_equality_rewrite_clause_proof(
                 parent_exprs[1][0],
                 target_expr,
@@ -33085,6 +33139,30 @@ def raw_positive_unit_clause_resolution_proof(
 ) -> str | None:
     target_binders, target_body = collect_foralls(target)
     source_binders, source_body = collect_foralls(source)
+    if source_binders:
+        avoid_names = (
+            {name for name, _sort in target_binders}
+            | expr_variables(target_body)
+            | expr_bound_variables(target_body)
+            | expr_variables(unit)
+            | expr_bound_variables(unit)
+        )
+        used_names = set(avoid_names) | expr_variables(source_body) | expr_bound_variables(source_body)
+        source_renames: dict[str, str] = {}
+        renamed_source_binders: list[tuple[str, str]] = []
+        for name, sort in source_binders:
+            replacement = name
+            if replacement in avoid_names:
+                replacement = fresh_identifier(f"S_{name}", expr_text(source), expr_text(target), expr_text(unit))
+                while replacement in used_names:
+                    replacement = fresh_identifier(replacement, expr_text(source), expr_text(target), expr_text(unit))
+            used_names.add(replacement)
+            renamed_source_binders.append((replacement, sort))
+            if replacement != name:
+                source_renames[name] = replacement
+        if source_renames:
+            source_body = rename_expr_variables(source_body, source_renames)
+            source_binders = renamed_source_binders
     unit_literals = raw_clause_literals(unit)
     if len(unit_literals) != 1:
         return None
@@ -33217,51 +33295,198 @@ def raw_positive_unit_clause_resolution_proof(
             options.append((instantiated, instantiated_proof))
         return options
 
-    try:
-        all_source_options: list[tuple[Expr, str]] = []
-        seen_options: set[str] = set()
-        for option in [*unit_resolution_source_options(), *source_options]:
-            key = expr_key(option[0])
-            if key in seen_options:
-                continue
-            seen_options.add(key)
-            all_source_options.append(option)
-        for source_option, source_option_proof in all_source_options[:16]:
+    def unit_instantiation_options(candidate_exprs: tuple[Expr, ...], limit: int = 48) -> list[tuple[Expr, str]]:
+        unit_binders, unit_body = collect_foralls(unit)
+        if len(unit_binders) > 3:
+            return []
+        if not unit_binders:
+            return [(unit_literal, unit_proof)]
+        local_sorts = {
+            **variable_sorts,
+            **{name: sort for name, sort in target_binders},
+            **{name: sort for name, sort in source_binders},
+            **{name: sort for name, sort in unit_binders},
+        }
+        options: list[tuple[Expr, str]] = []
+        seen: set[str] = set()
 
-            def source_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
-                direct = raw_literal_to_clause_proof(source_literal, target_body, source_literal_proof, target_literals, ())
-                if direct is not None:
-                    return direct
-                premise = negative_premise(source_literal)
-                if premise is not None:
-                    premise_proof = unit_literal_proves(premise)
+        def search(index: int, subst: dict[str, Expr], proof_text: str) -> None:
+            if len(options) >= limit or proof_search_timed_out():
+                return
+            if index >= len(unit_binders):
+                instantiated = substitute_expr(unit_body, subst)
+                literals = raw_clause_literals(instantiated)
+                if len(literals) != 1:
+                    return
+                key = expr_key(literals[0])
+                if key in seen:
+                    return
+                seen.add(key)
+                options.append((literals[0], proof_text))
+                return
+            name, sort = unit_binders[index]
+            candidates = raw_candidate_terms_for_sort(candidate_exprs, sort, local_sorts)
+            for candidate in candidates[:24]:
+                if expr_variables(candidate) & {binder_name for binder_name, _ in unit_binders}:
+                    continue
+                next_subst = dict(subst)
+                next_subst[name] = candidate
+                search(index + 1, next_subst, f"({proof_head(proof_text)} {proof_arg_text(candidate)})")
+
+        search(0, {}, unit_proof)
+        return options
+
+    def residual_guided_unit_resolution_source_options() -> list[tuple[Expr, str, Expr, str]]:
+        if not source_binders:
+            return []
+        source_literals = raw_clause_literals(source_body)
+        if len(source_literals) != 2 or len(target_literals) > 3:
+            return []
+        source_negative_count = sum(1 for literal in source_literals if negative_premise(literal) is not None)
+        if source_negative_count != 1:
+            return []
+        if not any(equality_like_sides(literal) is not None for literal in source_literals if negative_premise(literal) is None):
+            return []
+        source_binder_names = {name for name, _ in source_binders}
+        target_binder_names = {name for name, _sort in target_binders}
+        options: list[tuple[Expr, str, Expr, str]] = []
+        seen: set[str] = set()
+
+        def residual_substitutions(
+            residuals: list[Expr],
+            subst: dict[str, Expr],
+            used_targets: frozenset[int],
+        ) -> Iterable[dict[str, Expr]]:
+            if not residuals:
+                yield subst
+                return
+            literal = residuals[0]
+            for index, target_literal in enumerate(target_literals):
+                if index in used_targets:
+                    continue
+                target_variants = [target_literal]
+                target_sides = equality_like_sides(target_literal)
+                if target_sides is not None:
+                    target_variants.insert(0, equality_like_expr(target_literal, target_sides[1], target_sides[0]))
+                seen_trials: set[tuple[tuple[str, str], ...]] = set()
+                for target_variant in target_variants:
+                    trial = dict(subst)
+                    if not raw_match_literal_mod_equality_symmetry(literal, target_variant, source_binder_names, trial):
+                        continue
+                    flatten_substitution(trial)
+                    if any(expr_variables(value) & source_binder_names for value in trial.values()):
+                        continue
+                    key = tuple(sorted((name, expr_key(value)) for name, value in trial.items()))
+                    if key in seen_trials:
+                        continue
+                    seen_trials.add(key)
+                    yield from residual_substitutions(residuals[1:], trial, used_targets | {index})
+
+        for resolved_index, resolved_literal in enumerate(source_literals):
+            resolved_premise = negative_premise(resolved_literal)
+            if resolved_premise is None:
+                continue
+            residuals = [literal for index, literal in enumerate(source_literals) if index != resolved_index]
+            for residual_subst in residual_substitutions(residuals, {}, frozenset()):
+                candidate_exprs = (
+                    target_body,
+                    substitute_expr(source_body, residual_subst),
+                    substitute_expr(resolved_premise, residual_subst),
+                    unit,
+                )
+                for unit_option, unit_option_proof in unit_instantiation_options(candidate_exprs):
+                    subst = dict(residual_subst)
+                    premise = substitute_expr(resolved_premise, subst)
+                    if not match_expr_with_alpha_instantiation(premise, unit_option, source_binder_names, subst):
+                        continue
+                    flatten_substitution(subst)
+                    if any(name not in subst for name, _sort in source_binders):
+                        continue
+                    if any(
+                        RAW_TPTP_SYNTHETIC_DB_RE.fullmatch(variable) and variable not in target_binder_names
+                        for name, _sort in source_binders
+                        for variable in expr_variables(subst[name])
+                    ):
+                        continue
+                    if any(expr_variables(subst[name]) & source_binder_names for name, _sort in source_binders):
+                        continue
+                    instantiated = substitute_expr(source_body, subst)
+                    if not raw_clause_replay_budget_ok(instantiated, target_body, max_literals=16, max_literal_product=256):
+                        continue
+                    key = expr_key(instantiated)
+                    if key in seen:
+                        continue
+                    instantiated_proof = source_proof
+                    for name, _sort in source_binders:
+                        instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(subst[name])})"
+                    seen.add(key)
+                    options.append((instantiated, instantiated_proof, unit_option, unit_option_proof))
+                    if len(options) >= 32:
+                        return options
+        return options
+
+    try:
+        def try_source_options(all_source_options: list[tuple[Expr, str, Expr, str, Expr | None]]) -> str | None:
+            for source_option, source_option_proof, option_unit_literal, option_unit_proof, option_unit_negative_premise in all_source_options[:32]:
+
+                def source_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
+                    direct = raw_literal_to_clause_proof(source_literal, target_body, source_literal_proof, target_literals, ())
+                    if direct is not None:
+                        return direct
+                    premise = negative_premise(source_literal)
+                    if premise is not None:
+                        premise_proof = raw_literal_direct_transform_proof(option_unit_literal, premise, option_unit_proof, ())
+                        if premise_proof is None and expr_same_mod_alpha(option_unit_literal, premise):
+                            premise_proof = option_unit_proof
+                        if premise_proof is None:
+                            premise_proof = raw_deep_formula_transform_proof(option_unit_literal, premise, option_unit_proof, variable_sorts)
+                        if premise_proof is None:
+                            return None
+                        false_proof = f"({proof_head(source_literal_proof)} {proof_term_text(premise_proof)})"
+                        return raw_false_literal_elimination_proof(
+                            Expr("var", value="vampire_false"),
+                            target_body,
+                            false_proof,
+                        )
+                    if option_unit_negative_premise is None:
+                        return None
+                    premise_proof = source_literal_proves(source_literal, option_unit_negative_premise, source_literal_proof)
                     if premise_proof is None:
                         return None
-                    false_proof = f"({proof_head(source_literal_proof)} {proof_term_text(premise_proof)})"
+                    false_proof = f"({proof_head(option_unit_proof)} {proof_term_text(premise_proof)})"
                     return raw_false_literal_elimination_proof(
                         Expr("var", value="vampire_false"),
                         target_body,
                         false_proof,
                     )
-                if unit_negative_premise is None:
-                    return None
-                premise_proof = source_literal_proves(source_literal, unit_negative_premise, source_literal_proof)
-                if premise_proof is None:
-                    return None
-                false_proof = f"({proof_head(unit_proof)} {proof_term_text(premise_proof)})"
-                return raw_false_literal_elimination_proof(
-                    Expr("var", value="vampire_false"),
-                    target_body,
-                    false_proof,
-                )
 
-            proof = raw_clause_cases_with_handler(source_option, source_option_proof, source_handler)
-            if proof is None:
+                proof = raw_clause_cases_with_handler(source_option, source_option_proof, source_handler)
+                if proof is None:
+                    continue
+                for name, sort in reversed(target_binders):
+                    proof = f"(fun {name} :{sort} => {proof})"
+                return proof
+            return None
+
+        base_source_options: list[tuple[Expr, str, Expr, str, Expr | None]] = []
+        seen_options: set[str] = set()
+        for source_expr, source_expr_proof in [*unit_resolution_source_options(), *source_options]:
+            key = expr_key(source_expr)
+            if key in seen_options:
                 continue
-            for name, sort in reversed(target_binders):
-                proof = f"(fun {name} :{sort} => {proof})"
+            seen_options.add(key)
+            base_source_options.append((source_expr, source_expr_proof, unit_literal, unit_proof, unit_negative_premise))
+        proof = try_source_options(base_source_options)
+        if proof is not None:
             return proof
-        return None
+        residual_source_options: list[tuple[Expr, str, Expr, str, Expr | None]] = []
+        for source_expr, source_expr_proof, unit_option, unit_option_proof in residual_guided_unit_resolution_source_options():
+            key = expr_key(source_expr)
+            if key in seen_options:
+                continue
+            seen_options.add(key)
+            residual_source_options.append((source_expr, source_expr_proof, unit_option, unit_option_proof, negative_premise(unit_option)))
+        return try_source_options(residual_source_options)
     finally:
         if previous_target is None:
             if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
@@ -33461,6 +33686,8 @@ def raw_tptp_quantified_equality_clause_superposition_proof(
     variable_sorts: dict[str, str],
     replay_step: MegalodonReplayStep | None = None,
 ) -> str | None:
+    if proof_search_timed_out():
+        return None
     if len(parents) != 2:
         return None
     first_proposition = propositions_by_name.get(parents[0])
@@ -33484,6 +33711,8 @@ def raw_tptp_quantified_equality_clause_superposition_proof(
         equality_clause: Expr,
         equality_clause_proof: str,
     ) -> str | None:
+        if proof_search_timed_out():
+            return None
         source_options = [
             *raw_replay_substituted_parent_options(source_index, source, source_proof, replay_step, variable_sorts),
             *raw_instantiated_forall_clause_options(source, source_proof, target, equality_clause),
@@ -33497,6 +33726,8 @@ def raw_tptp_quantified_equality_clause_superposition_proof(
         seen_source: set[str] = set()
         unique_source_options: list[tuple[Expr, str]] = []
         for option in source_options:
+            if proof_search_timed_out():
+                return None
             key = expr_key(option[0])
             if key not in seen_source:
                 seen_source.add(key)
@@ -33504,12 +33735,18 @@ def raw_tptp_quantified_equality_clause_superposition_proof(
         seen_equality: set[str] = set()
         unique_equality_options: list[tuple[Expr, str]] = []
         for option in equality_options:
+            if proof_search_timed_out():
+                return None
             key = expr_key(option[0])
             if key not in seen_equality:
                 seen_equality.add(key)
                 unique_equality_options.append(option)
         for source_option, source_option_proof in unique_source_options[:6]:
+            if proof_search_timed_out():
+                return None
             for equality_option, equality_option_proof in unique_equality_options[:6]:
+                if proof_search_timed_out():
+                    return None
                 if not any(equality_like_sides(literal) is not None for literal in raw_clause_literals(equality_option)):
                     continue
                 proof = raw_equality_clause_superposition_proof(
@@ -33537,6 +33774,8 @@ def raw_tptp_quantified_equality_clause_superposition_proof(
         return None
 
     for source_index, equality_index in megalodon_replay_parent_pair_order(parents, replay_step):
+        if proof_search_timed_out():
+            return None
         if source_index == 0:
             proof = replay(0, 1, first, first_name, second, second_name)
         else:
