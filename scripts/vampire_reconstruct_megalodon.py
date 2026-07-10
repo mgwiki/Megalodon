@@ -25203,7 +25203,22 @@ def raw_nested_exists_counterexample_proof(
         return None
     target_text = proof_arg_text(target_negative)
     premise_names = [f"Hprem{index}" for index in range(len(premises))]
-    not_conclusion_name = "HnotConclusion"
+    target_name = fresh_identifier("Htarget", expr_text(source_premise), expr_text(target_negative), negative_proof)
+    not_target_name = fresh_identifier(
+        "HnotTarget",
+        expr_text(source_premise),
+        expr_text(target_negative),
+        negative_proof,
+        target_name,
+    )
+    not_conclusion_name = fresh_identifier(
+        "HnotConclusion",
+        expr_text(source_premise),
+        expr_text(target_negative),
+        negative_proof,
+        target_name,
+        not_target_name,
+    )
 
     def source_body(expr: Expr, index_premise: int, local_sorts: dict[str, str]) -> str | None:
         if expr.kind == "forall" and expr.value is not None and expr.sort is not None:
@@ -25231,7 +25246,7 @@ def raw_nested_exists_counterexample_proof(
         proof, consumed = exists_proof
         if consumed != len(premises):
             return None
-        false_proof = f"(HnotTarget {proof_term_text(proof)})"
+        false_proof = f"({not_target_name} {proof_term_text(proof)})"
         return f"(xm {proof_arg_text(source_conclusion)} {proof_arg_text(source_conclusion)} (fun Hconclusion => Hconclusion) (fun {not_conclusion_name} => ({false_proof} {proof_arg_text(source_conclusion)})))"
 
     source_counterproof = source_body(source_premise, 0, variable_sorts)
@@ -25239,8 +25254,8 @@ def raw_nested_exists_counterexample_proof(
         return None
     return (
         f"(xm {target_text} {target_text} "
-        f"(fun Htarget => Htarget) "
-        f"(fun HnotTarget => ({proof_head(negative_proof)} {proof_term_text(source_counterproof)} {target_text})))"
+        f"(fun {target_name} => {target_name}) "
+        f"(fun {not_target_name} => ({proof_head(negative_proof)} {proof_term_text(source_counterproof)} {target_text})))"
     )
 
 
@@ -25335,6 +25350,23 @@ def raw_cps_exists_counterexample_proof(
     target_components = raw_conjunction_components(target_body_at_source)
     if len(target_components) != len(premises) + 1:
         return None
+    target_text = proof_arg_text(target_exists)
+    target_name = fresh_identifier("Htarget", expr_text(source_premise), expr_text(target_exists), negative_proof)
+    not_target_name = fresh_identifier(
+        "HnotTarget",
+        expr_text(source_premise),
+        expr_text(target_exists),
+        negative_proof,
+        target_name,
+    )
+    not_conclusion_name = fresh_identifier(
+        "HsourceNegativeConclusion",
+        expr_text(source_premise),
+        expr_text(target_exists),
+        negative_proof,
+        target_name,
+        not_target_name,
+    )
 
     if len(binders) == 1 and len(premises) == 2:
         predicate_name, _predicate_sort = binders[0]
@@ -25460,9 +25492,15 @@ def raw_cps_exists_counterexample_proof(
             target_to_source = transform_component(component_premises[0], source_conclusion, "HtargetConclusion")
             if target_to_source is not None:
                 negative_component_count += 1
+                target_conclusion_name = fresh_identifier(
+                    "HtargetConclusion",
+                    expr_text(component),
+                    expr_text(source_conclusion),
+                    not_conclusion_name,
+                )
                 component_proofs[component_index] = (
-                    f"(fun HtargetConclusion :{proof_arg_text(component_premises[0])} => "
-                    f"HsourceNegativeConclusion {proof_term_text(target_to_source)})"
+                    f"(fun {target_conclusion_name} :{proof_arg_text(component_premises[0])} => "
+                    f"{not_conclusion_name} {proof_term_text(target_to_source)})"
                 )
                 continue
 
@@ -25496,7 +25534,7 @@ def raw_cps_exists_counterexample_proof(
     for source_name, _source_sort in reversed(binders):
         exists_proof = f"(fun Q Hexists => Hexists {source_name} {exists_proof})"
 
-    false_from_not_target = f"(HnotTarget {proof_term_text(exists_proof)})"
+    false_from_not_target = f"({not_target_name} {proof_term_text(exists_proof)})"
     conclusion_from_false = raw_false_to_expr_proof(
         false_from_not_target,
         source_conclusion,
@@ -25505,7 +25543,7 @@ def raw_cps_exists_counterexample_proof(
     source_body = (
         f"(xm {proof_arg_text(source_conclusion)} {proof_arg_text(source_conclusion)} "
         f"(fun HsourceConclusion => HsourceConclusion) "
-        f"(fun HsourceNegativeConclusion => {proof_term_text(conclusion_from_false)}))"
+        f"(fun {not_conclusion_name} => {proof_term_text(conclusion_from_false)}))"
     )
     for premise_name, premise in reversed(list(zip(premise_names, premises))):
         source_body = f"(fun {premise_name} :{proof_arg_text(premise)} => {source_body})"
@@ -25519,11 +25557,10 @@ def raw_cps_exists_counterexample_proof(
         target_exists,
         Expr("var", value="False"),
     )
-    target_text = proof_arg_text(target_exists)
     return (
         f"(xm {target_text} {target_text} "
-        f"(fun Htarget => Htarget) "
-        f"(fun HnotTarget => {proof_term_text(target_from_false)}))"
+        f"(fun {target_name} => {target_name}) "
+        f"(fun {not_target_name} => {proof_term_text(target_from_false)}))"
     )
 
 
@@ -39014,14 +39051,22 @@ def raw_quantified_equality_unit_context_superposition_proof(
                 if not hole_replaced:
                     continue
                 context_rewrite = (
+                    f"(vampire_native_eq_transport_set "
+                    f"{proof_arg_text(old_term)} "
+                    f"{proof_arg_text(new_term)} "
                     f"{proof_term_text(oriented_unit_proof)} "
                     f"(fun {hole} :set => {proof_arg_text(context_inst)} = {expr_text(context_with_hole)}) "
-                    f"(fun Q H => H)"
+                    f"(vampire_native_eq_refl_set {proof_arg_text(context_inst)}))"
                 )
-                other_to_context = eq_symmetry_proof(context_to_other, context_inst)
-                proof = eq_transitivity_proof([other_to_context, context_rewrite], expr_text(target_other))
-                if proof is None:
-                    continue
+                other_to_context = native_eq_symmetry_proof(context_to_other, context_inst, other_inst, "set")
+                proof = (
+                    f"(vampire_native_eq_trans_set "
+                    f"{proof_arg_text(target_other)} "
+                    f"{proof_arg_text(context_inst)} "
+                    f"{proof_arg_text(target_context)} "
+                    f"{proof_term_text(other_to_context)} "
+                    f"{proof_term_text(context_rewrite)})"
+                )
                 if target_reversed:
                     proof = eq_symmetry_proof(proof, target_other)
                 if not raw_tptp_replay_proof_is_unsafe("superposition", expr_text(target), proof):
@@ -49972,14 +50017,22 @@ def raw_peirce_cps_exists_ennf_proof(
         return None
     exists_intro = f"(fun Q Hexists => Hexists {witness_name} {proof_term_text(exists_body_proof)})"
     false_from_not_exists = f"({not_exists_name} {proof_term_text(exists_intro)})"
-    target_from_not_exists = raw_false_to_expr_proof(false_from_not_exists, target_var)
+    target_from_not_exists = raw_false_to_expr_proof(
+        false_from_not_exists,
+        target_var,
+        Expr("var", value="False"),
+    )
     source_function = (
         f"(fun {witness_name} :{witness_sort} => "
         f"(fun HsourceComponent :{proof_arg_text(source_component)} => {target_from_not_exists}))"
     )
     source_target = f"(({proof_head(source_proof)} {target_name}) {proof_term_text(source_function)})"
     false_from_not_target = f"({not_target_name} {proof_term_text(source_target)})"
-    exists_from_false = raw_false_to_expr_proof(false_from_not_target, target_exists)
+    exists_from_false = raw_false_to_expr_proof(
+        false_from_not_target,
+        target_exists,
+        Expr("var", value="False"),
+    )
     exists_case = (
         f"(xm {exists_text} {exists_text} "
         f"(fun Hexists => Hexists) "
@@ -50079,7 +50132,11 @@ def raw_tptp_peirce_implication_ennf_proof(
         ]
         not_premise_name = fresh_identifier("HnotPrem", expr_text(premise), expr_text(target), str(premise_index))
         false_from_negated_premise = f"({not_premise_name} {premise_names[premise_index]})"
-        body = raw_false_to_expr_proof(false_from_negated_premise, target_var)
+        body = raw_false_to_expr_proof(
+            false_from_negated_premise,
+            target_var,
+            Expr("var", value="False"),
+        )
         for premise_name, lambda_premise in reversed(list(zip(premise_names, implication_premises))):
             body = f"(fun {premise_name} :{proof_arg_text(lambda_premise)} => {body})"
         source_target = f"({proof_head(parent_at_target)} {proof_term_text(body)})"
@@ -50087,7 +50144,7 @@ def raw_tptp_peirce_implication_ennf_proof(
         return (
             f"(xm {proof_arg_text(premise)} {proof_arg_text(premise)} "
             f"(fun HpremDirect => HpremDirect) "
-            f"(fun {not_premise_name} => {proof_term_text(raw_false_to_expr_proof(contradiction, premise))}))"
+            f"(fun {not_premise_name} => {proof_term_text(raw_false_to_expr_proof(contradiction, premise, Expr('var', value='False')))}))"
         )
 
     component_proofs: list[tuple[Expr, str]] = [(components[negative_index], not_target_name)]
