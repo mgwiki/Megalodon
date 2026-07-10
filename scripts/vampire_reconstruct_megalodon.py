@@ -30734,6 +30734,24 @@ def raw_tptp_forward_demodulation_proof(
         )
         if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
             return proof
+    proof = raw_guarded_forall_true_negative_literal_demodulation_proof(
+        first,
+        target,
+        first_name,
+        second,
+        second_name,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_guarded_forall_true_negative_literal_demodulation_proof(
+        second,
+        target,
+        second_name,
+        first,
+        first_name,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
     proof = raw_tptp_exported_demodulation_rewrite_proof(
         target,
         ((first, first_name), (second, second_name)),
@@ -41445,6 +41463,96 @@ def raw_tptp_nested_reflexive_equality_resolution_proof(
                 delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
         else:
             PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
+def raw_forall_prop_truth_literal(expr: Expr) -> tuple[str, str] | None:
+    binders, body = collect_foralls(expr)
+    if len(binders) != 1:
+        return None
+    name, sort = binders[0]
+    if sort != "prop" or body.kind != "var" or body.value != name:
+        return None
+    return name, sort
+
+
+def raw_guarded_forall_true_negative_literal_demodulation_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    resolver: Expr,
+    resolver_proof: str,
+) -> str | None:
+    resolver_parts = raw_or_parts(collect_foralls(resolver)[1])
+    target_parts = raw_or_parts(collect_foralls(target)[1])
+    if resolver_parts is None or target_parts is None:
+        return None
+    truth_literal: Expr | None = None
+    guard_literal: Expr | None = None
+    for truth_candidate, guard_candidate in (resolver_parts, (resolver_parts[1], resolver_parts[0])):
+        if raw_forall_prop_truth_literal(truth_candidate) is None:
+            continue
+        truth_literal = truth_candidate
+        guard_literal = guard_candidate
+        break
+    if truth_literal is None or guard_literal is None:
+        return None
+    target_component: Expr | None = None
+    for component_candidate, guard_candidate in (target_parts, (target_parts[1], target_parts[0])):
+        if expr_same_mod_alpha(guard_candidate, guard_literal):
+            target_component = component_candidate
+            break
+    if target_component is None:
+        return None
+
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target_component)
+    if len(source_binders) != len(target_binders):
+        return None
+    if any(source_sort != target_sort for (_, source_sort), (_, target_sort) in zip(source_binders, target_binders)):
+        return None
+    opened_source = source_body
+    opened_source_proof = source_proof
+    for (source_name, _source_sort), (target_name, _target_sort) in zip(source_binders, target_binders):
+        opened_source = rename_expr_variables(opened_source, {source_name: target_name})
+        opened_source_proof = f"({proof_head(opened_source_proof)} {target_name})"
+
+    target_literals = raw_clause_literals(target_body)
+    target_text = proof_arg_text(target_body)
+
+    def handler(literal: Expr, literal_proof: str) -> str | None:
+        direct = raw_literal_to_clause_proof(literal, target_body, literal_proof, target_literals, ())
+        if direct is not None:
+            return direct
+        premises, conclusion = split_arrows(literal)
+        if len(premises) == 1 and false_eliminator_expr(conclusion):
+            false_proof = f"({proof_head(literal_proof)} ({proof_head('Htruth')} {proof_arg_text(premises[0])}))"
+            return raw_false_to_expr_proof(false_proof, target_body)
+        return None
+
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+    try:
+        component_proof = raw_clause_cases_with_handler(opened_source, opened_source_proof, handler)
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+    if component_proof is None:
+        return None
+    for name, sort in reversed(target_binders):
+        component_proof = f"(fun {name} :{sort} => {component_proof})"
+    target_text = proof_arg_text(collect_foralls(target)[1])
+    component_intro = raw_or_intro_from_branch(collect_foralls(target)[1], target_component, component_proof)
+    guard_intro = raw_or_intro_from_branch(collect_foralls(target)[1], guard_literal, "Hguard")
+    if component_intro is None or guard_intro is None:
+        return None
+    return (
+        f"({proof_head(resolver_proof)} {target_text} "
+        f"(fun Htruth => {proof_term_text(component_intro)}) "
+        f"(fun Hguard => {proof_term_text(guard_intro)}))"
+    )
 
 
 def raw_tptp_guarded_prop_inconsistency_resolution_proof(
