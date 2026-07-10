@@ -4064,6 +4064,21 @@ def equality_like_sides(expr: Expr) -> tuple[Expr, Expr] | None:
     return None
 
 
+def vampire_eq_prop_reflexivity_proof(expr: Expr) -> str | None:
+    if (
+        expr.kind != "app"
+        or len(expr.args) != 3
+        or expr.args[0].kind != "var"
+        or expr.args[0].value != "vampire_eq_prop"
+    ):
+        return None
+    left, right = expr.args[1], expr.args[2]
+    if not expr_same_mod_alpha(beta_normalize_expr(left), beta_normalize_expr(right)):
+        return None
+    arg = proof_arg_text(left)
+    return f"(vampire_prop_ext {arg} {arg} (fun Hsrc => Hsrc) (fun Htgt => Htgt))"
+
+
 def equality_like_expr(template: Expr, left: Expr, right: Expr) -> Expr:
     if (
         template.kind == "app"
@@ -5256,6 +5271,8 @@ def vampire_db_body_suggests_prop(expr: Expr, variable_sorts: dict[str, str]) ->
         if node.kind != "app" or not node.args:
             return True
         head = node.args[0]
+        if head.kind == "var" and head.value == "vLAM" and len(node.args) >= 2:
+            return all(visit(arg) for arg in node.args[1:])
         if head.kind != "var" or head.value not in {"vOR", "vAND", "vNOT", "vIMP", "vEQ"}:
             return False
         saw_prop_signal = True
@@ -10919,6 +10936,12 @@ def direct_proof_expr(expr: Expr) -> str | None:
         and equality_sides is not None
         and expr_same_mod_alpha(beta_normalize_expr(equality_sides[0]), beta_normalize_expr(equality_sides[1]))
     ):
+        vampire_prop_refl = vampire_eq_prop_reflexivity_proof(conclusion)
+        if vampire_prop_refl is not None:
+            proof = vampire_prop_refl
+            for name, sort in reversed(binders):
+                proof = f"(fun {name} :{sort} => {proof})"
+            return proof
         args = binder_names + ["Q", "H"]
         return f"({' '.join(['fun'] + args + ['=>', 'H'])})"
 
@@ -18788,6 +18811,9 @@ def raw_reflexivity_proof_for_expr(expr: Expr, local_definition_names: set[str] 
     if sides is None:
         return None
     if expr_same_mod_alpha(beta_normalize_expr(sides[0]), beta_normalize_expr(sides[1])):
+        vampire_prop_refl = vampire_eq_prop_reflexivity_proof(expr)
+        if vampire_prop_refl is not None:
+            return vampire_prop_refl
         return "(fun Q H => H)"
     return None
 
@@ -18989,7 +19015,7 @@ def add_missing_raw_tptp_variables(propositions: list[str], variables: dict[str,
 
 def raw_false_literal_elimination_proof(branch: Expr, target: Expr, branch_proof: str) -> str | None:
     if false_eliminator_expr(branch):
-        return f"({proof_head(branch_proof)} {proof_arg_text(target)})"
+        return raw_false_to_expr_proof(branch_proof, target, branch)
     if branch.kind == "var" and branch.value == "vampire_true":
         return None
     sides = equality_like_sides(branch)
@@ -19000,10 +19026,10 @@ def raw_false_literal_elimination_proof(branch: Expr, target: Expr, branch_proof
         true_proof = "(fun Q H => H)"
         if expr_key(left) == expr_key(true_expr) and expr_key(right) == expr_key(false_expr):
             false_proof = f"({proof_head(branch_proof)} (fun R:prop => R) {true_proof})"
-            return f"({false_proof} {proof_arg_text(target)})"
+            return raw_false_to_expr_proof(false_proof, target, false_expr)
         if expr_key(left) == expr_key(false_expr) and expr_key(right) == expr_key(true_expr):
             false_proof = f"(({proof_head(branch_proof)} (fun R:prop => R -> vampire_false) (fun H => H)) {true_proof})"
-            return f"({false_proof} {proof_arg_text(target)})"
+            return raw_false_to_expr_proof(false_proof, target, false_expr)
     premises, conclusion = split_arrows(branch)
     if len(premises) != 1 or not false_eliminator_expr(conclusion):
         return None
@@ -19013,7 +19039,8 @@ def raw_false_literal_elimination_proof(branch: Expr, target: Expr, branch_proof
         premise_proof = direct_proof_expr(premises[0])
     if premise_proof is None:
         return None
-    return f"(({proof_head(branch_proof)} {proof_argument_text(premise_proof)}) {proof_arg_text(target)})"
+    false_proof = f"({proof_head(branch_proof)} {proof_argument_text(premise_proof)})"
+    return raw_false_to_expr_proof(false_proof, target, conclusion)
 
 
 def raw_split_rewrite_proof(source: Expr, target: Expr, source_proof: str, rewrites: tuple[RawSplitRewrite, ...]) -> str | None:
@@ -19291,7 +19318,11 @@ def raw_clause_cases_proof(
     right_target = raw_clause_cases_proof(right, target, target_literals, rewrites, right_name, deep_literals)
     if left_target is None or right_target is None:
         return None
-    return f"({proof_head(source_proof)} {proof_arg_text(target)} (fun {left_name} => {left_target}) (fun {right_name} => {right_target}))"
+    return (
+        f"({proof_head(source_proof)} {proof_arg_text(target)} "
+        f"(fun {left_name} :{proof_arg_text(left)} => {left_target}) "
+        f"(fun {right_name} :{proof_arg_text(right)} => {right_target}))"
+    )
 
 
 def raw_clause_subsumption_transform_proof(
@@ -19974,7 +20005,11 @@ def raw_simple_clause_transform_proof(source: Expr, target: Expr, source_proof: 
     right_target = raw_simple_or_intro_from_branch(target, right, right_name, depth + 1)
     if left_target is None or right_target is None:
         return None
-    return f"({proof_head(source_proof)} {target_text} (fun {left_name} => {left_target}) (fun {right_name} => {right_target}))"
+    return (
+        f"({proof_head(source_proof)} {target_text} "
+        f"(fun {left_name} :{proof_arg_text(left)} => {left_target}) "
+        f"(fun {right_name} :{proof_arg_text(right)} => {right_target}))"
+    )
 
 
 def raw_complementary_literals(left: Expr, right: Expr) -> bool:
@@ -21083,7 +21118,11 @@ def raw_clause_cases_with_handler(
     target_text = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
     if not isinstance(target_text, str):
         return None
-    return f"({proof_head(source_proof)} {target_text} (fun {left_name} => {left_target}) (fun {right_name} => {right_target}))"
+    return (
+        f"({proof_head(source_proof)} {target_text} "
+        f"(fun {left_name} :{proof_arg_text(left)} => {left_target}) "
+        f"(fun {right_name} :{proof_arg_text(right)} => {right_target}))"
+    )
 
 
 def raw_flat_clause_resolution_proof(
@@ -22070,6 +22109,74 @@ def raw_impossible_prop_equality_clause_elimination_proof(
             PROOF_SEARCH_STATE.flat_resolution_target = previous_target
 
 
+def raw_false_from_negated_reflexive_equality_literal(
+    literal: Expr,
+    literal_proof: str,
+) -> tuple[str, Expr] | None:
+    premises, conclusion = split_arrows(literal)
+    if len(premises) != 1 or not false_eliminator_expr(conclusion):
+        return None
+    reflexive = raw_reflexivity_proof_for_expr(premises[0])
+    if reflexive is None:
+        reflexive = direct_proof_expr(premises[0])
+    if reflexive is None:
+        return None
+    return f"({proof_head(literal_proof)} {proof_term_text(reflexive)})", conclusion
+
+
+def raw_negated_reflexive_equality_clause_elimination_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+) -> str | None:
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
+        assert source.value is not None and target.value is not None and target.sort is not None
+        binder = target.value
+        source_body = source.args[0]
+        if source.value != binder:
+            source_body = rename_expr_variables(source_body, {source.value: binder})
+        inner = raw_negated_reflexive_equality_clause_elimination_proof(
+            source_body,
+            target.args[0],
+            f"({proof_head(source_proof)} {binder})",
+        )
+        if inner is None:
+            return None
+        return f"(fun {binder} :{target.sort} => {inner})"
+
+    source_literals = raw_clause_literals(source)
+    target_literals = raw_clause_literals(target)
+    if len(source_literals) <= len(target_literals):
+        return None
+    if not any(raw_false_from_negated_reflexive_equality_literal(literal, "HnegRefl") is not None for literal in source_literals):
+        return None
+
+    target_text = proof_arg_text(target)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+
+    def handler(literal: Expr, literal_proof: str) -> str | None:
+        false_entry = raw_false_from_negated_reflexive_equality_literal(literal, literal_proof)
+        if false_entry is not None:
+            false_proof, false_expr = false_entry
+            return raw_false_to_expr_proof(false_proof, target, false_expr)
+        return raw_literal_to_clause_proof(literal, target, literal_proof, target_literals, ())
+
+    try:
+        return raw_clause_cases_with_handler(
+            source,
+            source_proof,
+            handler,
+            avoid_text="negated_reflexive_equality",
+        )
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_quantified_parent_instantiation_proof(
     source: Expr,
     target: Expr,
@@ -22430,6 +22537,13 @@ def raw_tptp_trivial_inequality_removal_proof(
     )
     if false_clause is not None:
         return false_clause
+    negated_reflexive_clause = raw_negated_reflexive_equality_clause_elimination_proof(
+        ambient_source,
+        ambient_target,
+        raw_tptp_claim_name(parents[0]),
+    )
+    if negated_reflexive_clause is not None:
+        return negated_reflexive_clause
     impossible_disjunct = raw_impossible_prop_equality_disjunct_elimination_proof(
         ambient_source,
         ambient_target,
@@ -23368,10 +23482,14 @@ def raw_negative_formula_transform_proof(
     return raw_build_conjunction_from_component_proofs(target, component_proof)
 
 
-def raw_false_to_expr_proof(false_proof: str, target: Expr) -> str:
+def raw_false_to_expr_proof(false_proof: str, target: Expr, false_expr: Expr | None = None) -> str:
     if target.kind == "forall" and target.value is not None and target.sort is not None:
-        inner = raw_false_to_expr_proof(false_proof, target.args[0])
+        inner = raw_false_to_expr_proof(false_proof, target.args[0], false_expr)
         return f"(fun {target.value} :{target.sort} => {inner})"
+    if false_expr is not None and false_expr.kind == "var" and false_expr.value == "False":
+        if false_eliminator_expr(target):
+            return false_proof
+        return f"((FalseE {proof_term_text(false_proof)}) {proof_arg_text(target)})"
     return f"({proof_head(false_proof)} {proof_arg_text(target)})"
 
 
@@ -27170,12 +27288,37 @@ def raw_tptp_fool_elimination_proof(
     parsed_parent = parse_expr(parent_proposition) if parent_proposition is not None else None
     parsed_target = parse_expr(proposition)
     if parsed_parent is not None and parsed_target is not None:
-        candidate_pairs.insert(0, (ambient_basic_logic_expr(parsed_parent), ambient_basic_logic_expr(parsed_target)))
+        lambda_sort_hints = raw_tptp_step_lambda_sort_hints(replay_step) if replay_step is not None else {}
+
+        def lowered_fool_expr(expr: Expr) -> Expr:
+            surfaced = surface_direct_step_expr(
+                expr,
+                local_sorts,
+                lambda_sort_hints=lambda_sort_hints,
+            )
+            lowered = parse_expr(lower_function_equality_proposition(surfaced, local_sorts))
+            return lowered if lowered is not None else surfaced
+
+        candidate_pairs.insert(
+            0,
+            (
+                ambient_basic_logic_expr(lowered_fool_expr(parsed_parent)),
+                ambient_basic_logic_expr(lowered_fool_expr(parsed_target)),
+            ),
+        )
 
     previous_allow = getattr(PROOF_SEARCH_STATE, "allow_two_sided_equality", False)
     PROOF_SEARCH_STATE.allow_two_sided_equality = True
     try:
         for source, target in candidate_pairs:
+            proof = raw_strip_unused_foralls_transform_proof(
+                source,
+                target,
+                raw_tptp_claim_name(parents[0]),
+                local_sorts,
+            )
+            if proof is not None:
+                return proof
             source_premises, source_conclusion = split_arrows(source)
             target_premises, target_conclusion = split_arrows(target)
             if (
@@ -27187,14 +27330,6 @@ def raw_tptp_fool_elimination_proof(
                 source_premise_proof = direct_proof_expr(source_premises[0])
                 if source_premise_proof is not None:
                     return f"(fun Htarget => {proof_head(raw_tptp_claim_name(parents[0]))} {proof_term_text(source_premise_proof)})"
-            proof = raw_strip_unused_foralls_transform_proof(
-                source,
-                target,
-                raw_tptp_claim_name(parents[0]),
-                local_sorts,
-            )
-            if proof is not None:
-                return proof
             proof = raw_rectify_formula_transform_proof(source, target, raw_tptp_claim_name(parents[0]), local_sorts)
             if proof is not None:
                 return proof
@@ -28123,8 +28258,8 @@ def raw_basic_boolean_implication_proof(
                 continue
             return (
                 f"({proof_head(source_proof)} {target_text} "
-                f"(fun {left_name} => fun P Hleft Hright => {left_elim} {proof_term_text(left_proof)}) "
-                f"(fun {right_name} => fun P Hleft Hright => {right_elim} {proof_term_text(right_proof)}))"
+                f"(fun {left_name} :{proof_arg_text(source_left)} => fun P Hleft Hright => {left_elim} {proof_term_text(left_proof)}) "
+                f"(fun {right_name} :{proof_arg_text(source_right)} => fun P Hleft Hright => {right_elim} {proof_term_text(right_proof)}))"
             )
 
     if source_or is not None:
@@ -28153,11 +28288,11 @@ def raw_basic_boolean_implication_proof(
                     depth + 1,
                 )
                 if left_false is not None:
-                    left_branch = raw_false_to_expr_proof(left_false, target)
+                    left_branch = raw_false_to_expr_proof(left_false, target, Expr("var", value="False"))
                     return (
                         f"({proof_head(source_proof)} {proof_arg_text(target)} "
-                        f"(fun {left_name} => {proof_term_text(left_branch)}) "
-                        f"(fun {right_name} => {proof_term_text(right_to_target)}))"
+                        f"(fun {left_name} :{proof_arg_text(source_left)} => {proof_term_text(left_branch)}) "
+                        f"(fun {right_name} :{proof_arg_text(source_right)} => {proof_term_text(right_to_target)}))"
                     )
         right_false = raw_negated_tautology_false_proof(
             source_right,
@@ -28183,11 +28318,11 @@ def raw_basic_boolean_implication_proof(
                     depth + 1,
                 )
                 if right_false is not None:
-                    right_branch = raw_false_to_expr_proof(right_false, target)
+                    right_branch = raw_false_to_expr_proof(right_false, target, Expr("var", value="False"))
                     return (
                         f"({proof_head(source_proof)} {proof_arg_text(target)} "
-                        f"(fun {left_name} => {proof_term_text(left_to_target)}) "
-                        f"(fun {right_name} => {proof_term_text(right_branch)}))"
+                        f"(fun {left_name} :{proof_arg_text(source_left)} => {proof_term_text(left_to_target)}) "
+                        f"(fun {right_name} :{proof_arg_text(source_right)} => {proof_term_text(right_branch)}))"
                     )
         if false_eliminator_expr(source_left):
             right_name = fresh_identifier("HorRight", expr_text(source), expr_text(target), source_proof)
@@ -29740,6 +29875,50 @@ def raw_equality_clause_resolution_proof(
             direct_resolver = raw_literal_to_clause_proof(resolver_literal, target, resolver_literal_proof, target_literals, ())
             if direct_resolver is not None:
                 return direct_resolver
+            source_premises, source_conclusion = split_arrows(source_literal)
+            if len(source_premises) == 1 and false_eliminator_expr(source_conclusion):
+                premise_proof: str | None
+                if expr_same_mod_alpha(resolver_literal, source_premises[0]):
+                    premise_proof = resolver_literal_proof
+                else:
+                    premise_proof = raw_literal_direct_transform_proof(
+                        resolver_literal,
+                        source_premises[0],
+                        resolver_literal_proof,
+                        (),
+                    )
+                    if premise_proof is None and len(expr_text(resolver_literal)) + len(expr_text(source_premises[0])) <= 3000:
+                        premise_proof = raw_deep_formula_transform_proof(
+                            resolver_literal,
+                            source_premises[0],
+                            resolver_literal_proof,
+                            variable_sorts,
+                        )
+                if premise_proof is not None:
+                    false_proof = f"({proof_head(source_literal_proof)} {proof_term_text(premise_proof)})"
+                    return raw_false_to_expr_proof(false_proof, target, source_conclusion)
+            resolver_premises, resolver_conclusion = split_arrows(resolver_literal)
+            if len(resolver_premises) == 1 and false_eliminator_expr(resolver_conclusion):
+                premise_proof = None
+                if expr_same_mod_alpha(source_literal, resolver_premises[0]):
+                    premise_proof = source_literal_proof
+                else:
+                    premise_proof = raw_literal_direct_transform_proof(
+                        source_literal,
+                        resolver_premises[0],
+                        source_literal_proof,
+                        (),
+                    )
+                    if premise_proof is None and len(expr_text(source_literal)) + len(expr_text(resolver_premises[0])) <= 3000:
+                        premise_proof = raw_deep_formula_transform_proof(
+                            source_literal,
+                            resolver_premises[0],
+                            source_literal_proof,
+                            variable_sorts,
+                        )
+                if premise_proof is not None:
+                    false_proof = f"({proof_head(resolver_literal_proof)} {proof_term_text(premise_proof)})"
+                    return raw_false_to_expr_proof(false_proof, target, resolver_conclusion)
             proof = rewrite_literal_to_target(source_literal, source_literal_proof, resolver_literal, resolver_literal_proof)
             if proof is not None:
                 return proof
@@ -38135,6 +38314,28 @@ def raw_equality_clause_superposition_proof(
             direct_clause = raw_literal_to_clause_proof(clause_literal, target, clause_literal_proof, target_literals, ())
             if direct_clause is not None:
                 return direct_clause
+            source_premises, source_conclusion = split_arrows(source_literal)
+            if len(source_premises) == 1 and false_eliminator_expr(source_conclusion):
+                premise_proof: str | None
+                if expr_same_mod_alpha(clause_literal, source_premises[0]):
+                    premise_proof = clause_literal_proof
+                else:
+                    premise_proof = raw_literal_direct_transform_proof(
+                        clause_literal,
+                        source_premises[0],
+                        clause_literal_proof,
+                        (),
+                    )
+                    if premise_proof is None and len(expr_text(clause_literal)) + len(expr_text(source_premises[0])) <= 3000:
+                        premise_proof = raw_deep_formula_transform_proof(
+                            clause_literal,
+                            source_premises[0],
+                            clause_literal_proof,
+                            variable_sorts,
+                        )
+                if premise_proof is not None:
+                    false_proof = f"({proof_head(source_literal_proof)} {proof_term_text(premise_proof)})"
+                    return raw_false_to_expr_proof(false_proof, target, source_conclusion)
             sides = equality_like_sides(clause_literal)
             if sides is None:
                 return None
@@ -40466,9 +40667,6 @@ def raw_positive_unit_clause_resolution_proof(
             for source_option, source_option_proof, option_unit_literal, option_unit_proof, option_unit_negative_premise in all_source_options[:32]:
 
                 def source_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
-                    direct = raw_literal_to_clause_proof(source_literal, target_body, source_literal_proof, target_literals, ())
-                    if direct is not None:
-                        return direct
                     premise = negative_premise(source_literal)
                     if premise is not None:
                         premise_proof = raw_literal_direct_transform_proof(option_unit_literal, premise, option_unit_proof, ())
@@ -40484,6 +40682,9 @@ def raw_positive_unit_clause_resolution_proof(
                             target_body,
                             false_proof,
                         )
+                    direct = raw_literal_to_clause_proof(source_literal, target_body, source_literal_proof, target_literals, ())
+                    if direct is not None:
+                        return direct
                     if option_unit_negative_premise is None:
                         return None
                     premise_proof = source_literal_proves(source_literal, option_unit_negative_premise, source_literal_proof)
@@ -47961,15 +48162,8 @@ def raw_tptp_instantiated_negative_unit_resolution_proof(
                     target_sort_env,
                 )
                 if unit_proof is not None:
-                    false_proof = f"{proof_head(source_literal_proof)} {proof_term_text(unit_proof)}"
-                    for false_index in false_literal_indices:
-                        introduced = raw_or_intro_literal_at(
-                            target_body,
-                            false_index,
-                            false_proof,
-                        )
-                        if introduced is not None:
-                            return introduced
+                    false_proof = f"({proof_head(source_literal_proof)} {proof_term_text(unit_proof)})"
+                    return raw_false_to_expr_proof(false_proof, target_body, source_conclusion)
             return raw_literal_to_clause_proof(
                 source_literal,
                 target_body,
@@ -48071,6 +48265,23 @@ def raw_tptp_replay_proof(
     proof = raw_prop_equality_truth_table_clause_proof(proposition, variable_sorts)
     if proof is not None:
         return proof
+    if rule == "fool_elimination":
+        previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+        if previous_deadline is not None:
+            PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 3.0)
+        try:
+            proof = raw_tptp_fool_elimination_proof(
+                proposition,
+                parents,
+                propositions_by_name,
+                variable_sorts,
+                replay_step,
+            )
+            if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
+                return proof
+        finally:
+            if previous_deadline is not None:
+                PROOF_SEARCH_STATE.deadline = previous_deadline
     if rule == "superposition":
         proof = raw_guarded_prop_extensionality_fact_superposition_proof(
             proposition,
