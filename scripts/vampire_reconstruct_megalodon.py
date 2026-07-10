@@ -45304,7 +45304,9 @@ def raw_tptp_avatar_split_product_forall_clause_proof(
     target: Expr,
     source_proof: str,
     rewrites: tuple[RawSplitRewrite, ...],
+    split_true_refutations: list[tuple[RawSplitRewrite, str]] | None = None,
 ) -> str | None:
+    split_true_refutations = split_true_refutations or []
     if proof_search_timed_out() or len(expr_text(source)) + len(expr_text(target)) > 10000:
         return None
     target_literals = raw_clause_literals(target)
@@ -45380,7 +45382,15 @@ def raw_tptp_avatar_split_product_forall_clause_proof(
         return raw_false_to_expr_proof(false_proof, target_expr)
 
     def prove_product_literal(source_literal: Expr, literal_proof: str) -> str | None:
-        direct = raw_literal_to_clause_proof(source_literal, target, literal_proof, target_literals, rewrites)
+        direct = raw_literal_to_clause_with_split_refutations(
+            source_literal,
+            target,
+            literal_proof,
+            target_literals,
+            rewrites,
+            [],
+            split_true_refutations,
+        )
         if direct is not None:
             return direct
         source_binders, source_body = collect_foralls(source_literal)
@@ -45397,7 +45407,16 @@ def raw_tptp_avatar_split_product_forall_clause_proof(
             matched_entries.append(matched)
         if len(matched_entries) < 2:
             return None
-        if not all(source_literal_kind(literal, matched_entries) is not None for literal in source_literals):
+        def source_literal_supported(literal: Expr) -> bool:
+            if source_literal_kind(literal, matched_entries) is not None:
+                return True
+            return any(
+                raw_literal_refutation_from_split_true_assumption(literal, "HLit", target, rewrite, proof_name)
+                is not None
+                for rewrite, proof_name in split_true_refutations
+            )
+
+        if not all(source_literal_supported(literal) for literal in source_literals):
             return None
         if sum(1 for _idx, _rw, binders, _body, _src in matched_entries if binders) < 2:
             return None
@@ -45494,6 +45513,16 @@ def raw_tptp_avatar_split_product_forall_clause_proof(
                     if desired_branch is not None:
                         false_proof = f"({not_desired_name} {proof_term_text(desired_branch)})"
                         return false_to(contr_body_at_var, false_proof)
+                    for split, split_proof_name in split_true_refutations:
+                        refuted = raw_literal_refutation_from_split_true_assumption(
+                            branch_literal,
+                            branch_proof,
+                            contr_body_at_var,
+                            split,
+                            split_proof_name,
+                        )
+                        if refuted is not None:
+                            return refuted
                     kind = source_literal_kind(substitute_expr(branch_literal, {}), matched_entries)
                     if kind is None:
                         return None
@@ -45589,6 +45618,84 @@ def raw_tptp_avatar_split_product_forall_clause_proof(
                 delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
         else:
             PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
+def raw_tptp_avatar_split_guarded_product_forall_clause_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rewrites: tuple[RawSplitRewrite, ...],
+) -> str | None:
+    target_literals = raw_clause_literals(target)
+    if len(target_literals) < 3 or len(target_literals) > 8:
+        return None
+    rewrite_by_split = {raw_split_atom_name(rewrite.split): rewrite for rewrite in rewrites}
+    guards: list[tuple[int, RawSplitRewrite]] = []
+    positive_count = 0
+    for index, literal in enumerate(target_literals):
+        split = raw_split_literal_parts(literal)
+        if split is None:
+            continue
+        rewrite = rewrite_by_split.get(split[0])
+        if rewrite is None:
+            continue
+        if split[1]:
+            positive_count += 1
+        else:
+            guards.append((index, rewrite))
+    if not guards or positive_count < 2:
+        return None
+
+    target_text = proof_arg_text(target)
+
+    def build(
+        guard_index: int,
+        refutations: list[tuple[RawSplitRewrite, str]],
+        avoid_text: str,
+    ) -> str | None:
+        if guard_index >= len(guards):
+            return raw_tptp_avatar_split_product_forall_clause_proof(
+                source,
+                target,
+                source_proof,
+                rewrites,
+                split_true_refutations=refutations,
+            )
+        target_index, rewrite = guards[guard_index]
+        split_true_name = fresh_identifier(
+            "Hsplit",
+            expr_text(target),
+            expr_text(rewrite.split),
+            source_proof,
+            avoid_text,
+            str(guard_index),
+        )
+        true_branch = build(
+            guard_index + 1,
+            [*refutations, (rewrite, split_true_name)],
+            f"{avoid_text} {split_true_name}",
+        )
+        if true_branch is None:
+            return None
+        not_split_name = fresh_identifier(
+            "HnotSplit",
+            expr_text(target),
+            expr_text(rewrite.split),
+            source_proof,
+            avoid_text,
+            split_true_name,
+            str(guard_index),
+        )
+        false_branch = raw_or_intro_literal_at(target, target_index, not_split_name)
+        if false_branch is None:
+            return None
+        return (
+            f"(xm {proof_arg_text(rewrite.split)} {target_text} "
+            f"(fun {split_true_name} => {proof_term_text(true_branch)}) "
+            f"(fun {not_split_name} => {proof_term_text(false_branch)}))"
+        )
+
+    return build(0, [], "")
 
 
 def raw_tptp_avatar_split_multi_binder_product_proof(
@@ -45875,6 +45982,14 @@ def raw_tptp_avatar_split_clause_proof(
     )
     if multi_binder_product is not None:
         return multi_binder_product
+    guarded_product = raw_tptp_avatar_split_guarded_product_forall_clause_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+        rewrites,
+    )
+    if guarded_product is not None:
+        return guarded_product
     product_forall = raw_tptp_avatar_split_product_forall_clause_proof(
         source,
         target,
