@@ -46152,7 +46152,7 @@ def raw_find_skolem_application(
     head_args = raw_expr_application_head_args(expr)
     if head_args is not None:
         head, args = head_args
-        if head == symbol and sort_after_arguments(sort, len(args)) == result_sort:
+        if head == symbol and equivalent_sorts(sort_after_arguments(sort, len(args)), result_sort):
             if all(
                 equivalent_sorts(expr_sort(arg, variable_sorts), expected)
                 for arg, expected in zip(args, split_sort_arrows(sort)[:-1])
@@ -46803,6 +46803,155 @@ def raw_tptp_nested_set_skolem_intro_reconstruction(
     return definitions, proof
 
 
+def raw_vampire_exists_predicate(expr: Expr) -> Expr | None:
+    head_args = raw_expr_application_head_args(expr)
+    if head_args is None:
+        return None
+    head, args = head_args
+    if len(args) != 1:
+        return None
+    predicate = args[0]
+    if (
+        predicate.kind != "lambda"
+        or predicate.value is None
+        or predicate.sort is None
+        or not predicate.args
+    ):
+        return None
+    if head != vampire_exists_name_for_sort(predicate.sort):
+        return None
+    return predicate
+
+
+def raw_choice_skolem_definition_body_text(
+    predicate: Expr,
+    skolem_app: Expr,
+    binders: list[tuple[str, str]],
+    symbol_sort: str,
+    choice_sort: str,
+) -> str | None:
+    pieces = split_sort_arrows(symbol_sort)
+    if not pieces:
+        return None
+    head_args = raw_expr_application_head_args(skolem_app)
+    if head_args is None:
+        return None
+    _head, args = head_args
+    if not equivalent_sorts(sort_after_arguments(symbol_sort, len(args)), choice_sort):
+        return None
+    binder_sorts = {name: binder_sort for name, binder_sort in binders}
+    lambda_binders: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for arg, expected_sort in zip(args, pieces[:-1]):
+        if arg.kind != "var" or arg.value is None:
+            return None
+        actual_sort = binder_sorts.get(arg.value)
+        if not equivalent_sorts(actual_sort, expected_sort) or arg.value in seen:
+            return None
+        seen.add(arg.value)
+        lambda_binders.append((arg.value, actual_sort))
+    binder_names = set(binder_sorts)
+    if not (expr_variables(predicate) & (binder_names - {predicate.value})) <= seen:
+        return None
+    body = f"{vampire_choice_name_for_sort(choice_sort)} {proof_arg_text(predicate)}"
+    for name, binder_sort in reversed(lambda_binders):
+        body = f"fun {name} :{binder_sort_text(binder_sort)} => {body}"
+    return body
+
+
+def raw_tptp_nested_choice_skolem_intro_reconstruction(
+    proposition: str,
+    introduced: list[tuple[str, str]],
+    variable_sorts: dict[str, str],
+) -> tuple[dict[str, tuple[str, str]], str] | None:
+    if len(proposition) > 9000:
+        return None
+    expr = parse_expr(proposition)
+    if expr is None:
+        return None
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if len(premises) != 1:
+        return None
+
+    introduced_by_var = {replaced: symbol for replaced, symbol in introduced}
+    local_sorts = {
+        **variable_sorts,
+        **{name: binder_sort for name, binder_sort in binders},
+    }
+    definitions: dict[str, tuple[str, str]] = {}
+    replacements: dict[str, Expr] = {}
+    current_proof = "Hexists"
+    current_formula = premises[0]
+    used = 0
+
+    while True:
+        predicate = raw_vampire_exists_predicate(current_formula)
+        if predicate is None:
+            break
+        replaced = predicate.value
+        assert replaced is not None and predicate.sort is not None
+        symbol = introduced_by_var.get(replaced)
+        if symbol is None:
+            break
+        symbol_sort = variable_sorts.get(symbol)
+        if symbol_sort is None:
+            return None
+        choice_sort = predicate.sort
+        skolem_app = raw_find_skolem_application(
+            conclusion,
+            symbol,
+            symbol_sort,
+            choice_sort,
+            local_sorts,
+        )
+        if skolem_app is None:
+            return None
+        predicate = substitute_expr(predicate, replacements)
+        if equivalent_sorts(choice_sort, "set"):
+            definition_body = raw_skolem_definition_body_text(predicate, skolem_app, binders, symbol_sort)
+            if definition_body is None:
+                return None
+            definitions[symbol] = (symbol_sort, definition_body)
+            current_proof = f"((vampire_exists_set_eps {proof_arg_text(predicate)}) {proof_term_text(current_proof)})"
+        elif equivalent_sorts(choice_sort, "prop"):
+            return None
+        else:
+            definition_body = raw_choice_skolem_definition_body_text(
+                predicate,
+                skolem_app,
+                binders,
+                symbol_sort,
+                choice_sort,
+            )
+            if definition_body is None:
+                return None
+            definitions[symbol] = (symbol_sort, definition_body)
+            current_proof = (
+                f"(({vampire_choice_name_for_sort(choice_sort)}_ax "
+                f"{proof_arg_text(predicate)}) {proof_term_text(current_proof)})"
+            )
+        current_formula = substitute_expr(predicate.args[0], {replaced: skolem_app})
+        replacements[replaced] = skolem_app
+        local_sorts[symbol] = symbol_sort
+        used += 1
+
+    if used < 2:
+        return None
+    target_proof = current_proof
+    if not expr_same_mod_alpha(beta_normalize_expr(current_formula), beta_normalize_expr(conclusion)):
+        transformed = raw_deep_formula_transform_proof(current_formula, conclusion, current_proof, local_sorts)
+        if transformed is None:
+            transformed = raw_skolemised_formula_transform_proof(current_formula, conclusion, current_proof, (), local_sorts)
+        if transformed is None:
+            return None
+        target_proof = transformed
+    proof = f"(fun Hexists => {target_proof})"
+    for name, binder_sort in reversed(binders):
+        proof = f"(fun {name} :{binder_sort_text(binder_sort)} => {proof})"
+    return definitions, proof
+
+
 def raw_tptp_choice_skolem_intro_reconstruction(
     proposition: str,
     symbol: str,
@@ -46897,6 +47046,16 @@ def raw_tptp_skolem_epsilon_reconstructions(
                         continue
                     parent_step = replay_steps.get(parent)
                     if parent_step is None or parent_step.rule != "skolem symbol introduction":
+                        continue
+                    reconstructed_nested_choice = raw_tptp_nested_choice_skolem_intro_reconstruction(
+                        parent_step.proposition,
+                        all_introduced,
+                        variable_sorts,
+                    )
+                    if reconstructed_nested_choice is not None:
+                        step_definitions, proof = reconstructed_nested_choice
+                        definitions.update(step_definitions)
+                        intro_proofs[parent_claim] = proof
                         continue
                     reconstructed_nested = raw_tptp_nested_set_skolem_intro_reconstruction(
                         parent_step.proposition,
