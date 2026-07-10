@@ -33733,7 +33733,24 @@ def raw_tptp_extra_formula_expr(
     variable_sorts: dict[str, str],
     lambda_sort_hints: dict[str, str] | None = None,
 ) -> Expr | None:
+    proposition = fields.get(f"{key}_proposition")
     db_formula = fields.get(f"{key}_db_indices")
+    if (
+        proposition is not None
+        and (
+            db_formula is None
+            or (
+                RAW_TPTP_SYNTHETIC_DB_RE.search(db_formula) is None
+                and "vLAM" not in db_formula
+                and "^[" not in db_formula
+            )
+        )
+    ):
+        expr = parse_expr(proposition)
+        if expr is not None:
+            expr = surface_direct_step_expr(expr, variable_sorts, lambda_sort_hints=lambda_sort_hints)
+            lowered = parse_expr(lower_function_equality_proposition(expr, variable_sorts))
+            return lowered if lowered is not None else expr
     if db_formula is not None:
         db_proposition = tptp_formula_to_megalodon_proposition(db_formula, variable_sorts)
         if db_proposition is not None:
@@ -33742,13 +33759,13 @@ def raw_tptp_extra_formula_expr(
                 expr = surface_direct_step_expr(expr, variable_sorts, lambda_sort_hints=lambda_sort_hints)
                 lowered = parse_expr(lower_function_equality_proposition(expr, variable_sorts))
                 return lowered if lowered is not None else expr
-    proposition = fields.get(f"{key}_proposition")
     if proposition is not None:
         expr = parse_expr(proposition)
         if expr is None:
             return None
         expr = surface_direct_step_expr(expr, variable_sorts, lambda_sort_hints=lambda_sort_hints)
-        return parse_expr(lower_function_equality_proposition(expr, variable_sorts))
+        lowered = parse_expr(lower_function_equality_proposition(expr, variable_sorts))
+        return lowered if lowered is not None else expr
     formula = fields.get(key)
     if formula is None:
         return None
@@ -34360,6 +34377,55 @@ def raw_instantiated_clause_from_exported_literal(
         if value is None:
             return None
         instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(value)})"
+    return instantiated, instantiated_proof
+
+
+def raw_exported_parent_substitution(
+    fields: dict[str, str],
+    parent_index: int,
+    binders: list[tuple[str, str]],
+    variable_sorts: dict[str, str],
+) -> dict[str, Expr] | None:
+    raw_substitution = fields.get(f"parent_{parent_index}_substitution")
+    if raw_substitution is None:
+        return None
+    subst: dict[str, Expr] = {}
+    binder_names = [name for name, _sort in binders]
+    local_sorts = {**variable_sorts, **dict(binders)}
+    for match in re.finditer(r"(?P<left>[A-Za-z_]*[0-9]+)\s*->\s*(?P<right>[^,\]]+)", raw_substitution):
+        left = match.group("left").strip()
+        right = match.group("right").strip()
+        if left.isdigit():
+            index = int(left)
+            if index >= len(binder_names):
+                return None
+            left = binder_names[index]
+        value = tptp_term_to_expr(right, local_sorts)
+        if value is None:
+            value = parse_expr(right)
+        if value is None:
+            return None
+        subst[left] = surface_direct_step_expr(value, local_sorts)
+    if not subst:
+        return None
+    return subst
+
+
+def raw_instantiated_clause_from_exported_parent_substitution(
+    clause: Expr,
+    clause_proof: str,
+    fields: dict[str, str],
+    parent_index: int,
+    variable_sorts: dict[str, str] | None = None,
+) -> tuple[Expr, str] | None:
+    binders, body = collect_foralls(clause)
+    subst = raw_exported_parent_substitution(fields, parent_index, binders, variable_sorts or {})
+    if subst is None or any(name not in subst for name, _sort in binders):
+        return None
+    instantiated = flatten_applications(substitute_expr(body, subst))
+    instantiated_proof = clause_proof
+    for name, _sort in binders:
+        instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(subst[name])})"
     return instantiated, instantiated_proof
 
 
@@ -35108,24 +35174,40 @@ def raw_tptp_exported_two_literal_resolution_proof(
             *raw_tptp_extra_lambda_exprs(fields, "other_parent", extra_sorts),
             *raw_tptp_extra_lambda_exprs(fields, "conclusion", extra_sorts),
         )
-        selected_clause = raw_instantiated_clause_from_exported_literal(
+        selected_clause = raw_instantiated_clause_from_exported_parent_substitution(
             parsed_parents[selected_parent][0],
             parsed_parents[selected_parent][1],
-            selected_literal,
-            selected_substituted,
-            target_binders,
-            target_body,
+            fields,
+            selected_parent,
             extra_sorts,
         )
-        other_clause = raw_instantiated_clause_from_exported_literal(
+        if selected_clause is None:
+            selected_clause = raw_instantiated_clause_from_exported_literal(
+                parsed_parents[selected_parent][0],
+                parsed_parents[selected_parent][1],
+                selected_literal,
+                selected_substituted,
+                target_binders,
+                target_body,
+                extra_sorts,
+            )
+        other_clause = raw_instantiated_clause_from_exported_parent_substitution(
             parsed_parents[other_parent][0],
             parsed_parents[other_parent][1],
-            other_literal,
-            other_substituted,
-            target_binders,
-            target_body,
+            fields,
+            other_parent,
             extra_sorts,
         )
+        if other_clause is None:
+            other_clause = raw_instantiated_clause_from_exported_literal(
+                parsed_parents[other_parent][0],
+                parsed_parents[other_parent][1],
+                other_literal,
+                other_substituted,
+                target_binders,
+                target_body,
+                extra_sorts,
+            )
         if selected_clause is not None and other_clause is not None:
             source, source_proof = selected_clause
             resolver, resolver_proof = other_clause
@@ -35383,15 +35465,23 @@ def raw_tptp_equality_factoring_proof(
         other_substituted = raw_tptp_extra_formula_expr(fields, "other_substituted", extra_sorts, lambda_sort_hints)
         if selected_substituted is None or other_substituted is None:
             continue
-        selected_clause = raw_instantiated_clause_from_exported_literal(
+        selected_clause = raw_instantiated_clause_from_exported_parent_substitution(
             parent,
             parent_proof,
-            selected_literal_index,
-            selected_substituted,
-            target_binders,
-            target_body,
+            fields,
+            0,
             extra_sorts,
         )
+        if selected_clause is None:
+            selected_clause = raw_instantiated_clause_from_exported_literal(
+                parent,
+                parent_proof,
+                selected_literal_index,
+                selected_substituted,
+                target_binders,
+                target_body,
+                extra_sorts,
+            )
         if selected_clause is None:
             continue
         source_body, source_body_proof = selected_clause
@@ -41376,6 +41466,7 @@ def raw_tptp_selected_literal_subsumption_resolution_proof(
                 opened_proof = f"({proof_head(opened_proof)} {proof_arg_text(replacement)})"
             opened = substitute_expr(opened, prefix_subst)
         avoid = {name for name, _ in target_binders}
+        residual_binders: list[tuple[str, str, Expr]] = []
         while opened.kind == "forall" and opened.value is not None and opened.sort is not None:
             replacement = resolved_replacement(opened.value, use_substitution)
             if replacement is None:
@@ -41383,8 +41474,14 @@ def raw_tptp_selected_literal_subsumption_resolution_proof(
             if replacement is None:
                 return None
             shared_instantiations.setdefault(opened.value, replacement)
-            opened = substitute_expr(opened.args[0], {opened.value: replacement})
+            residual_binders.append((opened.value, opened.sort, replacement))
             opened_proof = f"({proof_head(opened_proof)} {proof_arg_text(replacement)})"
+            opened = opened.args[0]
+        if residual_binders:
+            opened = substitute_expr(
+                opened,
+                {source_name: replacement for source_name, _source_sort, replacement in residual_binders},
+            )
         return opened, opened_proof
 
     source_opened = open_parent(*parsed[selected_parent_index], use_substitution=False)
@@ -51289,13 +51386,31 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     PROOF_SEARCH_STATE.deadline = proof_search_now() + raw_tptp_replay_seconds_for_rule(rule)
                     try:
                         if step_info is not None:
-                            replay_proof = raw_tptp_replay_proof_from_step(
-                                step_info,
-                                proposition,
-                                replay_parents,
-                                propositions_by_name,
-                                variable_sorts,
-                            )
+                            if (
+                                step_info.proposition
+                                and step_info.proposition != proposition
+                                and canonical_proposition(use_ambient_basic_logic_text(step_info.proposition))
+                                == canonical_proposition(proposition)
+                                and any(
+                                    kind in {"literal", "two_literal_rewrite"}
+                                    for kind, _fields in step_info.extras
+                                )
+                            ):
+                                replay_proof = raw_tptp_replay_proof_from_step(
+                                    step_info,
+                                    step_info.proposition,
+                                    replay_parents,
+                                    exported_step_propositions_by_name,
+                                    variable_sorts,
+                                )
+                            if replay_proof is None:
+                                replay_proof = raw_tptp_replay_proof_from_step(
+                                    step_info,
+                                    proposition,
+                                    replay_parents,
+                                    propositions_by_name,
+                                    variable_sorts,
+                                )
                             if (
                                 replay_proof is None
                                 and step_info.proposition
