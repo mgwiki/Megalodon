@@ -48235,8 +48235,11 @@ def raw_tptp_replay_proof(
             if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
                 return proof
             return None
-        if rule in {"ennf_transformation", "nnf_transformation"} and raw_tptp_quantified_eq_prop_disjunction_ennf_needs_fallback(
-            proposition
+        has_rich_replay_metadata = replay_step is not None and bool(replay_step.extras)
+        if (
+            not has_rich_replay_metadata
+            and rule in {"ennf_transformation", "nnf_transformation"}
+            and raw_tptp_quantified_eq_prop_disjunction_ennf_needs_fallback(proposition)
         ):
             return None
         previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
@@ -48261,7 +48264,10 @@ def raw_tptp_replay_proof(
                     if (
                         proof is None
                         and rule in {"ennf_transformation", "nnf_transformation"}
-                        and raw_tptp_peirce_prop_binder_ennf_candidate(source_expr, target_expr)
+                        and (
+                            has_rich_replay_metadata
+                            or raw_tptp_peirce_prop_binder_ennf_candidate(source_expr, target_expr)
+                        )
                     ):
                         proof = raw_implication_to_ennf_or_proof(
                             source_expr,
@@ -48270,7 +48276,10 @@ def raw_tptp_replay_proof(
                             variable_sorts,
                         )
             if rule in {"ennf_transformation", "nnf_transformation"}:
-                if raw_tptp_quantified_eq_prop_disjunction_ennf_needs_fallback(proposition):
+                if (
+                    not has_rich_replay_metadata
+                    and raw_tptp_quantified_eq_prop_disjunction_ennf_needs_fallback(proposition)
+                ):
                     proof = None
                 else:
                     if proof is None and len(parents) == 1 and len(proposition) <= 512:
@@ -50686,7 +50695,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if claim_name in seen_claims:
             continue
         seen_claims.add(claim_name)
-        fallback_axiom = raw_tptp_entry_is_fallback_axiom(rule, proposition)
+        fallback_axiom = standard_tptp_proof and raw_tptp_entry_is_fallback_axiom(rule, proposition)
         if role not in {"axiom", "definition", "negated_conjecture"} and not trusted_definition and not fallback_axiom:
             continue
         rule_text = rule or "input"
@@ -50773,7 +50782,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if (
             role in {"axiom", "definition", "negated_conjecture"}
             or trusted_definition
-            or raw_tptp_entry_is_fallback_axiom(rule, proposition)
+            or (standard_tptp_proof and raw_tptp_entry_is_fallback_axiom(rule, proposition))
         ):
             continue
         if role == "conjecture":
