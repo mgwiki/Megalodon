@@ -39886,6 +39886,127 @@ def raw_tptp_explosive_implication_ennf_proof(
     return result
 
 
+def raw_tptp_peirce_implication_ennf_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parents) != 1:
+        return None
+    parent_proposition = propositions_by_name.get(parents[0])
+    source = parse_expr(parent_proposition) if parent_proposition is not None else None
+    target = parse_expr(proposition)
+    if source is None or target is None:
+        return None
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if len(source_binders) != len(target_binders) or len(target_binders) != 1:
+        return None
+    (source_name, source_sort), (target_name, target_sort) = source_binders[0], target_binders[0]
+    if source_sort != "prop" or target_sort != "prop":
+        return None
+    if source_name != target_name:
+        source_body = rename_expr_variables(source_body, {source_name: target_name})
+    target_var = Expr("var", value=target_name)
+    source_premises, source_conclusion = split_arrows(source_body)
+    if len(source_premises) != 1 or not expr_same_mod_alpha(source_conclusion, target_var):
+        return None
+    implication_premises, implication_conclusion = split_arrows(source_premises[0])
+    if not implication_premises or len(implication_premises) > 5 or not expr_same_mod_alpha(implication_conclusion, target_var):
+        return None
+    target_or = raw_or_parts(target_body)
+    if target_or is None:
+        return None
+    if expr_same_mod_alpha(target_or[0], target_var):
+        positive_on_left = True
+        conjunction_target = target_or[1]
+    elif expr_same_mod_alpha(target_or[1], target_var):
+        positive_on_left = False
+        conjunction_target = target_or[0]
+    else:
+        return None
+    components = raw_conjunction_components(conjunction_target)
+    if len(components) != len(implication_premises) + 1:
+        return None
+    negative_target = Expr("arrow", args=(target_var, Expr("var", value="False")))
+    negative_index = next(
+        (index for index, component in enumerate(components) if expr_same_mod_alpha(component, negative_target)),
+        None,
+    )
+    if negative_index is None:
+        return None
+    remaining_components = [component for index, component in enumerate(components) if index != negative_index]
+    local_sorts = {**variable_sorts, target_name: target_sort}
+    parent_at_target = f"({raw_tptp_claim_name(parents[0])} {target_name})"
+    not_target_name = fresh_identifier("HnotTarget", expr_text(source), expr_text(target))
+
+    def source_premise_proof(premise_index: int, premise: Expr) -> str:
+        premise_names = [
+            fresh_identifier(f"Hprem{index}", expr_text(premise), expr_text(target), str(premise_index))
+            for index, _premise in enumerate(implication_premises)
+        ]
+        not_premise_name = fresh_identifier("HnotPrem", expr_text(premise), expr_text(target), str(premise_index))
+        false_from_negated_premise = f"({not_premise_name} {premise_names[premise_index]})"
+        body = raw_false_to_expr_proof(false_from_negated_premise, target_var)
+        for premise_name, lambda_premise in reversed(list(zip(premise_names, implication_premises))):
+            body = f"(fun {premise_name} :{proof_arg_text(lambda_premise)} => {body})"
+        source_target = f"({proof_head(parent_at_target)} {proof_term_text(body)})"
+        contradiction = f"({not_target_name} {proof_term_text(source_target)})"
+        return (
+            f"(xm {proof_arg_text(premise)} {proof_arg_text(premise)} "
+            f"(fun HpremDirect => HpremDirect) "
+            f"(fun {not_premise_name} => {proof_term_text(raw_false_to_expr_proof(contradiction, premise))}))"
+        )
+
+    component_proofs: list[tuple[Expr, str]] = [(components[negative_index], not_target_name)]
+    used_premises: set[int] = set()
+    for component in remaining_components:
+        matched: tuple[int, str] | None = None
+        for premise_index, premise in enumerate(implication_premises):
+            if premise_index in used_premises:
+                continue
+            premise_proof = source_premise_proof(premise_index, premise)
+            transformed = raw_classical_implication_to_or_transform_proof(premise, component, premise_proof)
+            if transformed is None:
+                transformed = raw_deep_formula_transform_proof(premise, component, premise_proof, local_sorts)
+            if transformed is None:
+                transformed = raw_clause_transform_proof(premise, component, premise_proof)
+            if transformed is None:
+                continue
+            matched = (premise_index, transformed)
+            break
+        if matched is None:
+            return None
+        used_premises.add(matched[0])
+        component_proofs.append((component, matched[1]))
+
+    remaining = list(component_proofs)
+
+    def component_proof(component: Expr) -> str | None:
+        for index, (candidate, proof) in enumerate(remaining):
+            if expr_same_mod_alpha(candidate, component):
+                remaining.pop(index)
+                return proof
+        return None
+
+    right_branch = raw_build_conjunction_from_component_proofs(conjunction_target, component_proof)
+    if right_branch is None:
+        return None
+    positive_intro = raw_or_left_intro(target_body, "Htarget") if positive_on_left else raw_or_right_intro(target_body, "Htarget")
+    negative_intro = raw_or_right_intro(target_body, right_branch) if positive_on_left else raw_or_left_intro(target_body, right_branch)
+    if positive_intro is None or negative_intro is None:
+        return None
+    proof = (
+        f"(xm {proof_arg_text(target_var)} {proof_arg_text(target_body)} "
+        f"(fun Htarget => {proof_term_text(positive_intro)}) "
+        f"(fun {not_target_name} => {proof_term_text(negative_intro)}))"
+    )
+    for name, sort in reversed(target_binders):
+        proof = f"(fun {name} :{sort} => {proof})"
+    return proof
+
+
 def raw_tptp_quantified_eq_prop_disjunction_ennf_needs_fallback(proposition: str) -> bool:
     if "vampire_eq_prop" not in proposition:
         return False
@@ -40089,15 +40210,21 @@ def raw_tptp_trusted_definition_rewrites(
         definition = raw_trusted_predicate_definition_parts(parent_expr)
         if definition is None:
             continue
-        _binders, split, component = definition
+        binders, split, component = definition
         parent_name = raw_tptp_claim_name(parent)
         suffix = "_local" if local else ""
+        binder_args = " ".join(name for name, _sort in binders)
+        split_to_component = f"{parent_name}_split_to_component{suffix}"
+        component_to_split = f"{parent_name}_component_to_split{suffix}"
+        if binder_args:
+            split_to_component = f"({split_to_component} {binder_args})"
+            component_to_split = f"({component_to_split} {binder_args})"
         rewrites.append(
             RawSplitRewrite(
                 split,
                 component,
-                f"{parent_name}_split_to_component{suffix}",
-                f"{parent_name}_component_to_split{suffix}",
+                split_to_component,
+                component_to_split,
             )
         )
     return tuple(rewrites)
@@ -43551,6 +43678,13 @@ def raw_tptp_replay_proof(
                 if raw_tptp_quantified_eq_prop_disjunction_ennf_needs_fallback(proposition):
                     proof = None
                 else:
+                    if proof is None:
+                        proof = raw_tptp_peirce_implication_ennf_proof(
+                            proposition,
+                            parents,
+                            propositions_by_name,
+                            variable_sorts,
+                        )
                     if proof is None:
                         proof = raw_tptp_flattened_forall_implication_ennf_proof(
                             proposition,
