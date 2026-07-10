@@ -31287,7 +31287,7 @@ def raw_two_sided_equality_transform_proof(
     target_sides = equality_like_sides(target)
     if source_sides is None or target_sides is None:
         return None
-    equality_sort = "prop" if source.kind == "app" and source.args[0].kind == "var" and source.args[0].value == "vampire_eq_prop" else "set"
+    equality_sort = raw_equality_literal_transport_sort(source, source_sides, variable_sorts)
     symmetry = (
         eq_symmetry_proof(source_proof, source_sides[0], source_sides[1])
         if source.kind == "eq"
@@ -31681,6 +31681,19 @@ def raw_equality_transport_sort(left: Expr, right: Expr, variable_sorts: dict[st
     return expr_sort(left, known_sorts) or expr_sort(right, known_sorts) or "set"
 
 
+def raw_equality_literal_transport_sort(
+    equality: Expr,
+    sides: tuple[Expr, Expr],
+    variable_sorts: dict[str, str],
+) -> str:
+    if equality.kind == "app" and equality.args and equality.args[0].kind == "var":
+        if equality.args[0].value == "vampire_eq_prop":
+            return "prop"
+        if equality.args[0].value == "vampire_eq_set":
+            return "set"
+    return raw_equality_transport_sort(sides[0], sides[1], variable_sorts)
+
+
 def raw_equality_rewrite_clause_proof(
     source: Expr,
     target: Expr,
@@ -31763,7 +31776,7 @@ def raw_equality_clause_resolution_proof(
         sides = equality_like_sides(equality_literal)
         if sides is None:
             return None
-        equality_sort = raw_equality_transport_sort(sides[0], sides[1], variable_sorts)
+        equality_sort = raw_equality_literal_transport_sort(equality_literal, sides, variable_sorts)
         for replaced, transported in raw_equality_rewrite_clause_steps(
             literal,
             literal_proof,
@@ -32311,7 +32324,11 @@ def raw_quantified_parent_equality_rewrite_clause_proof(
                 equality_instance = equality_proof
                 for name, _ in equality_binders:
                     equality_instance = f"({proof_head(equality_instance)} {proof_arg_text(trial[name])})"
-                instantiated_sort = raw_equality_transport_sort(old_subterm, new_subterm, local_sorts)
+                instantiated_sort = (
+                    "prop"
+                    if equality_rewrites_propositions
+                    else raw_equality_transport_sort(old_subterm, new_subterm, local_sorts)
+                )
                 if reverse:
                     equality_instance = (
                         eq_symmetry_proof(equality_instance, new_subterm, old_subterm)
@@ -32532,7 +32549,7 @@ def raw_instantiated_quantified_equality_rewrite_clause_proof(
                     if transformed is not None:
                         return transformed
             continue
-        equality_sort = raw_equality_transport_sort(equality_sides[0], equality_sides[1], variable_sorts)
+        equality_sort = raw_equality_literal_transport_sort(equality_body, equality_sides, variable_sorts)
         native_equality = equality_body.kind == "eq"
         for old_side, new_side, side_proof in (
             (equality_sides[0], equality_sides[1], equality_proof),
