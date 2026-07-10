@@ -30752,6 +30752,24 @@ def raw_tptp_forward_demodulation_proof(
     )
     if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
         return proof
+    proof = raw_guarded_prop_equality_fact_demodulation_proof(
+        first,
+        target,
+        first_name,
+        second,
+        second_name,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_guarded_prop_equality_fact_demodulation_proof(
+        second,
+        target,
+        second_name,
+        first,
+        first_name,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
     proof = raw_tptp_exported_demodulation_rewrite_proof(
         target,
         ((first, first_name), (second, second_name)),
@@ -41553,6 +41571,107 @@ def raw_guarded_forall_true_negative_literal_demodulation_proof(
         f"(fun Htruth => {proof_term_text(component_intro)}) "
         f"(fun Hguard => {proof_term_text(guard_intro)}))"
     )
+
+
+def raw_guarded_prop_equality_fact_demodulation_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    fact: Expr,
+    fact_proof: str,
+) -> str | None:
+    source_parts = raw_or_parts(collect_foralls(source)[1])
+    target_body = collect_foralls(target)[1]
+    target_parts = raw_or_parts(target_body)
+    fact_parts = raw_or_parts(collect_foralls(fact)[1])
+    if source_parts is None or target_parts is None or fact_parts is None:
+        return None
+
+    for source_quant, source_guard in (source_parts, (source_parts[1], source_parts[0])):
+        for fact_atom, fact_guard in (fact_parts, (fact_parts[1], fact_parts[0])):
+            if not expr_same_mod_alpha(source_guard, fact_guard):
+                continue
+            for target_quant, target_guard in (target_parts, (target_parts[1], target_parts[0])):
+                if not expr_same_mod_alpha(source_guard, target_guard):
+                    continue
+                source_binders, source_inner = collect_foralls(source_quant)
+                target_binders, target_inner = collect_foralls(target_quant)
+                if len(source_binders) != 1 or len(target_binders) != 1:
+                    continue
+                source_name, source_sort = source_binders[0]
+                target_name, target_sort = target_binders[0]
+                if source_sort != "prop" or target_sort != "prop":
+                    continue
+                source_inner = rename_expr_variables(source_inner, {source_name: target_name})
+                source_literals = raw_clause_literals(source_inner)
+                target_literals = raw_clause_literals(target_inner)
+                if len(source_literals) != 2 or len(target_literals) != 2:
+                    continue
+                target_var = Expr("var", value=target_name)
+                for source_component in source_literals:
+                    if not any(expr_same_mod_alpha(source_component, target_literal) for target_literal in target_literals):
+                        continue
+                    source_equality = next(
+                        (literal for literal in source_literals if not expr_same_mod_alpha(literal, source_component)),
+                        None,
+                    )
+                    if source_equality is None:
+                        continue
+                    sides = equality_like_sides(source_equality)
+                    if sides is None:
+                        continue
+                    if expr_same_mod_alpha(sides[0], fact_atom) and expr_same_mod_alpha(sides[1], target_var):
+                        prop_from_eq = f"({proof_head('Heq')} (fun {target_name}Prop :prop => {target_name}Prop) Hfact)"
+                    elif expr_same_mod_alpha(sides[1], fact_atom) and expr_same_mod_alpha(sides[0], target_var):
+                        prop_from_eq = (
+                            f"(({proof_head('Heq')} "
+                            f"(fun {target_name}Prop :prop => {target_name}Prop -> {proof_arg_text(target_var)}) "
+                            f"(fun H => H)) Hfact)"
+                        )
+                    else:
+                        continue
+                    var_intro = raw_or_intro_literal_at(target_inner, 0, prop_from_eq)
+                    if not expr_same_mod_alpha(target_literals[0], target_var):
+                        var_index = next(
+                            (index for index, literal in enumerate(target_literals) if expr_same_mod_alpha(literal, target_var)),
+                            None,
+                        )
+                        if var_index is None:
+                            continue
+                        var_intro = raw_or_intro_literal_at(target_inner, var_index, prop_from_eq)
+                    component_index = next(
+                        (
+                            index
+                            for index, literal in enumerate(target_literals)
+                            if expr_same_mod_alpha(literal, source_component)
+                        ),
+                        None,
+                    )
+                    if component_index is None:
+                        continue
+                    component_intro = raw_or_intro_literal_at(target_inner, component_index, "Hcomponent")
+                    if var_intro is None or component_intro is None:
+                        continue
+                    forall_proof = (
+                        f"(fun {target_name} :prop => "
+                        f"(({proof_head('Hforall')} {target_name}) {proof_arg_text(target_inner)} "
+                        f"(fun Hcomponent => {proof_term_text(component_intro)}) "
+                        f"(fun Heq => {proof_term_text(var_intro)})))"
+                    )
+                    target_component_intro = raw_or_intro_from_branch(target_body, target_quant, forall_proof)
+                    target_guard_intro = raw_or_intro_from_branch(target_body, target_guard, "Hguard")
+                    source_guard_intro = raw_or_intro_from_branch(target_body, source_guard, "HsourceGuard")
+                    if target_component_intro is None or target_guard_intro is None or source_guard_intro is None:
+                        continue
+                    return (
+                        f"({proof_head(fact_proof)} {proof_arg_text(target_body)} "
+                        f"(fun Hfact => "
+                        f"({proof_head(source_proof)} {proof_arg_text(target_body)} "
+                        f"(fun Hforall => {proof_term_text(target_component_intro)}) "
+                        f"(fun HsourceGuard => {proof_term_text(source_guard_intro)}))) "
+                        f"(fun Hguard => {proof_term_text(target_guard_intro)}))"
+                    )
+    return None
 
 
 def raw_tptp_guarded_prop_inconsistency_resolution_proof(
