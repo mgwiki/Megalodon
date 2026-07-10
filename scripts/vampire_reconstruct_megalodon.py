@@ -51226,7 +51226,8 @@ def raw_tptp_normal_form_allows_generic_replay(
         has_large_formula = any(len(text) > 700 for text in formula_texts)
         has_huge_formula = any(len(text) > 1500 for text in formula_texts)
         has_exists = any("vampire_exists_" in text for text in formula_texts)
-        if has_prop_continuation and has_large_formula and (pair_count > 1 or (has_exists and has_huge_formula)):
+        # Shallow exported normal-form pairs often replay quickly as a single parent transform.
+        if has_prop_continuation and has_large_formula and (pair_count > 2 or (has_exists and has_huge_formula and pair_count > 2)):
             return False
     return True
 
