@@ -4195,6 +4195,19 @@ def equality_like_sides(expr: Expr) -> tuple[Expr, Expr] | None:
     return None
 
 
+def expr_mentions_equality(expr: Expr) -> bool:
+    if expr.kind == "eq":
+        return True
+    if (
+        expr.kind == "app"
+        and expr.args
+        and expr.args[0].kind == "var"
+        and expr.args[0].value in {"vampire_eq_set", "vampire_eq_prop"}
+    ):
+        return True
+    return any(expr_mentions_equality(arg) for arg in expr.args)
+
+
 def vampire_eq_prop_reflexivity_proof(expr: Expr) -> str | None:
     if (
         expr.kind != "app"
@@ -23450,11 +23463,48 @@ def raw_native_equality_to_vampire_eq_set_proof(source: Expr, target: Expr, sour
         return None
 
     hole = fresh_identifier("zz", expr_text(target_body), source_proof)
+    ignored = fresh_identifier("zz_ignored", expr_text(target_body), source_proof, hole)
     body_proof = (
         f"({proof_head(equality_proof)} "
-        f"(fun {hole} :set => vampire_eq_set {proof_arg_text(target_sides[0])} {hole}) "
+        f"(fun {hole} {ignored} :set => vampire_eq_set {proof_arg_text(target_sides[0])} {hole}) "
         f"(fun Q H => H))"
     )
+    for name, sort in reversed(target_binders):
+        body_proof = f"(fun {name} :{sort} => {body_proof})"
+    return body_proof
+
+
+def raw_source_fact_native_equality_to_vampire_eq_set_proof(target: Expr, source_proof: str) -> str | None:
+    target_binders, target_body = collect_foralls(target)
+    target_premises, target_conclusion = split_arrows(target_body)
+    target_sides = app_args(target_conclusion, "vampire_eq_set", 2)
+    if target_sides is None and target_conclusion.kind == "eq":
+        target_sides = target_conclusion.args[0], target_conclusion.args[1]
+    if target_sides is None:
+        return None
+    if any(expr_mentions_equality(premise) for premise in target_premises):
+        return None
+
+    source_instance = source_proof
+    for name, _sort in target_binders:
+        source_instance = f"({proof_head(source_instance)} {name})"
+
+    premise_names = [
+        fresh_identifier(f"Hsource{index}", expr_text(target), source_proof, str(index))
+        for index, _premise in enumerate(target_premises)
+    ]
+    for premise_name in premise_names:
+        source_instance = f"({proof_head(source_instance)} {premise_name})"
+
+    hole = fresh_identifier("zz", expr_text(target_conclusion), source_proof)
+    ignored = fresh_identifier("zz_ignored", expr_text(target_conclusion), source_proof, hole)
+    body_proof = (
+        f"({proof_head(source_instance)} "
+        f"(fun {hole} {ignored} :set => vampire_eq_set {proof_arg_text(target_sides[0])} {hole}) "
+        f"(fun Q H => H))"
+    )
+    for name, premise in reversed(list(zip(premise_names, target_premises))):
+        body_proof = f"(fun {name} :{proof_arg_text(premise)} => {body_proof})"
     for name, sort in reversed(target_binders):
         body_proof = f"(fun {name} :{sort} => {body_proof})"
     return body_proof
@@ -55659,18 +55709,22 @@ def raw_proposition_mentions_equality(proposition: str) -> bool:
     expr = parse_expr(proposition)
     if expr is None:
         return "=" in proposition or "vampire_eq_" in proposition
+    return expr_mentions_equality(expr)
 
-    def visit(node: Expr) -> bool:
-        if node.kind == "eq":
-            return True
-        if node.kind == "app" and node.args and node.args[0].kind == "var" and node.args[0].value in {
-            "vampire_eq_set",
-            "vampire_eq_prop",
-        }:
-            return True
-        return any(visit(arg) for arg in node.args)
 
-    return visit(expr)
+def raw_tptp_source_fact_proof(
+    proposition: str,
+    source_name: str | None,
+    source_fact_names: set[str],
+) -> str | None:
+    if source_name is None or source_name not in source_fact_names:
+        return None
+    if not raw_proposition_mentions_equality(proposition):
+        return source_name
+    parsed_source_fact = parse_expr(proposition)
+    if parsed_source_fact is None:
+        return None
+    return raw_source_fact_native_equality_to_vampire_eq_set_proof(parsed_source_fact, source_name)
 
 
 def raw_tptp_implication_chain(premises: list[str], conclusion: str) -> str:
@@ -56404,12 +56458,10 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             lines.append(f"exact {proof_argument_text(universal_instance_proof)}.")
             lines.append("Qed.")
         elif (
-            source_name is not None
-            and source_name in source_fact_names
-            and not raw_proposition_mentions_equality(proposition)
-        ):
+            source_fact_proof := raw_tptp_source_fact_proof(proposition, source_name, source_fact_names)
+        ) is not None:
             lines.append(f"Theorem {claim_name}: {proposition}.")
-            lines.append(f"exact {source_name}.")
+            lines.append(f"exact {proof_argument_text(source_fact_proof)}.")
             lines.append("Qed.")
         else:
             lines.append(f"Axiom {claim_name}:{proposition}.")
