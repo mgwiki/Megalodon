@@ -6036,6 +6036,133 @@ def raw_tptp_predicate_definition_equality_proposition(name: str, definition: De
     return proposition
 
 
+def raw_tptp_predicate_definition_equality_proof(name: str, definition: DefinitionInfo) -> str | None:
+    pieces = split_sort_arrows(definition.sort)
+    if not pieces or pieces[-1] != "prop" or len(pieces) - 1 != len(definition.binders):
+        return None
+    args = [Expr("var", value=binder) for binder in definition.binders]
+    target = append_application_args(Expr("var", value=name), args)
+    proposition_target = definition.folded_literal or target
+    body_text = proof_arg_text(definition.body)
+    target_text = proof_arg_text(proposition_target)
+    if definition.folded_literal is None:
+        proof = "(fun Q H => H)"
+    else:
+        forward = raw_eq_true_from_prop_proof(proposition_target, "Hbody", target)
+        backward = raw_prop_from_eq_true_proof(proposition_target, "Hfolded", target)
+        if forward is None or backward is None:
+            return None
+        proof = (
+            f"(vampire_prop_ext {body_text} {target_text} "
+            f"(fun Hbody :{body_text} => {forward}) "
+            f"(fun Hfolded :{target_text} => {backward}))"
+        )
+    for binder, sort in reversed(list(zip(definition.binders, pieces[:-1]))):
+        proof = f"(fun {binder} :{sort} => {proof})"
+    return proof
+
+
+def raw_eq_true_target(expr: Expr) -> Expr | None:
+    sides = app_args(expr, "vampire_eq_prop", 2)
+    if sides is None:
+        return None
+    left, right = sides
+    if raw_app_is_true_expr(left):
+        return right
+    if raw_app_is_true_expr(right):
+        return left
+    return None
+
+
+def raw_surface_boolean_alias_expr(expr: Expr) -> Expr:
+    if expr.kind == "var":
+        if expr.value == "vampire_true":
+            return Expr("var", value="True")
+        if expr.value == "vampire_false":
+            return Expr("var", value="False")
+        return expr
+    if expr.kind == "app" and expr.args and expr.args[0].kind == "var":
+        head = expr.args[0].value
+        if head in {"vampire_and", "vampire_or"} and len(expr.args) == 3:
+            return Expr(
+                "app",
+                args=(
+                    Expr("var", value="and" if head == "vampire_and" else "or"),
+                    raw_surface_boolean_alias_expr(expr.args[1]),
+                    raw_surface_boolean_alias_expr(expr.args[2]),
+                ),
+            )
+    return Expr(
+        expr.kind,
+        value=expr.value,
+        sort=expr.sort,
+        args=tuple(raw_surface_boolean_alias_expr(arg) for arg in expr.args),
+    )
+
+
+def raw_tptp_predicate_definition_intro_proof(
+    name: str,
+    definition: DefinitionInfo,
+    proposition: str,
+) -> str | None:
+    pieces = split_sort_arrows(definition.sort)
+    if not pieces or pieces[-1] != "prop" or len(pieces) - 1 != len(definition.binders):
+        return None
+    expr = parse_expr(proposition)
+    if expr is None:
+        return None
+    binders, body = collect_foralls(expr)
+    if tuple(name for name, _sort in binders) != definition.binders:
+        return None
+    parts = raw_or_parts(body)
+    if parts is None:
+        return None
+
+    negative_split: Expr | None = None
+    component: Expr | None = None
+    for candidate_negative, candidate_component in (parts, (parts[1], parts[0])):
+        premises, conclusion = split_arrows(candidate_negative)
+        if len(premises) == 1 and false_eliminator_expr(conclusion):
+            negative_split = candidate_negative
+            component = candidate_component
+            break
+    if negative_split is None or component is None:
+        return None
+    split_premises, _split_conclusion = split_arrows(negative_split)
+    split = split_premises[0]
+    target = raw_eq_true_target(split)
+    if target is None:
+        return None
+    expected_target = append_application_args(Expr("var", value=name), [Expr("var", value=binder) for binder in definition.binders])
+    if not expr_same_mod_alpha(target, expected_target):
+        return None
+    definition_body = raw_surface_boolean_alias_expr(definition.body)
+    if not expr_same_mod_alpha(beta_normalize_expr(component), beta_normalize_expr(definition_body)):
+        return None
+
+    component_intro = raw_or_intro_from_branch(body, component, "Hbody")
+    if component_intro is None:
+        return None
+    component_from_split = raw_prop_from_eq_true_proof(split, "Hsplit", target)
+    if component_from_split is None:
+        return None
+    not_split_proof = (
+        f"(fun Hsplit :{proof_arg_text(split)} => "
+        f"HnotBody {proof_term_text(component_from_split)})"
+    )
+    negative_intro = raw_or_intro_from_branch(body, negative_split, not_split_proof)
+    if negative_intro is None:
+        return None
+    proof = (
+        f"(xm {proof_arg_text(component)} {proof_arg_text(body)} "
+        f"(fun Hbody :{proof_arg_text(component)} => {component_intro}) "
+        f"(fun HnotBody :{proof_arg_text(component)} -> False => {negative_intro}))"
+    )
+    for binder, sort in reversed(binders):
+        proof = f"(fun {binder} :{sort} => {proof})"
+    return proof
+
+
 def raw_tptp_definition_clause_info(
     definition_text: str,
     proof: str,
@@ -54624,6 +54751,21 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if equality_proposition is not None:
             predicate_definition_equalities[definition.proof] = equality_proposition
     propositions_by_name.update(predicate_definition_equalities)
+    predicate_definition_intro_proofs: dict[str, str] = {}
+    for definition_name, definition in predicate_definitions.items():
+        if not definition.proof.endswith("_def"):
+            continue
+        intro_step_name = definition.proof[: -len("_def")]
+        intro_proposition = propositions_by_name.get(intro_step_name)
+        if intro_proposition is None:
+            continue
+        intro_proof = raw_tptp_predicate_definition_intro_proof(
+            definition_name,
+            definition,
+            intro_proposition,
+        )
+        if intro_proof is not None:
+            predicate_definition_intro_proofs[raw_tptp_claim_name(intro_step_name)] = intro_proof
     avatar_split_definitions: dict[str, str] = {}
     for _, _, proposition, rule, _, _, _ in entries:
         if rule != "avatar_definition" or not proposition:
@@ -54811,7 +54953,13 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         lines.append(f"Definition {name} : {definition.sort} := {definition.body_text}.")
         equality_proposition = predicate_definition_equalities.get(definition.proof)
         if equality_proposition is not None:
-            lines.append(f"Axiom {raw_tptp_claim_name(definition.proof)}:{equality_proposition}.")
+            equality_proof = raw_tptp_predicate_definition_equality_proof(name, definition)
+            if equality_proof is not None:
+                lines.append(f"Theorem {raw_tptp_claim_name(definition.proof)}:{equality_proposition}.")
+                lines.append(f"exact {equality_proof}.")
+                lines.append("Qed.")
+            else:
+                lines.append(f"Axiom {raw_tptp_claim_name(definition.proof)}:{equality_proposition}.")
     if any(split_sort_arrows(sort)[-1:] == ("set",) for sort, _body in skolem_epsilon_definitions.values()):
         lines.append(
             "Theorem vampire_exists_set_eps: forall P:set->prop, vampire_exists_set P -> P (Eps_i P)."
@@ -54902,6 +55050,10 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         elif claim_name in skolem_intro_proofs:
             lines.append(f"Theorem {claim_name}: {proposition}.")
             lines.append(f"exact {skolem_intro_proofs[claim_name]}.")
+            lines.append("Qed.")
+        elif claim_name in predicate_definition_intro_proofs:
+            lines.append(f"Theorem {claim_name}: {proposition}.")
+            lines.append(f"exact {predicate_definition_intro_proofs[claim_name]}.")
             lines.append("Qed.")
         else:
             lines.append(f"Axiom {claim_name}:{proposition}.")
