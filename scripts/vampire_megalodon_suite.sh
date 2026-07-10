@@ -119,7 +119,8 @@ PY
     --raw-tptp-skeleton-dir "$RAW_TPTP_SKELETON_DIR" \
     --jobs "$JOBS"
 
-  raw_admits=$({ rg -n "\badmit\." "$RAW_TPTP_SKELETON_DIR" -g '*.mg' || true; } | wc -l)
+  raw_admit_pattern='^\s*(\{\s*)?admit\.\s*(\})?\s*$'
+  raw_admits=$({ rg -n "$raw_admit_pattern" "$RAW_TPTP_SKELETON_DIR" -g '*.mg' || true; } | wc -l)
   raw_aby=$({ rg -n "\baby\b" "$RAW_TPTP_SKELETON_DIR" -g '*.mg' || true; } | wc -l)
   mkdir -p "$RAW_TPTP_CHECK_DIR"
 
@@ -127,7 +128,7 @@ PY
     noadmit)
       noadmit_list="$WORK_DIR/raw_tptp_noadmit_skeletons.txt"
       find "$RAW_TPTP_SKELETON_DIR" -maxdepth 1 -name '*.mg' | sort | while IFS= read -r skeleton; do
-        if ! rg -q "\badmit\." "$skeleton"; then
+        if ! rg -q "$raw_admit_pattern" "$skeleton"; then
           printf '%s\n' "$skeleton"
         fi
       done > "$noadmit_list"

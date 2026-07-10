@@ -32204,7 +32204,9 @@ def raw_negative_implication_equality_rewrite_proof(
     equality_right: Expr,
     equality_proof: str,
     equality_sort: str,
+    variable_sorts: dict[str, str] | None = None,
 ) -> str | None:
+    variable_sorts = variable_sorts or {}
     source_premises, source_conclusion = split_arrows(source)
     target_premises, target_conclusion = split_arrows(target)
     if (
@@ -32235,7 +32237,7 @@ def raw_negative_implication_equality_rewrite_proof(
             and expr_same_mod_alpha(rewritten_sides[0], source_sides[1])
             and expr_same_mod_alpha(rewritten_sides[1], source_sides[0])
         ):
-            symmetry_sort = raw_equality_transport_sort(rewritten_sides[0], rewritten_sides[1], {})
+            symmetry_sort = raw_equality_transport_sort(rewritten_sides[0], rewritten_sides[1], variable_sorts)
             symmetric = raw_eq_symmetry_proof(transported, rewritten_sides[0], symmetry_sort)
             return (
                 f"(fun Htarget :{proof_arg_text(target_premises[0])} => "
@@ -36681,6 +36683,146 @@ def raw_negative_reflexive_equality_parent_contradiction_proof(
     return None
 
 
+def raw_unit_equality_parent_negative_contradiction_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    unit: Expr,
+    unit_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_binders, source_body = collect_foralls(source)
+    if not source_binders or len(source_binders) > 4:
+        return None
+    source_premises, source_conclusion = split_arrows(source_body)
+    if len(source_premises) != 1 or not false_eliminator_expr(source_conclusion):
+        return None
+    source_premise = source_premises[0]
+    if equality_like_sides(source_premise) is None:
+        return None
+    unit_binders, unit_body = collect_foralls(unit)
+    if len(unit_binders) > 4 or equality_like_sides(unit_body) is None:
+        return None
+    target_binders, _target_body = collect_foralls(target)
+    if len(target_binders) > 6:
+        return None
+
+    source_binder_names = {name for name, _sort in source_binders}
+    unit_binder_names = {name for name, _sort in unit_binders}
+    local_sorts = {
+        **variable_sorts,
+        **{name: sort for name, sort in target_binders},
+        **{name: sort for name, sort in source_binders},
+        **{name: sort for name, sort in unit_binders},
+    }
+    base_exprs = (source_body, unit_body, target)
+    candidate_lists: list[list[Expr]] = []
+    for name, sort in source_binders:
+        candidates: list[Expr] = []
+        inhabitant = raw_simple_inhabitant_for_sort(sort)
+        if inhabitant is not None:
+            candidates.append(inhabitant)
+        candidates.extend(raw_candidate_terms_for_sort(base_exprs, sort, local_sorts))
+        deduped: list[Expr] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            if name in expr_variables(candidate):
+                continue
+            key = expr_key(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(candidate)
+            if len(deduped) >= 10:
+                break
+        if not deduped:
+            return None
+        candidate_lists.append(deduped)
+
+    def instantiate_proof(proof: str, binders: list[tuple[str, str]], subst: dict[str, Expr]) -> str | None:
+        result = proof
+        for name, _sort in binders:
+            value = subst.get(name)
+            if value is None:
+                return None
+            result = f"({proof_head(result)} {proof_arg_text(value)})"
+        return result
+
+    def complete_unit_substitution(subst: dict[str, Expr], extra_exprs: tuple[Expr, ...]) -> dict[str, Expr] | None:
+        completed = dict(subst)
+        flatten_substitution(completed)
+        for name, sort in unit_binders:
+            if name in completed:
+                continue
+            candidates: list[Expr] = []
+            inhabitant = raw_simple_inhabitant_for_sort(sort)
+            if inhabitant is not None:
+                candidates.append(inhabitant)
+            candidates.extend(raw_candidate_terms_for_sort(extra_exprs, sort, local_sorts))
+            for candidate in candidates:
+                if name not in expr_variables(candidate):
+                    completed[name] = candidate
+                    break
+        if not unit_binder_names <= completed.keys():
+            return None
+        for name, value in completed.items():
+            if name in unit_binder_names and expr_variables(value) & unit_binder_names:
+                return None
+        return completed
+
+    def unit_proof_for(goal: Expr) -> str | None:
+        goal_sides = equality_like_sides(goal)
+        if goal_sides is None:
+            return None
+        reversed_goal = equality_like_expr(goal, goal_sides[1], goal_sides[0])
+        for wanted, reverse in ((goal, False), (reversed_goal, True)):
+            trial: dict[str, Expr] = {}
+            if not match_expr_with_alpha_instantiation(unit_body, wanted, unit_binder_names, trial):
+                continue
+            completed = complete_unit_substitution(trial, (source_body, unit_body, target, goal))
+            if completed is None:
+                continue
+            unit_instance = beta_reduce_expr(flatten_applications(substitute_expr(unit_body, completed)))
+            if not expr_same_mod_alpha(unit_instance, wanted):
+                continue
+            proof = instantiate_proof(unit_proof, unit_binders, completed)
+            if proof is None:
+                continue
+            if not reverse:
+                return proof
+            unit_sides = equality_like_sides(unit_instance)
+            if unit_sides is None:
+                continue
+            equality_sort = raw_equality_transport_sort(unit_sides[0], unit_sides[1], local_sorts)
+            return raw_eq_symmetry_proof(proof, unit_sides[0], equality_sort)
+        return None
+
+    attempts = 0
+    for values in itertools.product(*candidate_lists):
+        attempts += 1
+        if attempts > 4096 or proof_search_timed_out():
+            return None
+        source_subst = {
+            name: value
+            for (name, _sort), value in zip(source_binders, values)
+        }
+        if any(expr_variables(value) & source_binder_names for value in source_subst.values()):
+            continue
+        instantiated_premise = beta_reduce_expr(flatten_applications(substitute_expr(source_premise, source_subst)))
+        premise_proof = unit_proof_for(instantiated_premise)
+        if premise_proof is None:
+            continue
+        false_proof = instantiate_proof(source_proof, source_binders, source_subst)
+        if false_proof is None:
+            continue
+        false_proof = f"({proof_head(false_proof)} {proof_term_text(premise_proof)})"
+        proof = raw_false_to_expr_proof(false_proof, target)
+        if raw_tptp_replay_proof_is_unsafe("superposition", expr_text(target), proof):
+            continue
+        return proof
+    return None
+
+
 def raw_guarded_universal_negative_literal_superposition_proof(
     source: Expr,
     target: Expr,
@@ -37501,13 +37643,42 @@ def raw_tptp_superposition_proof(
         megalodon_replay_extra_fields(replay_step, "superposition")
         or megalodon_replay_extra_fields(replay_step, "two_literal_rewrite")
     )
+    if len(parents) == 2:
+        target_expr = parse_expr(proposition)
+        parent_exprs: list[tuple[Expr, str]] = []
+        for parent in parents:
+            parent_proposition = propositions_by_name.get(parent)
+            parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+            if parent_expr is not None:
+                parent_exprs.append((parent_expr, raw_tptp_canonical_parent_proof_name(parent, propositions_by_name)))
+        if target_expr is not None and len(parent_exprs) == 2:
+            proof = raw_unit_equality_parent_negative_contradiction_proof(
+                parent_exprs[0][0],
+                target_expr,
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_unit_equality_parent_negative_contradiction_proof(
+                parent_exprs[1][0],
+                target_expr,
+                parent_exprs[1][1],
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
     proof = raw_tptp_universal_unit_contradiction_proof(
         proposition,
         parents,
         propositions_by_name,
         variable_sorts,
     )
-    if proof is not None:
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("superposition", proposition, proof):
         return proof
     proof = raw_tptp_parent_negated_tautology_exfalso_proof(
         proposition,
@@ -37515,7 +37686,7 @@ def raw_tptp_superposition_proof(
         propositions_by_name,
         variable_sorts,
     )
-    if proof is not None:
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("superposition", proposition, proof):
         return proof
     proof = raw_tptp_instantiated_negative_unit_resolution_proof(
         proposition,
@@ -37523,7 +37694,7 @@ def raw_tptp_superposition_proof(
         propositions_by_name,
         variable_sorts,
     )
-    if proof is not None:
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("superposition", proposition, proof):
         return proof
     if has_superposition_replay:
         proof = raw_tptp_exported_two_literal_resolution_proof(
@@ -37533,7 +37704,7 @@ def raw_tptp_superposition_proof(
             variable_sorts,
             replay_step,
         )
-        if proof is not None:
+        if proof is not None and not raw_tptp_replay_proof_is_unsafe("superposition", proposition, proof):
             return proof
     if len(parents) == 2:
         early_parent_exprs: list[tuple[Expr, str]] = []
@@ -37897,6 +38068,26 @@ def raw_tptp_superposition_proof(
                 )
                 if proof is not None:
                     return proof
+            proof = raw_unit_equality_parent_negative_contradiction_proof(
+                early_parent_exprs[0][0],
+                early_target_expr,
+                early_parent_exprs[0][1],
+                early_parent_exprs[1][0],
+                early_parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_unit_equality_parent_negative_contradiction_proof(
+                early_parent_exprs[1][0],
+                early_target_expr,
+                early_parent_exprs[1][1],
+                early_parent_exprs[0][0],
+                early_parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
             positive_orders = [(0, 1), (1, 0)]
 
             def positive_order_priority(order: tuple[int, int]) -> tuple[int, int]:
@@ -38062,7 +38253,7 @@ def raw_tptp_superposition_proof(
         variable_sorts,
         replay_step,
     )
-    if proof is not None:
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("superposition", proposition, proof):
         return proof
     proof = raw_tptp_exported_function_superposition_pointwise_proof(
         proposition,
@@ -38956,6 +39147,7 @@ def raw_guarded_negative_equality_superposition_instantiated_proof(
                     equality_sides[1],
                     equality_literal_proof,
                     equality_sort,
+                    variable_sorts,
                 )
                 if rewritten_negative is None:
                     continue
@@ -39130,6 +39322,7 @@ def raw_negative_equality_clause_superposition_proof(
                                         equality_right,
                                         oriented_equality_proof,
                                         equality_sort,
+                                        variable_sorts,
                                     )
                                     if rewritten_negative is None:
                                         continue
@@ -49900,7 +50093,7 @@ def raw_tptp_replay_proof(
             propositions_by_name,
             variable_sorts,
         )
-        if proof is not None:
+        if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
             return proof
         proof = raw_prop_guarded_ternary_equality_superposition_proof(
             proposition,
@@ -49908,7 +50101,7 @@ def raw_tptp_replay_proof(
             propositions_by_name,
             variable_sorts,
         )
-        if proof is not None:
+        if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
             return proof
         proof = raw_prop_guarded_equality_superposition_proof(
             proposition,
@@ -49916,14 +50109,14 @@ def raw_tptp_replay_proof(
             propositions_by_name,
             variable_sorts,
         )
-        if proof is not None:
+        if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
             return proof
         proof = raw_prop_disequality_superposition_proof(
             proposition,
             parents,
             propositions_by_name,
         )
-        if proof is not None:
+        if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
             return proof
         proof = raw_superposition_false_literal_unit_resolution_proof(
             proposition,
@@ -49932,7 +50125,7 @@ def raw_tptp_replay_proof(
             variable_sorts,
             replay_step,
         )
-        if proof is not None:
+        if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
             return proof
     proof = raw_tptp_parent_complement_false_proof(proposition, parents, propositions_by_name, variable_sorts)
     if proof is not None:
@@ -52795,6 +52988,14 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                                     exported_step_propositions_by_name,
                                     variable_sorts,
                                 )
+                            if replay_proof is None:
+                                replay_proof = raw_tptp_replay_proof(
+                                    rule,
+                                    proposition,
+                                    replay_parents,
+                                    propositions_by_name,
+                                    variable_sorts,
+                                )
                         else:
                             replay_proof = raw_tptp_replay_proof(rule, proposition, replay_parents, propositions_by_name, variable_sorts)
                     finally:
@@ -52826,7 +53027,20 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             and not trusted_definition_replay
             and raw_tptp_replay_proof_is_unsafe(rule, proposition, replay_proof)
         ):
-            replay_proof = None
+            fallback_replay = raw_tptp_replay_proof(
+                rule,
+                proposition,
+                replay_parents,
+                propositions_by_name,
+                variable_sorts,
+            )
+            if (
+                fallback_replay is not None
+                and not raw_tptp_replay_proof_is_unsafe(rule, proposition, fallback_replay)
+            ):
+                replay_proof = fallback_replay
+            else:
+                replay_proof = None
         if (
             replay_proof is not None
             and standard_tptp_proof
