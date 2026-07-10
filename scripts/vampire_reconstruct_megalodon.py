@@ -47782,6 +47782,14 @@ def raw_tptp_replay_proof(
     if proof is not None:
         return proof
     if rule == "superposition":
+        proof = raw_guarded_prop_extensionality_fact_superposition_proof(
+            proposition,
+            parents,
+            propositions_by_name,
+            variable_sorts,
+        )
+        if proof is not None:
+            return proof
         proof = raw_prop_guarded_ternary_equality_superposition_proof(
             proposition,
             parents,
@@ -48219,6 +48227,281 @@ def raw_tptp_relaxed_superposition_sorts(variable_sorts: dict[str, str], text: s
         if name.startswith(("sK", "sF", "db", "vampire_")):
             relaxed[name] = sort
     return relaxed
+
+
+def raw_guarded_prop_extensionality_fact_superposition_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parents) != 2:
+        return None
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    target_parts = raw_or_parts(target)
+    if target_parts is None:
+        return None
+
+    target_quantified: Expr | None = None
+    target_guard: Expr | None = None
+    target_quantified_index = -1
+    for index, part in enumerate(target_parts):
+        if part.kind == "forall":
+            target_quantified = part
+            target_guard = target_parts[1 - index]
+            target_quantified_index = index
+            break
+    if target_quantified is None or target_guard is None:
+        return None
+
+    target_binders, target_body = collect_foralls(target_quantified)
+    if not target_binders or len(target_binders) > 2 or any(sort != "prop" for _name, sort in target_binders):
+        return None
+    target_literals = raw_clause_literals(target_body)
+    if len(target_literals) != 3:
+        return None
+    target_text = proof_arg_text(target_body)
+
+    def prop_eq_sides(expr: Expr) -> tuple[Expr, Expr] | None:
+        return app_args(expr, "vampire_eq_prop", 2)
+
+    def negated_prop(expr: Expr) -> Expr | None:
+        premises, conclusion = split_arrows(expr)
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
+            return None
+        return premises[0]
+
+    def same(left: Expr, right: Expr) -> bool:
+        return expr_same_mod_alpha(left, right)
+
+    def intro(index: int, proof: str) -> str | None:
+        return raw_or_intro_literal_at(target_body, index, proof)
+
+    def outer_intro(index: int, proof: str) -> str:
+        if index == 0:
+            return f"(fun P Hleft Hright => Hleft {proof_term_text(proof)})"
+        return f"(fun P Hleft Hright => Hright {proof_term_text(proof)})"
+
+    def eq_parent_instance(parent: Expr, proof: str, left: Expr, right: Expr) -> tuple[str, Expr] | None:
+        binders, body = collect_foralls(parent)
+        if len(binders) != 2 or any(sort != "prop" for _name, sort in binders):
+            return None
+        subst = {binders[0][0]: left, binders[1][0]: right}
+        instantiated = substitute_expr(body, subst)
+        literals = raw_clause_literals(instantiated)
+        eq_index = neg_left_index = neg_right_index = None
+        for index, literal in enumerate(literals):
+            sides = prop_eq_sides(literal)
+            if sides is not None and (
+                (same(sides[0], left) and same(sides[1], right))
+                or (same(sides[0], right) and same(sides[1], left))
+            ):
+                eq_index = index
+                continue
+            neg = negated_prop(literal)
+            if neg is not None and same(neg, left):
+                neg_left_index = index
+            if neg is not None and same(neg, right):
+                neg_right_index = index
+        if eq_index is None or neg_left_index is None or neg_right_index is None:
+            return None
+        instantiated_proof = proof
+        for name, _sort in binders:
+            instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(subst[name])})"
+        return instantiated_proof, instantiated
+
+    def guarded_source(parent: Expr, proof: str) -> tuple[Expr, str, int] | None:
+        parts = raw_or_parts(parent)
+        if parts is None:
+            return None
+        for index, part in enumerate(parts):
+            if expr_same_mod_alpha(parts[1 - index], target_guard):
+                return part, proof, index
+        return None
+
+    parsed_parents: list[tuple[Expr, str]] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+        if parent_expr is None:
+            return None
+        parsed_parents.append((parent_expr, raw_tptp_claim_name(parent)))
+
+    def prop_ext_from_truth(left: Expr, right: Expr, left_proof: str, right_proof: str) -> str:
+        return (
+            f"(vampire_prop_ext {proof_arg_text(left)} {proof_arg_text(right)} "
+            f"(fun Hleft => {proof_term_text(right_proof)}) "
+            f"(fun Hright => {proof_term_text(left_proof)}))"
+        )
+
+    for source_index, eq_index in ((0, 1), (1, 0)):
+        source_info = guarded_source(parsed_parents[source_index][0], parsed_parents[source_index][1])
+        if source_info is None:
+            continue
+        source_fact, source_proof, source_fact_side = source_info
+        guard_intro = outer_intro(1 - target_quantified_index, "Hguard")
+
+        if len(target_binders) == 1:
+            var = Expr("var", value=target_binders[0][0])
+            source_at_true, changed = replace_expr(source_fact, Expr("var", value="True"), var)
+            if changed:
+                eq_target_index = false_index = neg_index = None
+                for index, literal in enumerate(target_literals):
+                    sides = prop_eq_sides(literal)
+                    if sides is not None and (
+                        (same(sides[0], source_at_true) and same(sides[1], var))
+                        or (same(sides[0], var) and same(sides[1], source_at_true))
+                    ):
+                        eq_target_index = index
+                        continue
+                    if false_eliminator_expr(literal):
+                        false_index = index
+                        continue
+                    neg = negated_prop(literal)
+                    if neg is not None and same(neg, var):
+                        neg_index = index
+                if eq_target_index is not None and false_index is not None and neg_index is not None:
+                    eq_instance = eq_parent_instance(parsed_parents[eq_index][0], parsed_parents[eq_index][1], Expr("var", value="True"), var)
+                    if eq_instance is not None:
+                        eq_parent_proof, eq_parent_body = eq_instance
+                        true_proof = "(fun P H => H)"
+                        def eq_branch(heq: str) -> str | None:
+                            hole_name = fresh_identifier("zz", expr_text(source_fact), expr_text(source_at_true), heq)
+                            context, context_changed = replace_expr(source_fact, Expr("var", value="True"), Expr("var", value=hole_name))
+                            if not context_changed:
+                                return None
+                            transported_fact = (
+                                f"({proof_head(heq)} "
+                                f"(fun {hole_name} :prop => {expr_text(context)}) "
+                                f"{proof_term_text(source_proof)})"
+                            )
+                            var_proof = f"({proof_head(heq)} (fun zz :prop => zz) {true_proof})"
+                            equality = prop_ext_from_truth(source_at_true, var, transported_fact, var_proof)
+                            return intro(eq_target_index, equality)
+
+                        def eq_parent_handler(literal: Expr, literal_proof: str) -> str | None:
+                            sides = prop_eq_sides(literal)
+                            if sides is not None:
+                                return eq_branch(literal_proof)
+                            neg = negated_prop(literal)
+                            if neg is not None and same(neg, var):
+                                return intro(neg_index, literal_proof)
+                            if neg is not None and expr_same_mod_alpha(neg, Expr("var", value="True")):
+                                return intro(false_index, f"({proof_head(literal_proof)} (fun P H => H))")
+                            return None
+
+                        previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+                        PROOF_SEARCH_STATE.flat_resolution_target = target_text
+                        try:
+                            body_proof = raw_clause_cases_with_handler(eq_parent_body, eq_parent_proof, eq_parent_handler)
+                        finally:
+                            if previous_target is None:
+                                if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                                    delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+                            else:
+                                PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+                        if body_proof is None:
+                            continue
+                        quantified = f"(fun {target_binders[0][0]} :prop => {body_proof})"
+                        source_case = outer_intro(target_quantified_index, quantified)
+                        if source_fact_side == 0:
+                            return (
+                                f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                                f"(fun HsourceFact => {source_case.replace(source_proof, 'HsourceFact')}) "
+                                f"(fun Hguard => {guard_intro}))"
+                            )
+                        return (
+                            f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                            f"(fun Hguard => {guard_intro}) "
+                            f"(fun HsourceFact => {source_case.replace(source_proof, 'HsourceFact')}))"
+                        )
+
+        if len(target_binders) == 2:
+            left_var = Expr("var", value=target_binders[0][0])
+            right_var = Expr("var", value=target_binders[1][0])
+            source_at_left, changed = replace_expr(source_fact, Expr("var", value="False"), left_var)
+            if not changed:
+                continue
+            fact_index = eq_target_index = neg_right_index = None
+            for index, literal in enumerate(target_literals):
+                if same(literal, source_at_left):
+                    fact_index = index
+                    continue
+                sides = prop_eq_sides(literal)
+                if sides is not None and (
+                    (same(sides[0], left_var) and same(sides[1], right_var))
+                    or (same(sides[0], right_var) and same(sides[1], left_var))
+                ):
+                    eq_target_index = index
+                    continue
+                neg = negated_prop(literal)
+                if neg is not None and same(neg, right_var):
+                    neg_right_index = index
+            if fact_index is None or eq_target_index is None or neg_right_index is None:
+                continue
+            eq_instance = eq_parent_instance(parsed_parents[eq_index][0], parsed_parents[eq_index][1], left_var, right_var)
+            if eq_instance is None:
+                continue
+            eq_parent_proof, eq_parent_body = eq_instance
+            def fact_from_not_left(not_left: str) -> str | None:
+                eq_left_false = (
+                    f"(vampire_prop_ext {proof_arg_text(left_var)} False "
+                    f"{proof_term_text(not_left)} "
+                    f"(fun Hfalse => (Hfalse {proof_arg_text(left_var)})))"
+                )
+                false_left = raw_eq_symmetry_proof(eq_left_false, left_var, "prop")
+                hole_name = fresh_identifier("zz", expr_text(source_fact), expr_text(source_at_left), not_left)
+                context, context_changed = replace_expr(source_fact, Expr("var", value="False"), Expr("var", value=hole_name))
+                if not context_changed:
+                    return None
+                transported = (
+                    f"({proof_head(false_left)} "
+                    f"(fun {hole_name} :prop => {expr_text(context)}) "
+                    f"{proof_term_text(source_proof)})"
+                )
+                return intro(fact_index, transported)
+
+            def eq_parent_handler(literal: Expr, literal_proof: str) -> str | None:
+                sides = prop_eq_sides(literal)
+                if sides is not None:
+                    return intro(eq_target_index, literal_proof)
+                neg = negated_prop(literal)
+                if neg is not None and same(neg, right_var):
+                    return intro(neg_right_index, literal_proof)
+                if neg is not None and same(neg, left_var):
+                    return fact_from_not_left(literal_proof)
+                return None
+
+            previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+            PROOF_SEARCH_STATE.flat_resolution_target = target_text
+            try:
+                body_proof = raw_clause_cases_with_handler(eq_parent_body, eq_parent_proof, eq_parent_handler)
+            finally:
+                if previous_target is None:
+                    if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                        delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+                else:
+                    PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+            if body_proof is None:
+                continue
+            quantified = body_proof
+            for name, sort in reversed(target_binders):
+                quantified = f"(fun {name} :{sort} => {quantified})"
+            source_case = outer_intro(target_quantified_index, quantified)
+            if source_fact_side == 0:
+                return (
+                    f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                    f"(fun HsourceFact => {source_case.replace(source_proof, 'HsourceFact')}) "
+                    f"(fun Hguard => {guard_intro}))"
+                )
+            return (
+                f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                f"(fun Hguard => {guard_intro}) "
+                f"(fun HsourceFact => {source_case.replace(source_proof, 'HsourceFact')}))"
+            )
+    return None
 
 
 def raw_prop_guarded_ternary_equality_superposition_proof(
