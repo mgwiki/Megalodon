@@ -20071,6 +20071,95 @@ def raw_match_complementary_literals(
     return False
 
 
+def raw_unify_expr_instantiating(
+    left: Expr,
+    right: Expr,
+    variables: set[str],
+    subst: dict[str, Expr],
+) -> bool:
+    left = resolve_substitution_value(left, subst)
+    right = resolve_substitution_value(right, subst)
+    if expr_same_mod_alpha(left, right):
+        return True
+    if left.kind == "var" and left.value in variables:
+        if left.value in expr_variables(right):
+            return False
+        subst[left.value] = right
+        flatten_substitution(subst)
+        return True
+    if right.kind == "var" and right.value in variables:
+        if right.value in expr_variables(left):
+            return False
+        subst[right.value] = left
+        flatten_substitution(subst)
+        return True
+    if left.kind == "forall" and right.kind == "forall" and left.sort == right.sort and left.value and right.value:
+        right_body = right.args[0]
+        if left.value != right.value:
+            right_body = rename_expr_variables(right_body, {right.value: left.value})
+        return raw_unify_expr_instantiating(left.args[0], right_body, variables | {left.value}, subst)
+    if left.kind != right.kind or left.value != right.value or left.sort != right.sort:
+        return False
+    if len(left.args) != len(right.args):
+        return False
+    return all(raw_unify_expr_instantiating(left_arg, right_arg, variables, subst) for left_arg, right_arg in zip(left.args, right.args))
+
+
+def raw_match_complementary_literals_joint(
+    left: Expr,
+    right: Expr,
+    variables: set[str],
+    subst: dict[str, Expr],
+) -> bool:
+    left_premises, left_conclusion = split_arrows(left)
+    if len(left_premises) == 1 and false_eliminator_expr(left_conclusion):
+        trial = dict(subst)
+        if raw_unify_expr_instantiating(left_premises[0], right, variables, trial):
+            subst.clear()
+            subst.update(trial)
+            return True
+        left_sides = equality_like_sides(left_premises[0])
+        right_sides = equality_like_sides(right)
+        if left_sides is None or right_sides is None:
+            return False
+        for first_right, second_right in ((right_sides[0], right_sides[1]), (right_sides[1], right_sides[0])):
+            trial = dict(subst)
+            if raw_unify_expr_instantiating(left_sides[0], first_right, variables, trial) and raw_unify_expr_instantiating(
+                left_sides[1],
+                second_right,
+                variables,
+                trial,
+            ):
+                subst.clear()
+                subst.update(trial)
+                return True
+        return False
+    right_premises, right_conclusion = split_arrows(right)
+    if len(right_premises) == 1 and false_eliminator_expr(right_conclusion):
+        trial = dict(subst)
+        if raw_unify_expr_instantiating(left, right_premises[0], variables, trial):
+            subst.clear()
+            subst.update(trial)
+            return True
+        left_sides = equality_like_sides(left)
+        right_sides = equality_like_sides(right_premises[0])
+        if left_sides is None or right_sides is None:
+            return False
+        for first_right, second_right in ((right_sides[0], right_sides[1]), (right_sides[1], right_sides[0])):
+            trial = dict(subst)
+            if raw_unify_expr_instantiating(left_sides[0], first_right, variables, trial) and raw_unify_expr_instantiating(
+                left_sides[1],
+                second_right,
+                variables,
+                trial,
+            ):
+                subst.clear()
+                subst.update(trial)
+                return True
+        return False
+    return False
+
+
 def raw_infer_forall_clause_substitution(
     body: Expr,
     target: Expr,
@@ -20571,6 +20660,88 @@ def raw_partially_quantified_literal_body_resolution_intro(
         }
         remaining_names = {name for name, _sort in local_source_binders if name not in kept_by_source}
         renamed_body = rename_expr_variables(local_source_body, kept_by_source)
+        avoid = expr_variables(renamed_body) | expr_variables(target_body) | target_names | remaining_names
+        renamed_resolver_literal = raw_forall_with_renamed_binders(resolver_literal, avoid)
+        resolver_binders, resolver_body = collect_foralls(renamed_resolver_literal)
+        resolver_names = {name for name, _sort in resolver_binders}
+        if resolver_binders and len(resolver_binders) <= 5 and len(raw_clause_literals(resolver_body)) <= 12:
+            for negative_literal in raw_clause_literals(renamed_body):
+                premises, conclusion = split_arrows(negative_literal)
+                if len(premises) != 1 or not false_eliminator_expr(conclusion):
+                    continue
+                for positive_literal in raw_clause_literals(resolver_body):
+                    subst: dict[str, Expr] = {}
+                    joint_names = remaining_names | resolver_names
+                    if not raw_match_complementary_literals_joint(negative_literal, positive_literal, joint_names, subst):
+                        continue
+                    flatten_substitution(subst)
+                    if not remaining_names <= subst.keys() or not resolver_names <= subst.keys():
+                        continue
+                    if any(expr_variables(subst[name]) & joint_names for name in joint_names):
+                        continue
+                    instantiated_body = flatten_applications(
+                        substitute_expr(renamed_body, {name: subst[name] for name in remaining_names})
+                    )
+                    instantiated_proof = source_proof
+                    for source_name, _source_sort in local_source_binders:
+                        kept_target = kept_by_source.get(source_name)
+                        if kept_target is not None:
+                            instantiated_proof = f"({proof_head(instantiated_proof)} {kept_target})"
+                        else:
+                            instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(subst[source_name])})"
+                    resolver_clause = flatten_applications(
+                        substitute_expr(resolver_body, {name: subst[name] for name in resolver_names})
+                    )
+                    resolver_clause_proof = resolver_proof
+                    for resolver_name, _resolver_sort in resolver_binders:
+                        resolver_clause_proof = f"({proof_head(resolver_clause_proof)} {proof_arg_text(subst[resolver_name])})"
+                    if not raw_clause_replay_budget_ok(
+                        instantiated_body,
+                        resolver_clause,
+                        target_body,
+                        max_literals=12,
+                        max_literal_product=256,
+                    ):
+                        continue
+                    body_proof = raw_flat_clause_resolution_proof(
+                        instantiated_body,
+                        target_body,
+                        instantiated_proof,
+                        resolver_clause,
+                        resolver_clause_proof,
+                        avoid_text=resolver_clause_proof,
+                    )
+                    if body_proof is None:
+                        body_proof = raw_flat_clause_resolution_proof(
+                            resolver_clause,
+                            target_body,
+                            resolver_clause_proof,
+                            instantiated_body,
+                            instantiated_proof,
+                            avoid_text=instantiated_proof,
+                        )
+                    if body_proof is None:
+                        body_proof = raw_clause_resolution_proof(
+                            instantiated_body,
+                            target_body,
+                            instantiated_proof,
+                            resolver_clause,
+                            resolver_clause_proof,
+                        )
+                    if body_proof is None:
+                        body_proof = raw_clause_resolution_proof(
+                            resolver_clause,
+                            target_body,
+                            resolver_clause_proof,
+                            instantiated_body,
+                            instantiated_proof,
+                        )
+                    if body_proof is None:
+                        continue
+                    target_literal_proof = body_proof
+                    for target_name, target_sort in reversed(target_binders):
+                        target_literal_proof = f"(fun {target_name} :{target_sort} => {target_literal_proof})"
+                    return raw_or_intro_literal_at(target_clause, target_literal_index, target_literal_proof)
         resolver_options = [(resolver_literal, resolver_proof)]
         resolver_options.extend(
             raw_instantiated_forall_clause_options(
@@ -20668,6 +20839,15 @@ def raw_quantified_source_literal_to_target(
     resolver_direct = raw_clause_transform_proof(resolver, target, resolver_proof, depth + 1)
     if resolver_direct is not None:
         return resolver_direct
+    joint_body_resolution = raw_quantified_source_literal_clause_resolution_proof(
+        source_literal,
+        target,
+        source_proof,
+        resolver,
+        resolver_proof,
+    )
+    if joint_body_resolution is not None:
+        return joint_body_resolution
 
     resolver_parts = raw_or_parts(resolver)
     if resolver_parts is not None:
@@ -20692,6 +20872,101 @@ def raw_quantified_source_literal_to_target(
             resolver_proof,
         )
         if proof is not None:
+            return proof
+    return None
+
+
+def raw_quantified_source_literal_clause_resolution_proof(
+    source_literal: Expr,
+    target: Expr,
+    source_proof: str,
+    resolver_literal: Expr,
+    resolver_proof: str,
+) -> str | None:
+    target_binders, target_body = collect_foralls(target)
+    source_literal = raw_forall_with_renamed_binders(source_literal, expr_variables(target_body) | expr_variables(resolver_literal))
+    source_binders, source_body = collect_foralls(source_literal)
+    if not source_binders or len(source_binders) > 5:
+        return None
+    if len(raw_clause_literals(source_body)) > 12 or len(raw_clause_literals(target_body)) > 16:
+        return None
+    avoid = expr_variables(source_body) | expr_variables(target_body) | {name for name, _sort in source_binders}
+    resolver_literal = raw_forall_with_renamed_binders(resolver_literal, avoid)
+    resolver_binders, resolver_body = collect_foralls(resolver_literal)
+    if len(resolver_binders) > 5 or len(raw_clause_literals(resolver_body)) > 12:
+        return None
+    source_names = {name for name, _sort in source_binders}
+    resolver_names = {name for name, _sort in resolver_binders}
+    joint_names = source_names | resolver_names
+    if not joint_names:
+        return None
+    for source_body_literal in raw_clause_literals(source_body):
+        for resolver_body_literal in raw_clause_literals(resolver_body):
+            subst: dict[str, Expr] = {}
+            if not raw_match_complementary_literals_joint(source_body_literal, resolver_body_literal, joint_names, subst):
+                continue
+            flatten_substitution(subst)
+            if not source_names <= subst.keys() or not resolver_names <= subst.keys():
+                continue
+            if any(expr_variables(subst[name]) & joint_names for name in joint_names):
+                continue
+            instantiated_source = flatten_applications(
+                substitute_expr(source_body, {name: subst[name] for name in source_names})
+            )
+            instantiated_source_proof = source_proof
+            for source_name, _source_sort in source_binders:
+                instantiated_source_proof = f"({proof_head(instantiated_source_proof)} {proof_arg_text(subst[source_name])})"
+            instantiated_resolver = flatten_applications(
+                substitute_expr(resolver_body, {name: subst[name] for name in resolver_names})
+            )
+            instantiated_resolver_proof = resolver_proof
+            for resolver_name, _resolver_sort in resolver_binders:
+                instantiated_resolver_proof = f"({proof_head(instantiated_resolver_proof)} {proof_arg_text(subst[resolver_name])})"
+            if not raw_clause_replay_budget_ok(
+                instantiated_source,
+                instantiated_resolver,
+                target_body,
+                max_literals=12,
+                max_literal_product=256,
+            ):
+                continue
+            proof = raw_flat_clause_resolution_proof(
+                instantiated_source,
+                target_body,
+                instantiated_source_proof,
+                instantiated_resolver,
+                instantiated_resolver_proof,
+                avoid_text=instantiated_resolver_proof,
+            )
+            if proof is None:
+                proof = raw_flat_clause_resolution_proof(
+                    instantiated_resolver,
+                    target_body,
+                    instantiated_resolver_proof,
+                    instantiated_source,
+                    instantiated_source_proof,
+                    avoid_text=instantiated_source_proof,
+                )
+            if proof is None:
+                proof = raw_clause_resolution_proof(
+                    instantiated_source,
+                    target_body,
+                    instantiated_source_proof,
+                    instantiated_resolver,
+                    instantiated_resolver_proof,
+                )
+            if proof is None:
+                proof = raw_clause_resolution_proof(
+                    instantiated_resolver,
+                    target_body,
+                    instantiated_resolver_proof,
+                    instantiated_source,
+                    instantiated_source_proof,
+                )
+            if proof is None:
+                continue
+            for target_name, target_sort in reversed(target_binders):
+                proof = f"(fun {target_name} :{target_sort} => {proof})"
             return proof
     return None
 
