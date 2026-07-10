@@ -37083,7 +37083,7 @@ def raw_tptp_superposition_proof(
                 early_parent_exprs.append((parent_expr, raw_tptp_canonical_parent_proof_name(parent, propositions_by_name)))
         early_target_expr = parse_expr(proposition)
         if early_target_expr is not None and len(early_parent_exprs) == 2:
-            early_target_binders, _early_target_body = collect_foralls(early_target_expr)
+            early_target_binders, early_target_body = collect_foralls(early_target_expr)
             early_parent_binder_counts = [
                 len(collect_foralls(parent_expr)[0])
                 for parent_expr, _parent_proof in early_parent_exprs
@@ -37109,6 +37109,56 @@ def raw_tptp_superposition_proof(
                 )
                 if proof is not None:
                     return proof
+            if (
+                early_target_binders
+                and "If_i" not in proposition
+                and "db" not in proposition
+                and len(proposition) < 1200
+                and sum(len(expr_text(parent_expr)) for parent_expr, _ in early_parent_exprs) < 1600
+            ):
+                parent_bodies = [collect_foralls(parent_expr)[1] for parent_expr, _ in early_parent_exprs]
+                parent_literals = [raw_clause_literals(body) for body in parent_bodies]
+                parent_unit_equalities = [
+                    len(literals) == 1 and equality_like_sides(literals[0]) is not None
+                    for literals in parent_literals
+                ]
+                target_has_negative_equality = any(
+                    len(premises) == 1
+                    and false_eliminator_expr(conclusion)
+                    and equality_like_sides(premises[0]) is not None
+                    for literal in raw_clause_literals(early_target_body)
+                    for premises, conclusion in [split_arrows(literal)]
+                )
+                quantified_parent_index = 1 if parent_unit_equalities[0] else 0
+                if (
+                    parent_unit_equalities.count(True) == 1
+                    and early_parent_binder_counts[quantified_parent_index] > 0
+                    and target_has_negative_equality
+                ):
+                    previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+                    if previous_deadline is not None:
+                        PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 2.5)
+                    try:
+                        proof = raw_tptp_quantified_equality_clause_superposition_proof(
+                            proposition,
+                            parents,
+                            propositions_by_name,
+                            variable_sorts,
+                            replay_step,
+                        )
+                        if proof is None:
+                            proof = raw_tptp_quantified_equality_clause_superposition_proof(
+                                proposition,
+                                [parents[1], parents[0]],
+                                propositions_by_name,
+                                variable_sorts,
+                                replay_step,
+                            )
+                    finally:
+                        if previous_deadline is not None:
+                            PROOF_SEARCH_STATE.deadline = previous_deadline
+                    if proof is not None:
+                        return proof
             proof = raw_guarded_universal_negative_literal_superposition_proof(
                 early_parent_exprs[0][0],
                 early_target_expr,
