@@ -43901,6 +43901,13 @@ def raw_tptp_replay_proof(
         )
         if proof is not None:
             return proof
+        proof = raw_prop_disequality_superposition_proof(
+            proposition,
+            parents,
+            propositions_by_name,
+        )
+        if proof is not None:
+            return proof
         proof = raw_superposition_false_literal_unit_resolution_proof(
             proposition,
             parents,
@@ -44380,6 +44387,171 @@ def raw_prop_guarded_equality_superposition_proof(
                 f"(fun HguardEq => {guard_intro('HguardEq')}))"
             )
             return f"(fun {target_binders[0][0]} :prop => {body_proof})"
+    return None
+
+
+def raw_prop_disequality_proof(
+    left: Expr,
+    right: Expr,
+    left_to_right: str,
+    right_to_left: str,
+) -> str:
+    return (
+        f"(vampire_prop_ext {proof_arg_text(left)} {proof_arg_text(right)} "
+        f"{proof_term_text(left_to_right)} {proof_term_text(right_to_left)})"
+    )
+
+
+def raw_prop_disequality_same_truth_false_proof(
+    not_equal_proof: str,
+    left: Expr,
+    right: Expr,
+    left_true: str | None = None,
+    right_true: str | None = None,
+    left_false: str | None = None,
+    right_false: str | None = None,
+) -> str | None:
+    if left_true is not None and right_true is not None:
+        left_to_right = f"(fun Hleft => {proof_term_text(right_true)})"
+        right_to_left = f"(fun Hright => {proof_term_text(left_true)})"
+        equality = raw_prop_disequality_proof(left, right, left_to_right, right_to_left)
+        return f"({proof_head(not_equal_proof)} {proof_term_text(equality)})"
+    if left_false is not None and right_false is not None:
+        left_name = fresh_identifier("Hleft", expr_text(left), expr_text(right), not_equal_proof)
+        right_name = fresh_identifier("Hright", expr_text(left), expr_text(right), left_name)
+        left_to_right = (
+            f"(fun {left_name} :{proof_arg_text(left)} => "
+            f"{raw_false_to_expr_proof(f'({proof_head(left_false)} {left_name})', right)})"
+        )
+        right_to_left = (
+            f"(fun {right_name} :{proof_arg_text(right)} => "
+            f"{raw_false_to_expr_proof(f'({proof_head(right_false)} {right_name})', left)})"
+        )
+        equality = raw_prop_disequality_proof(left, right, left_to_right, right_to_left)
+        return f"({proof_head(not_equal_proof)} {proof_term_text(equality)})"
+    return None
+
+
+def raw_prop_disequality_superposition_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> str | None:
+    target = parse_expr(proposition)
+    if target is None or not parents:
+        return None
+    negated_equality: tuple[Expr, Expr, str] | None = None
+    other_parents: list[tuple[Expr, str]] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+        if parent_expr is None:
+            return None
+        premises, conclusion = split_arrows(parent_expr)
+        equality_sides = app_args(premises[0], "vampire_eq_prop", 2) if len(premises) == 1 and false_eliminator_expr(conclusion) else None
+        if equality_sides is not None and negated_equality is None:
+            negated_equality = (equality_sides[0], equality_sides[1], raw_tptp_claim_name(parent))
+        else:
+            other_parents.append((parent_expr, raw_tptp_claim_name(parent)))
+    if negated_equality is None:
+        return None
+    left, right, not_equal_proof = negated_equality
+    target_literals = raw_clause_literals(target)
+    if len(target_literals) > 8:
+        return None
+
+    if len(target_literals) == 2 and (
+        (expr_same_mod_alpha(target_literals[0], left) and expr_same_mod_alpha(target_literals[1], right))
+        or (expr_same_mod_alpha(target_literals[0], right) and expr_same_mod_alpha(target_literals[1], left))
+    ):
+        target_text = proof_arg_text(target)
+        left_index = next(index for index, literal in enumerate(target_literals) if expr_same_mod_alpha(literal, left))
+        right_index = 1 - left_index
+        left_intro = raw_or_intro_literal_at(target, left_index, "HleftProof")
+        right_intro = raw_or_intro_literal_at(target, right_index, "HrightProof")
+        if left_intro is None or right_intro is None:
+            return None
+        same_false = raw_prop_disequality_same_truth_false_proof(
+            not_equal_proof,
+            left,
+            right,
+            left_false="HleftNot",
+            right_false="HrightNot",
+        )
+        if same_false is None:
+            return None
+        false_branch = raw_false_to_expr_proof(same_false, target)
+        return (
+            f"(xm {proof_arg_text(left)} {target_text} "
+            f"(fun HleftProof => {proof_term_text(left_intro)}) "
+            f"(fun HleftNot => "
+            f"(xm {proof_arg_text(right)} {target_text} "
+            f"(fun HrightProof => {proof_term_text(right_intro)}) "
+            f"(fun HrightNot => {proof_term_text(false_branch)}))))"
+        )
+
+    def negated_counterpart(literal: Expr) -> tuple[Expr, Expr] | None:
+        premises, conclusion = split_arrows(literal)
+        if len(premises) == 1 and false_eliminator_expr(conclusion):
+            if expr_same_mod_alpha(premises[0], left):
+                return right, left
+            if expr_same_mod_alpha(premises[0], right):
+                return left, right
+        return None
+
+    for source, source_proof in other_parents:
+        source_literals = raw_clause_literals(source)
+        if len(source_literals) > 8:
+            continue
+        previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+        PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target)
+
+        def handler(literal: Expr, literal_proof: str) -> str | None:
+            direct = raw_literal_to_clause_proof(literal, target, literal_proof, target_literals, ())
+            if direct is not None:
+                return direct
+            for target_index, target_literal in enumerate(target_literals):
+                counterpart = negated_counterpart(target_literal)
+                if counterpart is None:
+                    continue
+                positive_side, negative_side = counterpart
+                if not expr_same_mod_alpha(literal, positive_side):
+                    continue
+                assumed_negative = fresh_identifier("Hneg", expr_text(target_literal), source_proof)
+                if expr_same_mod_alpha(negative_side, left):
+                    false_proof = raw_prop_disequality_same_truth_false_proof(
+                        not_equal_proof,
+                        left,
+                        right,
+                        left_true=assumed_negative,
+                        right_true=literal_proof,
+                    )
+                else:
+                    false_proof = raw_prop_disequality_same_truth_false_proof(
+                        not_equal_proof,
+                        left,
+                        right,
+                        left_true=literal_proof,
+                        right_true=assumed_negative,
+                    )
+                if false_proof is None:
+                    continue
+                negative_proof = f"(fun {assumed_negative} :{proof_arg_text(negative_side)} => {false_proof})"
+                introduced = raw_or_intro_literal_at(target, target_index, negative_proof)
+                if introduced is not None:
+                    return introduced
+            return None
+
+        try:
+            proof = raw_clause_cases_with_handler(source, source_proof, handler, avoid_text="prop_diseq_superposition")
+        finally:
+            if previous_target is None:
+                if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                    delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+            else:
+                PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+        if proof is not None:
+            return proof
     return None
 
 
