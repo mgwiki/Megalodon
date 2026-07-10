@@ -22039,6 +22039,21 @@ def raw_impossible_prop_equality_disjunct_elimination_proof(
     target: Expr,
     source_proof: str,
 ) -> str | None:
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
+        assert source.value is not None and target.value is not None and target.sort is not None
+        binder = target.value
+        source_body = source.args[0]
+        if source.value != binder:
+            source_body = rename_expr_variables(source_body, {source.value: binder})
+        inner = raw_impossible_prop_equality_disjunct_elimination_proof(
+            source_body,
+            target.args[0],
+            f"({proof_head(source_proof)} {binder})",
+        )
+        if inner is None:
+            return None
+        return f"(fun {binder} :{target.sort} => {inner})"
+
     parts = raw_or_parts(source)
     if parts is None:
         return None
@@ -22077,6 +22092,21 @@ def raw_impossible_prop_equality_clause_elimination_proof(
     target: Expr,
     source_proof: str,
 ) -> str | None:
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
+        assert source.value is not None and target.value is not None and target.sort is not None
+        binder = target.value
+        source_body = source.args[0]
+        if source.value != binder:
+            source_body = rename_expr_variables(source_body, {source.value: binder})
+        inner = raw_impossible_prop_equality_clause_elimination_proof(
+            source_body,
+            target.args[0],
+            f"({proof_head(source_proof)} {binder})",
+        )
+        if inner is None:
+            return None
+        return f"(fun {binder} :{target.sort} => {inner})"
+
     source_literals = raw_clause_literals(source)
     target_literals = raw_clause_literals(target)
     if len(source_literals) <= len(target_literals):
@@ -35498,6 +35528,106 @@ def raw_tptp_equality_factoring_proof(
     return None
 
 
+def raw_tptp_instantiated_parent_clause_weaken_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+    *,
+    max_binders: int = 5,
+    max_literals: int = 16,
+    max_attempts: int = 512,
+) -> str | None:
+    if len(parents) != 1:
+        return None
+    parent_proposition = propositions_by_name.get(parents[0])
+    parent = parse_expr(parent_proposition) if parent_proposition is not None else None
+    target = parse_expr(proposition)
+    if parent is None or target is None:
+        return None
+    parent_binders, parent_body = collect_foralls(parent)
+    target_binders, target_body = collect_foralls(target)
+    if (
+        not parent_binders
+        or len(parent_binders) > max_binders
+        or len(target_binders) > max_binders
+        or len(parent_binders) < len(target_binders)
+    ):
+        return None
+    if len(raw_clause_literals(parent_body)) > max_literals or len(raw_clause_literals(target_body)) > max_literals:
+        return None
+
+    local_sorts = {**variable_sorts, **dict(parent_binders), **dict(target_binders)}
+    target_names = {name for name, _sort in target_binders}
+    parent_names = {name for name, _sort in parent_binders}
+    target_vars_by_sort: dict[str, list[Expr]] = {}
+    for name, sort in target_binders:
+        target_vars_by_sort.setdefault(sort, []).append(Expr("var", value=name))
+    candidate_exprs = (parent_body, target_body)
+    candidates_by_binder: list[list[Expr]] = []
+
+    for name, sort in parent_binders:
+        candidates: list[Expr] = []
+        seen: set[str] = set()
+
+        def add(candidate: Expr) -> None:
+            if expr_variables(candidate) & (parent_names - target_names):
+                return
+            if not equivalent_sorts(expr_sort(candidate, local_sorts), sort):
+                return
+            key = expr_key(candidate)
+            if key in seen:
+                return
+            seen.add(key)
+            candidates.append(candidate)
+
+        if name in target_names:
+            add(Expr("var", value=name))
+        for target_var in target_vars_by_sort.get(sort, []):
+            add(target_var)
+        for candidate in raw_candidate_terms_for_sort(candidate_exprs, sort, local_sorts):
+            add(candidate)
+        inhabitant = raw_simple_inhabitant_for_sort(sort)
+        if inhabitant is not None:
+            add(inhabitant)
+        if not candidates:
+            return None
+        candidates_by_binder.append(candidates[:12])
+
+    product = 1
+    for candidates in candidates_by_binder:
+        product *= len(candidates)
+        if product > max_attempts * 4:
+            return None
+
+    attempts = 0
+    for values in itertools.product(*candidates_by_binder):
+        attempts += 1
+        if attempts > max_attempts or proof_search_timed_out():
+            return None
+        subst = {name: value for (name, _sort), value in zip(parent_binders, values)}
+        instantiated_body = flatten_applications(substitute_expr(parent_body, subst))
+        if not raw_clause_replay_budget_ok(
+            instantiated_body,
+            target_body,
+            max_literals=max_literals,
+            max_literal_product=max_literals * max_literals,
+        ):
+            continue
+        source_proof = raw_tptp_claim_name(parents[0])
+        for name, _sort in parent_binders:
+            source_proof = f"({proof_head(source_proof)} {proof_arg_text(subst[name])})"
+        body_proof = raw_clause_subsumption_transform_proof(instantiated_body, target_body, source_proof)
+        if body_proof is None:
+            body_proof = raw_clause_transform_proof(instantiated_body, target_body, source_proof)
+        if body_proof is None:
+            continue
+        for name, sort in reversed(target_binders):
+            body_proof = f"(fun {name} :{sort} => {body_proof})"
+        return body_proof
+    return None
+
+
 def raw_tptp_guarded_prop_equality_factoring_fallback(
     proposition: str,
     parents: list[str],
@@ -48720,6 +48850,14 @@ def raw_tptp_replay_proof(
         if proof is not None:
             return proof
         proof = raw_tptp_guarded_prop_equality_factoring_fallback(
+            proposition,
+            parents,
+            propositions_by_name,
+            variable_sorts,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_tptp_instantiated_parent_clause_weaken_proof(
             proposition,
             parents,
             propositions_by_name,
