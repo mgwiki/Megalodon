@@ -32,6 +32,7 @@ SKELETON_DIR=${SKELETON_DIR:-"$WORK_DIR/claim_skeletons"}
 CHECK_CLAIM_SKELETONS=${CHECK_CLAIM_SKELETONS:-1}
 CHECK_RAW_TPTP=${CHECK_RAW_TPTP:-1}
 RAW_TPTP_REPLAY_SECONDS=${RAW_TPTP_REPLAY_SECONDS:-1.0}
+RAW_TPTP_SKELETON_SECONDS=${RAW_TPTP_SKELETON_SECONDS:-10}
 RAW_TPTP_SKELETON_DIR=${RAW_TPTP_SKELETON_DIR:-"$WORK_DIR/raw_tptp_skeletons"}
 RAW_TPTP_CHECK_DIR=${RAW_TPTP_CHECK_DIR:-"$WORK_DIR/raw_tptp_checks"}
 RAW_TPTP_PROOF_DIR=${RAW_TPTP_PROOF_DIR:-}
@@ -111,6 +112,7 @@ PY
 
   rm -rf "$RAW_TPTP_SKELETON_DIR" "$RAW_TPTP_CHECK_DIR"
   MEGALODON_RAW_TPTP_REPLAY_SECONDS="$RAW_TPTP_REPLAY_SECONDS" \
+  MEGALODON_RAW_TPTP_SKELETON_SECONDS="$RAW_TPTP_SKELETON_SECONDS" \
   python3 scripts/vampire_reconstruct_megalodon.py \
     --repo "$ROOT" \
     --megalodon "$MEGALODON" \
@@ -122,6 +124,7 @@ PY
   raw_admit_pattern='^\s*(\{\s*)?admit\.\s*(\})?\s*$'
   raw_admits=$({ rg -n "$raw_admit_pattern" "$RAW_TPTP_SKELETON_DIR" -g '*.mg' || true; } | wc -l)
   raw_aby=$({ rg -n "\baby\b" "$RAW_TPTP_SKELETON_DIR" -g '*.mg' || true; } | wc -l)
+  raw_timeouts=$(find "$RAW_TPTP_SKELETON_DIR" -maxdepth 1 -name '*.timeout' | wc -l)
   mkdir -p "$RAW_TPTP_CHECK_DIR"
 
   case "$RAW_TPTP_CHECK_MODE" in
@@ -159,6 +162,7 @@ PY
       ;;
     allow_admits)
       MEGALODON_RAW_TPTP_REPLAY_SECONDS="$RAW_TPTP_REPLAY_SECONDS" \
+      MEGALODON_RAW_TPTP_SKELETON_SECONDS="$RAW_TPTP_SKELETON_SECONDS" \
       python3 scripts/vampire_reconstruct_megalodon.py \
         --repo "$ROOT" \
         --megalodon "$MEGALODON" \
@@ -183,8 +187,8 @@ PY
       ;;
   esac
 
-  printf '{"raw_tptp_skeleton_dir":"%s","raw_tptp_check_dir":"%s","raw_tptp_admits":%s,"raw_tptp_aby":%s}\n' \
-    "$RAW_TPTP_SKELETON_DIR" "$RAW_TPTP_CHECK_DIR" "$raw_admits" "$raw_aby"
+  printf '{"raw_tptp_skeleton_dir":"%s","raw_tptp_check_dir":"%s","raw_tptp_admits":%s,"raw_tptp_aby":%s,"raw_tptp_timeouts":%s}\n' \
+    "$RAW_TPTP_SKELETON_DIR" "$RAW_TPTP_CHECK_DIR" "$raw_admits" "$raw_aby" "$raw_timeouts"
   printf '{"raw_tptp_check_mode":"%s","raw_tptp_checked":%s,"raw_tptp_check_failures":%s}\n' \
     "$RAW_TPTP_CHECK_MODE" "$raw_checked" "$raw_check_failures"
   if [[ "$raw_aby" != 0 || "$raw_check_failures" != 0 ]]; then

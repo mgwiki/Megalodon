@@ -19021,15 +19021,13 @@ def raw_false_literal_elimination_proof(branch: Expr, target: Expr, branch_proof
     sides = equality_like_sides(branch)
     if sides is not None:
         left, right = sides
-        true_expr = Expr("var", value="vampire_true")
-        false_expr = Expr("var", value="vampire_false")
-        true_proof = "(fun Q H => H)"
-        if expr_key(left) == expr_key(true_expr) and expr_key(right) == expr_key(false_expr):
+        true_proof = raw_true_intro_proof()
+        if raw_true_expr(left) and false_eliminator_expr(right):
             false_proof = f"({proof_head(branch_proof)} (fun R:prop => R) {true_proof})"
-            return raw_false_to_expr_proof(false_proof, target, false_expr)
-        if expr_key(left) == expr_key(false_expr) and expr_key(right) == expr_key(true_expr):
-            false_proof = f"(({proof_head(branch_proof)} (fun R:prop => R -> vampire_false) (fun H => H)) {true_proof})"
-            return raw_false_to_expr_proof(false_proof, target, false_expr)
+            return raw_false_to_expr_proof(false_proof, target, right)
+        if false_eliminator_expr(left) and raw_true_expr(right):
+            false_proof = f"(({proof_head(branch_proof)} (fun R:prop => R -> False) (fun H => H)) {true_proof})"
+            return raw_false_to_expr_proof(false_proof, target, left)
     premises, conclusion = split_arrows(branch)
     if len(premises) != 1 or not false_eliminator_expr(conclusion):
         return None
@@ -20312,6 +20310,7 @@ def raw_instantiated_forall_clause_options(
     proof: str,
     target: Expr,
     resolver: Expr,
+    variable_sorts: dict[str, str] | None = None,
 ) -> list[tuple[Expr, str]]:
     options = [(expr, proof)]
     seen = {expr_key(expr)}
@@ -20390,6 +20389,14 @@ def raw_instantiated_forall_clause_options(
     for subst in candidates:
         if not binder_names <= subst.keys():
             continue
+        if variable_sorts is not None:
+            target_binders, _target_body = collect_foralls(target)
+            known_sorts = {**variable_sorts, **dict(target_binders)}
+            if any(
+                not equivalent_sorts(expr_sort(subst[name], known_sorts), sort)
+                for name, sort in binders
+            ):
+                continue
         instantiated = flatten_applications(substitute_expr(body, subst))
         key = expr_key(instantiated)
         if key in seen:
@@ -23516,7 +23523,7 @@ def raw_false_to_expr_proof(false_proof: str, target: Expr, false_expr: Expr | N
     if target.kind == "forall" and target.value is not None and target.sort is not None:
         inner = raw_false_to_expr_proof(false_proof, target.args[0], false_expr)
         return f"(fun {target.value} :{target.sort} => {inner})"
-    if false_expr is not None and false_expr.kind == "var" and false_expr.value == "False":
+    if false_expr is not None and false_eliminator_expr(false_expr):
         if false_eliminator_expr(target):
             return false_proof
         return f"((FalseE {proof_term_text(false_proof)}) {proof_arg_text(target)})"
@@ -37632,6 +37639,84 @@ def raw_guarded_quantified_to_clause_equality_superposition_proof(
     return None
 
 
+def raw_prop_true_false_guard_superposition_proof(
+    target: Expr,
+    parent: Expr,
+    parent_proof: str,
+) -> str | None:
+    target_parts = raw_or_parts(target)
+    if target_parts is None:
+        return None
+    target_negative: Expr | None = None
+    target_guard: Expr | None = None
+    target_premise: Expr | None = None
+    for candidate_negative, candidate_guard in (target_parts, (target_parts[1], target_parts[0])):
+        premises, conclusion = split_arrows(candidate_negative)
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
+            continue
+        sides = app_args(premises[0], "vampire_eq_prop", 2)
+        if sides is None or not raw_true_expr(sides[0]) or not raw_true_expr(sides[1]):
+            continue
+        target_negative = candidate_negative
+        target_guard = candidate_guard
+        target_premise = premises[0]
+        break
+    if target_negative is None or target_guard is None or target_premise is None:
+        return None
+
+    binders, parent_body = collect_foralls(parent)
+    if len(binders) != 1:
+        return None
+    binder_name, binder_sort = binders[0]
+    if binder_sort != "prop":
+        return None
+    parent_parts = raw_or_parts(parent_body)
+    if parent_parts is None:
+        return None
+    parent_eq: Expr | None = None
+    parent_guard: Expr | None = None
+    parent_eq_first = True
+    for is_first, (candidate_eq, candidate_guard) in (
+        (True, parent_parts),
+        (False, (parent_parts[1], parent_parts[0])),
+    ):
+        sides = app_args(candidate_eq, "vampire_eq_prop", 2)
+        if sides is None:
+            continue
+        if not raw_true_expr(sides[0]) or sides[1].kind != "var" or sides[1].value != binder_name:
+            continue
+        if not expr_same_mod_alpha(candidate_guard, target_guard):
+            continue
+        parent_eq = candidate_eq
+        parent_guard = candidate_guard
+        parent_eq_first = is_first
+        break
+    if parent_eq is None or parent_guard is None:
+        return None
+
+    false_expr = Expr("var", value="False")
+    parent_eq_false = substitute_expr(parent_eq, {binder_name: false_expr})
+    opened_parent_proof = f"({proof_head(parent_proof)} False)"
+    false_proof = "(HL (fun R:prop => R) (fun P H => H))"
+    negative_proof = f"(fun Htt :{proof_arg_text(target_premise)} => {false_proof})"
+    negative_intro = raw_or_intro_from_branch(target, target_negative, negative_proof)
+    guard_intro = raw_or_intro_from_branch(target, target_guard, "HR")
+    if negative_intro is None or guard_intro is None:
+        return None
+    target_text = proof_arg_text(target)
+    if parent_eq_first:
+        return (
+            f"({opened_parent_proof} {target_text} "
+            f"(fun HL :{proof_arg_text(parent_eq_false)} => {proof_term_text(negative_intro)}) "
+            f"(fun HR :{proof_arg_text(parent_guard)} => {proof_term_text(guard_intro)}))"
+        )
+    return (
+        f"({opened_parent_proof} {target_text} "
+        f"(fun HR :{proof_arg_text(parent_guard)} => {proof_term_text(guard_intro)}) "
+        f"(fun HL :{proof_arg_text(parent_eq_false)} => {proof_term_text(negative_intro)}))"
+    )
+
+
 def raw_tptp_superposition_proof(
     proposition: str,
     parents: list[str],
@@ -37652,6 +37737,10 @@ def raw_tptp_superposition_proof(
             if parent_expr is not None:
                 parent_exprs.append((parent_expr, raw_tptp_canonical_parent_proof_name(parent, propositions_by_name)))
         if target_expr is not None and len(parent_exprs) == 2:
+            for parent_expr, parent_proof in parent_exprs:
+                proof = raw_prop_true_false_guard_superposition_proof(target_expr, parent_expr, parent_proof)
+                if proof is not None:
+                    return proof
             proof = raw_unit_equality_parent_negative_contradiction_proof(
                 parent_exprs[0][0],
                 target_expr,
@@ -43002,11 +43091,11 @@ def raw_tptp_forward_subsumption_resolution_proof(
                     return proof
             source_options = [
                 *raw_replay_substituted_parent_options(source_index, source, source_name, replay_step, variable_sorts),
-                *raw_instantiated_forall_clause_options(source, source_name, target_expr, resolver),
+                *raw_instantiated_forall_clause_options(source, source_name, target_expr, resolver, variable_sorts),
             ]
             resolver_options = [
                 *raw_replay_substituted_parent_options(resolver_index, resolver, resolver_name, replay_step, variable_sorts),
-                *raw_instantiated_forall_clause_options(resolver, resolver_name, target_expr, source),
+                *raw_instantiated_forall_clause_options(resolver, resolver_name, target_expr, source, variable_sorts),
             ]
             seen_source: set[str] = set()
             source_options = [
@@ -50087,6 +50176,20 @@ def raw_tptp_replay_proof(
             if previous_deadline is not None:
                 PROOF_SEARCH_STATE.deadline = previous_deadline
     if rule == "superposition":
+        target_expr = parse_expr(proposition)
+        if target_expr is not None:
+            for parent in parents:
+                parent_proposition = propositions_by_name.get(parent)
+                parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+                if parent_expr is None:
+                    continue
+                proof = raw_prop_true_false_guard_superposition_proof(
+                    target_expr,
+                    parent_expr,
+                    raw_tptp_canonical_parent_proof_name(parent, propositions_by_name),
+                )
+                if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
+                    return proof
         proof = raw_guarded_prop_extensionality_fact_superposition_proof(
             proposition,
             parents,
@@ -52424,6 +52527,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         source,
         proof_or_problem_obligation_line(proof, problem),
     )
+    local_set_sorts = {name: sort for name, (sort, _body) in all_local_set_definitions.items()}
     standard_tptp_proof = bool(declarations)
     entries: list[tuple[str, str, str, str | None, str | None, list[str], bool]]
     replay_steps = megalodon_replay_steps(text, proof, problem, source)
@@ -52431,10 +52535,10 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     if declarations:
         raw_declared_sorts = raw_tptp_type_variables(declarations)
         variable_sorts = {
-            **source_declared_sorts(source),
+            **local_set_sorts,
+            **source_active_declared_sorts(source),
             **source_definition_sorts(source),
             **raw_declared_sorts,
-            **{name: sort for name, (sort, _body) in all_local_set_definitions.items()},
         }
         variable_sorts.update(raw_tptp_standard_function_definition_sorts(declarations, variable_sorts))
         variable_sorts.update(raw_tptp_skolem_binder_sorts(text, variable_sorts))
@@ -52479,13 +52583,13 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         propositions = decoded_propositions
     else:
         variable_sorts = {
-            **source_declared_sorts(source),
+            **local_set_sorts,
+            **source_active_declared_sorts(source),
             **source_definition_sorts(source),
             **proof_text_type_variable_sorts(text),
             **problem_type_variable_sorts(proof, problem),
             **megalodon_outline_symbol_sorts(text),
             **raw_tptp_exported_source_variable_sorts(text),
-            **{name: sort for name, (sort, _body) in all_local_set_definitions.items()},
         }
         variable_sorts.update(raw_tptp_skolem_binder_sorts(text, variable_sorts))
         function_definitions = tptp_function_definition_infos(text, variable_sorts)
@@ -52759,7 +52863,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     for name, (sort, body) in local_set_definitions.items():
         if name in declared_names:
             continue
-        lines.append(f"Definition {name} : {sort} := {body}.")
+        resolved_sort = variable_sorts.get(name, sort)
+        lines.append(f"Definition {name} : {resolved_sort} := {body}.")
         declared_names.add(name)
     for name, definition in ordered_definitions(function_definitions):
         if name in declared_names:
@@ -53161,6 +53266,23 @@ def write_raw_tptp_skeletons(
         return [path for path in executor.map(write_raw_tptp_skeleton, tasks) if path is not None]
 
 
+class RawTptpSkeletonTimeout(TimeoutError):
+    pass
+
+
+def raw_tptp_skeleton_timeout_seconds() -> float:
+    value = os.environ.get("MEGALODON_RAW_TPTP_SKELETON_SECONDS", "0")
+    try:
+        seconds = float(value)
+    except ValueError:
+        return 0.0
+    return max(0.0, seconds)
+
+
+def raw_tptp_skeleton_timeout_handler(signum: int, frame: object) -> None:
+    raise RawTptpSkeletonTimeout()
+
+
 def raw_tptp_problem_candidates(proof_path: Path) -> list[str]:
     names: list[str] = []
 
@@ -53214,11 +53336,35 @@ def write_raw_tptp_skeleton(task: tuple[Path, Path, Path, Path | None]) -> Path 
         return None
     problem = find_raw_tptp_problem_for_proof(proof_path, repo)
     output = output_dir / f"{proof_path.stem}.raw_tptp_skeleton.mg"
-    output.write_text(
-        "\n".join(raw_tptp_skeleton_lines(proof_path, problem, source)) + "\n",
-        encoding="utf-8",
-    )
-    return output
+    marker = output_dir / f"{proof_path.stem}.raw_tptp_skeleton.timeout"
+    timeout_seconds = raw_tptp_skeleton_timeout_seconds()
+    previous_handler = None
+    previous_timer = None
+    if timeout_seconds > 0:
+        previous_handler = signal.getsignal(signal.SIGALRM)
+        signal.signal(signal.SIGALRM, raw_tptp_skeleton_timeout_handler)
+        previous_timer = signal.setitimer(signal.ITIMER_REAL, timeout_seconds)
+    try:
+        output.write_text(
+            "\n".join(raw_tptp_skeleton_lines(proof_path, problem, source)) + "\n",
+            encoding="utf-8",
+        )
+        if marker.exists():
+            marker.unlink()
+        return output
+    except RawTptpSkeletonTimeout:
+        marker.write_text(
+            f"timeout after {timeout_seconds:g}s while reconstructing {proof_path}\n",
+            encoding="utf-8",
+        )
+        return None
+    finally:
+        if timeout_seconds > 0:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            if previous_handler is not None:
+                signal.signal(signal.SIGALRM, previous_handler)
+            if previous_timer is not None and previous_timer[0] > 0:
+                signal.setitimer(signal.ITIMER_REAL, previous_timer[0], previous_timer[1])
 
 
 def check_raw_tptp_skeletons(
