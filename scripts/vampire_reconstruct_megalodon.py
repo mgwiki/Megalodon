@@ -2160,6 +2160,9 @@ def remove_axiom_shadowing_claims(lines: list[str]) -> list[str]:
 
 
 def problem_path_for_proof(proof: Path) -> Path | None:
+    direct_problem = proof.parent.parent / proof.name
+    if proof.parent.name.startswith("out") and direct_problem.exists():
+        return direct_problem
     if proof.parent.name != "proofs":
         return None
     for suffix in (".megalodon.out", ".leancheck.out", ".out"):
@@ -20690,35 +20693,43 @@ def raw_complement_resolution_proof(
         and false_eliminator_expr(left_conclusion)
         and expr_key(left_premises[0]) == expr_key(right)
     ):
-        return f"(({proof_head(left_proof)} {proof_term_text(right_proof)}) {proof_arg_text(target)})"
+        false_proof = f"({proof_head(left_proof)} {proof_term_text(right_proof)})"
+        return raw_false_to_expr_proof(false_proof, target, left_conclusion)
     if len(left_premises) == 1 and false_eliminator_expr(left_conclusion):
         premise_proof = raw_literal_direct_transform_proof(right, left_premises[0], right_proof, ())
         if premise_proof is None:
             premise_proof = raw_deep_formula_transform_proof(right, left_premises[0], right_proof, {})
         if premise_proof is not None:
-            return f"(({proof_head(left_proof)} {proof_term_text(premise_proof)}) {proof_arg_text(target)})"
+            false_proof = f"({proof_head(left_proof)} {proof_term_text(premise_proof)})"
+            return raw_false_to_expr_proof(false_proof, target, left_conclusion)
     symmetric = symmetric_equality_complement(left, left_proof, right, right_proof)
     if symmetric is not None:
         return symmetric
     if false_eliminator_expr(left) and len(right_premises) == 1 and false_eliminator_expr(right_conclusion):
-        return f"(({proof_head(right_proof)} ({proof_head(left_proof)} {proof_arg_text(right_premises[0])})) {proof_arg_text(target)})"
+        premise_proof = raw_false_to_expr_proof(left_proof, right_premises[0], left)
+        false_proof = f"({proof_head(right_proof)} {proof_term_text(premise_proof)})"
+        return raw_false_to_expr_proof(false_proof, target, right_conclusion)
     if (
         len(right_premises) == 1
         and false_eliminator_expr(right_conclusion)
         and expr_key(right_premises[0]) == expr_key(left)
     ):
-        return f"(({proof_head(right_proof)} {proof_term_text(left_proof)}) {proof_arg_text(target)})"
+        false_proof = f"({proof_head(right_proof)} {proof_term_text(left_proof)})"
+        return raw_false_to_expr_proof(false_proof, target, right_conclusion)
     if len(right_premises) == 1 and false_eliminator_expr(right_conclusion):
         premise_proof = raw_literal_direct_transform_proof(left, right_premises[0], left_proof, ())
         if premise_proof is None:
             premise_proof = raw_deep_formula_transform_proof(left, right_premises[0], left_proof, {})
         if premise_proof is not None:
-            return f"(({proof_head(right_proof)} {proof_term_text(premise_proof)}) {proof_arg_text(target)})"
+            false_proof = f"({proof_head(right_proof)} {proof_term_text(premise_proof)})"
+            return raw_false_to_expr_proof(false_proof, target, right_conclusion)
     symmetric = symmetric_equality_complement(right, right_proof, left, left_proof)
     if symmetric is not None:
         return symmetric
     if false_eliminator_expr(right) and len(left_premises) == 1 and false_eliminator_expr(left_conclusion):
-        return f"(({proof_head(left_proof)} ({proof_head(right_proof)} {proof_arg_text(left_premises[0])})) {proof_arg_text(target)})"
+        premise_proof = raw_false_to_expr_proof(right_proof, left_premises[0], right)
+        false_proof = f"({proof_head(left_proof)} {proof_term_text(premise_proof)})"
+        return raw_false_to_expr_proof(false_proof, target, left_conclusion)
     return None
 
 
@@ -28717,6 +28728,15 @@ def raw_rectify_formula_transform_proof(
                 depth + 1,
             )
             if right_equality is not None:
+                if source.kind == "eq" and target.kind == "eq":
+                    return (
+                        f"(vampire_native_eq_trans_set "
+                        f"{proof_arg_text(source_sides[0])} "
+                        f"{proof_arg_text(source_sides[1])} "
+                        f"{proof_arg_text(target_sides[1])} "
+                        f"{proof_term_text(source_proof)} "
+                        f"{proof_term_text(right_equality)})"
+                    )
                 return eq_transitivity_proof(
                     [source_proof, right_equality],
                     expr_text(source_sides[0]),
@@ -28729,6 +28749,15 @@ def raw_rectify_formula_transform_proof(
                 depth + 1,
             )
             if left_equality is not None:
+                if source.kind == "eq" and target.kind == "eq":
+                    return (
+                        f"(vampire_native_eq_trans_set "
+                        f"{proof_arg_text(target_sides[0])} "
+                        f"{proof_arg_text(source_sides[0])} "
+                        f"{proof_arg_text(source_sides[1])} "
+                        f"{proof_term_text(left_equality)} "
+                        f"{proof_term_text(source_proof)})"
+                    )
                 return eq_transitivity_proof(
                     [left_equality, source_proof],
                     expr_text(target_sides[0]),
@@ -29866,6 +29895,49 @@ def raw_prop_implication_transform_proof(
 
     source_sides = equality_like_sides(source)
     target_sides = equality_like_sides(target)
+    if source_sides is not None and target_sides is not None:
+        if expr_same_mod_alpha(source_sides[0], target_sides[0]):
+            right_equality = raw_set_term_equality_transform_proof(
+                source_sides[1],
+                target_sides[1],
+                variable_sorts,
+                depth + 1,
+            )
+            if right_equality is not None:
+                if source.kind == "eq" and target.kind == "eq":
+                    return (
+                        f"(vampire_native_eq_trans_set "
+                        f"{proof_arg_text(source_sides[0])} "
+                        f"{proof_arg_text(source_sides[1])} "
+                        f"{proof_arg_text(target_sides[1])} "
+                        f"{proof_term_text(source_proof)} "
+                        f"{proof_term_text(right_equality)})"
+                    )
+                return eq_transitivity_proof(
+                    [source_proof, right_equality],
+                    expr_text(source_sides[0]),
+                )
+        if expr_same_mod_alpha(source_sides[1], target_sides[1]):
+            left_equality = raw_set_term_equality_transform_proof(
+                target_sides[0],
+                source_sides[0],
+                variable_sorts,
+                depth + 1,
+            )
+            if left_equality is not None:
+                if source.kind == "eq" and target.kind == "eq":
+                    return (
+                        f"(vampire_native_eq_trans_set "
+                        f"{proof_arg_text(target_sides[0])} "
+                        f"{proof_arg_text(source_sides[0])} "
+                        f"{proof_arg_text(source_sides[1])} "
+                        f"{proof_term_text(left_equality)} "
+                        f"{proof_term_text(source_proof)})"
+                    )
+                return eq_transitivity_proof(
+                    [left_equality, source_proof],
+                    expr_text(target_sides[0]),
+                )
     if (
         source_sides is not None
         and target_sides is not None
@@ -30389,6 +30461,31 @@ def raw_prop_equivalence_proof(
     )
 
 
+def raw_native_prop_equality_proof(
+    source: Expr,
+    target: Expr,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 24 or proof_search_timed_out():
+        return None
+    if expr_same_mod_alpha(source, target):
+        return f"(prop_ext_2 {proof_arg_text(source)} {proof_arg_text(target)} (fun Hsrc => Hsrc) (fun Htgt => Htgt))"
+    forward_name = fresh_identifier("Hsrc", expr_text(source), expr_text(target), "native")
+    backward_name = fresh_identifier("Htgt", expr_text(source), expr_text(target), forward_name)
+    forward = raw_prop_implication_transform_proof(source, target, forward_name, variable_sorts, depth + 1)
+    if forward is None:
+        return None
+    backward = raw_prop_implication_transform_proof(target, source, backward_name, variable_sorts, depth + 1)
+    if backward is None:
+        return None
+    return (
+        f"(prop_ext_2 {proof_arg_text(source)} {proof_arg_text(target)} "
+        f"(fun {forward_name} => {proof_term_text(forward)}) "
+        f"(fun {backward_name} => {proof_term_text(backward)}))"
+    )
+
+
 def raw_exists_equality_symmetry_equivalence_proof(
     source: Expr,
     target: Expr,
@@ -30566,6 +30663,26 @@ def raw_set_term_equality_transform_proof(
     context_args[index] = Expr("var", value=hole)
     context = Expr("app", args=tuple(context_args))
     arg_sort = expr_sort(source.args[index], variable_sorts) or expr_sort(target.args[index], variable_sorts)
+    if arg_sort == "prop":
+        argument_equality = raw_native_prop_equality_proof(
+            source.args[index],
+            target.args[index],
+            variable_sorts,
+            depth + 1,
+        )
+        if argument_equality is None:
+            return None
+        equality_context = Expr("eq", args=(source, context))
+        transported = native_equality_transport_proof(
+            argument_equality,
+            source.args[index],
+            target.args[index],
+            native_set_reflexivity_proof(source),
+            hole,
+            "prop",
+            equality_context,
+        )
+        return transported
     if arg_sort == "set":
         left_hole = fresh_identifier("zl", expr_text(source), expr_text(target), str(index))
         right_hole = fresh_identifier("zr", expr_text(source), expr_text(target), str(index))
@@ -31045,6 +31162,52 @@ def raw_deep_formula_transform_proof(
             )
             if inner is not None:
                 return inner
+
+    source_sides = equality_like_sides(source)
+    target_sides = equality_like_sides(target)
+    if source_sides is not None and target_sides is not None:
+        if expr_same_mod_alpha(source_sides[0], target_sides[0]):
+            right_equality = raw_set_term_equality_transform_proof(
+                source_sides[1],
+                target_sides[1],
+                variable_sorts,
+                depth + 1,
+            )
+            if right_equality is not None:
+                if source.kind == "eq" and target.kind == "eq":
+                    return (
+                        f"(vampire_native_eq_trans_set "
+                        f"{proof_arg_text(source_sides[0])} "
+                        f"{proof_arg_text(source_sides[1])} "
+                        f"{proof_arg_text(target_sides[1])} "
+                        f"{proof_term_text(source_proof)} "
+                        f"{proof_term_text(right_equality)})"
+                    )
+                return eq_transitivity_proof(
+                    [source_proof, right_equality],
+                    expr_text(source_sides[0]),
+                )
+        if expr_same_mod_alpha(source_sides[1], target_sides[1]):
+            left_equality = raw_set_term_equality_transform_proof(
+                target_sides[0],
+                source_sides[0],
+                variable_sorts,
+                depth + 1,
+            )
+            if left_equality is not None:
+                if source.kind == "eq" and target.kind == "eq":
+                    return (
+                        f"(vampire_native_eq_trans_set "
+                        f"{proof_arg_text(target_sides[0])} "
+                        f"{proof_arg_text(source_sides[0])} "
+                        f"{proof_arg_text(source_sides[1])} "
+                        f"{proof_term_text(left_equality)} "
+                        f"{proof_term_text(source_proof)})"
+                    )
+                return eq_transitivity_proof(
+                    [left_equality, source_proof],
+                    expr_text(target_sides[0]),
+                )
 
     conjunction = raw_conjunction_transform_proof(source, target, source_proof, variable_sorts, depth + 1)
     if conjunction is not None:
