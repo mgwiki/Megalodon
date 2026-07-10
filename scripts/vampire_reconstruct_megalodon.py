@@ -44341,6 +44341,8 @@ def raw_tptp_forward_subsumption_resolution_proof(
     target = parse_expr(proposition)
     if target is None:
         return None
+    target_binders, target_body = collect_foralls(target)
+
     first_proposition = propositions_by_name.get(parents[0])
     second_proposition = propositions_by_name.get(parents[1])
     if first_proposition is None or second_proposition is None:
@@ -44363,28 +44365,29 @@ def raw_tptp_forward_subsumption_resolution_proof(
         if avatar_split_proof is not None:
             return avatar_split_proof
 
-    selected_literal_proof = raw_tptp_selected_literal_subsumption_resolution_proof(
-        target,
-        parsed,
-        parents,
-        variable_sorts,
-        replay_step,
-    )
-    if selected_literal_proof is not None:
-        return selected_literal_proof
+    if not target_binders:
+        selected_literal_proof = raw_tptp_selected_literal_subsumption_resolution_proof(
+            target,
+            parsed,
+            parents,
+            variable_sorts,
+            replay_step,
+        )
+        if selected_literal_proof is not None:
+            return selected_literal_proof
 
-    resolver_search_proof = raw_tptp_forward_subsumption_resolver_search_proof(
-        target,
-        parsed,
-        variable_sorts,
-    )
-    if resolver_search_proof is not None:
-        return resolver_search_proof
+        resolver_search_proof = raw_tptp_forward_subsumption_resolver_search_proof(
+            target,
+            parsed,
+            variable_sorts,
+        )
+        if resolver_search_proof is not None:
+            return resolver_search_proof
 
-    for parent_expr, parent_proof in parsed:
-        proof = raw_forall_prop_true_equality_split_proof(target, parent_expr, parent_proof)
-        if proof is not None:
-            return proof
+        for parent_expr, parent_proof in parsed:
+            proof = raw_forall_prop_true_equality_split_proof(target, parent_expr, parent_proof)
+            if proof is not None:
+                return proof
 
     def replay_pairs(target_expr: Expr, entries: list[tuple[Expr, str]]) -> str | None:
         for source_index, resolver_index in megalodon_replay_parent_pair_order(parents, replay_step):
@@ -44446,11 +44449,10 @@ def raw_tptp_forward_subsumption_resolution_proof(
                     return proof
         return None
 
-    direct_proof = replay_pairs(target, parsed)
+    direct_proof = None if target_binders else replay_pairs(target, parsed)
     if direct_proof is not None:
         return direct_proof
 
-    target_binders, target_body = collect_foralls(target)
     if target_binders:
         opened: list[tuple[Expr, str]] = parsed
         for target_name, target_sort in target_binders:
@@ -55401,8 +55403,9 @@ def source_local_set_definitions(source: Path | None, line: int | None) -> dict[
     if theorem_line is None:
         return {}
     rows = source.read_text(encoding="utf-8", errors="replace").splitlines()
-    definitions: dict[str, tuple[str, str]] = {}
-    for row in rows[theorem_line - 1 : min(line, len(rows))]:
+    scanned_rows = rows[theorem_line - 1 : min(line, len(rows))]
+    definitions: dict[str, tuple[str, str, int, int]] = {}
+    for offset, row in enumerate(scanned_rows):
         match = LOCAL_SET_DECL_RE.match(row)
         if match is None:
             continue
@@ -55410,8 +55413,25 @@ def source_local_set_definitions(source: Path | None, line: int | None) -> dict[
         body = match.group("body").strip()
         if not sort or not body:
             continue
-        definitions[match.group("name")] = (sort, body)
-    return definitions
+        definitions[match.group("name")] = (sort, body, offset, len(row) - len(row.lstrip()))
+    if not definitions:
+        return {}
+
+    def branch_or_scope_boundary(row: str, definition_indent: int) -> bool:
+        stripped = row.lstrip()
+        indent = len(row) - len(stripped)
+        if indent > definition_indent:
+            return False
+        if stripped.startswith("}"):
+            return True
+        return bool(re.match(r"^[-+*](?:\s|$)", stripped))
+
+    in_scope: dict[str, tuple[str, str]] = {}
+    for name, (sort, body, offset, indent) in definitions.items():
+        if any(branch_or_scope_boundary(row, indent) for row in scanned_rows[offset + 1 :]):
+            continue
+        in_scope[name] = (sort, body)
+    return in_scope
 
 
 def local_set_definition_body_is_safe(body: str) -> bool:
@@ -56406,6 +56426,37 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                             delattr(PROOF_SEARCH_STATE, "deadline")
                     else:
                         PROOF_SEARCH_STATE.deadline = previous_deadline
+            if replay_proof is None and step_info is None and rule in {"ennf_transformation", "nnf_transformation"}:
+                parent_proposition = propositions_by_name.get(replay_parents[0]) if len(replay_parents) == 1 else None
+                source_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+                target_expr = parse_expr(proposition)
+                if (
+                    source_expr is not None
+                    and target_expr is not None
+                    and raw_tptp_peirce_prop_binder_ennf_candidate(source_expr, target_expr)
+                ):
+                    previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+                    PROOF_SEARCH_STATE.deadline = proof_search_now() + 3.0
+                    try:
+                        replay_proof = raw_tptp_peirce_implication_ennf_proof(
+                            proposition,
+                            replay_parents,
+                            propositions_by_name,
+                            variable_sorts,
+                        )
+                        if replay_proof is None:
+                            replay_proof = raw_implication_to_ennf_or_proof(
+                                source_expr,
+                                target_expr,
+                                raw_tptp_claim_name(replay_parents[0]),
+                                variable_sorts,
+                            )
+                    finally:
+                        if previous_deadline is None:
+                            if hasattr(PROOF_SEARCH_STATE, "deadline"):
+                                delattr(PROOF_SEARCH_STATE, "deadline")
+                        else:
+                            PROOF_SEARCH_STATE.deadline = previous_deadline
             if replay_proof is None:
                 if raw_tptp_replay_payload_size_ok(
                     rule,
