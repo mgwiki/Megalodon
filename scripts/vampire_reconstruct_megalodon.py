@@ -1615,15 +1615,41 @@ def strip_tptp_negation(text: str) -> str | None:
 def reconstruction_prelude_for(propositions: list[str]) -> list[str]:
     joined = "\n".join(propositions)
     lines = [
-        "Definition vampire_eq : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y.",
-        "Infix = 502 := vampire_eq.",
-        "Definition vampire_eq_set : set->set->prop := vampire_eq.",
+        "Definition vampire_eq_set : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y.",
         "Definition vampire_eq_prop : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y.",
-        "Theorem vampire_eq_sym_set: forall x y:set, x = y -> y = x.",
-        "exact (fun x y H => H (fun z:set => z = x) (fun Q Hq => Hq)).",
+        "Theorem vampire_eq_sym_set: forall x y:set, vampire_eq_set x y -> vampire_eq_set y x.",
+        "exact (fun x y H => H (fun z:set => vampire_eq_set z x) (fun Q Hq => Hq)).",
         "Qed.",
-        "Theorem vampire_eq_transport_eq_set: forall a b c d:set, a = b -> a = c -> b = d -> c = d.",
-        "exact (fun a b c d Hab Hac Hbd => Hac (fun z:set => z = d) ((vampire_eq_sym_set a b Hab) (fun z:set => z = d) Hbd)).",
+        "Theorem vampire_native_eq_sym_set: forall x y:set, x = y -> y = x.",
+        "let x y.",
+        "assume Hxy:x = y.",
+        "let Q.",
+        "assume HQ:Q y x.",
+        "exact (Hxy (fun zl zr => Q zr zl) HQ).",
+        "Qed.",
+        "Theorem vampire_native_eq_transport_set: forall x y:set, x = y -> forall P:set->prop, P x -> P y.",
+        "let x y.",
+        "assume Hxy:x = y.",
+        "let P.",
+        "assume HP:P x.",
+        "exact (Hxy (fun zl zr => P zl) HP).",
+        "Qed.",
+        "Theorem vampire_native_eq_sym_prop: forall x y:prop, x = y -> y = x.",
+        "let x y.",
+        "assume Hxy:x = y.",
+        "let Q.",
+        "assume HQ:Q y x.",
+        "exact (Hxy (fun zl zr => Q zr zl) HQ).",
+        "Qed.",
+        "Theorem vampire_native_eq_transport_prop: forall x y:prop, x = y -> forall P:prop->prop, P x -> P y.",
+        "let x y.",
+        "assume Hxy:x = y.",
+        "let P.",
+        "assume HP:P x.",
+        "exact (Hxy (fun zl zr => P zl) HP).",
+        "Qed.",
+        "Theorem vampire_eq_transport_eq_set: forall a b c d:set, vampire_eq_set a b -> vampire_eq_set a c -> vampire_eq_set b d -> vampire_eq_set c d.",
+        "exact (fun a b c d Hab Hac Hbd => Hac (fun z:set => vampire_eq_set z d) ((vampire_eq_sym_set a b Hab) (fun z:set => vampire_eq_set z d) Hbd)).",
         "Qed.",
     ]
     exists_sorts: dict[str, str] = {}
@@ -1928,9 +1954,7 @@ def add_recovered_input_equalities(lines: list[str], proof_text: str | None) -> 
     if not propositions:
         return list(lines)
 
-    has_equality_prelude = any(line.startswith("Definition vampire_eq ") for line in lines) and any(
-        line.startswith("Infix = ") for line in lines
-    )
+    has_equality_prelude = any(line.startswith("Definition vampire_eq_set ") for line in lines)
     used_axiom_names = {
         axiom[0]
         for line in lines
@@ -1961,8 +1985,7 @@ def add_recovered_input_equalities(lines: list[str], proof_text: str | None) -> 
     axiom_index = 0
     for line in lines:
         if not inserted_prelude and (line.startswith("Variable ") or line.startswith("Axiom ") or line.startswith("Theorem ")):
-            result.append("Definition vampire_eq : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y.")
-            result.append("Infix = 502 := vampire_eq.")
+            result.append("Definition vampire_eq_set : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y.")
             inserted_prelude = True
         if not inserted_axioms and line.startswith("Theorem "):
             for proposition in propositions:
@@ -1976,8 +1999,7 @@ def add_recovered_input_equalities(lines: list[str], proof_text: str | None) -> 
         result.append(line)
 
     if not inserted_prelude:
-        result.append("Definition vampire_eq : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y.")
-        result.append("Infix = 502 := vampire_eq.")
+        result.append("Definition vampire_eq_set : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y.")
     if not inserted_axioms:
         for proposition in propositions:
             while f"ax_recovered_{axiom_index}" in used_axiom_names:
@@ -8586,16 +8608,20 @@ def fresh_identifier(base: str, *texts: str) -> str:
     return name
 
 
-def eq_symmetry_proof(proof: str, left: Expr, right: Expr | None = None) -> str:
-    if right is not None:
-        return f"(vampire_eq_sym_set {proof_arg_text(left)} {proof_arg_text(right)} {proof_term_text(proof)})"
-    left_text = expr_text(left)
-    name = fresh_identifier("zz", left_text)
+def native_eq_symmetry_proof(proof: str, left: Expr, right: Expr | None = None, sort: str = "set") -> str:
+    if right is None:
+        right = left
+    helper = "vampire_native_eq_sym_prop" if sort == "prop" else "vampire_native_eq_sym_set"
     return (
-        f"({proof_head(proof)} "
-        f"(fun {name} :set => {name} = {proof_arg_text(left)}) "
-        f"(fun Q H => H))"
+        f"({helper} "
+        f"{proof_arg_text(left)} "
+        f"{proof_arg_text(right)} "
+        f"{proof_term_text(proof)})"
     )
+
+
+def eq_symmetry_proof(proof: str, left: Expr, right: Expr | None = None) -> str:
+    return native_eq_symmetry_proof(proof, left, right, "set")
 
 
 def set_eq_symmetry_proof(proof: str, left: Expr) -> str:
@@ -19773,13 +19799,20 @@ def raw_literal_direct_transform_proof(
             and expr_same_mod_alpha(source_premise_sides[0], target_premise_sides[1])
             and expr_same_mod_alpha(source_premise_sides[1], target_premise_sides[0])
         ):
-            sort = "prop" if (
-                target_premises[0].kind == "app"
-                and target_premises[0].args
-                and target_premises[0].args[0].kind == "var"
-                and target_premises[0].args[0].value == "vampire_eq_prop"
-            ) else "set"
-            premise_proof = raw_eq_symmetry_proof(premise_name, target_premise_sides[0], sort)
+            if target_premises[0].kind == "eq":
+                premise_proof = eq_symmetry_proof(
+                    premise_name,
+                    target_premise_sides[0],
+                    target_premise_sides[1],
+                )
+            else:
+                sort = "prop" if (
+                    target_premises[0].kind == "app"
+                    and target_premises[0].args
+                    and target_premises[0].args[0].kind == "var"
+                    and target_premises[0].args[0].value == "vampire_eq_prop"
+                ) else "set"
+                premise_proof = raw_eq_symmetry_proof(premise_name, target_premise_sides[0], sort)
             return (
                 f"(fun {premise_name} :{proof_arg_text(target_premises[0])} => "
                 f"({proof_head(source_proof)} {proof_term_text(premise_proof)}))"
@@ -19835,6 +19868,8 @@ def raw_literal_direct_transform_proof(
         and expr_same_mod_alpha(source_sides[0], target_sides[1])
         and expr_same_mod_alpha(source_sides[1], target_sides[0])
     ):
+        if source.kind == "eq":
+            return eq_symmetry_proof(source_proof, source_sides[0], source_sides[1])
         sort = "prop" if source.args[0].value == "vampire_eq_prop" else "set"
         return raw_eq_symmetry_proof(source_proof, source_sides[0], sort)
     factored_forall = raw_factored_forall_literal_transform_proof(source, target, source_proof, rewrites)
@@ -23516,16 +23551,20 @@ def raw_native_equality_to_vampire_eq_set_proof(source: Expr, target: Expr, sour
     if expr_same_mod_alpha(source_sides[0], target_sides[0]) and expr_same_mod_alpha(source_sides[1], target_sides[1]):
         equality_proof = source_instance
     elif expr_same_mod_alpha(source_sides[0], target_sides[1]) and expr_same_mod_alpha(source_sides[1], target_sides[0]):
-        equality_proof = raw_eq_symmetry_proof(source_instance, source_sides[0], "set")
+        equality_proof = eq_symmetry_proof(source_instance, source_sides[0], source_sides[1])
     else:
         return None
 
-    hole = fresh_identifier("zz", expr_text(target_body), source_proof)
-    ignored = fresh_identifier("zz_ignored", expr_text(target_body), source_proof, hole)
+    predicate = fresh_identifier("Pset", expr_text(target_body), source_proof)
+    predicate_proof = fresh_identifier("HPset", expr_text(target_body), source_proof, predicate)
     body_proof = (
-        f"({proof_head(equality_proof)} "
-        f"(fun {hole} {ignored} :set => vampire_eq_set {proof_arg_text(target_sides[0])} {hole}) "
-        f"(fun Q H => H))"
+        f"(fun {predicate} :(set->prop) => fun {predicate_proof} => "
+        f"(vampire_native_eq_transport_set "
+        f"{proof_arg_text(target_sides[0])} "
+        f"{proof_arg_text(target_sides[1])} "
+        f"{proof_term_text(equality_proof)} "
+        f"{predicate} "
+        f"{predicate_proof}))"
     )
     for name, sort in reversed(target_binders):
         body_proof = f"(fun {name} :{sort} => {body_proof})"
@@ -23536,8 +23575,6 @@ def raw_source_fact_native_equality_to_vampire_eq_set_proof(target: Expr, source
     target_binders, target_body = collect_foralls(target)
     target_premises, target_conclusion = split_arrows(target_body)
     target_sides = app_args(target_conclusion, "vampire_eq_set", 2)
-    if target_sides is None and target_conclusion.kind == "eq":
-        target_sides = target_conclusion.args[0], target_conclusion.args[1]
     if target_sides is None:
         return None
     if any(expr_mentions_equality(premise) for premise in target_premises):
@@ -23554,12 +23591,16 @@ def raw_source_fact_native_equality_to_vampire_eq_set_proof(target: Expr, source
     for premise_name in premise_names:
         source_instance = f"({proof_head(source_instance)} {premise_name})"
 
-    hole = fresh_identifier("zz", expr_text(target_conclusion), source_proof)
-    ignored = fresh_identifier("zz_ignored", expr_text(target_conclusion), source_proof, hole)
+    predicate = fresh_identifier("Pset", expr_text(target_conclusion), source_proof)
+    predicate_proof = fresh_identifier("HPset", expr_text(target_conclusion), source_proof, predicate)
     body_proof = (
-        f"({proof_head(source_instance)} "
-        f"(fun {hole} {ignored} :set => vampire_eq_set {proof_arg_text(target_sides[0])} {hole}) "
-        f"(fun Q H => H))"
+        f"(fun {predicate} :(set->prop) => fun {predicate_proof} => "
+        f"(vampire_native_eq_transport_set "
+        f"{proof_arg_text(target_sides[0])} "
+        f"{proof_arg_text(target_sides[1])} "
+        f"{proof_term_text(source_instance)} "
+        f"{predicate} "
+        f"{predicate_proof}))"
     )
     for name, premise in reversed(list(zip(premise_names, target_premises))):
         body_proof = f"(fun {name} :{proof_arg_text(premise)} => {body_proof})"
@@ -24108,6 +24149,8 @@ def raw_direct_conclusion_transform_proof(source: Expr, target: Expr, source_pro
         and expr_same_mod_alpha(source_sides[0], target_sides[1])
         and expr_same_mod_alpha(source_sides[1], target_sides[0])
     ):
+        if source.kind == "eq":
+            return eq_symmetry_proof(source_proof, source_sides[0], source_sides[1])
         sort = "prop" if source.kind == "app" and source.args[0].kind == "var" and source.args[0].value == "vampire_eq_prop" else "set"
         return raw_eq_symmetry_proof(source_proof, source_sides[0], sort)
     return None
@@ -28667,6 +28710,8 @@ def raw_rectify_formula_transform_proof(
             expr_same_mod_alpha(source_sides[0], target_sides[1])
             and expr_same_mod_alpha(source_sides[1], target_sides[0])
         ):
+            if source.kind == "eq":
+                return eq_symmetry_proof(source_proof, source_sides[0], source_sides[1])
             equality_sort = raw_equality_transport_sort(source_sides[0], source_sides[1], variable_sorts)
             return raw_eq_symmetry_proof(source_proof, source_sides[0], equality_sort)
 
@@ -29032,6 +29077,32 @@ def raw_eq_symmetry_proof(proof: str, left: Expr, sort: str) -> str:
         predicate = f"forall Q:({sort_text})->prop, Q {name} -> Q {proof_arg_text(left)}"
         return f"({proof_head(proof)} (fun {name} :{sort_text} => {predicate}) (fun Q H => H))"
     return f"({proof_head(proof)} (fun {name} :{sort} => {predicate}) (fun Q H => H))"
+
+
+def native_equality_transport_proof(
+    proof: str,
+    old: Expr,
+    new: Expr,
+    source_proof: str,
+    hole_name: str,
+    equality_sort: str,
+    context: Expr,
+) -> str | None:
+    helper = {
+        "set": "vampire_native_eq_transport_set",
+        "prop": "vampire_native_eq_transport_prop",
+    }.get(equality_sort)
+    if helper is None:
+        return None
+    sort_text = binder_sort_text(equality_sort)
+    return (
+        f"({helper} "
+        f"{proof_arg_text(old)} "
+        f"{proof_arg_text(new)} "
+        f"{proof_term_text(proof)} "
+        f"(fun {hole_name} :{sort_text} => {expr_text(context)}) "
+        f"{proof_term_text(source_proof)})"
+    )
 
 
 def raw_candidate_terms_for_sort(
@@ -30804,6 +30875,8 @@ def raw_deep_formula_transform_proof(
         and expr_same_mod_alpha(source_sides[0], target_sides[1])
         and expr_same_mod_alpha(source_sides[1], target_sides[0])
     ):
+        if source.kind == "eq":
+            return eq_symmetry_proof(source_proof, source_sides[0], source_sides[1])
         sort = "set"
         if source.kind == "app" and source.args[0].kind == "var" and source.args[0].value == "vampire_eq_prop":
             sort = "prop"
@@ -30961,6 +31034,8 @@ def raw_equality_rewrite_clause_proof(
     equality_right: Expr,
     equality_proof: str,
     equality_sort: str,
+    *,
+    native_equality: bool = False,
 ) -> str | None:
     quantified = raw_quantified_equality_rewrite_clause_proof(
         source,
@@ -30970,6 +31045,7 @@ def raw_equality_rewrite_clause_proof(
         equality_right,
         equality_proof,
         equality_sort,
+        native_equality=native_equality,
     )
     if quantified is not None:
         return quantified
@@ -30981,6 +31057,7 @@ def raw_equality_rewrite_clause_proof(
         equality_right,
         equality_proof,
         equality_sort,
+        native_equality=native_equality,
     )
     if quantified_branch is not None:
         return quantified_branch
@@ -30991,6 +31068,7 @@ def raw_equality_rewrite_clause_proof(
         equality_right,
         equality_proof,
         equality_sort,
+        native_equality=native_equality,
     ):
         if expr_key(replaced) == expr_key(target):
             return transported
@@ -31038,6 +31116,7 @@ def raw_equality_clause_resolution_proof(
             sides[1],
             equality_proof,
             equality_sort,
+            native_equality=equality_literal.kind == "eq",
         ):
             proof = raw_literal_to_clause_proof(replaced, target, transported, target_literals, ())
             if proof is not None:
@@ -31127,6 +31206,8 @@ def raw_quantified_equality_rewrite_clause_proof(
     equality_right: Expr,
     equality_proof: str,
     equality_sort: str,
+    *,
+    native_equality: bool = False,
 ) -> str | None:
     if proof_search_timed_out():
         return None
@@ -31154,8 +31235,11 @@ def raw_quantified_equality_rewrite_clause_proof(
             target_rename[name] = candidate
     if target_rename:
         target_body = rename_expr_variables(target_body, target_rename)
-    equality_head = "vampire_eq_prop" if equality_sort == "prop" else "vampire_eq_set"
-    resolver = Expr("app", args=(Expr("var", value=equality_head), equality_left, equality_right))
+    if native_equality:
+        resolver = Expr("eq", args=(equality_left, equality_right))
+    else:
+        equality_head = "vampire_eq_prop" if equality_sort == "prop" else "vampire_eq_set"
+        resolver = Expr("app", args=(Expr("var", value=equality_head), equality_left, equality_right))
     substitutions: list[dict[str, Expr]] = []
     seen_substitutions: set[tuple[tuple[str, str], ...]] = set()
 
@@ -31219,6 +31303,7 @@ def raw_quantified_equality_rewrite_clause_proof(
             equality_right,
             equality_proof,
             equality_sort,
+            native_equality=native_equality,
         ):
             if expr_same_mod_alpha(replaced, target_body):
                 body_proof: str | None = transported
@@ -31241,6 +31326,8 @@ def raw_quantified_equality_literal_clause_proof(
     equality_right: Expr,
     equality_proof: str,
     equality_sort: str,
+    *,
+    native_equality: bool = False,
 ) -> str | None:
     source_binders, source_body = collect_foralls(source_literal)
     if not source_binders or len(source_binders) > 5:
@@ -31248,8 +31335,11 @@ def raw_quantified_equality_literal_clause_proof(
     if len(raw_clause_literals(source_body)) > 12 or len(target_literals) > 16:
         return None
     binder_names = {name for name, _ in source_binders}
-    equality_head = "vampire_eq_prop" if equality_sort == "prop" else "vampire_eq_set"
-    resolver = Expr("app", args=(Expr("var", value=equality_head), equality_left, equality_right))
+    if native_equality:
+        resolver = Expr("eq", args=(equality_left, equality_right))
+    else:
+        equality_head = "vampire_eq_prop" if equality_sort == "prop" else "vampire_eq_set"
+        resolver = Expr("app", args=(Expr("var", value=equality_head), equality_left, equality_right))
     substitutions: list[dict[str, Expr]] = []
     seen_substitutions: set[tuple[tuple[str, str], ...]] = set()
 
@@ -31302,6 +31392,7 @@ def raw_quantified_equality_literal_clause_proof(
             equality_right,
             equality_proof,
             equality_sort,
+            native_equality=native_equality,
         ):
             if expr_same_mod_alpha(replaced, target):
                 return transported
@@ -31323,6 +31414,8 @@ def raw_clause_quantified_equality_rewrite_proof(
     equality_right: Expr,
     equality_proof: str,
     equality_sort: str,
+    *,
+    native_equality: bool = False,
 ) -> str | None:
     source_literals = raw_clause_literals(source)
     target_literals = raw_clause_literals(target)
@@ -31345,6 +31438,7 @@ def raw_clause_quantified_equality_rewrite_proof(
             equality_right,
             equality_proof,
             equality_sort,
+            native_equality=native_equality,
         )
 
     try:
@@ -31364,12 +31458,19 @@ def raw_equality_rewrite_clause_steps(
     equality_right: Expr,
     equality_proof: str,
     equality_sort: str,
+    *,
+    native_equality: bool = False,
 ) -> list[tuple[Expr, str]]:
     steps: list[tuple[Expr, str]] = []
     seen: set[str] = set()
+    reverse_proof = (
+        eq_symmetry_proof(equality_proof, equality_left, equality_right)
+        if native_equality
+        else raw_eq_symmetry_proof(equality_proof, equality_left, equality_sort)
+    )
     for old, new, proof in (
         (equality_left, equality_right, equality_proof),
-        (equality_right, equality_left, raw_eq_symmetry_proof(equality_proof, equality_left, equality_sort)),
+        (equality_right, equality_left, reverse_proof),
     ):
         allow_alpha_context = "->" in equality_sort or old.kind == "lambda" or new.kind == "lambda"
         if expr_text(old) not in expr_text(source) and not (allow_alpha_context and any(
@@ -31390,11 +31491,24 @@ def raw_equality_rewrite_clause_steps(
                 continue
             seen.add(key)
             equality_sort_text = binder_sort_text(equality_sort)
-            transported = (
-                f"{proof_term_text(proof)} "
-                f"(fun {hole_name} :{equality_sort_text} => {expr_text(context)}) "
-                f"{proof_term_text(source_proof)}"
-            )
+            if native_equality:
+                transported = native_equality_transport_proof(
+                    proof,
+                    old,
+                    new,
+                    source_proof,
+                    hole_name,
+                    equality_sort,
+                    context,
+                )
+                if transported is None:
+                    continue
+            else:
+                transported = (
+                    f"{proof_term_text(proof)} "
+                    f"(fun {hole_name} :{equality_sort_text} => {expr_text(context)}) "
+                    f"{proof_term_text(source_proof)}"
+                )
             steps.append((replaced, transported))
         replaced, changed = replace_expr(source, old, new)
         if not changed:
@@ -31407,11 +31521,24 @@ def raw_equality_rewrite_clause_steps(
             continue
         seen.add(key)
         equality_sort_text = binder_sort_text(equality_sort)
-        transported = (
-            f"{proof_term_text(proof)} "
-            f"(fun {hole_name} :{equality_sort_text} => {expr_text(context)}) "
-            f"{proof_term_text(source_proof)}"
-        )
+        if native_equality:
+            transported = native_equality_transport_proof(
+                proof,
+                old,
+                new,
+                source_proof,
+                hole_name,
+                equality_sort,
+                context,
+            )
+            if transported is None:
+                continue
+        else:
+            transported = (
+                f"{proof_term_text(proof)} "
+                f"(fun {hole_name} :{equality_sort_text} => {expr_text(context)}) "
+                f"{proof_term_text(source_proof)}"
+            )
         steps.append((replaced, transported))
     return steps
 
@@ -31453,6 +31580,7 @@ def raw_quantified_parent_equality_rewrite_clause_proof(
     equality_sides = equality_like_sides(equality_body)
     if equality_sides is None:
         return None
+    native_equality = equality_body.kind == "eq"
     equality_rewrites_propositions = app_args(equality_body, "vampire_eq_prop", 2) is not None
     equality_left_body, equality_right_body = equality_sides
     if len(source_binders) != len(target_binders):
@@ -31530,16 +31658,33 @@ def raw_quantified_parent_equality_rewrite_clause_proof(
                     equality_instance = f"({proof_head(equality_instance)} {proof_arg_text(trial[name])})"
                 instantiated_sort = raw_equality_transport_sort(old_subterm, new_subterm, local_sorts)
                 if reverse:
-                    equality_instance = raw_eq_symmetry_proof(equality_instance, new_subterm, instantiated_sort)
+                    equality_instance = (
+                        eq_symmetry_proof(equality_instance, new_subterm, old_subterm)
+                        if native_equality
+                        else raw_eq_symmetry_proof(equality_instance, new_subterm, instantiated_sort)
+                    )
                 hole_name = fresh_identifier("zz", expr_text(renamed_source_body), expr_text(old_subterm), expr_text(new_subterm))
                 context, context_changed = replace_expr(renamed_source_body, old_subterm, Expr("var", value=hole_name))
                 if not context_changed:
                     continue
-                transported = (
-                    f"{proof_term_text(equality_instance)} "
-                    f"(fun {hole_name} :{instantiated_sort} => {expr_text(context)}) "
-                    f"{proof_term_text(source_body_proof)}"
-                )
+                if native_equality:
+                    transported = native_equality_transport_proof(
+                        equality_instance,
+                        old_subterm,
+                        new_subterm,
+                        source_body_proof,
+                        hole_name,
+                        instantiated_sort,
+                        context,
+                    )
+                    if transported is None:
+                        continue
+                else:
+                    transported = (
+                        f"{proof_term_text(equality_instance)} "
+                        f"(fun {hole_name} :{binder_sort_text(instantiated_sort)} => {expr_text(context)}) "
+                        f"{proof_term_text(source_body_proof)}"
+                    )
                 body_proof: str | None
                 if expr_same_mod_alpha(replaced, target_body):
                     body_proof = transported
@@ -32900,10 +33045,14 @@ def raw_tptp_exported_guarded_demodulation_rewrite_proof(
                 (
                     sides[1],
                     sides[0],
-                    raw_eq_symmetry_proof(
-                        equality_proof,
-                        sides[0],
-                        raw_equality_transport_sort(sides[0], sides[1], local_sorts),
+                    (
+                        eq_symmetry_proof(equality_proof, sides[0], sides[1])
+                        if equality.kind == "eq"
+                        else raw_eq_symmetry_proof(
+                            equality_proof,
+                            sides[0],
+                            raw_equality_transport_sort(sides[0], sides[1], local_sorts),
+                        )
                     ),
                 ),
             ):
@@ -32920,6 +33069,7 @@ def raw_tptp_exported_guarded_demodulation_rewrite_proof(
                     right,
                     proof,
                     equality_sort,
+                    native_equality=equality.kind == "eq",
                 ):
                     if expr_same_mod_alpha(replaced, target_body):
                         return transported
@@ -33660,6 +33810,7 @@ def raw_tptp_parent_equality_rewrite_proof(
             if equality_sides is None:
                 continue
             equality_sort = raw_equality_transport_sort(equality_sides[0], equality_sides[1], variable_sorts)
+            _equality_binders, equality_body = collect_foralls(equality)
             proof = raw_equality_rewrite_clause_proof(
                 source,
                 target,
@@ -33668,6 +33819,7 @@ def raw_tptp_parent_equality_rewrite_proof(
                 equality_sides[1],
                 equality_proof,
                 equality_sort,
+                native_equality=equality_body.kind == "eq",
             )
             if proof is not None:
                 return proof
@@ -35189,6 +35341,8 @@ def raw_equality_right_transport_proof(
     premise_proof: str,
     fixed_right: Expr,
     sort: str,
+    *,
+    native_equality: bool = False,
 ) -> str:
     hole_name = fresh_identifier(
         "zz",
@@ -35197,6 +35351,19 @@ def raw_equality_right_transport_proof(
         expr_text(fixed_right),
         sort,
     )
+    if native_equality and sort in {"set", "prop"}:
+        context = Expr("eq", args=(Expr("var", value=hole_name), fixed_right))
+        transported = native_equality_transport_proof(
+            equality_proof,
+            equality_left,
+            equality_right,
+            premise_proof,
+            hole_name,
+            sort,
+            context,
+        )
+        if transported is not None:
+            return transported
     if sort == "prop":
         predicate = f"vampire_eq_prop {hole_name} {proof_arg_text(fixed_right)}"
     else:
@@ -35222,14 +35389,28 @@ def raw_equality_composition_proof(
     if first_sides is None or second_sides is None or target_sides is None:
         return None
     sort = raw_equality_transport_sort(first_sides[0], first_sides[1], variable_sorts)
+    first_native = first.kind == "eq"
+    second_native = second.kind == "eq"
     first_orientations = (
         (first_sides[0], first_sides[1], first_proof),
-        (first_sides[1], first_sides[0], raw_eq_symmetry_proof(first_proof, first_sides[0], sort)),
+        (
+            first_sides[1],
+            first_sides[0],
+            native_eq_symmetry_proof(first_proof, first_sides[0], first_sides[1], sort)
+            if first_native
+            else raw_eq_symmetry_proof(first_proof, first_sides[0], sort),
+        ),
     )
     second_sort = raw_equality_transport_sort(second_sides[0], second_sides[1], variable_sorts)
     second_orientations = (
         (second_sides[0], second_sides[1], second_proof),
-        (second_sides[1], second_sides[0], raw_eq_symmetry_proof(second_proof, second_sides[0], second_sort)),
+        (
+            second_sides[1],
+            second_sides[0],
+            native_eq_symmetry_proof(second_proof, second_sides[0], second_sides[1], second_sort)
+            if second_native
+            else raw_eq_symmetry_proof(second_proof, second_sides[0], second_sort),
+        ),
     )
     for left, right, proof in first_orientations:
         for other_left, other_right, other_proof in second_orientations:
@@ -35237,13 +35418,30 @@ def raw_equality_composition_proof(
                 continue
             candidate = raw_equality_goal_expr(right, other_right, sort)
             if expr_same_mod_alpha(candidate, target):
-                return raw_equality_right_transport_proof(proof, left, right, other_proof, other_right, sort)
+                return raw_equality_right_transport_proof(
+                    proof,
+                    left,
+                    right,
+                    other_proof,
+                    other_right,
+                    sort,
+                    native_equality=first_native,
+                )
             candidate = raw_equality_goal_expr(other_right, right, sort)
             if expr_same_mod_alpha(candidate, target):
-                symmetric = raw_eq_symmetry_proof(
-                    raw_equality_right_transport_proof(proof, left, right, other_proof, other_right, sort),
+                transported = raw_equality_right_transport_proof(
+                    proof,
+                    left,
                     right,
+                    other_proof,
+                    other_right,
                     sort,
+                    native_equality=first_native,
+                )
+                symmetric = (
+                    native_eq_symmetry_proof(transported, right, other_right, sort)
+                    if target.kind == "eq"
+                    else raw_eq_symmetry_proof(transported, right, sort)
                 )
                 return symmetric
     return None
@@ -35260,17 +35458,20 @@ def raw_equality_rewrite_expr_proof(
     equality_sides = equality_like_sides(equality)
     if equality_sides is None:
         return None
+    native_equality = equality.kind == "eq"
+    equality_sort = raw_equality_transport_sort(equality_sides[0], equality_sides[1], variable_sorts)
+    reverse_proof = (
+        native_eq_symmetry_proof(equality_proof, equality_sides[0], equality_sides[1], equality_sort)
+        if native_equality
+        else raw_eq_symmetry_proof(
+            equality_proof,
+            equality_sides[0],
+            equality_sort,
+        )
+    )
     for old, new, proof in (
         (equality_sides[0], equality_sides[1], equality_proof),
-        (
-            equality_sides[1],
-            equality_sides[0],
-            raw_eq_symmetry_proof(
-                equality_proof,
-                equality_sides[0],
-                raw_equality_transport_sort(equality_sides[0], equality_sides[1], variable_sorts),
-            ),
-        ),
+        (equality_sides[1], equality_sides[0], reverse_proof),
     ):
         rewrite_sort = raw_equality_transport_sort(old, new, variable_sorts)
         for old_subterm in expr_subterms(source, limit=192):
@@ -35283,11 +35484,24 @@ def raw_equality_rewrite_expr_proof(
             context, context_changed = replace_expr(source, old_subterm, Expr("var", value=hole_name))
             if not context_changed:
                 continue
-            transported = (
-                f"{proof_term_text(proof)} "
-                f"(fun {hole_name} :{rewrite_sort} => {expr_text(context)}) "
-                f"{proof_term_text(source_proof)}"
-            )
+            if native_equality:
+                transported = native_equality_transport_proof(
+                    proof,
+                    old,
+                    new,
+                    source_proof,
+                    hole_name,
+                    rewrite_sort,
+                    context,
+                )
+                if transported is None:
+                    continue
+            else:
+                transported = (
+                    f"{proof_term_text(proof)} "
+                    f"(fun {hole_name} :{rewrite_sort} => {expr_text(context)}) "
+                    f"{proof_term_text(source_proof)}"
+                )
             if expr_same_mod_alpha(replaced, target):
                 return transported
             replaced_sides = equality_like_sides(replaced)
@@ -35299,6 +35513,8 @@ def raw_equality_rewrite_expr_proof(
                 and expr_same_mod_alpha(replaced_sides[1], target_sides[0])
             ):
                 equality_sort = raw_equality_transport_sort(replaced_sides[0], replaced_sides[1], variable_sorts)
+                if target.kind == "eq":
+                    return native_eq_symmetry_proof(transported, replaced_sides[0], replaced_sides[1], equality_sort)
                 return raw_eq_symmetry_proof(transported, replaced_sides[0], equality_sort)
     return None
 
@@ -37843,6 +38059,7 @@ def raw_clause_unit_equality_superposition_proof(
                             instantiated_equality_sides[1],
                             equality_inst_proof,
                             equality_sort,
+                            native_equality=equality_inst.kind == "eq",
                         ):
                             proof = raw_clause_subsumption_transform_proof(replaced, target_body, transported, deep_literals=True)
                             if proof is None:
@@ -38988,12 +39205,17 @@ def raw_guarded_quantified_instantiating_equality_superposition_proof(
             for name, _sort in source_binders:
                 source_instance_proof = f"({proof_head(source_instance_proof)} {proof_arg_text(source_subst[name])})"
             equality_sort = raw_equality_transport_sort(instantiated_sides[0], instantiated_sides[1], local_sorts)
+            reversed_equality_proof = (
+                eq_symmetry_proof(equality_instance_proof, instantiated_sides[0], instantiated_sides[1])
+                if equality_instance.kind == "eq"
+                else raw_eq_symmetry_proof(equality_instance_proof, instantiated_sides[0], equality_sort)
+            )
             rewrite_options = [
                 (instantiated_sides[0], instantiated_sides[1], equality_instance_proof),
                 (
                     instantiated_sides[1],
                     instantiated_sides[0],
-                    raw_eq_symmetry_proof(equality_instance_proof, instantiated_sides[0], equality_sort),
+                    reversed_equality_proof,
                 ),
             ]
             for old_side, new_side, oriented_equality_proof in rewrite_options:
@@ -39004,6 +39226,7 @@ def raw_guarded_quantified_instantiating_equality_superposition_proof(
                     new_side,
                     oriented_equality_proof,
                     equality_sort,
+                    native_equality=equality_instance.kind == "eq",
                 ):
                     checked += 1
                     if checked > 128:
@@ -39123,12 +39346,17 @@ def raw_guarded_quantified_to_clause_equality_superposition_proof(
             for name, _sort in equality_binders:
                 equality_instance_proof = f"({proof_head(equality_instance_proof)} {proof_arg_text(equality_subst[name])})"
             equality_sort = raw_equality_transport_sort(instantiated_sides[0], instantiated_sides[1], local_sorts)
+            reversed_equality_proof = (
+                eq_symmetry_proof(equality_instance_proof, instantiated_sides[0], instantiated_sides[1])
+                if equality_instance.kind == "eq"
+                else raw_eq_symmetry_proof(equality_instance_proof, instantiated_sides[0], equality_sort)
+            )
             rewrite_options = [
                 (instantiated_sides[0], instantiated_sides[1], equality_instance_proof),
                 (
                     instantiated_sides[1],
                     instantiated_sides[0],
-                    raw_eq_symmetry_proof(equality_instance_proof, instantiated_sides[0], equality_sort),
+                    reversed_equality_proof,
                 ),
             ]
             for old_side, new_side, oriented_equality_proof in rewrite_options:
@@ -39139,6 +39367,7 @@ def raw_guarded_quantified_to_clause_equality_superposition_proof(
                     new_side,
                     oriented_equality_proof,
                     equality_sort,
+                    native_equality=equality_instance.kind == "eq",
                 ):
                     checked += 1
                     if checked > 160:
@@ -40496,6 +40725,7 @@ def raw_equality_clause_superposition_proof(
                 sides[1],
                 clause_literal_proof,
                 equality_sort,
+                native_equality=clause_literal.kind == "eq",
             ):
                 proof = raw_literal_to_clause_proof(replaced, target, transported, target_literals, ())
                 if proof is not None:
@@ -41438,7 +41668,11 @@ def raw_guarded_quantified_equality_superposition_proof(
                 continue
             equality_sort = raw_equality_transport_sort(old_inst, new_inst, {**variable_sorts, **target_sort_by_name})
             oriented_equality_proof = (
-                raw_eq_symmetry_proof(equality_proof, equality_sides[0], equality_sort)
+                (
+                    eq_symmetry_proof(equality_proof, equality_sides[0], equality_sides[1])
+                    if equality_literal.kind == "eq"
+                    else raw_eq_symmetry_proof(equality_proof, equality_sides[0], equality_sort)
+                )
                 if reversed_equality
                 else equality_proof
             )
@@ -41446,11 +41680,24 @@ def raw_guarded_quantified_equality_superposition_proof(
             hole_name = fresh_identifier("zz", expr_text(source_instance), expr_text(old_inst), expr_text(new_inst))
             hole = Expr("var", value=hole_name)
             for rewritten, context in single_replacement_contexts(source_instance, old_inst, new_inst, hole, limit=4):
-                transported = (
-                    f"{proof_term_text(oriented_equality_proof)} "
-                    f"(fun {hole_name} :{equality_sort} => {expr_text(context)}) "
-                    f"{proof_term_text(source_instance_proof)}"
-                )
+                if equality_literal.kind == "eq":
+                    transported = native_equality_transport_proof(
+                        oriented_equality_proof,
+                        old_inst,
+                        new_inst,
+                        source_instance_proof,
+                        hole_name,
+                        equality_sort,
+                        context,
+                    )
+                    if transported is None:
+                        continue
+                else:
+                    transported = (
+                        f"{proof_term_text(oriented_equality_proof)} "
+                        f"(fun {hole_name} :{binder_sort_text(equality_sort)} => {expr_text(context)}) "
+                        f"{proof_term_text(source_instance_proof)}"
+                    )
                 targeted_steps.append((rewritten, transported))
             if "->" in equality_sort or old_inst.kind == "lambda" or new_inst.kind == "lambda":
                 for rewritten, context in single_replacement_contexts_mod_alpha(
@@ -41460,11 +41707,24 @@ def raw_guarded_quantified_equality_superposition_proof(
                     hole,
                     limit=4,
                 ):
-                    transported = (
-                        f"{proof_term_text(oriented_equality_proof)} "
-                        f"(fun {hole_name} :{equality_sort} => {expr_text(context)}) "
-                        f"{proof_term_text(source_instance_proof)}"
-                    )
+                    if equality_literal.kind == "eq":
+                        transported = native_equality_transport_proof(
+                            oriented_equality_proof,
+                            old_inst,
+                            new_inst,
+                            source_instance_proof,
+                            hole_name,
+                            equality_sort,
+                            context,
+                        )
+                        if transported is None:
+                            continue
+                    else:
+                        transported = (
+                            f"{proof_term_text(oriented_equality_proof)} "
+                            f"(fun {hole_name} :{binder_sort_text(equality_sort)} => {expr_text(context)}) "
+                            f"{proof_term_text(source_instance_proof)}"
+                        )
                     targeted_steps.append((rewritten, transported))
             generic_steps = raw_equality_rewrite_clause_steps(
                 source_instance,
@@ -41473,6 +41733,7 @@ def raw_guarded_quantified_equality_superposition_proof(
                 equality_sides[1],
                 equality_proof,
                 equality_sort,
+                native_equality=equality_literal.kind == "eq",
             )
             seen_rewrites: set[str] = set()
             for rewritten, transported in [*targeted_steps, *generic_steps]:
