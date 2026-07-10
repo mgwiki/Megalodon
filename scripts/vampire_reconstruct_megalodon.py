@@ -43013,6 +43013,32 @@ def raw_tptp_avatar_component_clause_proof(
             f"(fun Hcomponent => {proof_term_text(raw_or_right_intro(target, '(Hback Hcomponent)') or '')}) "
             f"(fun Hnotcomponent => {proof_term_text(raw_or_left_intro(target, negative_component_proof) or '')}))))"
         )
+    component_implication = implication_sides(component)
+    if (
+        component_implication is not None
+        and false_eliminator_expr(component_implication[1])
+        and expr_same_mod_alpha(target_right, split_atom)
+    ):
+        component_premise, _ = component_implication
+        premise_to_target = raw_clause_transform_proof(component_premise, target_left, "HcomponentPremise")
+        if premise_to_target is None:
+            premise_to_target = raw_forall_clause_transform_proof(component_premise, target_left, "HcomponentPremise", 0, ())
+        if premise_to_target is None:
+            premise_to_target = raw_deep_formula_transform_proof(component_premise, target_left, "HcomponentPremise", {**variable_sorts, **local_sorts})
+        if premise_to_target is None:
+            return None
+        negative_component_proof = f"(fun HcomponentPremise => HnotTargetLeft {proof_term_text(premise_to_target)})"
+        left_intro = raw_or_left_intro(target_body, "HTargetLeft")
+        right_intro = raw_or_right_intro(target_body, f"(Hback {negative_component_proof})")
+        if left_intro is None or right_intro is None:
+            return None
+        return wrap_target_binders(
+            f"({parent_name} {target_text} "
+            f"(fun Hforward Hback => "
+            f"(xm {proof_arg_text(target_left)} {target_text} "
+            f"(fun HTargetLeft => {proof_term_text(left_intro)}) "
+            f"(fun HnotTargetLeft => {proof_term_text(right_intro)}))))"
+        )
     return None
 
 
