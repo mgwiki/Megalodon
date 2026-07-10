@@ -46073,7 +46073,6 @@ def raw_prop_skolem_definition_body_text(
     if len(args) != len(pieces) - 1:
         return None
     binder_sorts = {name: binder_sort for name, binder_sort in binders}
-    binder_order = {name: index for index, (name, _sort) in enumerate(binders)}
     lambda_binders: list[tuple[str, str]] = []
     seen: set[str] = set()
     for arg, expected_sort in zip(args, pieces[:-1]):
@@ -46087,7 +46086,6 @@ def raw_prop_skolem_definition_body_text(
     binder_names = set(binder_sorts)
     if not (expr_variables(predicate) & (binder_names - {predicate.value})) <= seen:
         return None
-    lambda_binders.sort(key=lambda item: binder_order[item[0]])
     body = f"{proof_arg_text(predicate)} True"
     for name, binder_sort in reversed(lambda_binders):
         body = f"fun {name} :{binder_sort_text(binder_sort)} => {body}"
@@ -46108,18 +46106,19 @@ def raw_tptp_single_prop_skolem_intro_reconstruction(
         return None
     binders, body = collect_foralls(expr)
     premises, conclusion = split_arrows(body)
-    if len(premises) != 1:
+    if not premises:
         return None
     exists_args = app_args(premises[0], "vampire_exists_prop", 1)
     if exists_args is None:
         return None
+    target = make_arrow_expr(premises[1:], conclusion)
     predicate = exists_args[0]
     if predicate.kind != "lambda" or predicate.value is None or predicate.sort != "prop" or not predicate.args:
         return None
     if replaced is not None and predicate.value != replaced:
         return None
     local_sorts = {**variable_sorts, **{name: binder_sort for name, binder_sort in binders}, symbol: sort}
-    skolem_app = raw_find_skolem_application(conclusion, symbol, sort, "prop", local_sorts)
+    skolem_app = raw_find_skolem_application(target, symbol, sort, "prop", local_sorts)
     if skolem_app is None:
         return None
     definition_body = raw_prop_skolem_definition_body_text(predicate, skolem_app, binders, sort)
@@ -46128,10 +46127,10 @@ def raw_tptp_single_prop_skolem_intro_reconstruction(
     choice_body = substitute_expr(predicate.args[0], {predicate.value: skolem_app})
     choice_proof = f"((vampire_exists_prop_choice {proof_arg_text(predicate)}) Hexists)"
     target_proof = choice_proof
-    if not expr_same_mod_alpha(beta_normalize_expr(choice_body), beta_normalize_expr(conclusion)):
-        transformed = raw_deep_formula_transform_proof(choice_body, conclusion, choice_proof, local_sorts)
+    if not expr_same_mod_alpha(beta_normalize_expr(choice_body), beta_normalize_expr(target)):
+        transformed = raw_deep_formula_transform_proof(choice_body, target, choice_proof, local_sorts)
         if transformed is None:
-            transformed = raw_skolemised_formula_transform_proof(choice_body, conclusion, choice_proof, (), local_sorts)
+            transformed = raw_skolemised_formula_transform_proof(choice_body, target, choice_proof, (), local_sorts)
         if transformed is None:
             return None
         target_proof = transformed
@@ -46157,7 +46156,6 @@ def raw_set_prop_skolem_definition_body_text(
     if len(args) != len(pieces) - 1:
         return None
     binder_sorts = {name: binder_sort for name, binder_sort in binders}
-    binder_order = {name: index for index, (name, _sort) in enumerate(binders)}
     prefix_binders: list[tuple[str, str]] = []
     seen: set[str] = set()
     for arg, expected_sort in zip(args[:-1], pieces[:-2]):
@@ -46173,7 +46171,6 @@ def raw_set_prop_skolem_definition_body_text(
     binder_names = set(binder_sorts)
     if not (expr_variables(predicate) & (binder_names - {predicate.value})) <= seen:
         return None
-    prefix_binders.sort(key=lambda item: binder_order[item[0]])
     arg_name = fresh_identifier("skx", expr_text(predicate), *(name for name, _sort in binders))
     body = f"forall W:set->prop, {proof_arg_text(predicate)} W -> W {arg_name}"
     body = f"fun {arg_name} :set => {body}"
