@@ -17,6 +17,7 @@ import heapq
 import hashlib
 import itertools
 import json
+import math
 import os
 import re
 import signal
@@ -35266,6 +35267,113 @@ def raw_tptp_equality_factoring_proof(
     return None
 
 
+def raw_tptp_guarded_prop_equality_factoring_fallback(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parents) != 1:
+        return None
+    parent_proposition = propositions_by_name.get(parents[0])
+    parent = parse_expr(parent_proposition) if parent_proposition is not None else None
+    target = parse_expr(proposition)
+    if parent is None or target is None:
+        return None
+    _parent_binders, parent_body = collect_foralls(parent)
+    _target_top_binders, target_top_body = collect_foralls(target)
+    parent_parts = raw_or_parts(parent_body)
+    target_parts = raw_or_parts(target_top_body)
+    if parent_parts is None or target_parts is None:
+        return None
+
+    parent_name = raw_tptp_claim_name(parents[0])
+    for source_component, source_guard in (parent_parts, (parent_parts[1], parent_parts[0])):
+        for target_component, target_guard in (target_parts, (target_parts[1], target_parts[0])):
+            if not expr_same_mod_alpha(source_guard, target_guard):
+                continue
+            source_binders, source_body = collect_foralls(source_component)
+            target_binders, target_body = collect_foralls(target_component)
+            if not source_binders or len(source_binders) > 4 or len(target_binders) > 4:
+                continue
+            if any(sort != "prop" for _name, sort in source_binders + target_binders):
+                continue
+            if len(source_binders) != len(target_binders) + 1:
+                continue
+            if len(raw_clause_literals(source_body)) > 8 or len(raw_clause_literals(target_body)) > 8:
+                continue
+            local_sorts = {**variable_sorts, **dict(source_binders), **dict(target_binders)}
+
+            candidates_by_sort: dict[str, list[Expr]] = {}
+
+            def add_candidate(sort: str, candidate: Expr) -> None:
+                candidates = candidates_by_sort.setdefault(sort, [])
+                if all(expr_key(candidate) != expr_key(existing) for existing in candidates):
+                    candidates.append(candidate)
+
+            for name, sort in target_binders:
+                add_candidate(sort, Expr("var", value=name))
+            for sort in {sort for _name, sort in source_binders}:
+                for candidate in raw_candidate_terms_for_sort((source_body, target_body), sort, local_sorts):
+                    add_candidate(sort, candidate)
+                if sort == "prop":
+                    for name in ("vampire_true", "True", "vampire_false", "False"):
+                        add_candidate(sort, Expr("var", value=name))
+            candidate_lists: list[list[Expr]] = []
+            for _name, sort in source_binders:
+                candidates = candidates_by_sort.get(sort, [])
+                if not candidates:
+                    break
+                candidate_lists.append(candidates[:8])
+            if len(candidate_lists) != len(source_binders):
+                continue
+            if math.prod(len(candidates) for candidates in candidate_lists) > 4096:
+                continue
+
+            target_literals = raw_clause_literals(target_body)
+            source_only_binders = {name for name, _sort in source_binders} - {name for name, _sort in target_binders}
+            for values in itertools.product(*candidate_lists):
+                subst = {name: value for (name, _sort), value in zip(source_binders, values)}
+                if any(expr_variables(value) & source_only_binders for value in subst.values()):
+                    continue
+                instantiated_source = substitute_expr(source_body, subst)
+                if not all(
+                    raw_literal_to_clause_proof(literal, target_body, "HLit", target_literals, ()) is not None
+                    for literal in raw_clause_literals(instantiated_source)
+                ):
+                    continue
+                source_component_proof = "HsourceComponent"
+                for name, _sort in source_binders:
+                    source_component_proof = f"({proof_head(source_component_proof)} {proof_arg_text(subst[name])})"
+                body_proof = raw_clause_cases_proof(
+                    instantiated_source,
+                    target_body,
+                    target_literals,
+                    (),
+                    source_component_proof,
+                )
+                if body_proof is None:
+                    continue
+                for name, sort in reversed(target_binders):
+                    body_proof = f"(fun {name} :{sort} => {body_proof})"
+                component_intro = raw_or_intro_from_branch(target_top_body, target_component, body_proof)
+                guard_intro = raw_or_intro_from_branch(target_top_body, target_guard, "Hguard")
+                if component_intro is None or guard_intro is None:
+                    continue
+                if expr_same_mod_alpha(parent_parts[0], source_component):
+                    return (
+                        f"({parent_name} {proof_arg_text(target_top_body)} "
+                        f"(fun HsourceComponent => {proof_term_text(component_intro)}) "
+                        f"(fun Hguard => {proof_term_text(guard_intro)}))"
+                    )
+                return (
+                    f"({parent_name} {proof_arg_text(target_top_body)} "
+                    f"(fun Hguard => {proof_term_text(guard_intro)}) "
+                    f"(fun HsourceComponent => {proof_term_text(component_intro)}))"
+                )
+    return None
+
+
 def raw_tptp_guarded_parent_equality_rewrite_proof(
     proposition: str,
     parents: list[str],
@@ -47163,6 +47271,14 @@ def raw_tptp_replay_proof(
             propositions_by_name,
             variable_sorts,
             replay_step,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_tptp_guarded_prop_equality_factoring_fallback(
+            proposition,
+            parents,
+            propositions_by_name,
+            variable_sorts,
         )
         if proof is not None:
             return proof
