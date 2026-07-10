@@ -76,7 +76,7 @@ RAW_TPTP_REPLAY_SECONDS = float(os.environ.get("MEGALODON_RAW_TPTP_REPLAY_SECOND
 RAW_TPTP_DEFINITION_REPLAY_SECONDS = float(os.environ.get("MEGALODON_RAW_TPTP_DEFINITION_REPLAY_SECONDS", "30.0"))
 RAW_TPTP_FORWARD_SUBSUMPTION_REPLAY_SECONDS = float(os.environ.get("MEGALODON_RAW_TPTP_FORWARD_SUBSUMPTION_REPLAY_SECONDS", "1.0"))
 RAW_TPTP_REPLAY_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_REPLAY_CHAR_LIMIT", "12000"))
-RAW_TPTP_EXPORTED_NORMAL_FORM_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_NORMAL_FORM_CHAR_LIMIT", "60000"))
+RAW_TPTP_EXPORTED_NORMAL_FORM_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_NORMAL_FORM_CHAR_LIMIT", "80000"))
 RAW_TPTP_EXPORTED_FOOL_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_FOOL_CHAR_LIMIT", "60000"))
 RAW_TPTP_FOOL_PROOF_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_FOOL_PROOF_CHAR_LIMIT", "200000"))
 RAW_TPTP_EXPORTED_SKOLEM_CHAR_LIMIT = int(os.environ.get("MEGALODON_RAW_TPTP_EXPORTED_SKOLEM_CHAR_LIMIT", "60000"))
@@ -25205,6 +25205,163 @@ def raw_conjunction_reassociation_transform_proof(
     return raw_build_conjunction_from_component_proofs(target, component_proof)
 
 
+def raw_fast_or_assoc_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 80 or proof_search_timed_out():
+        return None
+    if expr_same_mod_alpha(source, target):
+        return source_proof
+
+    def transform(component_source: Expr, component_target: Expr, proof: str) -> str | None:
+        return raw_fast_or_assoc_transform_proof(
+            component_source,
+            component_target,
+            proof,
+            variable_sorts,
+            depth + 1,
+        )
+
+    source_or = raw_or_parts(source)
+    target_or = raw_or_parts(target)
+    if source_or is not None and target_or is not None:
+        source_left, source_right = source_or
+        target_left, target_right = target_or
+        source_right_or = raw_or_parts(source_right)
+        target_left_or = raw_or_parts(target_left)
+        if source_right_or is not None and target_left_or is not None:
+            source_mid, source_last = source_right_or
+            target_first, target_mid = target_left_or
+            left_name = fresh_identifier("HassocL", expr_text(source), expr_text(target), source_proof)
+            mid_name = fresh_identifier("HassocM", expr_text(source), expr_text(target), source_proof, left_name)
+            last_name = fresh_identifier("HassocR", expr_text(source), expr_text(target), source_proof, left_name, mid_name)
+            left_proof = transform(source_left, target_first, left_name)
+            mid_proof = transform(source_mid, target_mid, mid_name)
+            last_proof = transform(source_last, target_right, last_name)
+            if left_proof is not None and mid_proof is not None and last_proof is not None:
+                target_left_from_left = raw_or_left_intro(target_left, left_proof)
+                target_left_from_mid = raw_or_right_intro(target_left, mid_proof)
+                target_from_left = raw_or_left_intro(target, target_left_from_left) if target_left_from_left else None
+                target_from_mid = raw_or_left_intro(target, target_left_from_mid) if target_left_from_mid else None
+                target_from_last = raw_or_right_intro(target, last_proof)
+                if target_from_left is not None and target_from_mid is not None and target_from_last is not None:
+                    return (
+                        f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                        f"(fun {left_name} => {target_from_left}) "
+                        f"(fun HassocRight => "
+                        f"(HassocRight {proof_arg_text(target)} "
+                        f"(fun {mid_name} => {target_from_mid}) "
+                        f"(fun {last_name} => {target_from_last}))))"
+                    )
+
+        source_left_or = raw_or_parts(source_left)
+        target_right_or = raw_or_parts(target_right)
+        if source_left_or is not None and target_right_or is not None:
+            source_first, source_mid = source_left_or
+            target_mid, target_last = target_right_or
+            first_name = fresh_identifier("HassocL", expr_text(source), expr_text(target), source_proof)
+            mid_name = fresh_identifier("HassocM", expr_text(source), expr_text(target), source_proof, first_name)
+            last_name = fresh_identifier("HassocR", expr_text(source), expr_text(target), source_proof, first_name, mid_name)
+            first_proof = transform(source_first, target_left, first_name)
+            mid_proof = transform(source_mid, target_mid, mid_name)
+            last_proof = transform(source_right, target_last, last_name)
+            if first_proof is not None and mid_proof is not None and last_proof is not None:
+                target_right_from_mid = raw_or_left_intro(target_right, mid_proof)
+                target_right_from_last = raw_or_right_intro(target_right, last_proof)
+                target_from_first = raw_or_left_intro(target, first_proof)
+                target_from_mid = raw_or_right_intro(target, target_right_from_mid) if target_right_from_mid else None
+                target_from_last = raw_or_right_intro(target, target_right_from_last) if target_right_from_last else None
+                if target_from_first is not None and target_from_mid is not None and target_from_last is not None:
+                    return (
+                        f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                        f"(fun HassocLeft => "
+                        f"(HassocLeft {proof_arg_text(target)} "
+                        f"(fun {first_name} => {target_from_first}) "
+                        f"(fun {mid_name} => {target_from_mid})) ) "
+                        f"(fun {last_name} => {target_from_last}))"
+                    )
+
+        left_name = fresh_identifier("HorL", expr_text(source), expr_text(target), source_proof)
+        right_name = fresh_identifier("HorR", expr_text(source), expr_text(target), source_proof, left_name)
+        left_proof = transform(source_left, target_left, left_name)
+        right_proof = transform(source_right, target_right, right_name)
+        if left_proof is not None and right_proof is not None:
+            left_intro = raw_or_left_intro(target, left_proof)
+            right_intro = raw_or_right_intro(target, right_proof)
+            if left_intro is not None and right_intro is not None:
+                return (
+                    f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                    f"(fun {left_name} => {left_intro}) "
+                    f"(fun {right_name} => {right_intro}))"
+                )
+
+    source_and = vampire_and_parts(source)
+    target_and = vampire_and_parts(target)
+    if source_and is not None and target_and is not None:
+        left_projection = vampire_and_projection_from_proof(source_proof, source, source_and[0])
+        right_projection = vampire_and_projection_from_proof(source_proof, source, source_and[1])
+        if left_projection is None or right_projection is None:
+            return None
+        left_proof = transform(source_and[0], target_and[0], left_projection)
+        right_proof = transform(source_and[1], target_and[1], right_projection)
+        if left_proof is None or right_proof is None:
+            return None
+        return (
+            f"(fun P K => K "
+            f"{proof_term_text(left_proof)} "
+            f"{proof_term_text(right_proof)})"
+        )
+
+    source_exists = raw_exists_transform_parts(source)
+    target_exists = raw_exists_transform_parts(target)
+    if source_exists is not None and target_exists is not None:
+        source_head, source_sort, _source_predicate, source_name, source_body = source_exists
+        target_head, target_sort, _target_predicate, target_name, target_body = target_exists
+        if source_head != target_head or source_sort != target_sort:
+            return None
+        witness = fresh_identifier("wassoc", expr_text(source), expr_text(target), source_proof)
+        source_body = rename_expr_variables(source_body, {source_name: witness})
+        target_body = rename_expr_variables(target_body, {target_name: witness})
+        body_proof = raw_fast_or_assoc_transform_proof(
+            source_body,
+            target_body,
+            "HassocBody",
+            {**variable_sorts, witness: source_sort},
+            depth + 1,
+        )
+        if body_proof is None:
+            return None
+        target_intro = f"(fun Q Hexists => Hexists {witness} {proof_term_text(body_proof)})"
+        return (
+            f"({proof_head(source_proof)} {proof_arg_text(target)} "
+            f"(fun {witness} :{source_sort} => fun HassocBody => {target_intro}))"
+        )
+
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
+        assert source.value is not None and target.value is not None and target.sort is not None
+        binder = target.value
+        source_body = source.args[0]
+        target_body = target.args[0]
+        if source.value != binder:
+            source_body = rename_expr_variables(source_body, {source.value: binder})
+        inner = raw_fast_or_assoc_transform_proof(
+            source_body,
+            target_body,
+            f"({proof_head(source_proof)} {binder})",
+            {**variable_sorts, binder: target.sort},
+            depth + 1,
+        )
+        if inner is None:
+            return None
+        return f"(fun {binder} :{target.sort} => {inner})"
+
+    return None
+
+
 def raw_negated_implication_chain_to_conjunction_proof(
     source: Expr,
     target: Expr,
@@ -47025,7 +47182,7 @@ def raw_tptp_nested_choice_skolem_intro_reconstruction(
     introduced: list[tuple[str, str]],
     variable_sorts: dict[str, str],
 ) -> tuple[dict[str, tuple[str, str]], str] | None:
-    if len(proposition) > 9000:
+    if len(proposition) > 24000:
         return None
     expr = parse_expr(proposition)
     if expr is None:
@@ -47076,7 +47233,11 @@ def raw_tptp_nested_choice_skolem_intro_reconstruction(
             definitions[symbol] = (symbol_sort, definition_body)
             current_proof = f"((vampire_exists_set_eps {proof_arg_text(predicate)}) {proof_term_text(current_proof)})"
         elif equivalent_sorts(choice_sort, "prop"):
-            return None
+            definition_body = raw_prop_skolem_definition_body_text(predicate, skolem_app, binders, symbol_sort)
+            if definition_body is None:
+                return None
+            definitions[symbol] = (symbol_sort, definition_body)
+            current_proof = f"((vampire_exists_prop_choice {proof_arg_text(predicate)}) {proof_term_text(current_proof)})"
         else:
             definition_body = raw_choice_skolem_definition_body_text(
                 predicate,
@@ -50080,6 +50241,9 @@ def raw_structural_normal_form_transform_proof(
     rewrite_proof = raw_split_rewrite_proof(source, target, source_proof, rewrites)
     if rewrite_proof is not None:
         return rewrite_proof
+    fast_assoc = raw_fast_or_assoc_transform_proof(source, target, source_proof, variable_sorts, depth + 1)
+    if fast_assoc is not None:
+        return fast_assoc
 
     source_exists = raw_exists_transform_parts(source)
     target_exists = raw_exists_transform_parts(target)
