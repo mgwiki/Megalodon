@@ -48601,8 +48601,12 @@ def raw_implication_to_ennf_or_proof(
     )
     if conclusion_proof is None:
         return None
-    conclusion_intro = raw_or_intro_literal_at(target, 1 - negative_index, conclusion_proof)
-    negative_intro = raw_or_intro_literal_at(target, negative_index, not_premise_name)
+    if negative_index == 0:
+        negative_intro = raw_or_left_intro(target, not_premise_name)
+        conclusion_intro = raw_or_right_intro(target, conclusion_proof)
+    else:
+        conclusion_intro = raw_or_left_intro(target, conclusion_proof)
+        negative_intro = raw_or_right_intro(target, not_premise_name)
     if conclusion_intro is None or negative_intro is None:
         return None
     target_text = proof_arg_text(target)
@@ -53909,6 +53913,17 @@ def raw_tptp_replay_proof(
                 ):
                     proof = None
                 else:
+                    if proof is None and len(parents) == 1:
+                        parent_proposition = propositions_by_name.get(parents[0])
+                        source_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+                        target_expr = parse_expr(proposition)
+                        if source_expr is not None and target_expr is not None:
+                            proof = raw_implication_to_ennf_or_proof(
+                                source_expr,
+                                target_expr,
+                                raw_tptp_claim_name(parents[0]),
+                                variable_sorts,
+                            )
                     if proof is None and len(parents) == 1 and len(proposition) <= 512:
                         parent_proposition = propositions_by_name.get(parents[0], "")
                         if len(parent_proposition) <= 1024:
