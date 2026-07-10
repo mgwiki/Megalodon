@@ -45943,6 +45943,34 @@ def raw_expr_mentions_symbol(expr: Expr, symbol: str) -> bool:
     return any(raw_expr_mentions_symbol(arg, symbol) for arg in expr.args)
 
 
+def raw_expr_application_head_args(expr: Expr) -> tuple[str, tuple[Expr, ...]] | None:
+    if expr.kind == "var" and expr.value is not None:
+        return expr.value, ()
+    if expr.kind == "app" and expr.args and expr.args[0].kind == "var" and expr.args[0].value is not None:
+        return expr.args[0].value, expr.args[1:]
+    return None
+
+
+def raw_find_skolem_application(
+    expr: Expr,
+    symbol: str,
+    sort: str,
+    result_sort: str,
+    variable_sorts: dict[str, str],
+) -> Expr | None:
+    head_args = raw_expr_application_head_args(expr)
+    if head_args is not None:
+        head, args = head_args
+        if head == symbol and sort_after_arguments(sort, len(args)) == result_sort:
+            if all(expr_sort(arg, variable_sorts) == expected for arg, expected in zip(args, split_sort_arrows(sort)[:-1])):
+                return expr
+    for arg in expr.args:
+        found = raw_find_skolem_application(arg, symbol, sort, result_sort, variable_sorts)
+        if found is not None:
+            return found
+    return None
+
+
 def raw_skolem_application_expr(symbol: str, binders: list[tuple[str, str]], sort: str) -> Expr | None:
     pieces = split_sort_arrows(sort)
     if not pieces or pieces[-1] != "set":
@@ -45972,6 +46000,90 @@ def raw_skolem_definition_body_text(
     for name, binder_sort in reversed(binders[: len(pieces) - 1]):
         body = f"fun {name} :{binder_sort_text(binder_sort)} => {body}"
     return body
+
+
+def raw_prop_skolem_definition_body_text(
+    predicate: Expr,
+    skolem_app: Expr,
+    binders: list[tuple[str, str]],
+    sort: str,
+) -> str | None:
+    pieces = split_sort_arrows(sort)
+    if not pieces or pieces[-1] != "prop":
+        return None
+    head_args = raw_expr_application_head_args(skolem_app)
+    if head_args is None:
+        return None
+    _head, args = head_args
+    if len(args) != len(pieces) - 1:
+        return None
+    binder_sorts = {name: binder_sort for name, binder_sort in binders}
+    binder_order = {name: index for index, (name, _sort) in enumerate(binders)}
+    lambda_binders: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for arg, expected_sort in zip(args, pieces[:-1]):
+        if arg.kind != "var" or arg.value is None:
+            return None
+        actual_sort = binder_sorts.get(arg.value)
+        if actual_sort != expected_sort or arg.value in seen:
+            return None
+        seen.add(arg.value)
+        lambda_binders.append((arg.value, actual_sort))
+    binder_names = set(binder_sorts)
+    if not (expr_variables(predicate) & binder_names) <= seen:
+        return None
+    lambda_binders.sort(key=lambda item: binder_order[item[0]])
+    body = f"{proof_arg_text(predicate)} True"
+    for name, binder_sort in reversed(lambda_binders):
+        body = f"fun {name} :{binder_sort_text(binder_sort)} => {body}"
+    return body
+
+
+def raw_tptp_single_prop_skolem_intro_reconstruction(
+    proposition: str,
+    symbol: str,
+    sort: str,
+    replaced: str | None,
+    variable_sorts: dict[str, str],
+) -> tuple[tuple[str, str], str] | None:
+    if len(proposition) > 5000:
+        return None
+    expr = parse_expr(proposition)
+    if expr is None:
+        return None
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if len(premises) != 1:
+        return None
+    exists_args = app_args(premises[0], "vampire_exists_prop", 1)
+    if exists_args is None:
+        return None
+    predicate = exists_args[0]
+    if predicate.kind != "lambda" or predicate.value is None or predicate.sort != "prop" or not predicate.args:
+        return None
+    if replaced is not None and predicate.value != replaced:
+        return None
+    local_sorts = {**variable_sorts, **{name: binder_sort for name, binder_sort in binders}, symbol: sort}
+    skolem_app = raw_find_skolem_application(conclusion, symbol, sort, "prop", local_sorts)
+    if skolem_app is None:
+        return None
+    definition_body = raw_prop_skolem_definition_body_text(predicate, skolem_app, binders, sort)
+    if definition_body is None:
+        return None
+    choice_body = substitute_expr(predicate.args[0], {predicate.value: skolem_app})
+    choice_proof = f"((vampire_exists_prop_choice {proof_arg_text(predicate)}) Hexists)"
+    target_proof = choice_proof
+    if not expr_same_mod_alpha(beta_normalize_expr(choice_body), beta_normalize_expr(conclusion)):
+        transformed = raw_deep_formula_transform_proof(choice_body, conclusion, choice_proof, local_sorts)
+        if transformed is None:
+            transformed = raw_skolemised_formula_transform_proof(choice_body, conclusion, choice_proof, (), local_sorts)
+        if transformed is None:
+            return None
+        target_proof = transformed
+    proof = f"(fun Hexists => {target_proof})"
+    for name, binder_sort in reversed(binders):
+        proof = f"(fun {name} :{binder_sort_text(binder_sort)} => {proof})"
+    return (sort, definition_body), proof
 
 
 def raw_tptp_single_skolem_intro_epsilon_reconstruction(
@@ -46062,6 +46174,23 @@ def raw_tptp_skolem_epsilon_reconstructions(
                         if sort is None:
                             continue
                         reconstructed = raw_tptp_single_skolem_intro_epsilon_reconstruction(
+                            parent_step.proposition,
+                            symbol,
+                            sort,
+                            replaced,
+                            variable_sorts,
+                        )
+                        if reconstructed is None:
+                            continue
+                        definition, proof = reconstructed
+                        definitions.setdefault(symbol, definition)
+                        intro_proofs[raw_tptp_claim_name(parent)] = proof
+                        break
+                    for replaced, symbol in all_introduced:
+                        sort = variable_sorts.get(symbol)
+                        if sort is None:
+                            continue
+                        reconstructed = raw_tptp_single_prop_skolem_intro_reconstruction(
                             parent_step.proposition,
                             symbol,
                             sort,
@@ -54161,11 +54290,27 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         equality_proposition = predicate_definition_equalities.get(definition.proof)
         if equality_proposition is not None:
             lines.append(f"Axiom {raw_tptp_claim_name(definition.proof)}:{equality_proposition}.")
-    if skolem_intro_proofs:
+    if any(split_sort_arrows(sort)[-1:] == ("set",) for sort, _body in skolem_epsilon_definitions.values()):
         lines.append(
             "Theorem vampire_exists_set_eps: forall P:set->prop, vampire_exists_set P -> P (Eps_i P)."
         )
         lines.append("exact (fun P Hexists => Hexists (P (Eps_i P)) (fun X HX => Eps_i_ax P X HX)).")
+        lines.append("Qed.")
+    if any(split_sort_arrows(sort)[-1:] == ("prop",) for sort, _body in skolem_epsilon_definitions.values()):
+        lines.append(
+            "Theorem vampire_exists_prop_choice: forall P:prop->prop, vampire_exists_prop P -> P (P True)."
+        )
+        lines.append(
+            "exact (fun P Hexists => (xm (P True) (P (P True)) "
+            "(fun HPTrue => (((vampire_prop_ext True (P True) (fun _ :True => HPTrue) "
+            "(fun _ :P True => (fun Q H => H))) P) HPTrue)) "
+            "(fun HnotPTrue => Hexists (P (P True)) (fun X HPX => "
+            "(((vampire_prop_ext False (P True) (fun Hfalse :False => ((FalseE Hfalse) (P True))) HnotPTrue) P) "
+            "(((vampire_prop_ext X False "
+            "(fun HX :X => HnotPTrue (((vampire_prop_ext X True (fun _ :X => (fun Q H => H)) "
+            "(fun _ :True => HX)) P) HPX)) "
+            "(fun Hfalse :False => ((FalseE Hfalse) X))) P) HPX))))))."
+        )
         lines.append("Qed.")
     for name, (sort, body) in ordered_named_definition_bodies(skolem_epsilon_definitions):
         if name in declared_names:
