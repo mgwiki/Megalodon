@@ -40727,6 +40727,160 @@ def raw_tptp_selected_literal_subsumption_resolution_proof(
     return proof
 
 
+def raw_tptp_forward_subsumption_resolver_search_proof(
+    target: Expr,
+    parsed: list[tuple[Expr, str]],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parsed) != 2:
+        return None
+
+    def guarded_components(source: Expr, target_expr: Expr) -> tuple[Expr, Expr, Expr | None, bool] | None:
+        source_body = collect_foralls(source)[1]
+        target_body = collect_foralls(target_expr)[1]
+        source_parts = raw_or_parts(source_body)
+        target_parts = raw_or_parts(target_body)
+        if source_parts is not None and target_parts is not None:
+            for source_component, source_guard in (source_parts, (source_parts[1], source_parts[0])):
+                for target_component, target_guard in (target_parts, (target_parts[1], target_parts[0])):
+                    if expr_same_mod_alpha(source_guard, target_guard):
+                        return source_component, target_component, target_guard, expr_same_mod_alpha(source_parts[0], source_component)
+        return source, target_expr, None, True
+
+    for source_index, resolver_index in ((0, 1), (1, 0)):
+        source, source_name = parsed[source_index]
+        resolver, resolver_name = parsed[resolver_index]
+        component_info = guarded_components(source, target)
+        if component_info is None:
+            continue
+        source_component, target_component, target_guard, source_component_first = component_info
+        source_binders, source_body = collect_foralls(source_component)
+        target_binders, target_body = collect_foralls(target_component)
+        if len(source_binders) != len(target_binders) or len(source_binders) > 8:
+            continue
+        if any(source_sort != target_sort for (_, source_sort), (_, target_sort) in zip(source_binders, target_binders)):
+            continue
+        if not raw_clause_replay_budget_ok(source_body, target_body, max_literals=16, max_literal_product=384):
+            continue
+        source_subst = {
+            source_name_: Expr("var", value=target_name)
+            for (source_name_, _source_sort), (target_name, _target_sort) in zip(source_binders, target_binders)
+        }
+        opened_source = substitute_expr(source_body, source_subst)
+        source_component_proof = "HsourceComponent" if target_guard is not None else source_name
+        for source_name_, _source_sort in source_binders:
+            source_component_proof = f"({proof_head(source_component_proof)} {proof_arg_text(source_subst[source_name_])})"
+
+        resolver_binders, resolver_body = collect_foralls(resolver)
+        if not resolver_binders or len(resolver_binders) > 6:
+            continue
+        local_sorts = {**variable_sorts, **dict(target_binders), **dict(source_binders), **dict(resolver_binders)}
+        candidates_by_sort: dict[str, list[Expr]] = {}
+
+        def add_candidate(sort: str, candidate: Expr) -> None:
+            candidates = candidates_by_sort.setdefault(sort, [])
+            if all(expr_key(candidate) != expr_key(existing) for existing in candidates):
+                candidates.append(candidate)
+
+        for name, sort in target_binders:
+            add_candidate(sort, Expr("var", value=name))
+        for sort in {sort for _name, sort in resolver_binders}:
+            for candidate in raw_candidate_terms_for_sort((opened_source, target_body, resolver_body), sort, local_sorts):
+                add_candidate(sort, candidate)
+            if sort == "prop":
+                for name in ("vampire_true", "True", "vampire_false", "False"):
+                    add_candidate(sort, Expr("var", value=name))
+            inhabitant = raw_simple_inhabitant_for_sort(sort)
+            if inhabitant is not None:
+                add_candidate(sort, inhabitant)
+
+        candidate_lists: list[list[Expr]] = []
+        for _name, sort in resolver_binders:
+            candidates = candidates_by_sort.get(sort, [])
+            if not candidates:
+                break
+            candidate_lists.append(candidates[:8])
+        if len(candidate_lists) != len(resolver_binders):
+            continue
+        if math.prod(len(candidates) for candidates in candidate_lists) > 4096:
+            continue
+
+        source_literals = raw_clause_literals(opened_source)
+        target_literals = raw_clause_literals(target_body)
+        resolver_only_binders = {name for name, _sort in resolver_binders} - {name for name, _sort in target_binders}
+        for values in itertools.product(*candidate_lists):
+            resolver_subst = {
+                name: value
+                for (name, _sort), value in zip(resolver_binders, values)
+            }
+            if any(expr_variables(value) & resolver_only_binders for value in resolver_subst.values()):
+                continue
+            instantiated_resolver = substitute_expr(resolver_body, resolver_subst)
+            resolver_literals = raw_clause_literals(instantiated_resolver)
+            if not raw_clauses_have_complement(opened_source, instantiated_resolver):
+                continue
+            ok = True
+            for literal in source_literals:
+                if (
+                    raw_literal_to_clause_proof(literal, target_body, "HLit", target_literals, ()) is None
+                    and not any(raw_complementary_literals(literal, resolver_literal) for resolver_literal in resolver_literals)
+                ):
+                    ok = False
+                    break
+            if not ok:
+                continue
+            for literal in resolver_literals:
+                if (
+                    raw_literal_to_clause_proof(literal, target_body, "HLit", target_literals, ()) is None
+                    and not any(raw_complementary_literals(source_literal, literal) for source_literal in source_literals)
+                ):
+                    ok = False
+                    break
+            if not ok:
+                continue
+            resolver_proof = resolver_name
+            for name, _sort in resolver_binders:
+                resolver_proof = f"({proof_head(resolver_proof)} {proof_arg_text(resolver_subst[name])})"
+            body_proof = raw_flat_clause_resolution_proof(
+                opened_source,
+                target_body,
+                source_component_proof,
+                instantiated_resolver,
+                resolver_proof,
+            )
+            if body_proof is None:
+                body_proof = raw_clause_resolution_proof(
+                    opened_source,
+                    target_body,
+                    source_component_proof,
+                    instantiated_resolver,
+                    resolver_proof,
+                )
+            if body_proof is None:
+                continue
+            for name, sort in reversed(target_binders):
+                body_proof = f"(fun {name} :{sort} => {body_proof})"
+            if target_guard is None:
+                return body_proof
+            target_top_body = collect_foralls(target)[1]
+            component_intro = raw_or_intro_from_branch(target_top_body, target_component, body_proof)
+            guard_intro = raw_or_intro_from_branch(target_top_body, target_guard, "Hguard")
+            if component_intro is None or guard_intro is None:
+                continue
+            if source_component_first:
+                return (
+                    f"({source_name} {proof_arg_text(target_top_body)} "
+                    f"(fun HsourceComponent => {proof_term_text(component_intro)}) "
+                    f"(fun Hguard => {proof_term_text(guard_intro)}))"
+                )
+            return (
+                f"({source_name} {proof_arg_text(target_top_body)} "
+                f"(fun Hguard => {proof_term_text(guard_intro)}) "
+                f"(fun HsourceComponent => {proof_term_text(component_intro)}))"
+            )
+    return None
+
+
 def raw_tptp_forward_subsumption_resolution_proof(
     proposition: str,
     parents: list[str],
@@ -40762,6 +40916,14 @@ def raw_tptp_forward_subsumption_resolution_proof(
     )
     if selected_literal_proof is not None:
         return selected_literal_proof
+
+    resolver_search_proof = raw_tptp_forward_subsumption_resolver_search_proof(
+        target,
+        parsed,
+        variable_sorts,
+    )
+    if resolver_search_proof is not None:
+        return resolver_search_proof
 
     for parent_expr, parent_proof in parsed:
         proof = raw_forall_prop_true_equality_split_proof(target, parent_expr, parent_proof)
