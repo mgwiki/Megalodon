@@ -24125,6 +24125,15 @@ def raw_ennf_positive_consequent_transform_proof(
     direct = raw_direct_conclusion_transform_proof(source, target, source_proof)
     if direct is not None:
         return direct
+    implication_ennf = raw_implication_to_ennf_or_proof(
+        source,
+        target,
+        source_proof,
+        variable_sorts,
+        depth + 1,
+    )
+    if implication_ennf is not None:
+        return implication_ennf
     implication_chain = raw_implication_chain_to_or_negated_premises_proof(
         source,
         target,
