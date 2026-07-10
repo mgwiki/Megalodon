@@ -57147,6 +57147,33 @@ def source_toplevel_fact_names(source: Path | None) -> set[str]:
     return names
 
 
+def source_toplevel_fact_propositions(source: Path | None) -> dict[str, str]:
+    if source is None:
+        return {}
+    try:
+        text = source.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    propositions: dict[str, str] = {}
+    for line in text.splitlines():
+        for prefix in (
+            "Axiom ",
+            "Theorem ",
+            "Lemma ",
+            "Example ",
+            "Fact ",
+            "Remark ",
+            "Corollary ",
+            "Proposition ",
+            "Property ",
+        ):
+            parsed = proposition_after_colon(line, prefix)
+            if parsed is not None:
+                propositions.setdefault(parsed[0], parsed[1])
+                break
+    return propositions
+
+
 def normalize_megalodon_sort(sort: str) -> str:
     text = sort.strip()
     text = re.sub(r"\s*->\s*", "->", text)
@@ -57172,10 +57199,29 @@ def source_declared_sorts(source: Path | None) -> dict[str, str]:
     except OSError:
         return {}
     sorts: dict[str, str] = {}
+    section_parameters: list[list[tuple[str, str]]] = []
     for line in text.splitlines():
+        stripped = line.strip()
+        if re.match(r"^End\b", stripped):
+            if section_parameters:
+                section_parameters.pop()
+            continue
+        if re.match(r"^Section\b", stripped):
+            section_parameters.append([])
+            continue
         declared = megalodon_declared_sort(line)
         if declared is not None:
             name, sort = declared
+            if section_parameters and stripped.startswith(("Variable ", "Parameter ")):
+                section_parameters[-1].append((name, sort))
+            if section_parameters and stripped.startswith("Definition "):
+                parameter_sorts = [
+                    parameter_sort
+                    for section in section_parameters
+                    for _parameter_name, parameter_sort in section
+                ]
+                if parameter_sorts:
+                    sort = join_sort_arrows([*parameter_sorts, sort])
             sorts[name] = sort
     return sorts
 
@@ -57362,13 +57408,64 @@ def raw_proposition_mentions_equality(proposition: str) -> bool:
     return expr_mentions_equality(expr)
 
 
+def raw_tptp_source_fact_unfolded_subq_proof(
+    proposition: str,
+    source_name: str,
+    source_proposition: str | None,
+) -> str | None:
+    if source_proposition is None:
+        return None
+    if "c=" not in source_proposition and "Subq" not in source_proposition:
+        return None
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    binders, body = collect_foralls(target)
+    premises, conclusion = split_arrows(body)
+    if len(premises) != 1:
+        return None
+    premise_sides = app_args(premises[0], "In", 2)
+    conclusion_sides = app_args(conclusion, "In", 2)
+    if premise_sides is None or conclusion_sides is None:
+        return None
+    source_element, _source_set = premise_sides
+    target_element, _target_set = conclusion_sides
+    if not expr_same_mod_alpha(source_element, target_element):
+        return None
+    if source_element.kind != "var" or source_element.value is None:
+        return None
+    element_name = source_element.value
+    binder_names = [name for name, _sort in binders]
+    if element_name not in binder_names:
+        return None
+    source_args = [Expr("var", value=name) for name, _sort in binders if name != element_name]
+    proof = source_name
+    for argument in source_args:
+        proof = f"({proof_head(proof)} {proof_arg_text(argument)})"
+    proof = f"({proof_head(proof)} {proof_arg_text(source_element)})"
+    premise_name = fresh_identifier("Hsubq", proposition, source_name)
+    proof = f"({proof_head(proof)} {premise_name})"
+    proof = f"(fun {premise_name} => {proof})"
+    for name, sort in reversed(binders):
+        proof = f"(fun {name} :{sort} => {proof})"
+    return proof
+
+
 def raw_tptp_source_fact_proof(
     proposition: str,
     source_name: str | None,
     source_fact_names: set[str],
+    source_fact_propositions: dict[str, str],
 ) -> str | None:
     if source_name is None or source_name not in source_fact_names:
         return None
+    unfolded_subq_proof = raw_tptp_source_fact_unfolded_subq_proof(
+        proposition,
+        source_name,
+        source_fact_propositions.get(source_name),
+    )
+    if unfolded_subq_proof is not None:
+        return unfolded_subq_proof
     if not raw_proposition_mentions_equality(proposition):
         return source_name
     parsed_source_fact = parse_expr(proposition)
@@ -57854,6 +57951,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     source_sorts = source_active_declared_sorts(source)
     source_declared_sort_names = set(source_declared_sorts(source))
     source_fact_names = source_toplevel_fact_names(source)
+    source_fact_propositions = source_toplevel_fact_propositions(source)
     early_source_declarations: list[str] = []
     later_source_declarations: list[str] = []
     for declaration in source_declarations:
@@ -58124,7 +58222,12 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             lines.append(f"exact {proof_argument_text(universal_instance_proof)}.")
             lines.append("Qed.")
         elif (
-            source_fact_proof := raw_tptp_source_fact_proof(proposition, source_name, source_fact_names)
+            source_fact_proof := raw_tptp_source_fact_proof(
+                proposition,
+                source_name,
+                source_fact_names,
+                source_fact_propositions,
+            )
         ) is not None:
             lines.append(f"Theorem {claim_name}: {proposition}.")
             lines.append(f"exact {proof_argument_text(source_fact_proof)}.")
