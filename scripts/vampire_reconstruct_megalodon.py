@@ -44775,6 +44775,250 @@ def raw_tptp_avatar_split_product_forall_clause_proof(
             PROOF_SEARCH_STATE.flat_resolution_target = previous_target
 
 
+def raw_tptp_avatar_split_multi_binder_product_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rewrites: tuple[RawSplitRewrite, ...],
+) -> str | None:
+    if proof_search_timed_out() or len(expr_text(source)) + len(expr_text(target)) > 12000:
+        return None
+    target_literals = raw_clause_literals(target)
+    if len(target_literals) != 2:
+        return None
+    rewrite_by_split = {raw_split_atom_name(rewrite.split): rewrite for rewrite in rewrites}
+    target_entries: list[tuple[int, RawSplitRewrite, list[tuple[str, str]], Expr]] = []
+    for index, literal in enumerate(target_literals):
+        split = raw_split_literal_parts(literal)
+        if split is None or not split[1]:
+            return None
+        rewrite = rewrite_by_split.get(split[0])
+        if rewrite is None:
+            return None
+        component_binders, component_body = collect_foralls(rewrite.component)
+        if not component_binders or len(component_binders) > 4:
+            return None
+        target_entries.append((index, rewrite, component_binders, component_body))
+
+    target_text = proof_arg_text(target)
+
+    def component_source_mapping(
+        component_binders: list[tuple[str, str]],
+        component_body: Expr,
+        source_binders: list[tuple[str, str]],
+        source_literals: list[Expr],
+    ) -> dict[str, str] | None:
+        binder_order = [name for name, _sort in component_binders]
+        candidates_by_name: dict[str, list[str]] = {}
+        for component_name, component_sort in component_binders:
+            candidates = [source_name for source_name, source_sort in source_binders if source_sort == component_sort]
+            if not candidates:
+                return None
+            candidates_by_name[component_name] = candidates
+
+        def search(index: int, used: set[str], mapping: dict[str, str]) -> dict[str, str] | None:
+            if index == len(binder_order):
+                opened = rename_expr_variables(component_body, mapping)
+                component_literals = raw_clause_literals(opened)
+                if all(
+                    any(expr_same_mod_alpha(component_literal, source_literal) for source_literal in source_literals)
+                    for component_literal in component_literals
+                ):
+                    return dict(mapping)
+                return None
+            component_name = binder_order[index]
+            for source_name in candidates_by_name[component_name]:
+                if source_name in used:
+                    continue
+                mapping[component_name] = source_name
+                used.add(source_name)
+                found = search(index + 1, used, mapping)
+                if found is not None:
+                    return found
+                used.remove(source_name)
+                mapping.pop(component_name, None)
+            return None
+
+        return search(0, set(), {})
+
+    def safe_component(
+        entry: tuple[int, RawSplitRewrite, list[tuple[str, str]], Expr, dict[str, str]],
+        avoid_text: str,
+    ) -> tuple[int, RawSplitRewrite, list[tuple[str, str]], Expr, dict[str, str]]:
+        index, rewrite, binders, body, mapping = entry
+        used_text = avoid_text
+        renames: dict[str, str] = {}
+        safe_binders: list[tuple[str, str]] = []
+        for name, sort in binders:
+            safe_name = fresh_identifier(name, used_text, " ".join(renames.values()))
+            renames[name] = safe_name
+            safe_binders.append((safe_name, sort))
+            used_text = f"{used_text} {safe_name}"
+        safe_body = rename_expr_variables(body, renames)
+        safe_mapping = {renames[name]: source_name for name, source_name in mapping.items()}
+        return index, rewrite, safe_binders, safe_body, safe_mapping
+
+    def wrap_foralls(proof: str, binders: list[tuple[str, str]]) -> str:
+        for name, sort in reversed(binders):
+            proof = f"(fun {name} :{sort} => {proof})"
+        return proof
+
+    def prove_product_literal(source_literal: Expr, literal_proof: str) -> str | None:
+        direct = raw_literal_to_clause_proof(source_literal, target, literal_proof, target_literals, rewrites)
+        if direct is not None:
+            return direct
+        source_binders, source_body = collect_foralls(source_literal)
+        if len(source_binders) < 2 or len(source_binders) > 8:
+            return None
+        source_literals = raw_clause_literals(source_body)
+        if len(source_literals) > 12:
+            return None
+        matched: list[tuple[int, RawSplitRewrite, list[tuple[str, str]], Expr, dict[str, str]]] = []
+        for index, rewrite, component_binders, component_body in target_entries:
+            mapping = component_source_mapping(component_binders, component_body, source_binders, source_literals)
+            if mapping is None:
+                return None
+            matched.append((index, rewrite, component_binders, component_body, mapping))
+        if len(matched) != 2:
+            return None
+        matched.sort(key=lambda item: item[0])
+        avoid = f"{expr_text(source_literal)} {expr_text(target)} {literal_proof}"
+        safe_matched: list[tuple[int, RawSplitRewrite, list[tuple[str, str]], Expr, dict[str, str]]] = []
+        used_names_text = avoid
+        for entry in matched:
+            safe_entry = safe_component(entry, used_names_text)
+            safe_matched.append(safe_entry)
+            used_names_text = f"{used_names_text} {' '.join(name for name, _sort in safe_entry[2])}"
+        matched = safe_matched
+
+        def build_component_proof(
+            desired_index: int,
+            contradiction_index: int,
+            not_contradiction: str,
+        ) -> str | None:
+            _desired_target_index, _desired_rewrite, desired_binders, desired_body, desired_mapping = matched[desired_index]
+            _contr_target_index, contr_rewrite, contr_binders, contr_body, contr_mapping = matched[contradiction_index]
+            desired_source_to_var = {
+                source_name: Expr("var", value=component_name)
+                for component_name, source_name in desired_mapping.items()
+            }
+            contr_source_to_var = {
+                source_name: Expr("var", value=component_name)
+                for component_name, source_name in contr_mapping.items()
+            }
+            desired_body_literals = raw_clause_literals(desired_body)
+            contr_body_literals = raw_clause_literals(contr_body)
+            source_sort_by_name = {name: sort for name, sort in source_binders}
+            local_sorts = {
+                **source_sort_by_name,
+                **{name: sort for name, sort in desired_binders},
+                **{name: sort for name, sort in contr_binders},
+            }
+            avoid_names = {name for name, _sort in desired_binders} | {name for name, _sort in contr_binders}
+
+            def prove_contradiction_component(not_desired_name: str) -> str | None:
+                substitutions: dict[str, Expr] = {}
+                for source_name, source_sort in source_binders:
+                    if source_name in desired_source_to_var:
+                        substitutions[source_name] = desired_source_to_var[source_name]
+                    elif source_name in contr_source_to_var:
+                        substitutions[source_name] = contr_source_to_var[source_name]
+                    else:
+                        replacement = raw_tptp_constant_for_sort(source_sort, local_sorts, avoid_names)
+                        if replacement is None:
+                            return None
+                        substitutions[source_name] = replacement
+                applied_source = literal_proof
+                for source_name, _source_sort in source_binders:
+                    applied_source = f"({proof_head(applied_source)} {proof_arg_text(substitutions[source_name])})"
+                instantiated_body = substitute_expr(source_body, substitutions)
+
+                def branch_handler(branch_literal: Expr, branch_proof: str) -> str | None:
+                    contr_branch = raw_literal_to_clause_proof(
+                        branch_literal,
+                        contr_body,
+                        branch_proof,
+                        contr_body_literals,
+                        rewrites=(),
+                    )
+                    if contr_branch is not None:
+                        return contr_branch
+                    desired_branch = raw_literal_to_clause_proof(
+                        branch_literal,
+                        desired_body,
+                        branch_proof,
+                        desired_body_literals,
+                        rewrites=(),
+                    )
+                    if desired_branch is None:
+                        return None
+                    false_proof = f"({not_desired_name} {proof_term_text(desired_branch)})"
+                    return raw_false_to_expr_proof(false_proof, contr_body)
+
+                previous_inner_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+                PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(contr_body)
+                try:
+                    body_proof = raw_clause_cases_with_handler(instantiated_body, applied_source, branch_handler)
+                finally:
+                    if previous_inner_target is None:
+                        if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                            delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+                    else:
+                        PROOF_SEARCH_STATE.flat_resolution_target = previous_inner_target
+                if body_proof is None:
+                    return None
+                return wrap_foralls(body_proof, contr_binders)
+
+            not_desired_name = fresh_identifier(
+                "HnotComponent",
+                expr_text(desired_body),
+                expr_text(contr_body),
+                expr_text(target),
+                literal_proof,
+            )
+            contradiction_component = prove_contradiction_component(not_desired_name)
+            if contradiction_component is None:
+                return None
+            contradiction_split = f"({proof_head(contr_rewrite.component_to_split)} {proof_term_text(contradiction_component)})"
+            contradiction_false = f"({not_contradiction} {proof_term_text(contradiction_split)})"
+            desired_body_proof = (
+                f"(xm {proof_arg_text(desired_body)} {proof_arg_text(desired_body)} "
+                f"(fun Hcomponent => Hcomponent) "
+                f"(fun {not_desired_name} => {raw_false_to_expr_proof(contradiction_false, desired_body)}))"
+            )
+            return wrap_foralls(desired_body_proof, desired_binders)
+
+        first_index, first_rewrite, _first_binders, _first_body, _first_mapping = matched[0]
+        second_index, second_rewrite, _second_binders, _second_body, _second_mapping = matched[1]
+        first_true = raw_or_intro_literal_at(target, first_index, "Hsplit")
+        if first_true is None:
+            return None
+        not_first = fresh_identifier("HnotSplit", expr_text(target), expr_text(first_rewrite.split), literal_proof)
+        second_component = build_component_proof(1, 0, not_first)
+        if second_component is None:
+            return None
+        second_split = f"({proof_head(second_rewrite.component_to_split)} {proof_term_text(second_component)})"
+        second_intro = raw_or_intro_literal_at(target, second_index, second_split)
+        if second_intro is None:
+            return None
+        return (
+            f"(xm {proof_arg_text(first_rewrite.split)} {target_text} "
+            f"(fun Hsplit => {proof_term_text(first_true)}) "
+            f"(fun {not_first} => {proof_term_text(second_intro)}))"
+        )
+
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+    try:
+        return raw_clause_cases_with_handler(source, source_proof, prove_product_literal)
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_tptp_avatar_split_clause_proof(
     proposition: str,
     parents: list[str],
@@ -44807,6 +45051,14 @@ def raw_tptp_avatar_split_clause_proof(
     )
     if branching is not None:
         return branching
+    multi_binder_product = raw_tptp_avatar_split_multi_binder_product_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+        rewrites,
+    )
+    if multi_binder_product is not None:
+        return multi_binder_product
     product_forall = raw_tptp_avatar_split_product_forall_clause_proof(
         source,
         target,
