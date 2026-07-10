@@ -37299,6 +37299,26 @@ def raw_tptp_superposition_proof(
             )
             if proof is not None:
                 return proof
+            proof = raw_guarded_quantified_extra_equality_superposition_proof(
+                early_parent_exprs[0][0],
+                early_target_expr,
+                early_parent_exprs[0][1],
+                early_parent_exprs[1][0],
+                early_parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_guarded_quantified_extra_equality_superposition_proof(
+                early_parent_exprs[1][0],
+                early_target_expr,
+                early_parent_exprs[1][1],
+                early_parent_exprs[0][0],
+                early_parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
             proof = raw_guarded_quantified_equality_clause_rewrite_superposition_proof(
                 early_parent_exprs[0][0],
                 early_target_expr,
@@ -38348,6 +38368,7 @@ def raw_guarded_negative_equality_superposition_instantiated_proof(
     equality_clause: Expr,
     equality_clause_proof: str,
     variable_sorts: dict[str, str],
+    avoid_text: str = "",
 ) -> str | None:
     target_literals = raw_clause_literals(target)
     target_text = proof_arg_text(target)
@@ -38402,11 +38423,11 @@ def raw_guarded_negative_equality_superposition_instantiated_proof(
             equality_clause,
             equality_clause_proof,
             equality_handler,
-            avoid_text=source_literal_proof,
+            avoid_text=f"{avoid_text} {source_literal_proof}",
         )
 
     try:
-        return raw_clause_cases_with_handler(source, source_proof, source_handler)
+        return raw_clause_cases_with_handler(source, source_proof, source_handler, avoid_text=avoid_text)
     finally:
         if previous_target is None:
             if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
@@ -39101,6 +39122,188 @@ def raw_guarded_quantified_equality_superposition_proof(
         for name, sort in reversed(target_binders):
             body_proof = f"(fun {name} :{sort} => {body_proof})"
         return body_proof
+
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target)
+    target_top_literals = raw_clause_literals(target)
+
+    def resolver_handler(literal: Expr, literal_proof: str) -> str | None:
+        direct = raw_literal_to_clause_proof(literal, target, literal_proof, target_top_literals, ())
+        if direct is not None:
+            return direct
+        if not expr_same_mod_alpha(literal, resolver_quantified):
+            return None
+        quantified = quantified_target_proof(literal_proof)
+        if quantified is None:
+            return None
+        return raw_or_intro_literal_at(target, target_quantified_index, quantified)
+
+    try:
+        return raw_clause_cases_with_handler(
+            resolver,
+            resolver_proof,
+            resolver_handler,
+            avoid_text=source_proof,
+        )
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
+def raw_guarded_quantified_extra_equality_superposition_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    resolver: Expr,
+    resolver_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if proof_search_timed_out():
+        return None
+    target_parts = raw_or_parts(target)
+    resolver_parts = raw_or_parts(resolver)
+    if target_parts is None or resolver_parts is None:
+        return None
+
+    target_quantified: Expr | None = None
+    target_guard: Expr | None = None
+    target_quantified_index = -1
+    for index, (candidate_quantified, candidate_guard) in enumerate((target_parts, (target_parts[1], target_parts[0]))):
+        if candidate_quantified.kind == "forall":
+            target_quantified = candidate_quantified
+            target_guard = candidate_guard
+            target_quantified_index = index
+            break
+    if target_quantified is None or target_guard is None:
+        return None
+
+    resolver_quantified: Expr | None = None
+    for candidate_quantified, candidate_guard in (resolver_parts, (resolver_parts[1], resolver_parts[0])):
+        if candidate_quantified.kind == "forall" and expr_same_mod_alpha(candidate_guard, target_guard):
+            resolver_quantified = candidate_quantified
+            break
+    if resolver_quantified is None:
+        return None
+
+    target_binders, target_body = collect_foralls(target_quantified)
+    resolver_binders, resolver_body = collect_foralls(resolver_quantified)
+    _source_binders, source_body = collect_foralls(source)
+    if (
+        not target_binders
+        or not resolver_binders
+        or len(target_binders) > 6
+        or len(resolver_binders) > 6
+        or len(raw_clause_literals(source_body)) > 12
+        or len(raw_clause_literals(target_body)) > 16
+        or len(raw_clause_literals(resolver_body)) > 8
+    ):
+        return None
+
+    def negative_equality_literal(literal: Expr) -> bool:
+        premises, conclusion = split_arrows(literal)
+        return (
+            len(premises) == 1
+            and false_eliminator_expr(conclusion)
+            and equality_like_sides(premises[0]) is not None
+        )
+
+    if not any(negative_equality_literal(literal) for literal in raw_clause_literals(source_body)):
+        return None
+
+    target_sort_by_name = {name: sort for name, sort in target_binders}
+    resolver_binder_names = {name for name, _sort in resolver_binders}
+    local_sorts = {**variable_sorts, **target_sort_by_name}
+    candidate_context = (source_body, target_body, resolver_body, target_guard)
+
+    candidates_by_binder: list[tuple[str, list[Expr]]] = []
+    for index, (name, sort) in enumerate(resolver_binders):
+        candidates: list[Expr] = []
+        seen: set[str] = set()
+
+        def add(candidate: Expr) -> None:
+            key = expr_key(candidate)
+            if key in seen:
+                return
+            if not equivalent_sorts(expr_sort(candidate, local_sorts), sort):
+                return
+            escaped_resolver_names = expr_variables(candidate) & (resolver_binder_names - set(target_sort_by_name))
+            if escaped_resolver_names:
+                return
+            seen.add(key)
+            candidates.append(candidate)
+
+        if index < len(target_binders) and equivalent_sorts(sort, target_binders[index][1]):
+            add(Expr("var", value=target_binders[index][0]))
+        for candidate in raw_candidate_terms_for_sort(candidate_context, sort, local_sorts):
+            add(candidate)
+        if not candidates:
+            return None
+        candidates_by_binder.append((name, candidates[:10]))
+
+    resolver_instances: list[tuple[dict[str, Expr], Expr]] = []
+    seen_instances: set[str] = set()
+    subst: dict[str, Expr] = {}
+
+    def build_resolver_instances(index: int) -> None:
+        if proof_search_timed_out() or len(resolver_instances) >= 64:
+            return
+        if index == len(candidates_by_binder):
+            instantiated_body = flatten_applications(substitute_expr(resolver_body, subst))
+            literals = raw_clause_literals(instantiated_body)
+            if not any(equality_like_sides(literal) is not None for literal in literals):
+                return
+            key = expr_key(instantiated_body)
+            if key in seen_instances:
+                return
+            seen_instances.add(key)
+            resolver_instances.append((dict(subst), instantiated_body))
+            return
+        name, candidates = candidates_by_binder[index]
+        for candidate in candidates:
+            subst[name] = candidate
+            build_resolver_instances(index + 1)
+            subst.pop(name, None)
+
+    build_resolver_instances(0)
+    if not resolver_instances:
+        return None
+
+    def quantified_target_proof(resolver_quantified_proof: str) -> str | None:
+        for resolver_subst, instantiated_resolver_body in resolver_instances:
+            instantiated_resolver_proof = resolver_quantified_proof
+            for name, _sort in resolver_binders:
+                value = resolver_subst.get(name)
+                if value is None:
+                    instantiated_resolver_proof = ""
+                    break
+                instantiated_resolver_proof = f"({proof_head(instantiated_resolver_proof)} {proof_arg_text(value)})"
+            if not instantiated_resolver_proof:
+                continue
+            source_options = raw_instantiated_forall_clause_options(
+                source,
+                source_proof,
+                target_body,
+                instantiated_resolver_body,
+            )
+            for source_instance, source_instance_proof in source_options[:24]:
+                body_proof = raw_guarded_negative_equality_superposition_instantiated_proof(
+                    source_instance,
+                    target_body,
+                    source_instance_proof,
+                    instantiated_resolver_body,
+                    instantiated_resolver_proof,
+                    local_sorts,
+                    avoid_text=instantiated_resolver_proof,
+                )
+                if body_proof is None:
+                    continue
+                for name, sort in reversed(target_binders):
+                    body_proof = f"(fun {name} :{sort} => {body_proof})"
+                return body_proof
+        return None
 
     previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
     PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target)
