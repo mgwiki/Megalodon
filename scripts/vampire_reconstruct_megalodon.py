@@ -44695,7 +44695,16 @@ def raw_tptp_avatar_split_product_forall_clause_proof(
                     false_proof = f"({not_split} {proof_term_text(split_proof)})"
                     return false_to(contr_body_at_var, false_proof)
 
-                return raw_clause_cases_with_handler(instantiated_body, applied_source, branch_handler)
+                previous_inner_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+                PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(contr_body_at_var)
+                try:
+                    return raw_clause_cases_with_handler(instantiated_body, applied_source, branch_handler)
+                finally:
+                    if previous_inner_target is None:
+                        if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                            delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+                    else:
+                        PROOF_SEARCH_STATE.flat_resolution_target = previous_inner_target
 
             not_desired_name = fresh_identifier("HnotComponent", expr_text(desired_body), expr_text(target), literal_proof)
             contradiction_component = prove_contradiction_component(not_desired_name)
@@ -44726,7 +44735,14 @@ def raw_tptp_avatar_split_product_forall_clause_proof(
             true_branch = split_intro(target_index, "Hsplit")
             if true_branch is None:
                 return None
-            not_name = fresh_identifier("HnotSplit", expr_text(target), expr_text(split_expr), literal_proof, str(index))
+            not_name = fresh_identifier(
+                "HnotSplit",
+                expr_text(target),
+                expr_text(split_expr),
+                literal_proof,
+                " ".join(neg_assumptions.values()),
+                str(index),
+            )
             false_branch = build_target_from_entries(index + 1, {**neg_assumptions, index: not_name})
             if false_branch is None:
                 return None
