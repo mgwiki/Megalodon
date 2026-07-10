@@ -26180,6 +26180,14 @@ def raw_negated_forall_implication_to_exists_conjunction_proof(
         if proof is None:
             proof = raw_classical_implication_to_or_transform_proof(source_component, component, component_source_proof)
         if proof is None:
+            proof = raw_tptp_peirce_implication_ennf_proof(
+                expr_text(component),
+                ["source"],
+                {"source": expr_text(source_component)},
+                local_sorts,
+                source_proof_override=component_source_proof,
+            )
+        if proof is None:
             proof = raw_clause_transform_proof(source_component, component, component_source_proof)
         return proof
 
@@ -43645,6 +43653,16 @@ def raw_implication_to_ennf_or_proof(
         return None
     if expr_same_mod_alpha(source, target):
         return source_proof
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort == "prop":
+        proof = raw_tptp_peirce_implication_ennf_proof(
+            expr_text(target),
+            ["source"],
+            {"source": expr_text(source)},
+            variable_sorts,
+            source_proof_override=source_proof,
+        )
+        if proof is not None:
+            return proof
     if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort and source.value and target.value:
         binder = target.value
         source_body = source.args[0]
@@ -43860,6 +43878,17 @@ def raw_tptp_quantified_eq_prop_disjunction_ennf_needs_fallback(proposition: str
         return False
     binders, body = collect_foralls(expr)
     return bool(binders) and raw_or_parts(body) is not None
+
+
+def raw_tptp_peirce_prop_binder_ennf_candidate(source: Expr, target: Expr) -> bool:
+    del target
+    for subterm in expr_subterms(source, limit=256):
+        if subterm.kind != "forall" or subterm.sort != "prop" or subterm.value is None:
+            continue
+        premises, conclusion = split_arrows(subterm.args[0])
+        if premises and conclusion.kind == "var" and conclusion.value == subterm.value:
+            return True
+    return False
 
 
 def raw_tptp_eq_prop_true_clause_needs_fallback(proposition: str) -> bool:
@@ -48229,6 +48258,17 @@ def raw_tptp_replay_proof(
                         raw_tptp_claim_name(parents[0]),
                         variable_sorts,
                     )
+                    if (
+                        proof is None
+                        and rule in {"ennf_transformation", "nnf_transformation"}
+                        and raw_tptp_peirce_prop_binder_ennf_candidate(source_expr, target_expr)
+                    ):
+                        proof = raw_implication_to_ennf_or_proof(
+                            source_expr,
+                            target_expr,
+                            raw_tptp_claim_name(parents[0]),
+                            variable_sorts,
+                        )
             if rule in {"ennf_transformation", "nnf_transformation"}:
                 if raw_tptp_quantified_eq_prop_disjunction_ennf_needs_fallback(proposition):
                     proof = None
