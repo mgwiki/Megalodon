@@ -24485,6 +24485,122 @@ def raw_negated_forall_to_exists_negation_proof(
     )
 
 
+def raw_exists_prop_neg_false_proof(component: Expr) -> str | None:
+    exists_parts = raw_exists_transform_parts(component)
+    if exists_parts is None:
+        return None
+    _head, sort, _predicate, name, body = exists_parts
+    if sort != "prop":
+        return None
+    false_expr = Expr("var", value="False")
+    body_at_false = substitute_expr(body, {name: false_expr})
+    premises, conclusion = split_arrows(body_at_false)
+    if len(premises) != 1 or not false_eliminator_expr(premises[0]) or not false_eliminator_expr(conclusion):
+        return None
+    return "(fun Q Hexists => Hexists False (fun Hfalse :False => Hfalse))"
+
+
+def raw_negated_forall_implication_to_exists_witness_conjunction_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_premises, source_conclusion = split_arrows(source)
+    if len(source_premises) != 1 or not false_eliminator_expr(source_conclusion):
+        return None
+    source_binders, source_body = collect_foralls(source_premises[0])
+    if not source_binders or len(source_binders) > 6:
+        return None
+    implication_premises, implication_conclusion = split_arrows(source_body)
+    if not implication_premises or len(implication_premises) > 8:
+        return None
+    target_parts = raw_nested_exists_parts(target)
+    if target_parts is None:
+        return None
+    target_binders, target_body = target_parts
+    if len(target_binders) != len(source_binders):
+        return None
+    for (_, source_sort), (_, target_sort) in zip(source_binders, target_binders):
+        if source_sort != target_sort:
+            return None
+    source_var_subst = {
+        target_name: Expr("var", value=source_name)
+        for (source_name, _), (target_name, _) in zip(source_binders, target_binders)
+    }
+    target_body_at_source = substitute_expr(target_body, source_var_subst)
+    target_components = raw_conjunction_components(target_body_at_source)
+    if len(target_components) > len(implication_premises) + 2:
+        return None
+    local_sorts = {**variable_sorts, **{name: sort for name, sort in source_binders}}
+    premise_names = [
+        fresh_identifier(f"HsourcePremise{index}", expr_text(source), expr_text(target), source_proof)
+        for index, _premise in enumerate(implication_premises)
+    ]
+    used_premises: set[int] = set()
+    component_entries: list[tuple[Expr, str]] = []
+
+    def proof_from_premise(premise: Expr, component: Expr, premise_proof: str) -> str | None:
+        if expr_same_mod_alpha(premise, component):
+            return premise_proof
+        proof = raw_normal_form_side_proof(premise, component, premise_proof, local_sorts, 0)
+        if proof is not None:
+            return proof
+        proof = raw_clause_transform_proof(premise, component, premise_proof)
+        if proof is not None:
+            return proof
+        proof = raw_deep_formula_transform_proof(premise, component, premise_proof, local_sorts)
+        if proof is not None:
+            return proof
+        return raw_classical_implication_to_or_transform_proof(premise, component, premise_proof)
+
+    for component in target_components:
+        matched: tuple[int, str] | None = None
+        for premise_index, (premise, premise_name) in enumerate(zip(implication_premises, premise_names)):
+            if premise_index in used_premises:
+                continue
+            proof = proof_from_premise(premise, component, premise_name)
+            if proof is None:
+                continue
+            matched = (premise_index, proof)
+            break
+        if matched is not None:
+            used_premises.add(matched[0])
+            component_entries.append((component, matched[1]))
+            continue
+        if false_eliminator_expr(implication_conclusion):
+            proof = raw_exists_prop_neg_false_proof(component)
+            if proof is not None:
+                component_entries.append((component, proof))
+                continue
+        return None
+
+    def component_proof(component: Expr) -> str | None:
+        for candidate, proof in component_entries:
+            if expr_same_mod_alpha(candidate, component):
+                return proof
+        return None
+
+    conjunction_proof = raw_build_conjunction_from_component_proofs(target_body_at_source, component_proof)
+    if conjunction_proof is None:
+        return None
+    exists_proof = proof_term_text(conjunction_proof)
+    for source_name, _source_sort in reversed(source_binders):
+        exists_proof = f"(fun Q Hexists => Hexists {source_name} {exists_proof})"
+    false_from_not_target = f"(HnotTarget {proof_term_text(exists_proof)})"
+    implication_proof = false_from_not_target
+    for premise, premise_name in reversed(list(zip(implication_premises, premise_names))):
+        implication_proof = f"(fun {premise_name} :{proof_arg_text(premise)} => {implication_proof})"
+    for source_name, source_sort in reversed(source_binders):
+        implication_proof = f"(fun {source_name} :{source_sort} => {implication_proof})"
+    target_text = proof_arg_text(target)
+    return (
+        f"(xm {target_text} {target_text} "
+        f"(fun Htarget => Htarget) "
+        f"(fun HnotTarget => ({proof_head(source_proof)} {proof_term_text(implication_proof)} {target_text})))"
+    )
+
+
 def raw_negated_forall_to_double_negated_exists_negation_proof(
     source: Expr,
     target: Expr,
@@ -30798,6 +30914,14 @@ def raw_tptp_forward_demodulation_proof(
         variable_sorts,
     )
     if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_tptp_parent_equality_rewrite_proof(
+        proposition,
+        parents,
+        propositions_by_name,
+        variable_sorts,
+    )
+    if fallback_ok(proof):
         return proof
     if len(expr_text(first)) + len(expr_text(second)) + len(expr_text(target)) <= 3000:
         target_binders, _target_body = collect_foralls(target)
@@ -39917,7 +40041,13 @@ def raw_tptp_standard_replay_proof_is_unsafe(rule: str | None, proposition: str,
         r"\bR_[fs][0-9]+\s+[XY][0-9]+\b",
         proof,
     ):
-        return True
+        return raw_tptp_replay_proof_has_free_surface_variable(
+            proposition,
+            proof,
+        ) or raw_tptp_replay_proof_has_escaped_bound_surface_variable(
+            proposition,
+            proof,
+        )
     return False
 
 
@@ -44002,6 +44132,13 @@ def raw_tptp_replay_proof(
                                 raw_tptp_claim_name(parents[0]),
                                 variable_sorts,
                             )
+                            if proof is None:
+                                proof = raw_negated_forall_implication_to_exists_witness_conjunction_proof(
+                                    source_expr,
+                                    target_expr,
+                                    raw_tptp_claim_name(parents[0]),
+                                    variable_sorts,
+                                )
                 if proof is None:
                     proof = raw_tptp_explosive_implication_ennf_proof(
                         proposition,
@@ -45533,6 +45670,13 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                         propositions_by_name,
                         variable_sorts,
                     )
+                if replay_proof is None:
+                    replay_proof = raw_tptp_parent_equality_chain_rewrite_proof(
+                        proposition,
+                        replay_parents,
+                        propositions_by_name,
+                        variable_sorts,
+                    )
             if replay_proof is None:
                 if raw_tptp_replay_payload_size_ok(
                     rule,
@@ -45604,6 +45748,13 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 )
                 if replay_proof is None:
                     replay_proof = raw_tptp_pointwise_function_clause_definition_rewrite_proof(
+                        proposition,
+                        replay_parents,
+                        propositions_by_name,
+                        variable_sorts,
+                    )
+                if replay_proof is None:
+                    replay_proof = raw_tptp_parent_equality_chain_rewrite_proof(
                         proposition,
                         replay_parents,
                         propositions_by_name,
