@@ -6532,6 +6532,264 @@ def raw_tptp_exported_fold_steps_proof(
     return raw_deep_formula_transform_proof(current, target, proof, variable_sorts)
 
 
+def raw_guided_direct_quantified_equality_rewrite_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality: Expr,
+    equality_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    equality_binders, equality_body = collect_foralls(equality)
+    equality_sides = equality_like_sides(equality_body)
+    if equality_sides is None or len(equality_binders) > 8:
+        return None
+    protected = expr_bound_variables(source) | expr_bound_variables(target)
+    binder_sort_by_name = {name: sort for name, sort in equality_binders}
+    local_sorts = {**variable_sorts, **binder_sort_by_name}
+    seen_pairs: set[tuple[str, str]] = set()
+
+    for old_pattern, new_pattern, reverse in (
+        (equality_sides[0], equality_sides[1], False),
+        (equality_sides[1], equality_sides[0], True),
+    ):
+        for old_subterm in expr_subterms(source, limit=192):
+            if expr_variables(old_subterm) & protected:
+                continue
+            for new_subterm in expr_subterms(target, limit=192):
+                if expr_variables(new_subterm) & protected:
+                    continue
+                pair_key = (expr_key(old_subterm), expr_key(new_subterm))
+                if pair_key in seen_pairs:
+                    continue
+                seen_pairs.add(pair_key)
+                trial = raw_match_expr_pair_with_unary_function_binder_instantiation(
+                    old_pattern,
+                    old_subterm,
+                    new_pattern,
+                    new_subterm,
+                    binder_sort_by_name,
+                    local_sorts,
+                )
+                if trial is None:
+                    continue
+                flatten_substitution(trial)
+                if any(name not in trial for name, _ in equality_binders):
+                    continue
+                if any(raw_expr_has_synthetic_db_variable(trial[name]) for name, _ in equality_binders):
+                    continue
+                if any(expr_variables(trial[name]) & protected for name, _ in equality_binders):
+                    continue
+                replaced, changed = replace_expr(source, old_subterm, new_subterm)
+                if not changed or not expr_same_mod_alpha(replaced, target):
+                    continue
+                equality_instance = equality_proof
+                for name, _sort in equality_binders:
+                    equality_instance = f"({proof_head(equality_instance)} {proof_arg_text(trial[name])})"
+                instantiated_sort = raw_equality_transport_sort(old_subterm, new_subterm, local_sorts)
+                if reverse:
+                    equality_instance = raw_eq_symmetry_proof(equality_instance, new_subterm, instantiated_sort)
+                hole_name = fresh_identifier("zz", expr_text(source), expr_text(old_subterm), expr_text(new_subterm))
+                context, context_changed = replace_expr(source, old_subterm, Expr("var", value=hole_name))
+                if not context_changed:
+                    continue
+                return (
+                    f"{proof_term_text(equality_instance)} "
+                    f"(fun {hole_name} :{binder_sort_text(instantiated_sort)} => {expr_text(context)}) "
+                    f"{proof_term_text(source_proof)}"
+                )
+    return None
+
+
+def raw_guided_quantified_equality_rewrite_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality: Expr,
+    equality_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 80 or proof_search_timed_out():
+        return None
+    if expr_same_mod_alpha(source, target):
+        return source_proof
+
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
+        assert source.value is not None and target.value is not None and target.sort is not None
+        binder = target.value
+        source_body = source.args[0]
+        target_body = target.args[0]
+        if source.value != binder and binder in (expr_variables(source_body) | expr_bound_variables(source_body)):
+            used_names = (
+                expr_variables(source_body)
+                | expr_bound_variables(source_body)
+                | expr_variables(target_body)
+                | expr_bound_variables(target_body)
+                | {source.value, target.value}
+            )
+            binder = fresh_identifier(target.value, " ".join(sorted(used_names)))
+            target_body = rename_expr_variables(target_body, {target.value: binder})
+        if source.value != binder:
+            source_body = rename_expr_variables(source_body, {source.value: binder})
+        inner = raw_guided_quantified_equality_rewrite_proof(
+            source_body,
+            target_body,
+            f"({proof_head(source_proof)} {binder})",
+            equality,
+            equality_proof,
+            {**variable_sorts, binder: target.sort},
+            depth + 1,
+        )
+        if inner is not None:
+            return f"(fun {binder} :{binder_sort_text(target.sort)} => {inner})"
+        return None
+
+    source_exists = raw_exists_transform_parts(source)
+    target_exists = raw_exists_transform_parts(target)
+    if source_exists is not None and target_exists is not None:
+        source_head, source_sort, _source_predicate, source_name, source_body = source_exists
+        target_head, target_sort, _target_predicate, target_name, target_body = target_exists
+        if source_head != target_head or source_sort != target_sort:
+            return None
+        witness_name = fresh_identifier("w", expr_text(source), expr_text(target), source_proof)
+        source_body = rename_expr_variables(source_body, {source_name: witness_name})
+        target_body = rename_expr_variables(target_body, {target_name: witness_name})
+        body_proof = raw_guided_quantified_equality_rewrite_proof(
+            source_body,
+            target_body,
+            "Hbody",
+            equality,
+            equality_proof,
+            {**variable_sorts, witness_name: source_sort},
+            depth + 1,
+        )
+        if body_proof is None:
+            return None
+        target_intro = f"(fun Q Hexists => Hexists {witness_name} {proof_term_text(body_proof)})"
+        return (
+            f"({proof_head(source_proof)} {proof_arg_text(target)} "
+            f"(fun {witness_name} :{binder_sort_text(source_sort)} => fun Hbody => {target_intro}))"
+        )
+
+    source_and = vampire_and_parts(source)
+    target_and = vampire_and_parts(target)
+    if source_and is not None and target_and is not None:
+        left_source = vampire_and_projection_from_proof(source_proof, source, source_and[0])
+        right_source = vampire_and_projection_from_proof(source_proof, source, source_and[1])
+        if left_source is None or right_source is None:
+            return None
+        left_proof = raw_guided_quantified_equality_rewrite_proof(
+            source_and[0],
+            target_and[0],
+            left_source,
+            equality,
+            equality_proof,
+            variable_sorts,
+            depth + 1,
+        )
+        right_proof = raw_guided_quantified_equality_rewrite_proof(
+            source_and[1],
+            target_and[1],
+            right_source,
+            equality,
+            equality_proof,
+            variable_sorts,
+            depth + 1,
+        )
+        if left_proof is not None and right_proof is not None:
+            return f"(fun P K => K {proof_term_text(left_proof)} {proof_term_text(right_proof)})"
+        return None
+
+    source_or = raw_or_parts(source)
+    target_or = raw_or_parts(target)
+    if source_or is not None and target_or is not None:
+        left_name = fresh_identifier("HorL", expr_text(source), expr_text(target), source_proof)
+        right_name = fresh_identifier("HorR", expr_text(source), expr_text(target), source_proof, left_name)
+        left_proof = raw_guided_quantified_equality_rewrite_proof(
+            source_or[0],
+            target_or[0],
+            left_name,
+            equality,
+            equality_proof,
+            variable_sorts,
+            depth + 1,
+        )
+        if left_proof is None:
+            left_proof = raw_deep_formula_transform_proof(source_or[0], target_or[0], left_name, variable_sorts, depth + 1)
+        right_proof = raw_guided_quantified_equality_rewrite_proof(
+            source_or[1],
+            target_or[1],
+            right_name,
+            equality,
+            equality_proof,
+            variable_sorts,
+            depth + 1,
+        )
+        if right_proof is None:
+            right_proof = raw_deep_formula_transform_proof(source_or[1], target_or[1], right_name, variable_sorts, depth + 1)
+        if left_proof is not None and right_proof is not None:
+            return (
+                f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                f"(fun {left_name} => fun P Hleft Hright => Hleft {proof_term_text(left_proof)}) "
+                f"(fun {right_name} => fun P Hleft Hright => Hright {proof_term_text(right_proof)}))"
+            )
+        return None
+
+    if source.kind == "arrow" and target.kind == "arrow":
+        source_premise, source_conclusion = source.args
+        target_premise, target_conclusion = target.args
+        premise_name = fresh_identifier("Hprem", expr_text(source_premise), expr_text(target_premise), source_proof)
+        premise_proof = raw_guided_quantified_equality_rewrite_proof(
+            target_premise,
+            source_premise,
+            premise_name,
+            equality,
+            equality_proof,
+            variable_sorts,
+            depth + 1,
+        )
+        if premise_proof is None:
+            premise_proof = raw_deep_formula_transform_proof(
+                target_premise,
+                source_premise,
+                premise_name,
+                variable_sorts,
+                depth + 1,
+            )
+        if premise_proof is None:
+            return None
+        conclusion = raw_guided_quantified_equality_rewrite_proof(
+            source_conclusion,
+            target_conclusion,
+            f"({proof_head(source_proof)} {proof_term_text(premise_proof)})",
+            equality,
+            equality_proof,
+            variable_sorts,
+            depth + 1,
+        )
+        if conclusion is None:
+            conclusion = raw_deep_formula_transform_proof(
+                source_conclusion,
+                target_conclusion,
+                f"({proof_head(source_proof)} {proof_term_text(premise_proof)})",
+                variable_sorts,
+                depth + 1,
+            )
+        if conclusion is None:
+            return None
+        return f"(fun {premise_name} :{proof_arg_text(target_premise)} => {conclusion})"
+
+    return raw_guided_direct_quantified_equality_rewrite_proof(
+        source,
+        target,
+        source_proof,
+        equality,
+        equality_proof,
+        variable_sorts,
+    )
+
+
 def raw_tptp_exported_definition_chain_proof(
     fields: dict[str, str],
     parents: list[str],
@@ -6645,6 +6903,20 @@ def raw_tptp_exported_definition_chain_proof(
                 if proof is not None:
                     return proof
         return finish(states)
+
+    if fields.get("rule", "").replace(" ", "_") == "definition_folding":
+        source_proof = raw_tptp_claim_name(parents[0])
+        for equality, equality_proof in equalities:
+            proof = raw_guided_quantified_equality_rewrite_proof(
+                source,
+                target,
+                source_proof,
+                equality,
+                equality_proof,
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
 
     proof = apply_sequence(equalities)
     if proof is not None:
@@ -19202,14 +19474,20 @@ def raw_literal_direct_transform_proof(
                 and target_premises[0].args[0].value == "vampire_eq_prop"
             ) else "set"
             premise_proof = raw_eq_symmetry_proof(premise_name, target_premise_sides[0], sort)
-            return f"(fun {premise_name} => ({proof_head(source_proof)} {proof_term_text(premise_proof)}))"
+            return (
+                f"(fun {premise_name} :{proof_arg_text(target_premises[0])} => "
+                f"({proof_head(source_proof)} {proof_term_text(premise_proof)}))"
+            )
         premise_proof = raw_deep_formula_transform_proof(
             target_premises[0],
             source_premises[0],
             premise_name,
         )
         if premise_proof is not None:
-            return f"(fun {premise_name} => ({proof_head(source_proof)} {proof_term_text(premise_proof)}))"
+            return (
+                f"(fun {premise_name} :{proof_arg_text(target_premises[0])} => "
+                f"({proof_head(source_proof)} {proof_term_text(premise_proof)}))"
+            )
     source_sides = equality_like_sides(source)
     target_sides = equality_like_sides(target)
     if (
@@ -19700,6 +19978,105 @@ def raw_formula_entails_clause_proof(
     return None
 
 
+def raw_guided_formula_entails_clause_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 64 or proof_search_timed_out():
+        return None
+
+    if target.kind == "forall" and target.value is not None and target.sort is not None:
+        inner = raw_guided_formula_entails_clause_proof(
+            source,
+            target.args[0],
+            source_proof,
+            {**variable_sorts, target.value: target.sort},
+            depth + 1,
+        )
+        if inner is not None:
+            return f"(fun {target.value} :{binder_sort_text(target.sort)} => {inner})"
+
+    if source.kind == "forall" and source.value is not None and source.sort is not None:
+        candidates: list[Expr] = []
+        if variable_sorts.get(source.value) == source.sort:
+            candidates.append(Expr("var", value=source.value))
+        for name, sort in sorted(variable_sorts.items()):
+            if name != source.value and equivalent_sorts(sort, source.sort):
+                candidates.append(Expr("var", value=name))
+        for candidate in candidates[:8]:
+            instantiated_source = substitute_expr(source.args[0], {source.value: candidate})
+            instantiated_proof = f"({proof_head(source_proof)} {proof_arg_text(candidate)})"
+            proof = raw_guided_formula_entails_clause_proof(
+                instantiated_source,
+                target,
+                instantiated_proof,
+                variable_sorts,
+                depth + 1,
+            )
+            if proof is not None:
+                return proof
+        return None
+
+    target_literals = raw_clause_literals(target)
+    if len(target_literals) > 16:
+        return None
+    for index, target_literal in enumerate(target_literals):
+        literal_proof = raw_literal_direct_transform_proof(source, target_literal, source_proof, ())
+        if literal_proof is not None:
+            return raw_or_intro_literal_at(target, index, literal_proof)
+
+    source_conjuncts = vampire_and_parts(source)
+    if source_conjuncts is not None:
+        target_names = {
+            name
+            for literal in target_literals
+            for name in expr_variables(literal)
+            if name not in {"True", "False", "vampire_true", "vampire_false", "vampire_eq_prop", "vampire_eq_set", "or", "and"}
+        }
+
+        def conjunct_priority(conjunct: Expr) -> tuple[int, int]:
+            conjunct_text = expr_text(conjunct)
+            overlap = sum(1 for name in target_names if re.search(rf"\b{re.escape(name)}\b", conjunct_text))
+            return (-overlap, len(conjunct_text))
+
+        for conjunct in sorted(source_conjuncts, key=conjunct_priority):
+            conjunct_proof = vampire_and_projection_from_proof(source_proof, source, conjunct)
+            if conjunct_proof is None:
+                continue
+            proof = raw_guided_formula_entails_clause_proof(
+                conjunct,
+                target,
+                conjunct_proof,
+                variable_sorts,
+                depth + 1,
+            )
+            if proof is not None:
+                return proof
+        return None
+
+    source_parts = raw_or_parts(source)
+    if source_parts is not None:
+        left, right = source_parts
+        left_name = fresh_identifier("HL", expr_text(source), expr_text(target), source_proof)
+        right_name = fresh_identifier("HR", expr_text(source), expr_text(target), source_proof, left_name)
+        left_proof = raw_guided_formula_entails_clause_proof(left, target, left_name, variable_sorts, depth + 1)
+        if left_proof is None:
+            return None
+        right_proof = raw_guided_formula_entails_clause_proof(right, target, right_name, variable_sorts, depth + 1)
+        if right_proof is None:
+            return None
+        return (
+            f"({proof_head(source_proof)} {proof_arg_text(target)} "
+            f"(fun {left_name} :{proof_arg_text(left)} => {left_proof}) "
+            f"(fun {right_name} :{proof_arg_text(right)} => {right_proof}))"
+        )
+
+    return None
+
+
 def raw_tptp_cnf_formula_clause_proof(
     proposition: str,
     parents: list[str],
@@ -19717,6 +20094,14 @@ def raw_tptp_cnf_formula_clause_proof(
         return None
     if len(raw_clause_literals(target)) > 24:
         return None
+    guided = raw_guided_formula_entails_clause_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+        {},
+    )
+    if guided is not None:
+        return guided
     return raw_formula_entails_clause_proof(
         source,
         target,
@@ -34765,6 +35150,82 @@ def raw_exported_two_literal_superposition_clause_proof(
             PROOF_SEARCH_STATE.flat_resolution_target = previous_target
 
 
+def raw_exported_two_literal_negative_clause_fast_proof(
+    source: Expr,
+    source_proof: str,
+    resolver: Expr,
+    resolver_proof: str,
+    selected_literal: Expr,
+    target: Expr,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_literals = raw_clause_literals(source)
+    resolver_literals = raw_clause_literals(resolver)
+    target_literals = raw_clause_literals(target)
+    if len(source_literals) > 12 or len(resolver_literals) != 2 or len(target_literals) > 16:
+        return None
+    selected_premises, selected_conclusion = split_arrows(selected_literal)
+    if len(selected_premises) != 1 or not false_eliminator_expr(selected_conclusion):
+        return None
+
+    target_text = proof_arg_text(target)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+
+    def source_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
+        direct = raw_literal_to_clause_proof(source_literal, target, source_literal_proof, target_literals, ())
+        if direct is not None and not expr_same_mod_alpha(source_literal, selected_literal):
+            return direct
+
+        selected_proof = source_literal_proof if expr_same_mod_alpha(source_literal, selected_literal) else None
+        if selected_proof is None:
+            selected_proof = raw_literal_direct_transform_proof(
+                source_literal,
+                selected_literal,
+                source_literal_proof,
+                (),
+            )
+        if selected_proof is None:
+            return direct
+
+        def resolver_handler(resolver_literal: Expr, resolver_literal_proof: str) -> str | None:
+            complement = raw_complement_resolution_proof(
+                selected_literal,
+                selected_proof,
+                resolver_literal,
+                resolver_literal_proof,
+                target,
+            )
+            if complement is not None:
+                return complement
+            premise_proof = raw_literal_direct_transform_proof(
+                resolver_literal,
+                selected_premises[0],
+                resolver_literal_proof,
+                (),
+            )
+            if premise_proof is not None:
+                false_proof = f"({proof_head(selected_proof)} {proof_term_text(premise_proof)})"
+                return raw_false_to_expr_proof(false_proof, target, selected_conclusion)
+            return raw_literal_to_clause_proof(resolver_literal, target, resolver_literal_proof, target_literals, ())
+
+        return raw_clause_cases_with_handler(
+            resolver,
+            resolver_proof,
+            resolver_handler,
+            avoid_text=source_literal_proof,
+        )
+
+    try:
+        return raw_clause_cases_with_handler(source, source_proof, source_handler)
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_exported_pointwise_lambda_clause_rewrite_proof(
     selected_clause: Expr,
     selected_clause_proof: str,
@@ -35238,7 +35699,7 @@ def raw_exported_lambda_negative_rewrite_body_proof(
                     break
         if premise_proof is None:
             return None
-    return f"(fun Hprem => {proof_head(source_proof)} {proof_term_text(premise_proof)})"
+    return f"(fun Hprem :{proof_arg_text(target_premise)} => {proof_head(source_proof)} {proof_term_text(premise_proof)})"
 
 
 def raw_exported_lambda_negative_rewrite_proof(
@@ -35376,6 +35837,19 @@ def raw_tptp_exported_two_literal_resolution_proof(
         if selected_clause is not None and other_clause is not None:
             source, source_proof = selected_clause
             resolver, resolver_proof = other_clause
+            body_proof = raw_exported_two_literal_negative_clause_fast_proof(
+                source,
+                source_proof,
+                resolver,
+                resolver_proof,
+                selected_substituted,
+                target_body,
+                extra_sorts,
+            )
+            if body_proof is not None:
+                for name, sort in reversed(target_binders):
+                    body_proof = f"(fun {name} :{sort} => {body_proof})"
+                return body_proof
             body_proof = raw_exported_lambda_negative_rewrite_body_proof(
                 source,
                 target_body,
@@ -37941,6 +38415,41 @@ def raw_tptp_superposition_proof(
     )
     if proof is not None and not raw_tptp_replay_proof_is_unsafe("superposition", proposition, proof):
         return proof
+    if has_superposition_replay and len(parents) == 2:
+        early_target_expr = parse_expr(proposition)
+        early_parent_exprs: list[tuple[Expr, str]] = []
+        for parent in parents:
+            parent_proposition = propositions_by_name.get(parent)
+            parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+            if parent_expr is not None:
+                early_parent_exprs.append((parent_expr, raw_tptp_canonical_parent_proof_name(parent, propositions_by_name)))
+        if early_target_expr is not None and len(early_parent_exprs) == 2:
+            early_target_binders, _early_target_body = collect_foralls(early_target_expr)
+            early_parent_binder_counts = [
+                len(collect_foralls(parent_expr)[0])
+                for parent_expr, _parent_proof in early_parent_exprs
+            ]
+            if early_target_binders and min(early_parent_binder_counts, default=0) > 0:
+                proof = raw_instantiated_parent_clause_resolution_proof(
+                    early_parent_exprs[0][0],
+                    early_target_expr,
+                    early_parent_exprs[0][1],
+                    early_parent_exprs[1][0],
+                    early_parent_exprs[1][1],
+                    variable_sorts,
+                )
+                if proof is not None and not raw_tptp_replay_proof_is_unsafe("superposition", proposition, proof):
+                    return proof
+                proof = raw_instantiated_parent_clause_resolution_proof(
+                    early_parent_exprs[1][0],
+                    early_target_expr,
+                    early_parent_exprs[1][1],
+                    early_parent_exprs[0][0],
+                    early_parent_exprs[0][1],
+                    variable_sorts,
+                )
+                if proof is not None and not raw_tptp_replay_proof_is_unsafe("superposition", proposition, proof):
+                    return proof
     if has_superposition_replay:
         proof = raw_tptp_exported_two_literal_resolution_proof(
             proposition,
@@ -50664,6 +51173,13 @@ def raw_tptp_replay_proof(
         if previous_deadline is not None:
             PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 1.0)
         try:
+            if replay_step is not None and (
+                megalodon_replay_extra_fields(replay_step, "superposition")
+                or megalodon_replay_extra_fields(replay_step, "two_literal_rewrite")
+            ):
+                proof = raw_tptp_superposition_proof(proposition, parents, propositions_by_name, variable_sorts, replay_step)
+                if proof is not None:
+                    return proof
             relaxed_sorts = raw_tptp_relaxed_superposition_sorts(
                 variable_sorts,
                 " ".join([proposition, *(propositions_by_name.get(parent, "") for parent in parents)]),
@@ -53886,10 +54402,12 @@ def write_raw_tptp_skeleton(task: tuple[Path, Path, Path, Path | None]) -> Path 
         signal.signal(signal.SIGALRM, raw_tptp_skeleton_timeout_handler)
         previous_timer = signal.setitimer(signal.ITIMER_REAL, timeout_seconds)
     try:
-        output.write_text(
-            "\n".join(raw_tptp_skeleton_lines(proof_path, problem, source)) + "\n",
-            encoding="utf-8",
-        )
+        lines = raw_tptp_skeleton_lines(proof_path, problem, source)
+        skeleton_text = "\n".join(lines) + "\n"
+        if has_megalodon_admit(skeleton_text):
+            output.unlink(missing_ok=True)
+            return None
+        output.write_text(skeleton_text, encoding="utf-8")
         if marker.exists():
             marker.unlink()
         return output
