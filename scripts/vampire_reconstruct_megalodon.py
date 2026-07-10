@@ -47462,6 +47462,17 @@ def raw_tptp_replay_proof(
                 if raw_tptp_quantified_eq_prop_disjunction_ennf_needs_fallback(proposition):
                     proof = None
                 else:
+                    if proof is None and len(parents) == 1 and len(proposition) <= 512:
+                        parent_proposition = propositions_by_name.get(parents[0], "")
+                        if len(parent_proposition) <= 1024:
+                            proof = raw_tptp_one_parent_transform_proof(
+                                proposition,
+                                parents,
+                                propositions_by_name,
+                                variable_sorts,
+                                max_literals=12,
+                                max_literal_product=96,
+                            )
                     if proof is None:
                         proof = raw_tptp_peirce_implication_ennf_proof(
                             proposition,
