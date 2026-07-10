@@ -1457,20 +1457,6 @@ def tptp_formula_to_megalodon_proposition(text: str, variable_sorts: dict[str, s
     applied_quantifier = tptp_applied_quantifier_proposition(text, variable_sorts)
     if applied_quantifier is not None:
         return applied_quantifier
-    quantified = parse_tptp_quantifier(text)
-    if quantified is not None:
-        quantifier, variables, body_text = quantified
-        inner_sorts = dict(variable_sorts)
-        inner_sorts.update(variables)
-        body = tptp_formula_to_megalodon_proposition(body_text, inner_sorts)
-        if body is None:
-            return None
-        for name, sort in reversed(variables):
-            if quantifier == "!":
-                body = f"forall {name}:{sort}, {body}"
-            else:
-                body = f"{vampire_exists_name_for_sort(sort)} (fun {name} :{sort} => {body})"
-        return body
 
     equivalence = split_top_level_operator(text, "<=>")
     if equivalence is not None:
@@ -1503,6 +1489,21 @@ def tptp_formula_to_megalodon_proposition(text: str, variable_sorts: dict[str, s
         if left is None or right is None:
             return None
         return f"vampire_and {proposition_argument_text(left)} {proposition_argument_text(right)}"
+
+    quantified = parse_tptp_quantifier(text)
+    if quantified is not None:
+        quantifier, variables, body_text = quantified
+        inner_sorts = dict(variable_sorts)
+        inner_sorts.update(variables)
+        body = tptp_formula_to_megalodon_proposition(body_text, inner_sorts)
+        if body is None:
+            return None
+        for name, sort in reversed(variables):
+            if quantifier == "!":
+                body = f"forall {name}:{sort}, {body}"
+            else:
+                body = f"{vampire_exists_name_for_sort(sort)} (fun {name} :{sort} => {body})"
+        return body
 
     if text.startswith("~"):
         body = tptp_formula_to_megalodon_proposition(text[1:].strip(), variable_sorts)
@@ -20458,8 +20459,18 @@ def raw_quantified_literal_body_resolution_intro(
 ) -> str | None:
     source_binders, source_body = collect_foralls(source_literal)
     target_binders, target_body = collect_foralls(target_literal)
-    if not source_binders or len(source_binders) != len(target_binders):
+    if not source_binders:
         return None
+    if len(source_binders) != len(target_binders):
+        return raw_partially_quantified_literal_body_resolution_intro(
+            source_literal,
+            target_literal,
+            target_clause,
+            target_literal_index,
+            source_proof,
+            resolver_literal,
+            resolver_proof,
+        )
     if any(source_sort != target_sort for (_, source_sort), (_, target_sort) in zip(source_binders, target_binders)):
         return None
 
@@ -20516,6 +20527,117 @@ def raw_quantified_literal_body_resolution_intro(
         for target_name, target_sort in reversed(target_binders):
             target_literal_proof = f"(fun {target_name} :{target_sort} => {target_literal_proof})"
         return raw_or_intro_literal_at(target_clause, target_literal_index, target_literal_proof)
+    return None
+
+
+def raw_partially_quantified_literal_body_resolution_intro(
+    source_literal: Expr,
+    target_literal: Expr,
+    target_clause: Expr,
+    target_literal_index: int,
+    source_proof: str,
+    resolver_literal: Expr,
+    resolver_proof: str,
+) -> str | None:
+    source_binders, source_body = collect_foralls(source_literal)
+    target_binders, target_body = collect_foralls(target_literal)
+    if (
+        not target_binders
+        or len(target_binders) >= len(source_binders)
+        or len(source_binders) > 5
+        or len(target_binders) > 4
+    ):
+        return None
+    source_indices = range(len(source_binders))
+    for kept_indices in itertools.permutations(source_indices, len(target_binders)):
+        if len(set(kept_indices)) != len(kept_indices):
+            continue
+        if any(source_binders[index][1] != target_sort for index, (_, target_sort) in zip(kept_indices, target_binders)):
+            continue
+        kept_by_source = {
+            source_binders[index][0]: target_name
+            for index, (target_name, _target_sort) in zip(kept_indices, target_binders)
+        }
+        remaining_names = {name for name, _sort in source_binders if name not in kept_by_source}
+        renamed_body = rename_expr_variables(source_body, kept_by_source)
+        resolver_options = [(resolver_literal, resolver_proof)]
+        resolver_options.extend(
+            raw_instantiated_forall_clause_options(
+                resolver_literal,
+                resolver_proof,
+                renamed_body,
+                target_body,
+            )
+        )
+        seen_resolvers: set[str] = set()
+        for resolver_clause, resolver_clause_proof in resolver_options:
+            resolver_key = expr_key(resolver_clause)
+            if resolver_key in seen_resolvers:
+                continue
+            seen_resolvers.add(resolver_key)
+            resolver_literals = raw_clause_literals(resolver_clause)
+            resolver_literal_proofs = [(literal, f"Hresolver{index}") for index, literal in enumerate(resolver_literals)]
+            if len(resolver_literals) == 1:
+                resolver_literal_proofs = [(resolver_literals[0], resolver_clause_proof)]
+            for negative_literal in raw_clause_literals(renamed_body):
+                premises, conclusion = split_arrows(negative_literal)
+                if len(premises) != 1 or not false_eliminator_expr(conclusion):
+                    continue
+                for positive_literal, _positive_literal_proof in resolver_literal_proofs:
+                    subst: dict[str, Expr] = {}
+                    if not match_expr_with_alpha_instantiation(premises[0], positive_literal, remaining_names, subst):
+                        continue
+                    flatten_substitution(subst)
+                    if not remaining_names <= subst.keys():
+                        continue
+                    if any(expr_variables(value) & remaining_names for value in subst.values()):
+                        continue
+                    instantiated_body = substitute_expr(renamed_body, subst)
+                    instantiated_proof = source_proof
+                    for source_name, _source_sort in source_binders:
+                        kept_target = kept_by_source.get(source_name)
+                        if kept_target is not None:
+                            instantiated_proof = f"({proof_head(instantiated_proof)} {kept_target})"
+                        else:
+                            instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(subst[source_name])})"
+                    if not raw_clause_replay_budget_ok(
+                        instantiated_body,
+                        resolver_clause,
+                        target_body,
+                        max_literals=12,
+                        max_literal_product=256,
+                    ):
+                        continue
+                    body_proof = raw_flat_clause_resolution_proof(
+                        instantiated_body,
+                        target_body,
+                        instantiated_proof,
+                        resolver_clause,
+                        resolver_clause_proof,
+                        avoid_text=resolver_clause_proof,
+                    )
+                    if body_proof is None:
+                        body_proof = raw_clause_resolution_proof(
+                            instantiated_body,
+                            target_body,
+                            instantiated_proof,
+                            resolver_clause,
+                            resolver_clause_proof,
+                        )
+                    if body_proof is None:
+                        body_proof = raw_clause_resolution_proof(
+                            resolver_clause,
+                            target_body,
+                            resolver_clause_proof,
+                            instantiated_body,
+                            instantiated_proof,
+                        )
+                    if body_proof is None:
+                        continue
+                    target_literal_proof = body_proof
+                    for target_name, target_sort in reversed(target_binders):
+                        target_literal_proof = f"(fun {target_name} :{target_sort} => {target_literal_proof})"
+                    return raw_or_intro_literal_at(target_clause, target_literal_index, target_literal_proof)
     return None
 
 
@@ -35288,6 +35410,14 @@ def raw_tptp_superposition_proof(
     )
     if proof is not None:
         return proof
+    proof = raw_tptp_instantiated_negative_unit_resolution_proof(
+        proposition,
+        parents,
+        propositions_by_name,
+        variable_sorts,
+    )
+    if proof is not None:
+        return proof
     if len(parents) == 2:
         early_parent_exprs: list[tuple[Expr, str]] = []
         for parent in parents:
@@ -35327,6 +35457,15 @@ def raw_tptp_superposition_proof(
                     variable_sorts,
                 )
                 if proof is not None:
+                    return proof
+                proof = raw_quantified_literal_resolution_proof(
+                    early_parent_exprs[source_index][0],
+                    early_target_expr,
+                    early_parent_exprs[source_index][1],
+                    early_parent_exprs[unit_index][0],
+                    early_parent_exprs[unit_index][1],
+                )
+                if proof is not None and not raw_tptp_replay_proof_is_unsafe("superposition", proposition, proof):
                     return proof
             proof = raw_instantiated_binary_clause_resolution_proof(
                 early_parent_exprs[0][0],
@@ -39181,8 +39320,6 @@ def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: s
 
 
 def raw_tptp_standard_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: str) -> bool:
-    if rule == "cnf_transformation" and re.search(r"\(\s*forall\s+[A-Z][_A-Za-z0-9']*\s*:", proof):
-        return True
     if rule in {"definition_folding", "definition_unfolding"} and re.search(
         r"\(\s*fun\s+[XY][0-9]+\s*:",
         proof,
@@ -42308,6 +42445,247 @@ def raw_tptp_definition_replay_needs_function_sorts(
     return False
 
 
+def raw_tptp_flattened_forall_implication_ennf_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parents) != 1:
+        return None
+    parent_proposition = propositions_by_name.get(parents[0])
+    source = parse_expr(parent_proposition) if parent_proposition is not None else None
+    target = parse_expr(proposition)
+    if source is None or target is None:
+        return None
+    source = ambient_basic_logic_expr(source)
+    target = ambient_basic_logic_expr(target)
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if len(source_binders) != len(target_binders) or len(source_binders) < 2:
+        return None
+    common_count = len(target_binders) - 1
+    for (_source_name, source_sort), (_target_name, target_sort) in zip(
+        source_binders[:common_count],
+        target_binders[:common_count],
+    ):
+        if source_sort != target_sort:
+            return None
+    witness_name, witness_sort = source_binders[common_count]
+    target_arg_name, target_arg_sort = target_binders[-1]
+    if witness_sort != target_arg_sort:
+        return None
+    common_subst = {
+        source_name: Expr("var", value=target_name)
+        for (source_name, _), (target_name, _) in zip(
+            source_binders[:common_count],
+            target_binders[:common_count],
+        )
+    }
+    source_body = substitute_expr(source_body, common_subst)
+    source_premises, source_conclusion = split_arrows(source_body)
+    if len(source_premises) != 1:
+        return None
+    source_premise = source_premises[0]
+    conclusion_binders, conclusion_body = collect_foralls(source_conclusion)
+    if len(conclusion_binders) != 1 or conclusion_binders[0][1] != target_arg_sort:
+        return None
+    target_arg = Expr("var", value=target_arg_name)
+    conclusion_body = substitute_expr(conclusion_body, {conclusion_binders[0][0]: target_arg})
+    conclusion_premises, conclusion_positive = split_arrows(conclusion_body)
+    if len(conclusion_premises) != 1:
+        return None
+    conclusion_condition = conclusion_premises[0]
+    target_parts = raw_or_parts(target_body)
+    if target_parts is None:
+        return None
+    target_left, target_right = target_parts
+    target_left_parts = raw_or_parts(target_left)
+    if target_left_parts is None:
+        return None
+
+    quantified_premise = Expr("forall", value=witness_name, sort=witness_sort, args=(source_premise,))
+    negated_quantified_premise = Expr(
+        "arrow",
+        args=(quantified_premise, Expr("var", value="False")),
+    )
+    local_sorts = {**variable_sorts, **dict(target_binders), witness_name: witness_sort}
+    not_premise_name = fresh_identifier("HnotPrem", expr_text(source), expr_text(target))
+    counterexample_proof = raw_negated_forall_implication_to_exists_conjunction_proof(
+        negated_quantified_premise,
+        target_right,
+        not_premise_name,
+        local_sorts,
+    )
+    if counterexample_proof is None:
+        return None
+
+    source_proof = raw_tptp_claim_name(parents[0])
+    for target_name, _target_sort in target_binders[:common_count]:
+        source_proof = f"({proof_head(source_proof)} {target_name})"
+    source_proof_at_target_arg = f"({proof_head(source_proof)} {target_arg_name})"
+    premise_name = fresh_identifier("Hprem", expr_text(target_body), expr_text(source_premise))
+    positive_name = fresh_identifier("Hpos", expr_text(target_body), expr_text(conclusion_positive))
+    negative_name = fresh_identifier("HnotPos", expr_text(target_body), expr_text(conclusion_positive))
+    condition_name = fresh_identifier("Hcond", expr_text(target_body), expr_text(conclusion_condition))
+
+    def branch_proof(target_positive: Expr, target_negative: Expr) -> str | None:
+        target_negative_premises, target_negative_conclusion = split_arrows(target_negative)
+        if len(target_negative_premises) != 1 or not false_eliminator_expr(target_negative_conclusion):
+            return None
+        target_condition = target_negative_premises[0]
+        condition_proof = raw_clause_transform_proof(target_condition, conclusion_condition, condition_name)
+        if condition_proof is None:
+            condition_proof = raw_deep_formula_transform_proof(target_condition, conclusion_condition, condition_name, local_sorts)
+        if condition_proof is None and expr_same_mod_alpha(target_condition, conclusion_condition):
+            condition_proof = condition_name
+        if condition_proof is None:
+            return None
+        premise_at_arg = f"({proof_head(premise_name)} {target_arg_name})"
+        source_result = (
+            f"({proof_head(source_proof_at_target_arg)} "
+            f"{proof_term_text(premise_at_arg)})"
+        )
+        source_result = f"({proof_head(source_result)} {target_arg_name})"
+        source_positive = f"({proof_head(source_result)} {proof_term_text(condition_proof)})"
+        target_positive_proof = raw_clause_transform_proof(conclusion_positive, target_positive, source_positive)
+        if target_positive_proof is None:
+            target_positive_proof = raw_deep_formula_transform_proof(
+                conclusion_positive,
+                target_positive,
+                source_positive,
+                local_sorts,
+            )
+        if target_positive_proof is None and expr_same_mod_alpha(conclusion_positive, target_positive):
+            target_positive_proof = source_positive
+        if target_positive_proof is None:
+            return None
+        left_proof = (
+            f"(xm {proof_arg_text(target_positive)} {proof_arg_text(target_left)} "
+            f"(fun {positive_name} => (fun P Hleft Hright => Hleft {positive_name})) "
+            f"(fun {negative_name} => (fun P Hleft Hright => Hright "
+            f"(fun {condition_name} => {negative_name} {proof_term_text(target_positive_proof)}))))"
+        )
+        return f"(fun P Hleft Hright => Hleft {proof_term_text(left_proof)})"
+
+    positive_branch = branch_proof(target_left_parts[0], target_left_parts[1])
+    if positive_branch is None:
+        positive_branch = branch_proof(target_left_parts[1], target_left_parts[0])
+    if positive_branch is None:
+        return None
+    negative_branch = f"(fun P Hleft Hright => Hright {proof_term_text(counterexample_proof)})"
+    proof = (
+        f"(xm {proof_arg_text(quantified_premise)} {proof_arg_text(target_body)} "
+        f"(fun {premise_name} => {positive_branch}) "
+        f"(fun {not_premise_name} => {negative_branch}))"
+    )
+    for name, sort in reversed(target_binders):
+        proof = f"(fun {name} :{sort} => {proof})"
+    return proof
+
+
+def raw_tptp_instantiated_negative_unit_resolution_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parents) != 2:
+        return None
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    target_binders, target_body = collect_foralls(target)
+    target_literals = raw_clause_literals(target_body)
+    false_literal_indices = [
+        index for index, literal in enumerate(target_literals) if raw_false_clause_literal(literal)
+    ]
+    if not false_literal_indices:
+        return None
+    parsed_parents: list[tuple[Expr, str]] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+        if parent_expr is None:
+            return None
+        parsed_parents.append((parent_expr, raw_tptp_canonical_parent_proof_name(parent, propositions_by_name)))
+    target_sort_env = {**variable_sorts, **dict(target_binders)}
+
+    for source_index, unit_index in ((0, 1), (1, 0)):
+        source_expr, source_proof_name = parsed_parents[source_index]
+        unit_expr, unit_proof_name = parsed_parents[unit_index]
+        source_binders, source_body = collect_foralls(source_expr)
+        if not source_binders:
+            continue
+        source_literals = raw_clause_literals(source_body)
+        if len(source_literals) > 8:
+            continue
+        unit_binders, unit_body = collect_foralls(unit_expr)
+        if len(raw_clause_literals(unit_body)) != 1:
+            continue
+        subst = raw_infer_forall_clause_substitution(
+            source_body,
+            target_body,
+            unit_body,
+            {name for name, _sort in source_binders},
+        )
+        if subst is None or not {name for name, _sort in source_binders} <= subst.keys():
+            continue
+        instantiated_source = substitute_expr(source_body, subst)
+        instantiated_source_literals = raw_clause_literals(instantiated_source)
+        instantiated_source_proof = source_proof_name
+        for name, _sort in source_binders:
+            instantiated_source_proof = f"({proof_head(instantiated_source_proof)} {proof_arg_text(subst[name])})"
+
+        def handler(source_literal: Expr, source_literal_proof: str) -> str | None:
+            source_premises, source_conclusion = split_arrows(source_literal)
+            if len(source_premises) == 1 and false_eliminator_expr(source_conclusion):
+                unit_proof = raw_specialize_forall_transform_proof(
+                    unit_expr,
+                    source_premises[0],
+                    unit_proof_name,
+                    target_sort_env,
+                )
+                if unit_proof is not None:
+                    false_proof = f"{proof_head(source_literal_proof)} {proof_term_text(unit_proof)}"
+                    for false_index in false_literal_indices:
+                        introduced = raw_or_intro_literal_at(
+                            target_body,
+                            false_index,
+                            false_proof,
+                        )
+                        if introduced is not None:
+                            return introduced
+            return raw_literal_to_clause_proof(
+                source_literal,
+                target_body,
+                source_literal_proof,
+                target_literals,
+                (),
+            )
+
+        previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+        PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+        try:
+            body_proof = raw_clause_cases_with_handler(
+                instantiated_source,
+                instantiated_source_proof,
+                handler,
+            )
+        finally:
+            if previous_target is None:
+                if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                    delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+            else:
+                PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+        if body_proof is None:
+            continue
+        for name, sort in reversed(target_binders):
+            body_proof = f"(fun {name} :{sort} => {body_proof})"
+        return body_proof
+    return None
+
+
 def raw_tptp_parent_negated_tautology_exfalso_proof(
     proposition: str,
     parents: list[str],
@@ -42580,6 +42958,13 @@ def raw_tptp_replay_proof(
                 if raw_tptp_quantified_eq_prop_disjunction_ennf_needs_fallback(proposition):
                     proof = None
                 else:
+                    proof = raw_tptp_flattened_forall_implication_ennf_proof(
+                        proposition,
+                        parents,
+                        propositions_by_name,
+                        variable_sorts,
+                    )
+                if proof is None:
                     proof = raw_tptp_explosive_implication_ennf_proof(
                         proposition,
                         parents,
@@ -44071,6 +44456,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             lines.append(f"// unsupported raw vampire formula {name}.")
             continue
         replay_parents = list(parents)
+        step_info = replay_steps.get(name)
         replay_proof = known_raw_propositions.get(canonical_proposition(proposition))
         if replay_proof is None:
             if rule in {"definition_folding", "definition_unfolding"}:
@@ -44078,7 +44464,6 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     definition_key = predicate_definition_keys_by_step.get(parent)
                     if definition_key is not None and definition_key not in replay_parents:
                         replay_parents.append(definition_key)
-            step_info = replay_steps.get(name)
             if raw_tptp_replay_payload_size_ok(
                 rule,
                 proposition,
