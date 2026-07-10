@@ -20552,14 +20552,25 @@ def raw_partially_quantified_literal_body_resolution_intro(
     for kept_indices in itertools.permutations(source_indices, len(target_binders)):
         if len(set(kept_indices)) != len(kept_indices):
             continue
-        if any(source_binders[index][1] != target_sort for index, (_, target_sort) in zip(kept_indices, target_binders)):
+        local_source_binders = list(source_binders)
+        local_source_body = source_body
+        target_names = {name for name, _sort in target_binders}
+        used_names = target_names | expr_variables(target_body) | expr_variables(source_body)
+        for index, (source_name, source_sort) in enumerate(local_source_binders):
+            if index in kept_indices or source_name not in target_names:
+                continue
+            renamed = fresh_identifier("Qsrc", source_name, expr_text(source_body), expr_text(target_body), " ".join(used_names))
+            used_names.add(renamed)
+            local_source_body = rename_expr_variables(local_source_body, {source_name: renamed})
+            local_source_binders[index] = (renamed, source_sort)
+        if any(local_source_binders[index][1] != target_sort for index, (_, target_sort) in zip(kept_indices, target_binders)):
             continue
         kept_by_source = {
-            source_binders[index][0]: target_name
+            local_source_binders[index][0]: target_name
             for index, (target_name, _target_sort) in zip(kept_indices, target_binders)
         }
-        remaining_names = {name for name, _sort in source_binders if name not in kept_by_source}
-        renamed_body = rename_expr_variables(source_body, kept_by_source)
+        remaining_names = {name for name, _sort in local_source_binders if name not in kept_by_source}
+        renamed_body = rename_expr_variables(local_source_body, kept_by_source)
         resolver_options = [(resolver_literal, resolver_proof)]
         resolver_options.extend(
             raw_instantiated_forall_clause_options(
@@ -20594,7 +20605,7 @@ def raw_partially_quantified_literal_body_resolution_intro(
                         continue
                     instantiated_body = substitute_expr(renamed_body, subst)
                     instantiated_proof = source_proof
-                    for source_name, _source_sort in source_binders:
+                    for source_name, _source_sort in local_source_binders:
                         kept_target = kept_by_source.get(source_name)
                         if kept_target is not None:
                             instantiated_proof = f"({proof_head(instantiated_proof)} {kept_target})"
@@ -40123,6 +40134,98 @@ def raw_tptp_avatar_split_positive_atom_proof(
     return None
 
 
+def raw_tptp_avatar_split_branching_component_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rewrites: tuple[RawSplitRewrite, ...],
+) -> str | None:
+    if proof_search_timed_out() or len(expr_text(source)) + len(expr_text(target)) > 10000:
+        return None
+    target_literals = raw_clause_literals(target)
+    if len(target_literals) < 2 or len(target_literals) > 8:
+        return None
+    split_rewrites = {raw_split_atom_name(rewrite.split): rewrite for rewrite in rewrites}
+    target_split_literals: list[tuple[str, bool] | None] = [
+        raw_split_literal_parts(literal) for literal in target_literals
+    ]
+    positive_targets = [
+        (index, split_rewrites[item[0]])
+        for index, item in enumerate(target_split_literals)
+        if item is not None and item[1] and item[0] in split_rewrites
+    ]
+    control_targets = [
+        (index, split_rewrites[item[0]], item[1])
+        for index, item in enumerate(target_split_literals)
+        if item is not None and item[0] in split_rewrites
+    ]
+    if not positive_targets or not control_targets:
+        return None
+    target_text = proof_arg_text(target)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+
+    def handler(source_literal: Expr, source_literal_proof: str) -> str | None:
+        direct = raw_literal_to_clause_proof(source_literal, target, source_literal_proof, target_literals, rewrites)
+        if direct is not None:
+            return direct
+        for control_index, control_rewrite, control_positive in control_targets:
+            for desired_index, desired_rewrite in positive_targets:
+                if desired_index == control_index:
+                    continue
+                if control_positive:
+                    component_proof = raw_avatar_split_component_from_source_proof(
+                        source_literal,
+                        source_literal_proof,
+                        desired_rewrite.component,
+                        [(control_rewrite, "HnotSplit")],
+                        [],
+                        rewrites,
+                    )
+                    if component_proof is None:
+                        continue
+                    desired_split = f"({proof_head(desired_rewrite.component_to_split)} {proof_term_text(component_proof)})"
+                    false_branch = raw_or_intro_literal_at(target, desired_index, desired_split)
+                    true_branch = raw_or_intro_literal_at(target, control_index, "Hsplit")
+                    if false_branch is None or true_branch is None:
+                        continue
+                    return (
+                        f"(xm {proof_arg_text(control_rewrite.split)} {target_text} "
+                        f"(fun Hsplit => {proof_term_text(true_branch)}) "
+                        f"(fun HnotSplit => {proof_term_text(false_branch)}))"
+                    )
+                component_proof = raw_avatar_split_component_from_source_proof(
+                    source_literal,
+                    source_literal_proof,
+                    desired_rewrite.component,
+                    [],
+                    [(control_rewrite, "Hsplit")],
+                    rewrites,
+                )
+                if component_proof is None:
+                    continue
+                desired_split = f"({proof_head(desired_rewrite.component_to_split)} {proof_term_text(component_proof)})"
+                true_branch = raw_or_intro_literal_at(target, desired_index, desired_split)
+                false_branch = raw_or_intro_literal_at(target, control_index, "HnotSplit")
+                if true_branch is None or false_branch is None:
+                    continue
+                return (
+                    f"(xm {proof_arg_text(control_rewrite.split)} {target_text} "
+                    f"(fun Hsplit => {proof_term_text(true_branch)}) "
+                    f"(fun HnotSplit => {proof_term_text(false_branch)}))"
+                )
+        return None
+
+    try:
+        return raw_clause_cases_with_handler(source, source_proof, handler)
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_tptp_avatar_split_clause_proof(
     proposition: str,
     parents: list[str],
@@ -40147,6 +40250,14 @@ def raw_tptp_avatar_split_clause_proof(
     rewrites = raw_tptp_split_rewrites(parents[1:], propositions_by_name)
     if not rewrites:
         return None
+    branching = raw_tptp_avatar_split_branching_component_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+        rewrites,
+    )
+    if branching is not None:
+        return branching
     if len(parents) <= 10 and len(raw_clause_literals(target)) <= 8:
         direct = raw_tptp_avatar_split_direct_component_proof(
             source,
