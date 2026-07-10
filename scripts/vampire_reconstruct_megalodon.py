@@ -42309,6 +42309,77 @@ def raw_skolem_double_negated_rewrite_proof(
     return None
 
 
+def raw_skolemised_forall_permutation_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rewrites: tuple[RawSkolemRewrite, ...],
+    variable_sorts: dict[str, str],
+    depth: int,
+    fast: bool,
+) -> str | None:
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if (
+        not source_binders
+        or len(source_binders) != len(target_binders)
+        or len(source_binders) > 4
+        or len(source_binders) < 2
+    ):
+        return None
+    if [sort for _, sort in source_binders] == [sort for _, sort in target_binders]:
+        return None
+    if sorted(sort for _, sort in source_binders) != sorted(sort for _, sort in target_binders):
+        return None
+
+    target_by_sort: dict[str, list[str]] = {}
+    for target_name, target_sort in target_binders:
+        target_by_sort.setdefault(target_sort, []).append(target_name)
+
+    def candidate_targets(source_name: str, source_sort: str) -> list[str]:
+        names = list(target_by_sort.get(source_sort, ()))
+        names.sort(key=lambda name: (0 if name == source_name else 1, name))
+        return names
+
+    transform = raw_fast_skolemised_formula_transform_proof if fast else raw_skolemised_formula_transform_proof
+    local_sorts = {**variable_sorts, **{name: sort for name, sort in target_binders}}
+
+    def search(index: int, used: set[str], subst: dict[str, Expr]) -> str | None:
+        if proof_search_timed_out():
+            return None
+        if index >= len(source_binders):
+            opened_source = substitute_expr(source_body, subst)
+            opened_proof = source_proof
+            for source_name, _ in source_binders:
+                opened_proof = f"({proof_head(opened_proof)} {proof_arg_text(subst[source_name])})"
+            inner = transform(
+                opened_source,
+                target_body,
+                opened_proof,
+                rewrites,
+                local_sorts,
+                depth + 1,
+            )
+            if inner is None:
+                return None
+            for target_name, target_sort in reversed(target_binders):
+                inner = f"(fun {target_name} :{target_sort} => {inner})"
+            return inner
+
+        source_name, source_sort = source_binders[index]
+        for target_name in candidate_targets(source_name, source_sort):
+            if target_name in used:
+                continue
+            subst[source_name] = Expr("var", value=target_name)
+            found = search(index + 1, used | {target_name}, subst)
+            if found is not None:
+                return found
+            del subst[source_name]
+        return None
+
+    return search(0, set(), {})
+
+
 def raw_fast_skolemised_formula_transform_proof(
     source: Expr,
     target: Expr,
@@ -42321,6 +42392,18 @@ def raw_fast_skolemised_formula_transform_proof(
         return None
     if expr_same_mod_alpha(source, target):
         return source_proof
+
+    forall_permutation = raw_skolemised_forall_permutation_transform_proof(
+        source,
+        target,
+        source_proof,
+        rewrites,
+        variable_sorts,
+        depth,
+        fast=True,
+    )
+    if forall_permutation is not None:
+        return forall_permutation
 
     if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
         assert source.value is not None and target.value is not None and target.sort is not None
@@ -42554,6 +42637,18 @@ def raw_skolemised_formula_transform_proof(
         return double_negated
     if expr_same_mod_alpha(source, target):
         return source_proof
+
+    forall_permutation = raw_skolemised_forall_permutation_transform_proof(
+        source,
+        target,
+        source_proof,
+        rewrites,
+        variable_sorts,
+        depth,
+        fast=False,
+    )
+    if forall_permutation is not None:
+        return forall_permutation
 
     source_premises, source_conclusion = split_arrows(source)
     if len(source_premises) == 1 and false_eliminator_expr(source_conclusion):
