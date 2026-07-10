@@ -33132,6 +33132,26 @@ def raw_tptp_forward_demodulation_proof(
     )
     if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
         return proof
+    proof = raw_guarded_negative_prop_demodulation_proof(
+        first,
+        target,
+        first_name,
+        second,
+        second_name,
+        variable_sorts,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_guarded_negative_prop_demodulation_proof(
+        second,
+        target,
+        second_name,
+        first,
+        first_name,
+        variable_sorts,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
     proof = raw_tptp_exported_demodulation_rewrite_proof(
         target,
         ((first, first_name), (second, second_name)),
@@ -33520,6 +33540,90 @@ def raw_tptp_forward_demodulation_proof(
     if fallback_ok(proof):
         return proof
     return None
+
+
+def raw_guarded_negative_prop_demodulation_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    guard: Expr,
+    guard_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_premises, source_conclusion = split_arrows(source)
+    if len(source_premises) != 1 or not false_eliminator_expr(source_conclusion):
+        return None
+    source_atom = source_premises[0]
+    false_expr = Expr("var", value="False")
+    target_literals = raw_clause_literals(target)
+    if len(target_literals) > 12 or len(raw_clause_literals(guard)) > 12:
+        return None
+
+    candidates: list[tuple[Expr, Expr, str]] = []
+    for target_literal in target_literals:
+        target_premises, target_conclusion = split_arrows(target_literal)
+        if len(target_premises) != 1 or not false_eliminator_expr(target_conclusion):
+            continue
+        target_atom = target_premises[0]
+        for redex in expr_subterms(source_atom, limit=96):
+            if expr_sort(redex, variable_sorts) != "prop":
+                continue
+            replaced, changed = replace_expr(source_atom, redex, false_expr)
+            if not changed or not expr_same_mod_alpha(replaced, target_atom):
+                continue
+            hole = fresh_identifier("zz", expr_text(source_atom), expr_text(target_atom), expr_text(redex))
+            context, context_changed = replace_expr(source_atom, redex, Expr("var", value=hole))
+            if not context_changed:
+                continue
+            candidates.append((target_literal, redex, f"(fun {hole} :prop => {proof_arg_text(context)})"))
+
+    if not candidates:
+        return None
+
+    target_text = proof_arg_text(target)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+    try:
+        def handler(branch: Expr, branch_proof: str) -> str | None:
+            direct = raw_or_intro_from_branch(target, branch, branch_proof)
+            if direct is not None:
+                return direct
+            branch_premises, branch_conclusion = split_arrows(branch)
+            if len(branch_premises) != 1 or not false_eliminator_expr(branch_conclusion):
+                return None
+            for target_literal, redex, context in candidates:
+                if not expr_same_mod_alpha(branch_premises[0], redex):
+                    continue
+                target_premises, _target_conclusion = split_arrows(target_literal)
+                if len(target_premises) != 1:
+                    continue
+                target_atom = target_premises[0]
+                target_name = fresh_identifier(
+                    "Htarget",
+                    expr_text(target_literal),
+                    expr_text(redex),
+                    branch_proof,
+                )
+                false_to_redex = (
+                    f"(prop_ext_2 False {proof_arg_text(redex)} "
+                    f"(fun Hfalse :False => ((FalseE Hfalse) {proof_arg_text(redex)})) "
+                    f"{proof_term_text(branch_proof)})"
+                )
+                source_atom_proof = (
+                    f"(vampire_native_eq_transport_prop False {proof_arg_text(redex)} "
+                    f"{false_to_redex} {context} {target_name})"
+                )
+                target_literal_proof = f"(fun {target_name} :{proof_arg_text(target_atom)} => {proof_head(source_proof)} {source_atom_proof})"
+                return raw_or_intro_from_branch(target, target_literal, target_literal_proof)
+            return None
+
+        return raw_clause_cases_with_handler(guard, guard_proof, handler)
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
 
 
 def raw_tptp_exported_demodulation_rewrite_proof(
@@ -58839,9 +58943,10 @@ def write_raw_tptp_skeletons(
     repo: Path,
     source: Path | None = None,
     jobs: int = 1,
+    allow_admits: bool = False,
 ) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    tasks = [(proof, output_dir, repo, source) for proof in proofs]
+    tasks = [(proof, output_dir, repo, source, allow_admits) for proof in proofs]
     if jobs <= 1 or len(tasks) <= 1:
         return [path for path in (write_raw_tptp_skeleton(task) for task in tasks) if path is not None]
     with concurrent.futures.ProcessPoolExecutor(max_workers=min(jobs, len(tasks))) as executor:
@@ -58908,9 +59013,9 @@ def find_raw_tptp_problem_for_proof(proof_path: Path, repo: Path) -> Path | None
     return None
 
 
-def write_raw_tptp_skeleton(task: tuple[Path, Path, Path, Path | None]) -> Path | None:
+def write_raw_tptp_skeleton(task: tuple[Path, Path, Path, Path | None, bool]) -> Path | None:
     reset_proof_search_state()
-    proof, output_dir, repo, source = task
+    proof, output_dir, repo, source, allow_admits = task
     proof_path = proof if proof.is_absolute() else (repo / proof)
     if not proof_path.exists():
         raise SystemExit(f"raw TPTP proof not found: {proof_path}")
@@ -58930,7 +59035,7 @@ def write_raw_tptp_skeleton(task: tuple[Path, Path, Path, Path | None]) -> Path 
     try:
         lines = raw_tptp_skeleton_lines(proof_path, problem, source)
         skeleton_text = "\n".join(lines) + "\n"
-        if has_megalodon_admit(skeleton_text):
+        if not allow_admits and has_megalodon_admit(skeleton_text):
             output.unlink(missing_ok=True)
             return None
         output.write_text(skeleton_text, encoding="utf-8")
@@ -59101,7 +59206,14 @@ def main() -> int:
             if not args.raw_tptp_skeleton_dir.is_absolute()
             else args.raw_tptp_skeleton_dir
         )
-        written = write_raw_tptp_skeletons(args.raw_tptp_proof, raw_tptp_skeleton_dir, repo, source, args.jobs)
+        written = write_raw_tptp_skeletons(
+            args.raw_tptp_proof,
+            raw_tptp_skeleton_dir,
+            repo,
+            source,
+            args.jobs,
+            args.allow_raw_tptp_admits,
+        )
         skipped = len(args.raw_tptp_proof) - len(written)
         for path in written:
             print(f"raw TPTP skeleton: {path}")
