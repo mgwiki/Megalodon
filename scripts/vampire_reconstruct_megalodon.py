@@ -22033,6 +22033,43 @@ def raw_impossible_prop_equality_disjunct_elimination_proof(
     return None
 
 
+def raw_impossible_prop_equality_clause_elimination_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+) -> str | None:
+    source_literals = raw_clause_literals(source)
+    target_literals = raw_clause_literals(target)
+    if len(source_literals) <= len(target_literals):
+        return None
+    if not any(raw_false_from_prop_true_false_equality(literal, "Himpossible") is not None for literal in source_literals):
+        return None
+
+    target_text = proof_arg_text(target)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+
+    def handler(literal: Expr, literal_proof: str) -> str | None:
+        false_proof = raw_false_from_prop_true_false_equality(literal, literal_proof)
+        if false_proof is not None:
+            return raw_false_to_expr_proof(false_proof, target)
+        return raw_literal_to_clause_proof(literal, target, literal_proof, target_literals, ())
+
+    try:
+        return raw_clause_cases_with_handler(
+            source,
+            source_proof,
+            handler,
+            avoid_text="impossible_prop_equality",
+        )
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_quantified_parent_instantiation_proof(
     source: Expr,
     target: Expr,
@@ -22400,6 +22437,13 @@ def raw_tptp_trivial_inequality_removal_proof(
     )
     if impossible_disjunct is not None:
         return impossible_disjunct
+    impossible_clause = raw_impossible_prop_equality_clause_elimination_proof(
+        ambient_source,
+        ambient_target,
+        raw_tptp_claim_name(parents[0]),
+    )
+    if impossible_clause is not None:
+        return impossible_clause
     deep = raw_deep_formula_transform_proof(ambient_source, ambient_target, raw_tptp_claim_name(parents[0]))
     if deep is not None:
         return deep
@@ -43880,6 +43924,20 @@ def raw_tptp_quantified_eq_prop_disjunction_ennf_needs_fallback(proposition: str
     return bool(binders) and raw_or_parts(body) is not None
 
 
+def raw_tptp_replay_normal_form_has_path_fragment(
+    replay_step: MegalodonReplayStep | None,
+    fragment: str,
+) -> bool:
+    if replay_step is None:
+        return False
+    return any(
+        fragment in value
+        for fields in megalodon_replay_extra_fields(replay_step, "normal_form")
+        for key, value in fields.items()
+        if re.fullmatch(r"pair_[0-9]+_path", key)
+    )
+
+
 def raw_tptp_peirce_prop_binder_ennf_candidate(source: Expr, target: Expr) -> bool:
     del target
     for subterm in expr_subterms(source, limit=256):
@@ -48265,7 +48323,11 @@ def raw_tptp_replay_proof(
                         proof is None
                         and rule in {"ennf_transformation", "nnf_transformation"}
                         and (
-                            has_rich_replay_metadata
+                            (
+                                has_rich_replay_metadata
+                                and not raw_tptp_quantified_eq_prop_disjunction_ennf_needs_fallback(proposition)
+                            )
+                            or raw_tptp_replay_normal_form_has_path_fragment(replay_step, "ennf_neg_imp")
                             or raw_tptp_peirce_prop_binder_ennf_candidate(source_expr, target_expr)
                         )
                     ):
@@ -48332,9 +48394,17 @@ def raw_tptp_replay_proof(
                         propositions_by_name,
                     )
             if proof is None:
+                exported_quantified_eq_prop_exception = False
+                if (
+                    has_rich_replay_metadata
+                    and rule in {"ennf_transformation", "nnf_transformation"}
+                    and raw_tptp_replay_normal_form_has_path_fragment(replay_step, "ennf_neg_imp")
+                ):
+                    exported_quantified_eq_prop_exception = True
                 if not (
                     rule in {"ennf_transformation", "nnf_transformation"}
                     and raw_tptp_quantified_eq_prop_disjunction_ennf_needs_fallback(proposition)
+                    and not exported_quantified_eq_prop_exception
                 ):
                     proof = raw_tptp_exported_normal_form_proof(
                         rule,
