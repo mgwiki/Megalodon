@@ -19975,6 +19975,44 @@ def raw_tptp_small_forall_permutation_transform_proof(
     return raw_small_forall_permutation_clause_transform_proof(source, target, raw_tptp_claim_name(parents[0]))
 
 
+def raw_tptp_universal_instance_proof(
+    source_proposition: str,
+    target_proposition: str,
+    source_proof: str,
+    variable_sorts: dict[str, str] | None = None,
+) -> str | None:
+    source = parse_expr(source_proposition)
+    target = parse_expr(target_proposition)
+    if source is None or target is None:
+        return None
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if not source_binders:
+        return None
+    if expr_same_mod_alpha(source, target):
+        return source_proof
+    source_variables = {name for name, _sort in source_binders}
+    subst: dict[str, Expr] = {}
+    local_sorts = {
+        **(variable_sorts or {}),
+        **{name: sort for name, sort in source_binders},
+        **{name: sort for name, sort in target_binders},
+    }
+    if not match_expr_with_eta_instantiation(source_body, target_body, source_variables, subst, local_sorts):
+        return None
+    if any(name not in subst for name, _sort in source_binders):
+        return None
+    instantiated = beta_reduce_expr(flatten_applications(substitute_expr(source_body, subst)))
+    if not expr_same_mod_alpha(instantiated, beta_reduce_expr(flatten_applications(target_body))):
+        return None
+    proof = source_proof
+    for name, _sort in source_binders:
+        proof = f"({proof_head(proof)} {proof_arg_text(subst[name])})"
+    for name, sort in reversed(target_binders):
+        proof = f"(fun {name} :{binder_sort_text(sort)} => {proof})"
+    return proof
+
+
 def raw_formula_entails_clause_proof(
     source: Expr,
     target: Expr,
@@ -54853,11 +54891,33 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             later_source_declarations.append(declaration)
 
     known_raw_propositions: dict[str, str] = {}
+    known_raw_proposition_entries: list[tuple[str, str]] = []
     axiom_claim_instantiations: dict[str, str] = {}
     local_skolem_axiom_aliases: list[tuple[str, str, str]] = []
 
     def remember_raw_proposition(proposition: str, proof_name: str) -> None:
-        known_raw_propositions.setdefault(canonical_proposition(proposition), proof_name)
+        canonical = canonical_proposition(proposition)
+        if canonical not in known_raw_propositions:
+            known_raw_proposition_entries.append((proposition, proof_name))
+        known_raw_propositions.setdefault(canonical, proof_name)
+
+    def known_raw_universal_instance_proof(proposition: str) -> str | None:
+        if len(proposition) > 12000:
+            return None
+        for source_proposition, source_proof in reversed(known_raw_proposition_entries):
+            if source_proposition == proposition:
+                continue
+            if len(source_proposition) + len(proposition) > 18000:
+                continue
+            proof = raw_tptp_universal_instance_proof(
+                source_proposition,
+                proposition,
+                source_proof,
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+        return None
 
     def instantiate_global_axiom_proofs(proof: str) -> str:
         for claim_name, instantiated in sorted(axiom_claim_instantiations.items(), key=lambda item: -len(item[0])):
@@ -55059,6 +55119,10 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         elif claim_name in predicate_definition_intro_proofs:
             lines.append(f"Theorem {claim_name}: {proposition}.")
             lines.append(f"exact {predicate_definition_intro_proofs[claim_name]}.")
+            lines.append("Qed.")
+        elif (universal_instance_proof := known_raw_universal_instance_proof(proposition)) is not None:
+            lines.append(f"Theorem {claim_name}: {proposition}.")
+            lines.append(f"exact {proof_argument_text(universal_instance_proof)}.")
             lines.append("Qed.")
         else:
             lines.append(f"Axiom {claim_name}:{proposition}.")
