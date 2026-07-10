@@ -84,7 +84,7 @@ if [[ "$CHECK_RAW_TPTP" != 0 ]]; then
   mkdir -p "$WORK_DIR"
   proof_list="$WORK_DIR/raw_tptp_proofs.txt"
   if [[ -n "$RAW_TPTP_PROOF_DIR" ]]; then
-    find "$RAW_TPTP_PROOF_DIR" -maxdepth 1 -type f -name '*.out' | sort > "$proof_list"
+    find "$RAW_TPTP_PROOF_DIR" -maxdepth 1 -type f \( -name '*.out' -o -name '*.th0.p' \) | sort -V > "$proof_list"
   else
     python3 - "$manifest" "$proof_list" <<'PY'
 import json
@@ -111,54 +111,33 @@ PY
   done < "$proof_list"
 
   rm -rf "$RAW_TPTP_SKELETON_DIR" "$RAW_TPTP_CHECK_DIR"
-  MEGALODON_RAW_TPTP_REPLAY_SECONDS="$RAW_TPTP_REPLAY_SECONDS" \
-  MEGALODON_RAW_TPTP_SKELETON_SECONDS="$RAW_TPTP_SKELETON_SECONDS" \
-  python3 scripts/vampire_reconstruct_megalodon.py \
-    --repo "$ROOT" \
-    --megalodon "$MEGALODON" \
-    --source "$SOURCE" \
-    "${proof_args[@]}" \
-    --raw-tptp-skeleton-dir "$RAW_TPTP_SKELETON_DIR" \
-    --jobs "$JOBS"
-
   raw_admit_pattern='^\s*(\{\s*)?admit\.\s*(\})?\s*$'
-  raw_admits=$({ rg -n "$raw_admit_pattern" "$RAW_TPTP_SKELETON_DIR" -g '*.mg' || true; } | wc -l)
-  raw_aby=$({ rg -n "\baby\b" "$RAW_TPTP_SKELETON_DIR" -g '*.mg' || true; } | wc -l)
-  raw_timeouts=$(find "$RAW_TPTP_SKELETON_DIR" -maxdepth 1 -name '*.timeout' | wc -l)
   mkdir -p "$RAW_TPTP_CHECK_DIR"
+
+  raw_check_args=()
+  if [[ "$RAW_TPTP_CHECK_MODE" == noadmit ]]; then
+    raw_check_args+=(
+      --check-raw-tptp-skeletons
+      --raw-tptp-check-dir "$RAW_TPTP_CHECK_DIR"
+      --raw-tptp-check-timeout 30
+    )
+  fi
 
   case "$RAW_TPTP_CHECK_MODE" in
     noadmit)
-      noadmit_list="$WORK_DIR/raw_tptp_noadmit_skeletons.txt"
-      find "$RAW_TPTP_SKELETON_DIR" -maxdepth 1 -name '*.mg' | sort | while IFS= read -r skeleton; do
-        if ! rg -q "$raw_admit_pattern" "$skeleton"; then
-          printf '%s\n' "$skeleton"
-        fi
-      done > "$noadmit_list"
-      check_one_raw_tptp_skeleton() {
-        local skeleton="$1"
-        local base context log status
-        base=$(basename "$skeleton" .mg)
-        context="$RAW_TPTP_CHECK_DIR/${base}.source_context.mg"
-        log="$RAW_TPTP_CHECK_DIR/${base}.source_context.log"
-        { cat "$SOURCE"; printf '\n'; cat "$skeleton"; } > "$context"
-        if timeout 30 "$MEGALODON" -allowincompleteqed "$context" > "$log" 2>&1; then
-          printf 'ok %s\n' "$base"
-        else
-          status=$?
-          printf 'fail %s %s log=%s\n' "$status" "$base" "$log"
-        fi
-      }
-      export SOURCE RAW_TPTP_CHECK_DIR MEGALODON
-      export -f check_one_raw_tptp_skeleton
-      if [[ -s "$noadmit_list" ]]; then
-        xargs -a "$noadmit_list" -P "$JOBS" -n 1 bash -lc 'check_one_raw_tptp_skeleton "$0"' \
-          | tee "$RAW_TPTP_CHECK_DIR/status.txt"
-      else
-        : > "$RAW_TPTP_CHECK_DIR/status.txt"
-      fi
-      raw_checked=$(wc -l < "$noadmit_list")
-      raw_check_failures=$({ rg -n '^fail ' "$RAW_TPTP_CHECK_DIR/status.txt" || true; } | wc -l)
+      MEGALODON_RAW_TPTP_REPLAY_SECONDS="$RAW_TPTP_REPLAY_SECONDS" \
+      MEGALODON_RAW_TPTP_SKELETON_SECONDS="$RAW_TPTP_SKELETON_SECONDS" \
+      python3 scripts/vampire_reconstruct_megalodon.py \
+        --repo "$ROOT" \
+        --megalodon "$MEGALODON" \
+        --source "$SOURCE" \
+        "${proof_args[@]}" \
+        --raw-tptp-skeleton-dir "$RAW_TPTP_SKELETON_DIR" \
+        --jobs "$JOBS" \
+        "${raw_check_args[@]}" \
+        | tee "$RAW_TPTP_CHECK_DIR/status.txt"
+      raw_checked=$(find "$RAW_TPTP_CHECK_DIR" -maxdepth 1 -name '*.source_context.log' | wc -l)
+      raw_check_failures=$({ rg -n 'raw TPTP source-context check fail:' "$RAW_TPTP_CHECK_DIR/status.txt" || true; } | wc -l)
       ;;
     allow_admits)
       MEGALODON_RAW_TPTP_REPLAY_SECONDS="$RAW_TPTP_REPLAY_SECONDS" \
@@ -173,11 +152,22 @@ PY
         --allow-raw-tptp-admits \
         --raw-tptp-check-dir "$RAW_TPTP_CHECK_DIR" \
         --raw-tptp-check-timeout 30 \
-        --jobs "$JOBS"
-      raw_checked=$(find "$RAW_TPTP_SKELETON_DIR" -maxdepth 1 -name '*.mg' | wc -l)
+        --jobs "$JOBS" \
+        | tee "$RAW_TPTP_CHECK_DIR/status.txt"
+      raw_checked=$(find "$RAW_TPTP_CHECK_DIR" -maxdepth 1 -name '*.source_context.log' | wc -l)
       raw_check_failures=0
       ;;
     none)
+      MEGALODON_RAW_TPTP_REPLAY_SECONDS="$RAW_TPTP_REPLAY_SECONDS" \
+      MEGALODON_RAW_TPTP_SKELETON_SECONDS="$RAW_TPTP_SKELETON_SECONDS" \
+      python3 scripts/vampire_reconstruct_megalodon.py \
+        --repo "$ROOT" \
+        --megalodon "$MEGALODON" \
+        --source "$SOURCE" \
+        "${proof_args[@]}" \
+        --raw-tptp-skeleton-dir "$RAW_TPTP_SKELETON_DIR" \
+        --jobs "$JOBS" \
+        | tee "$RAW_TPTP_CHECK_DIR/status.txt"
       raw_checked=0
       raw_check_failures=0
       ;;
@@ -186,6 +176,10 @@ PY
       exit 2
       ;;
   esac
+
+  raw_admits=$({ rg -n "$raw_admit_pattern" "$RAW_TPTP_SKELETON_DIR" -g '*.mg' || true; } | wc -l)
+  raw_aby=$({ rg -n "\baby\b" "$RAW_TPTP_SKELETON_DIR" -g '*.mg' || true; } | wc -l)
+  raw_timeouts=$(find "$RAW_TPTP_SKELETON_DIR" -maxdepth 1 -name '*.timeout' | wc -l)
 
   printf '{"raw_tptp_skeleton_dir":"%s","raw_tptp_check_dir":"%s","raw_tptp_admits":%s,"raw_tptp_aby":%s,"raw_tptp_timeouts":%s}\n' \
     "$RAW_TPTP_SKELETON_DIR" "$RAW_TPTP_CHECK_DIR" "$raw_admits" "$raw_aby" "$raw_timeouts"

@@ -258,6 +258,25 @@ solvable problem files listed in the manifest. The driver caps Vampire timeouts
 at 10 seconds even if a larger `--timeout` is passed, to avoid spending time in
 unsuccessful portfolio strategies.
 
+To replay a directory of cached raw TPTP Vampire proof outputs without rerunning
+Vampire, point the suite at the proof directory.  This accepts both the usual
+`*.out` files and cached `*.th0.p` files such as `examples/hammer/out1`:
+
+```sh
+TMPDIR=/project/tmp \
+RAW_TPTP_PROOF_DIR=examples/hammer/out1 \
+CHECK_CLAIM_SKELETONS=0 \
+CHECK_RAW_TPTP=1 \
+RAW_TPTP_CHECK_MODE=noadmit \
+JOBS=20 \
+scripts/vampire_megalodon_suite.sh
+```
+
+In `noadmit` mode the suite writes raw TPTP Megalodon skeletons and checks them
+through `scripts/vampire_reconstruct_megalodon.py --check-raw-tptp-skeletons`,
+so the reusable test path exercises the same helper insertion and
+source-context checking code as development iterations.
+
 Megalodon mode asks Vampire for the same replay information that LeanChecker
 uses (`--proof_extra lean --skolemization syntactic --shuffle_input off`) but
 emits a Megalodon reconstruction outline instead of Lean syntax.  The outline
