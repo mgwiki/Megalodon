@@ -41287,6 +41287,9 @@ def raw_tptp_reflexive_equality_resolution_proof(
     if not raw_clause_replay_budget_ok(parent_body, target_body, max_literals=16, max_literal_product=256):
         return None
     target_vars = {name: Expr("var", value=name) for name, _sort in target_binders}
+    target_vars_by_sort: dict[str, list[Expr]] = {}
+    for name, sort in target_binders:
+        target_vars_by_sort.setdefault(sort, []).append(Expr("var", value=name))
     candidate_exprs = (parent_body, target_body)
 
     def complete_substitutions(initial: dict[str, Expr]) -> list[dict[str, Expr]]:
@@ -41303,6 +41306,9 @@ def raw_tptp_reflexive_equality_resolution_proof(
             target_var = target_vars.get(name)
             if target_var is not None:
                 candidates.append(target_var)
+            for target_var in target_vars_by_sort.get(sort, []):
+                if all(expr_key(target_var) != expr_key(existing) for existing in candidates):
+                    candidates.append(target_var)
             for candidate in raw_candidate_terms_for_sort(candidate_exprs, sort, variable_sorts):
                 if all(expr_key(candidate) != expr_key(existing) for existing in candidates):
                     candidates.append(candidate)
