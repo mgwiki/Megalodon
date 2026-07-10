@@ -45198,6 +45198,9 @@ def raw_tptp_replay_proof(
     proof = raw_prop_eq_middle_clause_proof(proposition)
     if proof is not None:
         return proof
+    proof = raw_prop_equality_truth_table_clause_proof(proposition, variable_sorts)
+    if proof is not None:
+        return proof
     if rule == "superposition":
         proof = raw_prop_guarded_equality_superposition_proof(
             proposition,
@@ -45702,6 +45705,178 @@ def raw_prop_guarded_equality_superposition_proof(
             )
             return f"(fun {target_binders[0][0]} :prop => {body_proof})"
     return None
+
+
+def raw_prop_equality_truth_table_clause_proof(proposition: str, variable_sorts: dict[str, str] | None = None) -> str | None:
+    variable_sorts = variable_sorts or {}
+    expr = parse_expr(proposition)
+    if expr is None:
+        return None
+    binders, body = collect_foralls(expr)
+    if not binders or len(binders) > 6 or any(sort != "prop" for _name, sort in binders):
+        return None
+    literals = raw_clause_literals(body)
+    if not literals or len(literals) > 10:
+        return None
+    binder_names = {name for name, _sort in binders}
+    known_prop_names = {
+        name
+        for name, sort in variable_sorts.items()
+        if sort == "prop" and re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", name)
+    }
+
+    def prop_var(term: Expr) -> str | None:
+        if term.kind == "var" and term.value in (binder_names | known_prop_names):
+            return term.value
+        return None
+
+    def literal_variables(literal: Expr) -> set[str] | None:
+        premises, conclusion = split_arrows(literal)
+        if len(premises) == 1 and false_eliminator_expr(conclusion):
+            premise = premises[0]
+            name = prop_var(premise)
+            if name is not None:
+                return {name}
+            sides = app_args(premise, "vampire_eq_prop", 2)
+            if sides is None:
+                return None
+            left = prop_var(sides[0])
+            right = prop_var(sides[1])
+            if left is None or right is None:
+                return None
+            return {left, right}
+        name = prop_var(literal)
+        if name is not None:
+            return {name}
+        sides = app_args(literal, "vampire_eq_prop", 2)
+        if sides is None:
+            return None
+        left = prop_var(sides[0])
+        right = prop_var(sides[1])
+        if left is None or right is None:
+            return None
+        return {left, right}
+
+    relevant_names: set[str] = set()
+    for literal in literals:
+        names = literal_variables(literal)
+        if names is None:
+            return None
+        relevant_names.update(names)
+    if not relevant_names:
+        return None
+
+    def positive_equality_proof(left: Expr, right: Expr, env: dict[str, tuple[bool, str]]) -> str | None:
+        left_name = prop_var(left)
+        right_name = prop_var(right)
+        if left_name is None or right_name is None:
+            return None
+        if left_name == right_name:
+            return "(fun Q H => H)"
+        left_truth, left_proof = env[left_name]
+        right_truth, right_proof = env[right_name]
+        if left_truth != right_truth:
+            return None
+        if left_truth:
+            return (
+                f"(vampire_prop_ext {proof_arg_text(left)} {proof_arg_text(right)} "
+                f"(fun Hleft => {proof_term_text(right_proof)}) "
+                f"(fun Hright => {proof_term_text(left_proof)}))"
+            )
+        left_false_name = fresh_identifier("Hleft", expr_text(left), expr_text(right), left_proof, right_proof)
+        right_false_name = fresh_identifier("Hright", expr_text(left), expr_text(right), left_proof, right_proof, left_false_name)
+        left_false = raw_false_to_expr_proof(f"({proof_head(left_proof)} {left_false_name})", right)
+        right_false = raw_false_to_expr_proof(f"({proof_head(right_proof)} {right_false_name})", left)
+        return (
+            f"(vampire_prop_ext {proof_arg_text(left)} {proof_arg_text(right)} "
+            f"(fun {left_false_name} => {left_false}) "
+            f"(fun {right_false_name} => {right_false}))"
+        )
+
+    def negative_equality_proof(left: Expr, right: Expr, env: dict[str, tuple[bool, str]], equality_proof: str) -> str | None:
+        left_name = prop_var(left)
+        right_name = prop_var(right)
+        if left_name is None or right_name is None or left_name == right_name:
+            return None
+        left_truth, left_proof = env[left_name]
+        right_truth, right_proof = env[right_name]
+        if left_truth == right_truth:
+            return None
+        if left_truth and not right_truth:
+            right_from_left = f"({proof_head(equality_proof)} (fun zz :prop => zz) {proof_term_text(left_proof)})"
+            return f"({proof_head(right_proof)} {right_from_left})"
+        not_right_from_not_left = (
+            f"({proof_head(equality_proof)} "
+            f"(fun zz :prop => zz -> False) "
+            f"{proof_term_text(left_proof)})"
+        )
+        return f"({not_right_from_not_left} {proof_term_text(right_proof)})"
+
+    def literal_proof(index: int, env: dict[str, tuple[bool, str]]) -> str | None:
+        literal = literals[index]
+        premises, conclusion = split_arrows(literal)
+        if len(premises) == 1 and false_eliminator_expr(conclusion):
+            premise = premises[0]
+            name = prop_var(premise)
+            if name is not None:
+                truth, proof = env[name]
+                return proof if not truth else None
+            sides = app_args(premise, "vampire_eq_prop", 2)
+            if sides is None:
+                return None
+            equality_name = fresh_identifier("Heq", expr_text(premise), str(index))
+            false_proof = negative_equality_proof(sides[0], sides[1], env, equality_name)
+            if false_proof is None:
+                return None
+            return f"(fun {equality_name} :{proof_arg_text(premise)} => {false_proof})"
+        name = prop_var(literal)
+        if name is not None:
+            truth, proof = env[name]
+            return proof if truth else None
+        sides = app_args(literal, "vampire_eq_prop", 2)
+        if sides is None:
+            return None
+        return positive_equality_proof(sides[0], sides[1], env)
+
+    ordered_names = [name for name, _sort in binders if name in relevant_names]
+    ordered_names.extend(sorted(name for name in relevant_names if name not in binder_names))
+
+    def prove_with_env(env: dict[str, tuple[bool, str]], index: int) -> str | None:
+        if proof_search_timed_out():
+            return None
+        if index == len(ordered_names):
+            for literal_index, _literal in enumerate(literals):
+                proof = literal_proof(literal_index, env)
+                if proof is None:
+                    continue
+                return raw_or_intro_literal_at(body, literal_index, proof)
+            return None
+        name = ordered_names[index]
+        target_text = proof_arg_text(body)
+        positive_name = fresh_identifier(f"H{name}", expr_text(body), str(index), "true")
+        negative_name = fresh_identifier(f"Hn{name}", expr_text(body), str(index), positive_name)
+        positive_env = dict(env)
+        positive_env[name] = (True, positive_name)
+        positive_branch = prove_with_env(positive_env, index + 1)
+        if positive_branch is None:
+            return None
+        negative_env = dict(env)
+        negative_env[name] = (False, negative_name)
+        negative_branch = prove_with_env(negative_env, index + 1)
+        if negative_branch is None:
+            return None
+        return (
+            f"(xm {name} {target_text} "
+            f"(fun {positive_name} => {positive_branch}) "
+            f"(fun {negative_name} => {negative_branch}))"
+        )
+
+    body_proof = prove_with_env({}, 0)
+    if body_proof is None:
+        return None
+    for name, sort in reversed(binders):
+        body_proof = f"(fun {name} :{sort} => {body_proof})"
+    return body_proof
 
 
 def raw_prop_disequality_proof(
