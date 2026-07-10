@@ -3737,6 +3737,29 @@ def raw_tptp_standard_function_definition_sorts(declarations: list[str], variabl
 def raw_tptp_skolem_binder_sorts(proof_text: str, variable_sorts: dict[str, str]) -> dict[str, str]:
     sorts: dict[str, str] = {}
     for line in proof_text.splitlines():
+        match = MEGALODON_STEP_EXTRA_RE.match(line.strip())
+        if match is None:
+            continue
+        kind = json.loads(f'"{match.group("kind")}"')
+        if kind != "skolemize":
+            continue
+        try:
+            fields = json.loads(f'[{match.group("fields")}]')
+        except json.JSONDecodeError:
+            continue
+        for field in fields:
+            if not isinstance(field, str) or "=" not in field:
+                continue
+            key, value = field.split("=", 1)
+            if not re.fullmatch(r"introduced_[0-9]+_declaration", key):
+                continue
+            declared = megalodon_declared_sort(value)
+            if declared is None:
+                continue
+            name, sort = declared
+            if re.fullmatch(r"sK[0-9]+", name):
+                sorts.setdefault(name, sort)
+    for line in proof_text.splitlines():
         match = MEGALODON_STEP_FORMULA_RE.match(line.strip())
         if match is None:
             continue
@@ -45974,6 +45997,123 @@ def raw_skolemised_forall_permutation_transform_proof(
     return search(0, set(), {})
 
 
+def raw_deterministic_skolemised_formula_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rewrites: tuple[RawSkolemRewrite, ...],
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 48 or proof_search_timed_out():
+        return None
+    if expr_same_mod_alpha(source, target):
+        return source_proof
+
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
+        assert source.value is not None and target.value is not None and target.sort is not None
+        source_body = source.args[0]
+        if source.value != target.value:
+            source_body = rename_expr_variables(source_body, {source.value: target.value})
+        inner = raw_deterministic_skolemised_formula_transform_proof(
+            source_body,
+            target.args[0],
+            f"({proof_head(source_proof)} {target.value})",
+            rewrites,
+            {**variable_sorts, target.value: target.sort},
+            depth + 1,
+        )
+        if inner is not None:
+            return f"(fun {target.value} :{target.sort} => {inner})"
+
+    source_conjuncts = vampire_and_parts(source)
+    target_conjuncts = vampire_and_parts(target)
+    if source_conjuncts is not None and target_conjuncts is not None:
+        left_name = fresh_identifier("HLskD", expr_text(source), expr_text(target), source_proof, str(depth))
+        right_name = fresh_identifier("HRskD", expr_text(source), expr_text(target), source_proof, left_name, str(depth))
+        left_proof = raw_deterministic_skolemised_formula_transform_proof(
+            source_conjuncts[0],
+            target_conjuncts[0],
+            left_name,
+            rewrites,
+            variable_sorts,
+            depth + 1,
+        )
+        if left_proof is not None:
+            right_proof = raw_deterministic_skolemised_formula_transform_proof(
+                source_conjuncts[1],
+                target_conjuncts[1],
+                right_name,
+                rewrites,
+                variable_sorts,
+                depth + 1,
+            )
+            if right_proof is not None:
+                return (
+                    f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                    f"(fun {left_name} :{proof_arg_text(source_conjuncts[0])} => "
+                    f"fun {right_name} :{proof_arg_text(source_conjuncts[1])} => "
+                    f"(fun Psk K => K {proof_term_text(left_proof)} {proof_term_text(right_proof)})))"
+                )
+
+    source_parts = raw_or_parts(source)
+    target_parts = raw_or_parts(target)
+    if source_parts is not None and target_parts is not None:
+        left_name = fresh_identifier("HLskOrD", expr_text(source), expr_text(target), source_proof, str(depth))
+        right_name = fresh_identifier("HRskOrD", expr_text(source), expr_text(target), source_proof, left_name, str(depth))
+        left_proof = raw_deterministic_skolemised_formula_transform_proof(
+            source_parts[0],
+            target_parts[0],
+            left_name,
+            rewrites,
+            variable_sorts,
+            depth + 1,
+        )
+        if left_proof is not None:
+            right_proof = raw_deterministic_skolemised_formula_transform_proof(
+                source_parts[1],
+                target_parts[1],
+                right_name,
+                rewrites,
+                variable_sorts,
+                depth + 1,
+            )
+            if right_proof is not None:
+                left_intro = f"(fun P Hleft Hright => Hleft {proof_term_text(left_proof)})"
+                right_intro = f"(fun P Hleft Hright => Hright {proof_term_text(right_proof)})"
+                return (
+                    f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                    f"(fun {left_name} => {left_intro}) "
+                    f"(fun {right_name} => {right_intro}))"
+                )
+
+    for rewrite in rewrites:
+        instance = raw_skolem_rewrite_instance_proof(
+            source,
+            rewrite,
+            source_proof,
+            variable_sorts,
+            target,
+        )
+        if instance is None:
+            continue
+        rewritten, rewritten_proof = instance
+        if expr_same_mod_alpha(rewritten, source):
+            continue
+        proof = raw_deterministic_skolemised_formula_transform_proof(
+            rewritten,
+            target,
+            rewritten_proof,
+            rewrites,
+            variable_sorts,
+            depth + 1,
+        )
+        if proof is not None:
+            return proof
+
+    return None
+
+
 def raw_fast_skolemised_formula_transform_proof(
     source: Expr,
     target: Expr,
@@ -46500,6 +46640,15 @@ def raw_tptp_skolemisation_proof(
     rewrites = raw_tptp_skolem_rewrites(parents[1:], propositions_by_name)
     if not rewrites:
         return None
+    proof = raw_deterministic_skolemised_formula_transform_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+        rewrites,
+        variable_sorts,
+    )
+    if proof is not None:
+        return proof
     proof = raw_skolem_double_negated_rewrite_proof(
         source,
         target,
