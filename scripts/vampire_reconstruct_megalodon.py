@@ -44180,6 +44180,8 @@ def raw_tptp_forward_subsumption_resolver_search_proof(
         return None
 
     def guarded_components(source: Expr, target_expr: Expr) -> tuple[Expr, Expr, Expr | None, bool] | None:
+        if source.kind == "forall" or target_expr.kind == "forall":
+            return source, target_expr, None, True
         source_body = collect_foralls(source)[1]
         target_body = collect_foralls(target_expr)[1]
         source_parts = raw_or_parts(source_body)
@@ -44218,7 +44220,37 @@ def raw_tptp_forward_subsumption_resolver_search_proof(
         resolver_binders, resolver_body = collect_foralls(resolver)
         if not resolver_binders or len(resolver_binders) > 6:
             continue
-        local_sorts = {**variable_sorts, **dict(target_binders), **dict(source_binders), **dict(resolver_binders)}
+        resolver_binder_names_before_rename = {name for name, _sort in resolver_binders}
+        avoid_resolver_names = (
+            {name for name, _sort in target_binders}
+            | expr_variables(opened_source)
+            | expr_variables(target_body)
+        )
+        if resolver_binder_names_before_rename & avoid_resolver_names:
+            used_names = avoid_resolver_names | (expr_variables(resolver_body) - resolver_binder_names_before_rename)
+            resolver_renames: dict[str, str] = {}
+            renamed_resolver_binders: list[tuple[str, str]] = []
+            for index, (name, sort) in enumerate(resolver_binders):
+                replacement = name
+                if replacement in used_names:
+                    replacement = fresh_identifier(f"RFSR{index}", expr_text(source), expr_text(target), expr_text(resolver))
+                    while replacement in used_names:
+                        replacement = fresh_identifier(replacement, expr_text(source), expr_text(target), expr_text(resolver))
+                used_names.add(replacement)
+                renamed_resolver_binders.append((replacement, sort))
+                if replacement != name:
+                    resolver_renames[name] = replacement
+            if resolver_renames:
+                resolver_body = rename_expr_variables(resolver_body, resolver_renames)
+                resolver_binders = renamed_resolver_binders
+
+        local_sorts = {**variable_sorts, **dict(target_binders), **dict(resolver_binders)}
+        for _iteration in range(4):
+            previous_sorts = dict(local_sorts)
+            for expr in (opened_source, target_body, resolver_body):
+                infer_missing_raw_tptp_sorts(expr, local_sorts, local_sorts, "prop")
+            if previous_sorts == local_sorts:
+                break
         candidates_by_sort: dict[str, list[Expr]] = {}
 
         def add_candidate(sort: str, candidate: Expr) -> None:
@@ -44375,15 +44407,15 @@ def raw_tptp_forward_subsumption_resolution_proof(
     if selected_literal_proof is not None:
         return selected_literal_proof
 
-    if not target_binders:
-        resolver_search_proof = raw_tptp_forward_subsumption_resolver_search_proof(
-            target,
-            parsed,
-            variable_sorts,
-        )
-        if resolver_search_proof is not None:
-            return resolver_search_proof
+    resolver_search_proof = raw_tptp_forward_subsumption_resolver_search_proof(
+        target,
+        parsed,
+        variable_sorts,
+    )
+    if resolver_search_proof is not None:
+        return resolver_search_proof
 
+    if not target_binders:
         for parent_expr, parent_proof in parsed:
             proof = raw_forall_prop_true_equality_split_proof(target, parent_expr, parent_proof)
             if proof is not None:
