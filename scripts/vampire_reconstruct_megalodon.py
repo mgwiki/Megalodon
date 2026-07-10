@@ -988,7 +988,8 @@ def strip_balanced_parens(text: str) -> str:
     return text
 
 
-def split_sort_arrows(sort: str) -> list[str]:
+@functools.lru_cache(maxsize=8192)
+def split_sort_arrows(sort: str) -> tuple[str, ...]:
     text = strip_balanced_parens(sort)
     pieces: list[str] = []
     start = 0
@@ -1008,11 +1009,11 @@ def split_sort_arrows(sort: str) -> list[str]:
             index += 1
         index += 1
     if depth != 0:
-        return [sort.strip()]
+        return (sort.strip(),)
     pieces.append(strip_balanced_parens(text[start:].strip()))
     if len(pieces) > 1 and "->" in pieces[-1]:
-        return pieces[:-1] + split_sort_arrows(pieces[-1])
-    return [piece for piece in pieces if piece]
+        return tuple(pieces[:-1]) + split_sort_arrows(pieces[-1])
+    return tuple(piece for piece in pieces if piece)
 
 
 def join_sort_arrows(pieces: Iterable[str]) -> str:
@@ -1713,43 +1714,67 @@ def raw_expr_well_sorted(
     expr: Expr,
     variable_sorts: dict[str, str],
     expected_sort: str | None = None,
+    cache: dict[tuple[str, str | None, tuple[tuple[str, str], ...]], bool] | None = None,
+    scope: tuple[tuple[str, str], ...] | None = None,
 ) -> bool:
+    if cache is None:
+        cache = {}
+    if scope is None:
+        scope = tuple(sorted(variable_sorts.items()))
+    key = (expr_key(expr), expected_sort, scope)
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+
+    def finish(value: bool) -> bool:
+        cache[key] = value
+        return value
+
+    def extended_scope(name: str, sort: str) -> tuple[tuple[str, str], ...]:
+        return scope + ((name, sort),)
+
     if expr.kind == "var":
         actual_sort = expr_sort(expr, variable_sorts)
-        return expected_sort is None or actual_sort is None or equivalent_sorts(actual_sort, expected_sort)
+        return finish(expected_sort is None or actual_sort is None or equivalent_sorts(actual_sort, expected_sort))
     if expr.kind == "app" and expr.args:
         head_sort = expr_sort(expr.args[0], variable_sorts)
         if head_sort is not None:
             pieces = split_sort_arrows(head_sort)
             if len(expr.args) > len(pieces):
-                return False
+                return finish(False)
             for arg, arg_sort in zip(expr.args[1:], pieces[:-1]):
-                if not raw_expr_well_sorted(arg, variable_sorts, arg_sort):
-                    return False
+                if not raw_expr_well_sorted(arg, variable_sorts, arg_sort, cache, scope):
+                    return finish(False)
             result_sort = join_sort_arrows(pieces[len(expr.args) - 1 :])
             if expected_sort is not None and not equivalent_sorts(result_sort, expected_sort):
-                return False
-        return all(raw_expr_well_sorted(arg, variable_sorts) for arg in expr.args)
+                return finish(False)
+        return finish(all(raw_expr_well_sorted(arg, variable_sorts, None, cache, scope) for arg in expr.args))
     if expr.kind == "eq" and len(expr.args) == 2:
         left_sort = expr_sort(expr.args[0], variable_sorts)
         right_sort = expr_sort(expr.args[1], variable_sorts)
         if left_sort is not None and right_sort is not None and not equivalent_sorts(left_sort, right_sort):
-            return False
-        if not raw_expr_well_sorted(expr.args[0], variable_sorts, right_sort):
-            return False
-        if not raw_expr_well_sorted(expr.args[1], variable_sorts, left_sort):
-            return False
-        return expected_sort is None or equivalent_sorts(expected_sort, "prop")
+            return finish(False)
+        if not raw_expr_well_sorted(expr.args[0], variable_sorts, right_sort, cache, scope):
+            return finish(False)
+        if not raw_expr_well_sorted(expr.args[1], variable_sorts, left_sort, cache, scope):
+            return finish(False)
+        return finish(expected_sort is None or equivalent_sorts(expected_sort, "prop"))
     if expr.kind == "arrow" and len(expr.args) == 2:
-        return (
+        return finish(
             (expected_sort is None or equivalent_sorts(expected_sort, "prop"))
-            and raw_expr_well_sorted(expr.args[0], variable_sorts, "prop")
-            and raw_expr_well_sorted(expr.args[1], variable_sorts, "prop")
+            and raw_expr_well_sorted(expr.args[0], variable_sorts, "prop", cache, scope)
+            and raw_expr_well_sorted(expr.args[1], variable_sorts, "prop", cache, scope)
         )
     if expr.kind == "forall" and expr.value is not None and expr.sort is not None and expr.args:
-        return (
+        return finish(
             (expected_sort is None or equivalent_sorts(expected_sort, "prop"))
-            and raw_expr_well_sorted(expr.args[0], {**variable_sorts, expr.value: expr.sort}, "prop")
+            and raw_expr_well_sorted(
+                expr.args[0],
+                {**variable_sorts, expr.value: expr.sort},
+                "prop",
+                cache,
+                extended_scope(expr.value, expr.sort),
+            )
         )
     if expr.kind == "lambda" and expr.value is not None and expr.sort is not None and expr.args:
         body_sort = None
@@ -1757,8 +1782,16 @@ def raw_expr_well_sorted(
             pieces = split_sort_arrows(expected_sort)
             if len(pieces) >= 2 and equivalent_sorts(pieces[0], expr.sort):
                 body_sort = join_sort_arrows(pieces[1:])
-        return raw_expr_well_sorted(expr.args[0], {**variable_sorts, expr.value: expr.sort}, body_sort)
-    return all(raw_expr_well_sorted(arg, variable_sorts) for arg in expr.args)
+        return finish(
+            raw_expr_well_sorted(
+                expr.args[0],
+                {**variable_sorts, expr.value: expr.sort},
+                body_sort,
+                cache,
+                extended_scope(expr.value, expr.sort),
+            )
+        )
+    return finish(all(raw_expr_well_sorted(arg, variable_sorts, None, cache, scope) for arg in expr.args))
 
 
 def is_function_value(expr: Expr, sort: str | None) -> bool:
@@ -3831,6 +3864,21 @@ def proof_term_text(proof: str) -> str:
 
 def proof_argument_text(proof: str) -> str:
     return proof if re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", proof) else f"({proof})"
+
+
+UNPARENTHESIZED_ARROW_BINDER_SORT_RE = re.compile(
+    r"(fun\s+[_A-Za-z][_A-Za-z0-9']*\s*:\s*)([^=:\n]*?->[^=:\n]*?)(\s*=>)"
+)
+
+
+def parenthesize_arrow_binder_sorts(proof: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        sort = match.group(2).strip()
+        if sort.startswith("(") or "->" not in sort:
+            return match.group(0)
+        return f"{match.group(1)}({sort}){match.group(3)}"
+
+    return UNPARENTHESIZED_ARROW_BINDER_SORT_RE.sub(replace, proof)
 
 
 def collect_foralls(expr: Expr) -> tuple[list[tuple[str, str]], Expr]:
@@ -22704,6 +22752,86 @@ def raw_vampire_eq_set_to_native_equality_proof(source: Expr, target: Expr, sour
     return body_proof
 
 
+def raw_native_equality_to_vampire_eq_set_proof(source: Expr, target: Expr, source_proof: str) -> str | None:
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if len(source_binders) != len(target_binders):
+        return None
+    if any(source_sort != target_sort for (_, source_sort), (_, target_sort) in zip(source_binders, target_binders)):
+        return None
+    renamed_source_body = source_body
+    rename = {
+        source_name: target_name
+        for (source_name, _), (target_name, _) in zip(source_binders, target_binders)
+        if source_name != target_name
+    }
+    if rename:
+        renamed_source_body = rename_expr_variables(renamed_source_body, rename)
+    if renamed_source_body.kind != "eq":
+        return None
+    source_sides = equality_like_sides(renamed_source_body)
+    target_sides = app_args(target_body, "vampire_eq_set", 2)
+    if source_sides is None or target_sides is None:
+        return None
+
+    source_instance = source_proof
+    for name, _ in target_binders:
+        source_instance = f"({proof_head(source_instance)} {name})"
+
+    if expr_same_mod_alpha(source_sides[0], target_sides[0]) and expr_same_mod_alpha(source_sides[1], target_sides[1]):
+        equality_proof = source_instance
+    elif expr_same_mod_alpha(source_sides[0], target_sides[1]) and expr_same_mod_alpha(source_sides[1], target_sides[0]):
+        equality_proof = raw_eq_symmetry_proof(source_instance, source_sides[0], "set")
+    else:
+        return None
+
+    hole = fresh_identifier("zz", expr_text(target_body), source_proof)
+    body_proof = (
+        f"({proof_head(equality_proof)} "
+        f"(fun {hole} :set => vampire_eq_set {proof_arg_text(target_sides[0])} {hole}) "
+        f"(fun Q H => H))"
+    )
+    for name, sort in reversed(target_binders):
+        body_proof = f"(fun {name} :{sort} => {body_proof})"
+    return body_proof
+
+
+def raw_tptp_exported_definition_rewrite_ambient_bridge_proof(
+    proposition: str,
+    parents: list[str],
+    exported_step_propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+    step_info: MegalodonReplayStep | None,
+) -> str | None:
+    if step_info is None or not step_info.proposition:
+        return None
+    source = parse_expr(step_info.proposition)
+    target = parse_expr(proposition)
+    if source is None or target is None:
+        return None
+    bridge = raw_native_equality_to_vampire_eq_set_proof(source, target, "Hnative")
+    if bridge is None:
+        return None
+    local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(step_info)}
+    native_proof = raw_tptp_parent_equality_chain_rewrite_proof(
+        step_info.proposition,
+        parents,
+        exported_step_propositions_by_name,
+        local_sorts,
+    )
+    if native_proof is None:
+        native_proof = raw_tptp_parent_equality_rewrite_proof(
+            step_info.proposition,
+            parents,
+            exported_step_propositions_by_name,
+            local_sorts,
+        )
+    if native_proof is None:
+        return None
+    native_proof = parenthesize_arrow_binder_sorts(native_proof)
+    return raw_native_equality_to_vampire_eq_set_proof(source, target, native_proof)
+
+
 def raw_tptp_one_parent_transform_proof(
     proposition: str,
     parents: list[str],
@@ -30248,9 +30376,10 @@ def raw_equality_rewrite_clause_steps(
             if key in seen:
                 continue
             seen.add(key)
+            equality_sort_text = binder_sort_text(equality_sort)
             transported = (
                 f"{proof_term_text(proof)} "
-                f"(fun {hole_name} :{equality_sort} => {expr_text(context)}) "
+                f"(fun {hole_name} :{equality_sort_text} => {expr_text(context)}) "
                 f"{proof_term_text(source_proof)}"
             )
             steps.append((replaced, transported))
@@ -30264,9 +30393,10 @@ def raw_equality_rewrite_clause_steps(
         if not context_changed:
             continue
         seen.add(key)
+        equality_sort_text = binder_sort_text(equality_sort)
         transported = (
             f"{proof_term_text(proof)} "
-            f"(fun {hole_name} :{equality_sort} => {expr_text(context)}) "
+            f"(fun {hole_name} :{equality_sort_text} => {expr_text(context)}) "
             f"{proof_term_text(source_proof)}"
         )
         steps.append((replaced, transported))
@@ -33059,9 +33189,10 @@ def raw_function_equality_to_pointwise_proof(
         else:
             predicate = f"vampire_eq_prop {proof_arg_text(left_app)} {proof_arg_text(hole_app)}"
             refl = "(fun Q H => H)"
+        function_sort_text = binder_sort_text(function_sort)
         proof = (
             f"{proof_term_text(equality_proof)} "
-            f"(fun {hole} :{function_sort} => {predicate}) "
+            f"(fun {hole} :{function_sort_text} => {predicate}) "
             f"{refl}"
         )
         if forward:
@@ -33189,9 +33320,10 @@ def raw_function_equality_term_rewrite_proof(
             context_sides = equality_like_sides(context)
             if not context_changed or context_sides is None:
                 continue
+            rewrite_sort_text = binder_sort_text(rewrite_sort)
             transported = (
                 f"{proof_term_text(proof)} "
-                f"(fun {hole_name} :{rewrite_sort} => "
+                f"(fun {hole_name} :{rewrite_sort_text} => "
                 f"{raw_leibniz_equality_proposition_text(context_sides[0], context_sides[1], function_sort)}) "
                 f"{proof_term_text(source_proof)}"
             )
@@ -33615,11 +33747,15 @@ def raw_tptp_target_guided_parent_equality_chain_rewrite_proof(
                         yield instantiated, proof, instantiated_sides
 
     for _source_name, source, source_proof in opened_source_options():
+        if proof_search_timed_out():
+            return None
         current = source
         current_proof = source_proof
         current_score = literal_match_score(current)
         seen_current = {expr_key(current)}
         for _step in range(12):
+            if proof_search_timed_out():
+                return None
             if expr_same_mod_alpha(current, target_body):
                 return close_target_proof(current_proof)
             transformed = raw_clause_transform_proof(current, target_body, current_proof)
@@ -33633,12 +33769,20 @@ def raw_tptp_target_guided_parent_equality_chain_rewrite_proof(
                 queue: list[tuple[Expr, list[tuple[Expr, str, tuple[Expr, Expr], str]]]] = [(source_literal, [])]
                 seen_literals = {expr_key(source_literal)}
                 for _depth in range(4):
+                    if proof_search_timed_out():
+                        return None
                     next_queue: list[tuple[Expr, list[tuple[Expr, str, tuple[Expr, Expr], str]]]] = []
                     for literal, path in queue:
+                        if proof_search_timed_out():
+                            return None
                         if expr_same_mod_alpha(literal, target_literal):
                             return path
                         for _equality_name, equality, equality_proof in equality_parents:
+                            if proof_search_timed_out():
+                                return None
                             for _instantiated, instantiated_proof, sides in instantiate_equality_options(equality, equality_proof, literal):
+                                if proof_search_timed_out():
+                                    return None
                                 equality_sort = raw_equality_transport_sort(sides[0], sides[1], local_sorts)
                                 for old_side, new_side, oriented_proof in (
                                     (sides[0], sides[1], instantiated_proof),
@@ -33705,7 +33849,11 @@ def raw_tptp_target_guided_parent_equality_chain_rewrite_proof(
 
             best: tuple[int, Expr, str] | None = None
             for _equality_name, equality, equality_proof in equality_parents:
+                if proof_search_timed_out():
+                    return None
                 for _instantiated, instantiated_proof, sides in instantiate_equality_options(equality, equality_proof, current):
+                    if proof_search_timed_out():
+                        return None
                     equality_sort = raw_equality_transport_sort(sides[0], sides[1], local_sorts)
                     for replaced, proof in raw_equality_rewrite_clause_steps(
                         current,
@@ -33715,6 +33863,8 @@ def raw_tptp_target_guided_parent_equality_chain_rewrite_proof(
                         instantiated_proof,
                         equality_sort,
                     ):
+                        if proof_search_timed_out():
+                            return None
                         key = expr_key(replaced)
                         if key in seen_current:
                             continue
@@ -43039,14 +43189,16 @@ def raw_tptp_forward_subsumption_resolution_proof(
         variable_sorts = {}
     if len(parents) != 2:
         return None
+    target = parse_expr(proposition)
+    if target is None:
+        return None
     first_proposition = propositions_by_name.get(parents[0])
     second_proposition = propositions_by_name.get(parents[1])
     if first_proposition is None or second_proposition is None:
         return None
     first = parse_expr(first_proposition)
     second = parse_expr(second_proposition)
-    target = parse_expr(proposition)
-    if first is None or second is None or target is None:
+    if first is None or second is None:
         return None
     first_name = raw_tptp_claim_name(parents[0])
     second_name = raw_tptp_claim_name(parents[1])
@@ -45500,6 +45652,79 @@ def raw_tptp_avatar_definition_proof(proposition: str) -> str | None:
     if raw_tptp_avatar_definition_parts(proposition) is None:
         return None
     return "(fun P K => K (fun H => H) (fun H => H))"
+
+
+def raw_tptp_component_proof_from_parent(
+    parent: Expr,
+    component: Expr,
+    parent_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if expr_same_mod_alpha(parent, component):
+        return parent_proof
+    proof = raw_quantified_parent_instantiation_proof(
+        parent,
+        component,
+        parent_proof,
+        variable_sorts,
+    )
+    if proof is not None:
+        return proof
+    proof = raw_specialize_forall_transform_proof(parent, component, parent_proof, variable_sorts)
+    if proof is not None:
+        return proof
+    if raw_clause_replay_budget_ok(parent, component, max_literals=16, max_literal_product=256):
+        proof = raw_simple_clause_transform_proof(parent, component, parent_proof)
+        if proof is not None:
+            return proof
+        proof = raw_clause_transform_proof(parent, component, parent_proof)
+        if proof is not None:
+            return proof
+    return raw_deep_formula_transform_proof(parent, component, parent_proof, variable_sorts)
+
+
+def raw_tptp_avatar_split_from_component_parent_proof(
+    target: Expr,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    target_binders, target_body = collect_foralls(target)
+    target_split = raw_split_definition_name(target_body)
+    if target_split is None:
+        return None
+
+    parent_entries: list[tuple[Expr, str]] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+        if parent_expr is not None:
+            parent_entries.append((parent_expr, raw_tptp_claim_name(parent)))
+    if not parent_entries:
+        return None
+
+    for definition_name, definition_proposition in propositions_by_name.items():
+        definition = raw_tptp_avatar_definition_parts(definition_proposition)
+        if definition is None:
+            continue
+        split_name, component = definition
+        if split_name != target_split:
+            continue
+        local_sorts = {**variable_sorts, **dict(target_binders)}
+        for parent_expr, parent_proof in parent_entries:
+            component_proof = raw_tptp_component_proof_from_parent(
+                parent_expr,
+                component,
+                parent_proof,
+                local_sorts,
+            )
+            if component_proof is None:
+                continue
+            proof = f"({raw_tptp_claim_name(definition_name)}_component_to_split_local {proof_term_text(component_proof)})"
+            for name, sort in reversed(target_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
+            return proof
+    return None
 
 
 def raw_or_left_intro(target: Expr, proof: str) -> str | None:
@@ -50517,7 +50742,8 @@ def raw_tptp_replay_proof(
                     has_rich_replay_metadata
                     and rule in {"ennf_transformation", "nnf_transformation"}
                     and (
-                        raw_tptp_replay_normal_form_has_path_fragment(replay_step, "ennf_neg_imp")
+                        raw_tptp_quantified_eq_prop_disjunction_ennf_needs_fallback(proposition)
+                        or raw_tptp_replay_normal_form_has_path_fragment(replay_step, "ennf_neg_imp")
                         or raw_tptp_replay_normal_form_has_path_fragment(replay_step, "ennf_imp")
                     )
                 ):
@@ -53008,41 +53234,58 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         trusted_definition_replay = False
         if replay_proof is None:
             if rule in {"definition_folding", "definition_unfolding"}:
-                for parent in parents:
-                    definition_key = predicate_definition_keys_by_step.get(parent)
-                    if definition_key is not None and definition_key not in replay_parents:
-                        replay_parents.append(definition_key)
-                replay_proof = raw_tptp_trusted_definition_rewrite_proof(
-                    proposition,
-                    replay_parents,
-                    propositions_by_name,
-                    variable_sorts,
-                    trusted_definition_names,
-                )
-                trusted_definition_replay = replay_proof is not None
-                if replay_proof is None:
-                    replay_proof = raw_tptp_unit_clause_simplification_proof(
+                previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+                PROOF_SEARCH_STATE.deadline = proof_search_now() + 3.0
+                try:
+                    for parent in parents:
+                        definition_key = predicate_definition_keys_by_step.get(parent)
+                        if definition_key is not None and definition_key not in replay_parents:
+                            replay_parents.append(definition_key)
+                    replay_proof = raw_tptp_trusted_definition_rewrite_proof(
                         proposition,
                         replay_parents,
                         propositions_by_name,
                         variable_sorts,
+                        trusted_definition_names,
                     )
-                if replay_proof is None:
-                    replay_proof = raw_tptp_target_guided_parent_equality_chain_rewrite_proof(
-                        proposition,
-                        replay_parents,
-                        propositions_by_name,
-                        variable_sorts,
-                    )
-                    if replay_proof is not None:
-                        trusted_definition_replay = True
-                if replay_proof is None:
-                    replay_proof = raw_tptp_parent_equality_chain_rewrite_proof(
-                        proposition,
-                        replay_parents,
-                        propositions_by_name,
-                        variable_sorts,
-                    )
+                    trusted_definition_replay = replay_proof is not None
+                    if replay_proof is None:
+                        replay_proof = raw_tptp_unit_clause_simplification_proof(
+                            proposition,
+                            replay_parents,
+                            propositions_by_name,
+                            variable_sorts,
+                        )
+                    if replay_proof is None:
+                        replay_proof = raw_tptp_target_guided_parent_equality_chain_rewrite_proof(
+                            proposition,
+                            replay_parents,
+                            propositions_by_name,
+                            variable_sorts,
+                        )
+                        if replay_proof is not None:
+                            trusted_definition_replay = True
+                    if replay_proof is None:
+                        replay_proof = raw_tptp_exported_definition_rewrite_ambient_bridge_proof(
+                            proposition,
+                            replay_parents,
+                            exported_step_propositions_by_name,
+                            variable_sorts,
+                            step_info,
+                        )
+                    if replay_proof is None:
+                        replay_proof = raw_tptp_parent_equality_chain_rewrite_proof(
+                            proposition,
+                            replay_parents,
+                            propositions_by_name,
+                            variable_sorts,
+                        )
+                finally:
+                    if previous_deadline is None:
+                        if hasattr(PROOF_SEARCH_STATE, "deadline"):
+                            delattr(PROOF_SEARCH_STATE, "deadline")
+                    else:
+                        PROOF_SEARCH_STATE.deadline = previous_deadline
             if replay_proof is None:
                 if raw_tptp_replay_payload_size_ok(
                     rule,
@@ -53184,6 +53427,14 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     )
                     if replay_proof is not None:
                         trusted_definition_replay = True
+                if replay_proof is None:
+                    replay_proof = raw_tptp_exported_definition_rewrite_ambient_bridge_proof(
+                        proposition,
+                        replay_parents,
+                        exported_step_propositions_by_name,
+                        variable_sorts,
+                        step_info,
+                    )
                 if replay_proof is None:
                     replay_proof = raw_tptp_parent_equality_chain_rewrite_proof(
                         proposition,
