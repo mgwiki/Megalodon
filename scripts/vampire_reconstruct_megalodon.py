@@ -1026,7 +1026,9 @@ def join_sort_arrows(pieces: Iterable[str]) -> str:
 
 def binder_sort_text(sort: str) -> str:
     stripped = strip_balanced_parens(sort)
-    return f"({stripped})" if len(split_sort_arrows(stripped)) > 1 else stripped
+    if len(split_sort_arrows(stripped)) > 1 or re.search(r"\s|=", stripped):
+        return f"({stripped})"
+    return stripped
 
 
 def equivalent_sorts(left: str | None, right: str | None) -> bool:
@@ -3812,7 +3814,11 @@ class ExprParser:
         while self.peek() is not None and self.peek() != "=>":
             sort_tokens.append(self.pop())
         self.pop("=>")
-        return Expr("lambda", value=name, sort="".join(sort_tokens), args=(self.parse_arrow(),))
+        sort_text = " ".join(sort_tokens)
+        sort_text = re.sub(r"\s*->\s*", "->", sort_text)
+        sort_text = re.sub(r"\(\s+", "(", sort_text)
+        sort_text = re.sub(r"\s+\)", ")", sort_text)
+        return Expr("lambda", value=name, sort=sort_text, args=(self.parse_arrow(),))
 
 
 @functools.lru_cache(maxsize=100_000)
@@ -52449,6 +52455,10 @@ SOURCE_DECLARED_NAME_RE = re.compile(
 MEGALODON_DECLARED_NAME_RE = re.compile(
     r"^\s*(?:Variable|Parameter|Definition|Axiom)\s+(?P<name>[_A-Za-z][_A-Za-z0-9']*)(?=\s|:|\.|$)"
 )
+MEGALODON_TOPLEVEL_DECLARED_NAME_RE = re.compile(
+    r"^\s*(?:Variable|Parameter|Definition|Axiom|Theorem|Lemma|Example|Fact|Remark|Corollary|Proposition|Property)\s+"
+    r"(?P<name>[_A-Za-z][_A-Za-z0-9']*)(?=\s|:|\.|$)"
+)
 MEGALODON_SORT_DECL_RE = re.compile(
     r"^\s*(?:Variable|Parameter|Definition)\s+"
     r"(?P<name>[_A-Za-z][_A-Za-z0-9']*)\s*:\s*"
@@ -52492,6 +52502,21 @@ def source_active_declared_names(source: Path | None) -> set[str]:
             names.add(match.group("name"))
         if re.match(r"^Section\b", stripped):
             section_depth += 1
+    return names
+
+
+def source_toplevel_declared_names(source: Path | None) -> set[str]:
+    if source is None:
+        return set()
+    try:
+        text = source.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return set()
+    names: set[str] = set()
+    for line in text.splitlines():
+        match = MEGALODON_TOPLEVEL_DECLARED_NAME_RE.match(line)
+        if match is not None:
+            names.add(match.group("name"))
     return names
 
 
@@ -52618,6 +52643,35 @@ def local_set_definition_closure(
                     needed.add(token)
                     changed = True
     return {name: value for name, value in definitions.items() if name in needed}
+
+
+def fresh_reconstruction_identifier(name: str, used: set[str], suffix: str = "__local") -> str:
+    candidate = f"{name}{suffix}"
+    index = 0
+    while candidate in used:
+        index += 1
+        candidate = f"{name}{suffix}{index}"
+    used.add(candidate)
+    return candidate
+
+
+def rename_generated_identifier_text(text: str, renames: dict[str, str]) -> str:
+    if not text or not renames:
+        return text
+    expr = parse_expr(text)
+    if expr is not None:
+        return expr_text(rename_expr_variables(expr, renames))
+    result = text
+    for name, replacement in sorted(renames.items(), key=lambda item: -len(item[0])):
+        result = replace_identifier(result, name, replacement)
+    return result
+
+
+def replace_generated_identifier_tokens(text: str, renames: dict[str, str]) -> str:
+    result = text
+    for name, replacement in sorted(renames.items(), key=lambda item: -len(item[0])):
+        result = replace_identifier(result, name, replacement)
+    return result
 
 
 def local_set_reflexivity_roots(
@@ -52749,10 +52803,24 @@ def raw_tptp_adjust_section_parameterized_sorts(
 def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | None = None) -> list[str]:
     text = proof.read_text(encoding="utf-8", errors="replace")
     declarations = collect_tptp_declarations(text)
+    source_declarations = raw_tptp_exported_source_declarations(text)
+    source_context_variable_names = {
+        name
+        for declaration in source_declarations
+        if declaration.startswith(("Variable ", "Parameter "))
+        for name in [megalodon_declared_name(declaration)]
+        if name is not None
+    }
     all_local_set_definitions = source_local_set_definitions(
         source,
         proof_or_problem_obligation_line(proof, problem),
     )
+    if source_context_variable_names:
+        all_local_set_definitions = {
+            name: value
+            for name, value in all_local_set_definitions.items()
+            if name not in source_context_variable_names
+        }
     local_set_sorts = {name: sort for name, (sort, _body) in all_local_set_definitions.items()}
     standard_tptp_proof = bool(declarations)
     entries: list[tuple[str, str, str, str | None, str | None, list[str], bool]]
@@ -52893,10 +52961,28 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             entries.append((name, role, proposition, rule, None, list(step.parents), False))
             propositions.append(proposition)
         add_missing_raw_tptp_variables(propositions, variable_sorts)
+
+    source_reserved_names = source_active_declared_names(source) | source_toplevel_declared_names(source)
+    local_identifier_renames: dict[str, str] = {}
+    if all_local_set_definitions:
+        used_reconstruction_names = (
+            set(variable_sorts)
+            | source_reserved_names
+            | set(RAW_TPTP_AMBIENT_CONSTANTS)
+            | {"vAND", "vOR", "vIMP", "vNOT"}
+        )
+        for name in sorted(all_local_set_definitions):
+            if name not in source_reserved_names:
+                continue
+            replacement = fresh_reconstruction_identifier(name, used_reconstruction_names)
+            local_identifier_renames[name] = replacement
+            variable_sorts[replacement] = variable_sorts.get(name, local_set_sorts.get(name, "set"))
+
     renamed_entries = []
     renamed_propositions = []
     for name, role, proposition, rule, source_name, parents, trusted_definition in entries:
         if proposition:
+            proposition = rename_generated_identifier_text(proposition, local_identifier_renames)
             proposition = raw_tptp_rename_conflicting_forall_binders(proposition, variable_sorts)
             proposition = use_ambient_basic_logic_text(proposition)
             parsed_proposition = parse_expr(proposition)
@@ -52910,7 +52996,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     propositions = renamed_propositions
     propositions_by_name = {name: proposition for name, _, proposition, _, _, _, _ in entries if proposition}
     exported_step_propositions_by_name = {
-        name: step.proposition
+        name: rename_generated_identifier_text(step.proposition, local_identifier_renames)
         for name, step in replay_steps.items()
         if step.proposition
     }
@@ -52961,12 +53047,19 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             final_proposition = proposition
             break
 
+    renamed_all_local_set_definitions = {
+        local_identifier_renames.get(name, name): (
+            sort,
+            rename_generated_identifier_text(body, local_identifier_renames),
+        )
+        for name, (sort, body) in all_local_set_definitions.items()
+    }
     local_set_definitions = local_set_definition_closure(
-        all_local_set_definitions,
-        local_set_reflexivity_roots(entries, set(all_local_set_definitions)),
+        renamed_all_local_set_definitions,
+        local_set_reflexivity_roots(entries, set(renamed_all_local_set_definitions)),
     )
     local_set_definition_names = set(local_set_definitions)
-    source_local_set_names = set(all_local_set_definitions)
+    source_local_set_names = set(all_local_set_definitions) | set(renamed_all_local_set_definitions)
 
     lines = [
         "// Raw Vampire TPTP reconstruction skeleton.",
@@ -52987,10 +53080,9 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if name is not None
     }
     seen_infixes = {line for line in lines if line.startswith("Infix ")}
-    source_names = source_active_declared_names(source)
+    source_names = source_reserved_names
     source_sorts = source_active_declared_sorts(source)
     source_declared_sort_names = set(source_declared_sorts(source))
-    source_declarations = raw_tptp_exported_source_declarations(text)
     early_source_declarations: list[str] = []
     later_source_declarations: list[str] = []
     for declaration in source_declarations:
@@ -53400,6 +53492,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if replay_proof is not None:
             replay_proof = instantiate_global_axiom_proofs(replay_proof)
             replay_proof = use_ambient_basic_logic_text(replay_proof)
+            replay_proof = rename_generated_identifier_text(replay_proof, local_identifier_renames)
         lines.append(f"claim {claim_name}: {proposition}.")
         if replay_proof is None and rule in {"definition_folding", "definition_unfolding"}:
             previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
@@ -53457,6 +53550,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             if replay_proof is not None:
                 replay_proof = instantiate_global_axiom_proofs(replay_proof)
                 replay_proof = use_ambient_basic_logic_text(replay_proof)
+                replay_proof = rename_generated_identifier_text(replay_proof, local_identifier_renames)
         if replay_proof is None:
             bridge_block = None
             if rule in {"definition_folding", "definition_unfolding"}:
@@ -53497,6 +53591,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     else:
         lines.append(f"exact {final_name}.")
     lines.append("Qed.")
+    if local_identifier_renames:
+        lines = [replace_generated_identifier_tokens(line, local_identifier_renames) for line in lines]
     lines = reconcile_megalodon_declarations(use_ambient_basic_logic(add_problem_type_variables(lines, proof, text, problem, source)))
     lines = parenthesize_atomic_axiom_propositions(lines, variable_sorts)
     return reconcile_megalodon_declarations(add_used_boolean_extensionality_helpers(lines))
