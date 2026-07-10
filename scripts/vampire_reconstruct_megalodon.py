@@ -3578,7 +3578,7 @@ def add_problem_type_variables(
             line.startswith(("Variable ", "Axiom "))
             or (
                 line.startswith("Theorem ")
-                and not line.startswith(("Theorem vampire_eq_sym_set:", "Theorem vampire_eq_transport_eq_set:"))
+                and not is_vampire_closed_helper_theorem(line)
             )
         ):
             result.extend(additions)
@@ -5961,7 +5961,7 @@ def needs_boolean_ext_helpers(lines: list[str]) -> bool:
 
 def should_insert_boolean_helpers_before(line: str) -> bool:
     return line.startswith(("Variable ", "Axiom ")) or (
-        line.startswith("Theorem ") and not line.startswith("Theorem vampire_eq_sym_set:")
+        line.startswith("Theorem ") and not is_vampire_closed_helper_theorem(line)
     )
 
 
@@ -43665,6 +43665,8 @@ def raw_common_rhs_equality_superposition_proof(
     target_sides = equality_like_sides(target_body)
     if source_sides is None or target_sides is None:
         return None
+    native_source_equality = source_body.kind == "eq"
+    native_target_equality = target_body.kind == "eq"
     if len(source_binders) > 6 or len(target_binders) > 8:
         return None
     binder_names = {name for name, _sort in source_binders}
@@ -56771,6 +56773,20 @@ def ordered_named_definition_bodies(definitions: dict[str, tuple[str, str]]) -> 
 def megalodon_declared_name(line: str) -> str | None:
     match = MEGALODON_DECLARED_NAME_RE.match(line)
     return match.group("name") if match is not None else None
+
+
+VAMPIRE_CLOSED_HELPER_THEOREM_PREFIXES = (
+    "Theorem vampire_eq_sym_set:",
+    "Theorem vampire_native_eq_sym_set:",
+    "Theorem vampire_native_eq_transport_set:",
+    "Theorem vampire_native_eq_sym_prop:",
+    "Theorem vampire_native_eq_transport_prop:",
+    "Theorem vampire_eq_transport_eq_set:",
+)
+
+
+def is_vampire_closed_helper_theorem(line: str) -> bool:
+    return line.startswith(VAMPIRE_CLOSED_HELPER_THEOREM_PREFIXES)
 
 
 def reconcile_megalodon_declarations(lines: list[str]) -> list[str]:
