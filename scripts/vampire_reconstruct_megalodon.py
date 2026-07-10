@@ -19460,6 +19460,9 @@ class RawSplitRewrite:
     component: Expr
     split_to_component: str
     component_to_split: str
+    binders: tuple[tuple[str, str], ...] = ()
+    split_to_component_head: str | None = None
+    component_to_split_head: str | None = None
 
 
 @dataclass(frozen=True)
@@ -19615,10 +19618,46 @@ def raw_false_literal_elimination_proof(branch: Expr, target: Expr, branch_proof
     return raw_false_to_expr_proof(false_proof, target, conclusion)
 
 
+def raw_split_projection_proof(
+    rewrite: RawSplitRewrite,
+    *,
+    component_to_split: bool,
+    subst: dict[str, Expr] | None = None,
+) -> str | None:
+    if component_to_split:
+        proof = rewrite.component_to_split
+        head = rewrite.component_to_split_head
+    else:
+        proof = rewrite.split_to_component
+        head = rewrite.split_to_component_head
+    if not rewrite.binders or subst is None:
+        return proof
+    if head is None:
+        return proof
+    result = head
+    for name, _sort in rewrite.binders:
+        argument = subst.get(name)
+        if argument is None:
+            return None
+        result = f"({proof_head(result)} {proof_arg_text(argument)})"
+    return result
+
+
 def raw_split_rewrite_proof(source: Expr, target: Expr, source_proof: str, rewrites: tuple[RawSplitRewrite, ...]) -> str | None:
     for rewrite in rewrites:
         if expr_key(source) == expr_key(rewrite.component) and expr_key(target) == expr_key(rewrite.split):
-            return f"({proof_head(rewrite.component_to_split)} {proof_term_text(source_proof)})"
+            projection = raw_split_projection_proof(rewrite, component_to_split=True)
+            if projection is not None:
+                return f"({proof_head(projection)} {proof_term_text(source_proof)})"
+        if rewrite.binders:
+            variables = {name for name, _sort in rewrite.binders}
+            subst: dict[str, Expr] = {}
+            if match_expr(rewrite.component, source, variables, subst) and match_expr(rewrite.split, target, variables, subst):
+                flatten_substitution(subst)
+                if variables <= set(subst):
+                    projection = raw_split_projection_proof(rewrite, component_to_split=True, subst=subst)
+                    if projection is not None:
+                        return f"({proof_head(projection)} {proof_term_text(source_proof)})"
 
         source_premises, source_conclusion = split_arrows(source)
         target_premises, target_conclusion = split_arrows(target)
@@ -19631,8 +19670,27 @@ def raw_split_rewrite_proof(source: Expr, target: Expr, source_proof: str, rewri
             and expr_key(target_premises[0]) == expr_key(rewrite.split)
         ):
             split_name = fresh_identifier("Hsplit", expr_text(source), expr_text(target), source_proof)
-            component_proof = f"({proof_head(rewrite.split_to_component)} {split_name})"
+            projection = raw_split_projection_proof(rewrite, component_to_split=False)
+            if projection is None:
+                continue
+            component_proof = f"({proof_head(projection)} {split_name})"
             return f"(fun {split_name} => {proof_head(source_proof)} {component_proof})"
+        if rewrite.binders and len(source_premises) == 1 and len(target_premises) == 1:
+            variables = {name for name, _sort in rewrite.binders}
+            subst = {}
+            if (
+                false_eliminator_expr(source_conclusion)
+                and false_eliminator_expr(target_conclusion)
+                and match_expr(rewrite.component, source_premises[0], variables, subst)
+                and match_expr(rewrite.split, target_premises[0], variables, subst)
+            ):
+                flatten_substitution(subst)
+                if variables <= set(subst):
+                    split_name = fresh_identifier("Hsplit", expr_text(source), expr_text(target), source_proof)
+                    projection = raw_split_projection_proof(rewrite, component_to_split=False, subst=subst)
+                    if projection is not None:
+                        component_proof = f"({proof_head(projection)} {split_name})"
+                        return f"(fun {split_name} => {proof_head(source_proof)} {component_proof})"
     return None
 
 
@@ -48186,6 +48244,15 @@ def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: s
         and "(fun Q Hexists => Hexists" in proof
     ):
         return True
+    if (
+        rule in {"ennf_transformation", "nnf_transformation"}
+        and proof.startswith("(xm (vampire_exists_set")
+        and "HnotTarget" in proof
+        and "HnotSourceConclusion" in proof
+        and "HtargetNegativeBody" in proof
+        and re.search(r"forall X[0-9]+:prop, or X[0-9]+ \(vampire_exists_set", proof)
+    ):
+        return True
     return False
 
 
@@ -48950,6 +49017,9 @@ def raw_tptp_trusted_definition_rewrites(
                 component,
                 split_to_component,
                 component_to_split,
+                tuple(binders),
+                f"{parent_name}_split_to_component{suffix}",
+                f"{parent_name}_component_to_split{suffix}",
             )
         )
     return tuple(rewrites)
