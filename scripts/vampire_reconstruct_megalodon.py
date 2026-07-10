@@ -1061,10 +1061,22 @@ def join_sort_arrows(pieces: Iterable[str]) -> str:
     return "->".join(rendered)
 
 
+def display_sort_text(sort: str) -> str:
+    stripped = strip_balanced_parens(sort)
+    pieces = split_sort_arrows(stripped)
+    if len(pieces) <= 1:
+        return stripped
+    rendered: list[str] = []
+    for piece in pieces:
+        piece_text = display_sort_text(piece)
+        rendered.append(f"({piece_text})" if len(split_sort_arrows(piece)) > 1 else piece_text)
+    return " -> ".join(rendered)
+
+
 def binder_sort_text(sort: str) -> str:
     stripped = strip_balanced_parens(sort)
     if len(split_sort_arrows(stripped)) > 1 or re.search(r"\s|=", stripped):
-        return f"({stripped})"
+        return f"({display_sort_text(stripped)})"
     return stripped
 
 
@@ -1627,12 +1639,22 @@ def reconstruction_prelude_for(propositions: list[str]) -> list[str]:
         "assume HQ:Q y x.",
         "exact (Hxy (fun zl zr => Q zr zl) HQ).",
         "Qed.",
+        "Theorem vampire_native_eq_refl_set: forall x:set, x = x.",
+        "let x.",
+        "reflexivity.",
+        "Qed.",
         "Theorem vampire_native_eq_transport_set: forall x y:set, x = y -> forall P:set->prop, P x -> P y.",
         "let x y.",
         "assume Hxy:x = y.",
         "let P.",
         "assume HP:P x.",
         "exact (Hxy (fun zl zr => P zl) HP).",
+        "Qed.",
+        "Theorem vampire_native_eq_trans_set: forall x y z:set, x = y -> y = z -> x = z.",
+        "let x y z.",
+        "assume Hxy:x = y.",
+        "assume Hyz:y = z.",
+        "exact (Hyz (fun zl zr => x = zl) Hxy).",
         "Qed.",
         "Theorem vampire_native_eq_sym_prop: forall x y:prop, x = y -> y = x.",
         "let x y.",
@@ -8628,6 +8650,11 @@ def set_eq_symmetry_proof(proof: str, left: Expr) -> str:
     left_text = expr_text(left)
     name = fresh_identifier("zz", left_text)
     return f"({proof_head(proof)} (fun {name} :set => vampire_eq_set {name} {proof_arg_text(left)}) (fun Q H => H))"
+
+
+def native_set_reflexivity_proof(expr: Expr | str) -> str:
+    text = proof_arg_text(expr) if isinstance(expr, Expr) else expr
+    return f"(vampire_native_eq_refl_set {text})"
 
 
 def eq_transitivity_proof(proofs: list[str], start_text: str | None = None) -> str | None:
@@ -29845,7 +29872,9 @@ def raw_prop_implication_transform_proof(
         and expr_same_mod_alpha(source_sides[0], target_sides[1])
         and expr_same_mod_alpha(source_sides[1], target_sides[0])
     ):
-        sort = "prop" if source.kind == "app" and source.args[0].kind == "var" and source.args[0].value == "vampire_eq_prop" else "set"
+        sort = raw_equality_transport_sort(source_sides[0], source_sides[1], variable_sorts)
+        if source.kind == "eq":
+            return native_eq_symmetry_proof(source_proof, source_sides[0], source_sides[1], sort)
         return raw_eq_symmetry_proof(source_proof, source_sides[0], sort)
 
     prop_argument_rewrite = raw_prop_argument_set_rewrite_proof(
@@ -30058,10 +30087,14 @@ def raw_prop_argument_set_rewrite_proof(
     context_args = list(source.args)
     context_args[index] = Expr("var", value=hole)
     context = Expr("app", args=tuple(context_args))
-    return (
-        f"{proof_term_text(equality)} "
-        f"(fun {hole} :set => {expr_text(context)}) "
-        f"{proof_term_text(source_proof)}"
+    return native_equality_transport_proof(
+        equality,
+        source.args[index],
+        target.args[index],
+        source_proof,
+        hole,
+        "set",
+        context,
     )
 
 
@@ -30105,11 +30138,17 @@ def raw_prop_multi_argument_set_rewrite_proof(
         context_args = list(current_args)
         context_args[index] = Expr("var", value=hole)
         context = Expr("app", args=tuple(context_args))
-        proof = (
-            f"{proof_term_text(equality)} "
-            f"(fun {hole} :set => {expr_text(context)}) "
-            f"{proof_term_text(proof)}"
+        proof = native_equality_transport_proof(
+            equality,
+            current_arg,
+            target_arg,
+            proof,
+            hole,
+            "set",
+            context,
         )
+        if proof is None:
+            return None
         current_args[index] = target_arg
     return proof
 
@@ -30471,12 +30510,12 @@ def raw_set_term_equality_transform_proof(
     if depth > 24 or proof_search_timed_out():
         return None
     if expr_same_mod_alpha(source, target):
-        return f"(fun Q:(set->prop) => fun H:Q ({proof_arg_text(source)}) => H)"
+        return native_set_reflexivity_proof(source)
     beta_source = beta_normalize_expr(source)
     beta_target = beta_normalize_expr(target)
     if not (expr_same_mod_alpha(beta_source, source) and expr_same_mod_alpha(beta_target, target)):
         if expr_same_mod_alpha(beta_source, beta_target):
-            return f"(fun Q:(set->prop) => fun H:Q ({proof_arg_text(source)}) => H)"
+            return native_set_reflexivity_proof(source)
         beta_proof = raw_set_term_equality_transform_proof(
             beta_source,
             beta_target,
@@ -30528,6 +30567,11 @@ def raw_set_term_equality_transform_proof(
     context = Expr("app", args=tuple(context_args))
     arg_sort = expr_sort(source.args[index], variable_sorts) or expr_sort(target.args[index], variable_sorts)
     if arg_sort == "set":
+        left_hole = fresh_identifier("zl", expr_text(source), expr_text(target), str(index))
+        right_hole = fresh_identifier("zr", expr_text(source), expr_text(target), str(index))
+        native_context_args = list(source.args)
+        native_context_args[index] = Expr("var", value=left_hole)
+        native_context = Expr("app", args=tuple(native_context_args))
         argument_equality = raw_set_term_equality_transform_proof(
             source.args[index],
             target.args[index],
@@ -30538,8 +30582,8 @@ def raw_set_term_equality_transform_proof(
             return None
         return (
             f"{proof_term_text(argument_equality)} "
-            f"(fun {hole} :set => {proof_arg_text(source)} = {expr_text(context)}) "
-            f"(fun Q H => H)"
+            f"(fun {left_hole} {right_hole} => {proof_arg_text(source)} = {expr_text(native_context)}) "
+            f"{native_set_reflexivity_proof(source)}"
         )
     if arg_sort in {"set->set", "set->set->set", "set->(set->set)", "set->(set->set)->set"}:
         normalized_sort = join_sort_arrows(split_sort_arrows(arg_sort))
@@ -30554,7 +30598,7 @@ def raw_set_term_equality_transform_proof(
         return (
             f"{proof_term_text(argument_transport)} "
             f"(fun {hole} :{binder_sort_text(normalized_sort)} => {proof_arg_text(source)} = {expr_text(context)}) "
-            f"(fun Q H => H)"
+            f"{native_set_reflexivity_proof(source)}"
         )
     if arg_sort == "set->prop":
         if len(expr_text(source)) + len(expr_text(target)) > 3000:
@@ -30569,7 +30613,7 @@ def raw_set_term_equality_transform_proof(
         return (
             f"{proof_term_text(predicate_equality)} "
             f"(fun {hole} :set->prop => {proof_arg_text(source)} = {expr_text(context)}) "
-            f"(fun Q H => H)"
+            f"{native_set_reflexivity_proof(source)}"
         )
     return None
 
@@ -30642,6 +30686,7 @@ def raw_set_application_multi_argument_equality_proof(
         return None
     current_args = list(source.args)
     proofs: list[str] = []
+    chain_terms: list[Expr] = [source]
     for index in differing:
         current_expr = Expr("app", args=tuple(current_args))
         current_arg = current_args[index]
@@ -30654,13 +30699,18 @@ def raw_set_application_multi_argument_equality_proof(
         context_args[index] = Expr("var", value=hole)
         context = Expr("app", args=tuple(context_args))
         if arg_sort == "set":
+            left_hole = fresh_identifier("zl", expr_text(current_expr), expr_text(target), str(index))
+            right_hole = fresh_identifier("zr", expr_text(current_expr), expr_text(target), str(index))
+            native_context_args = list(current_args)
+            native_context_args[index] = Expr("var", value=left_hole)
+            native_context = Expr("app", args=tuple(native_context_args))
             argument_equality = raw_set_term_equality_transform_proof(current_arg, target_arg, variable_sorts, depth + 1)
             if argument_equality is None:
                 return None
             proof = (
                 f"{proof_term_text(argument_equality)} "
-                f"(fun {hole} :set => {expr_text(current_expr)} = {expr_text(context)}) "
-                f"(fun Q:(set->prop) => fun H:Q ({proof_arg_text(current_expr)}) => H)"
+                f"(fun {left_hole} {right_hole} => {expr_text(current_expr)} = {expr_text(native_context)}) "
+                f"{native_set_reflexivity_proof(current_expr)}"
             )
         elif arg_sort in {"set->set", "set->set->set", "set->(set->set)", "set->(set->set)->set"}:
             arg_sort = join_sort_arrows(split_sort_arrows(arg_sort))
@@ -30670,7 +30720,7 @@ def raw_set_application_multi_argument_equality_proof(
             proof = (
                 f"{proof_term_text(argument_transport)} "
                 f"(fun {hole} :{binder_sort_text(arg_sort)} => {expr_text(current_expr)} = {expr_text(context)}) "
-                f"(fun Q:(set->prop) => fun H:Q ({proof_arg_text(current_expr)}) => H)"
+                f"{native_set_reflexivity_proof(current_expr)}"
             )
         elif arg_sort == "set->prop":
             predicate_equality = raw_fast_set_predicate_extensionality_proof(
@@ -30683,13 +30733,26 @@ def raw_set_application_multi_argument_equality_proof(
             proof = (
                 f"{proof_term_text(predicate_equality)} "
                 f"(fun {hole} :set->prop => {expr_text(current_expr)} = {expr_text(context)}) "
-                f"(fun Q:(set->prop) => fun H:Q ({proof_arg_text(current_expr)}) => H)"
+                f"{native_set_reflexivity_proof(current_expr)}"
             )
         else:
             return None
         proofs.append(proof)
         current_args = next_args
-    return eq_transitivity_proof(proofs, expr_text(source))
+        chain_terms.append(Expr("app", args=tuple(current_args)))
+    if not proofs:
+        return None
+    proof = proofs[0]
+    for index, next_proof in enumerate(proofs[1:], start=1):
+        proof = (
+            f"(vampire_native_eq_trans_set "
+            f"{proof_arg_text(chain_terms[0])} "
+            f"{proof_arg_text(chain_terms[index])} "
+            f"{proof_arg_text(chain_terms[index + 1])} "
+            f"{proof_term_text(proof)} "
+            f"{proof_term_text(next_proof)})"
+        )
+    return proof
 
 
 def raw_two_sided_equality_transform_proof(
@@ -30803,11 +30866,17 @@ def raw_equality_predicate_argument_rewrite_proof(
             context = equality_like_expr(source, Expr("var", value=hole), source_sides[1])
         else:
             context = equality_like_expr(source, source_sides[0], Expr("var", value=hole))
-        return (
-            f"{proof_term_text(term_equality)} "
-            f"(fun {hole} :set => {expr_text(context)}) "
-            f"{proof_term_text(source_proof)}"
+        transported = native_equality_transport_proof(
+            term_equality,
+            source_app,
+            target_app,
+            source_proof,
+            hole,
+            "set",
+            context,
         )
+        if transported is not None:
+            return transported
     return None
 
 
@@ -31464,7 +31533,7 @@ def raw_equality_rewrite_clause_steps(
     steps: list[tuple[Expr, str]] = []
     seen: set[str] = set()
     reverse_proof = (
-        eq_symmetry_proof(equality_proof, equality_left, equality_right)
+        native_eq_symmetry_proof(equality_proof, equality_left, equality_right, equality_sort)
         if native_equality
         else raw_eq_symmetry_proof(equality_proof, equality_left, equality_sort)
     )
@@ -32715,6 +32784,7 @@ def raw_tptp_forward_demodulation_proof(
                 function_sides[1],
                 function_equality_proof,
                 function_sort,
+                native_equality=function_equality.kind == "eq",
             )
             if fallback_ok(proof):
                 return proof
@@ -32726,6 +32796,7 @@ def raw_tptp_forward_demodulation_proof(
                 function_sides[1],
                 function_equality_proof,
                 function_sort,
+                native_equality=function_equality.kind == "eq",
             )
             if fallback_ok(proof):
                 return proof
@@ -32743,6 +32814,7 @@ def raw_tptp_forward_demodulation_proof(
                 function_sides[1],
                 function_equality_proof,
                 function_sort,
+                native_equality=function_equality.kind == "eq",
             )
             if fallback_ok(proof):
                 return proof
@@ -32767,6 +32839,7 @@ def raw_tptp_forward_demodulation_proof(
             second_sides[1],
             second_name,
             equality_sort,
+            native_equality=second.kind == "eq",
         )
         if fallback_ok(proof):
             return proof
@@ -32791,6 +32864,7 @@ def raw_tptp_forward_demodulation_proof(
             first_sides[1],
             first_name,
             equality_sort,
+            native_equality=first.kind == "eq",
         )
         if fallback_ok(proof):
             return proof
@@ -33664,6 +33738,8 @@ def raw_negative_implication_equality_rewrite_proof(
     equality_proof: str,
     equality_sort: str,
     variable_sorts: dict[str, str] | None = None,
+    *,
+    native_equality: bool = False,
 ) -> str | None:
     variable_sorts = variable_sorts or {}
     source_premises, source_conclusion = split_arrows(source)
@@ -33682,6 +33758,7 @@ def raw_negative_implication_equality_rewrite_proof(
         equality_right,
         equality_proof,
         equality_sort,
+        native_equality=native_equality,
     ):
         if expr_same_mod_alpha(rewritten, source_premises[0]):
             return (
@@ -33697,7 +33774,11 @@ def raw_negative_implication_equality_rewrite_proof(
             and expr_same_mod_alpha(rewritten_sides[1], source_sides[0])
         ):
             symmetry_sort = raw_equality_transport_sort(rewritten_sides[0], rewritten_sides[1], variable_sorts)
-            symmetric = raw_eq_symmetry_proof(transported, rewritten_sides[0], symmetry_sort)
+            symmetric = (
+                native_eq_symmetry_proof(transported, rewritten_sides[0], rewritten_sides[1], symmetry_sort)
+                if native_equality
+                else raw_eq_symmetry_proof(transported, rewritten_sides[0], symmetry_sort)
+            )
             return (
                 f"(fun Htarget :{proof_arg_text(target_premises[0])} => "
                 f"{proof_head(source_proof)} {proof_term_text(symmetric)})"
@@ -41120,6 +41201,7 @@ def raw_guarded_negative_equality_superposition_instantiated_proof(
                     equality_literal_proof,
                     equality_sort,
                     variable_sorts,
+                    native_equality=equality_literal.kind == "eq",
                 )
                 if rewritten_negative is None:
                     continue
@@ -41274,12 +41356,20 @@ def raw_negative_equality_clause_superposition_proof(
                         equality_sides = equality_like_sides(equality_literal)
                         if equality_sides is not None and negative_equality_premise(source_literal) is not None:
                             equality_sort = raw_equality_transport_sort(equality_sides[0], equality_sides[1], variable_sorts)
+                            native_equality = equality_literal.kind == "eq"
                             orientations = (
                                 (equality_sides[0], equality_sides[1], equality_literal_proof),
                                 (
                                     equality_sides[1],
                                     equality_sides[0],
-                                    raw_eq_symmetry_proof(equality_literal_proof, equality_sides[0], equality_sort),
+                                    native_eq_symmetry_proof(
+                                        equality_literal_proof,
+                                        equality_sides[0],
+                                        equality_sides[1],
+                                        equality_sort,
+                                    )
+                                    if native_equality
+                                    else raw_eq_symmetry_proof(equality_literal_proof, equality_sides[0], equality_sort),
                                 ),
                             )
                             for equality_left, equality_right, oriented_equality_proof in orientations:
@@ -41295,6 +41385,7 @@ def raw_negative_equality_clause_superposition_proof(
                                         oriented_equality_proof,
                                         equality_sort,
                                         variable_sorts,
+                                        native_equality=native_equality,
                                     )
                                     if rewritten_negative is None:
                                         continue
@@ -55541,6 +55632,7 @@ def raw_prop_guarded_equality_superposition_proof(
         equality_sides = equality_like_sides(eq_main)
         if equality_sides is None:
             continue
+        native_equality = eq_main.kind == "eq"
         for source_side, target_side, reverse in (
             (equality_sides[0], equality_sides[1], False),
             (equality_sides[1], equality_sides[0], True),
@@ -55555,12 +55647,29 @@ def raw_prop_guarded_equality_superposition_proof(
             equality_sort = raw_equality_transport_sort(source_side, target_side, variable_sorts)
             equality_instance = "Heq"
             if reverse:
-                equality_instance = raw_eq_symmetry_proof(equality_instance, target_side, equality_sort)
-            transported = (
-                f"{proof_term_text(equality_instance)} "
-                f"(fun {hole_name} :{equality_sort} => {expr_text(context)}) "
-                f"Hpred"
-            )
+                equality_instance = (
+                    native_eq_symmetry_proof(equality_instance, target_side, source_side, equality_sort)
+                    if native_equality
+                    else raw_eq_symmetry_proof(equality_instance, target_side, equality_sort)
+                )
+            if native_equality:
+                transported = native_equality_transport_proof(
+                    equality_instance,
+                    source_side,
+                    target_side,
+                    "Hpred",
+                    hole_name,
+                    equality_sort,
+                    context,
+                )
+                if transported is None:
+                    continue
+            else:
+                transported = (
+                    f"{proof_term_text(equality_instance)} "
+                    f"(fun {hole_name} :{binder_sort_text(equality_sort)} => {expr_text(context)}) "
+                    f"Hpred"
+                )
             pred_case = (
                 f"(({proof_head(pred_parent_proof)} {target_binders[0][0]}) "
                 f"{proof_arg_text(target_body)} "
@@ -56778,7 +56887,9 @@ def megalodon_declared_name(line: str) -> str | None:
 VAMPIRE_CLOSED_HELPER_THEOREM_PREFIXES = (
     "Theorem vampire_eq_sym_set:",
     "Theorem vampire_native_eq_sym_set:",
+    "Theorem vampire_native_eq_refl_set:",
     "Theorem vampire_native_eq_transport_set:",
+    "Theorem vampire_native_eq_trans_set:",
     "Theorem vampire_native_eq_sym_prop:",
     "Theorem vampire_native_eq_transport_prop:",
     "Theorem vampire_eq_transport_eq_set:",
