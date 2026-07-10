@@ -43210,6 +43210,16 @@ def raw_tptp_forward_subsumption_resolution_proof(
     second_name = raw_tptp_claim_name(parents[1])
     parsed = [(first, first_name), (second, second_name)]
 
+    if raw_split_definition_name(collect_foralls(target)[1]) is not None:
+        avatar_split_proof = raw_tptp_avatar_split_from_component_parent_proof(
+            target,
+            parents,
+            propositions_by_name,
+            variable_sorts,
+        )
+        if avatar_split_proof is not None:
+            return avatar_split_proof
+
     selected_literal_proof = raw_tptp_selected_literal_subsumption_resolution_proof(
         target,
         parsed,
@@ -45541,6 +45551,17 @@ RAW_TPTP_SURFACE_VAR_RE = re.compile(r"\b[XY][0-9]+\b")
 RAW_TPTP_SURFACE_BINDER_RE = re.compile(r"\b(?:fun|forall)\s+([XY][0-9]+)\s*:")
 RAW_TPTP_BAD_DEFINITION_CONTEXT_RE = re.compile(r"\bR_S[0-9]+_def\s+\(fun\b")
 RAW_TPTP_NESTED_BAD_DEFINITION_CONTEXT_RE = re.compile(r"\bR_S[0-9]+_def\s+\(fun\b[^)]*\s=>.*\bforall\b")
+RAW_TPTP_CLAIM_LAMBDA_ARGUMENT_RE = re.compile(
+    r"\bR_S[0-9]+\s+\(\s*fun\s+[A-Za-z_][A-Za-z0-9_']*\s*:"
+)
+
+
+def raw_tptp_claim_applied_to_function_lambda(proof: str) -> bool:
+    for match in RAW_TPTP_CLAIM_LAMBDA_ARGUMENT_RE.finditer(proof):
+        sort_prefix = proof[match.end() : match.end() + 160].split("=>", 1)[0]
+        if "->" in sort_prefix:
+            return True
+    return False
 
 
 def raw_tptp_replay_proof_has_escaped_surface_variable(proposition: str, proof: str) -> bool:
@@ -45606,6 +45627,8 @@ def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: s
         return True
     if rule in {"definition_folding", "definition_unfolding"} and RAW_TPTP_NESTED_BAD_DEFINITION_CONTEXT_RE.search(proof):
         return True
+    if rule in {"definition_folding", "definition_unfolding"} and raw_tptp_claim_applied_to_function_lambda(proof):
+        return True
     if rule not in {"definition_folding", "definition_unfolding"} and RAW_TPTP_BAD_DEFINITION_CONTEXT_RE.search(proof):
         return True
     if raw_tptp_replay_proof_has_free_surface_variable(proposition, proof):
@@ -45635,11 +45658,11 @@ def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: s
 
 
 def raw_tptp_standard_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: str) -> bool:
-    if rule in {"definition_folding", "definition_unfolding"} and re.search(
-        r"\(\s*fun\s+[XY][0-9]+\s*:",
-        proof,
-    ):
-        return True
+    if rule in {"definition_folding", "definition_unfolding"}:
+        if re.search(r"\(\s*fun\s+[XY][0-9]+\s*:", proof):
+            return True
+        if raw_tptp_claim_applied_to_function_lambda(proof):
+            return True
     if rule in {"forward_demodulation", "backward_demodulation"} and re.search(
         r"\bR_[fs][0-9]+\s+[XY][0-9]+\b",
         proof,
@@ -49844,6 +49867,145 @@ def raw_tptp_unit_clause_simplification_proof(
     return body_proof
 
 
+def raw_tptp_chained_definition_rewrite_with_native_argument_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parents) < 3:
+        return None
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    target_binders, target_body = collect_foralls(target)
+    target_sides = equality_like_sides(target_body)
+    if target_sides is None:
+        return None
+    target_left, target_right = target_sides
+    target_right = beta_normalize_expr(target_right)
+    target_binder_sorts = dict(target_binders)
+    local_sorts = {**variable_sorts, **target_binder_sorts}
+
+    parent_exprs: list[tuple[str, Expr, str]] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+        if parent_expr is not None:
+            parent_exprs.append((parent, parent_expr, raw_tptp_claim_name(parent)))
+
+    native_equalities: list[tuple[Expr, Expr, str]] = []
+    for _name, expr, proof in parent_exprs:
+        binders, body = collect_foralls(expr)
+        if binders:
+            continue
+        sides = equality_like_sides(body)
+        if sides is not None:
+            native_equalities.append((sides[0], sides[1], proof))
+            native_equalities.append((sides[1], sides[0], raw_eq_symmetry_proof(
+                proof,
+                sides[0],
+                raw_equality_transport_sort(sides[0], sides[1], local_sorts),
+            )))
+    if not native_equalities:
+        return None
+
+    def opened_parent_body(expr: Expr, proof: str) -> tuple[Expr, str] | None:
+        binders, body = collect_foralls(expr)
+        if len(binders) != len(target_binders):
+            return None
+        if any(source_sort != target_sort for (_source_name, source_sort), (_target_name, target_sort) in zip(binders, target_binders)):
+            return None
+        renames = {
+            source_name: target_name
+            for (source_name, _source_sort), (target_name, _target_sort) in zip(binders, target_binders)
+            if source_name != target_name
+        }
+        if renames:
+            body = rename_expr_variables(body, renames)
+        opened_proof = proof
+        for target_name, _target_sort in target_binders:
+            opened_proof = f"({proof_head(opened_proof)} {target_name})"
+        return body, opened_proof
+
+    for source_name, source_expr, source_proof_name in parent_exprs:
+        opened = opened_parent_body(source_expr, source_proof_name)
+        if opened is None:
+            continue
+        source_body, source_proof = opened
+        source_sides = equality_like_sides(source_body)
+        if source_sides is None:
+            continue
+        source_left, source_middle = source_sides
+        source_middle = beta_normalize_expr(source_middle)
+        if not expr_same_mod_alpha(beta_normalize_expr(source_left), beta_normalize_expr(target_left)):
+            continue
+
+        for definition_name, definition_expr, definition_proof_name in parent_exprs:
+            if definition_name == source_name:
+                continue
+            definition_binders, definition_body = collect_foralls(definition_expr)
+            if not definition_binders:
+                continue
+            definition_sides = equality_like_sides(definition_body)
+            if definition_sides is None:
+                continue
+            subst: dict[str, Expr] = {}
+            binder_names = {name for name, _sort in definition_binders}
+            if not match_expr_with_eta_instantiation(
+                definition_sides[0],
+                source_middle,
+                binder_names,
+                subst,
+                local_sorts,
+            ):
+                continue
+            if any(name not in subst for name, _sort in definition_binders):
+                continue
+            instantiated_definition = beta_normalize_expr(substitute_expr(definition_body, subst))
+            instantiated_sides = equality_like_sides(instantiated_definition)
+            if instantiated_sides is None:
+                continue
+            definition_proof = definition_proof_name
+            for name, _sort in definition_binders:
+                definition_proof = f"({proof_head(definition_proof)} {proof_arg_text(subst[name])})"
+            target_middle_equality = equality_like_expr(
+                target_body,
+                source_middle,
+                target_right,
+            )
+            middle_proof = None
+            if expr_same_mod_alpha(instantiated_definition, target_middle_equality):
+                middle_proof = definition_proof
+            else:
+                for equality_left, equality_right, equality_proof in native_equalities:
+                    equality_sort = raw_equality_transport_sort(equality_left, equality_right, local_sorts)
+                    middle_proof = raw_equality_rewrite_clause_proof(
+                        instantiated_definition,
+                        target_middle_equality,
+                        definition_proof,
+                        equality_left,
+                        equality_right,
+                        equality_proof,
+                        equality_sort,
+                    )
+                    if middle_proof is not None:
+                        break
+            if middle_proof is None:
+                continue
+            transport_sort = raw_equality_transport_sort(target_left, target_right, local_sorts)
+            return_proof = (
+                f"{proof_head(middle_proof)} "
+                f"(fun zz :{binder_sort_text(transport_sort)} => "
+                f"{expr_text(equality_like_expr(target_body, target_left, Expr('var', value='zz')))}) "
+                f"{proof_term_text(source_proof)}"
+            )
+            for name, sort in reversed(target_binders):
+                return_proof = f"(fun {name} :{binder_sort_text(sort)} => {return_proof})"
+            return return_proof
+    return None
+
+
 def raw_tptp_pointwise_function_clause_definition_rewrite_proof(
     proposition: str,
     parents: list[str],
@@ -53324,6 +53486,15 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         step_info = replay_steps.get(name)
         replay_proof = known_raw_propositions.get(canonical_proposition(proposition))
         trusted_definition_replay = False
+        if replay_proof is None and rule in {"forward_subsumption_resolution", "backward_subsumption_resolution"}:
+            target_expr = parse_expr(proposition)
+            if target_expr is not None and raw_split_definition_name(collect_foralls(target_expr)[1]) is not None:
+                replay_proof = raw_tptp_avatar_split_from_component_parent_proof(
+                    target_expr,
+                    replay_parents,
+                    propositions_by_name,
+                    variable_sorts,
+                )
         if replay_proof is None:
             if rule in {"definition_folding", "definition_unfolding"}:
                 previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
@@ -53450,12 +53621,19 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                         previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
                         PROOF_SEARCH_STATE.deadline = proof_search_now() + 3.0
                         try:
-                            replay_proof = raw_tptp_pointwise_function_clause_definition_rewrite_proof(
+                            replay_proof = raw_tptp_chained_definition_rewrite_with_native_argument_proof(
                                 proposition,
                                 replay_parents,
                                 propositions_by_name,
                                 variable_sorts,
                             )
+                            if replay_proof is None:
+                                replay_proof = raw_tptp_pointwise_function_clause_definition_rewrite_proof(
+                                    proposition,
+                                    replay_parents,
+                                    propositions_by_name,
+                                    variable_sorts,
+                                )
                         finally:
                             if previous_deadline is None:
                                 if hasattr(PROOF_SEARCH_STATE, "deadline"):
@@ -53467,13 +53645,22 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             and not trusted_definition_replay
             and raw_tptp_replay_proof_is_unsafe(rule, proposition, replay_proof)
         ):
-            fallback_replay = raw_tptp_replay_proof(
-                rule,
-                proposition,
-                replay_parents,
-                propositions_by_name,
-                variable_sorts,
-            )
+            fallback_replay = None
+            if rule in {"definition_folding", "definition_unfolding"}:
+                fallback_replay = raw_tptp_chained_definition_rewrite_with_native_argument_proof(
+                    proposition,
+                    replay_parents,
+                    propositions_by_name,
+                    variable_sorts,
+                )
+            if fallback_replay is None:
+                fallback_replay = raw_tptp_replay_proof(
+                    rule,
+                    proposition,
+                    replay_parents,
+                    propositions_by_name,
+                    variable_sorts,
+                )
             if (
                 fallback_replay is not None
                 and not raw_tptp_replay_proof_is_unsafe(rule, proposition, fallback_replay)
@@ -53504,6 +53691,13 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     propositions_by_name,
                     variable_sorts,
                 )
+                if replay_proof is None:
+                    replay_proof = raw_tptp_chained_definition_rewrite_with_native_argument_proof(
+                        proposition,
+                        replay_parents,
+                        propositions_by_name,
+                        variable_sorts,
+                    )
                 if replay_proof is None:
                     replay_proof = raw_tptp_pointwise_function_clause_definition_rewrite_proof(
                         proposition,
