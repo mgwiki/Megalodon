@@ -30897,6 +30897,24 @@ def raw_two_sided_equality_transform_proof(
         right_equality = raw_set_term_equality_transform_proof(right, target_sides[1], variable_sorts)
         if left_equality is None or right_equality is None:
             continue
+        if source.kind == "eq" and target.kind == "eq":
+            target_to_left = native_eq_symmetry_proof(left_equality, left, target_sides[0])
+            target_to_right = (
+                f"(vampire_native_eq_trans_set "
+                f"{proof_arg_text(target_sides[0])} "
+                f"{proof_arg_text(left)} "
+                f"{proof_arg_text(right)} "
+                f"{proof_term_text(target_to_left)} "
+                f"{proof_term_text(proof)})"
+            )
+            return (
+                f"(vampire_native_eq_trans_set "
+                f"{proof_arg_text(target_sides[0])} "
+                f"{proof_arg_text(right)} "
+                f"{proof_arg_text(target_sides[1])} "
+                f"{proof_term_text(target_to_right)} "
+                f"{proof_term_text(right_equality)})"
+            )
         if equality_sort == "set":
             return (
                 f"(vampire_eq_transport_eq_set "
@@ -44850,7 +44868,21 @@ def raw_tptp_quantified_equality_clause_superposition_proof(
     ) -> str | None:
         if proof_search_timed_out():
             return None
+        def open_over_target_binders(expr: Expr, proof: str) -> tuple[Expr, str] | None:
+            opened_expr = expr
+            opened_proof = proof
+            for target_name, target_sort in target_binders:
+                if opened_expr.kind != "forall" or opened_expr.sort != target_sort or opened_expr.value is None:
+                    return None
+                opened_body = opened_expr.args[0]
+                if opened_expr.value != target_name:
+                    opened_body = rename_expr_variables(opened_body, {opened_expr.value: target_name})
+                opened_expr = opened_body
+                opened_proof = f"({proof_head(opened_proof)} {target_name})"
+            return opened_expr, opened_proof
+
         source_options = [
+            *([opened] if target_binders and (opened := open_over_target_binders(source, source_proof)) is not None else []),
             *raw_replay_substituted_parent_options(source_index, source, source_proof, replay_step, variable_sorts),
             *raw_instantiated_forall_clause_options(source, source_proof, target, equality_clause),
             *raw_superposition_target_residual_instantiated_options(source, source_proof, target),
