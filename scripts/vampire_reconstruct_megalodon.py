@@ -36216,6 +36216,244 @@ def raw_guarded_universal_negative_literal_superposition_proof(
     return None
 
 
+def raw_guarded_quantified_clause_resolution_superposition_proof(
+    guarded: Expr,
+    target: Expr,
+    guarded_proof: str,
+    source: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    target_parts = raw_or_parts(target)
+    guarded_parts = raw_or_parts(guarded)
+    if target_parts is None or guarded_parts is None or proof_search_timed_out():
+        return None
+
+    target_quantified: Expr | None = None
+    target_guard: Expr | None = None
+    target_quantified_index = -1
+    for index, (candidate_quantified, candidate_guard) in enumerate((target_parts, (target_parts[1], target_parts[0]))):
+        if candidate_quantified.kind == "forall":
+            target_quantified = candidate_quantified
+            target_guard = candidate_guard
+            target_quantified_index = index
+            break
+
+    guarded_quantified: Expr | None = None
+    guarded_guard: Expr | None = None
+    for candidate_quantified, candidate_guard in (guarded_parts, (guarded_parts[1], guarded_parts[0])):
+        if candidate_quantified.kind == "forall":
+            guarded_quantified = candidate_quantified
+            guarded_guard = candidate_guard
+            break
+    if (
+        target_quantified is None
+        or target_guard is None
+        or guarded_quantified is None
+        or guarded_guard is None
+        or not expr_same_mod_alpha(target_guard, guarded_guard)
+    ):
+        return None
+
+    target_binders, target_body = collect_foralls(target_quantified)
+    guarded_binders, guarded_body = collect_foralls(guarded_quantified)
+    source_binders, source_body = collect_foralls(source)
+    if (
+        not target_binders
+        or not guarded_binders
+        or not source_binders
+        or len(target_binders) > 8
+        or len(guarded_binders) > 6
+        or len(source_binders) > 8
+    ):
+        return None
+
+    target_names = {name for name, _sort in target_binders}
+    used_names = target_names | expr_variables(target_body) | expr_variables(target_guard)
+
+    def rename_local_binders(
+        binders: list[tuple[str, str]],
+        body: Expr,
+        prefix: str,
+    ) -> tuple[list[tuple[str, str]], Expr]:
+        renamed: list[tuple[str, str]] = []
+        renames: dict[str, str] = {}
+        for index, (name, sort) in enumerate(binders):
+            replacement = name
+            if replacement in used_names:
+                replacement = f"{prefix}{index}"
+                suffix = 0
+                while replacement in used_names:
+                    suffix += 1
+                    replacement = f"{prefix}{index}_{suffix}"
+            used_names.add(replacement)
+            renamed.append((replacement, sort))
+            if replacement != name:
+                renames[name] = replacement
+        if renames:
+            body = rename_expr_variables(body, renames)
+        return renamed, body
+
+    guarded_binder_original_order = list(guarded_binders)
+    source_binder_original_order = list(source_binders)
+    guarded_binders, guarded_body = rename_local_binders(guarded_binders, guarded_body, "G")
+    source_binders, source_body = rename_local_binders(source_binders, source_body, "S")
+
+    target_literals = raw_clause_literals(target_body)
+    guarded_literals = raw_clause_literals(guarded_body)
+    source_literals = raw_clause_literals(source_body)
+    if len(target_literals) > 16 or len(guarded_literals) > 8 or len(source_literals) > 8:
+        return None
+
+    target_sort_by_name = {name: sort for name, sort in target_binders}
+    guarded_sort_by_name = {name: sort for name, sort in guarded_binders}
+    source_sort_by_name = {name: sort for name, sort in source_binders}
+    guarded_names = set(guarded_sort_by_name)
+    source_names = set(source_sort_by_name)
+    local_sorts = {
+        **variable_sorts,
+        **target_sort_by_name,
+        **guarded_sort_by_name,
+        **source_sort_by_name,
+    }
+
+    def residual_substitutions(
+        literals: list[Expr],
+        variables: set[str],
+        binders: list[tuple[str, str]],
+    ) -> Iterable[dict[str, Expr]]:
+        seen: set[str] = set()
+        for literal in literals:
+            if raw_false_clause_literal(literal):
+                continue
+            for target_literal in target_literals:
+                if raw_false_clause_literal(target_literal):
+                    continue
+                subst: dict[str, Expr] = {}
+                if not match_expr_with_alpha_instantiation(literal, target_literal, variables, subst):
+                    subst = {}
+                    if not match_expr_with_alpha_instantiation(
+                        beta_reduce_expr(flatten_applications(literal)),
+                        beta_reduce_expr(flatten_applications(target_literal)),
+                        variables,
+                        subst,
+                    ):
+                        continue
+                flatten_substitution(subst)
+                if any(name not in subst for name, _sort in binders):
+                    continue
+                key = " ".join(f"{name}={expr_key(subst[name])}" for name, _sort in binders)
+                if key in seen:
+                    continue
+                seen.add(key)
+                yield dict(subst)
+
+    guarded_options = list(residual_substitutions(guarded_literals, guarded_names, guarded_binders))[:24]
+    source_options = list(residual_substitutions(source_literals, source_names, source_binders))[:24]
+    if not guarded_options or not source_options:
+        return None
+
+    target_text = proof_arg_text(target_body)
+
+    for guarded_subst in guarded_options:
+        guarded_instance = flatten_applications(substitute_expr(guarded_body, guarded_subst))
+        top_guarded_name = "HguardedTop"
+        top_guard_name = "HguardTop"
+        guarded_instance_proof = top_guarded_name
+        for (_original_name, _original_sort), (name, _sort) in zip(guarded_binder_original_order, guarded_binders):
+            guarded_instance_proof = f"({proof_head(guarded_instance_proof)} {proof_arg_text(guarded_subst[name])})"
+        guarded_instance_literals = raw_clause_literals(guarded_instance)
+
+        for source_subst in source_options:
+            source_instance = flatten_applications(substitute_expr(source_body, source_subst))
+            source_instance_proof = source_proof
+            for (_original_name, _original_sort), (name, _sort) in zip(source_binder_original_order, source_binders):
+                source_instance_proof = f"({proof_head(source_instance_proof)} {proof_arg_text(source_subst[name])})"
+            if not any(
+                raw_complementary_literals(guarded_literal, source_literal)
+                for guarded_literal in guarded_instance_literals
+                for source_literal in raw_clause_literals(source_instance)
+            ):
+                continue
+
+            previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+            PROOF_SEARCH_STATE.flat_resolution_target = target_text
+
+            def source_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
+                if any(raw_complementary_literals(source_literal, guarded_literal) for guarded_literal in guarded_instance_literals):
+                    def guarded_handler(guarded_literal: Expr, guarded_literal_proof: str) -> str | None:
+                        complement = raw_complement_resolution_proof(
+                            source_literal,
+                            source_literal_proof,
+                            guarded_literal,
+                            guarded_literal_proof,
+                            target_body,
+                        )
+                        if complement is not None:
+                            return complement
+                        return raw_literal_to_clause_proof(
+                            guarded_literal,
+                            target_body,
+                            guarded_literal_proof,
+                            target_literals,
+                            (),
+                        )
+
+                    return raw_clause_cases_with_handler(
+                        guarded_instance,
+                        guarded_instance_proof,
+                        guarded_handler,
+                        avoid_text=source_literal_proof,
+                    )
+
+                direct = raw_literal_to_clause_proof(source_literal, target_body, source_literal_proof, target_literals, ())
+                if direct is not None:
+                    return direct
+                return None
+
+            try:
+                body_proof = raw_clause_cases_with_handler(
+                    source_instance,
+                    source_instance_proof,
+                    source_handler,
+                    avoid_text=guarded_instance_proof,
+                )
+            finally:
+                if previous_target is None:
+                    if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                        delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+                else:
+                    PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+            if body_proof is None:
+                continue
+            for name, sort in reversed(target_binders):
+                body_proof = f"(fun {name} :{sort} => {body_proof})"
+            quantified_intro = raw_or_intro_literal_at(target, target_quantified_index, body_proof)
+            if quantified_intro is None:
+                continue
+
+            target_top_literals = raw_clause_literals(target)
+            guard_intro = raw_literal_to_clause_proof(target_guard, target, top_guard_name, target_top_literals, ())
+            if guard_intro is None:
+                continue
+            if expr_same_mod_alpha(guarded_parts[0], guarded_quantified):
+                proof = (
+                    f"{proof_term_text(guarded_proof)} {proof_arg_text(target)} "
+                    f"(fun {top_guarded_name} => {quantified_intro}) "
+                    f"(fun {top_guard_name} => {guard_intro})"
+                )
+            else:
+                proof = (
+                    f"{proof_term_text(guarded_proof)} {proof_arg_text(target)} "
+                    f"(fun {top_guard_name} => {guard_intro}) "
+                    f"(fun {top_guarded_name} => {quantified_intro})"
+                )
+            if proof is not None:
+                return proof
+    return None
+
+
 def raw_tptp_superposition_proof(
     proposition: str,
     parents: list[str],
@@ -36271,6 +36509,26 @@ def raw_tptp_superposition_proof(
             if proof is not None:
                 return proof
             proof = raw_guarded_universal_negative_literal_superposition_proof(
+                early_parent_exprs[1][0],
+                early_target_expr,
+                early_parent_exprs[1][1],
+                early_parent_exprs[0][0],
+                early_parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_guarded_quantified_clause_resolution_superposition_proof(
+                early_parent_exprs[0][0],
+                early_target_expr,
+                early_parent_exprs[0][1],
+                early_parent_exprs[1][0],
+                early_parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_guarded_quantified_clause_resolution_superposition_proof(
                 early_parent_exprs[1][0],
                 early_target_expr,
                 early_parent_exprs[1][1],
