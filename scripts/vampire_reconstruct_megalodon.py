@@ -47782,6 +47782,14 @@ def raw_tptp_replay_proof(
     if proof is not None:
         return proof
     if rule == "superposition":
+        proof = raw_prop_guarded_ternary_equality_superposition_proof(
+            proposition,
+            parents,
+            propositions_by_name,
+            variable_sorts,
+        )
+        if proof is not None:
+            return proof
         proof = raw_prop_guarded_equality_superposition_proof(
             proposition,
             parents,
@@ -48211,6 +48219,351 @@ def raw_tptp_relaxed_superposition_sorts(variable_sorts: dict[str, str], text: s
         if name.startswith(("sK", "sF", "db", "vampire_")):
             relaxed[name] = sort
     return relaxed
+
+
+def raw_prop_guarded_ternary_equality_superposition_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parents) != 2:
+        return None
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    target_parts = raw_or_parts(target)
+    if target_parts is None:
+        return None
+
+    component_index: int | None = None
+    component: Expr | None = None
+    guard: Expr | None = None
+    for index, part in enumerate(target_parts):
+        binders, body = collect_foralls(part)
+        if len(binders) == 3 and all(sort == "prop" for _name, sort in binders):
+            component_index = index
+            component = part
+            guard = target_parts[1 - index]
+            break
+    if component_index is None or component is None or guard is None:
+        return None
+
+    target_binders, target_body = collect_foralls(component)
+    target_literals = raw_clause_literals(target_body)
+    if len(target_literals) != 4:
+        return None
+
+    def prop_eq_sides(expr: Expr) -> tuple[Expr, Expr] | None:
+        return app_args(expr, "vampire_eq_prop", 2)
+
+    def negated_prop_eq_sides(expr: Expr) -> tuple[Expr, Expr] | None:
+        premises, conclusion = split_arrows(expr)
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
+            return None
+        return prop_eq_sides(premises[0])
+
+    def negated_prop_atom(expr: Expr) -> Expr | None:
+        premises, conclusion = split_arrows(expr)
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
+            return None
+        if expr_sort(premises[0], {**variable_sorts, **dict(target_binders)}) != "prop":
+            return None
+        return premises[0]
+
+    def same(left: Expr, right: Expr) -> bool:
+        return expr_same_mod_alpha(left, right)
+
+    def other_side_if_contains(sides: tuple[Expr, Expr], value: Expr) -> Expr | None:
+        if same(sides[0], value):
+            return sides[1]
+        if same(sides[1], value):
+            return sides[0]
+        return None
+
+    atom_index: int | None = None
+    atom: Expr | None = None
+    for index, literal in enumerate(target_literals):
+        if prop_eq_sides(literal) is None and negated_prop_eq_sides(literal) is None:
+            if literal.kind == "var" and literal.value in {name for name, _sort in target_binders}:
+                atom_index = index
+                atom = literal
+                break
+    if atom_index is None or atom is None:
+        return None
+
+    neg_index: int | None = None
+    a_side: Expr | None = None
+    b_side: Expr | None = None
+    for index, literal in enumerate(target_literals):
+        sides = negated_prop_eq_sides(literal)
+        if sides is None:
+            continue
+        other = other_side_if_contains(sides, atom)
+        if other is None:
+            continue
+        neg_index = index
+        a_side = atom
+        b_side = other
+        break
+    if neg_index is None or a_side is None or b_side is None:
+        return None
+
+    positive_eqs: list[tuple[int, tuple[Expr, Expr]]] = []
+    for index, literal in enumerate(target_literals):
+        sides = prop_eq_sides(literal)
+        if sides is not None:
+            positive_eqs.append((index, sides))
+    if len(positive_eqs) != 2:
+        return None
+
+    binder_names = {name for name, _sort in target_binders}
+    bc_index: int | None = None
+    sc_index: int | None = None
+    c_side: Expr | None = None
+    s_side: Expr | None = None
+    for index, sides in positive_eqs:
+        candidate_c = other_side_if_contains(sides, b_side)
+        if candidate_c is None:
+            continue
+        if candidate_c.kind != "var" or candidate_c.value not in binder_names:
+            continue
+        other_eq = next((entry for entry in positive_eqs if entry[0] != index), None)
+        if other_eq is None:
+            continue
+        candidate_s = other_side_if_contains(other_eq[1], candidate_c)
+        if candidate_s is None or same(candidate_s, b_side):
+            continue
+        bc_index = index
+        sc_index = other_eq[0]
+        c_side = candidate_c
+        s_side = candidate_s
+        break
+    if bc_index is None or sc_index is None or c_side is None or s_side is None:
+        return None
+
+    def outer_intro(index: int, proof: str) -> str:
+        if index == 0:
+            return f"(fun P Hleft Hright => Hleft {proof_term_text(proof)})"
+        return f"(fun P Hleft Hright => Hright {proof_term_text(proof)})"
+
+    parsed_parents: list[tuple[str, Expr, str]] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+        if parent_expr is None:
+            return None
+        parsed_parents.append((parent, parent_expr, raw_tptp_claim_name(parent)))
+
+    def prop_eq_proof_b_c_from_a_b_and_a_c(aeqb: str, aeqc: str) -> str:
+        sym_ab = raw_eq_symmetry_proof(aeqb, a_side, "prop")
+        sym_ac = raw_eq_symmetry_proof(aeqc, a_side, "prop")
+        return (
+            f"(vampire_prop_ext {proof_arg_text(b_side)} {proof_arg_text(c_side)} "
+            f"(fun HB => ({proof_head(aeqc)} (fun zz :prop => zz) "
+            f"({proof_head(sym_ab)} (fun zz :prop => zz) HB))) "
+            f"(fun HC => ({proof_head(aeqb)} (fun zz :prop => zz) "
+            f"({proof_head(sym_ac)} (fun zz :prop => zz) HC))))"
+        )
+
+    def prop_eq_proof_b_c_from_a_b_and_c_a(aeqb: str, ceqa: str) -> str:
+        sym_ab = raw_eq_symmetry_proof(aeqb, a_side, "prop")
+        sym_ca = raw_eq_symmetry_proof(ceqa, c_side, "prop")
+        return (
+            f"(vampire_prop_ext {proof_arg_text(b_side)} {proof_arg_text(c_side)} "
+            f"(fun HB => ({proof_head(sym_ca)} (fun zz :prop => zz) "
+            f"({proof_head(sym_ab)} (fun zz :prop => zz) HB))) "
+            f"(fun HC => ({proof_head(aeqb)} (fun zz :prop => zz) "
+            f"({proof_head(ceqa)} (fun zz :prop => zz) HC))))"
+        )
+
+    def eq_to_a_c_proof(literal: Expr, proof: str) -> str | None:
+        sides = prop_eq_sides(literal)
+        if sides is None:
+            return None
+        if same(sides[0], a_side) and same(sides[1], c_side):
+            return proof
+        if same(sides[0], c_side) and same(sides[1], a_side):
+            return raw_eq_symmetry_proof(proof, c_side, "prop")
+        return None
+
+    def eq_to_s_c_proof(literal: Expr, proof: str) -> str | None:
+        sides = prop_eq_sides(literal)
+        if sides is None:
+            return None
+        if same(sides[0], s_side) and same(sides[1], c_side):
+            return proof
+        if same(sides[0], c_side) and same(sides[1], s_side):
+            return raw_eq_symmetry_proof(proof, c_side, "prop")
+        return None
+
+    def eq_to_b_c_from_component(literal: Expr, proof: str, aeqb: str) -> str | None:
+        sides = prop_eq_sides(literal)
+        if sides is None:
+            return None
+        if same(sides[0], a_side) and same(sides[1], c_side):
+            return prop_eq_proof_b_c_from_a_b_and_a_c(aeqb, proof)
+        if same(sides[0], c_side) and same(sides[1], a_side):
+            return prop_eq_proof_b_c_from_a_b_and_c_a(aeqb, proof)
+        return None
+
+    def find_guarded_parent(
+        parent_expr: Expr,
+        parent_proof: str,
+    ) -> tuple[int, Expr, list[tuple[str, str]], Expr, str] | None:
+        parts = raw_or_parts(parent_expr)
+        if parts is None:
+            return None
+        for index, part in enumerate(parts):
+            binders, body = collect_foralls(part)
+            if len(binders) != 2 or any(sort != "prop" for _name, sort in binders):
+                continue
+            other = parts[1 - index]
+            if not same(other, guard):
+                continue
+            literals = raw_clause_literals(body)
+            if len(literals) != 2:
+                continue
+            first = Expr("var", value=binders[0][0])
+            second = Expr("var", value=binders[1][0])
+            has_atom_second = any(same(literal, second) for literal in literals)
+            has_eq = any(
+                (sides := prop_eq_sides(literal)) is not None
+                and {expr_key(sides[0]), expr_key(sides[1])} == {expr_key(first), expr_key(second)}
+                for literal in literals
+            )
+            if not has_atom_second or not has_eq:
+                continue
+            return index, part, binders, body, parent_proof
+        return None
+
+    def find_source_parent(
+        parent_expr: Expr,
+        parent_proof: str,
+    ) -> tuple[Expr, str] | None:
+        binders, body = collect_foralls(parent_expr)
+        if len(binders) != 2 or any(sort != "prop" for _name, sort in binders):
+            return None
+        for first_value, second_value in ((a_side, c_side), (c_side, a_side)):
+            subst = {
+                binders[0][0]: first_value,
+                binders[1][0]: second_value,
+            }
+            instance_body = substitute_expr(body, subst)
+            literals = raw_clause_literals(instance_body)
+            if len(literals) != 3:
+                continue
+            has_not_a = any((neg_atom := negated_prop_atom(literal)) is not None and same(neg_atom, a_side) for literal in literals)
+            has_a_c = any(eq_to_a_c_proof(literal, "HLit") is not None for literal in literals)
+            has_s_c = any(eq_to_s_c_proof(literal, "HLit") is not None for literal in literals)
+            if not (has_not_a and has_a_c and has_s_c):
+                continue
+            proof = parent_proof
+            for name, _sort in binders:
+                proof = f"({proof_head(proof)} {proof_arg_text(subst[name])})"
+            return instance_body, proof
+        return None
+
+    for guarded_parent_index, source_parent_index in ((0, 1), (1, 0)):
+        guarded = find_guarded_parent(parsed_parents[guarded_parent_index][1], parsed_parents[guarded_parent_index][2])
+        source = find_source_parent(parsed_parents[source_parent_index][1], parsed_parents[source_parent_index][2])
+        if guarded is None or source is None:
+            continue
+        guarded_component_index, _guarded_component, guarded_binders, guarded_body, guarded_proof = guarded
+        source_body, source_proof = source
+
+        comp_subst = {
+            guarded_binders[0][0]: c_side,
+            guarded_binders[1][0]: a_side,
+        }
+        comp_body = substitute_expr(guarded_body, comp_subst)
+        component_proof_placeholder = "HguardedComponentRaw"
+        comp_proof = component_proof_placeholder
+        for name, _sort in guarded_binders:
+            comp_proof = f"({proof_head(comp_proof)} {proof_arg_text(comp_subst[name])})"
+
+        hnot_a = fresh_identifier("HnotA", expr_text(target_body), expr_text(a_side))
+        haeqb = fresh_identifier("HAeqB", expr_text(target_body), hnot_a)
+        hnot_aeqb = fresh_identifier("HnotAeqB", expr_text(target_body), haeqb)
+        hbeqc = fresh_identifier("HBeqC", expr_text(target_body), hnot_aeqb)
+        hnot_beqc = fresh_identifier("HnotBeqC", expr_text(target_body), hbeqc)
+        hseqc = fresh_identifier("HSeqC", expr_text(target_body), hnot_beqc)
+        hnot_seqc = fresh_identifier("HnotSeqC", expr_text(target_body), hseqc)
+
+        def contradiction_to_body(false_proof: str) -> str:
+            return raw_false_to_expr_proof(false_proof, target_body)
+
+        def component_handler(literal: Expr, literal_proof: str) -> str | None:
+            if same(literal, a_side):
+                return contradiction_to_body(f"({proof_head(hnot_a)} {proof_term_text(literal_proof)})")
+            eqbc = eq_to_b_c_from_component(literal, literal_proof, haeqb)
+            if eqbc is not None:
+                return contradiction_to_body(f"({proof_head(hnot_beqc)} {proof_term_text(eqbc)})")
+            return None
+
+        def source_handler(literal: Expr, literal_proof: str) -> str | None:
+            neg_atom = negated_prop_atom(literal)
+            if neg_atom is not None and same(neg_atom, a_side):
+                return raw_clause_cases_with_handler(
+                    comp_body,
+                    comp_proof,
+                    component_handler,
+                    avoid_text=f"{literal_proof} {haeqb}",
+                )
+            aeqc = eq_to_a_c_proof(literal, literal_proof)
+            if aeqc is not None:
+                eqbc = prop_eq_proof_b_c_from_a_b_and_a_c(haeqb, aeqc)
+                return contradiction_to_body(f"({proof_head(hnot_beqc)} {proof_term_text(eqbc)})")
+            seqc = eq_to_s_c_proof(literal, literal_proof)
+            if seqc is not None:
+                return contradiction_to_body(f"({proof_head(hnot_seqc)} {proof_term_text(seqc)})")
+            return None
+
+        previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+        PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+        try:
+            source_cases = raw_clause_cases_with_handler(source_body, source_proof, source_handler)
+        finally:
+            if previous_target is None:
+                if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                    delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+            else:
+                PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+        if source_cases is None:
+            continue
+
+        body_proof = (
+            f"(xm {proof_arg_text(a_side)} {proof_arg_text(target_body)} "
+            f"(fun HA => {raw_or_intro_literal_at(target_body, atom_index, 'HA')}) "
+            f"(fun {hnot_a} => "
+            f"(xm {proof_arg_text(Expr('app', args=(Expr('var', value='vampire_eq_prop'), a_side, b_side)))} {proof_arg_text(target_body)} "
+            f"(fun {haeqb} => "
+            f"(xm {proof_arg_text(Expr('app', args=(Expr('var', value='vampire_eq_prop'), b_side, c_side)))} {proof_arg_text(target_body)} "
+            f"(fun {hbeqc} => {raw_or_intro_literal_at(target_body, bc_index, hbeqc)}) "
+            f"(fun {hnot_beqc} => "
+            f"(xm {proof_arg_text(Expr('app', args=(Expr('var', value='vampire_eq_prop'), s_side, c_side)))} {proof_arg_text(target_body)} "
+            f"(fun {hseqc} => {raw_or_intro_literal_at(target_body, sc_index, hseqc)}) "
+            f"(fun {hnot_seqc} => {source_cases}))))) "
+            f"(fun {hnot_aeqb} => {raw_or_intro_literal_at(target_body, neg_index, hnot_aeqb)}))))"
+        )
+        component_proof = body_proof
+        for name, sort in reversed(target_binders):
+            component_proof = f"(fun {name} :{sort} => {component_proof})"
+
+        def guarded_branch(left_branch: bool, branch_name: str) -> str:
+            if (left_branch and guarded_component_index == 0) or (not left_branch and guarded_component_index == 1):
+                branch_component_proof = component_proof.replace(component_proof_placeholder, branch_name)
+                return outer_intro(component_index, branch_component_proof)
+            return outer_intro(1 - component_index, branch_name)
+
+        left_name = fresh_identifier("HguardedL", expr_text(target), guarded_proof)
+        right_name = fresh_identifier("HguardedR", expr_text(target), guarded_proof, left_name)
+        return (
+            f"({proof_head(guarded_proof)} {proof_arg_text(target)} "
+            f"(fun {left_name} => {guarded_branch(True, left_name)}) "
+            f"(fun {right_name} => {guarded_branch(False, right_name)}))"
+        )
+    return None
 
 
 def raw_prop_guarded_equality_superposition_proof(
