@@ -44365,17 +44365,17 @@ def raw_tptp_forward_subsumption_resolution_proof(
         if avatar_split_proof is not None:
             return avatar_split_proof
 
-    if not target_binders:
-        selected_literal_proof = raw_tptp_selected_literal_subsumption_resolution_proof(
-            target,
-            parsed,
-            parents,
-            variable_sorts,
-            replay_step,
-        )
-        if selected_literal_proof is not None:
-            return selected_literal_proof
+    selected_literal_proof = raw_tptp_selected_literal_subsumption_resolution_proof(
+        target,
+        parsed,
+        parents,
+        variable_sorts,
+        replay_step,
+    )
+    if selected_literal_proof is not None:
+        return selected_literal_proof
 
+    if not target_binders:
         resolver_search_proof = raw_tptp_forward_subsumption_resolver_search_proof(
             target,
             parsed,
