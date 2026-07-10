@@ -36593,6 +36593,176 @@ def raw_guarded_unit_quantified_clause_resolution_superposition_proof(
     return None
 
 
+def raw_guarded_quantified_instantiating_equality_superposition_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality: Expr,
+    equality_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_parts = raw_or_parts(source)
+    target_parts = raw_or_parts(target)
+    if source_parts is None or target_parts is None or proof_search_timed_out():
+        return None
+
+    source_quantified: Expr | None = None
+    source_guard: Expr | None = None
+    for candidate_quantified, candidate_guard in (source_parts, (source_parts[1], source_parts[0])):
+        if candidate_quantified.kind == "forall":
+            source_quantified = candidate_quantified
+            source_guard = candidate_guard
+            break
+
+    target_quantified: Expr | None = None
+    target_guard: Expr | None = None
+    target_quantified_index = -1
+    for index, (candidate_quantified, candidate_guard) in enumerate((target_parts, (target_parts[1], target_parts[0]))):
+        if candidate_quantified.kind == "forall":
+            target_quantified = candidate_quantified
+            target_guard = candidate_guard
+            target_quantified_index = index
+            break
+    if (
+        source_quantified is None
+        or source_guard is None
+        or target_quantified is None
+        or target_guard is None
+        or not expr_same_mod_alpha(source_guard, target_guard)
+    ):
+        return None
+
+    source_binders, source_body = collect_foralls(source_quantified)
+    target_binders, target_body = collect_foralls(target_quantified)
+    equality_binders, equality_body = collect_foralls(equality)
+    equality_sides = equality_like_sides(equality_body)
+    if (
+        not source_binders
+        or not target_binders
+        or equality_sides is None
+        or len(source_binders) > 5
+        or len(target_binders) > 5
+        or len(equality_binders) > 2
+    ):
+        return None
+
+    target_sort_by_name = {name: sort for name, sort in target_binders}
+    source_sort_by_name = {name: sort for name, sort in source_binders}
+    equality_sort_by_name = {name: sort for name, sort in equality_binders}
+    local_sorts = {
+        **variable_sorts,
+        **target_sort_by_name,
+        **source_sort_by_name,
+        **equality_sort_by_name,
+    }
+    candidate_exprs = (source_body, target_body, equality_body)
+
+    source_candidates: list[list[Expr]] = []
+    for source_name, source_sort in source_binders:
+        candidates: list[Expr] = [
+            Expr("var", value=target_name)
+            for target_name, target_sort in target_binders
+            if equivalent_sorts(source_sort, target_sort)
+        ]
+        for side in equality_sides:
+            for subterm in expr_subterms(side, limit=64):
+                subterm_sort = expr_sort(subterm, local_sorts)
+                if equivalent_sorts(source_sort, subterm_sort) and all(expr_key(subterm) != expr_key(existing) for existing in candidates):
+                    candidates.append(subterm)
+        for candidate in raw_candidate_terms_for_sort(candidate_exprs, source_sort, local_sorts):
+            if all(expr_key(candidate) != expr_key(existing) for existing in candidates):
+                candidates.append(candidate)
+        if not candidates:
+            return None
+        source_candidates.append(candidates[:10])
+
+    equality_candidates: list[list[Expr]] = []
+    for equality_name, equality_sort in equality_binders:
+        candidates = [
+            Expr("var", value=target_name)
+            for target_name, target_sort in target_binders
+            if equivalent_sorts(equality_sort, target_sort)
+        ]
+        for candidate in raw_candidate_terms_for_sort(candidate_exprs, equality_sort, local_sorts):
+            if all(expr_key(candidate) != expr_key(existing) for existing in candidates):
+                candidates.append(candidate)
+        if not candidates:
+            return None
+        equality_candidates.append(candidates[:8])
+
+    target_text = proof_arg_text(target_body)
+    target_literals = raw_clause_literals(target_body)
+    checked = 0
+    for source_values in itertools.product(*source_candidates):
+        if proof_search_timed_out():
+            return None
+        source_subst = {name: value for (name, _sort), value in zip(source_binders, source_values)}
+        source_instance = flatten_applications(substitute_expr(source_body, source_subst))
+        if len(raw_clause_literals(source_instance)) > 12:
+            continue
+        for equality_values in itertools.product(*equality_candidates) if equality_candidates else [()]:
+            equality_subst = {
+                name: value
+                for (name, _sort), value in zip(equality_binders, equality_values)
+            }
+            equality_instance = flatten_applications(substitute_expr(equality_body, equality_subst))
+            instantiated_sides = equality_like_sides(equality_instance)
+            if instantiated_sides is None:
+                continue
+            equality_instance_proof = equality_proof
+            for name, _sort in equality_binders:
+                equality_instance_proof = f"({proof_head(equality_instance_proof)} {proof_arg_text(equality_subst[name])})"
+            source_instance_proof = "HsourceQuantified"
+            for name, _sort in source_binders:
+                source_instance_proof = f"({proof_head(source_instance_proof)} {proof_arg_text(source_subst[name])})"
+            equality_sort = raw_equality_transport_sort(instantiated_sides[0], instantiated_sides[1], local_sorts)
+            rewrite_options = [
+                (instantiated_sides[0], instantiated_sides[1], equality_instance_proof),
+                (
+                    instantiated_sides[1],
+                    instantiated_sides[0],
+                    raw_eq_symmetry_proof(equality_instance_proof, instantiated_sides[0], equality_sort),
+                ),
+            ]
+            for old_side, new_side, oriented_equality_proof in rewrite_options:
+                for rewritten, rewritten_proof in raw_equality_rewrite_clause_steps(
+                    source_instance,
+                    source_instance_proof,
+                    old_side,
+                    new_side,
+                    oriented_equality_proof,
+                    equality_sort,
+                ):
+                    checked += 1
+                    if checked > 128:
+                        return None
+                    body_proof = raw_clause_subsumption_transform_proof(rewritten, target_body, rewritten_proof, deep_literals=True)
+                    if body_proof is None:
+                        body_proof = raw_clause_transform_proof(rewritten, target_body, rewritten_proof)
+                    if body_proof is None:
+                        body_proof = raw_deep_formula_transform_proof(rewritten, target_body, rewritten_proof, local_sorts)
+                    if body_proof is None:
+                        continue
+                    for name, sort in reversed(target_binders):
+                        body_proof = f"(fun {name} :{sort} => {body_proof})"
+                    quantified_intro = raw_or_intro_literal_at(target, target_quantified_index, body_proof)
+                    guard_intro = raw_literal_to_clause_proof(target_guard, target, "Hguard", raw_clause_literals(target), ())
+                    if quantified_intro is None or guard_intro is None:
+                        continue
+                    if expr_same_mod_alpha(source_parts[0], source_quantified):
+                        return (
+                            f"{proof_term_text(source_proof)} {proof_arg_text(target)} "
+                            f"(fun HsourceQuantified => {quantified_intro}) "
+                            f"(fun Hguard => {guard_intro})"
+                        )
+                    return (
+                        f"{proof_term_text(source_proof)} {proof_arg_text(target)} "
+                        f"(fun Hguard => {guard_intro}) "
+                        f"(fun HsourceQuantified => {quantified_intro})"
+                    )
+    return None
+
+
 def raw_tptp_superposition_proof(
     proposition: str,
     parents: list[str],
@@ -36688,6 +36858,26 @@ def raw_tptp_superposition_proof(
             if proof is not None:
                 return proof
             proof = raw_guarded_unit_quantified_clause_resolution_superposition_proof(
+                early_parent_exprs[1][0],
+                early_target_expr,
+                early_parent_exprs[1][1],
+                early_parent_exprs[0][0],
+                early_parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_guarded_quantified_instantiating_equality_superposition_proof(
+                early_parent_exprs[0][0],
+                early_target_expr,
+                early_parent_exprs[0][1],
+                early_parent_exprs[1][0],
+                early_parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_guarded_quantified_instantiating_equality_superposition_proof(
                 early_parent_exprs[1][0],
                 early_target_expr,
                 early_parent_exprs[1][1],
