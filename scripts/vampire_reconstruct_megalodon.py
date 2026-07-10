@@ -38392,6 +38392,154 @@ def raw_propositional_clause_entailment_proof(
             PROOF_SEARCH_STATE.flat_resolution_target = previous_target
 
 
+def raw_propositional_unit_propagation_proof(
+    target: Expr,
+    clauses: list[tuple[Expr, str]],
+) -> str | None:
+    if len(clauses) > 12 or any(len(raw_clause_literals(clause)) > 8 for clause, _proof in clauses):
+        return None
+    if any(collect_foralls(clause)[0] for clause, _proof in clauses):
+        return None
+    target_polarity = raw_literal_polarity(target)
+    if target_polarity is None:
+        return None
+    target_is_false = false_eliminator_expr(target)
+    target_positive, target_atom = target_polarity
+    target_key = expr_key(target_atom)
+    if target_is_false:
+        assumption_name = ""
+        initial_env: dict[tuple[str, bool], str] = {}
+    elif target_positive:
+        assumption_name = fresh_identifier("HnotTarget", expr_text(target))
+        initial_env = {(target_key, False): assumption_name}
+    else:
+        assumption_name = fresh_identifier("HtargetPositive", expr_text(target))
+        initial_env = {(target_key, True): assumption_name}
+
+    def literal_key(literal: Expr) -> tuple[str, bool] | None:
+        polarity = raw_literal_polarity(literal)
+        if polarity is None:
+            return None
+        positive, atom = polarity
+        return expr_key(atom), positive
+
+    def false_from_literal(literal: Expr, literal_proof: str, env: dict[tuple[str, bool], str]) -> str | None:
+        key = literal_key(literal)
+        if key is None:
+            return None
+        atom_key, positive = key
+        if positive:
+            negative = env.get((atom_key, False))
+            if negative is None:
+                return None
+            return f"({proof_head(negative)} {proof_term_text(literal_proof)})"
+        positive_proof = env.get((atom_key, True))
+        if positive_proof is None:
+            return None
+        return f"({proof_head(literal_proof)} {proof_term_text(positive_proof)})"
+
+    def clause_contradiction_proof(
+        clause: Expr,
+        clause_proof: str,
+        env: dict[tuple[str, bool], str],
+    ) -> str | None:
+        previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+        PROOF_SEARCH_STATE.flat_resolution_target = "False"
+
+        def handler(literal: Expr, literal_proof: str) -> str | None:
+            return false_from_literal(literal, literal_proof, env)
+
+        try:
+            return raw_clause_cases_with_handler(clause, clause_proof, handler, avoid_text="rat_unit_false")
+        finally:
+            if previous_target is None:
+                if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                    delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+            else:
+                PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+    def forced_literal_proof(
+        clause: Expr,
+        clause_proof: str,
+        forced: Expr,
+        env: dict[tuple[str, bool], str],
+    ) -> str | None:
+        previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+        PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(forced)
+
+        def handler(literal: Expr, literal_proof: str) -> str | None:
+            direct = raw_literal_direct_transform_proof(literal, forced, literal_proof, ())
+            if direct is not None:
+                return direct
+            false_proof = false_from_literal(literal, literal_proof, env)
+            if false_proof is None:
+                return None
+            return raw_false_to_expr_proof(false_proof, forced)
+
+        try:
+            return raw_clause_cases_with_handler(clause, clause_proof, handler, avoid_text="rat_unit_forced")
+        finally:
+            if previous_target is None:
+                if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                    delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+            else:
+                PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+    env = dict(initial_env)
+    for _round in range(32):
+        progressed = False
+        for clause, clause_proof in clauses:
+            if proof_search_timed_out():
+                return None
+            literals = raw_clause_literals(clause)
+            if not literals:
+                continue
+            remaining: list[Expr] = []
+            satisfied = False
+            for literal in literals:
+                key = literal_key(literal)
+                if key is None:
+                    remaining.append(literal)
+                    continue
+                atom_key, positive = key
+                if (atom_key, positive) in env:
+                    satisfied = True
+                    break
+                if (atom_key, not positive) in env:
+                    continue
+                remaining.append(literal)
+            if satisfied:
+                continue
+            if not remaining:
+                contradiction = clause_contradiction_proof(clause, clause_proof, env)
+                if contradiction is None:
+                    return None
+                if target_is_false:
+                    return contradiction
+                if target_positive:
+                    target_from_false = raw_false_to_expr_proof(contradiction, target)
+                    return (
+                        f"(xm {proof_arg_text(target)} {proof_arg_text(target)} "
+                        f"(fun Htarget => Htarget) "
+                        f"(fun {assumption_name} => {proof_term_text(target_from_false)}))"
+                    )
+                return f"(fun {assumption_name} :{proof_arg_text(target_atom)} => {contradiction})"
+            if len(remaining) != 1:
+                continue
+            forced = remaining[0]
+            forced_key = literal_key(forced)
+            if forced_key is None or forced_key in env:
+                continue
+            proof = forced_literal_proof(clause, clause_proof, forced, env)
+            if proof is None:
+                continue
+            env[forced_key] = proof
+            progressed = True
+        if not progressed:
+            return None
+    return None
+
+
 def raw_tptp_rat_proof(
     proposition: str,
     parents: list[str],
@@ -38418,6 +38566,32 @@ def raw_tptp_rat_proof(
             parent_exprs.append((parent, parent_expr, raw_tptp_claim_name(parent)))
     if len(parent_exprs) < 2:
         return None
+    if len(parent_exprs) == 2 and all(not collect_foralls(expr)[0] for _parent, expr, _proof in parent_exprs):
+        proof = raw_flat_clause_resolution_proof(
+            parent_exprs[0][1],
+            target,
+            parent_exprs[0][2],
+            parent_exprs[1][1],
+            parent_exprs[1][2],
+            avoid_text="rat",
+        )
+        if proof is None:
+            proof = raw_flat_clause_resolution_proof(
+                parent_exprs[1][1],
+                target,
+                parent_exprs[1][2],
+                parent_exprs[0][1],
+                parent_exprs[0][2],
+                avoid_text="rat",
+        )
+        if proof is not None:
+            return proof
+    unit_propagation = raw_propositional_unit_propagation_proof(
+        target,
+        [(expr, proof_name) for _parent, expr, proof_name in parent_exprs],
+    )
+    if unit_propagation is not None:
+        return unit_propagation
     propositional = raw_propositional_clause_entailment_proof(
         target,
         [(expr, proof_name) for _parent, expr, proof_name in parent_exprs],
@@ -39673,6 +39847,8 @@ def raw_tptp_replay_proof_has_escaped_bound_surface_variable(proposition: str, p
 
 
 def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: str) -> bool:
+    if rule == "rat" and re.search(r"\(\(\(([A-Za-z_][A-Za-z0-9_']*)\s+\1\)\)", proof):
+        return True
     if rule in {"definition_folding", "definition_unfolding"} and RAW_TPTP_NESTED_BAD_DEFINITION_CONTEXT_RE.search(proof):
         return True
     if rule not in {"definition_folding", "definition_unfolding"} and RAW_TPTP_BAD_DEFINITION_CONTEXT_RE.search(proof):
