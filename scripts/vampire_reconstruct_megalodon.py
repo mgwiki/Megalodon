@@ -1580,7 +1580,7 @@ def tptp_formula_to_megalodon_proposition(text: str, variable_sorts: dict[str, s
         if is_function_value(left_expr, left_sort) or is_function_value(right_expr, right_sort):
             return tptp_function_equality_proposition(left_expr, right_expr, left_sort, right_sort, negated=True)
         if left_sort in {None, "set"} and right_sort in {None, "set"}:
-            return f"vampire_eq_set {proof_arg_text(left_expr)} {proof_arg_text(right_expr)} -> vampire_false"
+            return f"{proof_arg_text(left_expr)} = {proof_arg_text(right_expr)} -> vampire_false"
         return None
 
     equality = split_top_level_equality(text)
@@ -1601,7 +1601,7 @@ def tptp_formula_to_megalodon_proposition(text: str, variable_sorts: dict[str, s
         if is_function_value(left_expr, left_sort) or is_function_value(right_expr, right_sort):
             return tptp_function_equality_proposition(left_expr, right_expr, left_sort, right_sort, negated=False)
         if left_sort in {None, "set"} and right_sort in {None, "set"}:
-            return f"vampire_eq_set {proof_arg_text(left_expr)} {proof_arg_text(right_expr)}"
+            return f"{proof_arg_text(left_expr)} = {proof_arg_text(right_expr)}"
         return None
 
     if text == "$true":
@@ -1626,12 +1626,22 @@ def strip_tptp_negation(text: str) -> str | None:
 
 def reconstruction_prelude_for(propositions: list[str]) -> list[str]:
     joined = "\n".join(propositions)
-    lines = [
-        "Definition vampire_eq_set : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y.",
-        "Definition vampire_eq_prop : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y.",
-        "Theorem vampire_eq_sym_set: forall x y:set, vampire_eq_set x y -> vampire_eq_set y x.",
-        "exact (fun x y H => H (fun z:set => vampire_eq_set z x) (fun Q Hq => Hq)).",
-        "Qed.",
+    needs_vampire_eq_set = "vampire_eq_set" in joined
+    needs_vampire_eq_prop = "vampire_eq_prop" in joined
+    lines = []
+    if needs_vampire_eq_set:
+        lines.extend(
+            [
+                "Definition vampire_eq_set : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y.",
+                "Theorem vampire_eq_sym_set: forall x y:set, vampire_eq_set x y -> vampire_eq_set y x.",
+                "exact (fun x y H => H (fun z:set => vampire_eq_set z x) (fun Q Hq => Hq)).",
+                "Qed.",
+            ]
+        )
+    if needs_vampire_eq_prop:
+        lines.append("Definition vampire_eq_prop : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y.")
+    lines.extend(
+        [
         "Theorem vampire_native_eq_sym_set: forall x y:set, x = y -> y = x.",
         "let x y.",
         "assume Hxy:x = y.",
@@ -1670,10 +1680,16 @@ def reconstruction_prelude_for(propositions: list[str]) -> list[str]:
         "assume HP:P x.",
         "exact (Hxy (fun zl zr => P zl) HP).",
         "Qed.",
-        "Theorem vampire_eq_transport_eq_set: forall a b c d:set, vampire_eq_set a b -> vampire_eq_set a c -> vampire_eq_set b d -> vampire_eq_set c d.",
-        "exact (fun a b c d Hab Hac Hbd => Hac (fun z:set => vampire_eq_set z d) ((vampire_eq_sym_set a b Hab) (fun z:set => vampire_eq_set z d) Hbd)).",
-        "Qed.",
-    ]
+        ]
+    )
+    if needs_vampire_eq_set:
+        lines.extend(
+            [
+                "Theorem vampire_eq_transport_eq_set: forall a b c d:set, vampire_eq_set a b -> vampire_eq_set a c -> vampire_eq_set b d -> vampire_eq_set c d.",
+                "exact (fun a b c d Hab Hac Hbd => Hac (fun z:set => vampire_eq_set z d) ((vampire_eq_sym_set a b Hab) (fun z:set => vampire_eq_set z d) Hbd)).",
+                "Qed.",
+            ]
+        )
     exists_sorts: dict[str, str] = {}
     for name in sorted(set(re.findall(r"\bvampire_exists_[A-Za-z0-9_']+\b", joined))):
         for proposition in propositions:
@@ -18658,6 +18674,7 @@ def check_megalodon_lines(
         if should_retry_pruned_claim_fill(output_lines):
             output_lines = fill_small_remaining_claim_admits(output_lines)
     output_lines = add_used_boolean_extensionality_helpers(output_lines)
+    output_lines = add_missing_basic_connective_definitions(output_lines)
     output_lines = annotate_remaining_admits(output_lines, proof_text)
     output_lines = annotate_source_links(output_lines, proof, proof_text, source)
     if header:
@@ -58795,7 +58812,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         lines = [replace_generated_identifier_tokens(line, local_identifier_renames) for line in lines]
     lines = reconcile_megalodon_declarations(use_ambient_basic_logic(add_problem_type_variables(lines, proof, text, problem, source)))
     lines = parenthesize_atomic_axiom_propositions(lines, variable_sorts)
-    return reconcile_megalodon_declarations(add_used_boolean_extensionality_helpers(lines))
+    lines = reconcile_megalodon_declarations(add_used_boolean_extensionality_helpers(lines))
+    return reconcile_megalodon_declarations(add_missing_basic_connective_definitions(lines))
 
 
 def write_raw_tptp_skeletons(
