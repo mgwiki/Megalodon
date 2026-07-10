@@ -32682,6 +32682,14 @@ def raw_tptp_forward_demodulation_proof(
     )
     if fallback_ok(proof):
         return proof
+    proof = raw_tptp_guarded_extra_binder_parent_equality_rewrite_proof(
+        proposition,
+        parents,
+        propositions_by_name,
+        variable_sorts,
+    )
+    if fallback_ok(proof):
+        return proof
     proof = raw_tptp_forward_subsumption_resolution_proof(proposition, parents, propositions_by_name)
     if fallback_ok(proof):
         return proof
@@ -37296,6 +37304,145 @@ def raw_tptp_guarded_parent_equality_rewrite_proof(
     return None
 
 
+def raw_tptp_guarded_extra_binder_parent_equality_rewrite_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parents) != 2:
+        return None
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    target_binders, target_body = collect_foralls(target)
+    target_parts = raw_or_parts(target_body)
+    if target_parts is None:
+        return None
+    target_left, target_guard = target_parts
+    target_left_binders, target_left_body = collect_foralls(target_left)
+    if not target_left_binders:
+        return None
+    parsed: list[tuple[Expr, str]] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+        if parent_expr is None:
+            return None
+        parsed.append((parent_expr, raw_tptp_claim_name(parent)))
+
+    for source_index, guard_index in ((0, 1), (1, 0)):
+        source, source_proof = parsed[source_index]
+        guard_source, guard_proof = parsed[guard_index]
+        guard_parts = raw_or_parts(collect_foralls(guard_source)[1])
+        if guard_parts is None:
+            continue
+        positive_guard: Expr | None = None
+        for positive_candidate, guard_candidate in (guard_parts, (guard_parts[1], guard_parts[0])):
+            if expr_same_mod_alpha(guard_candidate, target_guard):
+                positive_guard = positive_candidate
+                break
+        if positive_guard is None or equality_like_sides(positive_guard) is None:
+            continue
+        source_binders, source_body = collect_foralls(source)
+        if (
+            len(source_binders) <= len(target_left_binders)
+            or len(source_binders) > len(target_left_binders) + 2
+            or len(source_binders) > 6
+        ):
+            continue
+        if len(raw_clause_literals(source_body)) > 10 or len(raw_clause_literals(target_left_body)) > 10:
+            continue
+        local_sorts = {**variable_sorts}
+        subst: dict[str, Expr] = {}
+        ok = True
+        for (source_name, source_sort), (target_name, target_sort) in zip(source_binders, target_left_binders):
+            if not equivalent_sorts(source_sort, target_sort):
+                ok = False
+                break
+            subst[source_name] = Expr("var", value=target_name)
+            local_sorts[target_name] = target_sort
+        if not ok:
+            continue
+        local_sorts.update(dict(source_binders))
+
+        candidate_exprs = (source_body, target_left_body, positive_guard)
+        extra_candidate_lists: list[list[Expr]] = []
+        source_only_names = {name for name, _sort in source_binders} - set(subst)
+
+        for name, sort in source_binders[len(target_left_binders) :]:
+            candidates: list[Expr] = []
+            seen: set[str] = set()
+
+            def add_candidate(candidate: Expr) -> None:
+                if expr_variables(candidate) & source_only_names:
+                    return
+                if not equivalent_sorts(expr_sort(candidate, local_sorts), sort):
+                    return
+                key = expr_key(candidate)
+                if key in seen:
+                    return
+                seen.add(key)
+                candidates.append(candidate)
+
+            for candidate in raw_candidate_terms_for_sort(candidate_exprs, sort, local_sorts):
+                add_candidate(candidate)
+            inhabitant = raw_simple_inhabitant_for_sort(sort)
+            if inhabitant is not None:
+                add_candidate(inhabitant)
+            if not candidates:
+                ok = False
+                break
+            extra_candidate_lists.append(candidates[:10])
+        if not ok:
+            continue
+        product = 1
+        for candidates in extra_candidate_lists:
+            product *= len(candidates)
+            if product > 256:
+                ok = False
+                break
+        if not ok:
+            continue
+
+        for values in itertools.product(*extra_candidate_lists):
+            trial_subst = dict(subst)
+            for (name, _sort), value in zip(source_binders[len(target_left_binders) :], values):
+                trial_subst[name] = value
+            instantiated_source_body = flatten_applications(substitute_expr(source_body, trial_subst))
+            source_body_proof = source_proof
+            for name, _sort in source_binders:
+                source_body_proof = f"({proof_head(source_body_proof)} {proof_arg_text(trial_subst[name])})"
+            positive_proof = raw_equality_rewrite_expr_proof(
+                instantiated_source_body,
+                target_left_body,
+                source_body_proof,
+                positive_guard,
+                "Hpositive",
+                {**local_sorts, **dict(target_left_binders)},
+            )
+            if positive_proof is None:
+                positive_proof = raw_clause_transform_proof(instantiated_source_body, target_left_body, source_body_proof)
+            if positive_proof is None:
+                continue
+            for name, sort in reversed(target_left_binders):
+                positive_proof = f"(fun {name} :{sort} => {positive_proof})"
+            target_text = proof_arg_text(target_body)
+            left_branch = raw_or_left_intro(target_body, positive_proof)
+            right_branch = raw_or_right_intro(target_body, "Hguard")
+            if left_branch is None or right_branch is None:
+                continue
+            body_proof = (
+                f"({proof_head(guard_proof)} {target_text} "
+                f"(fun Hpositive => {proof_term_text(left_branch)}) "
+                f"(fun Hguard => {proof_term_text(right_branch)}))"
+            )
+            for name, sort in reversed(target_binders):
+                body_proof = f"(fun {name} :{sort} => {body_proof})"
+            return body_proof
+    return None
+
+
 def raw_tptp_fast_parent_transform_proof(
     proposition: str,
     parent: str,
@@ -39770,6 +39917,14 @@ def raw_tptp_superposition_proof(
     if proof is not None:
         return proof
     proof = raw_tptp_guarded_parent_equality_rewrite_proof(
+        proposition,
+        parents,
+        propositions_by_name,
+        variable_sorts,
+    )
+    if proof is not None:
+        return proof
+    proof = raw_tptp_guarded_extra_binder_parent_equality_rewrite_proof(
         proposition,
         parents,
         propositions_by_name,
