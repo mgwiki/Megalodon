@@ -45971,6 +45971,37 @@ def raw_find_skolem_application(
     return None
 
 
+def raw_infer_skolem_sort_from_application(
+    proposition: str,
+    symbol: str,
+    result_sort: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    expr = parse_expr(proposition)
+    if expr is None:
+        return None
+    binders, _body = collect_foralls(expr)
+    local_sorts = {**variable_sorts, **{name: binder_sort for name, binder_sort in binders}}
+
+    def visit(node: Expr) -> str | None:
+        head_args = raw_expr_application_head_args(node)
+        if head_args is not None:
+            head, args = head_args
+            if head == symbol:
+                arg_sorts = [expr_sort(arg, local_sorts) for arg in args]
+                if arg_sorts and all(arg_sort is not None for arg_sort in arg_sorts):
+                    return join_sort_arrows([*(arg_sort for arg_sort in arg_sorts if arg_sort is not None), result_sort])
+                if not arg_sorts:
+                    return result_sort
+        for arg in node.args:
+            found = visit(arg)
+            if found is not None:
+                return found
+        return None
+
+    return visit(expr)
+
+
 def raw_skolem_application_expr(symbol: str, binders: list[tuple[str, str]], sort: str) -> Expr | None:
     pieces = split_sort_arrows(sort)
     if not pieces or pieces[-1] != "set":
@@ -46086,6 +46117,346 @@ def raw_tptp_single_prop_skolem_intro_reconstruction(
     return (sort, definition_body), proof
 
 
+def raw_set_prop_skolem_definition_body_text(
+    predicate: Expr,
+    skolem_app: Expr,
+    binders: list[tuple[str, str]],
+    sort: str,
+) -> str | None:
+    pieces = split_sort_arrows(sort)
+    if len(pieces) < 2 or pieces[-1] != "prop" or pieces[-2] != "set":
+        return None
+    head_args = raw_expr_application_head_args(skolem_app)
+    if head_args is None:
+        return None
+    _head, args = head_args
+    if len(args) != len(pieces) - 1:
+        return None
+    binder_sorts = {name: binder_sort for name, binder_sort in binders}
+    binder_order = {name: index for index, (name, _sort) in enumerate(binders)}
+    prefix_binders: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for arg, expected_sort in zip(args[:-1], pieces[:-2]):
+        if arg.kind != "var" or arg.value is None:
+            return None
+        actual_sort = binder_sorts.get(arg.value)
+        if actual_sort != expected_sort or arg.value in seen:
+            return None
+        seen.add(arg.value)
+        prefix_binders.append((arg.value, actual_sort))
+    if expr_sort(args[-1], {**binder_sorts}) != "set":
+        return None
+    binder_names = set(binder_sorts)
+    if not (expr_variables(predicate) & binder_names) <= seen:
+        return None
+    prefix_binders.sort(key=lambda item: binder_order[item[0]])
+    arg_name = fresh_identifier("skx", expr_text(predicate), *(name for name, _sort in binders))
+    body = f"forall W:set->prop, {proof_arg_text(predicate)} W -> W {arg_name}"
+    body = f"fun {arg_name} :set => {body}"
+    for name, binder_sort in reversed(prefix_binders):
+        body = f"fun {name} :{binder_sort_text(binder_sort)} => {body}"
+    return body
+
+
+def raw_app_is_true_expr(expr: Expr) -> bool:
+    return expr.kind == "var" and expr.value in {"True", "vampire_true", "true"}
+
+
+def raw_eq_prop_application_term(expr: Expr, function_name: str) -> tuple[Expr, Expr] | None:
+    sides = app_args(expr, "vampire_eq_prop", 2)
+    if sides is None:
+        return None
+    left, right = sides
+    for prop_side, true_side in ((left, right), (right, left)):
+        if not raw_app_is_true_expr(true_side):
+            continue
+        head_args = raw_expr_application_head_args(prop_side)
+        if head_args is None:
+            continue
+        head, args = head_args
+        if head == function_name and len(args) == 1:
+            return args[0], prop_side
+    return None
+
+
+def raw_prop_from_eq_true_proof(equality: Expr, equality_proof: str, proposition: Expr) -> str | None:
+    sides = app_args(equality, "vampire_eq_prop", 2)
+    if sides is None:
+        return None
+    left, right = sides
+    if raw_app_is_true_expr(left) and expr_same_mod_alpha(right, proposition):
+        return f"({proof_head(equality_proof)} (fun Qprop :prop => Qprop) (fun P H => H))"
+    if expr_same_mod_alpha(left, proposition) and raw_app_is_true_expr(right):
+        symmetric = raw_eq_symmetry_proof(equality_proof, left, "prop")
+        return f"({proof_head(symmetric)} (fun Qprop :prop => Qprop) (fun P H => H))"
+    return None
+
+
+def raw_eq_true_from_prop_proof(equality: Expr, proposition_proof: str, proposition: Expr) -> str | None:
+    sides = app_args(equality, "vampire_eq_prop", 2)
+    if sides is None:
+        return None
+    left, right = sides
+    if raw_app_is_true_expr(left) and expr_same_mod_alpha(right, proposition):
+        return (
+            f"(vampire_prop_ext True {proof_arg_text(proposition)} "
+            f"(fun _ :True => {proof_term_text(proposition_proof)}) "
+            f"(fun _ :{proof_arg_text(proposition)} => (fun P H => H)))"
+        )
+    if expr_same_mod_alpha(left, proposition) and raw_app_is_true_expr(right):
+        return (
+            f"(vampire_prop_ext {proof_arg_text(proposition)} True "
+            f"(fun _ :{proof_arg_text(proposition)} => (fun P H => H)) "
+            f"(fun _ :True => {proof_term_text(proposition_proof)}))"
+        )
+    return None
+
+
+def raw_source_eq_component_proof_for_set_prop(
+    source_body: Expr,
+    source_proof: str,
+    function_name: str,
+    term: Expr,
+    proposition: Expr,
+) -> str | None:
+    for component in raw_conjunction_components(source_body):
+        matched = raw_eq_prop_application_term(component, function_name)
+        if matched is None:
+            continue
+        component_term, component_prop = matched
+        if not expr_same_mod_alpha(component_term, term):
+            continue
+        projection = vampire_and_projection_from_proof(source_proof, source_body, component)
+        if projection is None:
+            continue
+        proof = raw_prop_from_eq_true_proof(component, projection, component_prop)
+        if proof is not None:
+            return proof
+    return None
+
+
+def raw_source_negative_component_proof_for_set_prop(
+    source_body: Expr,
+    source_proof: str,
+    function_name: str,
+    term: Expr,
+    proposition_proof: str,
+    proposition: Expr,
+) -> str | None:
+    for component in raw_conjunction_components(source_body):
+        premises, conclusion = split_arrows(component)
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
+            continue
+        matched = raw_eq_prop_application_term(premises[0], function_name)
+        if matched is None:
+            continue
+        component_term, component_prop = matched
+        if not expr_same_mod_alpha(component_term, term):
+            continue
+        projection = vampire_and_projection_from_proof(source_proof, source_body, component)
+        if projection is None:
+            continue
+        equality = raw_eq_true_from_prop_proof(premises[0], proposition_proof, proposition)
+        if equality is None:
+            continue
+        return f"({proof_head(projection)} {proof_term_text(equality)})"
+    return None
+
+
+def raw_source_step_component_for_set_prop(source_body: Expr, function_name: str) -> tuple[Expr, str, Expr, Expr, Expr] | None:
+    for component in raw_conjunction_components(source_body):
+        binders, body = collect_foralls(component)
+        if len(binders) != 1 or binders[0][1] != "set":
+            continue
+        parts = raw_or_parts(body)
+        if parts is None:
+            continue
+        left, right = parts
+        premises, conclusion = split_arrows(left)
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
+            continue
+        left_matched = raw_eq_prop_application_term(premises[0], function_name)
+        right_matched = raw_eq_prop_application_term(right, function_name)
+        if left_matched is None or right_matched is None:
+            continue
+        binder_name = binders[0][0]
+        if not expr_same_mod_alpha(left_matched[0], Expr("var", value=binder_name)):
+            continue
+        return component, binder_name, premises[0], right, right_matched[1]
+    return None
+
+
+def raw_tptp_single_set_prop_skolem_intro_reconstruction(
+    proposition: str,
+    symbol: str,
+    sort: str,
+    replaced: str | None,
+    variable_sorts: dict[str, str],
+) -> tuple[tuple[str, str], str] | None:
+    if len(proposition) > 5000:
+        return None
+    expr = parse_expr(proposition)
+    if expr is None:
+        return None
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if len(premises) != 1:
+        return None
+    exists_args = app_args(premises[0], "vampire_exists_set_prop", 1)
+    if exists_args is None:
+        return None
+    predicate = exists_args[0]
+    if predicate.kind != "lambda" or predicate.value is None or predicate.sort != "(set->prop)" or not predicate.args:
+        return None
+    if replaced is not None and predicate.value != replaced:
+        return None
+    local_sorts = {**variable_sorts, **{name: binder_sort for name, binder_sort in binders}, symbol: sort}
+    skolem_app = raw_find_skolem_application(conclusion, symbol, sort, "prop", local_sorts)
+    if skolem_app is None:
+        return None
+    definition_body = raw_set_prop_skolem_definition_body_text(predicate, skolem_app, binders, sort)
+    if definition_body is None:
+        return None
+
+    witness_name = fresh_identifier("W", proposition, symbol)
+    witness = Expr("var", value=witness_name)
+    source_body = substitute_expr(predicate.args[0], {predicate.value: witness})
+    source_proof = "HWbody"
+
+    def skolem_application_element(app: Expr) -> tuple[Expr, Expr] | None:
+        head_args = raw_expr_application_head_args(app)
+        if head_args is None:
+            return None
+        head, args = head_args
+        if head != symbol or not args or sort_after_arguments(sort, len(args)) != "prop":
+            return None
+        return app, args[-1]
+
+    def skolem_prop_proof(term: Expr) -> str | None:
+        source_atom = Expr("app", args=(witness, term))
+        witness_body = proof_arg_text(predicate)
+        inner = raw_source_eq_component_proof_for_set_prop(
+            source_body,
+            source_proof,
+            witness_name,
+            term,
+            source_atom,
+        )
+        if inner is None:
+            return None
+        return f"(fun {witness_name} :set->prop => fun {source_proof} :{witness_body} {witness_name} => {inner})"
+
+    def component_proof(component: Expr) -> str | None:
+        matched = raw_eq_prop_application_term(component, symbol)
+        if matched is not None:
+            _term, skolem_prop = matched
+            app_element = skolem_application_element(skolem_prop)
+            if app_element is None:
+                return None
+            _app, term = app_element
+            proof = skolem_prop_proof(term)
+            if proof is None:
+                return None
+            return raw_eq_true_from_prop_proof(component, proof, skolem_prop)
+
+        component_binders, component_body = collect_foralls(component)
+        if len(component_binders) == 1 and component_binders[0][1] == "set":
+            target_parts = raw_or_parts(component_body)
+            source_step = raw_source_step_component_for_set_prop(source_body, witness_name)
+            if target_parts is not None and source_step is not None:
+                left, right = target_parts
+                left_premises, left_conclusion = split_arrows(left)
+                right_matched = raw_eq_prop_application_term(right, symbol)
+                if len(left_premises) == 1 and false_eliminator_expr(left_conclusion) and right_matched is not None:
+                    binder_name = component_binders[0][0]
+                    target_var = Expr("var", value=binder_name)
+                    left_matched = raw_eq_prop_application_term(left_premises[0], symbol)
+                    if left_matched is None:
+                        return None
+                    left_app = skolem_application_element(left_matched[1])
+                    right_app = skolem_application_element(right_matched[1])
+                    if left_app is None or right_app is None or not expr_same_mod_alpha(left_app[1], target_var):
+                        return None
+                    source_component, source_binder, _source_left, source_right, source_right_prop = source_step
+                    source_projection = vampire_and_projection_from_proof(source_proof, source_body, source_component)
+                    if source_projection is None:
+                        return None
+                    source_right_at_target = substitute_expr(source_right, {source_binder: target_var})
+                    source_right_prop_at_target = substitute_expr(source_right_prop, {source_binder: target_var})
+                    target_left_prop = left_matched[1]
+                    target_right_prop = right_matched[1]
+                    target_left_from_eq = raw_prop_from_eq_true_proof(left_premises[0], "HtargetEq", target_left_prop)
+                    if target_left_from_eq is None:
+                        return None
+                    source_left_prop = Expr("app", args=(witness, target_var))
+                    source_left_eq = raw_eq_true_from_prop_proof(
+                        substitute_expr(_source_left, {source_binder: target_var}),
+                        f"(HtargetLeft {witness_name} {source_proof})",
+                        source_left_prop,
+                    )
+                    if source_left_eq is None:
+                        return None
+                    source_right_from_eq = raw_prop_from_eq_true_proof(
+                        source_right_at_target,
+                        "HsourceRightEq",
+                        source_right_prop_at_target,
+                    )
+                    if source_right_from_eq is None:
+                        return None
+                    target_right_proof = (
+                        f"(fun {witness_name} :set->prop => fun {source_proof} :{proof_arg_text(predicate)} {witness_name} => "
+                        f"({proof_head(source_projection)} {proof_arg_text(target_var)} "
+                        f"{proof_arg_text(source_right_prop_at_target)} "
+                        f"(fun HsourceNotLeft => ((FalseE (HsourceNotLeft {proof_term_text(source_left_eq)})) {proof_arg_text(source_right_prop_at_target)})) "
+                        f"(fun HsourceRightEq => {source_right_from_eq})))"
+                    )
+                    target_right_eq = raw_eq_true_from_prop_proof(right, target_right_proof, target_right_prop)
+                    if target_right_eq is None:
+                        return None
+                    left_or = f"(fun HtargetEq :{proof_arg_text(left_premises[0])} => HnotTargetLeft {proof_term_text(target_left_from_eq)})"
+                    return (
+                        f"(fun {binder_name} :set => "
+                        f"(xm {proof_arg_text(target_left_prop)} {proof_arg_text(component_body)} "
+                        f"(fun HtargetLeft => fun P Hleft Hright => Hright {proof_term_text(target_right_eq)}) "
+                        f"(fun HnotTargetLeft => fun P Hleft Hright => Hleft {proof_term_text(left_or)})))"
+                    )
+
+        target_premises, target_conclusion = split_arrows(component)
+        if len(target_premises) == 1 and false_eliminator_expr(target_conclusion):
+            matched_premise = raw_eq_prop_application_term(target_premises[0], symbol)
+            if matched_premise is None:
+                return None
+            app_element = skolem_application_element(matched_premise[1])
+            if app_element is None:
+                return None
+            _app, term = app_element
+            target_prop_from_eq = raw_prop_from_eq_true_proof(target_premises[0], "HtargetEq", matched_premise[1])
+            if target_prop_from_eq is None:
+                return None
+            source_atom = Expr("app", args=(witness, term))
+            source_atom_proof = f"({target_prop_from_eq} {witness_name} {source_proof})"
+            contradiction = raw_source_negative_component_proof_for_set_prop(
+                source_body,
+                source_proof,
+                witness_name,
+                term,
+                source_atom_proof,
+                source_atom,
+            )
+            if contradiction is None:
+                return None
+            return f"(fun HtargetEq :{proof_arg_text(target_premises[0])} => Hexists False (fun {witness_name} :set->prop => fun {source_proof} :{proof_arg_text(predicate)} {witness_name} => {contradiction}))"
+        return None
+
+    proof_body = raw_build_conjunction_from_component_proofs(conclusion, component_proof)
+    if proof_body is None:
+        return None
+    proof = f"(fun Hexists => {proof_body})"
+    for name, binder_sort in reversed(binders):
+        proof = f"(fun {name} :{binder_sort_text(binder_sort)} => {proof})"
+    return (sort, definition_body), proof
+
+
 def raw_tptp_single_skolem_intro_epsilon_reconstruction(
     proposition: str,
     symbol: str,
@@ -46170,7 +46541,12 @@ def raw_tptp_skolem_epsilon_reconstructions(
                     if parent_step is None or parent_step.rule != "skolem symbol introduction":
                         continue
                     for replaced, symbol in all_introduced:
-                        sort = variable_sorts.get(symbol)
+                        sort = variable_sorts.get(symbol) or raw_infer_skolem_sort_from_application(
+                            parent_step.proposition,
+                            symbol,
+                            "set",
+                            variable_sorts,
+                        )
                         if sort is None:
                             continue
                         reconstructed = raw_tptp_single_skolem_intro_epsilon_reconstruction(
@@ -46187,10 +46563,37 @@ def raw_tptp_skolem_epsilon_reconstructions(
                         intro_proofs[raw_tptp_claim_name(parent)] = proof
                         break
                     for replaced, symbol in all_introduced:
-                        sort = variable_sorts.get(symbol)
+                        sort = variable_sorts.get(symbol) or raw_infer_skolem_sort_from_application(
+                            parent_step.proposition,
+                            symbol,
+                            "prop",
+                            variable_sorts,
+                        )
                         if sort is None:
                             continue
                         reconstructed = raw_tptp_single_prop_skolem_intro_reconstruction(
+                            parent_step.proposition,
+                            symbol,
+                            sort,
+                            replaced,
+                            variable_sorts,
+                        )
+                        if reconstructed is None:
+                            continue
+                        definition, proof = reconstructed
+                        definitions.setdefault(symbol, definition)
+                        intro_proofs[raw_tptp_claim_name(parent)] = proof
+                        break
+                    for replaced, symbol in all_introduced:
+                        sort = variable_sorts.get(symbol) or raw_infer_skolem_sort_from_application(
+                            parent_step.proposition,
+                            symbol,
+                            "prop",
+                            variable_sorts,
+                        )
+                        if sort is None:
+                            continue
+                        reconstructed = raw_tptp_single_set_prop_skolem_intro_reconstruction(
                             parent_step.proposition,
                             symbol,
                             sort,
@@ -54297,6 +54700,9 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         lines.append("exact (fun P Hexists => Hexists (P (Eps_i P)) (fun X HX => Eps_i_ax P X HX)).")
         lines.append("Qed.")
     if any(split_sort_arrows(sort)[-1:] == ("prop",) for sort, _body in skolem_epsilon_definitions.values()):
+        if "vampire_exists_prop" not in declared_names:
+            lines.append(vampire_exists_definition_for_sort("prop", "vampire_exists_prop"))
+            declared_names.add("vampire_exists_prop")
         lines.append(
             "Theorem vampire_exists_prop_choice: forall P:prop->prop, vampire_exists_prop P -> P (P True)."
         )
