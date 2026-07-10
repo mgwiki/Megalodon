@@ -40220,6 +40220,81 @@ def raw_tptp_explosive_implication_ennf_proof(
     return result
 
 
+def raw_implication_to_ennf_or_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 16 or proof_search_timed_out():
+        return None
+    if expr_same_mod_alpha(source, target):
+        return source_proof
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort and source.value and target.value:
+        binder = target.value
+        source_body = source.args[0]
+        if source.value != binder:
+            source_body = rename_expr_variables(source_body, {source.value: binder})
+        inner = raw_implication_to_ennf_or_proof(
+            source_body,
+            target.args[0],
+            f"({proof_head(source_proof)} {binder})",
+            {**variable_sorts, binder: target.sort},
+            depth + 1,
+        )
+        if inner is None:
+            return None
+        return f"(fun {binder} :{target.sort} => {inner})"
+
+    premises, conclusion = split_arrows(source)
+    if not premises:
+        proof = raw_deep_formula_transform_proof(source, target, source_proof, variable_sorts)
+        if proof is not None:
+            return proof
+        proof = raw_clause_transform_proof(source, target, source_proof)
+        if proof is not None:
+            return proof
+        return raw_boolean_tautology_proof(target, variable_sorts)
+
+    premise = premises[0]
+    remaining_source = make_arrow_expr(premises[1:], conclusion)
+    target_parts = raw_or_parts(target)
+    if target_parts is None:
+        return None
+    negated_premise = raw_negation_expr(premise)
+    if expr_same_mod_alpha(target_parts[0], negated_premise):
+        negative_index = 0
+        conclusion_target = target_parts[1]
+    elif expr_same_mod_alpha(target_parts[1], negated_premise):
+        negative_index = 1
+        conclusion_target = target_parts[0]
+    else:
+        return None
+
+    premise_name = fresh_identifier("Hprem", expr_text(premise), expr_text(target), source_proof)
+    not_premise_name = fresh_identifier("HnotPrem", expr_text(premise), expr_text(target), premise_name)
+    conclusion_proof = raw_implication_to_ennf_or_proof(
+        remaining_source,
+        conclusion_target,
+        f"({proof_head(source_proof)} {premise_name})",
+        variable_sorts,
+        depth + 1,
+    )
+    if conclusion_proof is None:
+        return None
+    conclusion_intro = raw_or_intro_literal_at(target, 1 - negative_index, conclusion_proof)
+    negative_intro = raw_or_intro_literal_at(target, negative_index, not_premise_name)
+    if conclusion_intro is None or negative_intro is None:
+        return None
+    target_text = proof_arg_text(target)
+    return (
+        f"(xm {proof_arg_text(premise)} {target_text} "
+        f"(fun {premise_name} => {proof_term_text(conclusion_intro)}) "
+        f"(fun {not_premise_name} => {proof_term_text(negative_intro)}))"
+    )
+
+
 def raw_tptp_peirce_implication_ennf_proof(
     proposition: str,
     parents: list[str],
@@ -40275,7 +40350,8 @@ def raw_tptp_peirce_implication_ennf_proof(
     local_sorts = {**variable_sorts, target_name: target_sort}
     source_proof = source_proof_override or raw_tptp_claim_name(parents[0])
     parent_at_target = f"({proof_head(source_proof)} {target_name})"
-    not_target_name = fresh_identifier("HnotTarget", expr_text(source), expr_text(target))
+    target_proof_name = fresh_identifier("Htarget", expr_text(source), expr_text(target), source_proof)
+    not_target_name = fresh_identifier("HnotTarget", expr_text(source), expr_text(target), source_proof, target_proof_name)
 
     def source_premise_proof(premise_index: int, premise: Expr) -> str:
         premise_names = [
@@ -40309,6 +40385,21 @@ def raw_tptp_peirce_implication_ennf_proof(
             if transformed is None:
                 transformed = raw_clause_transform_proof(premise, component, premise_proof)
             if transformed is None:
+                transformed = raw_tptp_peirce_implication_ennf_proof(
+                    expr_text(component),
+                    ["source"],
+                    {"source": expr_text(premise)},
+                    local_sorts,
+                    source_proof_override=premise_proof,
+                )
+            if transformed is None:
+                transformed = raw_implication_to_ennf_or_proof(
+                    premise,
+                    component,
+                    premise_proof,
+                    local_sorts,
+                )
+            if transformed is None:
                 continue
             matched = (premise_index, transformed)
             break
@@ -40329,13 +40420,17 @@ def raw_tptp_peirce_implication_ennf_proof(
     right_branch = raw_build_conjunction_from_component_proofs(conjunction_target, component_proof)
     if right_branch is None:
         return None
-    positive_intro = raw_or_left_intro(target_body, "Htarget") if positive_on_left else raw_or_right_intro(target_body, "Htarget")
+    positive_intro = (
+        raw_or_left_intro(target_body, target_proof_name)
+        if positive_on_left
+        else raw_or_right_intro(target_body, target_proof_name)
+    )
     negative_intro = raw_or_right_intro(target_body, right_branch) if positive_on_left else raw_or_left_intro(target_body, right_branch)
     if positive_intro is None or negative_intro is None:
         return None
     proof = (
         f"(xm {proof_arg_text(target_var)} {proof_arg_text(target_body)} "
-        f"(fun Htarget => {proof_term_text(positive_intro)}) "
+        f"(fun {target_proof_name} => {proof_term_text(positive_intro)}) "
         f"(fun {not_target_name} => {proof_term_text(negative_intro)}))"
     )
     for name, sort in reversed(target_binders):
@@ -40515,6 +40610,8 @@ def raw_trusted_predicate_definition_parts(expr: Expr) -> tuple[list[tuple[str, 
         if len(premises) != 1 or not false_eliminator_expr(conclusion):
             continue
         split = premises[0]
+        if split.kind == "var":
+            return list(binders), split, component
         if split.kind != "app" or not split.args or split.args[0].kind != "var":
             continue
         return list(binders), split, component
@@ -43918,6 +44015,14 @@ def raw_tptp_replay_proof(
         if proof is not None:
             return proof
     proof = raw_tptp_parent_complement_false_proof(proposition, parents, propositions_by_name, variable_sorts)
+    if proof is not None:
+        return proof
+    proof = raw_tptp_parent_negated_tautology_exfalso_proof(
+        proposition,
+        parents,
+        propositions_by_name,
+        variable_sorts,
+    )
     if proof is not None:
         return proof
     if len(parents) == 1:
