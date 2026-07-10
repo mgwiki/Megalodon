@@ -52864,7 +52864,7 @@ def raw_tptp_replay_proof(
     if rule == "avatar_split_clause":
         previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
         if previous_deadline is not None:
-            PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 1.0)
+            PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 4.0)
         try:
             return raw_tptp_avatar_split_clause_proof(proposition, parents, propositions_by_name)
         finally:
