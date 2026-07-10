@@ -173,6 +173,12 @@ def raw_tptp_replay_payload_size_ok(
         and any(kind == "two_literal_rewrite" for kind, _fields in replay_step.extras)
     ):
         return size <= RAW_TPTP_EXPORTED_CNF_CHAR_LIMIT
+    if (
+        rule_key == "forward_demodulation"
+        and replay_step is not None
+        and any(kind == "rewrite" for kind, _fields in replay_step.extras)
+    ):
+        return size <= RAW_TPTP_EXPORTED_CNF_CHAR_LIMIT
     return False
 
 
@@ -31700,6 +31706,127 @@ def raw_guarded_equality_composition_clause_proof(
     return None
 
 
+def raw_guarded_multi_literal_equality_composition_clause_proof(
+    target: Expr,
+    parents: tuple[tuple[Expr, str], tuple[Expr, str]],
+    variable_sorts: dict[str, str],
+    replay_step: MegalodonReplayStep | None,
+) -> str | None:
+    target_binders, target_body = collect_foralls(target)
+    if target_binders:
+        return None
+    target_literals = raw_clause_literals(target_body)
+    if len(target_literals) < 3 or len(target_literals) > 16:
+        return None
+    target_equalities = [
+        (index, literal)
+        for index, literal in enumerate(target_literals)
+        if equality_like_sides(literal) is not None
+    ]
+    if not target_equalities:
+        return None
+
+    rule_lhs: Expr | None = None
+    redex: Expr | None = None
+    local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
+    for fields in megalodon_replay_extra_fields(replay_step, "rewrite"):
+        rule_lhs = raw_tptp_replay_extra_expr(fields, "rule_lhs", local_sorts)
+        redex = raw_tptp_replay_extra_expr(fields, "redex", local_sorts)
+        if rule_lhs is not None and redex is not None:
+            break
+
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+    try:
+        for first_index, second_index in ((0, 1), (1, 0)):
+            first, first_proof = parents[first_index]
+            second, second_proof = parents[second_index]
+            first_options = raw_clause_options_with_exported_match(
+                first,
+                first_proof,
+                target_body,
+                second,
+                rule_lhs,
+                redex,
+            )
+            for first_clause, first_clause_proof in first_options:
+                if len(raw_clause_literals(first_clause)) > 16:
+                    continue
+                second_options = raw_clause_options_with_exported_match(
+                    second,
+                    second_proof,
+                    target_body,
+                    first_clause,
+                    rule_lhs,
+                    redex,
+                )
+                for second_clause, second_clause_proof in second_options:
+                    if len(raw_clause_literals(second_clause)) > 16:
+                        continue
+
+                    def first_handler(first_literal: Expr, first_literal_proof: str) -> str | None:
+                        direct = raw_literal_to_clause_proof(first_literal, target_body, first_literal_proof, target_literals, ())
+                        if direct is not None:
+                            return direct
+                        if equality_like_sides(first_literal) is None:
+                            return None
+
+                        def second_handler(second_literal: Expr, second_literal_proof: str) -> str | None:
+                            direct_second = raw_literal_to_clause_proof(
+                                second_literal,
+                                target_body,
+                                second_literal_proof,
+                                target_literals,
+                                (),
+                            )
+                            if direct_second is not None:
+                                return direct_second
+                            if equality_like_sides(second_literal) is None:
+                                return None
+                            for target_index, target_equality in target_equalities:
+                                composition = raw_equality_composition_proof(
+                                    first_literal,
+                                    first_literal_proof,
+                                    second_literal,
+                                    second_literal_proof,
+                                    target_equality,
+                                    local_sorts,
+                                )
+                                if composition is None:
+                                    composition = raw_equality_composition_proof(
+                                        second_literal,
+                                        second_literal_proof,
+                                        first_literal,
+                                        first_literal_proof,
+                                        target_equality,
+                                        local_sorts,
+                                    )
+                                if composition is None:
+                                    continue
+                                introduced = raw_or_intro_literal_at(target_body, target_index, composition)
+                                if introduced is not None:
+                                    return introduced
+                            return None
+
+                        return raw_clause_cases_with_handler(
+                            second_clause,
+                            second_clause_proof,
+                            second_handler,
+                            avoid_text=first_literal_proof,
+                        )
+
+                    proof = raw_clause_cases_with_handler(first_clause, first_clause_proof, first_handler)
+                    if proof is not None:
+                        return proof
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+    return None
+
+
 def raw_tptp_forward_demodulation_proof(
     proposition: str,
     parents: list[str],
@@ -31765,6 +31892,14 @@ def raw_tptp_forward_demodulation_proof(
         second_name,
         first,
         first_name,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_guarded_multi_literal_equality_composition_clause_proof(
+        target,
+        ((first, first_name), (second, second_name)),
+        variable_sorts,
+        replay_step,
     )
     if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
         return proof
