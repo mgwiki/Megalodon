@@ -41013,6 +41013,66 @@ def raw_tptp_reflexive_equality_resolution_proof(
     return None
 
 
+def raw_tptp_guarded_prop_inconsistency_resolution_proof(
+    parent_body: Expr,
+    target_body: Expr,
+    parent_proof: str,
+) -> str | None:
+    parent_parts = raw_or_parts(parent_body)
+    target_parts = raw_or_parts(target_body)
+    if parent_parts is None or target_parts is None:
+        return None
+
+    def inconsistent_forall_prop(expr: Expr) -> tuple[str, str] | None:
+        binders, body = collect_foralls(expr)
+        if len(binders) != 1 or binders[0][1] != "prop":
+            return None
+        premises, conclusion = split_arrows(body)
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
+            return None
+        if premises[0].kind != "var" or premises[0].value != binders[0][0]:
+            return None
+        return binders[0]
+
+    target_literals = raw_clause_literals(target_body)
+    for quantified_index, guard_index in ((0, 1), (1, 0)):
+        quantified = parent_parts[quantified_index]
+        guard = parent_parts[guard_index]
+        binder = inconsistent_forall_prop(quantified)
+        if binder is None:
+            continue
+        target_false_index = None
+        target_guard_index = None
+        for index, literal in enumerate(target_literals):
+            if false_eliminator_expr(literal):
+                target_false_index = index
+            if expr_same_mod_alpha(literal, guard):
+                target_guard_index = index
+        if target_false_index is None or target_guard_index is None:
+            continue
+        guard_intro = raw_or_intro_literal_at(target_body, target_guard_index, "Hguard")
+        forall_proof_name = fresh_identifier("HforallPropFalse", expr_text(parent_body), expr_text(target_body))
+        false_intro = raw_or_intro_literal_at(
+            target_body,
+            target_false_index,
+            f"(({forall_proof_name} vampire_true) (fun P :prop => fun H :P => H))",
+        )
+        if guard_intro is None or false_intro is None:
+            continue
+        if quantified_index == 0:
+            return (
+                f"{proof_term_text(parent_proof)} {proof_arg_text(target_body)} "
+                f"(fun {forall_proof_name} => {false_intro}) "
+                f"(fun Hguard => {guard_intro})"
+            )
+        return (
+            f"{proof_term_text(parent_proof)} {proof_arg_text(target_body)} "
+            f"(fun Hguard => {guard_intro}) "
+            f"(fun {forall_proof_name} => {false_intro})"
+        )
+    return None
+
+
 def raw_tptp_exported_equality_resolution_instantiations(
     parent_body: Expr,
     parent_binders: list[tuple[str, str]],
@@ -41068,6 +41128,13 @@ def raw_tptp_equality_resolution_proof(
     parent_binders, parent_body = collect_foralls(parent)
     target_binders, target_body = collect_foralls(target)
     parent_proof = raw_tptp_claim_name(parents[0])
+    proof = raw_tptp_guarded_prop_inconsistency_resolution_proof(
+        parent_body,
+        target_body,
+        parent_proof,
+    )
+    if proof is not None:
+        return proof
     proof = raw_tptp_reflexive_equality_resolution_proof(
         parent_binders,
         parent_body,
