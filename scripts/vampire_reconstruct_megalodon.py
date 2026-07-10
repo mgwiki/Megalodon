@@ -2076,7 +2076,7 @@ def add_recovered_input_equalities(lines: list[str], proof_text: str | None) -> 
         if proof is None:
             proof = raw_local_definition_reflexivity_proof_for_proposition(proposition, local_definitions)
         if proof is None:
-            target.append(f"Axiom {name}:{proposition}.")
+            target.append(f"Axiom {name}: {proposition}.")
             return
         target.append(f"Theorem {name}: {proposition}.")
         target.append(f"exact {proof}.")
@@ -2199,7 +2199,7 @@ def add_recovered_input_axioms(lines: list[str], proof_text: str | None) -> list
                     "Definition vampire_eq_prop : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y."
                 )
             for name, proposition in additions:
-                result.append(f"Axiom {name}:{proposition}.")
+                result.append(f"Axiom {name}: {proposition}.")
             inserted = True
         result.append(line)
     if not inserted:
@@ -2208,7 +2208,7 @@ def add_recovered_input_axioms(lines: list[str], proof_text: str | None) -> list
         if needs_prop_equality and not has_prop_equality:
             result.append("Definition vampire_eq_prop : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y.")
         for name, proposition in additions:
-            result.append(f"Axiom {name}:{proposition}.")
+            result.append(f"Axiom {name}: {proposition}.")
     return result
 
 
@@ -3600,7 +3600,7 @@ def add_problem_predicate_eliminator_axioms(lines: list[str], proof: Path | None
                     suffix += 1
                     axiom_name = f"{name}_{suffix}"
                 existing_names.add(axiom_name)
-                result.append(f"Axiom {axiom_name}:{proposition}.")
+                result.append(f"Axiom {axiom_name}: {proposition}.")
             inserted = True
         result.append(line)
     if not inserted:
@@ -3611,7 +3611,7 @@ def add_problem_predicate_eliminator_axioms(lines: list[str], proof: Path | None
                 suffix += 1
                 axiom_name = f"{name}_{suffix}"
             existing_names.add(axiom_name)
-            result.append(f"Axiom {axiom_name}:{proposition}.")
+            result.append(f"Axiom {axiom_name}: {proposition}.")
     return result
 
 
@@ -7500,7 +7500,7 @@ def parenthesize_atomic_axiom_propositions(
             expr = parse_expr(stripped)
             if expr is None:
                 if prefix == "Axiom " and not (stripped.startswith("(") and stripped.endswith(")")):
-                    result.append(f"Axiom {name}:({stripped}).")
+                    result.append(f"Axiom {name}: ({stripped}).")
                 else:
                     result.append(line)
                 rewritten = True
@@ -7512,7 +7512,7 @@ def parenthesize_atomic_axiom_propositions(
                 break
             if prefix == "Axiom " and expr.kind == "app" and len(expr.args) >= 3:
                 rendered = f"({rendered})"
-            result.append(f"{prefix}{name}:{rendered}.")
+            result.append(f"{prefix}{name}: {rendered}.")
             rewritten = True
             break
         if not rewritten:
@@ -58181,11 +58181,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if equality_proposition is not None:
             equality_proof = raw_tptp_predicate_definition_equality_proof(name, definition)
             if equality_proof is not None:
-                lines.append(f"Theorem {raw_tptp_claim_name(definition.proof)}:{equality_proposition}.")
+                lines.append(f"Theorem {raw_tptp_claim_name(definition.proof)}: {equality_proposition}.")
                 lines.append(f"exact {equality_proof}.")
                 lines.append("Qed.")
             else:
-                lines.append(f"Axiom {raw_tptp_claim_name(definition.proof)}:{equality_proposition}.")
+                lines.append(f"Axiom {raw_tptp_claim_name(definition.proof)}: {equality_proposition}.")
     if any(
         "Eps_i" in body or "vampire_exists_set " in body
         for _sort, body in skolem_epsilon_definitions.values()
@@ -58324,7 +58324,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             lines.append(f"exact {proof_argument_text(source_fact_proof)}.")
             lines.append("Qed.")
         else:
-            lines.append(f"Axiom {claim_name}:{proposition}.")
+            lines.append(f"Axiom {claim_name}: {proposition}.")
             if rule == "skolem_symbol_introduction" or standard_tptp_proof:
                 local_alias = f"{claim_name}_local"
                 if claim_name not in axiom_claim_instantiations:
@@ -58339,17 +58339,17 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 if definition is not None:
                     binders, split, component = definition
                     lines.append(
-                        f"Axiom {claim_name}_split_to_component:{raw_forall_wrapped_implication(binders, split, component)}."
+                        f"Axiom {claim_name}_split_to_component: {raw_forall_wrapped_implication(binders, split, component)}."
                     )
                     lines.append(
-                        f"Axiom {claim_name}_component_to_split:{raw_forall_wrapped_implication(binders, component, split)}."
+                        f"Axiom {claim_name}_component_to_split: {raw_forall_wrapped_implication(binders, component, split)}."
                     )
         avatar_definition = raw_tptp_avatar_definition_parts(proposition)
         if avatar_definition is not None:
             split_name, component = avatar_definition
             component_text = proof_arg_text(component)
-            lines.append(f"Axiom {claim_name}_split_to_component:{split_name} -> {component_text}.")
-            lines.append(f"Axiom {claim_name}_component_to_split:{component_text} -> {split_name}.")
+            lines.append(f"Axiom {claim_name}_split_to_component: {split_name} -> {component_text}.")
+            lines.append(f"Axiom {claim_name}_component_to_split: {component_text} -> {split_name}.")
         remember_raw_proposition(proposition, claim_name)
 
     theorem_name = "vampire_raw_tptp_reconstruction"
