@@ -37435,6 +37435,16 @@ def raw_tptp_superposition_proof(
     )
     if proof is not None:
         return proof
+    if has_superposition_replay:
+        proof = raw_tptp_exported_two_literal_resolution_proof(
+            proposition,
+            parents,
+            propositions_by_name,
+            variable_sorts,
+            replay_step,
+        )
+        if proof is not None:
+            return proof
     if len(parents) == 2:
         early_parent_exprs: list[tuple[Expr, str]] = []
         for parent in parents:
@@ -41350,15 +41360,21 @@ def raw_tptp_selected_literal_subsumption_resolution_proof(
     def open_parent(expr: Expr, proof: str, use_substitution: bool) -> tuple[Expr, str] | None:
         opened = expr
         opened_proof = proof
+        prefix_binders: list[tuple[str, str, str]] = []
         for target_name, target_sort in target_binders:
-            if opened.kind == "forall" and opened.sort == target_sort and opened.value is not None:
-                replacement = resolved_replacement(opened.value, use_substitution)
+            if opened.kind != "forall" or opened.sort != target_sort or opened.value is None:
+                break
+            prefix_binders.append((opened.value, opened.sort, target_name))
+            opened = opened.args[0]
+        if prefix_binders:
+            prefix_subst: dict[str, Expr] = {}
+            for source_name, _source_sort, target_name in prefix_binders:
+                replacement = resolved_replacement(source_name, use_substitution)
                 if replacement is None:
-                    opened = rename_expr_variables(opened.args[0], {opened.value: target_name})
-                    opened_proof = f"({proof_head(opened_proof)} {target_name})"
-                else:
-                    opened = substitute_expr(opened.args[0], {opened.value: replacement})
-                    opened_proof = f"({proof_head(opened_proof)} {proof_arg_text(replacement)})"
+                    replacement = Expr("var", value=target_name)
+                prefix_subst[source_name] = replacement
+                opened_proof = f"({proof_head(opened_proof)} {proof_arg_text(replacement)})"
+            opened = substitute_expr(opened, prefix_subst)
         avoid = {name for name, _ in target_binders}
         while opened.kind == "forall" and opened.value is not None and opened.sort is not None:
             replacement = resolved_replacement(opened.value, use_substitution)
@@ -44861,9 +44877,9 @@ def raw_avatar_split_component_from_source_proof(
                 trial = dict(subst)
                 trial[source_name] = candidate
                 next_options.append((trial, f"({proof_head(proof)} {proof_arg_text(candidate)})"))
-                if len(next_options) >= 16:
+                if len(next_options) >= 64:
                     break
-            if len(next_options) >= 16:
+            if len(next_options) >= 64:
                 break
         if not next_options:
             return None
@@ -50902,6 +50918,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     entries = renamed_entries
     propositions = renamed_propositions
     propositions_by_name = {name: proposition for name, _, proposition, _, _, _, _ in entries if proposition}
+    exported_step_propositions_by_name = {
+        name: step.proposition
+        for name, step in replay_steps.items()
+        if step.proposition
+    }
     trusted_definition_names = {name for name, _, proposition, _, _, _, trusted in entries if proposition and trusted}
     if "function_definitions" not in locals():
         function_definitions = tptp_function_definition_infos(text, variable_sorts)
@@ -51275,6 +51296,19 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                                 propositions_by_name,
                                 variable_sorts,
                             )
+                            if (
+                                replay_proof is None
+                                and step_info.proposition
+                                and canonical_proposition(use_ambient_basic_logic_text(step_info.proposition))
+                                == canonical_proposition(proposition)
+                            ):
+                                replay_proof = raw_tptp_replay_proof_from_step(
+                                    step_info,
+                                    step_info.proposition,
+                                    replay_parents,
+                                    exported_step_propositions_by_name,
+                                    variable_sorts,
+                                )
                         else:
                             replay_proof = raw_tptp_replay_proof(rule, proposition, replay_parents, propositions_by_name, variable_sorts)
                     finally:
