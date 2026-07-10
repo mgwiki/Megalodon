@@ -24193,7 +24193,7 @@ def raw_or_reassociation_transform_proof(
             target_component,
             branch_proof,
             variable_sorts,
-            branch_depth + 1,
+            depth=branch_depth + 1,
         )
         if component_proof is None:
             return None
@@ -24228,7 +24228,7 @@ def raw_conjunction_reassociation_transform_proof(
             target_component,
             projection,
             variable_sorts,
-            depth + 1,
+            depth=depth + 1,
         )
         if proof is None:
             return None
@@ -40048,6 +40048,92 @@ def raw_tptp_split_rewrites(parents: list[str], propositions_by_name: dict[str, 
     return tuple(rewrites)
 
 
+def raw_trusted_predicate_definition_parts(expr: Expr) -> tuple[list[tuple[str, str]], Expr, Expr] | None:
+    binders, body = collect_foralls(expr)
+    parts = raw_or_parts(body)
+    if parts is None:
+        return None
+    for component, negative_split in (parts, (parts[1], parts[0])):
+        premises, conclusion = split_arrows(negative_split)
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
+            continue
+        split = premises[0]
+        if split.kind != "app" or not split.args or split.args[0].kind != "var":
+            continue
+        return list(binders), split, component
+    return None
+
+
+def raw_forall_wrapped_implication(binders: list[tuple[str, str]], premise: Expr, conclusion: Expr) -> str:
+    expr = Expr("arrow", args=(premise, conclusion))
+    for name, sort in reversed(binders):
+        expr = Expr("forall", value=name, sort=sort, args=(expr,))
+    return expr_text(expr)
+
+
+def raw_tptp_trusted_definition_rewrites(
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    trusted_definition_names: set[str],
+    *,
+    local: bool,
+) -> tuple[RawSplitRewrite, ...]:
+    rewrites: list[RawSplitRewrite] = []
+    for parent in parents:
+        if parent not in trusted_definition_names:
+            continue
+        parent_proposition = propositions_by_name.get(parent)
+        parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+        if parent_expr is None:
+            continue
+        definition = raw_trusted_predicate_definition_parts(parent_expr)
+        if definition is None:
+            continue
+        _binders, split, component = definition
+        parent_name = raw_tptp_claim_name(parent)
+        suffix = "_local" if local else ""
+        rewrites.append(
+            RawSplitRewrite(
+                split,
+                component,
+                f"{parent_name}_split_to_component{suffix}",
+                f"{parent_name}_component_to_split{suffix}",
+            )
+        )
+    return tuple(rewrites)
+
+
+def raw_tptp_trusted_definition_rewrite_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+    trusted_definition_names: set[str],
+) -> str | None:
+    if len(parents) < 2:
+        return None
+    source_proposition = propositions_by_name.get(parents[0])
+    source = parse_expr(source_proposition) if source_proposition is not None else None
+    target = parse_expr(proposition)
+    if source is None or target is None:
+        return None
+    rewrites = raw_tptp_trusted_definition_rewrites(
+        parents[1:],
+        propositions_by_name,
+        trusted_definition_names,
+        local=False,
+    )
+    if not rewrites:
+        return None
+    return raw_structural_normal_form_transform_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+        variable_sorts,
+        rewrites,
+    )
+
+
 def raw_avatar_split_match_literal(
     source_literal: Expr,
     target_literal: Expr,
@@ -40782,12 +40868,16 @@ def raw_structural_normal_form_transform_proof(
     target: Expr,
     source_proof: str,
     variable_sorts: dict[str, str],
+    rewrites: tuple[RawSplitRewrite, ...] = (),
     depth: int = 0,
 ) -> str | None:
     if depth > 80 or proof_search_timed_out():
         return None
     if expr_same_mod_alpha(source, target):
         return source_proof
+    rewrite_proof = raw_split_rewrite_proof(source, target, source_proof, rewrites)
+    if rewrite_proof is not None:
+        return rewrite_proof
 
     source_exists = raw_exists_transform_parts(source)
     target_exists = raw_exists_transform_parts(target)
@@ -40804,6 +40894,7 @@ def raw_structural_normal_form_transform_proof(
             target_body,
             "Hbody",
             {**variable_sorts, witness_name: source_sort},
+            rewrites,
             depth + 1,
         )
         if body_proof is None:
@@ -40836,6 +40927,7 @@ def raw_structural_normal_form_transform_proof(
             target_body,
             f"({proof_head(source_proof)} {binder})",
             {**variable_sorts, binder: target.sort},
+            rewrites,
             depth + 1,
         )
         if inner is None:
@@ -40862,6 +40954,7 @@ def raw_structural_normal_form_transform_proof(
                 left_target,
                 left_name,
                 variable_sorts,
+                rewrites,
                 depth + 1,
             )
             if left_proof is None:
@@ -40871,6 +40964,7 @@ def raw_structural_normal_form_transform_proof(
                 right_target,
                 right_name,
                 variable_sorts,
+                rewrites,
                 depth + 1,
             )
             if right_proof is None:
@@ -40912,6 +41006,7 @@ def raw_structural_normal_form_transform_proof(
                 left_target,
                 left_name,
                 variable_sorts,
+                rewrites,
                 depth + 1,
             )
             if left_proof is None:
@@ -40921,6 +41016,7 @@ def raw_structural_normal_form_transform_proof(
                 right_target,
                 right_name,
                 variable_sorts,
+                rewrites,
                 depth + 1,
             )
             if right_proof is None:
@@ -40947,6 +41043,7 @@ def raw_structural_normal_form_transform_proof(
             source_premise,
             premise_name,
             variable_sorts,
+            rewrites,
             depth + 1,
         )
         if premise_proof is None:
@@ -40956,6 +41053,7 @@ def raw_structural_normal_form_transform_proof(
             target_conclusion,
             f"({proof_head(source_proof)} {proof_term_text(premise_proof)})",
             variable_sorts,
+            rewrites,
             depth + 1,
         )
         if conclusion_proof is None:
@@ -40999,7 +41097,7 @@ def raw_normal_form_local_pair_proof(
 ) -> str | None:
     if expr_same_mod_alpha(source, target):
         return source_proof
-    proof = raw_structural_normal_form_transform_proof(source, target, source_proof, variable_sorts, depth + 1)
+    proof = raw_structural_normal_form_transform_proof(source, target, source_proof, variable_sorts, depth=depth + 1)
     if proof is not None:
         return proof
     proof = raw_negated_conjunction_to_ennf_disjunction_proof(source, target, source_proof, variable_sorts)
@@ -41032,7 +41130,7 @@ def raw_normal_form_side_proof(
 ) -> str | None:
     if expr_same_mod_alpha(source, target):
         return source_proof
-    proof = raw_structural_normal_form_transform_proof(source, target, source_proof, variable_sorts, depth + 1)
+    proof = raw_structural_normal_form_transform_proof(source, target, source_proof, variable_sorts, depth=depth + 1)
     if proof is not None:
         return proof
     proof = raw_deep_formula_transform_proof(source, target, source_proof, variable_sorts, depth + 1)
@@ -43438,16 +43536,28 @@ def raw_tptp_replay_proof(
             PROOF_SEARCH_STATE.deep_clause_literals = True
         try:
             proof = None
+            if rule in {"flattening", "ennf_transformation", "nnf_transformation"} and len(parents) == 1:
+                parent_proposition = propositions_by_name.get(parents[0])
+                source_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+                target_expr = parse_expr(proposition)
+                if source_expr is not None and target_expr is not None:
+                    proof = raw_structural_normal_form_transform_proof(
+                        source_expr,
+                        target_expr,
+                        raw_tptp_claim_name(parents[0]),
+                        variable_sorts,
+                    )
             if rule in {"ennf_transformation", "nnf_transformation"}:
                 if raw_tptp_quantified_eq_prop_disjunction_ennf_needs_fallback(proposition):
                     proof = None
                 else:
-                    proof = raw_tptp_flattened_forall_implication_ennf_proof(
-                        proposition,
-                        parents,
-                        propositions_by_name,
-                        variable_sorts,
-                    )
+                    if proof is None:
+                        proof = raw_tptp_flattened_forall_implication_ennf_proof(
+                            proposition,
+                            parents,
+                            propositions_by_name,
+                            variable_sorts,
+                        )
                 if proof is None:
                     proof = raw_tptp_explosive_implication_ennf_proof(
                         proposition,
@@ -44641,6 +44751,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     entries = renamed_entries
     propositions = renamed_propositions
     propositions_by_name = {name: proposition for name, _, proposition, _, _, _, _ in entries if proposition}
+    trusted_definition_names = {name for name, _, proposition, _, _, _, trusted in entries if proposition and trusted}
     if "function_definitions" not in locals():
         function_definitions = tptp_function_definition_infos(text, variable_sorts)
         variable_sorts.update(raw_tptp_function_definition_sorts(function_definitions, variable_sorts))
@@ -44883,6 +44994,20 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 local_alias = f"{claim_name}_local"
                 axiom_claim_instantiations[claim_name] = local_alias
                 local_skolem_axiom_aliases.append((local_alias, claim_name, proposition))
+            if trusted_definition:
+                parsed_definition = parse_expr(proposition)
+                if parsed_definition is not None:
+                    definition = raw_trusted_predicate_definition_parts(parsed_definition)
+                else:
+                    definition = None
+                if definition is not None:
+                    binders, split, component = definition
+                    lines.append(
+                        f"Axiom {claim_name}_split_to_component:{raw_forall_wrapped_implication(binders, split, component)}."
+                    )
+                    lines.append(
+                        f"Axiom {claim_name}_component_to_split:{raw_forall_wrapped_implication(binders, component, split)}."
+                    )
         avatar_definition = raw_tptp_avatar_definition_parts(proposition)
         if avatar_definition is not None:
             split_name, component = avatar_definition
@@ -44942,62 +45067,73 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         replay_parents = list(parents)
         step_info = replay_steps.get(name)
         replay_proof = known_raw_propositions.get(canonical_proposition(proposition))
+        trusted_definition_replay = False
         if replay_proof is None:
             if rule in {"definition_folding", "definition_unfolding"}:
                 for parent in parents:
                     definition_key = predicate_definition_keys_by_step.get(parent)
                     if definition_key is not None and definition_key not in replay_parents:
                         replay_parents.append(definition_key)
-            if raw_tptp_replay_payload_size_ok(
-                rule,
-                proposition,
-                replay_parents,
-                propositions_by_name,
-                step_info,
-            ):
-                previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
-                PROOF_SEARCH_STATE.deadline = proof_search_now() + raw_tptp_replay_seconds_for_rule(rule)
-                try:
-                    if step_info is not None:
-                        replay_proof = raw_tptp_replay_proof_from_step(
-                            step_info,
-                            proposition,
-                            replay_parents,
-                            propositions_by_name,
-                            variable_sorts,
-                        )
-                    else:
-                        replay_proof = raw_tptp_replay_proof(rule, proposition, replay_parents, propositions_by_name, variable_sorts)
-                finally:
-                    if previous_deadline is None:
-                        if hasattr(PROOF_SEARCH_STATE, "deadline"):
-                            delattr(PROOF_SEARCH_STATE, "deadline")
-                    else:
-                        PROOF_SEARCH_STATE.deadline = previous_deadline
-            else:
-                replay_proof = None
-                if rule in {"definition_folding", "definition_unfolding"}:
+                replay_proof = raw_tptp_trusted_definition_rewrite_proof(
+                    proposition,
+                    replay_parents,
+                    propositions_by_name,
+                    variable_sorts,
+                    trusted_definition_names,
+                )
+                trusted_definition_replay = replay_proof is not None
+            if replay_proof is None:
+                if raw_tptp_replay_payload_size_ok(
+                    rule,
+                    proposition,
+                    replay_parents,
+                    propositions_by_name,
+                    step_info,
+                ):
                     previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
-                    PROOF_SEARCH_STATE.deadline = proof_search_now() + 3.0
+                    PROOF_SEARCH_STATE.deadline = proof_search_now() + raw_tptp_replay_seconds_for_rule(rule)
                     try:
-                        replay_proof = raw_tptp_pointwise_function_clause_definition_rewrite_proof(
-                            proposition,
-                            replay_parents,
-                            propositions_by_name,
-                            variable_sorts,
-                        )
+                        if step_info is not None:
+                            replay_proof = raw_tptp_replay_proof_from_step(
+                                step_info,
+                                proposition,
+                                replay_parents,
+                                propositions_by_name,
+                                variable_sorts,
+                            )
+                        else:
+                            replay_proof = raw_tptp_replay_proof(rule, proposition, replay_parents, propositions_by_name, variable_sorts)
                     finally:
                         if previous_deadline is None:
                             if hasattr(PROOF_SEARCH_STATE, "deadline"):
                                 delattr(PROOF_SEARCH_STATE, "deadline")
                         else:
                             PROOF_SEARCH_STATE.deadline = previous_deadline
+                else:
+                    replay_proof = None
+                    if rule in {"definition_folding", "definition_unfolding"}:
+                        previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+                        PROOF_SEARCH_STATE.deadline = proof_search_now() + 3.0
+                        try:
+                            replay_proof = raw_tptp_pointwise_function_clause_definition_rewrite_proof(
+                                proposition,
+                                replay_parents,
+                                propositions_by_name,
+                                variable_sorts,
+                            )
+                        finally:
+                            if previous_deadline is None:
+                                if hasattr(PROOF_SEARCH_STATE, "deadline"):
+                                    delattr(PROOF_SEARCH_STATE, "deadline")
+                            else:
+                                PROOF_SEARCH_STATE.deadline = previous_deadline
         if replay_proof is not None and raw_tptp_replay_proof_is_unsafe(rule, proposition, replay_proof):
             replay_proof = None
         if (
             replay_proof is not None
             and standard_tptp_proof
             and step_info is None
+            and not trusted_definition_replay
             and raw_tptp_standard_replay_proof_is_unsafe(rule, proposition, replay_proof)
         ):
             replay_proof = None
