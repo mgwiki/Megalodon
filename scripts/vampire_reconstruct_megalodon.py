@@ -55367,6 +55367,10 @@ MEGALODON_TOPLEVEL_DECLARED_NAME_RE = re.compile(
     r"^\s*(?:Variable|Parameter|Definition|Axiom|Theorem|Lemma|Example|Fact|Remark|Corollary|Proposition|Property)\s+"
     r"(?P<name>[_A-Za-z][_A-Za-z0-9']*)(?=\s|:|\.|$)"
 )
+MEGALODON_TOPLEVEL_FACT_NAME_RE = re.compile(
+    r"^\s*(?:Axiom|Theorem|Lemma|Example|Fact|Remark|Corollary|Proposition|Property)\s+"
+    r"(?P<name>[_A-Za-z][_A-Za-z0-9']*)(?=\s|:|\.|$)"
+)
 MEGALODON_SORT_DECL_RE = re.compile(
     r"^\s*(?:Variable|Parameter|Definition)\s+"
     r"(?P<name>[_A-Za-z][_A-Za-z0-9']*)\s*:\s*"
@@ -55423,6 +55427,21 @@ def source_toplevel_declared_names(source: Path | None) -> set[str]:
     names: set[str] = set()
     for line in text.splitlines():
         match = MEGALODON_TOPLEVEL_DECLARED_NAME_RE.match(line)
+        if match is not None:
+            names.add(match.group("name"))
+    return names
+
+
+def source_toplevel_fact_names(source: Path | None) -> set[str]:
+    if source is None:
+        return set()
+    try:
+        text = source.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return set()
+    names: set[str] = set()
+    for line in text.splitlines():
+        match = MEGALODON_TOPLEVEL_FACT_NAME_RE.match(line)
         if match is not None:
             names.add(match.group("name"))
     return names
@@ -55634,6 +55653,24 @@ def local_set_reflexivity_roots(
 
 def raw_tptp_entry_is_negated_conjecture(role: str, rule: str | None) -> bool:
     return role == "negated_conjecture" or rule in {"negated_conjecture", "negated conjecture"}
+
+
+def raw_proposition_mentions_equality(proposition: str) -> bool:
+    expr = parse_expr(proposition)
+    if expr is None:
+        return "=" in proposition or "vampire_eq_" in proposition
+
+    def visit(node: Expr) -> bool:
+        if node.kind == "eq":
+            return True
+        if node.kind == "app" and node.args and node.args[0].kind == "var" and node.args[0].value in {
+            "vampire_eq_set",
+            "vampire_eq_prop",
+        }:
+            return True
+        return any(visit(arg) for arg in node.args)
+
+    return visit(expr)
 
 
 def raw_tptp_implication_chain(premises: list[str], conclusion: str) -> str:
@@ -56096,6 +56133,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     source_names = source_reserved_names
     source_sorts = source_active_declared_sorts(source)
     source_declared_sort_names = set(source_declared_sorts(source))
+    source_fact_names = source_toplevel_fact_names(source)
     early_source_declarations: list[str] = []
     later_source_declarations: list[str] = []
     for declaration in source_declarations:
@@ -56364,6 +56402,14 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         elif (universal_instance_proof := known_raw_universal_instance_proof(proposition)) is not None:
             lines.append(f"Theorem {claim_name}: {proposition}.")
             lines.append(f"exact {proof_argument_text(universal_instance_proof)}.")
+            lines.append("Qed.")
+        elif (
+            source_name is not None
+            and source_name in source_fact_names
+            and not raw_proposition_mentions_equality(proposition)
+        ):
+            lines.append(f"Theorem {claim_name}: {proposition}.")
+            lines.append(f"exact {source_name}.")
             lines.append("Qed.")
         else:
             lines.append(f"Axiom {claim_name}:{proposition}.")
