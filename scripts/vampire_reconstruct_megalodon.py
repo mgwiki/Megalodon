@@ -44454,6 +44454,56 @@ def raw_tptp_forward_subsumption_resolution_proof(
         return direct_proof
 
     if target_binders:
+        def open_parent_over_target_binders(expr: Expr, proof: str) -> tuple[Expr, str] | None:
+            opened_expr = expr
+            opened_proof = proof
+            for target_name, target_sort in target_binders:
+                if opened_expr.kind != "forall" or opened_expr.sort != target_sort or opened_expr.value is None:
+                    return None
+                opened_expr = rename_expr_variables(opened_expr.args[0], {opened_expr.value: target_name})
+                opened_proof = f"({proof_head(opened_proof)} {target_name})"
+            return opened_expr, opened_proof
+
+        def replay_uses_non_target_selected_substitution() -> bool:
+            if replay_step is None:
+                return False
+            target_names = {name for name, _sort in target_binders}
+            for fields in megalodon_replay_extra_fields(replay_step, "literal"):
+                if hasattr(fields, "get"):
+                    substitutions = [fields.get("selected_substitution", "")]
+                else:
+                    substitutions = [
+                        field.removeprefix("selected_substitution=")
+                        for field in fields
+                        if field.startswith("selected_substitution=")
+                    ]
+                for substitution in substitutions:
+                    if not substitution.startswith("[") or not substitution.endswith("]"):
+                        continue
+                    body = substitution.removeprefix("[").removesuffix("]")
+                    for part in body.split(","):
+                        if "->" not in part:
+                            continue
+                        value = part.split("->", 1)[1].strip()
+                        if value and value not in target_names:
+                            return True
+            return False
+
+        if replay_uses_non_target_selected_substitution():
+            for source_index, _resolver_index in megalodon_replay_parent_pair_order(parents, replay_step):
+                opened_source = open_parent_over_target_binders(*parsed[source_index])
+                if opened_source is None:
+                    continue
+                entries = list(parsed)
+                entries[source_index] = opened_source
+                body_proof = replay_pairs(target_body, entries)
+                if body_proof is None:
+                    continue
+                proof = body_proof
+                for target_name, target_sort in reversed(target_binders):
+                    proof = f"(fun {target_name} :{target_sort} => {proof})"
+                return proof
+
         opened: list[tuple[Expr, str]] = parsed
         for target_name, target_sort in target_binders:
             next_opened: list[tuple[Expr, str]] = []
@@ -44466,6 +44516,42 @@ def raw_tptp_forward_subsumption_resolution_proof(
             opened = next_opened
         body_proof = replay_pairs(target_body, opened)
         if body_proof is not None:
+            proof = body_proof
+            for target_name, target_sort in reversed(target_binders):
+                proof = f"(fun {target_name} :{target_sort} => {proof})"
+            return proof
+
+        def parent_opening_variants(expr: Expr, proof: str) -> list[tuple[Expr, str]]:
+            variants: list[tuple[Expr, str]] = [(expr, proof)]
+            for target_name, target_sort in target_binders:
+                next_variants: list[tuple[Expr, str]] = []
+                seen_variants: set[tuple[str, str]] = set()
+                for variant_expr, variant_proof in variants:
+                    candidates = [(variant_expr, variant_proof)]
+                    if variant_expr.kind == "forall" and variant_expr.sort == target_sort and variant_expr.value is not None:
+                        body = rename_expr_variables(variant_expr.args[0], {variant_expr.value: target_name})
+                        candidates.append((body, f"({proof_head(variant_proof)} {target_name})"))
+                    for candidate_expr, candidate_proof in candidates:
+                        key = (expr_key(candidate_expr), candidate_proof)
+                        if key in seen_variants:
+                            continue
+                        seen_variants.add(key)
+                        next_variants.append((candidate_expr, candidate_proof))
+                        if len(next_variants) >= 8:
+                            break
+                    if len(next_variants) >= 8:
+                        break
+                variants = next_variants
+            return variants
+
+        variant_lists = [parent_opening_variants(expr, proof) for expr, proof in parsed]
+        for entries_tuple in itertools.product(*variant_lists):
+            entries = list(entries_tuple)
+            if entries == opened:
+                continue
+            body_proof = replay_pairs(target_body, entries)
+            if body_proof is None:
+                continue
             proof = body_proof
             for target_name, target_sort in reversed(target_binders):
                 proof = f"(fun {target_name} :{target_sort} => {proof})"
