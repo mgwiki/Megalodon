@@ -37800,6 +37800,26 @@ def raw_tptp_superposition_proof(
             )
             if proof is not None:
                 return proof
+            proof = raw_guarded_equality_parent_quantified_clause_superposition_proof(
+                early_parent_exprs[0][0],
+                early_target_expr,
+                early_parent_exprs[0][1],
+                early_parent_exprs[1][0],
+                early_parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_guarded_equality_parent_quantified_clause_superposition_proof(
+                early_parent_exprs[1][0],
+                early_target_expr,
+                early_parent_exprs[1][1],
+                early_parent_exprs[0][0],
+                early_parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
             proof = raw_guarded_quantified_positive_clause_resolution_superposition_proof(
                 early_parent_exprs[0][0],
                 early_target_expr,
@@ -39871,8 +39891,41 @@ def raw_guarded_quantified_equality_clause_rewrite_superposition_proof(
         or len(equality_binders) > 6
     ):
         return None
-    if any(source_sort != target_sort for (_, source_sort), (_, target_sort) in zip(source_binders, target_binders)):
+    source_matches: list[dict[int, int]] = []
+
+    def search_source_match(target_index: int, used_source: set[int], mapping: dict[int, int]) -> None:
+        if len(source_matches) >= 8:
+            return
+        if target_index >= len(target_binders):
+            source_matches.append(dict(mapping))
+            return
+        _target_name, target_sort = target_binders[target_index]
+        for source_index, (_source_name, source_sort) in enumerate(source_binders):
+            if source_index in used_source or not equivalent_sorts(source_sort, target_sort):
+                continue
+            mapping[target_index] = source_index
+            used_source.add(source_index)
+            search_source_match(target_index + 1, used_source, mapping)
+            used_source.remove(source_index)
+            mapping.pop(target_index, None)
+
+    search_source_match(0, set(), {})
+    if not source_matches:
         return None
+    source_match = source_matches[0]
+    matched_source_to_target = {source_index: target_index for target_index, source_index in source_match.items()}
+    source_binder_target_value: dict[str, Expr] = {}
+    source_renames: dict[str, str] = {}
+    renamed_source_binders: list[tuple[str, str]] = []
+    for source_index, (source_name, source_sort) in enumerate(source_binders):
+        target_index = matched_source_to_target[source_index]
+        renamed = target_binders[target_index][0]
+        source_renames[source_name] = renamed
+        source_binder_target_value[renamed] = Expr("var", value=renamed)
+        renamed_source_binders.append((renamed, source_sort))
+    if source_renames:
+        source_body = rename_expr_variables(source_body, source_renames)
+    source_binders = renamed_source_binders
 
     target_literals = raw_clause_literals(target_body)
     equality_literals = raw_clause_literals(equality_body)
@@ -39882,8 +39935,6 @@ def raw_guarded_quantified_equality_clause_rewrite_superposition_proof(
         return None
 
     opened_source_body = source_body
-    for (source_name, _source_sort), (target_name, _target_sort) in zip(source_binders, target_binders):
-        opened_source_body = rename_expr_variables(opened_source_body, {source_name: target_name})
 
     equality_binder_original_order = list(equality_binders)
     equality_binder_names_before_rename = {name for name, _sort in equality_binders}
@@ -39984,8 +40035,11 @@ def raw_guarded_quantified_equality_clause_rewrite_superposition_proof(
 
     def quantified_target_proof(source_quantified_proof: str) -> str | None:
         opened_source_proof = source_quantified_proof
-        for target_name, _sort in target_binders:
-            opened_source_proof = f"({proof_head(opened_source_proof)} {target_name})"
+        for source_name, _sort in source_binders:
+            value = source_binder_target_value.get(source_name)
+            if value is None:
+                return None
+            opened_source_proof = f"({proof_head(opened_source_proof)} {proof_arg_text(value)})"
 
         seen: set[str] = set()
         for completed, old_inst, new_inst, reversed_equality in rewrite_candidates():
@@ -40108,6 +40162,207 @@ def raw_guarded_quantified_equality_clause_rewrite_superposition_proof(
             PROOF_SEARCH_STATE.flat_resolution_target = previous_target
 
 
+def raw_guarded_equality_parent_quantified_clause_superposition_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality_clause: Expr,
+    equality_clause_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if proof_search_timed_out():
+        return None
+    target_parts = raw_or_parts(target)
+    equality_parts = raw_or_parts(equality_clause)
+    if target_parts is None or equality_parts is None:
+        return None
+
+    target_quantified: Expr | None = None
+    target_guard: Expr | None = None
+    target_quantified_index = -1
+    for index, (candidate_quantified, candidate_guard) in enumerate((target_parts, (target_parts[1], target_parts[0]))):
+        if candidate_quantified.kind == "forall":
+            target_quantified = candidate_quantified
+            target_guard = candidate_guard
+            target_quantified_index = index
+            break
+
+    equality_quantified: Expr | None = None
+    equality_guard: Expr | None = None
+    for candidate_quantified, candidate_guard in (equality_parts, (equality_parts[1], equality_parts[0])):
+        if candidate_quantified.kind == "forall":
+            equality_quantified = candidate_quantified
+            equality_guard = candidate_guard
+            break
+    if (
+        target_quantified is None
+        or target_guard is None
+        or equality_quantified is None
+        or equality_guard is None
+        or not expr_same_mod_alpha(target_guard, equality_guard)
+    ):
+        return None
+
+    target_binders, target_body = collect_foralls(target_quantified)
+    equality_binders, equality_body = collect_foralls(equality_quantified)
+    source_binders, source_body = collect_foralls(source)
+    if (
+        not target_binders
+        or not equality_binders
+        or not source_binders
+        or len(target_binders) > 8
+        or len(equality_binders) > 4
+        or len(source_binders) > 8
+    ):
+        return None
+    target_literals = raw_clause_literals(target_body)
+    equality_literals = raw_clause_literals(equality_body)
+    if len(target_literals) > 24 or len(equality_literals) > 8 or len(raw_clause_literals(source_body)) > 12:
+        return None
+    if not any(equality_like_sides(literal) is not None for literal in equality_literals):
+        return None
+
+    target_sort_by_name = {name: sort for name, sort in target_binders}
+    equality_sort_by_name = {name: sort for name, sort in equality_binders}
+    local_sorts = {**variable_sorts, **target_sort_by_name, **equality_sort_by_name}
+    target_text = proof_arg_text(target)
+    target_top_literals = raw_clause_literals(target)
+
+    candidate_values: list[list[Expr]] = []
+    for equality_name, equality_sort in equality_binders:
+        values = [
+            Expr("var", value=target_name)
+            for target_name, target_sort in target_binders
+            if equivalent_sorts(equality_sort, target_sort)
+        ]
+        if equality_sort == "prop":
+            values.extend((Expr("var", value="vampire_true"), Expr("var", value="vampire_false")))
+        if not values:
+            return None
+        preferred = [value for value in values if value.kind == "var" and value.value == equality_name]
+        rest = [value for value in values if not preferred or expr_key(value) != expr_key(preferred[0])]
+        candidate_values.append(preferred + rest)
+
+    substitutions: list[dict[str, Expr]] = []
+
+    def build_substitutions(index: int, current: dict[str, Expr]) -> None:
+        if len(substitutions) >= 32 or proof_search_timed_out():
+            return
+        if index >= len(equality_binders):
+            completed = dict(current)
+            flatten_substitution(completed)
+            substitutions.append(completed)
+            return
+        name, _sort = equality_binders[index]
+        for value in candidate_values[index]:
+            current[name] = value
+            build_substitutions(index + 1, current)
+        current.pop(name, None)
+
+    build_substitutions(0, {})
+
+    def instantiate_quantified_equality_proof(quantified_proof: str, subst: dict[str, Expr]) -> str | None:
+        proof = quantified_proof
+        for name, _sort in equality_binders:
+            value = subst.get(name)
+            if value is None:
+                return None
+            proof = f"({proof_head(proof)} {proof_arg_text(value)})"
+        return proof
+
+    def body_from_equality_quantified(quantified_proof: str) -> str | None:
+        seen: set[str] = set()
+        for subst in substitutions:
+            equality_body_instance = substitute_expr(equality_body, subst)
+            key = alpha_expr_key(equality_body_instance)
+            if key in seen:
+                continue
+            seen.add(key)
+            equality_body_proof = instantiate_quantified_equality_proof(quantified_proof, subst)
+            if equality_body_proof is None:
+                continue
+            previous_body_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+            PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+
+            def equality_body_handler(literal: Expr, literal_proof: str) -> str | None:
+                direct = raw_literal_to_clause_proof(literal, target_body, literal_proof, target_literals, ())
+                if direct is not None:
+                    return direct
+                if equality_like_sides(literal) is None:
+                    return None
+                unit_proof = raw_clause_unit_equality_superposition_proof(
+                    source,
+                    target_body,
+                    source_proof,
+                    literal,
+                    literal_proof,
+                    local_sorts,
+                )
+                if unit_proof is not None:
+                    return unit_proof
+                return raw_residual_equality_clause_superposition_proof(
+                    source,
+                    target_body,
+                    source_proof,
+                    literal,
+                    literal_proof,
+                    local_sorts,
+                )
+
+            try:
+                proof = raw_clause_cases_with_handler(
+                    equality_body_instance,
+                    equality_body_proof,
+                    equality_body_handler,
+                    avoid_text=source_proof,
+                )
+            finally:
+                if previous_body_target is None:
+                    if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                        delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+                else:
+                    PROOF_SEARCH_STATE.flat_resolution_target = previous_body_target
+            if proof is not None:
+                return proof
+        return None
+
+    def quantified_target_proof(quantified_equality_proof: str) -> str | None:
+        body_proof = body_from_equality_quantified(quantified_equality_proof)
+        if body_proof is None:
+            return None
+        for name, sort in reversed(target_binders):
+            body_proof = f"(fun {name} :{sort} => {body_proof})"
+        return body_proof
+
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+
+    def equality_clause_handler(literal: Expr, literal_proof: str) -> str | None:
+        direct = raw_literal_to_clause_proof(literal, target, literal_proof, target_top_literals, ())
+        if direct is not None:
+            return direct
+        if not expr_same_mod_alpha(literal, equality_quantified):
+            return None
+        quantified = quantified_target_proof(literal_proof)
+        if quantified is None:
+            return None
+        return raw_or_intro_literal_at(target, target_quantified_index, quantified)
+
+    try:
+        return raw_clause_cases_with_handler(
+            equality_clause,
+            equality_clause_proof,
+            equality_clause_handler,
+            avoid_text=source_proof,
+        )
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_guarded_quantified_positive_clause_resolution_superposition_proof(
     source: Expr,
     target: Expr,
@@ -40161,20 +40416,67 @@ def raw_guarded_quantified_positive_clause_resolution_superposition_proof(
         or len(resolver_binders) > 8
     ):
         return None
-    if any(source_sort != target_sort for (_, source_sort), (_, target_sort) in zip(source_binders, target_binders)):
-        return None
 
     target_literals = raw_clause_literals(target_body)
     if len(raw_clause_literals(source_body)) > 16 or len(target_literals) > 28 or len(raw_clause_literals(resolver_body)) > 12:
         return None
 
-    opened_source_body = source_body
-    for (source_name, _source_sort), (target_name, _target_sort) in zip(source_binders, target_binders):
-        opened_source_body = rename_expr_variables(opened_source_body, {source_name: target_name})
+    source_matches: list[dict[int, int]] = []
 
-    source_extra_binders = source_binders[len(target_binders) :]
+    def search_source_match(target_index: int, used_source: set[int], mapping: dict[int, int]) -> None:
+        if len(source_matches) >= 8:
+            return
+        if target_index >= len(target_binders):
+            source_matches.append(dict(mapping))
+            return
+        _target_name, target_sort = target_binders[target_index]
+        for source_index, (_source_name, source_sort) in enumerate(source_binders):
+            if source_index in used_source or not equivalent_sorts(source_sort, target_sort):
+                continue
+            mapping[target_index] = source_index
+            used_source.add(source_index)
+            search_source_match(target_index + 1, used_source, mapping)
+            used_source.remove(source_index)
+            mapping.pop(target_index, None)
+
+    search_source_match(0, set(), {})
+    if not source_matches:
+        return None
+    source_match = source_matches[0]
+    matched_source_to_target = {source_index: target_index for target_index, source_index in source_match.items()}
+    target_names = {name for name, _sort in target_binders}
+    used_source_names = set(target_names) | expr_variables(target_body) | expr_bound_variables(target_body)
+    source_renames: dict[str, str] = {}
+    renamed_source_binders: list[tuple[str, str]] = []
+    source_binder_target_value: dict[str, Expr] = {}
+    for source_index, (source_name, source_sort) in enumerate(source_binders):
+        target_index = matched_source_to_target.get(source_index)
+        if target_index is not None:
+            renamed = target_binders[target_index][0]
+            source_renames[source_name] = renamed
+            source_binder_target_value[renamed] = Expr("var", value=renamed)
+            renamed_source_binders.append((renamed, source_sort))
+            continue
+        renamed = source_name
+        if renamed in used_source_names:
+            renamed = fresh_identifier("SP", expr_text(source), expr_text(target), source_name)
+            while renamed in used_source_names:
+                renamed = fresh_identifier(renamed, expr_text(source), expr_text(target), source_name)
+        used_source_names.add(renamed)
+        if renamed != source_name:
+            source_renames[source_name] = renamed
+        renamed_source_binders.append((renamed, source_sort))
+    if source_renames:
+        source_body = rename_expr_variables(source_body, source_renames)
+    source_binders = renamed_source_binders
+    opened_source_body = source_body
+    source_extra_binders = [
+        (name, sort)
+        for name, sort in source_binders
+        if name not in source_binder_target_value
+    ]
     source_extra_names = {name for name, _sort in source_extra_binders}
-    if not source_extra_binders or len(source_extra_binders) > 3:
+    if len(source_extra_binders) > 3:
         return None
 
     resolver_binder_original_order = list(resolver_binders)
@@ -40339,10 +40641,8 @@ def raw_guarded_quantified_positive_clause_resolution_superposition_proof(
                     ):
                         continue
                     source_instance_proof = source_proof
-                    for target_name, _sort in target_binders:
-                        source_instance_proof = f"({proof_head(source_instance_proof)} {target_name})"
-                    for name, _sort in source_extra_binders:
-                        value = subst.get(name)
+                    for name, _sort in source_binders:
+                        value = source_binder_target_value.get(name) or subst.get(name)
                         if value is None:
                             source_instance_proof = ""
                             break
