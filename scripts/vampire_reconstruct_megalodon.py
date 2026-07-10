@@ -41522,34 +41522,34 @@ def raw_tptp_selected_literal_subsumption_resolution_proof(
                 previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
                 PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
                 try:
-
-                    def resolver_handler(resolver_literal: Expr, resolver_literal_proof: str) -> str | None:
-                        if raw_complementary_literals(selected_literal, resolver_literal):
-                            premise_proof = raw_literal_direct_transform_proof(
-                                resolver_literal,
-                                selected_premises[0],
-                                resolver_literal_proof,
-                                (),
-                            )
-                            if premise_proof is None:
-                                return None
-                            false_proof = f"({proof_head('Hselected')} {proof_term_text(premise_proof)})"
-                            return raw_false_to_expr_proof(false_proof, target_body, selected_conclusion)
-                        return raw_literal_to_clause_proof(
-                            resolver_literal,
-                            target_body,
-                            resolver_literal_proof,
-                            target_literals,
-                            (),
-                        )
-
-                    resolver_case = raw_clause_cases_with_handler(resolver, resolver_proof, resolver_handler)
-                    if resolver_case is None:
-                        continue
-
                     def source_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
                         if expr_same_mod_alpha(source_literal, selected_literal):
-                            return resolver_case.replace("Hselected", source_literal_proof)
+                            def resolver_handler(resolver_literal: Expr, resolver_literal_proof: str) -> str | None:
+                                if raw_complementary_literals(selected_literal, resolver_literal):
+                                    premise_proof = raw_literal_direct_transform_proof(
+                                        resolver_literal,
+                                        selected_premises[0],
+                                        resolver_literal_proof,
+                                        (),
+                                    )
+                                    if premise_proof is None:
+                                        return None
+                                    false_proof = f"({proof_head(source_literal_proof)} {proof_term_text(premise_proof)})"
+                                    return raw_false_to_expr_proof(false_proof, target_body, selected_conclusion)
+                                return raw_literal_to_clause_proof(
+                                    resolver_literal,
+                                    target_body,
+                                    resolver_literal_proof,
+                                    target_literals,
+                                    (),
+                                )
+
+                            return raw_clause_cases_with_handler(
+                                resolver,
+                                resolver_proof,
+                                resolver_handler,
+                                avoid_text=source_literal_proof,
+                            )
                         return raw_literal_to_clause_proof(
                             source_literal,
                             target_body,
@@ -48934,7 +48934,10 @@ def raw_tptp_replay_proof(
                 if (
                     has_rich_replay_metadata
                     and rule in {"ennf_transformation", "nnf_transformation"}
-                    and raw_tptp_replay_normal_form_has_path_fragment(replay_step, "ennf_neg_imp")
+                    and (
+                        raw_tptp_replay_normal_form_has_path_fragment(replay_step, "ennf_neg_imp")
+                        or raw_tptp_replay_normal_form_has_path_fragment(replay_step, "ennf_imp")
+                    )
                 ):
                     exported_quantified_eq_prop_exception = True
                 if not (
