@@ -1900,6 +1900,23 @@ def add_recovered_input_equalities(lines: list[str], proof_text: str | None) -> 
         for axiom in [proposition_after_colon(line, "Axiom ")]
         if axiom is not None
     }
+    local_definitions = {
+        match.group("name"): (match.group("sort").strip(), match.group("body").strip())
+        for line in lines
+        for match in [DEFINITION_RE.match(line)]
+        if match is not None
+    }
+
+    def append_recovered_equality(target: list[str], name: str, proposition: str) -> None:
+        proof = raw_reflexivity_proof_for_proposition(proposition)
+        if proof is None:
+            proof = raw_local_definition_reflexivity_proof_for_proposition(proposition, local_definitions)
+        if proof is None:
+            target.append(f"Axiom {name}:{proposition}.")
+            return
+        target.append(f"Theorem {name}: {proposition}.")
+        target.append(f"exact {proof}.")
+        target.append("Qed.")
 
     result: list[str] = []
     inserted_prelude = has_equality_prelude
@@ -1916,7 +1933,7 @@ def add_recovered_input_equalities(lines: list[str], proof_text: str | None) -> 
                     axiom_index += 1
                 name = f"ax_recovered_{axiom_index}"
                 used_axiom_names.add(name)
-                result.append(f"Axiom {name}:{proposition}.")
+                append_recovered_equality(result, name, proposition)
                 axiom_index += 1
             inserted_axioms = True
         result.append(line)
@@ -1930,7 +1947,7 @@ def add_recovered_input_equalities(lines: list[str], proof_text: str | None) -> 
                 axiom_index += 1
             name = f"ax_recovered_{axiom_index}"
             used_axiom_names.add(name)
-            result.append(f"Axiom {name}:{proposition}.")
+            append_recovered_equality(result, name, proposition)
             axiom_index += 1
     return result
 
@@ -6079,7 +6096,7 @@ def raw_tptp_definition_clause_info(
     if target_sort is None:
         target_sort = "->".join([*arg_sorts, "prop"]) if arg_sorts else "prop"
     pieces = split_sort_arrows(target_sort)
-    if not pieces or pieces[-1] != "prop" or pieces[:-1] != arg_sorts:
+    if not pieces or pieces[-1] != "prop" or pieces[:-1] != tuple(arg_sorts):
         return None
 
     free_variables = expr_variables(body)
@@ -45920,6 +45937,82 @@ def raw_tptp_skolemisation_proof(
     )
 
 
+def raw_tptp_skolem_epsilon_reconstructions(
+    replay_steps: dict[str, MegalodonReplayStep],
+    variable_sorts: dict[str, str],
+) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
+    definitions: dict[str, tuple[str, str]] = {}
+    intro_proofs: dict[str, str] = {}
+    for step in replay_steps.values():
+        for fields in megalodon_replay_extra_fields(step, "skolemize"):
+            if len(step.parents) < 2:
+                continue
+            intro_step = step.parents[1]
+            try:
+                introduced_count = int(fields.get("introduced_count", "0"))
+            except ValueError:
+                continue
+            if introduced_count <= 0:
+                continue
+            introduced: list[tuple[str, str]] = []
+            supported = True
+            for index in range(introduced_count):
+                if fields.get(f"introduced_{index}_kind") != "0":
+                    supported = False
+                    break
+                symbol = fields.get(f"introduced_{index}_symbol")
+                replaced = fields.get(f"introduced_{index}_replaced_var")
+                if (
+                    symbol is None
+                    or replaced is None
+                    or variable_sorts.get(symbol) != "set"
+                    or not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", symbol)
+                ):
+                    supported = False
+                    break
+                introduced.append((replaced, symbol))
+            if not supported:
+                continue
+            local_sorts = {
+                **variable_sorts,
+                **{replaced: "set" for replaced, _ in introduced},
+                **{symbol: "set" for _, symbol in introduced},
+            }
+            source = raw_tptp_replay_extra_expr(fields, "source", local_sorts)
+            target = raw_tptp_replay_extra_expr(fields, "target", local_sorts)
+            if source is None or target is None:
+                continue
+            current = source
+            current_proof = "Hexists"
+            step_definitions: dict[str, tuple[str, str]] = {}
+            for replaced, symbol in introduced:
+                exists_args = app_args(current, "vampire_exists_set", 1)
+                if exists_args is None:
+                    supported = False
+                    break
+                predicate = exists_args[0]
+                if predicate.kind != "lambda" or predicate.value != replaced or predicate.sort != "set" or not predicate.args:
+                    supported = False
+                    break
+                body = predicate.args[0]
+                step_definitions[symbol] = ("set", f"Eps_i {proof_arg_text(predicate)}")
+                current_proof = f"((vampire_exists_set_eps {proof_arg_text(predicate)}) {proof_term_text(current_proof)})"
+                current = substitute_expr(body, {replaced: Expr("var", value=symbol)})
+            if not supported:
+                continue
+            target_proof = current_proof
+            if not expr_same_mod_alpha(beta_normalize_expr(current), beta_normalize_expr(target)):
+                transformed = raw_deep_formula_transform_proof(current, target, current_proof, local_sorts)
+                if transformed is None:
+                    transformed = raw_skolemised_formula_transform_proof(current, target, current_proof, (), local_sorts)
+                if transformed is None:
+                    continue
+                target_proof = transformed
+            definitions.update(step_definitions)
+            intro_proofs[raw_tptp_claim_name(intro_step)] = f"(fun Hexists => {target_proof})"
+    return definitions, intro_proofs
+
+
 def raw_double_negated_skolemised_target_proof(
     source: Expr,
     target: Expr,
@@ -53275,6 +53368,15 @@ def source_enclosing_theorem_line(source: Path | None, line: int | None) -> int 
     return None
 
 
+def source_enclosing_theorem_name(source: Path | None, line: int | None) -> str | None:
+    theorem_line = source_enclosing_theorem_line(source, line)
+    if source is None or theorem_line is None or not source.exists():
+        return None
+    rows = source.read_text(encoding="utf-8", errors="replace").splitlines()
+    match = THEOREM_RE.match(rows[theorem_line - 1])
+    return match.group("name") if match is not None else None
+
+
 def source_local_set_definitions(source: Path | None, line: int | None) -> dict[str, tuple[str, str]]:
     if source is None or line is None or not source.exists():
         return {}
@@ -53373,6 +53475,37 @@ def local_set_reflexivity_roots(
             continue
         roots.update((expr_variables(sides[0]) | expr_variables(sides[1])) & local_definition_names)
     return roots
+
+
+def raw_tptp_entry_is_negated_conjecture(role: str, rule: str | None) -> bool:
+    return role == "negated_conjecture" or rule in {"negated_conjecture", "negated conjecture"}
+
+
+def raw_tptp_implication_chain(premises: list[str], conclusion: str) -> str:
+    result = conclusion
+    for premise in reversed(premises):
+        result = f"{proposition_argument_text(premise)} -> {result}"
+    return result
+
+
+def raw_tptp_positive_conjecture_from_negated(proposition: str) -> str | None:
+    expr = parse_expr(proposition)
+    if expr is None:
+        return None
+    premises, conclusion = split_arrows(expr)
+    if len(premises) != 1 or not false_eliminator_expr(conclusion):
+        return None
+    return expr_text(premises[0])
+
+
+def raw_tptp_reconstructed_conjecture_name(source: Path | None, problem: Path | None, proof: Path | None) -> str:
+    theorem_name = source_enclosing_theorem_name(source, proof_or_problem_obligation_line(proof, problem))
+    if theorem_name is None:
+        theorem_name = "conjecture"
+    sanitized = re.sub(r"[^_A-Za-z0-9']", "_", theorem_name)
+    if not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", sanitized):
+        sanitized = f"conjecture_{sanitized}"
+    return f"vampire_reconstructed_{sanitized}_tptp"
 
 
 def megalodon_declared_name(line: str) -> str | None:
@@ -53716,6 +53849,13 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             body_text = raw_tptp_safe_split_definition_body(body, local_sorts)
             if body_text is not None:
                 avatar_split_definitions.setdefault(split_name, body_text)
+    skolem_epsilon_definitions: dict[str, tuple[str, str]] = {}
+    skolem_intro_proofs: dict[str, str] = {}
+    if {"Eps_i", "Eps_i_ax"} <= source_active_declared_names(source):
+        skolem_epsilon_definitions, skolem_intro_proofs = raw_tptp_skolem_epsilon_reconstructions(
+            replay_steps,
+            variable_sorts,
+        )
 
     final_name = None
     final_proposition = "vampire_false"
@@ -53822,6 +53962,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             and not (declaration.startswith("Definition ") and declared_name in local_set_definition_names)
         ):
             continue
+        if declared_name is not None and declared_name in skolem_epsilon_definitions:
+            continue
         if declared_name is not None and declared_name in declared_names:
             continue
         if declared_name is not None:
@@ -53845,6 +53987,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if name in source_local_set_names:
             continue
         if equivalent_sorts(sort, source_sorts.get(name)):
+            continue
+        if name in skolem_epsilon_definitions:
             continue
         if name in declared_names:
             continue
@@ -53872,6 +54016,17 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         equality_proposition = predicate_definition_equalities.get(definition.proof)
         if equality_proposition is not None:
             lines.append(f"Axiom {raw_tptp_claim_name(definition.proof)}:{equality_proposition}.")
+    if skolem_intro_proofs:
+        lines.append(
+            "Theorem vampire_exists_set_eps: forall P:set->prop, vampire_exists_set P -> P (Eps_i P)."
+        )
+        lines.append("exact (fun P Hexists => Hexists (P (Eps_i P)) (fun X HX => Eps_i_ax P X HX)).")
+        lines.append("Qed.")
+    for name, (sort, body) in sorted(skolem_epsilon_definitions.items()):
+        if name in declared_names:
+            continue
+        lines.append(f"Definition {name} : {sort} := {body}.")
+        declared_names.add(name)
     for name, body in sorted(avatar_split_definitions.items()):
         lines.append(f"Definition {name} : prop := {body}.")
     for declaration in later_source_declarations:
@@ -53883,6 +54038,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             continue
         if declared_name is not None and declared_name in source_local_set_names:
             continue
+        if declared_name is not None and declared_name in skolem_epsilon_definitions:
+            continue
         if declared_name is not None and declared_name in declared_names:
             continue
         if declared_name is not None:
@@ -53892,6 +54049,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         lines.append(declaration)
 
     seen_claims: set[str] = set()
+    negated_conjecture_assumptions: list[tuple[str, str]] = []
     for name, role, proposition, rule, source_name, parents, trusted_definition in entries:
         claim_name = raw_tptp_claim_name(name)
         if claim_name in seen_claims:
@@ -53909,6 +54067,10 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if not proposition:
             lines.append(f"// unsupported raw vampire formula {name}.")
             continue
+        if raw_tptp_entry_is_negated_conjecture(role, rule):
+            negated_conjecture_assumptions.append((claim_name, proposition))
+            remember_raw_proposition(proposition, claim_name)
+            continue
         reflexivity_proof = raw_reflexivity_proof_for_proposition(
             proposition,
             local_set_definition_names,
@@ -53921,6 +54083,10 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if reflexivity_proof is not None:
             lines.append(f"Theorem {claim_name}: {proposition}.")
             lines.append(f"exact {reflexivity_proof}.")
+            lines.append("Qed.")
+        elif claim_name in skolem_intro_proofs:
+            lines.append(f"Theorem {claim_name}: {proposition}.")
+            lines.append(f"exact {skolem_intro_proofs[claim_name]}.")
             lines.append("Qed.")
         else:
             lines.append(f"Axiom {claim_name}:{proposition}.")
@@ -53951,7 +54117,13 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         remember_raw_proposition(proposition, claim_name)
 
     theorem_name = "vampire_raw_tptp_reconstruction"
-    lines.append(f"Theorem {theorem_name}: {final_proposition}.")
+    theorem_proposition = raw_tptp_implication_chain(
+        [proposition for _, proposition in negated_conjecture_assumptions],
+        final_proposition,
+    )
+    lines.append(f"Theorem {theorem_name}: {theorem_proposition}.")
+    for claim_name, proposition in negated_conjecture_assumptions:
+        lines.append(f"assume {claim_name}: {proposition}.")
     for local_alias, global_name, proposition in local_skolem_axiom_aliases:
         lines.append(f"claim {local_alias}: {proposition}.")
         lines.append(f"{{ exact {global_name}. }}")
@@ -53959,7 +54131,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     for name, role, proposition, _rule, _source_name, _parents, trusted_definition in entries:
         if not proposition:
             continue
-        if role not in {"axiom", "definition", "negated_conjecture"} and not trusted_definition:
+        if (
+            role not in {"axiom", "definition", "negated_conjecture"}
+            and not raw_tptp_entry_is_negated_conjecture(role, _rule)
+            and not trusted_definition
+        ):
             continue
         claim_name = raw_tptp_claim_name(name)
         if claim_name in emitted_local_avatar_projections:
@@ -54301,6 +54477,22 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     else:
         lines.append(f"exact {final_name}.")
     lines.append("Qed.")
+    if len(negated_conjecture_assumptions) == 1:
+        _negated_name, negated_proposition = negated_conjecture_assumptions[0]
+        positive_conjecture = raw_tptp_positive_conjecture_from_negated(negated_proposition)
+        positive_expr = parse_expr(positive_conjecture) if positive_conjecture is not None else None
+        final_expr = parse_expr(final_proposition)
+        if positive_conjecture is not None and positive_expr is not None and final_expr is not None:
+            contradiction = f"({theorem_name} Hneg)"
+            positive_from_contradiction = raw_false_to_expr_proof(contradiction, positive_expr, final_expr)
+            conjecture_name = raw_tptp_reconstructed_conjecture_name(source, problem, proof)
+            positive_arg = proposition_argument_text(positive_conjecture)
+            lines.append(f"Theorem {conjecture_name}: {positive_conjecture}.")
+            lines.append(
+                f"exact ((xm {positive_arg}) {positive_arg} "
+                f"(fun Hpos => Hpos) (fun Hneg => {positive_from_contradiction}))."
+            )
+            lines.append("Qed.")
     if local_identifier_renames:
         lines = [replace_generated_identifier_tokens(line, local_identifier_renames) for line in lines]
     lines = reconcile_megalodon_declarations(use_ambient_basic_logic(add_problem_type_variables(lines, proof, text, problem, source)))
