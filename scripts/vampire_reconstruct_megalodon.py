@@ -46525,6 +46525,93 @@ def raw_tptp_single_skolem_intro_epsilon_reconstruction(
     return (sort, definition_body), proof
 
 
+def raw_tptp_nested_set_skolem_intro_reconstruction(
+    proposition: str,
+    introduced: list[tuple[str, str]],
+    variable_sorts: dict[str, str],
+) -> tuple[dict[str, tuple[str, str]], str] | None:
+    if len(proposition) > 9000:
+        return None
+    expr = parse_expr(proposition)
+    if expr is None:
+        return None
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if len(premises) != 1:
+        return None
+
+    nested: list[tuple[str, Expr]] = []
+    current = premises[0]
+    while True:
+        exists_args = app_args(current, "vampire_exists_set", 1)
+        if exists_args is None:
+            break
+        predicate = exists_args[0]
+        if predicate.kind != "lambda" or predicate.value is None or predicate.sort != "set" or not predicate.args:
+            return None
+        nested.append((predicate.value, predicate))
+        current = predicate.args[0]
+    if len(nested) < 2:
+        return None
+
+    introduced_by_var = {replaced: symbol for replaced, symbol in introduced}
+    local_sorts = {
+        **variable_sorts,
+        **{name: binder_sort for name, binder_sort in binders},
+        **{replaced: "set" for replaced, _symbol in introduced},
+    }
+    for _replaced, symbol in introduced:
+        sort = variable_sorts.get(symbol)
+        if sort is not None:
+            local_sorts[symbol] = sort
+
+    definitions: dict[str, tuple[str, str]] = {}
+    replacements: dict[str, Expr] = {}
+    current_proof = "Hexists"
+    current_formula = premises[0]
+    used = 0
+    for replaced, predicate in nested:
+        symbol = introduced_by_var.get(replaced)
+        if symbol is None:
+            return None
+        sort = variable_sorts.get(symbol) or raw_infer_skolem_sort_from_application(
+            proposition,
+            symbol,
+            "set",
+            local_sorts,
+        )
+        if sort is None or sort_after_arguments(sort, len(split_sort_arrows(sort)) - 1) != "set":
+            return None
+        local_sorts[symbol] = sort
+        predicate = substitute_expr(predicate, replacements)
+        skolem_app = raw_find_skolem_application(conclusion, symbol, sort, "set", local_sorts)
+        if skolem_app is None:
+            return None
+        definition_body = raw_skolem_definition_body_text(predicate, skolem_app, binders, sort)
+        if definition_body is None:
+            return None
+        definitions[symbol] = (sort, definition_body)
+        current_proof = f"((vampire_exists_set_eps {proof_arg_text(predicate)}) {proof_term_text(current_proof)})"
+        current_formula = substitute_expr(predicate.args[0], {predicate.value: skolem_app})
+        replacements[replaced] = skolem_app
+        used += 1
+
+    if used < 2:
+        return None
+    target_proof = current_proof
+    if not expr_same_mod_alpha(beta_normalize_expr(current_formula), beta_normalize_expr(conclusion)):
+        transformed = raw_deep_formula_transform_proof(current_formula, conclusion, current_proof, local_sorts)
+        if transformed is None:
+            transformed = raw_skolemised_formula_transform_proof(current_formula, conclusion, current_proof, (), local_sorts)
+        if transformed is None:
+            return None
+        target_proof = transformed
+    proof = f"(fun Hexists => {target_proof})"
+    for name, binder_sort in reversed(binders):
+        proof = f"(fun {name} :{binder_sort_text(binder_sort)} => {proof})"
+    return definitions, proof
+
+
 def raw_tptp_skolem_epsilon_reconstructions(
     replay_steps: dict[str, MegalodonReplayStep],
     variable_sorts: dict[str, str],
@@ -46556,10 +46643,21 @@ def raw_tptp_skolem_epsilon_reconstructions(
                 all_introduced.append((replaced, symbol))
             if all_supported:
                 for parent in step.parents[1:]:
-                    if parent in intro_proofs:
+                    parent_claim = raw_tptp_claim_name(parent)
+                    if parent_claim in intro_proofs:
                         continue
                     parent_step = replay_steps.get(parent)
                     if parent_step is None or parent_step.rule != "skolem symbol introduction":
+                        continue
+                    reconstructed_nested = raw_tptp_nested_set_skolem_intro_reconstruction(
+                        parent_step.proposition,
+                        all_introduced,
+                        variable_sorts,
+                    )
+                    if reconstructed_nested is not None:
+                        step_definitions, proof = reconstructed_nested
+                        definitions.update(step_definitions)
+                        intro_proofs[parent_claim] = proof
                         continue
                     for replaced, symbol in all_introduced:
                         sort = variable_sorts.get(symbol) or raw_infer_skolem_sort_from_application(
