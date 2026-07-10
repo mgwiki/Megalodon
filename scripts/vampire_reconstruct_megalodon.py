@@ -39142,10 +39142,9 @@ def raw_double_negated_skolemised_target_proof(
 
 
 def implication_sides(expr: Expr) -> tuple[Expr, Expr] | None:
-    premises, conclusion = split_arrows(expr)
-    if len(premises) != 1:
+    if expr.kind != "arrow" or len(expr.args) != 2:
         return None
-    return premises[0], conclusion
+    return expr.args[0], expr.args[1]
 
 
 def raw_split_definition_name(expr: Expr) -> str | None:
@@ -39158,7 +39157,7 @@ def raw_tptp_avatar_definition_parts(proposition: str) -> tuple[str, Expr] | Non
     expr = parse_expr(proposition)
     if expr is None:
         return None
-    parts = app_args(expr, "vampire_and", 2)
+    parts = vampire_and_parts(expr)
     if parts is None:
         return None
     first = implication_sides(parts[0])
