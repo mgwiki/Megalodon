@@ -32128,12 +32128,15 @@ def raw_instantiated_quantified_equality_rewrite_clause_proof(
                         return transformed
             continue
         equality_sort = raw_equality_transport_sort(equality_sides[0], equality_sides[1], variable_sorts)
+        native_equality = equality_body.kind == "eq"
         for old_side, new_side, side_proof in (
             (equality_sides[0], equality_sides[1], equality_proof),
             (
                 equality_sides[1],
                 equality_sides[0],
-                raw_eq_symmetry_proof(equality_proof, equality_sides[1], equality_sort),
+                native_eq_symmetry_proof(equality_proof, equality_sides[0], equality_sides[1], equality_sort)
+                if native_equality
+                else raw_eq_symmetry_proof(equality_proof, equality_sides[1], equality_sort),
             ),
         ):
             proof = raw_equality_rewrite_clause_proof(
@@ -32144,6 +32147,7 @@ def raw_instantiated_quantified_equality_rewrite_clause_proof(
                 new_side,
                 side_proof,
                 equality_sort,
+                native_equality=native_equality,
             )
             if proof is not None:
                 return proof
