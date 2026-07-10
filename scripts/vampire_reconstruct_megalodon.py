@@ -41490,6 +41490,88 @@ def raw_tptp_selected_literal_subsumption_resolution_proof(
         return None
     source, source_proof = source_opened
     resolver, resolver_proof = resolver_opened
+    target_literals = raw_clause_literals(target_body)
+
+    def direct_selected_literal_proof() -> str | None:
+        source_literals = raw_clause_literals(source)
+        resolver_literals = raw_clause_literals(resolver)
+        for selected_literal in source_literals:
+            selected_premises, selected_conclusion = split_arrows(selected_literal)
+            if len(selected_premises) != 1 or not false_eliminator_expr(selected_conclusion):
+                continue
+            complementary_resolvers = [
+                resolver_literal
+                for resolver_literal in resolver_literals
+                if raw_complementary_literals(selected_literal, resolver_literal)
+            ]
+            if not complementary_resolvers:
+                continue
+            if any(
+                not expr_same_mod_alpha(source_literal, selected_literal)
+                and raw_literal_to_clause_proof(source_literal, target_body, "HLit", target_literals, ()) is None
+                for source_literal in source_literals
+            ):
+                continue
+            for complementary_resolver in complementary_resolvers:
+                if any(
+                    not expr_same_mod_alpha(resolver_literal, complementary_resolver)
+                    and raw_literal_to_clause_proof(resolver_literal, target_body, "HLit", target_literals, ()) is None
+                    for resolver_literal in resolver_literals
+                ):
+                    continue
+                previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+                PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+                try:
+
+                    def resolver_handler(resolver_literal: Expr, resolver_literal_proof: str) -> str | None:
+                        if raw_complementary_literals(selected_literal, resolver_literal):
+                            premise_proof = raw_literal_direct_transform_proof(
+                                resolver_literal,
+                                selected_premises[0],
+                                resolver_literal_proof,
+                                (),
+                            )
+                            if premise_proof is None:
+                                return None
+                            false_proof = f"({proof_head('Hselected')} {proof_term_text(premise_proof)})"
+                            return raw_false_to_expr_proof(false_proof, target_body, selected_conclusion)
+                        return raw_literal_to_clause_proof(
+                            resolver_literal,
+                            target_body,
+                            resolver_literal_proof,
+                            target_literals,
+                            (),
+                        )
+
+                    resolver_case = raw_clause_cases_with_handler(resolver, resolver_proof, resolver_handler)
+                    if resolver_case is None:
+                        continue
+
+                    def source_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
+                        if expr_same_mod_alpha(source_literal, selected_literal):
+                            return resolver_case.replace("Hselected", source_literal_proof)
+                        return raw_literal_to_clause_proof(
+                            source_literal,
+                            target_body,
+                            source_literal_proof,
+                            target_literals,
+                            (),
+                        )
+
+                    return raw_clause_cases_with_handler(source, source_proof, source_handler)
+                finally:
+                    if previous_target is None:
+                        if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                            delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+                    else:
+                        PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+        return None
+
+    direct_proof = direct_selected_literal_proof()
+    if direct_proof is not None:
+        for target_name, target_sort in reversed(target_binders):
+            direct_proof = f"(fun {target_name} :{target_sort} => {direct_proof})"
+        return direct_proof
     if not raw_clause_replay_budget_ok(source, resolver, target_body, max_literals=16, max_literal_product=512):
         return None
     proof = raw_flat_clause_resolution_proof(source, target_body, source_proof, resolver, resolver_proof)
