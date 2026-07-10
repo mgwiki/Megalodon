@@ -46195,8 +46195,8 @@ def raw_eq_prop_application_term(expr: Expr, function_name: str) -> tuple[Expr, 
         if head_args is None:
             continue
         head, args = head_args
-        if head == function_name and len(args) == 1:
-            return args[0], prop_side
+        if head == function_name and args:
+            return args[-1], prop_side
     return None
 
 
