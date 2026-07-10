@@ -6112,8 +6112,6 @@ def raw_tptp_predicate_definition_intro_proof(
     if expr is None:
         return None
     binders, body = collect_foralls(expr)
-    if tuple(name for name, _sort in binders) != definition.binders:
-        return None
     parts = raw_or_parts(body)
     if parts is None:
         return None
@@ -6133,10 +6131,17 @@ def raw_tptp_predicate_definition_intro_proof(
     target = raw_eq_true_target(split)
     if target is None:
         return None
-    expected_target = append_application_args(Expr("var", value=name), [Expr("var", value=binder) for binder in definition.binders])
-    if not expr_same_mod_alpha(target, expected_target):
+    target_head_args = raw_expr_application_head_args(target)
+    if target_head_args is None:
         return None
-    definition_body = raw_surface_boolean_alias_expr(definition.body)
+    target_head, target_args = target_head_args
+    if target_head != name or len(target_args) != len(definition.binders):
+        return None
+    definition_body = substitute_expr(
+        definition.body,
+        {binder: arg for binder, arg in zip(definition.binders, target_args)},
+    )
+    definition_body = raw_surface_boolean_alias_expr(definition_body)
     if not expr_same_mod_alpha(beta_normalize_expr(component), beta_normalize_expr(definition_body)):
         return None
 
