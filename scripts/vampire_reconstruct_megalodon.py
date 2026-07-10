@@ -6208,18 +6208,36 @@ def raw_tptp_definition_clause_info(
         return None
     binders, conclusion = collect_foralls(definition)
     local_sorts = {**variable_sorts, **{name: sort for name, sort in binders}}
-    parts = raw_or_parts(conclusion)
-    if parts is None:
-        return None
-    left, right = parts
+
+    def or_literals(expr: Expr) -> list[Expr]:
+        parts = raw_or_parts(expr)
+        if parts is None:
+            return [expr]
+        return or_literals(parts[0]) + or_literals(parts[1])
+
+    def make_or(literals: list[Expr]) -> Expr | None:
+        if not literals:
+            return None
+        result = literals[-1]
+        for literal in reversed(literals[:-1]):
+            result = Expr(
+                "app",
+                args=(Expr("var", value="or"), literal, result),
+            )
+        return result
+
     split: Expr
     body: Expr
-    left_premises, left_conclusion = split_arrows(left)
-    right_premises, right_conclusion = split_arrows(right)
-    if len(left_premises) == 1 and false_eliminator_expr(left_conclusion):
-        split, body = left_premises[0], right
-    elif len(right_premises) == 1 and false_eliminator_expr(right_conclusion):
-        split, body = right_premises[0], left
+    for index, literal in enumerate(or_literals(conclusion)):
+        premises, literal_conclusion = split_arrows(literal)
+        if len(premises) != 1 or not false_eliminator_expr(literal_conclusion):
+            continue
+        remaining = or_literals(conclusion)
+        body_candidate = make_or(remaining[:index] + remaining[index + 1 :])
+        if body_candidate is None:
+            continue
+        split, body = premises[0], body_candidate
+        break
     else:
         return None
 
@@ -19396,6 +19414,14 @@ class RawSplitRewrite:
     component: Expr
     split_to_component: str
     component_to_split: str
+
+
+@dataclass(frozen=True)
+class RawDefinitionFoldRewrite:
+    binders: tuple[tuple[str, str], ...]
+    component: Expr
+    split: Expr
+    equality_proof: str
 
 
 def infer_missing_raw_tptp_sorts(expr: Expr, variables: dict[str, str], local_sorts: dict[str, str], expected: str | None = None) -> None:
@@ -48364,6 +48390,246 @@ def raw_tptp_trusted_definition_rewrites(
     return tuple(rewrites)
 
 
+def raw_tptp_definition_fold_rewrites(
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> tuple[RawDefinitionFoldRewrite, ...]:
+    rewrites: list[RawDefinitionFoldRewrite] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+        if parent_expr is None:
+            continue
+        binders, body = collect_foralls(parent_expr)
+        sides = equality_like_sides(body)
+        if sides is None:
+            continue
+        left, right = sides
+        parent_name = raw_tptp_claim_name(parent)
+        rewrites.append(RawDefinitionFoldRewrite(tuple(binders), left, right, parent_name))
+    return tuple(rewrites)
+
+
+def raw_definition_fold_instance(
+    target: Expr,
+    rewrite: RawDefinitionFoldRewrite,
+) -> tuple[Expr, str] | None:
+    variables = {name for name, _sort in rewrite.binders}
+    subst: dict[str, Expr] = {}
+    if not match_expr(rewrite.split, target, variables, subst):
+        return None
+    flatten_substitution(subst)
+    if not variables <= set(subst):
+        return None
+    component = substitute_expr(rewrite.component, subst)
+    equality_proof = rewrite.equality_proof
+    for name, _sort in rewrite.binders:
+        equality_proof = f"({proof_head(equality_proof)} {proof_arg_text(subst[name])})"
+    return component, equality_proof
+
+
+def raw_definition_fold_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rewrites: tuple[RawDefinitionFoldRewrite, ...],
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 80 or proof_search_timed_out():
+        return None
+    if expr_same_mod_alpha(source, target):
+        return source_proof
+
+    for rewrite in rewrites:
+        instance = raw_definition_fold_instance(target, rewrite)
+        if instance is None:
+            continue
+        component, equality_proof = instance
+        component_proof = raw_definition_fold_transform_proof(
+            source,
+            component,
+            source_proof,
+            rewrites,
+            variable_sorts,
+            depth + 1,
+        )
+        if component_proof is None:
+            continue
+        return f"({proof_head(equality_proof)} (fun Qprop :prop => Qprop) {proof_term_text(component_proof)})"
+
+    source_exists = raw_exists_transform_parts(source)
+    target_exists = raw_exists_transform_parts(target)
+    if source_exists is not None and target_exists is not None:
+        source_head, source_sort, _source_predicate, source_name, source_body = source_exists
+        target_head, target_sort, _target_predicate, target_name, target_body = target_exists
+        if source_head == target_head and source_sort == target_sort:
+            witness = fresh_identifier("wfold", expr_text(source), expr_text(target), source_proof)
+            opened_source = rename_expr_variables(source_body, {source_name: witness})
+            opened_target = rename_expr_variables(target_body, {target_name: witness})
+            body_proof = raw_definition_fold_transform_proof(
+                opened_source,
+                opened_target,
+                "HfoldBody",
+                rewrites,
+                {**variable_sorts, witness: source_sort},
+                depth + 1,
+            )
+            if body_proof is not None:
+                target_intro = f"(fun Q Hexists => Hexists {witness} {proof_term_text(body_proof)})"
+                return (
+                    f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                    f"(fun {witness} :{source_sort} => fun HfoldBody => {target_intro}))"
+                )
+
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
+        assert source.value is not None and target.value is not None and target.sort is not None
+        binder = target.value
+        source_body = source.args[0]
+        target_body = target.args[0]
+        if source.value != binder:
+            source_body = rename_expr_variables(source_body, {source.value: binder})
+        body_proof = raw_definition_fold_transform_proof(
+            source_body,
+            target_body,
+            f"({proof_head(source_proof)} {binder})",
+            rewrites,
+            {**variable_sorts, binder: target.sort},
+            depth + 1,
+        )
+        if body_proof is not None:
+            return f"(fun {binder} :{target.sort} => {body_proof})"
+
+    source_and = vampire_and_parts(source)
+    target_and = vampire_and_parts(target)
+    if source_and is not None and target_and is not None:
+        left_name = fresh_identifier("HfoldL", expr_text(source), expr_text(target), source_proof)
+        right_name = fresh_identifier("HfoldR", expr_text(source), expr_text(target), source_proof, left_name)
+        for left_target, right_target in (target_and, (target_and[1], target_and[0])):
+            left_proof = raw_definition_fold_transform_proof(
+                source_and[0],
+                left_target,
+                left_name,
+                rewrites,
+                variable_sorts,
+                depth + 1,
+            )
+            if left_proof is None:
+                continue
+            right_proof = raw_definition_fold_transform_proof(
+                source_and[1],
+                right_target,
+                right_name,
+                rewrites,
+                variable_sorts,
+                depth + 1,
+            )
+            if right_proof is None:
+                continue
+            if expr_same_mod_alpha(left_target, target_and[0]):
+                return (
+                    f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                    f"(fun {left_name} {right_name} => "
+                    f"(fun P K => K {proof_term_text(left_proof)} {proof_term_text(right_proof)})))"
+                )
+            return (
+                f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                f"(fun {left_name} {right_name} => "
+                f"(fun P K => K {proof_term_text(right_proof)} {proof_term_text(left_proof)})))"
+            )
+
+    source_or = raw_or_parts(source)
+    target_or = raw_or_parts(target)
+    if source_or is not None and target_or is not None:
+        left_name = fresh_identifier("HfoldOrL", expr_text(source), expr_text(target), source_proof)
+        right_name = fresh_identifier("HfoldOrR", expr_text(source), expr_text(target), source_proof, left_name)
+        for left_target, right_target in (target_or, (target_or[1], target_or[0])):
+            left_proof = raw_definition_fold_transform_proof(
+                source_or[0],
+                left_target,
+                left_name,
+                rewrites,
+                variable_sorts,
+                depth + 1,
+            )
+            if left_proof is None:
+                continue
+            right_proof = raw_definition_fold_transform_proof(
+                source_or[1],
+                right_target,
+                right_name,
+                rewrites,
+                variable_sorts,
+                depth + 1,
+            )
+            if right_proof is None:
+                continue
+            if expr_same_mod_alpha(left_target, target_or[0]):
+                left_intro = f"(fun P Hleft Hright => Hleft {proof_term_text(left_proof)})"
+                right_intro = f"(fun P Hleft Hright => Hright {proof_term_text(right_proof)})"
+            else:
+                left_intro = f"(fun P Hleft Hright => Hright {proof_term_text(left_proof)})"
+                right_intro = f"(fun P Hleft Hright => Hleft {proof_term_text(right_proof)})"
+            return (
+                f"({proof_head(source_proof)} {proof_arg_text(target)} "
+                f"(fun {left_name} :{proof_arg_text(source_or[0])} => {left_intro}) "
+                f"(fun {right_name} :{proof_arg_text(source_or[1])} => {right_intro}))"
+            )
+
+    if source.kind == "arrow" and target.kind == "arrow":
+        source_premise, source_conclusion = source.args
+        target_premise, target_conclusion = target.args
+        premise_name = fresh_identifier("HfoldPrem", expr_text(source), expr_text(target), source_proof)
+        premise_proof = raw_definition_fold_transform_proof(
+            target_premise,
+            source_premise,
+            premise_name,
+            rewrites,
+            variable_sorts,
+            depth + 1,
+        )
+        if premise_proof is None:
+            return None
+        conclusion_proof = raw_definition_fold_transform_proof(
+            source_conclusion,
+            target_conclusion,
+            f"({proof_head(source_proof)} {proof_term_text(premise_proof)})",
+            rewrites,
+            variable_sorts,
+            depth + 1,
+        )
+        if conclusion_proof is None:
+            return None
+        return f"(fun {premise_name} :{proof_arg_text(target_premise)} => {conclusion_proof})"
+
+    return None
+
+
+def raw_tptp_definition_fold_rewrite_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if not parents:
+        return None
+    source_proposition = propositions_by_name.get(parents[0])
+    source = parse_expr(source_proposition) if source_proposition is not None else None
+    target = parse_expr(proposition)
+    if source is None or target is None:
+        return None
+    rewrites = raw_tptp_definition_fold_rewrites(parents[1:], propositions_by_name)
+    if not rewrites:
+        return None
+    return raw_definition_fold_transform_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+        rewrites,
+        variable_sorts,
+    )
+
+
 def raw_tptp_trusted_definition_rewrite_proof(
     proposition: str,
     parents: list[str],
@@ -49736,6 +50002,14 @@ def raw_tptp_definition_rewrite_proof(
             if proof is not None:
                 return proof
             proof = raw_tptp_exported_definition_chain_proof(fields, parents, local_sorts, propositions_by_name)
+            if proof is not None:
+                return proof
+            proof = raw_tptp_definition_fold_rewrite_proof(
+                expr_text(exported_target),
+                parents,
+                propositions_by_name,
+                local_sorts,
+            )
             if proof is not None:
                 return proof
             proof = raw_deep_formula_transform_proof(
@@ -55191,7 +55465,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     for definition_name, definition in predicate_definitions.items():
         equality_proposition = raw_tptp_predicate_definition_equality_proposition(definition_name, definition)
         if equality_proposition is not None:
-            predicate_definition_equalities[definition.proof] = equality_proposition
+            predicate_definition_equalities[definition.proof] = use_ambient_basic_logic_text(equality_proposition)
     propositions_by_name.update(predicate_definition_equalities)
     predicate_definition_intro_proofs: dict[str, str] = {}
     for definition_name, definition in predicate_definitions.items():
@@ -55658,14 +55932,21 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                         definition_key = predicate_definition_keys_by_step.get(parent)
                         if definition_key is not None and definition_key not in replay_parents:
                             replay_parents.append(definition_key)
-                    replay_proof = raw_tptp_trusted_definition_rewrite_proof(
+                    replay_proof = raw_tptp_definition_fold_rewrite_proof(
                         proposition,
                         replay_parents,
                         propositions_by_name,
                         variable_sorts,
-                        trusted_definition_names,
                     )
-                    trusted_definition_replay = replay_proof is not None
+                    if replay_proof is None:
+                        replay_proof = raw_tptp_trusted_definition_rewrite_proof(
+                            proposition,
+                            replay_parents,
+                            propositions_by_name,
+                            variable_sorts,
+                            trusted_definition_names,
+                        )
+                        trusted_definition_replay = replay_proof is not None
                     if replay_proof is None:
                         replay_proof = raw_tptp_unit_clause_simplification_proof(
                             proposition,
@@ -55845,6 +56126,13 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     propositions_by_name,
                     variable_sorts,
                 )
+                if replay_proof is None:
+                    replay_proof = raw_tptp_definition_fold_rewrite_proof(
+                        proposition,
+                        replay_parents,
+                        propositions_by_name,
+                        variable_sorts,
+                    )
                 if replay_proof is None:
                     replay_proof = raw_tptp_chained_definition_rewrite_with_native_argument_proof(
                         proposition,
