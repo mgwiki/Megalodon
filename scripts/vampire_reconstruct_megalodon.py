@@ -45937,6 +45937,90 @@ def raw_tptp_skolemisation_proof(
     )
 
 
+def raw_expr_mentions_symbol(expr: Expr, symbol: str) -> bool:
+    if expr.kind == "var":
+        return expr.value == symbol
+    return any(raw_expr_mentions_symbol(arg, symbol) for arg in expr.args)
+
+
+def raw_skolem_application_expr(symbol: str, binders: list[tuple[str, str]], sort: str) -> Expr | None:
+    pieces = split_sort_arrows(sort)
+    if not pieces or pieces[-1] != "set":
+        return None
+    arg_sorts = list(pieces[:-1])
+    if any(arg_sort != "set" for arg_sort in arg_sorts):
+        return None
+    if len(arg_sorts) > len(binders):
+        return None
+    args: list[Expr] = []
+    for (binder_name, binder_sort), arg_sort in zip(binders, arg_sorts):
+        if binder_sort != arg_sort:
+            return None
+        args.append(Expr("var", value=binder_name))
+    return append_application_args(Expr("var", value=symbol), args)
+
+
+def raw_skolem_definition_body_text(
+    predicate: Expr,
+    binders: list[tuple[str, str]],
+    sort: str,
+) -> str | None:
+    pieces = split_sort_arrows(sort)
+    if not pieces or pieces[-1] != "set" or len(pieces[:-1]) > len(binders):
+        return None
+    body = f"Eps_i {proof_arg_text(predicate)}"
+    for name, binder_sort in reversed(binders[: len(pieces) - 1]):
+        body = f"fun {name} :{binder_sort_text(binder_sort)} => {body}"
+    return body
+
+
+def raw_tptp_single_skolem_intro_epsilon_reconstruction(
+    proposition: str,
+    symbol: str,
+    sort: str,
+    replaced: str | None,
+    variable_sorts: dict[str, str],
+) -> tuple[tuple[str, str], str] | None:
+    if len(proposition) > 2500:
+        return None
+    expr = parse_expr(proposition)
+    if expr is None:
+        return None
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if len(premises) != 1:
+        return None
+    exists_args = app_args(premises[0], "vampire_exists_set", 1)
+    if exists_args is None:
+        return None
+    predicate = exists_args[0]
+    if predicate.kind != "lambda" or predicate.value is None or predicate.sort != "set" or not predicate.args:
+        return None
+    if replaced is not None and predicate.value != replaced:
+        return None
+    skolem_app = raw_skolem_application_expr(symbol, binders, sort)
+    if skolem_app is None or not raw_expr_mentions_symbol(conclusion, symbol):
+        return None
+    definition_body = raw_skolem_definition_body_text(predicate, binders, sort)
+    if definition_body is None:
+        return None
+    choice_body = substitute_expr(predicate.args[0], {predicate.value: skolem_app})
+    local_sorts = {**variable_sorts, **{name: binder_sort for name, binder_sort in binders}, symbol: sort}
+    choice_proof = f"((vampire_exists_set_eps {proof_arg_text(predicate)}) Hexists)"
+    target_proof = choice_proof
+    if not expr_same_mod_alpha(beta_normalize_expr(choice_body), beta_normalize_expr(conclusion)):
+        transformed = raw_deep_formula_transform_proof(choice_body, conclusion, choice_proof, local_sorts)
+        if transformed is None:
+            transformed = raw_skolemised_formula_transform_proof(choice_body, conclusion, choice_proof, (), local_sorts)
+        if transformed is None:
+            return None
+        target_proof = transformed
+    proof = f"(fun Hexists => {target_proof})"
+    for name, binder_sort in reversed(binders):
+        proof = f"(fun {name} :{binder_sort_text(binder_sort)} => {proof})"
+    return (sort, definition_body), proof
+
+
 def raw_tptp_skolem_epsilon_reconstructions(
     replay_steps: dict[str, MegalodonReplayStep],
     variable_sorts: dict[str, str],
@@ -45954,6 +46038,42 @@ def raw_tptp_skolem_epsilon_reconstructions(
                 continue
             if introduced_count <= 0:
                 continue
+            all_introduced: list[tuple[str, str]] = []
+            all_supported = True
+            for index in range(introduced_count):
+                if fields.get(f"introduced_{index}_kind") != "0":
+                    all_supported = False
+                    break
+                symbol = fields.get(f"introduced_{index}_symbol")
+                replaced = fields.get(f"introduced_{index}_replaced_var")
+                if symbol is None or replaced is None or not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", symbol):
+                    all_supported = False
+                    break
+                all_introduced.append((replaced, symbol))
+            if all_supported:
+                for parent in step.parents[1:]:
+                    if parent in intro_proofs:
+                        continue
+                    parent_step = replay_steps.get(parent)
+                    if parent_step is None or parent_step.rule != "skolem symbol introduction":
+                        continue
+                    for replaced, symbol in all_introduced:
+                        sort = variable_sorts.get(symbol)
+                        if sort is None:
+                            continue
+                        reconstructed = raw_tptp_single_skolem_intro_epsilon_reconstruction(
+                            parent_step.proposition,
+                            symbol,
+                            sort,
+                            replaced,
+                            variable_sorts,
+                        )
+                        if reconstructed is None:
+                            continue
+                        definition, proof = reconstructed
+                        definitions.setdefault(symbol, definition)
+                        intro_proofs[raw_tptp_claim_name(parent)] = proof
+                        break
             introduced: list[tuple[str, str]] = []
             supported = True
             for index in range(introduced_count):
@@ -53508,6 +53628,31 @@ def raw_tptp_reconstructed_conjecture_name(source: Path | None, problem: Path | 
     return f"vampire_reconstructed_{sanitized}_tptp"
 
 
+def ordered_named_definition_bodies(definitions: dict[str, tuple[str, str]]) -> list[tuple[str, tuple[str, str]]]:
+    pending = set(definitions)
+    ordered: list[tuple[str, tuple[str, str]]] = []
+    while pending:
+        progressed = False
+        for name in sorted(pending):
+            _sort, body = definitions[name]
+            dependencies = {
+                other
+                for other in pending
+                if other != name and re.search(rf"(?<![A-Za-z0-9_']){re.escape(other)}(?![A-Za-z0-9_'])", body)
+            }
+            if dependencies:
+                continue
+            ordered.append((name, definitions[name]))
+            pending.remove(name)
+            progressed = True
+            break
+        if not progressed:
+            for name in sorted(pending):
+                ordered.append((name, definitions[name]))
+            break
+    return ordered
+
+
 def megalodon_declared_name(line: str) -> str | None:
     match = MEGALODON_DECLARED_NAME_RE.match(line)
     return match.group("name") if match is not None else None
@@ -54022,7 +54167,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         )
         lines.append("exact (fun P Hexists => Hexists (P (Eps_i P)) (fun X HX => Eps_i_ax P X HX)).")
         lines.append("Qed.")
-    for name, (sort, body) in sorted(skolem_epsilon_definitions.items()):
+    for name, (sort, body) in ordered_named_definition_bodies(skolem_epsilon_definitions):
         if name in declared_names:
             continue
         lines.append(f"Definition {name} : {sort} := {body}.")
