@@ -569,6 +569,12 @@ def proof_has_reconstruction_payload(text: str, proof_mode: str) -> bool:
 def raw_tptp_proof_has_reconstructable_content(text: str) -> bool:
     if collect_tptp_declarations(text):
         return True
+    if (
+        "% format: vampire-megalodon-proof-outline-v1" in text
+        and "megalodon_reconstruction_start." in text
+        and any(MEGALODON_STEP_RE.match(line) for line in text.splitlines())
+    ):
+        return True
     return (
         "megalodon_reconstruction_start." in text
         and "megalodon_final_step(" in text
@@ -24287,6 +24293,81 @@ def raw_false_to_expr_proof(false_proof: str, target: Expr, false_expr: Expr | N
             return false_proof
         return f"((FalseE {proof_term_text(false_proof)}) {proof_arg_text(target)})"
     return f"({proof_head(false_proof)} {proof_arg_text(target)})"
+
+
+def raw_final_clause_false_from_known_proof(
+    source: Expr,
+    source_proof: str,
+    known_entries: list[tuple[str, str]],
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 24 or proof_search_timed_out():
+        return None
+    false_target = Expr("var", value="False")
+    if false_eliminator_expr(source):
+        return source_proof
+    impossible = raw_false_literal_elimination_proof(source, false_target, source_proof)
+    if impossible is not None:
+        return impossible
+    source_or = raw_or_parts(source)
+    if source_or is not None:
+        left, right = source_or
+        left_name = fresh_identifier("HfinalL", expr_text(source), source_proof)
+        right_name = fresh_identifier("HfinalR", expr_text(source), source_proof, left_name)
+        left_false = raw_final_clause_false_from_known_proof(
+            left,
+            left_name,
+            known_entries,
+            variable_sorts,
+            depth + 1,
+        )
+        right_false = raw_final_clause_false_from_known_proof(
+            right,
+            right_name,
+            known_entries,
+            variable_sorts,
+            depth + 1,
+        )
+        if left_false is not None and right_false is not None:
+            return (
+                f"({proof_head(source_proof)} False "
+                f"(fun {left_name} => {left_false}) "
+                f"(fun {right_name} => {right_false}))"
+            )
+        return None
+
+    candidates: list[tuple[Expr, str]] = []
+    for proposition, proof in reversed(known_entries):
+        if proof == source_proof or len(proposition) + len(expr_text(source)) > 30000:
+            continue
+        candidate = parse_expr(proposition)
+        if candidate is None:
+            continue
+        candidates.append((ambient_basic_logic_expr(candidate), proof))
+        if len(candidates) >= 160:
+            break
+
+    for candidate, candidate_proof in candidates:
+        proof = raw_complement_resolution_proof(
+            source,
+            source_proof,
+            candidate,
+            candidate_proof,
+            false_target,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_complement_resolution_proof(
+            candidate,
+            candidate_proof,
+            source,
+            source_proof,
+            false_target,
+        )
+        if proof is not None:
+            return proof
+    return None
 
 
 def raw_negated_implication_forall_to_conjunction_proof(
@@ -56021,6 +56102,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         [proposition for _, proposition in negated_conjecture_assumptions],
         final_proposition,
     )
+    theorem_line_index = len(lines)
     lines.append(f"Theorem {theorem_name}: {theorem_proposition}.")
     for claim_name, proposition in negated_conjecture_assumptions:
         lines.append(f"assume {claim_name}: {proposition}.")
@@ -56386,10 +56468,37 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             )
             emitted_local_avatar_projections.add(claim_name)
 
-    if final_name is None:
+    final_exact_proof = final_name
+    final_expr_for_close = parse_expr(final_proposition)
+    if final_exact_proof is not None and final_expr_for_close is not None and not false_eliminator_expr(final_expr_for_close):
+        previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+        PROOF_SEARCH_STATE.deadline = proof_search_now() + 5.0
+        try:
+            closed_false_proof = raw_final_clause_false_from_known_proof(
+                ambient_basic_logic_expr(final_expr_for_close),
+                final_exact_proof,
+                known_raw_proposition_entries,
+                variable_sorts,
+            )
+        finally:
+            if previous_deadline is None:
+                if hasattr(PROOF_SEARCH_STATE, "deadline"):
+                    delattr(PROOF_SEARCH_STATE, "deadline")
+            else:
+                PROOF_SEARCH_STATE.deadline = previous_deadline
+        if closed_false_proof is not None:
+            final_exact_proof = closed_false_proof
+            final_proposition = "False"
+            theorem_proposition = raw_tptp_implication_chain(
+                [proposition for _, proposition in negated_conjecture_assumptions],
+                final_proposition,
+            )
+            lines[theorem_line_index] = f"Theorem {theorem_name}: {theorem_proposition}."
+
+    if final_exact_proof is None:
         lines.append("admit.")
     else:
-        lines.append(f"exact {final_name}.")
+        lines.append(f"exact {final_exact_proof}.")
     lines.append("Qed.")
     if len(negated_conjecture_assumptions) == 1:
         _negated_name, negated_proposition = negated_conjecture_assumptions[0]
@@ -56397,16 +56506,22 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         positive_expr = parse_expr(positive_conjecture) if positive_conjecture is not None else None
         final_expr = parse_expr(final_proposition)
         if positive_conjecture is not None and positive_expr is not None and final_expr is not None:
-            contradiction = f"({theorem_name} Hneg)"
-            positive_from_contradiction = raw_false_to_expr_proof(contradiction, positive_expr, final_expr)
-            conjecture_name = raw_tptp_reconstructed_conjecture_name(source, problem, proof)
-            positive_arg = proposition_argument_text(positive_conjecture)
-            lines.append(f"Theorem {conjecture_name}: {positive_conjecture}.")
-            lines.append(
-                f"exact ((xm {positive_arg}) {positive_arg} "
-                f"(fun Hpos => Hpos) (fun Hneg => {positive_from_contradiction}))."
-            )
-            lines.append("Qed.")
+            final_proof = f"({theorem_name} Hneg)"
+            false_proof = final_proof if false_eliminator_expr(final_expr) else None
+            if false_proof is not None:
+                positive_from_contradiction = raw_false_to_expr_proof(
+                    false_proof,
+                    positive_expr,
+                    Expr("var", value="False"),
+                )
+                conjecture_name = raw_tptp_reconstructed_conjecture_name(source, problem, proof)
+                positive_arg = proposition_argument_text(positive_conjecture)
+                lines.append(f"Theorem {conjecture_name}: {positive_conjecture}.")
+                lines.append(
+                    f"exact ((xm {positive_arg}) {positive_arg} "
+                    f"(fun Hpos => Hpos) (fun Hneg => {positive_from_contradiction}))."
+                )
+                lines.append("Qed.")
     if local_identifier_renames:
         lines = [replace_generated_identifier_tokens(line, local_identifier_renames) for line in lines]
     lines = reconcile_megalodon_declarations(use_ambient_basic_logic(add_problem_type_variables(lines, proof, text, problem, source)))
