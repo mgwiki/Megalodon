@@ -38024,11 +38024,107 @@ def raw_forall_prop_true_equality_split_proof(
     return None
 
 
+def raw_literal_polarity(expr: Expr) -> tuple[bool, Expr] | None:
+    premises, conclusion = split_arrows(expr)
+    if len(premises) == 1 and false_eliminator_expr(conclusion):
+        return False, premises[0]
+    if false_eliminator_expr(expr):
+        return False, Expr("var", value="True")
+    return True, expr
+
+
+def raw_propositional_clause_entailment_proof(
+    target: Expr,
+    clauses: list[tuple[Expr, str]],
+) -> str | None:
+    if len(clauses) > 8 or any(len(raw_clause_literals(clause)) > 6 for clause, _ in clauses):
+        return None
+    if any(collect_foralls(clause)[0] for clause, _ in clauses):
+        return None
+    target_key = expr_key(target)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target)
+    visited: set[tuple[tuple[tuple[str, bool], ...], int]] = set()
+
+    def env_key(env: dict[tuple[str, bool], str], depth: int) -> tuple[tuple[tuple[str, bool], ...], int]:
+        return tuple(sorted(env.keys())), depth
+
+    def contradiction_proof(literal: Expr, literal_proof: str, env: dict[tuple[str, bool], str]) -> str | None:
+        polarity = raw_literal_polarity(literal)
+        if polarity is None:
+            return None
+        positive, atom = polarity
+        key = expr_key(atom)
+        if positive:
+            negative_proof = env.get((key, False))
+            if negative_proof is None:
+                return None
+            false_proof = f"({proof_head(negative_proof)} {proof_term_text(literal_proof)})"
+        else:
+            positive_proof = env.get((key, True))
+            if positive_proof is None:
+                return None
+            false_proof = f"({proof_head(literal_proof)} {proof_term_text(positive_proof)})"
+        return raw_false_to_expr_proof(false_proof, target)
+
+    def add_literal_env(literal: Expr, literal_proof: str, env: dict[tuple[str, bool], str]) -> dict[tuple[str, bool], str] | None:
+        polarity = raw_literal_polarity(literal)
+        if polarity is None:
+            return None
+        positive, atom = polarity
+        next_env = dict(env)
+        next_env.setdefault((expr_key(atom), positive), literal_proof)
+        return next_env
+
+    def search(env: dict[tuple[str, bool], str], depth: int) -> str | None:
+        if depth > 10 or proof_search_timed_out():
+            return None
+        direct = env.get((target_key, True))
+        if direct is not None:
+            return direct
+        state = env_key(env, depth)
+        if state in visited:
+            return None
+        visited.add(state)
+        for clause, clause_proof in clauses:
+            if proof_search_timed_out():
+                return None
+
+            def handler(literal: Expr, literal_proof: str) -> str | None:
+                direct_literal = raw_literal_direct_transform_proof(literal, target, literal_proof, ())
+                if direct_literal is not None:
+                    return direct_literal
+                contradiction = contradiction_proof(literal, literal_proof, env)
+                if contradiction is not None:
+                    return contradiction
+                next_env = add_literal_env(literal, literal_proof, env)
+                if next_env is None or next_env.keys() <= env.keys():
+                    return None
+                return search(next_env, depth + 1)
+
+            proof = raw_clause_cases_with_handler(clause, clause_proof, handler, avoid_text=str(depth))
+            if proof is not None:
+                return proof
+        return None
+
+    try:
+        return search({}, 0)
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_tptp_rat_proof(
     proposition: str,
     parents: list[str],
     propositions_by_name: dict[str, str],
 ) -> str | None:
+    target = parse_expr(proposition)
+    if target is None:
+        return None
     if len(parents) == 1:
         return raw_tptp_trivial_inequality_removal_proof(
             proposition,
@@ -38037,9 +38133,6 @@ def raw_tptp_rat_proof(
             max_literals=16,
             max_literal_product=256,
         )
-    target = parse_expr(proposition)
-    if target is None:
-        return None
     parent_exprs: list[tuple[str, Expr, str]] = []
     for parent in parents:
         parent_proposition = propositions_by_name.get(parent)
@@ -38050,6 +38143,12 @@ def raw_tptp_rat_proof(
             parent_exprs.append((parent, parent_expr, raw_tptp_claim_name(parent)))
     if len(parent_exprs) < 2:
         return None
+    propositional = raw_propositional_clause_entailment_proof(
+        target,
+        [(expr, proof_name) for _parent, expr, proof_name in parent_exprs],
+    )
+    if propositional is not None:
+        return propositional
     if 2 < len(parent_exprs) <= 16:
         for source_index, (_, source, source_proof) in enumerate(parent_exprs[:8]):
             if len(raw_clause_literals(source)) > 24:
