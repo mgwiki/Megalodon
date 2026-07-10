@@ -48251,6 +48251,7 @@ def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: s
         and "HnotSourceConclusion" in proof
         and "HtargetNegativeBody" in proof
         and re.search(r"forall X[0-9]+:prop, or X[0-9]+ \(vampire_exists_set", proof)
+        and "HnotExists" not in proof
     ):
         return True
     return False
@@ -48603,13 +48604,173 @@ def raw_implication_to_ennf_or_proof(
     )
 
 
+def raw_peirce_cps_exists_ennf_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 20 or proof_search_timed_out():
+        return None
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if len(source_binders) != len(target_binders) or len(target_binders) != 1:
+        return None
+    (source_name, source_sort), (target_name, target_sort) = source_binders[0], target_binders[0]
+    if source_sort != "prop" or target_sort != "prop":
+        return None
+    if source_name != target_name:
+        source_body = rename_expr_variables(source_body, {source_name: target_name})
+    target_var = Expr("var", value=target_name)
+    source_premises, source_conclusion = split_arrows(source_body)
+    if len(source_premises) != 1 or not expr_same_mod_alpha(source_conclusion, target_var):
+        return None
+
+    premise_binders, premise_body = collect_foralls(source_premises[0])
+    if len(premise_binders) != 1:
+        return None
+    witness_name, witness_sort = premise_binders[0]
+    premise_parts, premise_conclusion = split_arrows(premise_body)
+    if len(premise_parts) != 1 or not expr_same_mod_alpha(premise_conclusion, target_var):
+        return None
+    source_component = premise_parts[0]
+
+    target_or = raw_or_parts(target_body)
+    if target_or is None:
+        return None
+    if expr_same_mod_alpha(target_or[0], target_var):
+        positive_on_left = True
+        target_exists = target_or[1]
+    elif expr_same_mod_alpha(target_or[1], target_var):
+        positive_on_left = False
+        target_exists = target_or[0]
+    else:
+        return None
+    exists_parts = raw_exists_transform_parts(target_exists)
+    if exists_parts is None:
+        return None
+    _exists_head, exists_sort, _exists_predicate, exists_name, exists_body = exists_parts
+    if exists_sort != witness_sort:
+        return None
+    if exists_name != witness_name:
+        exists_body = rename_expr_variables(exists_body, {exists_name: witness_name})
+    negative_target = Expr("arrow", args=(target_var, Expr("var", value="False")))
+    exists_components = raw_conjunction_components(exists_body)
+    negative_index = next(
+        (index for index, component in enumerate(exists_components) if expr_same_mod_alpha(component, negative_target)),
+        None,
+    )
+    if negative_index is None:
+        return None
+    remaining_components = [component for index, component in enumerate(exists_components) if index != negative_index]
+    if len(remaining_components) != 1:
+        return None
+    target_component = remaining_components[0]
+
+    local_sorts = {**variable_sorts, target_name: target_sort, witness_name: witness_sort}
+    component_proof = raw_deep_formula_transform_proof(
+        source_component,
+        target_component,
+        "HsourceComponent",
+        local_sorts,
+    )
+    if component_proof is None:
+        component_proof = raw_classical_implication_to_or_transform_proof(
+            source_component,
+            target_component,
+            "HsourceComponent",
+        )
+    if component_proof is None:
+        component_proof = raw_tptp_peirce_implication_ennf_proof(
+            expr_text(target_component),
+            ["source"],
+            {"source": expr_text(source_component)},
+            local_sorts,
+            source_proof_override="HsourceComponent",
+            depth=depth + 1,
+        )
+    if component_proof is None:
+        component_proof = raw_implication_to_ennf_or_proof(
+            source_component,
+            target_component,
+            "HsourceComponent",
+            local_sorts,
+            depth + 1,
+        )
+    if component_proof is None:
+        component_proof = raw_clause_transform_proof(source_component, target_component, "HsourceComponent")
+    if component_proof is None and expr_same_mod_alpha(source_component, target_component):
+        component_proof = "HsourceComponent"
+    if component_proof is None:
+        return None
+
+    target_text = proof_arg_text(target_body)
+    exists_text = proof_arg_text(target_exists)
+    target_proof_name = fresh_identifier("Htarget", expr_text(source), expr_text(target), source_proof)
+    not_target_name = fresh_identifier("HnotTarget", expr_text(source), expr_text(target), source_proof, target_proof_name)
+    not_exists_name = fresh_identifier("HnotExists", expr_text(source), expr_text(target), source_proof)
+
+    positive_intro = (
+        raw_or_left_intro(target_body, target_proof_name)
+        if positive_on_left
+        else raw_or_right_intro(target_body, target_proof_name)
+    )
+    if positive_intro is None:
+        return None
+
+    def exists_body_component_proof(component: Expr) -> str | None:
+        if expr_same_mod_alpha(component, negative_target):
+            return not_target_name
+        if expr_same_mod_alpha(component, target_component):
+            return component_proof
+        return None
+
+    exists_body_proof = raw_build_conjunction_from_component_proofs(exists_body, exists_body_component_proof)
+    if exists_body_proof is None:
+        return None
+    exists_intro = f"(fun Q Hexists => Hexists {witness_name} {proof_term_text(exists_body_proof)})"
+    false_from_not_exists = f"({not_exists_name} {proof_term_text(exists_intro)})"
+    target_from_not_exists = raw_false_to_expr_proof(false_from_not_exists, target_var)
+    source_function = (
+        f"(fun {witness_name} :{witness_sort} => "
+        f"(fun HsourceComponent :{proof_arg_text(source_component)} => {target_from_not_exists}))"
+    )
+    source_target = f"(({proof_head(source_proof)} {target_name}) {proof_term_text(source_function)})"
+    false_from_not_target = f"({not_target_name} {proof_term_text(source_target)})"
+    exists_from_false = raw_false_to_expr_proof(false_from_not_target, target_exists)
+    exists_case = (
+        f"(xm {exists_text} {exists_text} "
+        f"(fun Hexists => Hexists) "
+        f"(fun {not_exists_name} => {exists_from_false}))"
+    )
+    negative_intro = (
+        raw_or_right_intro(target_body, exists_case)
+        if positive_on_left
+        else raw_or_left_intro(target_body, exists_case)
+    )
+    if negative_intro is None:
+        return None
+    proof = (
+        f"(xm {proof_arg_text(target_var)} {target_text} "
+        f"(fun {target_proof_name} => {proof_term_text(positive_intro)}) "
+        f"(fun {not_target_name} => {proof_term_text(negative_intro)}))"
+    )
+    for name, sort in reversed(target_binders):
+        proof = f"(fun {name} :{sort} => {proof})"
+    return proof
+
+
 def raw_tptp_peirce_implication_ennf_proof(
     proposition: str,
     parents: list[str],
     propositions_by_name: dict[str, str],
     variable_sorts: dict[str, str],
     source_proof_override: str | None = None,
+    depth: int = 0,
 ) -> str | None:
+    if depth > 20 or proof_search_timed_out():
+        return None
     if len(parents) != 1:
         return None
     parent_proposition = propositions_by_name.get(parents[0])
@@ -48617,6 +48778,15 @@ def raw_tptp_peirce_implication_ennf_proof(
     target = parse_expr(proposition)
     if source is None or target is None:
         return None
+    cps_exists = raw_peirce_cps_exists_ennf_proof(
+        source,
+        target,
+        source_proof_override or raw_tptp_claim_name(parents[0]),
+        variable_sorts,
+        depth,
+    )
+    if cps_exists is not None:
+        return cps_exists
     source_binders, source_body = collect_foralls(source)
     target_binders, target_body = collect_foralls(target)
     if len(source_binders) != len(target_binders) or len(target_binders) != 1:
@@ -48687,7 +48857,15 @@ def raw_tptp_peirce_implication_ennf_proof(
             if premise_index in used_premises:
                 continue
             premise_proof = source_premise_proof(premise_index, premise)
-            transformed = raw_classical_implication_to_or_transform_proof(premise, component, premise_proof)
+            transformed = raw_peirce_cps_exists_ennf_proof(
+                premise,
+                component,
+                premise_proof,
+                local_sorts,
+                depth + 1,
+            )
+            if transformed is None:
+                transformed = raw_classical_implication_to_or_transform_proof(premise, component, premise_proof)
             if transformed is None:
                 transformed = raw_deep_formula_transform_proof(premise, component, premise_proof, local_sorts)
             if transformed is None:
@@ -48699,6 +48877,7 @@ def raw_tptp_peirce_implication_ennf_proof(
                     {"source": expr_text(premise)},
                     local_sorts,
                     source_proof_override=premise_proof,
+                    depth=depth + 1,
                 )
             if transformed is None:
                 transformed = raw_implication_to_ennf_or_proof(
