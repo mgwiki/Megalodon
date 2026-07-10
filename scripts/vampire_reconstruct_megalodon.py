@@ -37083,6 +37083,32 @@ def raw_tptp_superposition_proof(
                 early_parent_exprs.append((parent_expr, raw_tptp_canonical_parent_proof_name(parent, propositions_by_name)))
         early_target_expr = parse_expr(proposition)
         if early_target_expr is not None and len(early_parent_exprs) == 2:
+            early_target_binders, _early_target_body = collect_foralls(early_target_expr)
+            early_parent_binder_counts = [
+                len(collect_foralls(parent_expr)[0])
+                for parent_expr, _parent_proof in early_parent_exprs
+            ]
+            if early_target_binders and min(early_parent_binder_counts, default=0) > 0:
+                proof = raw_instantiated_parent_clause_resolution_proof(
+                    early_parent_exprs[0][0],
+                    early_target_expr,
+                    early_parent_exprs[0][1],
+                    early_parent_exprs[1][0],
+                    early_parent_exprs[1][1],
+                    variable_sorts,
+                )
+                if proof is not None:
+                    return proof
+                proof = raw_instantiated_parent_clause_resolution_proof(
+                    early_parent_exprs[1][0],
+                    early_target_expr,
+                    early_parent_exprs[1][1],
+                    early_parent_exprs[0][0],
+                    early_parent_exprs[0][1],
+                    variable_sorts,
+                )
+                if proof is not None:
+                    return proof
             proof = raw_guarded_universal_negative_literal_superposition_proof(
                 early_parent_exprs[0][0],
                 early_target_expr,
