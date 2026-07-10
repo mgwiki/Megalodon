@@ -27437,9 +27437,13 @@ def raw_tptp_rectify_proof(
     variable_sorts: dict[str, str],
     replay_step: MegalodonReplayStep | None,
 ) -> str | None:
-    if len(parents) != 1 or replay_step is None:
+    if len(parents) != 1:
         return None
-    local_sorts = raw_tptp_replay_metadata_sorts(variable_sorts, replay_step)
+    local_sorts = (
+        raw_tptp_replay_metadata_sorts(variable_sorts, replay_step)
+        if replay_step is not None
+        else variable_sorts
+    )
     parent_proof = raw_tptp_claim_name(parents[0])
     target = parse_expr(proposition)
     parent_proposition = propositions_by_name.get(parents[0])
@@ -27448,6 +27452,9 @@ def raw_tptp_rectify_proof(
         proof = raw_rectify_formula_transform_proof(parsed_parent, target, parent_proof, local_sorts)
         if proof is not None:
             return proof
+
+    if replay_step is None:
+        return None
 
     candidate_pairs: list[tuple[Expr, Expr]] = []
     for fields in megalodon_replay_extra_fields(replay_step, "rectify"):
