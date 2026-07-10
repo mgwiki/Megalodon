@@ -89,6 +89,10 @@ PROOF_SEARCH_CLOCK = getattr(time, "thread_time", time.monotonic)
 MEGALODON_ADMIT_RE = re.compile(r"\badmit\.")
 
 
+def reset_proof_search_state() -> None:
+    PROOF_SEARCH_STATE.__dict__.clear()
+
+
 def proof_search_now() -> float:
     return PROOF_SEARCH_CLOCK()
 
@@ -49039,7 +49043,7 @@ def raw_tptp_trusted_definition_rewrite_proof(
         parents[1:],
         propositions_by_name,
         trusted_definition_names,
-        local=False,
+        local=True,
     )
     if not rewrites:
         return None
@@ -53130,6 +53134,11 @@ def raw_tptp_replay_proof(
     variable_sorts: dict[str, str],
     replay_step: MegalodonReplayStep | None = None,
 ) -> str | None:
+    parsed_proposition = parse_expr(proposition)
+    if parsed_proposition is not None:
+        tautology_proof = raw_boolean_tautology_proof(parsed_proposition, variable_sorts)
+        if tautology_proof is not None:
+            return tautology_proof
     if rule == "fool_exhaustiveness_axiom":
         return raw_fool_exhaustiveness_axiom_proof(proposition)
     if rule == "fool_distinctness_axiom":
@@ -56220,10 +56229,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             lines.append("Qed.")
         else:
             lines.append(f"Axiom {claim_name}:{proposition}.")
-            if rule == "skolem_symbol_introduction":
+            if rule == "skolem_symbol_introduction" or standard_tptp_proof:
                 local_alias = f"{claim_name}_local"
-                axiom_claim_instantiations[claim_name] = local_alias
-                local_skolem_axiom_aliases.append((local_alias, claim_name, proposition))
+                if claim_name not in axiom_claim_instantiations:
+                    axiom_claim_instantiations[claim_name] = local_alias
+                    local_skolem_axiom_aliases.append((local_alias, claim_name, proposition))
             if trusted_definition:
                 parsed_definition = parse_expr(proposition)
                 if parsed_definition is not None:
@@ -56262,13 +56272,30 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     for name, role, proposition, _rule, _source_name, _parents, trusted_definition in entries:
         if not proposition:
             continue
+        claim_name = raw_tptp_claim_name(name)
+        if trusted_definition:
+            parsed_definition = parse_expr(proposition)
+            definition = raw_trusted_predicate_definition_parts(parsed_definition) if parsed_definition is not None else None
+            if definition is not None and claim_name not in emitted_local_avatar_projections:
+                binders, split, component = definition
+                lines.append(
+                    f"claim {claim_name}_split_to_component_local: "
+                    f"{raw_forall_wrapped_implication(binders, split, component)}."
+                )
+                lines.append(f"{{ exact {claim_name}_split_to_component. }}")
+                lines.append(
+                    f"claim {claim_name}_component_to_split_local: "
+                    f"{raw_forall_wrapped_implication(binders, component, split)}."
+                )
+                lines.append(f"{{ exact {claim_name}_component_to_split. }}")
+                emitted_local_avatar_projections.add(claim_name)
+                continue
         if (
             role not in {"axiom", "definition", "negated_conjecture"}
             and not raw_tptp_entry_is_negated_conjecture(role, _rule)
             and not trusted_definition
         ):
             continue
-        claim_name = raw_tptp_claim_name(name)
         if claim_name in emitted_local_avatar_projections:
             continue
         avatar_definition = raw_tptp_avatar_definition_parts(proposition)
@@ -56754,6 +56781,7 @@ def find_raw_tptp_problem_for_proof(proof_path: Path, repo: Path) -> Path | None
 
 
 def write_raw_tptp_skeleton(task: tuple[Path, Path, Path, Path | None]) -> Path | None:
+    reset_proof_search_state()
     proof, output_dir, repo, source = task
     proof_path = proof if proof.is_absolute() else (repo / proof)
     if not proof_path.exists():
