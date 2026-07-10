@@ -37640,6 +37640,26 @@ def raw_tptp_superposition_proof(
             )
             if proof is not None:
                 return proof
+            proof = raw_guarded_quantified_resolver_clause_superposition_proof(
+                early_parent_exprs[0][0],
+                early_target_expr,
+                early_parent_exprs[0][1],
+                early_parent_exprs[1][0],
+                early_parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_guarded_quantified_resolver_clause_superposition_proof(
+                early_parent_exprs[1][0],
+                early_target_expr,
+                early_parent_exprs[1][1],
+                early_parent_exprs[0][0],
+                early_parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
             proof = raw_guarded_universal_negative_literal_superposition_proof(
                 early_parent_exprs[0][0],
                 early_target_expr,
@@ -40960,6 +40980,338 @@ def raw_guarded_resolver_quantified_positive_clause_resolution_superposition_pro
     try:
         return raw_clause_cases_with_handler(
             resolver_body,
+            resolver_proof,
+            resolver_handler,
+            avoid_text=source_proof,
+        )
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
+def raw_guarded_quantified_resolver_clause_superposition_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    resolver: Expr,
+    resolver_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if proof_search_timed_out():
+        return None
+    source_binders, source_body = collect_foralls(source)
+    if not source_binders:
+        return None
+    if not any("->" in sort for _name, sort in source_binders):
+        return None
+    target_parts = raw_or_parts(target)
+    resolver_parts = raw_or_parts(resolver)
+    if target_parts is None or resolver_parts is None:
+        return None
+
+    target_quantified: Expr | None = None
+    target_guard: Expr | None = None
+    target_quantified_index = -1
+    target_guard_index = -1
+    for index, (candidate_quantified, candidate_guard) in enumerate((target_parts, (target_parts[1], target_parts[0]))):
+        if candidate_quantified.kind != "forall":
+            continue
+        target_quantified = candidate_quantified
+        target_guard = candidate_guard
+        target_quantified_index = index
+        target_guard_index = 1 - index
+        break
+    if target_quantified is None or target_guard is None:
+        return None
+
+    resolver_quantified: Expr | None = None
+    resolver_guard: Expr | None = None
+    for candidate_quantified, candidate_guard in (resolver_parts, (resolver_parts[1], resolver_parts[0])):
+        if candidate_quantified.kind == "forall" and expr_same_mod_alpha(candidate_guard, target_guard):
+            resolver_quantified = candidate_quantified
+            resolver_guard = candidate_guard
+            break
+    if resolver_quantified is None or resolver_guard is None:
+        return None
+
+    target_binders, target_body = collect_foralls(target_quantified)
+    resolver_binders, resolver_body = collect_foralls(resolver_quantified)
+    if (
+        not target_binders
+        or not resolver_binders
+        or len(source_binders) > 8
+        or len(target_binders) > 8
+        or len(resolver_binders) > 8
+    ):
+        return None
+    if (
+        len(raw_clause_literals(source_body)) > 14
+        or len(raw_clause_literals(resolver_body)) > 14
+        or len(raw_clause_literals(target_body)) > 18
+    ):
+        return None
+
+    target_names = {name for name, _sort in target_binders}
+    avoid_source_names = (
+        target_names
+        | expr_variables(target_body)
+        | expr_bound_variables(target_body)
+        | expr_variables(resolver_body)
+        | expr_bound_variables(resolver_body)
+        | expr_variables(target_guard)
+        | expr_bound_variables(target_guard)
+    )
+    if {name for name, _sort in source_binders} & avoid_source_names:
+        used_names = avoid_source_names | expr_variables(source_body) | expr_bound_variables(source_body)
+        source_renames: dict[str, str] = {}
+        renamed_source_binders: list[tuple[str, str]] = []
+        for index, (name, sort) in enumerate(source_binders):
+            replacement = name
+            if replacement in avoid_source_names:
+                replacement = fresh_identifier(f"GQS{index}", expr_text(source), expr_text(target), expr_text(resolver))
+                while replacement in used_names:
+                    replacement = fresh_identifier(replacement, expr_text(source), expr_text(target), expr_text(resolver))
+            used_names.add(replacement)
+            renamed_source_binders.append((replacement, sort))
+            if replacement != name:
+                source_renames[name] = replacement
+        if source_renames:
+            source_body = rename_expr_variables(source_body, source_renames)
+            source_binders = renamed_source_binders
+
+    source_names = {name for name, _sort in source_binders}
+    avoid_resolver_names = (
+        target_names
+        | source_names
+        | expr_variables(target_body)
+        | expr_bound_variables(target_body)
+        | expr_variables(source_body)
+        | expr_bound_variables(source_body)
+        | expr_variables(target_guard)
+        | expr_bound_variables(target_guard)
+    )
+    if {name for name, _sort in resolver_binders} & avoid_resolver_names:
+        used_names = avoid_resolver_names | expr_variables(resolver_body) | expr_bound_variables(resolver_body)
+        resolver_renames: dict[str, str] = {}
+        renamed_resolver_binders: list[tuple[str, str]] = []
+        for index, (name, sort) in enumerate(resolver_binders):
+            replacement = name
+            if replacement in avoid_resolver_names:
+                replacement = fresh_identifier(f"GQR{index}", expr_text(source), expr_text(target), expr_text(resolver))
+                while replacement in used_names:
+                    replacement = fresh_identifier(replacement, expr_text(source), expr_text(target), expr_text(resolver))
+            used_names.add(replacement)
+            renamed_resolver_binders.append((replacement, sort))
+            if replacement != name:
+                resolver_renames[name] = replacement
+        if resolver_renames:
+            resolver_body = rename_expr_variables(resolver_body, resolver_renames)
+            resolver_binders = renamed_resolver_binders
+
+    source_names = {name for name, _sort in source_binders}
+    resolver_names = {name for name, _sort in resolver_binders}
+    target_sort_by_name = {name: sort for name, sort in target_binders}
+    source_sort_by_name = {name: sort for name, sort in source_binders}
+    resolver_sort_by_name = {name: sort for name, sort in resolver_binders}
+    local_sorts = {
+        **variable_sorts,
+        **target_sort_by_name,
+        **source_sort_by_name,
+        **resolver_sort_by_name,
+    }
+    source_literals = raw_clause_literals(source_body)
+    resolver_literals = raw_clause_literals(resolver_body)
+    target_literals = raw_clause_literals(target_body)
+    target_nonfalse_literals = [
+        literal
+        for literal in target_literals
+        if not false_eliminator_expr(literal)
+    ]
+
+    def substitution_sorts_ok(subst: dict[str, Expr], sort_by_name: dict[str, str]) -> bool:
+        for name, value in subst.items():
+            expected_sort = sort_by_name.get(name)
+            if expected_sort is None:
+                continue
+            value_sort = expr_sort(value, local_sorts)
+            if value_sort is not None and not equivalent_sorts(expected_sort, value_sort):
+                return False
+        return True
+
+    def residual_substitutions(
+        residuals: list[Expr],
+        variables: set[str],
+        sort_by_name: dict[str, str],
+        initial: dict[str, Expr] | None = None,
+        limit: int = 32,
+    ) -> list[dict[str, Expr]]:
+        options: list[dict[str, Expr]] = []
+        seen: set[tuple[int, tuple[tuple[str, str], ...]]] = set()
+
+        def search(index: int, subst: dict[str, Expr]) -> None:
+            if len(options) >= limit or proof_search_timed_out():
+                return
+            subst = dict(subst)
+            flatten_substitution(subst)
+            if variables <= subst.keys():
+                if (
+                    substitution_sorts_ok(subst, sort_by_name)
+                    and not any(expr_variables(subst[name]) & variables for name in variables)
+                    and not any(raw_expr_has_synthetic_db_variable(subst[name]) for name in variables)
+                ):
+                    options.append(subst)
+                return
+            if index >= len(residuals):
+                return
+            key = (
+                index,
+                tuple(sorted((name, expr_key(value)) for name, value in subst.items())),
+            )
+            if key in seen:
+                return
+            seen.add(key)
+            literal = substitute_expr(residuals[index], subst)
+            for target_literal in target_nonfalse_literals:
+                trial = dict(subst)
+                if not match_expr_with_eta_instantiation(literal, target_literal, variables, trial, local_sorts):
+                    continue
+                flatten_substitution(trial)
+                if substitution_sorts_ok(trial, sort_by_name):
+                    search(index + 1, trial)
+            search(index + 1, subst)
+
+        search(0, dict(initial or {}))
+        return options
+
+    def instantiate_proof(proof: str, binders: list[tuple[str, str]], subst: dict[str, Expr]) -> str | None:
+        result = proof
+        for name, _sort in binders:
+            value = subst.get(name)
+            if value is None:
+                return None
+            result = f"({proof_head(result)} {proof_arg_text(value)})"
+        return result
+
+    def quantified_target_proof(resolver_quantified_proof: str) -> str | None:
+        seen: set[tuple[str, str]] = set()
+        for source_resolved_index, source_resolved_literal in enumerate(source_literals):
+            source_residuals = [
+                literal
+                for index, literal in enumerate(source_literals)
+                if index != source_resolved_index
+            ]
+            source_options = residual_substitutions(
+                source_residuals,
+                source_names,
+                source_sort_by_name,
+                limit=48,
+            )
+            for source_subst in source_options:
+                source_instance = beta_reduce_expr(flatten_applications(substitute_expr(source_body, source_subst)))
+                source_literal_instance = beta_reduce_expr(flatten_applications(substitute_expr(source_resolved_literal, source_subst)))
+                source_instance_proof = instantiate_proof(source_proof, source_binders, source_subst)
+                if source_instance_proof is None:
+                    continue
+                for resolver_resolved_index, resolver_resolved_literal in enumerate(resolver_literals):
+                    resolver_residuals = [
+                        literal
+                        for index, literal in enumerate(resolver_literals)
+                        if index != resolver_resolved_index
+                    ]
+                    for resolver_subst in residual_substitutions(
+                        resolver_residuals,
+                        resolver_names,
+                        resolver_sort_by_name,
+                        limit=48,
+                    ):
+                        trial = dict(resolver_subst)
+                        resolver_literal_instance = beta_reduce_expr(flatten_applications(substitute_expr(resolver_resolved_literal, trial)))
+                        if not raw_match_complementary_literals_joint(
+                            source_literal_instance,
+                            resolver_literal_instance,
+                            resolver_names,
+                            trial,
+                        ):
+                            continue
+                        flatten_substitution(trial)
+                        if (
+                            not resolver_names <= trial.keys()
+                            or not substitution_sorts_ok(trial, resolver_sort_by_name)
+                            or any(expr_variables(trial[name]) & resolver_names for name in resolver_names)
+                            or any(raw_expr_has_synthetic_db_variable(trial[name]) for name in resolver_names)
+                        ):
+                            continue
+                        resolver_instance = beta_reduce_expr(flatten_applications(substitute_expr(resolver_body, trial)))
+                        if not raw_clause_replay_budget_ok(
+                            source_instance,
+                            resolver_instance,
+                            target_body,
+                            max_literals=16,
+                            max_literal_product=320,
+                        ):
+                            continue
+                        key = (expr_key(source_instance), expr_key(resolver_instance))
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        resolver_instance_proof = instantiate_proof(
+                            resolver_quantified_proof,
+                            resolver_binders,
+                            trial,
+                        )
+                        if resolver_instance_proof is None:
+                            continue
+                        proof = raw_flat_clause_resolution_proof(
+                            source_instance,
+                            target_body,
+                            source_instance_proof,
+                            resolver_instance,
+                            resolver_instance_proof,
+                            avoid_text=resolver_instance_proof,
+                        )
+                        if proof is None:
+                            proof = raw_flat_clause_resolution_proof(
+                                resolver_instance,
+                                target_body,
+                                resolver_instance_proof,
+                                source_instance,
+                                source_instance_proof,
+                                avoid_text=source_instance_proof,
+                            )
+                        if proof is None:
+                            proof = raw_clause_resolution_proof(
+                                source_instance,
+                                target_body,
+                                source_instance_proof,
+                                resolver_instance,
+                                resolver_instance_proof,
+                            )
+                        if proof is None:
+                            continue
+                        for name, sort in reversed(target_binders):
+                            proof = f"(fun {name} :{sort} => {proof})"
+                        return proof
+        return None
+
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target)
+
+    def resolver_handler(literal: Expr, literal_proof: str) -> str | None:
+        if expr_same_mod_alpha(literal, target_guard):
+            return raw_or_intro_literal_at(target, target_guard_index, literal_proof)
+        if not expr_same_mod_alpha(literal, resolver_quantified):
+            return None
+        quantified = quantified_target_proof(literal_proof)
+        if quantified is None:
+            return None
+        return raw_or_intro_literal_at(target, target_quantified_index, quantified)
+
+    try:
+        return raw_clause_cases_with_handler(
+            resolver,
             resolver_proof,
             resolver_handler,
             avoid_text=source_proof,
