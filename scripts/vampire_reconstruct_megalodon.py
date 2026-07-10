@@ -33171,6 +33171,264 @@ def raw_tptp_parent_equality_chain_rewrite_proof(
     return None
 
 
+def raw_tptp_target_guided_parent_equality_chain_rewrite_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parents) < 2 or proof_search_timed_out():
+        return None
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    target_binders, target_body = collect_foralls(target)
+    if len(target_binders) > 6:
+        return None
+    target_literals = raw_clause_literals(target_body)
+    if len(target_literals) > 14:
+        return None
+
+    parent_exprs: list[tuple[str, Expr, str]] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        if parent_proposition is None:
+            continue
+        parent_expr = parse_expr(parent_proposition)
+        if parent_expr is not None:
+            parent_exprs.append((parent, parent_expr, raw_tptp_claim_name(parent)))
+
+    equality_parents: list[tuple[str, Expr, str]] = []
+    for name, expr, proof in parent_exprs:
+        function_equality = raw_pointwise_set_function_equality(expr, proof)
+        if function_equality is not None:
+            equality_expr, equality_proof = function_equality
+            equality_parents.append((f"{name}#funext", equality_expr, equality_proof))
+        if equality_like_sides(collect_foralls(expr)[1]) is not None:
+            equality_parents.append((name, expr, proof))
+    if not equality_parents:
+        return None
+
+    target_sort_by_name = {name: sort for name, sort in target_binders}
+    local_sorts = {**variable_sorts, **target_sort_by_name}
+
+    def literal_match_score(expr: Expr) -> int:
+        score = 0
+        for literal in raw_clause_literals(expr):
+            if any(expr_same_mod_alpha(literal, target_literal) for target_literal in target_literals):
+                score += 1
+        return score
+
+    def opened_source_options() -> Iterable[tuple[str, Expr, str]]:
+        for source_name, source, source_proof in parent_exprs:
+            if any(source_name == equality_name for equality_name, _expr, _proof in equality_parents):
+                continue
+            source_binders, source_body = collect_foralls(source)
+            if len(source_binders) != len(target_binders):
+                continue
+            if any(source_sort != target_sort for (_, source_sort), (_, target_sort) in zip(source_binders, target_binders)):
+                continue
+            if len(raw_clause_literals(source_body)) > 14:
+                continue
+            opened = source_body
+            proof = source_proof
+            for (source_binder, _source_sort), (target_binder, _target_sort) in zip(source_binders, target_binders):
+                opened = rename_expr_variables(opened, {source_binder: target_binder})
+                proof = f"({proof_head(proof)} {target_binder})"
+            yield source_name, opened, proof
+
+    def close_target_proof(body_proof: str) -> str:
+        proof = body_proof
+        for name, sort in reversed(target_binders):
+            proof = f"(fun {name} :{sort} => {proof})"
+        return proof
+
+    def instantiate_equality_options(equality: Expr, equality_proof: str, current: Expr) -> Iterable[tuple[Expr, str, tuple[Expr, Expr]]]:
+        binders, body = collect_foralls(equality)
+        sides = equality_like_sides(body)
+        if sides is None or len(binders) > 5:
+            return
+        binder_names = {name for name, _sort in binders}
+        binder_sort_by_name = {name: sort for name, sort in binders}
+        current_subterms = expr_subterms(current, limit=240)
+        seen: set[str] = set()
+
+        def complete(partial: dict[str, Expr]) -> Iterable[dict[str, Expr]]:
+            subst = dict(partial)
+            flatten_substitution(subst)
+            missing = [name for name, _sort in binders if name not in subst]
+            if len(missing) > 2:
+                return
+            candidates = {
+                name: [
+                    Expr("var", value=target_name)
+                    for target_name, target_sort in target_binders
+                    if equivalent_sorts(binder_sort_by_name[name], target_sort)
+                ]
+                for name in missing
+            }
+
+            def search(index: int) -> Iterable[dict[str, Expr]]:
+                if proof_search_timed_out():
+                    return
+                if index == len(missing):
+                    if binder_names <= subst.keys():
+                        yield dict(subst)
+                    return
+                name = missing[index]
+                for candidate in candidates.get(name, []):
+                    subst[name] = candidate
+                    yield from search(index + 1)
+                subst.pop(name, None)
+
+            yield from search(0)
+
+        for side in sides:
+            for subterm in current_subterms:
+                partial: dict[str, Expr] = {}
+                if not match_expr_with_alpha_instantiation(side, subterm, binder_names, partial):
+                    continue
+                for completed in complete(partial):
+                    key = " ".join(f"{name}={expr_key(value)}" for name, value in sorted(completed.items()))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    instantiated = substitute_expr(body, completed)
+                    instantiated_sides = equality_like_sides(instantiated)
+                    if instantiated_sides is None:
+                        continue
+                    proof = equality_proof
+                    for name, _sort in binders:
+                        value = completed.get(name)
+                        if value is None:
+                            proof = ""
+                            break
+                        proof = f"({proof_head(proof)} {proof_arg_text(value)})"
+                    if proof:
+                        yield instantiated, proof, instantiated_sides
+
+    for _source_name, source, source_proof in opened_source_options():
+        current = source
+        current_proof = source_proof
+        current_score = literal_match_score(current)
+        seen_current = {expr_key(current)}
+        for _step in range(12):
+            if expr_same_mod_alpha(current, target_body):
+                return close_target_proof(current_proof)
+            transformed = raw_clause_transform_proof(current, target_body, current_proof)
+            if transformed is not None:
+                return close_target_proof(transformed)
+            transformed = raw_deep_formula_transform_proof(current, target_body, current_proof, local_sorts)
+            if transformed is not None:
+                return close_target_proof(transformed)
+
+            def literal_rewrite_path(source_literal: Expr, target_literal: Expr) -> list[tuple[Expr, str, tuple[Expr, Expr], str]] | None:
+                queue: list[tuple[Expr, list[tuple[Expr, str, tuple[Expr, Expr], str]]]] = [(source_literal, [])]
+                seen_literals = {expr_key(source_literal)}
+                for _depth in range(4):
+                    next_queue: list[tuple[Expr, list[tuple[Expr, str, tuple[Expr, Expr], str]]]] = []
+                    for literal, path in queue:
+                        if expr_same_mod_alpha(literal, target_literal):
+                            return path
+                        for _equality_name, equality, equality_proof in equality_parents:
+                            for _instantiated, instantiated_proof, sides in instantiate_equality_options(equality, equality_proof, literal):
+                                equality_sort = raw_equality_transport_sort(sides[0], sides[1], local_sorts)
+                                for old_side, new_side, oriented_proof in (
+                                    (sides[0], sides[1], instantiated_proof),
+                                    (sides[1], sides[0], raw_eq_symmetry_proof(instantiated_proof, sides[0], equality_sort)),
+                                ):
+                                    replaced, changed = replace_expr(literal, old_side, new_side)
+                                    if not changed:
+                                        continue
+                                    key = expr_key(replaced)
+                                    if key in seen_literals:
+                                        continue
+                                    next_path = [*path, (replaced, oriented_proof, (old_side, new_side), equality_sort)]
+                                    if expr_same_mod_alpha(replaced, target_literal):
+                                        return next_path
+                                    seen_literals.add(key)
+                                    if len(seen_literals) <= 80:
+                                        next_queue.append((replaced, next_path))
+                    queue = next_queue[:40]
+                    if not queue:
+                        break
+                return None
+
+            advanced_by_literal_path = False
+            current_literals = raw_clause_literals(current)
+            for target_literal in target_literals:
+                if any(expr_same_mod_alpha(current_literal, target_literal) for current_literal in current_literals):
+                    continue
+                for source_literal in current_literals:
+                    path = literal_rewrite_path(source_literal, target_literal)
+                    if not path:
+                        continue
+                    next_current = current
+                    next_proof = current_proof
+                    ok = True
+                    for next_literal, equality_proof, sides, equality_sort in path:
+                        chosen: tuple[Expr, str] | None = None
+                        for replaced, proof in raw_equality_rewrite_clause_steps(
+                            next_current,
+                            next_proof,
+                            sides[0],
+                            sides[1],
+                            equality_proof,
+                            equality_sort,
+                        ):
+                            if any(expr_same_mod_alpha(literal, next_literal) for literal in raw_clause_literals(replaced)):
+                                chosen = (replaced, proof)
+                                break
+                        if chosen is None:
+                            ok = False
+                            break
+                        next_current, next_proof = chosen
+                    if not ok or expr_key(next_current) in seen_current:
+                        continue
+                    current = next_current
+                    current_proof = next_proof
+                    current_score = literal_match_score(current)
+                    seen_current.add(expr_key(current))
+                    advanced_by_literal_path = True
+                    break
+                if advanced_by_literal_path:
+                    break
+            if advanced_by_literal_path:
+                continue
+
+            best: tuple[int, Expr, str] | None = None
+            for _equality_name, equality, equality_proof in equality_parents:
+                for _instantiated, instantiated_proof, sides in instantiate_equality_options(equality, equality_proof, current):
+                    equality_sort = raw_equality_transport_sort(sides[0], sides[1], local_sorts)
+                    for replaced, proof in raw_equality_rewrite_clause_steps(
+                        current,
+                        current_proof,
+                        sides[0],
+                        sides[1],
+                        instantiated_proof,
+                        equality_sort,
+                    ):
+                        key = expr_key(replaced)
+                        if key in seen_current:
+                            continue
+                        transformed = raw_clause_transform_proof(replaced, target_body, proof)
+                        if transformed is not None:
+                            return close_target_proof(transformed)
+                        transformed = raw_deep_formula_transform_proof(replaced, target_body, proof, local_sorts)
+                        if transformed is not None:
+                            return close_target_proof(transformed)
+                        score = literal_match_score(replaced)
+                        if score <= current_score:
+                            continue
+                        if best is None or score > best[0]:
+                            best = (score, replaced, proof)
+            if best is None:
+                break
+            current_score, current, current_proof = best
+            seen_current.add(expr_key(current))
+    return None
+
+
 def raw_tptp_extra_formula_expr(
     fields: dict[str, str],
     key: str,
@@ -45340,6 +45598,9 @@ def raw_tptp_replay_proof(
             )
             if proof is not None:
                 return proof
+            proof = raw_tptp_target_guided_parent_equality_chain_rewrite_proof(proposition, parents, propositions_by_name, variable_sorts)
+            if proof is not None:
+                return proof
             proof = raw_tptp_parent_equality_chain_rewrite_proof(proposition, parents, propositions_by_name, variable_sorts)
             if proof is not None:
                 return proof
@@ -47332,6 +47593,15 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                         variable_sorts,
                     )
                 if replay_proof is None:
+                    replay_proof = raw_tptp_target_guided_parent_equality_chain_rewrite_proof(
+                        proposition,
+                        replay_parents,
+                        propositions_by_name,
+                        variable_sorts,
+                    )
+                    if replay_proof is not None:
+                        trusted_definition_replay = True
+                if replay_proof is None:
                     replay_proof = raw_tptp_parent_equality_chain_rewrite_proof(
                         proposition,
                         replay_parents,
@@ -47383,7 +47653,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                                     delattr(PROOF_SEARCH_STATE, "deadline")
                             else:
                                 PROOF_SEARCH_STATE.deadline = previous_deadline
-        if replay_proof is not None and raw_tptp_replay_proof_is_unsafe(rule, proposition, replay_proof):
+        if (
+            replay_proof is not None
+            and not trusted_definition_replay
+            and raw_tptp_replay_proof_is_unsafe(rule, proposition, replay_proof)
+        ):
             replay_proof = None
         if (
             replay_proof is not None
@@ -47415,6 +47689,15 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                         variable_sorts,
                     )
                 if replay_proof is None:
+                    replay_proof = raw_tptp_target_guided_parent_equality_chain_rewrite_proof(
+                        proposition,
+                        replay_parents,
+                        propositions_by_name,
+                        variable_sorts,
+                    )
+                    if replay_proof is not None:
+                        trusted_definition_replay = True
+                if replay_proof is None:
                     replay_proof = raw_tptp_parent_equality_chain_rewrite_proof(
                         proposition,
                         replay_parents,
@@ -47427,7 +47710,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                         delattr(PROOF_SEARCH_STATE, "deadline")
                 else:
                     PROOF_SEARCH_STATE.deadline = previous_deadline
-            if replay_proof is not None and raw_tptp_replay_proof_is_unsafe(rule, proposition, replay_proof):
+            if (
+                replay_proof is not None
+                and not trusted_definition_replay
+                and raw_tptp_replay_proof_is_unsafe(rule, proposition, replay_proof)
+            ):
                 replay_proof = None
             if replay_proof is not None:
                 replay_proof = instantiate_global_axiom_proofs(replay_proof)
