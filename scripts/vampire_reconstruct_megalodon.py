@@ -26067,6 +26067,15 @@ def raw_negated_forall_implication_to_exists_conjunction_proof(
         return proof
 
     def negated_conclusion_component_proof(component: Expr) -> str | None:
+        direct_negated_forall = raw_negated_forall_implication_to_exists_conjunction_proof(
+            Expr("arrow", args=(implication_conclusion, Expr("var", value="False"))),
+            component,
+            "HnotSourceConclusion",
+            local_sorts,
+        )
+        if direct_negated_forall is not None:
+            return direct_negated_forall
+
         negated_or_component = raw_negated_or_to_negative_component_proof(
             Expr("arrow", args=(implication_conclusion, Expr("var", value="False"))),
             component,
@@ -26449,9 +26458,13 @@ def raw_negated_implication_chain_to_ennf_conjunction_proof(
     if len(source_premises) != 1 or not false_eliminator_expr(source_conclusion):
         return None
     implication_premises, implication_conclusion = split_arrows(source_premises[0])
-    if len(implication_premises) < 3 or len(implication_premises) > 10:
+    if len(implication_premises) < 1 or len(implication_premises) > 10:
         return None
-    if not any(premise.kind == "forall" or split_arrows(premise)[0] for premise in implication_premises):
+    if not (
+        any(premise.kind == "forall" or split_arrows(premise)[0] for premise in implication_premises)
+        or implication_conclusion.kind == "forall"
+        or bool(split_arrows(implication_conclusion)[0])
+    ):
         return None
     target_components = raw_conjunction_components(target)
     if len(target_components) != len(implication_premises) + 1:
@@ -26503,6 +26516,14 @@ def raw_negated_implication_chain_to_ennf_conjunction_proof(
                     positive_premise,
                 )
             if proof is None:
+                proof = raw_tptp_peirce_implication_ennf_proof(
+                    expr_text(component),
+                    ["source"],
+                    {"source": expr_text(premise)},
+                    variable_sorts,
+                    source_proof_override=positive_premise,
+                )
+            if proof is None:
                 continue
             matched = (component_index, proof)
             break
@@ -26530,6 +26551,13 @@ def raw_negated_implication_chain_to_ennf_conjunction_proof(
             variable_sorts,
             0,
         )
+        if proof is None:
+            proof = raw_negated_forall_implication_to_exists_conjunction_proof(
+                negative_conclusion,
+                component,
+                negative_conclusion_proof,
+                variable_sorts,
+            )
         if proof is None:
             continue
         matched_negative = (component_index, proof)
@@ -40067,6 +40095,7 @@ def raw_tptp_peirce_implication_ennf_proof(
     parents: list[str],
     propositions_by_name: dict[str, str],
     variable_sorts: dict[str, str],
+    source_proof_override: str | None = None,
 ) -> str | None:
     if len(parents) != 1:
         return None
@@ -40114,7 +40143,8 @@ def raw_tptp_peirce_implication_ennf_proof(
         return None
     remaining_components = [component for index, component in enumerate(components) if index != negative_index]
     local_sorts = {**variable_sorts, target_name: target_sort}
-    parent_at_target = f"({raw_tptp_claim_name(parents[0])} {target_name})"
+    source_proof = source_proof_override or raw_tptp_claim_name(parents[0])
+    parent_at_target = f"({proof_head(source_proof)} {target_name})"
     not_target_name = fresh_identifier("HnotTarget", expr_text(source), expr_text(target))
 
     def source_premise_proof(premise_index: int, premise: Expr) -> str:
@@ -43090,6 +43120,99 @@ def raw_tptp_definition_bridge_block(
     ]
 
 
+def raw_tptp_unit_clause_simplification_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parents) < 2:
+        return None
+    source_proposition = propositions_by_name.get(parents[0])
+    source = parse_expr(source_proposition) if source_proposition is not None else None
+    target = parse_expr(proposition)
+    if source is None or target is None:
+        return None
+    unit_proofs: list[tuple[Expr, str]] = []
+    for parent in parents[1:]:
+        parent_proposition = propositions_by_name.get(parent)
+        parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+        if parent_expr is None:
+            continue
+        parent_binders, parent_body = collect_foralls(parent_expr)
+        if parent_binders:
+            continue
+        if len(raw_clause_literals(parent_body)) != 1:
+            continue
+        unit_proofs.append((parent_body, raw_tptp_claim_name(parent)))
+    if not unit_proofs:
+        return None
+
+    def direct_complement_false_proof(literal: Expr, literal_proof: str) -> str | None:
+        premises, conclusion = split_arrows(literal)
+        if len(premises) == 1 and false_eliminator_expr(conclusion):
+            for unit, unit_proof in unit_proofs:
+                unit_as_premise = raw_literal_direct_transform_proof(unit, premises[0], unit_proof, ())
+                if unit_as_premise is not None:
+                    return f"({proof_head(literal_proof)} {proof_term_text(unit_as_premise)})"
+        for unit, unit_proof in unit_proofs:
+            unit_premises, unit_conclusion = split_arrows(unit)
+            if len(unit_premises) == 1 and false_eliminator_expr(unit_conclusion):
+                literal_as_premise = raw_literal_direct_transform_proof(literal, unit_premises[0], literal_proof, ())
+                if literal_as_premise is not None:
+                    return f"({proof_head(unit_proof)} {proof_term_text(literal_as_premise)})"
+        return None
+
+    def prove_body(source_body: Expr, target_body: Expr, source_proof: str, local_sorts: dict[str, str]) -> str | None:
+        if len(raw_clause_literals(source_body)) > 16 or len(raw_clause_literals(target_body)) > 16:
+            return None
+        target_literals = raw_clause_literals(target_body)
+        previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+        PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+
+        def handler(literal: Expr, literal_proof: str) -> str | None:
+            direct = raw_literal_to_clause_proof(literal, target_body, literal_proof, target_literals, ())
+            if direct is not None:
+                return direct
+            deep_direct = raw_literal_to_clause_proof(literal, target_body, literal_proof, target_literals, (), deep_literals=True)
+            if deep_direct is not None:
+                return deep_direct
+            false_proof = direct_complement_false_proof(literal, literal_proof)
+            if false_proof is not None:
+                return raw_false_to_expr_proof(false_proof, target_body)
+            return None
+
+        try:
+            return raw_clause_cases_with_handler(source_body, source_proof, handler, avoid_text="unit_simplification")
+        finally:
+            if previous_target is None:
+                if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                    delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+            else:
+                PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if len(source_binders) != len(target_binders):
+        return None
+    if any(source_sort != target_sort for (_source_name, source_sort), (_target_name, target_sort) in zip(source_binders, target_binders)):
+        return None
+    local_sorts = dict(variable_sorts)
+    source_proof = raw_tptp_claim_name(parents[0])
+    renamed_source_body = source_body
+    for (source_name, source_sort), (target_name, _target_sort) in zip(source_binders, target_binders):
+        local_sorts[target_name] = source_sort
+        if source_name != target_name:
+            renamed_source_body = rename_expr_variables(renamed_source_body, {source_name: target_name})
+        source_proof = f"({proof_head(source_proof)} {target_name})"
+    body_proof = prove_body(renamed_source_body, target_body, source_proof, local_sorts)
+    if body_proof is None:
+        return None
+    for target_name, target_sort in reversed(target_binders):
+        body_proof = f"(fun {target_name} :{target_sort} => {body_proof})"
+    return body_proof
+
+
 def raw_tptp_pointwise_function_clause_definition_rewrite_proof(
     proposition: str,
     parents: list[str],
@@ -43868,6 +43991,17 @@ def raw_tptp_replay_proof(
                             propositions_by_name,
                             variable_sorts,
                         )
+                    if proof is None and len(parents) == 1:
+                        parent_proposition = propositions_by_name.get(parents[0])
+                        source_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+                        target_expr = parse_expr(proposition)
+                        if source_expr is not None and target_expr is not None:
+                            proof = raw_negated_implication_chain_to_ennf_conjunction_proof(
+                                source_expr,
+                                target_expr,
+                                raw_tptp_claim_name(parents[0]),
+                                variable_sorts,
+                            )
                 if proof is None:
                     proof = raw_tptp_explosive_implication_ennf_proof(
                         proposition,
@@ -45392,6 +45526,13 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     trusted_definition_names,
                 )
                 trusted_definition_replay = replay_proof is not None
+                if replay_proof is None:
+                    replay_proof = raw_tptp_unit_clause_simplification_proof(
+                        proposition,
+                        replay_parents,
+                        propositions_by_name,
+                        variable_sorts,
+                    )
             if replay_proof is None:
                 if raw_tptp_replay_payload_size_ok(
                     rule,
@@ -45455,12 +45596,19 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
             PROOF_SEARCH_STATE.deadline = proof_search_now() + 3.0
             try:
-                replay_proof = raw_tptp_pointwise_function_clause_definition_rewrite_proof(
+                replay_proof = raw_tptp_unit_clause_simplification_proof(
                     proposition,
                     replay_parents,
                     propositions_by_name,
                     variable_sorts,
                 )
+                if replay_proof is None:
+                    replay_proof = raw_tptp_pointwise_function_clause_definition_rewrite_proof(
+                        proposition,
+                        replay_parents,
+                        propositions_by_name,
+                        variable_sorts,
+                    )
             finally:
                 if previous_deadline is None:
                     if hasattr(PROOF_SEARCH_STATE, "deadline"):
