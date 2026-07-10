@@ -49781,6 +49781,129 @@ def raw_tptp_avatar_split_component_instantiation_proof(
     return search(0, {})
 
 
+def raw_tptp_avatar_split_duplicate_component_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rewrites: tuple[RawSplitRewrite, ...],
+) -> str | None:
+    if proof_search_timed_out() or len(expr_text(source)) + len(expr_text(target)) > 14000:
+        return None
+    target_literals = raw_clause_literals(target)
+    if len(target_literals) < 3 or len(target_literals) > 8:
+        return None
+    source_binders, source_body = collect_foralls(source)
+    if not source_binders or len(source_binders) > 7 or len(raw_clause_literals(source_body)) > 12:
+        return None
+    target_split_indices: dict[str, list[int]] = {}
+    for index, literal in enumerate(target_literals):
+        parsed = raw_split_literal_parts(literal)
+        if parsed is None or not parsed[1]:
+            continue
+        target_split_indices.setdefault(parsed[0], []).append(index)
+    if len(target_split_indices) < 2:
+        return None
+    rewrite_by_split = {
+        name: rewrite
+        for rewrite in rewrites
+        for name in [raw_split_atom_name(rewrite.split)]
+        if name is not None
+    }
+
+    for refute_split, refute_indices in target_split_indices.items():
+        if refute_split not in rewrite_by_split:
+            continue
+        if len(refute_indices) < 1:
+            continue
+        refute_rewrite = rewrite_by_split[refute_split]
+        refute_index = refute_indices[0]
+        refute_intro = raw_or_intro_literal_at(target, refute_index, "Hsplit")
+        if refute_intro is None:
+            continue
+        for goal_split, goal_indices in target_split_indices.items():
+            if goal_split == refute_split or goal_split not in rewrite_by_split:
+                continue
+            goal_rewrite = rewrite_by_split[goal_split]
+            goal_index = goal_indices[0]
+            component_binders, component_body = collect_foralls(goal_rewrite.component)
+            if len(component_binders) > 5 or len(raw_clause_literals(component_body)) > 10:
+                continue
+            component_env = {name: sort for name, sort in component_binders}
+            component_candidates_by_sort: dict[str, list[Expr]] = {}
+            for name, sort in component_binders:
+                component_candidates_by_sort.setdefault(sort, []).append(Expr("var", value=name))
+            candidate_lists: list[list[Expr]] = []
+            for _source_name, source_sort in source_binders:
+                candidates: list[Expr] = []
+                if source_sort == "prop":
+                    candidates.append(refute_rewrite.split)
+                candidates.extend(component_candidates_by_sort.get(source_sort, []))
+                seen: set[str] = set()
+                unique: list[Expr] = []
+                for candidate in candidates:
+                    key = expr_key(candidate)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    unique.append(candidate)
+                if not unique:
+                    break
+                candidate_lists.append(unique)
+            if len(candidate_lists) != len(source_binders):
+                continue
+            attempts = 1
+            for candidates in candidate_lists:
+                attempts *= len(candidates)
+                if attempts > 512:
+                    break
+            if attempts > 512:
+                continue
+            for values in itertools.product(*candidate_lists):
+                subst = {name: value for (name, _sort), value in zip(source_binders, values)}
+                if not set(component_env) <= {
+                    value.value
+                    for value in subst.values()
+                    if value.kind == "var" and isinstance(value.value, str)
+                }:
+                    continue
+                instantiated_source = flatten_applications(substitute_expr(source_body, subst))
+                if not raw_clause_replay_budget_ok(
+                    instantiated_source,
+                    component_body,
+                    max_literals=12,
+                    max_literal_product=144,
+                ):
+                    continue
+                instantiated_source_proof = source_proof
+                for name, _sort in source_binders:
+                    instantiated_source_proof = (
+                        f"({proof_head(instantiated_source_proof)} {proof_arg_text(subst[name])})"
+                    )
+                component_proof = raw_clause_cases_with_split_refutations(
+                    instantiated_source,
+                    component_body,
+                    raw_clause_literals(component_body),
+                    rewrites,
+                    [(refute_rewrite, "HnotSplit")],
+                    [],
+                    instantiated_source_proof,
+                )
+                if component_proof is None:
+                    continue
+                for name, sort in reversed(component_binders):
+                    component_proof = f"(fun {name} :{sort} => {component_proof})"
+                split_proof = f"({proof_head(goal_rewrite.component_to_split)} {proof_term_text(component_proof)})"
+                goal_intro = raw_or_intro_literal_at(target, goal_index, split_proof)
+                if goal_intro is None:
+                    continue
+                return (
+                    f"(xm {proof_arg_text(refute_rewrite.split)} {proof_arg_text(target)} "
+                    f"(fun Hsplit => {proof_term_text(refute_intro)}) "
+                    f"(fun HnotSplit => {proof_term_text(goal_intro)}))"
+                )
+    return None
+
+
 def raw_split_atom_name(expr: Expr) -> str | None:
     return raw_split_definition_name(expr)
 
@@ -50870,6 +50993,14 @@ def raw_tptp_avatar_split_clause_proof(
     )
     if branching is not None:
         return branching
+    duplicate_component = raw_tptp_avatar_split_duplicate_component_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+        rewrites,
+    )
+    if duplicate_component is not None:
+        return duplicate_component
     multi_binder_product = raw_tptp_avatar_split_multi_binder_product_proof(
         source,
         target,
