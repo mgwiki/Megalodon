@@ -203,6 +203,27 @@ def vampire_exists_definition_for_sort(sort: str, name: str | None = None) -> st
     )
 
 
+def vampire_choice_name_for_sort(sort: str) -> str:
+    suffix = re.sub(r"[^A-Za-z0-9]+", "_", sort).strip("_")
+    return f"vampire_choice_{suffix}"
+
+
+def vampire_choice_declaration_for_sort(sort: str) -> str:
+    name = vampire_choice_name_for_sort(sort)
+    predicate_sort = f"({binder_sort_text(sort)})->prop"
+    return f"Variable {name}:({predicate_sort})->{binder_sort_text(sort)}."
+
+
+def vampire_choice_axiom_for_sort(sort: str) -> str:
+    exists_name = vampire_exists_name_for_sort(sort)
+    choice_name = vampire_choice_name_for_sort(sort)
+    predicate_sort = f"({binder_sort_text(sort)})->prop"
+    return (
+        f"Axiom {choice_name}_ax: forall P:{binder_sort_text(predicate_sort)}, "
+        f"{exists_name} P -> P ({choice_name} P)."
+    )
+
+
 def vampire_exists_sort_from_proposition(proposition: str, name: str) -> str | None:
     pattern = re.compile(rf"\b{re.escape(name)}\s+\(fun\s+[_A-Za-z][_A-Za-z0-9']*\s*:\s*(?P<sort>.*?)\s*=>")
     match = pattern.search(proposition)
@@ -46782,6 +46803,64 @@ def raw_tptp_nested_set_skolem_intro_reconstruction(
     return definitions, proof
 
 
+def raw_tptp_choice_skolem_intro_reconstruction(
+    proposition: str,
+    symbol: str,
+    sort: str,
+    replaced: str | None,
+    variable_sorts: dict[str, str],
+) -> tuple[tuple[str, str], str] | None:
+    if len(proposition) > 9000:
+        return None
+    if split_sort_arrows(sort)[-1:] in {("set",), ("prop",)} and len(split_sort_arrows(sort)) == 1:
+        return None
+    expr = parse_expr(proposition)
+    if expr is None:
+        return None
+    binders, body = collect_foralls(expr)
+    premises, conclusion = split_arrows(body)
+    if len(premises) != 1:
+        return None
+    exists_name = vampire_exists_name_for_sort(sort)
+    exists_args = app_args(premises[0], exists_name, 1)
+    if exists_args is None:
+        return None
+    predicate = exists_args[0]
+    if (
+        predicate.kind != "lambda"
+        or predicate.value is None
+        or not equivalent_sorts(predicate.sort, sort)
+        or not predicate.args
+    ):
+        return None
+    if replaced is not None and predicate.value != replaced:
+        return None
+    local_sorts = {
+        **variable_sorts,
+        **{name: binder_sort for name, binder_sort in binders},
+        symbol: sort,
+        vampire_choice_name_for_sort(sort): f"(({binder_sort_text(sort)})->prop)->{binder_sort_text(sort)}",
+    }
+    skolem = Expr("var", value=symbol)
+    choice_body = beta_reduce_expr(flatten_applications(substitute_expr(predicate.args[0], {predicate.value: skolem})))
+    if not (expr_variables(choice_body) & {symbol}):
+        return None
+    definition_body = f"{vampire_choice_name_for_sort(sort)} {proof_arg_text(predicate)}"
+    choice_proof = f"(({vampire_choice_name_for_sort(sort)}_ax {proof_arg_text(predicate)}) Hexists)"
+    target_proof = choice_proof
+    if not expr_same_mod_alpha(choice_body, beta_reduce_expr(flatten_applications(conclusion))):
+        transformed = raw_deep_formula_transform_proof(choice_body, conclusion, choice_proof, local_sorts)
+        if transformed is None:
+            transformed = raw_skolemised_formula_transform_proof(choice_body, conclusion, choice_proof, (), local_sorts)
+        if transformed is None:
+            return None
+        target_proof = transformed
+    proof = f"(fun Hexists => {target_proof})"
+    for name, binder_sort in reversed(binders):
+        proof = f"(fun {name} :{binder_sort_text(binder_sort)} => {proof})"
+    return (sort, definition_body), proof
+
+
 def raw_tptp_skolem_epsilon_reconstructions(
     replay_steps: dict[str, MegalodonReplayStep],
     variable_sorts: dict[str, str],
@@ -46830,6 +46909,8 @@ def raw_tptp_skolem_epsilon_reconstructions(
                         intro_proofs[parent_claim] = proof
                         continue
                     for replaced, symbol in all_introduced:
+                        if parent_claim in intro_proofs:
+                            break
                         sort = variable_sorts.get(symbol) or raw_infer_skolem_sort_from_application(
                             parent_step.proposition,
                             symbol,
@@ -46852,6 +46933,8 @@ def raw_tptp_skolem_epsilon_reconstructions(
                         intro_proofs[raw_tptp_claim_name(parent)] = proof
                         break
                     for replaced, symbol in all_introduced:
+                        if parent_claim in intro_proofs:
+                            break
                         sort = variable_sorts.get(symbol) or raw_infer_skolem_sort_from_application(
                             parent_step.proposition,
                             symbol,
@@ -46874,6 +46957,8 @@ def raw_tptp_skolem_epsilon_reconstructions(
                         intro_proofs[raw_tptp_claim_name(parent)] = proof
                         break
                     for replaced, symbol in all_introduced:
+                        if parent_claim in intro_proofs:
+                            break
                         sort = variable_sorts.get(symbol) or raw_infer_skolem_sort_from_application(
                             parent_step.proposition,
                             symbol,
@@ -46883,6 +46968,25 @@ def raw_tptp_skolem_epsilon_reconstructions(
                         if sort is None:
                             continue
                         reconstructed = raw_tptp_single_set_prop_skolem_intro_reconstruction(
+                            parent_step.proposition,
+                            symbol,
+                            sort,
+                            replaced,
+                            variable_sorts,
+                        )
+                        if reconstructed is None:
+                            continue
+                        definition, proof = reconstructed
+                        definitions.setdefault(symbol, definition)
+                        intro_proofs[raw_tptp_claim_name(parent)] = proof
+                        break
+                    for replaced, symbol in all_introduced:
+                        if parent_claim in intro_proofs:
+                            break
+                        sort = variable_sorts.get(symbol)
+                        if sort is None:
+                            continue
+                        reconstructed = raw_tptp_choice_skolem_intro_reconstruction(
                             parent_step.proposition,
                             symbol,
                             sort,
@@ -55025,7 +55129,13 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 lines.append("Qed.")
             else:
                 lines.append(f"Axiom {raw_tptp_claim_name(definition.proof)}:{equality_proposition}.")
-    if any(split_sort_arrows(sort)[-1:] == ("set",) for sort, _body in skolem_epsilon_definitions.values()):
+    if any(
+        "Eps_i" in body or "vampire_exists_set " in body
+        for _sort, body in skolem_epsilon_definitions.values()
+    ):
+        if "vampire_exists_set" not in declared_names:
+            lines.append(vampire_exists_definition_for_sort("set", "vampire_exists_set"))
+            declared_names.add("vampire_exists_set")
         lines.append(
             "Theorem vampire_exists_set_eps: forall P:set->prop, vampire_exists_set P -> P (Eps_i P)."
         )
@@ -55050,6 +55160,27 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             "(fun Hfalse :False => ((FalseE Hfalse) X))) P) HPX))))))."
         )
         lines.append("Qed.")
+    choice_sorts = sorted(
+        {
+            sort
+            for sort, _body in skolem_epsilon_definitions.values()
+            if len(split_sort_arrows(sort)) > 1
+        },
+        key=lambda item: (len(item), item),
+    )
+    for sort in choice_sorts:
+        exists_name = vampire_exists_name_for_sort(sort)
+        choice_name = vampire_choice_name_for_sort(sort)
+        if exists_name not in declared_names:
+            lines.append(vampire_exists_definition_for_sort(sort, exists_name))
+            declared_names.add(exists_name)
+        if choice_name not in declared_names:
+            lines.append(vampire_choice_declaration_for_sort(sort))
+            declared_names.add(choice_name)
+        axiom_name = f"{choice_name}_ax"
+        if axiom_name not in declared_names:
+            lines.append(vampire_choice_axiom_for_sort(sort))
+            declared_names.add(axiom_name)
     for name, (sort, body) in ordered_named_definition_bodies(skolem_epsilon_definitions):
         if name in declared_names:
             continue
