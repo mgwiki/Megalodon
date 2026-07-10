@@ -41361,6 +41361,92 @@ def raw_tptp_reflexive_equality_resolution_proof(
     return None
 
 
+def raw_function_head_reflexive_substitution(
+    left: Expr,
+    right: Expr,
+    binder_names: set[str],
+) -> dict[str, Expr] | None:
+    for source, pattern in ((left, right), (right, left)):
+        source_flat = flatten_applications(source)
+        pattern_flat = flatten_applications(pattern)
+        if source_flat.kind != "app" or pattern_flat.kind != "app" or len(pattern_flat.args) < 2:
+            continue
+        head = pattern_flat.args[0]
+        if head.kind != "var" or head.value not in binder_names:
+            continue
+        suffix_len = len(pattern_flat.args) - 1
+        source_args = source_flat.args
+        if len(source_args) <= suffix_len:
+            continue
+        candidate_parts = source_args[: len(source_args) - suffix_len]
+        candidate = candidate_parts[0] if len(candidate_parts) == 1 else Expr("app", args=tuple(candidate_parts))
+        if expr_mentions_any(candidate, {head.value}):
+            continue
+        subst = {head.value: candidate}
+        instantiated_left = beta_reduce_expr(flatten_applications(substitute_expr(left, subst)))
+        instantiated_right = beta_reduce_expr(flatten_applications(substitute_expr(right, subst)))
+        if expr_same_mod_alpha(instantiated_left, instantiated_right):
+            return subst
+    return None
+
+
+def raw_tptp_nested_reflexive_equality_resolution_proof(
+    parent_body: Expr,
+    target_body: Expr,
+    parent_proof: str,
+) -> str | None:
+    if not raw_clause_replay_budget_ok(parent_body, target_body, max_literals=16, max_literal_product=256):
+        return None
+    target_literals = raw_clause_literals(target_body)
+    target_text = proof_arg_text(target_body)
+
+    def handler(literal: Expr, literal_proof: str) -> str | None:
+        direct = raw_literal_to_clause_proof(literal, target_body, literal_proof, target_literals, ())
+        if direct is not None:
+            return direct
+        binders, body = collect_foralls(literal)
+        if not binders or len(binders) > 3:
+            return None
+        binder_names = {name for name, _sort in binders}
+        for branch in raw_clause_literals(body):
+            premises, conclusion = split_arrows(branch)
+            if len(premises) != 1 or not false_eliminator_expr(conclusion):
+                continue
+            sides = equality_like_sides(premises[0])
+            if sides is None:
+                continue
+            subst: dict[str, Expr] = {}
+            if not unify_expr_variables(sides[0], sides[1], binder_names, subst):
+                head_subst = raw_function_head_reflexive_substitution(sides[0], sides[1], binder_names)
+                if head_subst is None:
+                    continue
+                subst.update(head_subst)
+            flatten_substitution(subst)
+            if any(name not in subst for name, _sort in binders):
+                continue
+            instantiated_body = beta_reduce_expr(flatten_applications(substitute_expr(body, subst)))
+            instantiated_proof = literal_proof
+            for name, _sort in binders:
+                instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(subst[name])})"
+            proof = raw_clause_subsumption_transform_proof(instantiated_body, target_body, instantiated_proof)
+            if proof is None:
+                proof = raw_clause_transform_proof(instantiated_body, target_body, instantiated_proof)
+            if proof is not None:
+                return proof
+        return None
+
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+    try:
+        return raw_clause_cases_with_handler(parent_body, parent_proof, handler)
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_tptp_guarded_prop_inconsistency_resolution_proof(
     parent_body: Expr,
     target_body: Expr,
@@ -41493,6 +41579,14 @@ def raw_tptp_equality_resolution_proof(
     )
     if proof is not None:
         return proof
+    if not parent_binders and not target_binders:
+        proof = raw_tptp_nested_reflexive_equality_resolution_proof(
+            parent_body,
+            target_body,
+            parent_proof,
+        )
+        if proof is not None:
+            return proof
     if len(target_binders) + 1 != len(parent_binders):
         return None
     parent_binder_sorts = {name: sort for name, sort in parent_binders}
