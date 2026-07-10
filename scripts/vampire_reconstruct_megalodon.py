@@ -36086,6 +36086,136 @@ def raw_negative_reflexive_equality_parent_contradiction_proof(
     return None
 
 
+def raw_guarded_universal_negative_literal_superposition_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    guarded: Expr,
+    guarded_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    target_parts = raw_or_parts(target)
+    guarded_parts = raw_or_parts(guarded)
+    if target_parts is None or guarded_parts is None:
+        return None
+
+    target_options: list[tuple[int, Expr, Expr]] = []
+    for forall_index, guard_index in ((0, 1), (1, 0)):
+        target_forall = target_parts[forall_index]
+        if collect_foralls(target_forall)[0]:
+            target_options.append((forall_index, target_forall, target_parts[guard_index]))
+
+    guarded_options: list[tuple[int, Expr, Expr]] = []
+    for forall_index, guard_index in ((0, 1), (1, 0)):
+        guarded_forall = guarded_parts[forall_index]
+        if collect_foralls(guarded_forall)[0]:
+            guarded_options.append((forall_index, guarded_forall, guarded_parts[guard_index]))
+
+    source_binders, source_body = collect_foralls(source)
+    if not source_binders:
+        return None
+    source_literals = raw_clause_literals(source_body)
+    if len(source_literals) != 2:
+        return None
+
+    def or_intro(index: int, proof: str) -> str:
+        if index == 0:
+            return f"(fun P Hleft Hright => Hleft {proof_term_text(proof)})"
+        return f"(fun P Hleft Hright => Hright {proof_term_text(proof)})"
+
+    for target_forall_index, target_forall, target_guard in target_options:
+        target_binders, target_body = collect_foralls(target_forall)
+        if not target_binders:
+            continue
+        target_body_parts = raw_or_parts(target_body)
+        if target_body_parts is None:
+            continue
+        target_body_positive_options: list[tuple[int, Expr]] = []
+        for positive_index, false_index in ((0, 1), (1, 0)):
+            if raw_false_clause_literal(target_body_parts[false_index]):
+                target_body_positive_options.append((positive_index, target_body_parts[positive_index]))
+        if not target_body_positive_options:
+            continue
+
+        for guarded_forall_index, guarded_forall, guarded_guard in guarded_options:
+            if not expr_same_mod_alpha(target_guard, guarded_guard):
+                continue
+            guarded_binders, guarded_body = collect_foralls(guarded_forall)
+            if not guarded_binders:
+                continue
+
+            for negative_index, positive_index in ((0, 1), (1, 0)):
+                negative_literal = source_literals[negative_index]
+                positive_literal = source_literals[positive_index]
+                negative_premises, negative_conclusion = split_arrows(negative_literal)
+                if len(negative_premises) != 1 or not false_eliminator_expr(negative_conclusion):
+                    continue
+                negative_atom = negative_premises[0]
+
+                for target_body_positive_index, target_positive in target_body_positive_options:
+                    local_sorts = {
+                        **variable_sorts,
+                        **{name: sort for name, sort in source_binders},
+                        **{name: sort for name, sort in target_binders},
+                        **{name: sort for name, sort in guarded_binders},
+                    }
+                    source_subst: dict[str, Expr] = {}
+                    source_variables = {name for name, _sort in source_binders}
+                    if not match_expr_with_eta_instantiation(
+                        positive_literal,
+                        target_positive,
+                        source_variables,
+                        source_subst,
+                        local_sorts,
+                    ):
+                        continue
+                    if any(name not in source_subst for name, _sort in source_binders):
+                        continue
+                    instantiated_negative_atom = substitute_expr(negative_atom, source_subst)
+
+                    guarded_subst: dict[str, Expr] = {}
+                    guarded_variables = {name for name, _sort in guarded_binders}
+                    if not match_expr_with_eta_instantiation(
+                        guarded_body,
+                        instantiated_negative_atom,
+                        guarded_variables,
+                        guarded_subst,
+                        local_sorts,
+                    ):
+                        continue
+                    if any(name not in guarded_subst for name, _sort in guarded_binders):
+                        continue
+
+                    source_application = source_proof
+                    for name, _sort in source_binders:
+                        source_application = f"({proof_head(source_application)} {proof_arg_text(source_subst[name])})"
+                    guarded_application = "Hguarded"
+                    for name, _sort in guarded_binders:
+                        guarded_application = f"({proof_head(guarded_application)} {proof_arg_text(guarded_subst[name])})"
+
+                    false_branch = f"(Hnegative {proof_term_text(guarded_application)})"
+                    body_false_intro = or_intro(1 - target_body_positive_index, false_branch)
+                    body_positive_intro = or_intro(target_body_positive_index, "Hpositive")
+                    body_proof = (
+                        f"{proof_term_text(source_application)} {proof_arg_text(target_body)} "
+                        f"(fun Hnegative => {body_false_intro}) "
+                        f"(fun Hpositive => {body_positive_intro})"
+                    )
+                    forall_proof = body_proof
+                    for name, sort in reversed(target_binders):
+                        forall_proof = f"(fun {name} :{sort} => {forall_proof})"
+
+                    guarded_left = or_intro(target_forall_index, forall_proof)
+                    guarded_right = or_intro(1 - target_forall_index, "Hguard")
+                    proof = (
+                        f"{proof_term_text(guarded_proof)} {proof_arg_text(target)} "
+                        f"(fun Hguarded => {guarded_left}) "
+                        f"(fun Hguard => {guarded_right})"
+                    )
+                    return proof
+    return None
+
+
 def raw_tptp_superposition_proof(
     proposition: str,
     parents: list[str],
@@ -36130,6 +36260,26 @@ def raw_tptp_superposition_proof(
                 early_parent_exprs.append((parent_expr, raw_tptp_canonical_parent_proof_name(parent, propositions_by_name)))
         early_target_expr = parse_expr(proposition)
         if early_target_expr is not None and len(early_parent_exprs) == 2:
+            proof = raw_guarded_universal_negative_literal_superposition_proof(
+                early_parent_exprs[0][0],
+                early_target_expr,
+                early_parent_exprs[0][1],
+                early_parent_exprs[1][0],
+                early_parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_guarded_universal_negative_literal_superposition_proof(
+                early_parent_exprs[1][0],
+                early_target_expr,
+                early_parent_exprs[1][1],
+                early_parent_exprs[0][0],
+                early_parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
             proof = raw_guarded_quantified_resolution_superposition_proof(
                 early_parent_exprs[0][0],
                 early_target_expr,
