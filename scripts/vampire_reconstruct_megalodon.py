@@ -19710,6 +19710,7 @@ class RawDefinitionFoldRewrite:
     component: Expr
     split: Expr
     equality_proof: str
+    native_equality: bool = False
 
 
 def infer_missing_raw_tptp_sorts(expr: Expr, variables: dict[str, str], local_sorts: dict[str, str], expected: str | None = None) -> None:
@@ -42265,6 +42266,108 @@ def raw_guarded_prop_equality_clause_resolution_superposition_proof(
     return None
 
 
+def raw_quantified_prop_equality_set_argument_superposition_proof(
+    target: Expr,
+    quantified_equality: Expr,
+    quantified_equality_proof: str,
+    set_equality: Expr,
+    set_equality_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    target_binders, target_body = collect_foralls(target)
+    if target_binders:
+        return None
+    target_sides = equality_like_sides(target_body)
+    if target_sides is None or target_body.kind != "eq":
+        return None
+    target_left, target_right = target_sides
+
+    set_binders, set_body = collect_foralls(set_equality)
+    if set_binders:
+        return None
+    set_sides = equality_like_sides(set_body)
+    if set_sides is None or set_body.kind != "eq":
+        return None
+    if raw_equality_transport_sort(set_sides[0], set_sides[1], variable_sorts) != "set":
+        return None
+
+    equality_binders, equality_body = collect_foralls(quantified_equality)
+    equality_sides = equality_like_sides(equality_body)
+    if equality_sides is None or equality_body.kind != "eq" or len(equality_binders) > 6:
+        return None
+    binder_names = {name for name, _sort in equality_binders}
+
+    set_orientations = (
+        (set_sides[0], set_sides[1], set_equality_proof),
+        (
+            set_sides[1],
+            set_sides[0],
+            native_eq_symmetry_proof(set_equality_proof, set_sides[0], set_sides[1], "set"),
+        ),
+    )
+
+    for other_pattern, target_pattern, reverse_equality in (
+        (equality_sides[0], equality_sides[1], False),
+        (equality_sides[1], equality_sides[0], True),
+    ):
+        subst: dict[str, Expr] = {}
+        if not match_expr_with_alpha_instantiation(target_pattern, target_right, binder_names, subst):
+            continue
+        flatten_substitution(subst)
+        if not binder_names <= subst.keys():
+            continue
+        if any(expr_variables(value) & binder_names for value in subst.values()):
+            continue
+        instantiated_other = substitute_expr(other_pattern, subst)
+        instantiated_target = substitute_expr(target_pattern, subst)
+        if not expr_same_mod_alpha(instantiated_target, target_right):
+            continue
+
+        instantiated_equality_proof = quantified_equality_proof
+        for name, _sort in equality_binders:
+            instantiated_equality_proof = f"({proof_head(instantiated_equality_proof)} {proof_arg_text(subst[name])})"
+        if reverse_equality:
+            instantiated_equality_proof = native_eq_symmetry_proof(
+                instantiated_equality_proof,
+                target_right,
+                instantiated_other,
+                "prop",
+            )
+
+        for new_arg, old_arg, new_to_old_proof in set_orientations:
+            rewritten, changed = replace_expr(instantiated_other, old_arg, new_arg)
+            if not changed or not expr_same_mod_alpha(rewritten, target_left):
+                continue
+            hole_name = fresh_identifier(
+                "zz",
+                expr_text(target_left),
+                expr_text(instantiated_other),
+                expr_text(new_arg),
+                expr_text(old_arg),
+            )
+            context, context_changed = replace_expr(instantiated_other, old_arg, Expr("var", value=hole_name))
+            if not context_changed:
+                continue
+            left_refl = raw_native_prop_equality_proof(target_left, target_left, variable_sorts)
+            if left_refl is None:
+                continue
+            left_to_instantiated = (
+                f"(vampire_native_eq_transport_set {proof_arg_text(new_arg)} {proof_arg_text(old_arg)} "
+                f"{proof_term_text(new_to_old_proof)} "
+                f"(fun {hole_name} :set => {proof_arg_text(target_left)} = {expr_text(context)}) "
+                f"{proof_term_text(left_refl)})"
+            )
+            return (
+                f"(vampire_native_eq_transport_prop "
+                f"{proof_arg_text(instantiated_other)} "
+                f"{proof_arg_text(target_right)} "
+                f"{proof_term_text(instantiated_equality_proof)} "
+                f"(fun Qprop :prop => {proof_arg_text(target_left)} = Qprop) "
+                f"{proof_term_text(left_to_instantiated)})"
+            )
+    return None
+
+
 def raw_tptp_superposition_proof(
     proposition: str,
     parents: list[str],
@@ -42289,6 +42392,26 @@ def raw_tptp_superposition_proof(
                 proof = raw_prop_true_false_guard_superposition_proof(target_expr, parent_expr, parent_proof)
                 if proof is not None:
                     return proof
+            proof = raw_quantified_prop_equality_set_argument_superposition_proof(
+                target_expr,
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_quantified_prop_equality_set_argument_superposition_proof(
+                target_expr,
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
             proof = raw_unit_equality_parent_negative_contradiction_proof(
                 parent_exprs[0][0],
                 target_expr,
@@ -53207,14 +53330,14 @@ def raw_tptp_definition_fold_rewrites(
             continue
         left, right = sides
         parent_name = raw_tptp_claim_name(parent)
-        rewrites.append(RawDefinitionFoldRewrite(tuple(binders), left, right, parent_name))
+        rewrites.append(RawDefinitionFoldRewrite(tuple(binders), left, right, parent_name, body.kind == "eq"))
     return tuple(rewrites)
 
 
 def raw_definition_fold_instance(
     target: Expr,
     rewrite: RawDefinitionFoldRewrite,
-) -> tuple[Expr, str] | None:
+) -> tuple[Expr, Expr, str] | None:
     variables = {name for name, _sort in rewrite.binders}
     subst: dict[str, Expr] = {}
     if not match_expr(rewrite.split, target, variables, subst):
@@ -53223,10 +53346,11 @@ def raw_definition_fold_instance(
     if not variables <= set(subst):
         return None
     component = substitute_expr(rewrite.component, subst)
+    split = substitute_expr(rewrite.split, subst)
     equality_proof = rewrite.equality_proof
     for name, _sort in rewrite.binders:
         equality_proof = f"({proof_head(equality_proof)} {proof_arg_text(subst[name])})"
-    return component, equality_proof
+    return component, split, equality_proof
 
 
 def raw_definition_fold_transform_proof(
@@ -53246,7 +53370,7 @@ def raw_definition_fold_transform_proof(
         instance = raw_definition_fold_instance(target, rewrite)
         if instance is None:
             continue
-        component, equality_proof = instance
+        component, split, equality_proof = instance
         component_proof = raw_definition_fold_transform_proof(
             source,
             component,
@@ -53257,6 +53381,22 @@ def raw_definition_fold_transform_proof(
         )
         if component_proof is None:
             continue
+        if rewrite.native_equality:
+            equality_sort = raw_equality_transport_sort(component, split, variable_sorts)
+            hole_name = fresh_identifier("Qprop", expr_text(component), expr_text(rewrite.split), equality_proof)
+            context = Expr("var", value=hole_name)
+            transported = native_equality_transport_proof(
+                equality_proof,
+                component,
+                split,
+                component_proof,
+                hole_name,
+                equality_sort,
+                context,
+            )
+            if transported is None:
+                continue
+            return transported
         return f"({proof_head(equality_proof)} (fun Qprop :prop => Qprop) {proof_term_text(component_proof)})"
 
     source_exists = raw_exists_transform_parts(source)
@@ -59957,7 +60097,7 @@ def raw_prop_equality_truth_table_clause_proof(proposition: str, variable_sorts:
             name = prop_var(premise)
             if name is not None:
                 return {name}
-            sides = app_args(premise, "vampire_eq_prop", 2)
+            sides = equality_like_sides(premise)
             if sides is None:
                 return None
             left = prop_var(sides[0])
@@ -59968,7 +60108,7 @@ def raw_prop_equality_truth_table_clause_proof(proposition: str, variable_sorts:
         name = prop_var(literal)
         if name is not None:
             return {name}
-        sides = app_args(literal, "vampire_eq_prop", 2)
+        sides = equality_like_sides(literal)
         if sides is None:
             return None
         left = prop_var(sides[0])
@@ -59986,34 +60126,40 @@ def raw_prop_equality_truth_table_clause_proof(proposition: str, variable_sorts:
     if not relevant_names:
         return None
 
-    def positive_equality_proof(left: Expr, right: Expr, env: dict[str, tuple[bool, str]]) -> str | None:
+    def positive_equality_proof(template: Expr, left: Expr, right: Expr, env: dict[str, tuple[bool, str]]) -> str | None:
         left_name = prop_var(left)
         right_name = prop_var(right)
         if left_name is None or right_name is None:
             return None
         if left_name == right_name:
+            if template.kind == "eq":
+                return f"(prop_ext_2 {proof_arg_text(left)} {proof_arg_text(right)} (fun Hsrc => Hsrc) (fun Htgt => Htgt))"
             return "(fun Q H => H)"
         left_truth, left_proof = env[left_name]
         right_truth, right_proof = env[right_name]
         if left_truth != right_truth:
             return None
         if left_truth:
-            return (
-                f"(vampire_prop_ext {proof_arg_text(left)} {proof_arg_text(right)} "
-                f"(fun Hleft => {proof_term_text(right_proof)}) "
-                f"(fun Hright => {proof_term_text(left_proof)}))"
+            return raw_prop_equality_intro_proof(
+                template,
+                left,
+                right,
+                f"(fun Hleft => {proof_term_text(right_proof)})",
+                f"(fun Hright => {proof_term_text(left_proof)})",
             )
         left_false_name = fresh_identifier("Hleft", expr_text(left), expr_text(right), left_proof, right_proof)
         right_false_name = fresh_identifier("Hright", expr_text(left), expr_text(right), left_proof, right_proof, left_false_name)
         left_false = raw_false_to_expr_proof(f"({proof_head(left_proof)} {left_false_name})", right)
         right_false = raw_false_to_expr_proof(f"({proof_head(right_proof)} {right_false_name})", left)
-        return (
-            f"(vampire_prop_ext {proof_arg_text(left)} {proof_arg_text(right)} "
-            f"(fun {left_false_name} => {left_false}) "
-            f"(fun {right_false_name} => {right_false}))"
+        return raw_prop_equality_intro_proof(
+            template,
+            left,
+            right,
+            f"(fun {left_false_name} => {left_false})",
+            f"(fun {right_false_name} => {right_false})",
         )
 
-    def negative_equality_proof(left: Expr, right: Expr, env: dict[str, tuple[bool, str]], equality_proof: str) -> str | None:
+    def negative_equality_proof(template: Expr, left: Expr, right: Expr, env: dict[str, tuple[bool, str]], equality_proof: str) -> str | None:
         left_name = prop_var(left)
         right_name = prop_var(right)
         if left_name is None or right_name is None or left_name == right_name:
@@ -60023,13 +60169,25 @@ def raw_prop_equality_truth_table_clause_proof(proposition: str, variable_sorts:
         if left_truth == right_truth:
             return None
         if left_truth and not right_truth:
-            right_from_left = f"({proof_head(equality_proof)} (fun zz :prop => zz) {proof_term_text(left_proof)})"
+            if template.kind == "eq":
+                right_from_left = (
+                    f"(vampire_native_eq_transport_prop {proof_arg_text(left)} {proof_arg_text(right)} "
+                    f"{equality_proof} (fun zz :prop => zz) {proof_term_text(left_proof)})"
+                )
+            else:
+                right_from_left = f"({proof_head(equality_proof)} (fun zz :prop => zz) {proof_term_text(left_proof)})"
             return f"({proof_head(right_proof)} {right_from_left})"
-        not_right_from_not_left = (
-            f"({proof_head(equality_proof)} "
-            f"(fun zz :prop => zz -> False) "
-            f"{proof_term_text(left_proof)})"
-        )
+        if template.kind == "eq":
+            not_right_from_not_left = (
+                f"(vampire_native_eq_transport_prop {proof_arg_text(left)} {proof_arg_text(right)} "
+                f"{equality_proof} (fun zz :prop => zz -> False) {proof_term_text(left_proof)})"
+            )
+        else:
+            not_right_from_not_left = (
+                f"({proof_head(equality_proof)} "
+                f"(fun zz :prop => zz -> False) "
+                f"{proof_term_text(left_proof)})"
+            )
         return f"({not_right_from_not_left} {proof_term_text(right_proof)})"
 
     def literal_proof(index: int, env: dict[str, tuple[bool, str]]) -> str | None:
@@ -60041,11 +60199,11 @@ def raw_prop_equality_truth_table_clause_proof(proposition: str, variable_sorts:
             if name is not None:
                 truth, proof = env[name]
                 return proof if not truth else None
-            sides = app_args(premise, "vampire_eq_prop", 2)
+            sides = equality_like_sides(premise)
             if sides is None:
                 return None
             equality_name = fresh_identifier("Heq", expr_text(premise), str(index))
-            false_proof = negative_equality_proof(sides[0], sides[1], env, equality_name)
+            false_proof = negative_equality_proof(premise, sides[0], sides[1], env, equality_name)
             if false_proof is None:
                 return None
             return f"(fun {equality_name} :{proof_arg_text(premise)} => {false_proof})"
@@ -60053,10 +60211,10 @@ def raw_prop_equality_truth_table_clause_proof(proposition: str, variable_sorts:
         if name is not None:
             truth, proof = env[name]
             return proof if truth else None
-        sides = app_args(literal, "vampire_eq_prop", 2)
+        sides = equality_like_sides(literal)
         if sides is None:
             return None
-        return positive_equality_proof(sides[0], sides[1], env)
+        return positive_equality_proof(literal, sides[0], sides[1], env)
 
     ordered_names = [name for name, _sort in binders if name in relevant_names]
     ordered_names.extend(sorted(name for name in relevant_names if name not in binder_names))
