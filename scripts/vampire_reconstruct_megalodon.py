@@ -73008,6 +73008,22 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                             delattr(PROOF_SEARCH_STATE, "deadline")
                     else:
                         PROOF_SEARCH_STATE.deadline = previous_deadline
+            if replay_proof is None and rule == "skolemisation":
+                previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+                PROOF_SEARCH_STATE.deadline = proof_search_now() + 5.0
+                try:
+                    replay_proof = raw_tptp_skolemisation_proof(
+                        proposition,
+                        replay_parents,
+                        propositions_by_name,
+                        variable_sorts,
+                    )
+                finally:
+                    if previous_deadline is None:
+                        if hasattr(PROOF_SEARCH_STATE, "deadline"):
+                            delattr(PROOF_SEARCH_STATE, "deadline")
+                    else:
+                        PROOF_SEARCH_STATE.deadline = previous_deadline
             if replay_proof is None:
                 if raw_tptp_replay_payload_size_ok(
                     rule,
