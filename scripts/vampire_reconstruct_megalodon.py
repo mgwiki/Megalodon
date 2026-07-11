@@ -189,6 +189,8 @@ def raw_tptp_replay_payload_size_ok(
 def raw_tptp_replay_seconds_for_rule(rule: str | None) -> float:
     if rule == "rectify":
         return max(RAW_TPTP_REPLAY_SECONDS, 1.0)
+    if rule == "flattening":
+        return max(RAW_TPTP_REPLAY_SECONDS, 0.8)
     if rule in {"definition_folding", "definition_unfolding"}:
         return max(RAW_TPTP_REPLAY_SECONDS, RAW_TPTP_DEFINITION_REPLAY_SECONDS)
     if rule == "superposition":
@@ -57020,11 +57022,20 @@ def raw_tptp_replay_proof(
             PROOF_SEARCH_STATE.deep_clause_literals = True
         try:
             proof = None
+            if rule == "flattening" and len(parents) == 1:
+                proof = raw_tptp_one_parent_transform_proof(
+                    proposition,
+                    parents,
+                    propositions_by_name,
+                    variable_sorts,
+                    max_literals=12,
+                    max_literal_product=96,
+                )
             if rule in {"flattening", "ennf_transformation", "nnf_transformation"} and len(parents) == 1:
                 parent_proposition = propositions_by_name.get(parents[0])
                 source_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
                 target_expr = parse_expr(proposition)
-                if source_expr is not None and target_expr is not None:
+                if proof is None and source_expr is not None and target_expr is not None:
                     proof = raw_structural_normal_form_transform_proof(
                         source_expr,
                         target_expr,
