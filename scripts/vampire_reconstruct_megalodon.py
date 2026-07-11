@@ -19497,12 +19497,116 @@ def tptp_introduced_definition(annotations: list[str]) -> bool:
     return "introduced(definition" in ",".join(annotations)
 
 
+def tptp_inequality_splitting_name_introduction(annotations: list[str]) -> bool:
+    return "inequality_splitting_name_introduction" in ",".join(annotations)
+
+
 def raw_tptp_claim_name(name: str) -> str:
     decoded = decode_tptp_identifier(name)
     sanitized = re.sub(r"[^_A-Za-z0-9']", "_", decoded)
     if not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", sanitized):
         sanitized = f"R_{sanitized}"
     return f"R_{sanitized}"
+
+
+@dataclass(frozen=True)
+class RawInequalitySplitNameDefinition:
+    name: str
+    sort: str
+    body_text: str
+    argument_sort: str
+    split_arg: Expr
+
+
+def raw_app_head_and_args(expr: Expr) -> tuple[str, tuple[Expr, ...]] | None:
+    if expr.kind != "app" or not expr.args or expr.args[0].kind != "var" or expr.args[0].value is None:
+        return None
+    return expr.args[0].value, expr.args[1:]
+
+
+def raw_negative_body(expr: Expr) -> Expr | None:
+    premises, conclusion = split_arrows(expr)
+    if len(premises) == 1 and false_eliminator_expr(conclusion):
+        return premises[0]
+    return None
+
+
+def raw_tptp_inequality_splitting_intro_steps(declarations: list[str]) -> set[str]:
+    steps: set[str] = set()
+    for declaration in declarations:
+        parsed = tptp_decl_formula_parts(declaration)
+        if parsed is None:
+            continue
+        name, _role, _formula, annotations = parsed
+        if tptp_inequality_splitting_name_introduction(annotations):
+            steps.add(name)
+    return steps
+
+
+def raw_tptp_inequality_split_name_definitions(
+    intro_steps: set[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> tuple[dict[str, RawInequalitySplitNameDefinition], dict[str, str]]:
+    definitions: dict[str, RawInequalitySplitNameDefinition] = {}
+    intro_proofs: dict[str, str] = {}
+    for step in intro_steps:
+        proposition = propositions_by_name.get(step)
+        expr = parse_expr(proposition) if proposition is not None else None
+        if expr is None:
+            continue
+        _binders, body = collect_foralls(expr)
+        negative = raw_negative_body(body)
+        app = raw_app_head_and_args(negative) if negative is not None else None
+        if app is None:
+            continue
+        name, args = app
+        if not args or not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", name):
+            continue
+        predicate_sort = variable_sorts.get(name)
+        pieces = split_sort_arrows(predicate_sort) if predicate_sort else ()
+        if len(pieces) >= 2 and pieces[-1] == "prop":
+            argument_sorts = list(pieces[:-1])
+        else:
+            inferred = [expr_sort(arg, variable_sorts) or "set" for arg in args]
+            argument_sorts = inferred
+            predicate_sort = join_sort_arrows([*argument_sorts, "prop"])
+        if len(argument_sorts) != len(args):
+            continue
+        split_arg = args[-1]
+        argument_sort = argument_sorts[-1]
+        binder_names: list[str] = []
+        used = {name, *variable_sorts.keys(), *expr_variables(split_arg)}
+        body = ""
+        for index, sort in enumerate(argument_sorts):
+            binder = fresh_identifier(f"Xineq{index}", name, expr_text(split_arg), *binder_names, *used)
+            binder_names.append(binder)
+            used.add(binder)
+            body += f"fun {binder} :{sort} => "
+        last_binder = Expr("var", value=binder_names[-1])
+        if argument_sort == "prop":
+            equality_text = f"vampire_eq_prop {proof_arg_text(last_binder)} {proof_arg_text(split_arg)}"
+        elif argument_sort == "set":
+            equality_text = f"{proof_arg_text(last_binder)} = {proof_arg_text(split_arg)}"
+        else:
+            continue
+        body += f"{equality_text} -> False"
+        definitions[name] = RawInequalitySplitNameDefinition(
+            name=name,
+            sort=predicate_sort,
+            body_text=body,
+            argument_sort=argument_sort,
+            split_arg=split_arg,
+        )
+        if argument_sort == "prop":
+            reflexivity = "(fun Q H => H)"
+        elif argument_sort == "set":
+            reflexivity = "(fun Q H => H)"
+        else:
+            continue
+        assumption = fresh_identifier("Hsplit", proposition, name)
+        intro_proofs[raw_tptp_claim_name(step)] = f"(fun {assumption} => {assumption} {reflexivity})"
+    return definitions, intro_proofs
 
 
 def raw_reflexivity_proof_for_expr(expr: Expr, local_definition_names: set[str] | None = None) -> str | None:
@@ -22747,6 +22851,86 @@ def raw_tptp_unit_resulting_resolution_proof(
             resolver_option_lists[index] = options[:16]
         resolver_candidate_exprs = [option[0] for options in resolver_option_lists for option in options[:16]]
 
+        def guided_source_instantiation_options() -> list[tuple[Expr, str]]:
+            source_binders, source_body = collect_foralls(source)
+            if not source_binders or len(source_binders) > 6:
+                return []
+            binder_names = {name for name, _sort in source_binders}
+            source_literals = raw_clause_literals(source_body)
+            if not source_literals or len(source_literals) > 10:
+                return []
+            target_candidates = [target_body, *raw_clause_literals(target_body)]
+            resolver_literals = [
+                literal
+                for options in resolver_option_lists
+                for resolver_clause, _resolver_clause_proof in options[:16]
+                for literal in raw_clause_literals(resolver_clause)
+            ]
+            if not resolver_literals:
+                return []
+            literal_order = sorted(
+                range(len(source_literals)),
+                key=lambda index: -len(expr_variables(source_literals[index]) & binder_names),
+            )
+            found: list[dict[str, Expr]] = []
+            seen: set[tuple[tuple[str, str], ...]] = set()
+            attempts = 0
+
+            def remember(subst: dict[str, Expr]) -> None:
+                flatten_substitution(subst)
+                if not binder_names <= subst.keys():
+                    return
+                if any(expr_variables(value) & binder_names for value in subst.values()):
+                    return
+                key = tuple(sorted((name, expr_key(subst[name])) for name in binder_names))
+                if key in seen:
+                    return
+                seen.add(key)
+                found.append(dict(subst))
+
+            def search(order_index: int, subst: dict[str, Expr]) -> None:
+                nonlocal attempts
+                if proof_search_timed_out() or attempts > 4096 or len(found) >= 12:
+                    return
+                flatten_substitution(subst)
+                if order_index >= len(literal_order):
+                    remember(subst)
+                    return
+                literal = substitute_expr(source_literals[literal_order[order_index]], subst)
+                unresolved = expr_variables(literal) & binder_names
+                if not unresolved:
+                    target_ok = any(
+                        raw_literal_to_clause_proof(literal, target_body, "Hguided", raw_clause_literals(target_body), ())
+                        is not None
+                        for _target_candidate in (target_body,)
+                    )
+                    resolver_ok = any(raw_complementary_literals(literal, resolver_literal) for resolver_literal in resolver_literals)
+                    if target_ok or resolver_ok:
+                        search(order_index + 1, subst)
+                    return
+                for target_candidate in target_candidates:
+                    attempts += 1
+                    trial = dict(subst)
+                    if raw_unify_expr_instantiating(literal, target_candidate, binder_names, trial):
+                        search(order_index + 1, trial)
+                for resolver_literal in resolver_literals:
+                    attempts += 1
+                    trial = dict(subst)
+                    if raw_match_complementary_literals_joint(literal, resolver_literal, binder_names, trial):
+                        search(order_index + 1, trial)
+
+            search(0, {})
+            options: list[tuple[Expr, str]] = []
+            for subst in found:
+                instantiated = flatten_applications(substitute_expr(source_body, subst))
+                if any(expr_key(existing[0]) == expr_key(instantiated) for existing in options):
+                    continue
+                instantiated_proof = source_proof
+                for name, _sort in source_binders:
+                    instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(subst[name])})"
+                options.append((instantiated, instantiated_proof))
+            return options
+
         prop_false_proof = raw_prop_false_unit_resulting_resolution_proof(
             target_body,
             source,
@@ -22839,6 +23023,10 @@ def raw_tptp_unit_resulting_resolution_proof(
                     break
             if len(source_options) >= 6:
                 break
+
+        for option in guided_source_instantiation_options():
+            if all(expr_key(option[0]) != expr_key(existing[0]) for existing in source_options):
+                source_options.append(option)
 
         source_binders, source_body = collect_foralls(source)
         if source_binders and len(source_binders) <= 4:
@@ -55762,6 +55950,75 @@ def raw_tptp_parent_negated_tautology_exfalso_proof(
     return None
 
 
+def raw_tptp_inequality_splitting_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    target = parse_expr(proposition)
+    target_app = raw_app_head_and_args(target) if target is not None else None
+    if target_app is None:
+        return None
+    split_name, target_args = target_app
+    if not target_args:
+        return None
+    target_arg = target_args[-1]
+
+    split_arg: Expr | None = None
+    for parent in parents:
+        parent_expr = parse_expr(propositions_by_name.get(parent, ""))
+        if parent_expr is None:
+            continue
+        _binders, parent_body = collect_foralls(parent_expr)
+        negative = raw_negative_body(parent_body)
+        parent_app = raw_app_head_and_args(negative) if negative is not None else None
+        if parent_app is None:
+            continue
+        parent_name, parent_args = parent_app
+        if parent_name == split_name and len(parent_args) == len(target_args):
+            split_arg = parent_args[-1]
+            break
+    if split_arg is None:
+        return None
+
+    expected_prop_equality = Expr("app", args=(Expr("var", value="vampire_eq_prop"), target_arg, split_arg))
+    expected_set_equality = Expr("eq", args=(target_arg, split_arg))
+    for parent in parents:
+        parent_expr = parse_expr(propositions_by_name.get(parent, ""))
+        if parent_expr is None:
+            continue
+        _binders, parent_body = collect_foralls(parent_expr)
+        source_negative = raw_negative_body(parent_body)
+        if source_negative is None:
+            continue
+        parent_proof = raw_tptp_canonical_parent_proof_name(parent, propositions_by_name)
+        source_sides = equality_like_sides(source_negative)
+        if source_sides is not None:
+            left, right = source_sides
+            if expr_same_mod_alpha(left, target_arg) and expr_same_mod_alpha(right, split_arg):
+                return parent_proof
+            if expr_same_mod_alpha(left, split_arg) and expr_same_mod_alpha(right, target_arg):
+                assumption = fresh_identifier("Hineq", proposition, parent_proof)
+                if source_negative.kind == "eq":
+                    symmetry = eq_symmetry_proof(assumption, target_arg, split_arg)
+                else:
+                    symmetry = raw_eq_symmetry_proof(assumption, target_arg, "prop")
+                return f"(fun {assumption} => {proof_head(parent_proof)} {proof_term_text(symmetry)})"
+        if not expr_same_mod_alpha(source_negative, split_arg):
+            continue
+        truth_proof = raw_boolean_tautology_proof(target_arg, variable_sorts)
+        if truth_proof is None:
+            continue
+        assumption = fresh_identifier("Hineq", proposition, parent_proof)
+        if expr_sort(target_arg, variable_sorts) == "prop" or expr_sort(split_arg, variable_sorts) == "prop":
+            transported = f"({assumption} (fun Qprop :prop => Qprop) {proof_term_text(truth_proof)})"
+            return f"(fun {assumption} :{expr_text(expected_prop_equality)} => {proof_head(parent_proof)} {transported})"
+        if expr_sort(target_arg, variable_sorts) == "set" or expr_sort(split_arg, variable_sorts) == "set":
+            return f"(fun {assumption} :{expr_text(expected_set_equality)} => {proof_head(parent_proof)} {assumption})"
+    return None
+
+
 def raw_tptp_replay_proof(
     rule: str | None,
     proposition: str,
@@ -55806,6 +56063,10 @@ def raw_tptp_replay_proof(
     proof = raw_prop_equality_truth_table_clause_proof(proposition, variable_sorts)
     if proof is not None:
         return proof
+    if rule == "inequality_splitting":
+        proof = raw_tptp_inequality_splitting_proof(proposition, parents, propositions_by_name, variable_sorts)
+        if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
+            return proof
     if rule == "fool_elimination":
         previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
         if previous_deadline is not None:
@@ -56240,7 +56501,7 @@ def raw_tptp_replay_proof(
         )
     if rule == "unit_resulting_resolution":
         previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
-        if previous_deadline is not None and replay_step is not None:
+        if previous_deadline is not None:
             PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 8.0)
         try:
             proof = raw_tptp_unit_resulting_resolution_proof(
@@ -58513,6 +58774,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         }
     local_set_sorts = {name: sort for name, (sort, _body) in all_local_set_definitions.items()}
     standard_tptp_proof = bool(declarations)
+    inequality_split_intro_steps = raw_tptp_inequality_splitting_intro_steps(declarations)
     entries: list[tuple[str, str, str, str | None, str | None, list[str], bool]]
     replay_steps = megalodon_replay_steps(text, proof, problem, source)
     unsupported = 0
@@ -58707,6 +58969,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if equality_proposition is not None:
             predicate_definition_equalities[definition.proof] = use_ambient_basic_logic_text(equality_proposition)
     propositions_by_name.update(predicate_definition_equalities)
+    inequality_split_name_definitions, inequality_split_intro_proofs = raw_tptp_inequality_split_name_definitions(
+        inequality_split_intro_steps,
+        propositions_by_name,
+        variable_sorts,
+    )
     predicate_definition_intro_proofs: dict[str, str] = {}
     for definition_name, definition in predicate_definitions.items():
         if not definition.proof.endswith("_def"):
@@ -58784,7 +59051,14 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     lines.append(f"// tptp declarations: {len(declarations)}")
     lines.append(f"// decoded proof formulas: {len(propositions)}")
     lines.append(f"// unsupported proof formulas: {unsupported}")
-    lines.extend(reconstruction_prelude_for(propositions))
+    lines.extend(
+        reconstruction_prelude_for(
+            [
+                *propositions,
+                *(definition.body_text for definition in inequality_split_name_definitions.values()),
+            ]
+        )
+    )
     declared_names = {
         name
         for line in lines
@@ -58916,7 +59190,14 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             continue
         if name in predicate_definitions:
             continue
+        if name in inequality_split_name_definitions:
+            continue
         lines.append(f"Variable {name}:{sort}.")
+        declared_names.add(name)
+    for name, definition in sorted(inequality_split_name_definitions.items()):
+        if name in declared_names:
+            continue
+        lines.append(f"Definition {name} : {definition.sort} := {definition.body_text}.")
         declared_names.add(name)
     for name, (sort, body) in local_set_definitions.items():
         if name in declared_names:
@@ -59061,6 +59342,10 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         elif claim_name in predicate_definition_intro_proofs:
             lines.append(f"Theorem {claim_name}: {proposition}.")
             lines.append(f"exact {predicate_definition_intro_proofs[claim_name]}.")
+            lines.append("Qed.")
+        elif claim_name in inequality_split_intro_proofs:
+            lines.append(f"Theorem {claim_name}: {proposition}.")
+            lines.append(f"exact {inequality_split_intro_proofs[claim_name]}.")
             lines.append("Qed.")
         elif (universal_instance_proof := known_raw_universal_instance_proof(proposition)) is not None:
             lines.append(f"Theorem {claim_name}: {proposition}.")
