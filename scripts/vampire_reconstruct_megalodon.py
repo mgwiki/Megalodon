@@ -6230,7 +6230,7 @@ def raw_tptp_predicate_definition_equality_proposition(name: str, definition: De
     args = [Expr("var", value=binder) for binder in definition.binders]
     target = append_application_args(Expr("var", value=name), args)
     proposition_target = definition.folded_literal or target
-    proposition = f"vampire_eq_prop {proof_arg_text(definition.body)} {proof_arg_text(proposition_target)}"
+    proposition = f"{proof_arg_text(definition.body)} = {proof_arg_text(proposition_target)}"
     for binder, sort in reversed(list(zip(definition.binders, pieces[:-1]))):
         proposition = f"forall {binder}:{sort}, {proposition}"
     return proposition
@@ -6253,7 +6253,7 @@ def raw_tptp_predicate_definition_equality_proof(name: str, definition: Definiti
         if forward is None or backward is None:
             return None
         proof = (
-            f"(vampire_prop_ext {body_text} {target_text} "
+            f"(prop_ext_2 {body_text} {target_text} "
             f"(fun Hbody :{body_text} => {forward}) "
             f"(fun Hfolded :{target_text} => {backward}))"
         )
