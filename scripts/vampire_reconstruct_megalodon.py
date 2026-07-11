@@ -48630,7 +48630,13 @@ def raw_tptp_equality_resolution_with_instantiations_proof(
                 mapped = subst.get(parent_name)
                 arg = proof_arg_text(mapped) if mapped is not None else parent_name
             source_proof = f"({proof_head(source_proof)} {arg})"
-        body_proof = raw_clause_subsumption_transform_proof(instantiated_parent_body, target_body, source_proof)
+        body_proof = raw_negated_reflexive_equality_clause_elimination_proof(
+            instantiated_parent_body,
+            target_body,
+            source_proof,
+        )
+        if body_proof is None:
+            body_proof = raw_clause_subsumption_transform_proof(instantiated_parent_body, target_body, source_proof)
         if body_proof is None and raw_clause_replay_budget_ok(instantiated_parent_body, target_body, max_literals=12, max_literal_product=96):
             body_proof = raw_clause_transform_proof(instantiated_parent_body, target_body, source_proof)
         if body_proof is None and len(expr_text(instantiated_parent_body)) + len(expr_text(target_body)) <= 6000:
@@ -48720,7 +48726,13 @@ def raw_tptp_reflexive_equality_resolution_proof(
                 source_proof = f"({proof_head(source_proof)} {proof_arg_text(value)})"
             if not ok:
                 continue
-            body_proof = raw_clause_subsumption_transform_proof(instantiated_parent_body, target_body, source_proof)
+            body_proof = raw_negated_reflexive_equality_clause_elimination_proof(
+                instantiated_parent_body,
+                target_body,
+                source_proof,
+            )
+            if body_proof is None:
+                body_proof = raw_clause_subsumption_transform_proof(instantiated_parent_body, target_body, source_proof)
             if body_proof is None:
                 body_proof = raw_clause_transform_proof(instantiated_parent_body, target_body, source_proof)
             if body_proof is None:
@@ -48792,6 +48804,64 @@ def raw_tptp_nested_reflexive_equality_resolution_proof(
                     continue
                 subst.update(head_subst)
             flatten_substitution(subst)
+            remaining_binders = [(name, sort) for name, sort in binders if name not in subst]
+            if remaining_binders:
+                for target_literal in target_literals:
+                    target_binders, target_literal_body = collect_foralls(target_literal)
+                    if len(target_binders) != len(remaining_binders):
+                        continue
+                    if any(
+                        source_sort != target_sort
+                        for (_, source_sort), (_, target_sort) in zip(remaining_binders, target_binders)
+                    ):
+                        continue
+                    binder_subst = {
+                        source_name: Expr("var", value=target_name)
+                        for (source_name, _source_sort), (target_name, _target_sort) in zip(
+                            remaining_binders,
+                            target_binders,
+                        )
+                    }
+                    full_subst = {
+                        name: substitute_expr(value, binder_subst)
+                        for name, value in subst.items()
+                    }
+                    full_subst.update(binder_subst)
+                    instantiated_body = beta_reduce_expr(flatten_applications(substitute_expr(body, full_subst)))
+                    instantiated_proof = literal_proof
+                    for name, _sort in binders:
+                        instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(full_subst[name])})"
+                    target_literal_proof = raw_negated_reflexive_equality_clause_elimination_proof(
+                        instantiated_body,
+                        target_literal_body,
+                        instantiated_proof,
+                    )
+                    if target_literal_proof is None:
+                        target_literal_proof = raw_clause_subsumption_transform_proof(
+                            instantiated_body,
+                            target_literal_body,
+                            instantiated_proof,
+                        )
+                    if target_literal_proof is None:
+                        target_literal_proof = raw_clause_transform_proof(
+                            instantiated_body,
+                            target_literal_body,
+                            instantiated_proof,
+                        )
+                    if target_literal_proof is None:
+                        continue
+                    for target_name, target_sort in reversed(target_binders):
+                        target_literal_proof = f"(fun {target_name} :{target_sort} => {target_literal_proof})"
+                    target_clause_proof = raw_literal_to_clause_proof(
+                        target_literal,
+                        target_body,
+                        target_literal_proof,
+                        target_literals,
+                        (),
+                    )
+                    if target_clause_proof is not None:
+                        return target_clause_proof
+                continue
             if any(name not in subst for name, _sort in binders):
                 continue
             instantiated_body = beta_reduce_expr(flatten_applications(substitute_expr(body, subst)))
