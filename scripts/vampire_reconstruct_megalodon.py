@@ -57585,6 +57585,109 @@ def raw_implication_to_ennf_or_proof(
     )
 
 
+def raw_implication_chain_with_positive_ennf_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 32 or proof_search_timed_out():
+        return None
+    if expr_same_mod_alpha(source, target):
+        return source_proof
+
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort and source.value and target.value:
+        binder = target.value
+        source_body = source.args[0]
+        if source.value != binder:
+            source_body = rename_expr_variables(source_body, {source.value: binder})
+        inner = raw_implication_chain_with_positive_ennf_proof(
+            source_body,
+            target.args[0],
+            f"({proof_head(source_proof)} {binder})",
+            {**variable_sorts, binder: target.sort},
+            depth + 1,
+        )
+        if inner is not None:
+            return f"(fun {binder} :{target.sort} => {inner})"
+
+    source_premises, source_conclusion = split_arrows(source)
+    if not source_premises:
+        proof = raw_ennf_positive_consequent_transform_proof(
+            source,
+            target,
+            source_proof,
+            variable_sorts,
+            depth + 1,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_deep_formula_transform_proof(source, target, source_proof, variable_sorts, depth + 1)
+        if proof is not None:
+            return proof
+        if raw_clause_replay_budget_ok(source, target, max_literals=16, max_literal_product=256):
+            return raw_clause_transform_proof(source, target, source_proof)
+        return None
+
+    premise = source_premises[0]
+    source_conclusion = make_arrow_expr(source_premises[1:], source_conclusion)
+    target_parts = raw_or_parts(target)
+    if target_parts is None:
+        return None
+    negative_premise = Expr("arrow", args=(premise, Expr("var", value="False")))
+
+    premise_name = fresh_identifier("HpremEnnf", expr_text(premise), expr_text(target), source_proof, str(depth))
+    not_premise_name = fresh_identifier("HnotPremEnnf", expr_text(premise), expr_text(target), premise_name, str(depth))
+    for negative_index, negative_target, conclusion_target in (
+        (0, target_parts[0], target_parts[1]),
+        (1, target_parts[1], target_parts[0]),
+    ):
+        if expr_same_mod_alpha(negative_target, negative_premise):
+            negative_proof = not_premise_name
+        else:
+            negative_proof = raw_negative_formula_transform_proof(
+                premise,
+                negative_target,
+                not_premise_name,
+                variable_sorts,
+                depth + 1,
+            )
+            if negative_proof is None:
+                continue
+        conclusion_proof = raw_implication_chain_with_positive_ennf_proof(
+            source_conclusion,
+            conclusion_target,
+            f"({proof_head(source_proof)} {premise_name})",
+            variable_sorts,
+            depth + 1,
+        )
+        if conclusion_proof is None:
+            conclusion_proof = raw_ennf_positive_consequent_transform_proof(
+                source_conclusion,
+                conclusion_target,
+                f"({proof_head(source_proof)} {premise_name})",
+                variable_sorts,
+                depth + 1,
+            )
+        if conclusion_proof is None:
+            continue
+        if negative_index == 0:
+            negative_intro = raw_or_left_intro(target, negative_proof)
+            conclusion_intro = raw_or_right_intro(target, conclusion_proof)
+        else:
+            conclusion_intro = raw_or_left_intro(target, conclusion_proof)
+            negative_intro = raw_or_right_intro(target, negative_proof)
+        if conclusion_intro is None or negative_intro is None:
+            continue
+        return (
+            f"(xm {proof_arg_text(premise)} {proof_arg_text(target)} "
+            f"(fun {premise_name} :{proof_arg_text(premise)} => {proof_term_text(conclusion_intro)}) "
+            f"(fun {not_premise_name} :{proof_arg_text(premise)} -> False => {proof_term_text(negative_intro)}))"
+        )
+    return None
+
+
 def raw_implication_chain_to_ennf_or_components_proof(
     source: Expr,
     target: Expr,
@@ -69117,12 +69220,28 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
                     PROOF_SEARCH_STATE.deadline = proof_search_now() + 3.0
                     try:
-                        replay_proof = raw_two_premise_implication_chain_ennf_by_contradiction_proof(
-                            source_expr,
-                            target_expr,
-                            raw_tptp_claim_name(replay_parents[0]),
-                            variable_sorts,
-                        )
+                        fast_ennf_bridge_ok = len(proposition) + len(parent_proposition or "") <= 2500
+                        if fast_ennf_bridge_ok:
+                            replay_proof = raw_implication_to_ennf_or_proof(
+                                source_expr,
+                                target_expr,
+                                raw_tptp_claim_name(replay_parents[0]),
+                                variable_sorts,
+                            )
+                        if replay_proof is None and fast_ennf_bridge_ok:
+                            replay_proof = raw_implication_chain_with_positive_ennf_proof(
+                                source_expr,
+                                target_expr,
+                                raw_tptp_claim_name(replay_parents[0]),
+                                variable_sorts,
+                            )
+                        if replay_proof is None:
+                            replay_proof = raw_two_premise_implication_chain_ennf_by_contradiction_proof(
+                                source_expr,
+                                target_expr,
+                                raw_tptp_claim_name(replay_parents[0]),
+                                variable_sorts,
+                            )
                         if replay_proof is None:
                             replay_proof = raw_implication_chain_to_ennf_or_components_proof(
                                 source_expr,
