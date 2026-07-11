@@ -39689,6 +39689,22 @@ def raw_tptp_guarded_prop_equality_factoring_fallback(
                 continue
             source_binders, source_body = collect_foralls(source_component)
             target_binders, target_body = collect_foralls(target_component)
+            equal_binder_proof = raw_guarded_prop_equality_factoring_equal_binders_proof(
+                source_component,
+                source_guard,
+                source_binders,
+                source_body,
+                target_component,
+                target_guard,
+                target_binders,
+                target_body,
+                parent_parts,
+                parent_name,
+                target_top_body,
+                variable_sorts,
+            )
+            if equal_binder_proof is not None:
+                return equal_binder_proof
             if not source_binders or len(source_binders) > 4 or len(target_binders) > 4:
                 continue
             if any(sort != "prop" for _name, sort in source_binders + target_binders):
@@ -39766,6 +39782,185 @@ def raw_tptp_guarded_prop_equality_factoring_fallback(
                     f"(fun Hguard => {proof_term_text(guard_intro)}) "
                     f"(fun HsourceComponent => {proof_term_text(component_intro)}))"
                 )
+    return None
+
+
+def raw_guarded_prop_equality_factoring_equal_binders_proof(
+    source_component: Expr,
+    source_guard: Expr,
+    source_binders: list[tuple[str, str]],
+    source_body: Expr,
+    target_component: Expr,
+    target_guard: Expr,
+    target_binders: list[tuple[str, str]],
+    target_body: Expr,
+    parent_parts: tuple[Expr, Expr],
+    parent_name: str,
+    target_top_body: Expr,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if (
+        not source_binders
+        or len(source_binders) != len(target_binders)
+        or len(source_binders) > 5
+        or len(raw_clause_literals(source_body)) > 10
+        or len(raw_clause_literals(target_body)) > 10
+    ):
+        return None
+    target_sorts = dict(target_binders)
+    local_sorts = {**variable_sorts, **dict(source_binders), **target_sorts}
+    target_literals = raw_clause_literals(target_body)
+    source_only_names = {name for name, _sort in source_binders} - {name for name, _sort in target_binders}
+
+    def negative_literal_atom(literal: Expr) -> Expr | None:
+        premises, conclusion = split_arrows(literal)
+        if len(premises) == 1 and false_eliminator_expr(conclusion):
+            return premises[0]
+        return None
+
+    def equality_to_factored_target_proof(literal: Expr, literal_proof: str) -> str | None:
+        sides = equality_like_sides(literal)
+        if sides is None:
+            return None
+        equality_sort = raw_equality_literal_transport_sort(literal, sides, local_sorts)
+        if equality_sort != "prop":
+            return None
+        for positive_side, negative_side in (sides, (sides[1], sides[0])):
+            positive_index = next(
+                (index for index, target_literal in enumerate(target_literals) if expr_same_mod_alpha(target_literal, positive_side)),
+                None,
+            )
+            negative_index = next(
+                (
+                    index
+                    for index, target_literal in enumerate(target_literals)
+                    if (atom := negative_literal_atom(target_literal)) is not None
+                    and expr_same_mod_alpha(atom, negative_side)
+                ),
+                None,
+            )
+            if positive_index is None or negative_index is None:
+                continue
+            side_name = fresh_identifier("HfactorSide", expr_text(negative_side), expr_text(positive_side))
+            if literal.kind == "eq":
+                if expr_same_mod_alpha(sides[0], negative_side) and expr_same_mod_alpha(sides[1], positive_side):
+                    equality_proof = literal_proof
+                elif expr_same_mod_alpha(sides[0], positive_side) and expr_same_mod_alpha(sides[1], negative_side):
+                    equality_proof = native_eq_symmetry_proof(literal_proof, positive_side, negative_side, "prop")
+                else:
+                    continue
+                transported = native_equality_transport_proof(
+                    equality_proof,
+                    negative_side,
+                    positive_side,
+                    side_name,
+                    "Qprop",
+                    "prop",
+                    Expr("var", value="Qprop"),
+                )
+            elif (
+                literal.kind == "app"
+                and literal.args
+                and literal.args[0].kind == "var"
+                and literal.args[0].value == "vampire_eq_prop"
+            ):
+                if expr_same_mod_alpha(sides[0], negative_side) and expr_same_mod_alpha(sides[1], positive_side):
+                    equality_proof = literal_proof
+                elif expr_same_mod_alpha(sides[0], positive_side) and expr_same_mod_alpha(sides[1], negative_side):
+                    equality_proof = raw_eq_symmetry_proof(literal_proof, positive_side, "prop")
+                else:
+                    continue
+                transported = f"({proof_head(equality_proof)} (fun Qprop :prop => Qprop) {side_name})"
+            else:
+                continue
+            if transported is None:
+                continue
+            positive_intro = raw_or_intro_literal_at(target_body, positive_index, transported)
+            negative_intro = raw_or_intro_literal_at(target_body, negative_index, "HnotFactorSide")
+            if positive_intro is None or negative_intro is None:
+                continue
+            return (
+                f"(xm {proof_arg_text(negative_side)} {proof_arg_text(target_body)} "
+                f"(fun {side_name} :{proof_arg_text(negative_side)} => {proof_term_text(positive_intro)}) "
+                f"(fun HnotFactorSide :{proof_arg_text(negative_side)} -> False => {proof_term_text(negative_intro)}))"
+            )
+        return None
+
+    candidates_by_binder: list[list[Expr]] = []
+    candidate_exprs = (source_body, target_body)
+    for source_name, source_sort in source_binders:
+        candidates: list[Expr] = []
+        seen: set[str] = set()
+
+        def add_candidate(candidate: Expr) -> None:
+            if expr_variables(candidate) & source_only_names:
+                return
+            if not equivalent_sorts(expr_sort(candidate, local_sorts), source_sort):
+                return
+            key = expr_key(candidate)
+            if key in seen:
+                return
+            seen.add(key)
+            candidates.append(candidate)
+
+        for target_name, target_sort in target_binders:
+            if equivalent_sorts(target_sort, source_sort):
+                add_candidate(Expr("var", value=target_name))
+        for candidate in raw_candidate_terms_for_sort(candidate_exprs, source_sort, local_sorts):
+            add_candidate(candidate)
+        if not candidates:
+            return None
+        candidates_by_binder.append(candidates[:8])
+
+    if math.prod(len(candidates) for candidates in candidates_by_binder) > 512:
+        return None
+
+    for values in itertools.product(*candidates_by_binder):
+        subst = {name: value for (name, _sort), value in zip(source_binders, values)}
+        instantiated_source = flatten_applications(substitute_expr(source_body, subst))
+        source_component_proof = "HsourceComponent"
+        for name, _sort in source_binders:
+            source_component_proof = f"({proof_head(source_component_proof)} {proof_arg_text(subst[name])})"
+
+        def handler(literal: Expr, literal_proof: str) -> str | None:
+            direct = raw_literal_to_clause_proof(literal, target_body, literal_proof, target_literals, ())
+            if direct is not None:
+                return direct
+            factored = equality_to_factored_target_proof(literal, literal_proof)
+            if factored is not None:
+                return factored
+            return raw_clause_transform_proof(literal, target_body, literal_proof)
+
+        previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+        PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+        try:
+            body_proof = raw_clause_cases_with_handler(instantiated_source, source_component_proof, handler)
+        finally:
+            if previous_target is None:
+                if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                    delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+            else:
+                PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+        if body_proof is None:
+            continue
+        for name, sort in reversed(target_binders):
+            body_proof = f"(fun {name} :{sort} => {body_proof})"
+        component_intro = raw_or_intro_from_branch(target_top_body, target_component, body_proof)
+        guard_intro = raw_or_intro_from_branch(target_top_body, target_guard, "Hguard")
+        if component_intro is None or guard_intro is None:
+            continue
+        target_text = proof_arg_text(target_top_body)
+        if expr_same_mod_alpha(parent_parts[0], source_component):
+            return (
+                f"({parent_name} {target_text} "
+                f"(fun HsourceComponent => {proof_term_text(component_intro)}) "
+                f"(fun Hguard => {proof_term_text(guard_intro)}))"
+            )
+        return (
+            f"({parent_name} {target_text} "
+            f"(fun Hguard => {proof_term_text(guard_intro)}) "
+            f"(fun HsourceComponent => {proof_term_text(component_intro)}))"
+        )
     return None
 
 
