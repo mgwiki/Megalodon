@@ -41224,7 +41224,7 @@ def raw_guarded_quantified_clause_resolution_superposition_proof(
     target_literals = raw_clause_literals(target_body)
     guarded_literals = raw_clause_literals(guarded_body)
     source_literals = raw_clause_literals(source_body)
-    if len(target_literals) > 16 or len(guarded_literals) > 8 or len(source_literals) > 8:
+    if len(target_literals) > 16 or len(guarded_literals) > 8 or len(source_literals) > 12:
         return None
 
     target_sort_by_name = {name: sort for name, sort in target_binders}
