@@ -35888,6 +35888,66 @@ def raw_tptp_forward_demodulation_proof(
     second_sides = equality_like_sides(second)
     first_name = raw_tptp_claim_name(parents[0])
     second_name = raw_tptp_claim_name(parents[1])
+    proof = raw_binary_equality_chain_demodulation_proof(
+        first,
+        target,
+        first_name,
+        second,
+        second_name,
+        variable_sorts,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_binary_equality_chain_demodulation_proof(
+        second,
+        target,
+        second_name,
+        first,
+        first_name,
+        variable_sorts,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_formula_context_demodulation_proof(
+        first,
+        target,
+        first_name,
+        second,
+        second_name,
+        variable_sorts,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_formula_context_demodulation_proof(
+        second,
+        target,
+        second_name,
+        first,
+        first_name,
+        variable_sorts,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_equality_conclusion_demodulation_proof(
+        first,
+        target,
+        first_name,
+        second,
+        second_name,
+        variable_sorts,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_equality_conclusion_demodulation_proof(
+        second,
+        target,
+        second_name,
+        first,
+        first_name,
+        variable_sorts,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
     proof = raw_direct_false_from_fact_and_negation_proof(first, first_name, second, second_name, target)
     if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
         return proof
@@ -36526,6 +36586,322 @@ def raw_guarded_negative_prop_demodulation_proof(
                 delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
         else:
             PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
+def raw_oriented_equality_proof(
+    old: Expr,
+    new: Expr,
+    equality_left: Expr,
+    equality_right: Expr,
+    equality_proof: str,
+    equality_sort: str,
+) -> str | None:
+    if expr_same_mod_alpha(old, equality_left) and expr_same_mod_alpha(new, equality_right):
+        return equality_proof
+    if expr_same_mod_alpha(old, equality_right) and expr_same_mod_alpha(new, equality_left):
+        if equality_sort in {"set", "prop"}:
+            return native_eq_symmetry_proof(equality_proof, equality_left, equality_right, equality_sort)
+        if "->" in equality_sort:
+            return raw_eq_symmetry_proof(equality_proof, equality_left, equality_sort)
+        return (
+            f"({proof_head(equality_proof)} "
+            f"(fun zz :{binder_sort_text(equality_sort)} => zz = {proof_arg_text(equality_left)}) "
+            f"(fun Q H => H))"
+        )
+    return None
+
+
+def raw_formula_context_demodulation_options(
+    equality: Expr,
+    equality_proof: str,
+    variable_sorts: dict[str, str],
+) -> list[tuple[Expr, Expr, str, str]]:
+    options: list[tuple[Expr, Expr, str, str]] = []
+    equality_sides = equality_like_sides(equality)
+    if equality_sides is not None:
+        equality_sort = raw_equality_transport_sort(equality_sides[0], equality_sides[1], variable_sorts)
+        if equality_sort is not None:
+            options.append((equality_sides[0], equality_sides[1], equality_proof, equality_sort))
+    pointwise = raw_pointwise_set_function_equality(equality, equality_proof)
+    if pointwise is not None:
+        function_equality, function_equality_proof = pointwise
+        function_sides = equality_like_sides(function_equality)
+        if function_sides is not None:
+            function_sort = raw_equality_transport_sort(function_sides[0], function_sides[1], variable_sorts)
+            if function_sort is not None:
+                options.append((function_sides[0], function_sides[1], function_equality_proof, function_sort))
+    return options
+
+
+def raw_binary_equality_chain_demodulation_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    link: Expr,
+    link_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_sides = equality_like_sides(source)
+    target_sides = equality_like_sides(target)
+    if source_sides is None or target_sides is None or proof_search_timed_out():
+        return None
+    source_sort = raw_equality_transport_sort(source_sides[0], source_sides[1], variable_sorts)
+    if source_sort is None:
+        return None
+
+    for source_old, source_new in ((source_sides[0], source_sides[1]), (source_sides[1], source_sides[0])):
+        source_old_to_new = raw_oriented_equality_proof(
+            source_old,
+            source_new,
+            source_sides[0],
+            source_sides[1],
+            source_proof,
+            source_sort,
+        )
+        if source_old_to_new is None:
+            continue
+        for link_left, link_right, link_equality_proof, link_sort in raw_formula_context_demodulation_options(
+            link,
+            link_proof,
+            variable_sorts,
+        ):
+            if not equivalent_sorts(source_sort, link_sort):
+                continue
+            if expr_same_mod_alpha(target_sides[1], source_new):
+                target_left_to_old = raw_oriented_equality_proof(
+                    target_sides[0],
+                    source_old,
+                    link_left,
+                    link_right,
+                    link_equality_proof,
+                    link_sort,
+                )
+                if target_left_to_old is not None:
+                    hole = fresh_identifier(
+                        "zz",
+                        expr_text(source),
+                        expr_text(target),
+                        source_old_to_new,
+                        target_left_to_old,
+                    )
+                    context = Expr(
+                        "eq",
+                        args=(target_sides[0], Expr("var", value=hole)),
+                    )
+                    if source.kind == "eq":
+                        transported = native_equality_transport_proof(
+                            source_old_to_new,
+                            source_old,
+                            source_new,
+                            target_left_to_old,
+                            hole,
+                            source_sort,
+                            context,
+                        )
+                        if transported is not None:
+                            return transported
+                    return (
+                        f"({proof_head(source_old_to_new)} "
+                        f"(fun {hole} :{binder_sort_text(source_sort)} => "
+                        f"{proof_arg_text(context)}) "
+                        f"{proof_term_text(target_left_to_old)})"
+                    )
+            if expr_same_mod_alpha(target_sides[0], source_new):
+                old_to_target_right = raw_oriented_equality_proof(
+                    source_old,
+                    target_sides[1],
+                    link_left,
+                    link_right,
+                    link_equality_proof,
+                    link_sort,
+                )
+                if old_to_target_right is not None:
+                    hole = fresh_identifier(
+                        "zz",
+                        expr_text(source),
+                        expr_text(target),
+                        source_old_to_new,
+                        old_to_target_right,
+                    )
+                    context = Expr(
+                        "eq",
+                        args=(Expr("var", value=hole), target_sides[1]),
+                    )
+                    if source.kind == "eq":
+                        transported = native_equality_transport_proof(
+                            source_old_to_new,
+                            source_old,
+                            source_new,
+                            old_to_target_right,
+                            hole,
+                            source_sort,
+                            context,
+                        )
+                        if transported is not None:
+                            return transported
+                    return (
+                        f"({proof_head(source_old_to_new)} "
+                        f"(fun {hole} :{binder_sort_text(source_sort)} => "
+                        f"{proof_arg_text(context)}) "
+                        f"{proof_term_text(old_to_target_right)})"
+                    )
+    return None
+
+
+def raw_formula_context_demodulation_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality: Expr,
+    equality_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if proof_search_timed_out() or len(expr_text(source)) + len(expr_text(target)) > 12000:
+        return None
+    hole = fresh_identifier(
+        "zz",
+        expr_text(source),
+        expr_text(target),
+        expr_text(equality),
+        equality_proof,
+    )
+    hole_expr = Expr("var", value=hole)
+    seen: set[tuple[str, str, str]] = set()
+    for equality_left, equality_right, equality_proof_term, equality_sort in raw_formula_context_demodulation_options(
+        equality,
+        equality_proof,
+        variable_sorts,
+    ):
+        key = (expr_key(equality_left), expr_key(equality_right), equality_proof_term)
+        if key in seen:
+            continue
+        seen.add(key)
+        for old, new in ((equality_left, equality_right), (equality_right, equality_left)):
+            old_to_new = raw_oriented_equality_proof(
+                old,
+                new,
+                equality_left,
+                equality_right,
+                equality_proof_term,
+                equality_sort,
+            )
+            if old_to_new is None:
+                continue
+            for replaced, context in single_replacement_contexts_mod_alpha(source, old, new, hole_expr, limit=16):
+                demodulated_proof = (
+                    f"({proof_head(old_to_new)} "
+                    f"(fun {hole} :{binder_sort_text(equality_sort)} => {proof_arg_text(context)}) "
+                    f"{proof_term_text(source_proof)})"
+                )
+                if expr_same_mod_alpha(replaced, target):
+                    return demodulated_proof
+                if raw_clause_replay_budget_ok(replaced, target, max_literals=24, max_literal_product=384):
+                    proof = raw_structural_normal_form_transform_proof(
+                        replaced,
+                        target,
+                        demodulated_proof,
+                        variable_sorts,
+                    )
+                    if proof is not None:
+                        return proof
+    return None
+
+
+def raw_equality_context_demodulation_proof(
+    source_left: Expr,
+    source_right: Expr,
+    target_left: Expr,
+    target_right: Expr,
+    source_proof: str,
+    old: Expr,
+    new: Expr,
+    old_to_new: str,
+    equality_sort: str,
+) -> str | None:
+    hole = fresh_identifier(
+        "zz",
+        expr_text(source_left),
+        expr_text(source_right),
+        expr_text(target_left),
+        expr_text(target_right),
+        expr_text(old),
+        expr_text(new),
+    )
+    hole_expr = Expr("var", value=hole)
+
+    if expr_same_mod_alpha(source_left, target_left):
+        for replaced, context in single_replacement_contexts_mod_alpha(source_right, old, new, hole_expr, limit=8):
+            if not expr_same_mod_alpha(replaced, target_right):
+                continue
+            return (
+                f"({proof_head(old_to_new)} "
+                f"(fun {hole} :{binder_sort_text(equality_sort)} => "
+                f"{proof_arg_text(source_left)} = {proof_arg_text(context)}) "
+                f"{proof_term_text(source_proof)})"
+            )
+
+    if expr_same_mod_alpha(source_right, target_right):
+        for replaced, context in single_replacement_contexts_mod_alpha(source_left, old, new, hole_expr, limit=8):
+            if not expr_same_mod_alpha(replaced, target_left):
+                continue
+            return (
+                f"({proof_head(old_to_new)} "
+                f"(fun {hole} :{binder_sort_text(equality_sort)} => "
+                f"{proof_arg_text(context)} = {proof_arg_text(source_right)}) "
+                f"{proof_term_text(source_proof)})"
+            )
+
+    return None
+
+
+def raw_equality_conclusion_demodulation_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality: Expr,
+    equality_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_sides = equality_like_sides(source)
+    target_sides = equality_like_sides(target)
+    if source_sides is None or target_sides is None or proof_search_timed_out():
+        return None
+
+    seen: set[tuple[str, str, str]] = set()
+    for equality_left, equality_right, equality_proof_term, equality_sort in raw_formula_context_demodulation_options(
+        equality,
+        equality_proof,
+        variable_sorts,
+    ):
+        key = (expr_key(equality_left), expr_key(equality_right), equality_proof_term)
+        if key in seen:
+            continue
+        seen.add(key)
+        for old, new in ((equality_left, equality_right), (equality_right, equality_left)):
+            old_to_new = raw_oriented_equality_proof(
+                old,
+                new,
+                equality_left,
+                equality_right,
+                equality_proof_term,
+                equality_sort,
+            )
+            if old_to_new is None:
+                continue
+            proof = raw_equality_context_demodulation_proof(
+                source_sides[0],
+                source_sides[1],
+                target_sides[0],
+                target_sides[1],
+                source_proof,
+                old,
+                new,
+                old_to_new,
+                equality_sort,
+            )
+            if proof is not None:
+                return proof
+    return None
 
 
 def raw_tptp_exported_demodulation_rewrite_proof(
