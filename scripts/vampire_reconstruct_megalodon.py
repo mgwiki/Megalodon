@@ -50152,6 +50152,56 @@ def raw_tptp_forall_prop_equality_contradiction_resolution_proof(
     return None
 
 
+def raw_quantified_literal_resolution_priority_candidate(
+    source: Expr,
+    resolver: Expr,
+    target: Expr,
+) -> bool:
+    source_literals = raw_clause_literals(source)
+    resolver_literals = raw_clause_literals(resolver)
+    target_literals = raw_clause_literals(target)
+    if len(source_literals) > 4 or len(resolver_literals) > 4 or len(target_literals) > 6:
+        return False
+
+    quantified_source_literals = [literal for literal in source_literals if collect_foralls(literal)[0]]
+    quantified_target_literals = [literal for literal in target_literals if collect_foralls(literal)[0]]
+    if len(quantified_source_literals) != 1 or len(quantified_target_literals) != 1:
+        return False
+
+    source_quantified = quantified_source_literals[0]
+    target_quantified = quantified_target_literals[0]
+    source_binders, source_body = collect_foralls(source_quantified)
+    target_binders, _target_body = collect_foralls(target_quantified)
+    if all(sort != "prop" for _name, sort in source_binders):
+        return False
+    if [sort for _name, sort in source_binders] != [sort for _name, sort in target_binders]:
+        return False
+
+    def literal_in(literal: Expr, literals: list[Expr]) -> bool:
+        normalized = beta_normalize_expr(literal)
+        return any(expr_same_mod_alpha(normalized, beta_normalize_expr(candidate)) for candidate in literals)
+
+    source_guards = [literal for literal in source_literals if literal is not source_quantified]
+    if any(not literal_in(guard, target_literals) for guard in source_guards):
+        return False
+
+    resolver_guards = []
+    resolver_negative_premises = []
+    for literal in resolver_literals:
+        premises, conclusion = split_arrows(literal)
+        if len(premises) == 1 and false_eliminator_expr(conclusion):
+            resolver_negative_premises.append(premises[0])
+        else:
+            resolver_guards.append(literal)
+    if len(resolver_negative_premises) != 1:
+        return False
+    if any(not literal_in(guard, target_literals) for guard in resolver_guards):
+        return False
+
+    source_body_literals = raw_clause_literals(source_body)
+    return literal_in(resolver_negative_premises[0], source_body_literals)
+
+
 def raw_tptp_forward_subsumption_resolution_proof(
     proposition: str,
     parents: list[str],
@@ -50227,6 +50277,13 @@ def raw_tptp_forward_subsumption_resolution_proof(
         for source_index, resolver_index in megalodon_replay_parent_pair_order(parents, replay_step):
             source, source_name = entries[source_index]
             resolver, resolver_name = entries[resolver_index]
+            if (
+                allow_quantified_literal
+                and raw_quantified_literal_resolution_priority_candidate(source, resolver, target_expr)
+            ):
+                proof = raw_quantified_literal_resolution_proof(source, target_expr, source_name, resolver, resolver_name)
+                if proof is not None:
+                    return proof
             if raw_clause_replay_budget_ok(source, resolver, target_expr, max_literals=12, max_literal_product=512):
                 proof = raw_flat_clause_resolution_proof(source, target_expr, source_name, resolver, resolver_name)
                 if proof is not None:
