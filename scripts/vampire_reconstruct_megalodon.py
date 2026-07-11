@@ -28669,8 +28669,11 @@ def raw_negated_implication_chain_to_conjunction_proof(
     ]
 
     def contradiction_function_from_negative(index: int, negative_name: str) -> str:
-        conclusion_text = proof_arg_text(implication_conclusion)
-        body = f"(({negative_name} {premise_names[index]}) {conclusion_text})"
+        body = raw_false_to_expr_proof(
+            f"({negative_name} {premise_names[index]})",
+            implication_conclusion,
+            Expr("var", value="False"),
+        )
         for premise_index in reversed(range(len(implication_premises))):
             premise_type = proof_arg_text(implication_premises[premise_index])
             body = f"(fun {premise_names[premise_index]} :{premise_type} => {body})"
@@ -28681,11 +28684,16 @@ def raw_negated_implication_chain_to_conjunction_proof(
         premise_text = proof_arg_text(premise)
         negative_name = negative_premise_names[index]
         contradiction_function = contradiction_function_from_negative(index, negative_name)
+        false_from_source = f"({proof_head(source_proof)} {proof_term_text(contradiction_function)})"
+        premise_from_false = raw_false_to_expr_proof(
+            false_from_source,
+            premise,
+            Expr("var", value="False"),
+        )
         return (
             f"(xm {premise_text} {premise_text} "
-            f"(fun {premise_names[index]} => {premise_names[index]}) "
-            f"(fun {negative_name} => "
-            f"({proof_head(source_proof)} {proof_term_text(contradiction_function)} {premise_text})))"
+            f"(fun {premise_names[index]} :{premise_text} => {premise_names[index]}) "
+            f"(fun {negative_name} :{premise_text} -> False => {premise_from_false}))"
         )
 
     def conclusion_refutation(component: Expr) -> str | None:
@@ -71312,6 +71320,28 @@ def local_set_definition_body_is_safe(body: str) -> bool:
     return not any(token in body for token in ("+", "*", ":/:", " -", "- "))
 
 
+def local_source_fact_export_is_safe(proposition: str | None) -> bool:
+    if proposition is None:
+        return False
+    if parse_expr(proposition) is None:
+        return False
+    unsafe_tokens = (
+        ":e",
+        "+",
+        "*",
+        ":/:",
+        " c=",
+        "<=",
+        "<",
+        ">",
+        "\\/",
+        "/\\",
+        "~",
+        "<>",
+    )
+    return not any(token in proposition for token in unsafe_tokens)
+
+
 def local_set_definition_closure(
     definitions: dict[str, tuple[str, str]],
     roots: set[str],
@@ -72356,6 +72386,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             lines.append(f"exact {proof_argument_text(source_fact_proof)}.")
             lines.append("Qed.")
         else:
+            if (
+                source_name is not None
+                and local_source_fact_export_is_safe(local_source_fact_propositions.get(source_name))
+            ):
+                emit_local_source_fact(source_name, proposition)
             lines.append(f"Axiom {claim_name}: {proposition}.")
             if rule == "skolem_symbol_introduction" or standard_tptp_proof:
                 local_alias = f"{claim_name}_local"
