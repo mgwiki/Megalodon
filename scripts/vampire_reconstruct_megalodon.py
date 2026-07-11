@@ -45580,6 +45580,140 @@ def raw_guarded_equality_parent_quantified_clause_superposition_proof(
             PROOF_SEARCH_STATE.flat_resolution_target = previous_target
 
 
+def raw_guarded_unit_equality_quantified_clause_superposition_proof(
+    source_clause: Expr,
+    target: Expr,
+    source_clause_proof: str,
+    equality_clause: Expr,
+    equality_clause_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if proof_search_timed_out():
+        return None
+    source_parts = raw_or_parts(source_clause)
+    target_parts = raw_or_parts(target)
+    equality_parts = raw_or_parts(equality_clause)
+    if source_parts is None or target_parts is None or equality_parts is None:
+        return None
+
+    source_quantified: Expr | None = None
+    for candidate_quantified, _candidate_guard in (source_parts, (source_parts[1], source_parts[0])):
+        if candidate_quantified.kind == "forall":
+            source_quantified = candidate_quantified
+            break
+
+    target_quantified: Expr | None = None
+    target_quantified_index = -1
+    for index, (candidate_quantified, _candidate_guard) in enumerate((target_parts, (target_parts[1], target_parts[0]))):
+        if candidate_quantified.kind == "forall":
+            target_quantified = candidate_quantified
+            target_quantified_index = index
+            break
+
+    equality_literal: Expr | None = None
+    for candidate_literal, _candidate_guard in (equality_parts, (equality_parts[1], equality_parts[0])):
+        if equality_like_sides(candidate_literal) is not None:
+            equality_literal = candidate_literal
+            break
+
+    if source_quantified is None or target_quantified is None or equality_literal is None:
+        return None
+    target_binders, target_body = collect_foralls(target_quantified)
+    source_binders, source_body = collect_foralls(source_quantified)
+    if (
+        not target_binders
+        or not source_binders
+        or len(target_binders) > 8
+        or len(source_binders) > 8
+        or len(raw_clause_literals(target_body)) > 16
+        or len(raw_clause_literals(source_body)) > 16
+    ):
+        return None
+
+    target_text = proof_arg_text(target)
+    target_top_literals = raw_clause_literals(target)
+    local_sorts = {
+        **variable_sorts,
+        **{name: sort for name, sort in target_binders},
+        **{name: sort for name, sort in source_binders},
+    }
+
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+    previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+    if previous_deadline is not None:
+        PROOF_SEARCH_STATE.deadline = max(previous_deadline, proof_search_now() + 2.0)
+
+    def equality_clause_handler(equality_branch_literal: Expr, equality_branch_proof: str) -> str | None:
+        direct = raw_literal_to_clause_proof(
+            equality_branch_literal,
+            target,
+            equality_branch_proof,
+            target_top_literals,
+            (),
+        )
+        if direct is not None:
+            return direct
+        if not expr_same_mod_alpha(equality_branch_literal, equality_literal):
+            return None
+
+        def source_clause_handler(source_branch_literal: Expr, source_branch_proof: str) -> str | None:
+            source_direct = raw_literal_to_clause_proof(
+                source_branch_literal,
+                target,
+                source_branch_proof,
+                target_top_literals,
+                (),
+            )
+            if source_direct is not None:
+                return source_direct
+            if not expr_same_mod_alpha(source_branch_literal, source_quantified):
+                return None
+            quantified = raw_clause_unit_equality_superposition_proof(
+                source_quantified,
+                target_quantified,
+                source_branch_proof,
+                equality_literal,
+                equality_branch_proof,
+                local_sorts,
+            )
+            if quantified is None:
+                quantified = raw_residual_equality_clause_superposition_proof(
+                    source_quantified,
+                    target_quantified,
+                    source_branch_proof,
+                    equality_literal,
+                    equality_branch_proof,
+                    local_sorts,
+                )
+            if quantified is None:
+                return None
+            return raw_or_intro_literal_at(target, target_quantified_index, quantified)
+
+        return raw_clause_cases_with_handler(
+            source_clause,
+            source_clause_proof,
+            source_clause_handler,
+            avoid_text=equality_branch_proof,
+        )
+
+    try:
+        return raw_clause_cases_with_handler(
+            equality_clause,
+            equality_clause_proof,
+            equality_clause_handler,
+            avoid_text=source_clause_proof,
+        )
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+        if previous_deadline is not None:
+            PROOF_SEARCH_STATE.deadline = previous_deadline
+
+
 def raw_guarded_quantified_positive_clause_resolution_superposition_proof(
     source: Expr,
     target: Expr,
@@ -58353,6 +58487,26 @@ def raw_tptp_replay_proof(
                     if parent_expr is not None:
                         parent_exprs.append((parent_expr, raw_tptp_canonical_parent_proof_name(parent, propositions_by_name)))
                 if len(parent_exprs) == 2:
+                    proof = raw_guarded_unit_equality_quantified_clause_superposition_proof(
+                        parent_exprs[0][0],
+                        target_expr,
+                        parent_exprs[0][1],
+                        parent_exprs[1][0],
+                        parent_exprs[1][1],
+                        variable_sorts,
+                    )
+                    if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
+                        return proof
+                    proof = raw_guarded_unit_equality_quantified_clause_superposition_proof(
+                        parent_exprs[1][0],
+                        target_expr,
+                        parent_exprs[1][1],
+                        parent_exprs[0][0],
+                        parent_exprs[0][1],
+                        variable_sorts,
+                    )
+                    if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
+                        return proof
                     proof = raw_nested_quantified_literal_equality_clause_superposition_proof(
                         parent_exprs[0][0],
                         target_expr,
