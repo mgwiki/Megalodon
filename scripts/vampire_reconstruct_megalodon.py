@@ -5294,10 +5294,26 @@ def parse_definition_body(body_text: str) -> tuple[tuple[str, ...], Expr] | None
     binders: list[str] = []
     text = body_text.strip()
     while text.startswith("fun "):
-        match = re.match(r"fun (?P<name>[_A-Za-z][_A-Za-z0-9']*):(?P<sort>[^=]+?) => (?P<body>.*)$", text)
+        text = re.sub(
+            r"^fun\s+\((?P<name>[_A-Za-z][_A-Za-z0-9']*)\s*:\s*(?P<sort>[^)]+)\)\s*=>\s*",
+            r"fun \g<name>:\g<sort> => ",
+            text,
+        )
+        match = re.match(
+            r"fun\s+(?P<names>(?:\([_A-Za-z][_A-Za-z0-9']*\)|[_A-Za-z][_A-Za-z0-9']*)(?:\s+(?:\([_A-Za-z][_A-Za-z0-9']*\)|[_A-Za-z][_A-Za-z0-9']*))*)"
+            r"\s*:\s*(?P<sort>[^=]+?)\s*=>\s*(?P<body>.*)$",
+            text,
+        )
         if match is None:
             return None
-        binders.append(match.group("name"))
+        names = [
+            name.strip("()")
+            for name in match.group("names").split()
+            if re.fullmatch(r"\(?[_A-Za-z][_A-Za-z0-9']*\)?", name)
+        ]
+        if not names:
+            return None
+        binders.extend(names)
         text = match.group("body").strip()
     body = parse_expr(text)
     if body is None:
@@ -72599,6 +72615,230 @@ def source_fact_membership_premise_matches(
     return expr_same_mod_alpha(source_element, target_sides[0]) and expr_same_mod_alpha(source_set, target_sides[1])
 
 
+BOUNDED_SOURCE_FORALL_RE = re.compile(r"\bforall\s+([^,:]+?)\s*:e\s*([^,]+),")
+
+
+def source_surface_term_argument(text: str) -> str:
+    stripped = text.strip()
+    if not stripped:
+        return stripped
+    if stripped.startswith("(") and stripped.endswith(")"):
+        return stripped
+    if re.search(r"\s", stripped):
+        return f"({stripped})"
+    return stripped
+
+
+def normalize_source_surface_numerals(text: str) -> str:
+    text = re.sub(r"(?<![_A-Za-z0-9'])0(?![_A-Za-z0-9'])", "Empty", text)
+    return re.sub(r"(?<![_A-Za-z0-9'])-\s*([_A-Za-z][_A-Za-z0-9']*)", r"minus_SNo \1", text)
+
+
+def desugar_source_bounded_foralls(proposition: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        names = [
+            name
+            for name in SOURCE_IDENTIFIER_RE.findall(match.group(1))
+            if name not in {"forall", "_"}
+        ]
+        if not names:
+            return match.group(0)
+        set_text = source_surface_term_argument(match.group(2))
+        binders = "".join(f"forall {name}:set, " for name in names)
+        premises = " -> ".join(f"In {name} {set_text}" for name in names)
+        return f"{binders}{premises} -> "
+
+    previous = proposition
+    while True:
+        current = BOUNDED_SOURCE_FORALL_RE.sub(replace, previous)
+        if current == previous:
+            return current
+        previous = current
+
+
+SOURCE_FORALL_RE = re.compile(
+    r"^forall\s+(?P<name>[_A-Za-z][_A-Za-z0-9']*)\s*:\s*(?P<sort>[^,]+),\s*(?P<body>.*)$"
+)
+SOURCE_UNTYPED_FORALL_RE = re.compile(
+    r"^forall\s+(?P<name>[_A-Za-z][_A-Za-z0-9']*)\s*,\s*(?P<body>.*)$"
+)
+SOURCE_LAMBDA_RE = re.compile(
+    r"^fun\s+(?P<names>(?:\([_A-Za-z][_A-Za-z0-9']*\)|[_A-Za-z][_A-Za-z0-9']*)(?:\s+(?:\([_A-Za-z][_A-Za-z0-9']*\)|[_A-Za-z][_A-Za-z0-9']*))*)"
+    r"\s*:\s*(?P<sort>[^=]+?)\s*=>\s*(?P<body>.*)$"
+)
+
+
+def source_surface_expr_text(text: str) -> str:
+    stripped = strip_balanced_parens(normalize_source_surface_numerals(text.strip()))
+    stripped = re.sub(
+        r"^fun\s+\((?P<name>[_A-Za-z][_A-Za-z0-9']*)\s*:\s*(?P<sort>[^)]+)\)\s*=>\s*",
+        r"fun \g<name>:\g<sort> => ",
+        stripped,
+    )
+    if not stripped:
+        return stripped
+    forall_match = SOURCE_FORALL_RE.match(stripped)
+    if forall_match is not None:
+        return (
+            f"forall {forall_match.group('name')}:{normalize_megalodon_sort(forall_match.group('sort'))}, "
+            f"{source_surface_expr_text(forall_match.group('body'))}"
+        )
+    untyped_forall_match = SOURCE_UNTYPED_FORALL_RE.match(stripped)
+    if untyped_forall_match is not None:
+        return (
+            f"forall {untyped_forall_match.group('name')}:set, "
+            f"{source_surface_expr_text(untyped_forall_match.group('body'))}"
+        )
+    lambda_match = SOURCE_LAMBDA_RE.match(stripped)
+    if lambda_match is not None:
+        names = [name.strip("()") for name in lambda_match.group("names").split()]
+        body = source_surface_expr_text(lambda_match.group("body"))
+        for name in reversed(names):
+            body = f"fun {name} :{normalize_megalodon_sort(lambda_match.group('sort'))} => {body}"
+        return body
+    for operator, connective in (("/\\", "and"), ("\\/", "or")):
+        split = split_top_level_operator(stripped, operator)
+        if split is not None:
+            left, right = split
+            return f"{connective} ({source_surface_expr_text(left)}) ({source_surface_expr_text(right)})"
+    arrow = split_top_level_operator(stripped, "->")
+    if arrow is not None:
+        left, right = arrow
+        left_text = source_surface_expr_text(left)
+        left_expr = parse_expr(left_text)
+        if left_expr is not None and left_expr.kind in {"arrow", "forall", "lambda"}:
+            left_text = f"({left_text})"
+        return f"{left_text} -> {source_surface_expr_text(right)}"
+    not_in = split_top_level_operator(stripped, "/:e")
+    if not_in is not None:
+        left, right = not_in
+        return f"In ({source_surface_expr_text(left)}) ({source_surface_expr_text(right)}) -> False"
+    membership = split_top_level_operator(stripped, ":e")
+    if membership is not None:
+        left, right = membership
+        return f"In ({source_surface_expr_text(left)}) ({source_surface_expr_text(right)})"
+    subset = split_top_level_operator(stripped, "c=")
+    if subset is not None:
+        left, right = subset
+        element = "__src"
+        return (
+            f"forall {element}:set, In {element} ({source_surface_expr_text(left)}) -> "
+            f"In {element} ({source_surface_expr_text(right)})"
+        )
+    return stripped
+
+
+def source_surface_parse_text(proposition: str) -> str:
+    return source_surface_expr_text(desugar_source_bounded_foralls(proposition))
+
+
+def source_definition_infos(source: Path | None) -> dict[str, DefinitionInfo]:
+    if source is None:
+        return {}
+    try:
+        text = source.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    definitions: dict[str, DefinitionInfo] = {}
+    for line in text.splitlines():
+        match = DEFINITION_RE.match(line.strip())
+        if match is None:
+            continue
+        body_text = source_surface_parse_text(match.group("body").strip())
+        parsed = parse_definition_body(body_text)
+        if parsed is None:
+            continue
+        binders, body = parsed
+        definitions[match.group("name")] = DefinitionInfo(
+            normalize_megalodon_sort(match.group("sort")),
+            body_text,
+            match.group("name"),
+            binders,
+            body,
+        )
+    return definitions
+
+
+def expr_same_mod_alpha_after_sort_normalization(left: Expr, right: Expr) -> bool:
+    left_normal = parse_expr(expr_text(left))
+    right_normal = parse_expr(expr_text(right))
+    if left_normal is None or right_normal is None:
+        return expr_same_mod_alpha(left, right)
+    return expr_same_mod_alpha(left_normal, right_normal)
+
+
+def raw_tptp_source_membership_fact_proof(
+    proposition: str,
+    source_name: str,
+    source_proposition: str | None,
+    source_aliases: dict[str, tuple[str, str]] | None = None,
+) -> str | None:
+    if source_proposition is None:
+        return None
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    if source_fact_membership_premise_matches(source_proposition, target, {}, expr_text(target), source_aliases):
+        return source_name
+    return None
+
+
+def raw_tptp_desugared_source_fact_proof(
+    proposition: str,
+    source_name: str,
+    source_proposition: str | None,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if source_proposition is None or ":e" not in source_proposition:
+        return None
+    desugared = desugar_source_bounded_foralls(source_proposition)
+    if desugared == source_proposition:
+        return None
+    if canonical_proposition(desugared) == canonical_proposition(proposition):
+        return source_name
+    source = parse_expr(desugared)
+    target = parse_expr(proposition)
+    if source is None or target is None:
+        return None
+    if expr_same_mod_alpha(source, target):
+        return source_name
+    proof = raw_structural_normal_form_transform_proof(
+        source,
+        target,
+        source_name,
+        variable_sorts,
+    )
+    if proof is not None:
+        return proof
+    if raw_clause_replay_budget_ok(source, target, max_literals=16, max_literal_product=256):
+        proof = raw_clause_subsumption_transform_proof(source, target, source_name, deep_literals=True)
+        if proof is not None:
+            return proof
+        proof = raw_clause_transform_proof(source, target, source_name)
+        if proof is not None:
+            return proof
+    return None
+
+
+def raw_tptp_unfolded_source_fact_proof(
+    proposition: str,
+    source_name: str,
+    source_proposition: str | None,
+    source_definitions: dict[str, DefinitionInfo],
+) -> str | None:
+    if source_proposition is None or not source_definitions:
+        return None
+    source = parse_expr(source_surface_parse_text(source_proposition))
+    target = parse_expr(proposition)
+    if source is None or target is None:
+        return None
+    source_unfolded = normalize_defined_expr(source, source_definitions)
+    target_unfolded = normalize_defined_expr(target, source_definitions)
+    if expr_same_mod_alpha_after_sort_normalization(source_unfolded, target_unfolded):
+        return source_name
+    return None
+
+
 def raw_tptp_unparsed_source_equality_proof(
     proposition: str,
     source_name: str,
@@ -72723,6 +72963,8 @@ def raw_tptp_source_fact_proof(
     source_name: str | None,
     source_fact_names: set[str],
     source_fact_propositions: dict[str, str],
+    variable_sorts: dict[str, str],
+    source_definitions: dict[str, DefinitionInfo],
     source_aliases: dict[str, tuple[str, str]] | None = None,
 ) -> str | None:
     if source_name is None or source_name not in source_fact_names:
@@ -72737,6 +72979,30 @@ def raw_tptp_source_fact_proof(
     source_proposition = source_fact_propositions.get(source_name)
     if source_proposition is not None and canonical_proposition(source_proposition) == canonical_proposition(proposition):
         return source_name
+    desugared_source_fact = raw_tptp_desugared_source_fact_proof(
+        proposition,
+        source_name,
+        source_proposition,
+        variable_sorts,
+    )
+    if desugared_source_fact is not None:
+        return desugared_source_fact
+    membership_source_fact = raw_tptp_source_membership_fact_proof(
+        proposition,
+        source_name,
+        source_proposition,
+        source_aliases,
+    )
+    if membership_source_fact is not None:
+        return membership_source_fact
+    unfolded_source_fact = raw_tptp_unfolded_source_fact_proof(
+        proposition,
+        source_name,
+        source_proposition,
+        source_definitions,
+    )
+    if unfolded_source_fact is not None:
+        return unfolded_source_fact
     oriented_source_fact = raw_tptp_oriented_source_fact_proof(
         proposition,
         source_name,
@@ -72770,6 +73036,7 @@ def raw_tptp_local_source_fact_proof(
     source_name: str | None,
     local_source_fact_propositions: dict[str, str | None],
     variable_sorts: dict[str, str],
+    source_definitions: dict[str, DefinitionInfo],
 ) -> str | None:
     if source_name is None or source_name not in local_source_fact_propositions:
         return None
@@ -72778,6 +73045,29 @@ def raw_tptp_local_source_fact_proof(
         return source_name
     if canonical_proposition(source_proposition) == canonical_proposition(proposition):
         return source_name
+    desugared_source_fact = raw_tptp_desugared_source_fact_proof(
+        proposition,
+        source_name,
+        source_proposition,
+        variable_sorts,
+    )
+    if desugared_source_fact is not None:
+        return desugared_source_fact
+    membership_source_fact = raw_tptp_source_membership_fact_proof(
+        proposition,
+        source_name,
+        source_proposition,
+    )
+    if membership_source_fact is not None:
+        return membership_source_fact
+    unfolded_source_fact = raw_tptp_unfolded_source_fact_proof(
+        proposition,
+        source_name,
+        source_proposition,
+        source_definitions,
+    )
+    if unfolded_source_fact is not None:
+        return unfolded_source_fact
     source = parse_expr(source_proposition)
     target = parse_expr(proposition)
     if source is None or target is None:
@@ -73328,6 +73618,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         for name, location in all_local_set_locations.items()
     }
     source_fact_propositions = source_toplevel_fact_propositions(source)
+    source_definitions = source_definition_infos(source)
     used_source_annotations = {
         source_name
         for _name, _role, _proposition, _rule, source_name, _parents, _trusted_definition in entries
@@ -73554,7 +73845,12 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             return False
         if source_name in declared_names:
             return True
-        proposition = local_source_fact_propositions[source_name] or fallback_proposition
+        source_proposition = local_source_fact_propositions[source_name]
+        proposition = (
+            source_proposition
+            if local_source_fact_export_is_safe(source_proposition)
+            else fallback_proposition
+        )
         if not proposition:
             return False
         lines.append(
@@ -73809,6 +74105,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 source_name,
                 local_source_fact_propositions,
                 variable_sorts,
+                source_definitions,
             )
         ) is not None and emit_local_source_fact(source_name, proposition):
             lines.append(f"Theorem {claim_name}: {proposition}.")
@@ -73820,6 +74117,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 source_name,
                 source_fact_names,
                 source_fact_propositions,
+                variable_sorts,
+                source_definitions,
                 local_set_definitions,
             )
         ) is not None:
