@@ -47602,6 +47602,177 @@ def raw_negative_predicate_argument_true_excluded_superposition_proof(
     )
 
 
+def raw_negative_predicate_from_universal_prop_equality_superposition_proof(
+    target: Expr,
+    source: Expr,
+    source_proof: str,
+    resolver: Expr,
+    resolver_proof: str,
+) -> str | None:
+    target_binders, target_body = collect_foralls(target)
+    if target_binders:
+        return None
+    source_premises, source_conclusion = split_arrows(source)
+    if len(source_premises) != 1 or not false_eliminator_expr(source_conclusion):
+        return None
+    source_atom = source_premises[0]
+    if source_atom.kind != "app" or len(source_atom.args) != 2:
+        return None
+    predicate_head = source_atom.args[0]
+    argument = source_atom.args[1]
+    argument_negation = Expr("arrow", args=(argument, Expr("var", value="False")))
+    target_literals = raw_clause_literals(target_body)
+    negated_argument_indices = [
+        index for index, literal in enumerate(target_literals)
+        if expr_same_mod_alpha(literal, argument_negation)
+    ]
+    if not negated_argument_indices:
+        return None
+
+    resolver_binders, resolver_body = collect_foralls(resolver)
+    if resolver_binders:
+        return None
+    resolver_literals = raw_clause_literals(resolver_body)
+    if len(resolver_literals) != 2:
+        return None
+    universal_index = None
+    residual_index = None
+    universal_binder = None
+    universal_body = None
+    equality_index = None
+    equality_reversed = False
+    negated_binder_index = None
+    for index, literal in enumerate(resolver_literals):
+        binders, body = collect_foralls(literal)
+        if len(binders) != 1 or binders[0][1] != "prop":
+            continue
+        binder_expr = Expr("var", value=binders[0][0])
+        body_literals = raw_clause_literals(body)
+        if len(body_literals) != 2:
+            continue
+        local_equality_index = None
+        local_equality_reversed = False
+        local_negated_binder_index = None
+        for body_index, body_literal in enumerate(body_literals):
+            premises, conclusion = split_arrows(body_literal)
+            if len(premises) == 1 and false_eliminator_expr(conclusion) and expr_same_mod_alpha(premises[0], binder_expr):
+                local_negated_binder_index = body_index
+                continue
+            sides = equality_like_sides(body_literal)
+            if sides is None:
+                continue
+            if expr_same_mod_alpha(sides[1], binder_expr):
+                component = sides[0]
+                reversed_equality = False
+            elif expr_same_mod_alpha(sides[0], binder_expr):
+                component = sides[1]
+                reversed_equality = True
+            else:
+                continue
+            if component.kind != "app" or len(component.args) != 2:
+                continue
+            if not expr_same_mod_alpha(component.args[0], predicate_head):
+                continue
+            if not expr_same_mod_alpha(component.args[1], binder_expr):
+                continue
+            local_equality_index = body_index
+            local_equality_reversed = reversed_equality
+        if local_equality_index is None or local_negated_binder_index is None:
+            continue
+        universal_index = index
+        residual_index = 1 - index
+        universal_binder = binders[0]
+        universal_body = body
+        equality_index = local_equality_index
+        equality_reversed = local_equality_reversed
+        negated_binder_index = local_negated_binder_index
+        break
+    if (
+        universal_index is None
+        or residual_index is None
+        or universal_binder is None
+        or universal_body is None
+        or equality_index is None
+        or negated_binder_index is None
+    ):
+        return None
+    residual_literal = resolver_literals[residual_index]
+    residual_target_indices = [
+        index for index, literal in enumerate(target_literals)
+        if expr_same_mod_alpha(literal, residual_literal)
+    ]
+    if not residual_target_indices:
+        return None
+
+    binder_name, _binder_sort = universal_binder
+    universal_instance = f"({proof_head('__UNIVERSAL_PROOF__')} {proof_arg_text(argument)})"
+    argument_text = proof_arg_text(argument)
+    predicate_argument = Expr("app", args=(predicate_head, argument))
+    predicate_argument_text = proof_arg_text(predicate_argument)
+    argument_proof = fresh_identifier("Harg", expr_text(target_body), source_proof)
+    equality_proof_name = fresh_identifier("Heq", expr_text(universal_body), argument_proof)
+    negation_proof_name = fresh_identifier("Hneg", expr_text(universal_body), argument_proof, equality_proof_name)
+    equality_to_predicate = (
+        equality_proof_name
+        if equality_reversed
+        else native_eq_symmetry_proof(equality_proof_name, predicate_argument, argument, "prop")
+    )
+    transported_argument = (
+        f"(vampire_native_eq_transport_prop {argument_text} {predicate_argument_text} "
+        f"{proof_term_text(equality_to_predicate)} "
+        f"(fun Y :prop => Y) "
+        f"{argument_proof})"
+    )
+    equality_branch = (
+        f"(fun {equality_proof_name} :{proof_arg_text(substitute_expr(raw_clause_literals(universal_body)[equality_index], {binder_name: argument}))} => "
+        f"{proof_head(source_proof)} {transported_argument})"
+    )
+    negation_branch = (
+        f"(fun {negation_proof_name} :{argument_text} -> False => "
+        f"{negation_proof_name} {argument_proof})"
+    )
+    negated_argument_proof_template = (
+        f"(fun {argument_proof} :{argument_text} => "
+        f"{universal_instance} False {equality_branch} {negation_branch})"
+    )
+    universal_target_template = raw_typed_or_intro_literal_at(
+        target_body,
+        negated_argument_indices[0],
+        negated_argument_proof_template,
+    )
+    residual_target_template = raw_typed_or_intro_literal_at(
+        target_body,
+        residual_target_indices[0],
+        "__RESIDUAL_PROOF__",
+    )
+    if universal_target_template is None or residual_target_template is None:
+        return None
+
+    outer_target_text = proof_arg_text(target_body)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = outer_target_text
+    try:
+        def resolver_handler(literal: Expr, literal_proof: str) -> str | None:
+            if expr_same_mod_alpha(literal, resolver_literals[universal_index]):
+                return universal_target_template.replace("__UNIVERSAL_PROOF__", literal_proof)
+            if expr_same_mod_alpha(literal, residual_literal):
+                return residual_target_template.replace("__RESIDUAL_PROOF__", literal_proof)
+            return None
+
+        return raw_clause_cases_with_handler(
+            resolver_body,
+            resolver_proof,
+            resolver_handler,
+            avoid_text=expr_text(target_body),
+        )
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_guarded_quantified_component_clause_resolution_superposition_proof(
     target: Expr,
     source: Expr,
@@ -47902,6 +48073,24 @@ def raw_tptp_superposition_proof(
             if proof is not None:
                 return proof
             proof = raw_negative_predicate_argument_true_excluded_superposition_proof(
+                target_expr,
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+            )
+            if proof is not None:
+                return proof
+            proof = raw_negative_predicate_from_universal_prop_equality_superposition_proof(
+                target_expr,
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+            )
+            if proof is not None:
+                return proof
+            proof = raw_negative_predicate_from_universal_prop_equality_superposition_proof(
                 target_expr,
                 parent_exprs[1][0],
                 parent_exprs[1][1],
