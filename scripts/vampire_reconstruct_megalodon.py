@@ -72866,8 +72866,6 @@ def source_surface_expr_text(text: str) -> str:
         (":\\/:", "binunion"),
         (":\\:", "setminus"),
         ("+", "add_SNo"),
-        ("*", "mul_SNo"),
-        (":/:", "div_SNo"),
     ):
         split = split_source_top_level_operator(stripped, operator)
         if split is not None:
@@ -72875,6 +72873,14 @@ def source_surface_expr_text(text: str) -> str:
             return f"{function_name} ({source_surface_expr_text(left)}) ({source_surface_expr_text(right)})"
     if re.match(r"^-\s+", stripped):
         return f"minus_SNo ({source_surface_expr_text(stripped[1:].strip())})"
+    for operator, function_name in (
+        ("*", "mul_SNo"),
+        (":/:", "div_SNo"),
+    ):
+        split = split_source_top_level_operator(stripped, operator)
+        if split is not None:
+            left, right = split
+            return f"{function_name} ({source_surface_expr_text(left)}) ({source_surface_expr_text(right)})"
     return source_surface_rewrite_parenthesized_terms(stripped)
 
 
