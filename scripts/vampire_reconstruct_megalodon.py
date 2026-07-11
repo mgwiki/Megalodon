@@ -36000,6 +36000,59 @@ def raw_quantified_prop_false_argument_demodulation_proof(
     return None
 
 
+def raw_guarded_universal_prop_explosion_demodulation_proof(
+    target: Expr,
+    explosive_parent: Expr,
+    explosive_parent_proof: str,
+) -> str | None:
+    target_binders, target_body = collect_foralls(target)
+    explosive_binders, explosive_body = collect_foralls(explosive_parent)
+    if target_binders or explosive_binders:
+        return None
+    target_parts = raw_or_parts(target_body)
+    explosive_parts = raw_or_parts(explosive_body)
+    if target_parts is None or explosive_parts is None:
+        return None
+
+    def universal_prop_identity_false_proof(component: Expr, component_proof: str) -> str | None:
+        binders, body = collect_foralls(component)
+        if len(binders) != 1 or binders[0][1] != "prop":
+            return None
+        name, _sort = binders[0]
+        if body.kind != "var" or body.value != name:
+            return None
+        return f"({proof_head(component_proof)} False)"
+
+    for target_component, target_guard in (target_parts, (target_parts[1], target_parts[0])):
+        for explosive_component, explosive_guard, explosive_first in (
+            (explosive_parts[0], explosive_parts[1], True),
+            (explosive_parts[1], explosive_parts[0], False),
+        ):
+            if not expr_same_mod_alpha(target_guard, explosive_guard):
+                continue
+            false_proof = universal_prop_identity_false_proof(explosive_component, "Hexplosive")
+            if false_proof is None:
+                continue
+            component_proof = raw_false_to_expr_proof(false_proof, target_component, Expr("var", value="False"))
+            component_intro = raw_or_intro_from_branch(target_body, target_component, component_proof)
+            guard_intro = raw_or_intro_from_branch(target_body, target_guard, "Hguard")
+            if component_intro is None or guard_intro is None:
+                continue
+            target_text = proof_arg_text(target_body)
+            if explosive_first:
+                return (
+                    f"({explosive_parent_proof} {target_text} "
+                    f"(fun Hexplosive => {proof_term_text(component_intro)}) "
+                    f"(fun Hguard => {proof_term_text(guard_intro)}))"
+                )
+            return (
+                f"({explosive_parent_proof} {target_text} "
+                f"(fun Hguard => {proof_term_text(guard_intro)}) "
+                f"(fun Hexplosive => {proof_term_text(component_intro)}))"
+            )
+    return None
+
+
 def raw_tptp_forward_demodulation_proof(
     proposition: str,
     parents: list[str],
@@ -36206,6 +36259,12 @@ def raw_tptp_forward_demodulation_proof(
         first_name,
         variable_sorts,
     )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_guarded_universal_prop_explosion_demodulation_proof(target, first, first_name)
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_guarded_universal_prop_explosion_demodulation_proof(target, second, second_name)
     if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
         return proof
     proof = raw_guarded_negative_prop_demodulation_proof(
