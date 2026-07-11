@@ -63130,14 +63130,14 @@ def raw_avatar_split_component_from_source_proof(
         candidates: list[Expr] = []
         if component_sorts.get(source_name) == source_sort:
             candidates.append(Expr("var", value=source_name))
+        if source_sort == "prop":
+            candidates.extend((Expr("var", value="vampire_false"), Expr("var", value="vampire_true")))
+            candidates.extend(refutable_components)
         candidates.extend(
             Expr("var", value=component_name)
             for component_name, component_sort in component_binders
             if component_name != source_name and component_sort == source_sort
         )
-        if source_sort == "prop":
-            candidates.extend((Expr("var", value="vampire_true"), Expr("var", value="vampire_false")))
-            candidates.extend(refutable_components)
         for subst, proof in source_options:
             for candidate in candidates:
                 if (
