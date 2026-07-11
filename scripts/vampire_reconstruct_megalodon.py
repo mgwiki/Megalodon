@@ -71535,7 +71535,7 @@ def raw_avatar_sat_dpll_refutation_proof(
         clauses.append((name, clause, clause_proof, literals))
         for _, (variable, _) in literals:
             variables.add(variable)
-    if not clauses or len(variables) > 24:
+    if not clauses or len(variables) > 32:
         return None
     search_nodes = 0
 
