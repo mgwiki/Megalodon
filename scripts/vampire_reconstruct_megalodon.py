@@ -39935,6 +39935,270 @@ def raw_guarded_universal_negative_literal_superposition_proof(
     return None
 
 
+def raw_guarded_universal_negative_clause_superposition_proof(
+    guarded: Expr,
+    target: Expr,
+    guarded_proof: str,
+    source: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if proof_search_timed_out():
+        return None
+    target_parts = raw_or_parts(target)
+    guarded_parts = raw_or_parts(guarded)
+    if target_parts is None or guarded_parts is None:
+        return None
+
+    target_quantified: Expr | None = None
+    target_guard: Expr | None = None
+    target_quantified_index = -1
+    for index, (candidate_quantified, candidate_guard) in enumerate((target_parts, (target_parts[1], target_parts[0]))):
+        if candidate_quantified.kind == "forall":
+            target_quantified = candidate_quantified
+            target_guard = candidate_guard
+            target_quantified_index = index
+            break
+
+    guarded_quantified: Expr | None = None
+    guarded_guard: Expr | None = None
+    for candidate_quantified, candidate_guard in (guarded_parts, (guarded_parts[1], guarded_parts[0])):
+        if candidate_quantified.kind == "forall":
+            guarded_quantified = candidate_quantified
+            guarded_guard = candidate_guard
+            break
+    if (
+        target_quantified is None
+        or target_guard is None
+        or guarded_quantified is None
+        or guarded_guard is None
+        or not expr_same_mod_alpha(target_guard, guarded_guard)
+    ):
+        return None
+
+    target_binders, target_body = collect_foralls(target_quantified)
+    guarded_binders, guarded_body = collect_foralls(guarded_quantified)
+    source_binders, source_body = collect_foralls(source)
+    if (
+        not target_binders
+        or not guarded_binders
+        or not source_binders
+        or len(target_binders) > 8
+        or len(guarded_binders) > 8
+        or len(source_binders) > 8
+    ):
+        return None
+
+    target_names = {name for name, _sort in target_binders}
+    used_names = (
+        target_names
+        | expr_variables(target_body)
+        | expr_bound_variables(target_body)
+        | expr_variables(target_guard)
+        | expr_bound_variables(target_guard)
+    )
+
+    def rename_local_binders(
+        binders: list[tuple[str, str]],
+        body: Expr,
+        prefix: str,
+    ) -> tuple[list[tuple[str, str]], Expr]:
+        renamed: list[tuple[str, str]] = []
+        renames: dict[str, str] = {}
+        for index, (name, sort) in enumerate(binders):
+            replacement = name
+            if replacement in used_names:
+                replacement = fresh_identifier(f"{prefix}{index}", expr_text(source), expr_text(target), expr_text(guarded))
+                while replacement in used_names:
+                    replacement = fresh_identifier(replacement, expr_text(source), expr_text(target), expr_text(guarded))
+            used_names.add(replacement)
+            renamed.append((replacement, sort))
+            if replacement != name:
+                renames[name] = replacement
+        if renames:
+            body = rename_expr_variables(body, renames)
+        return renamed, body
+
+    guarded_binders, guarded_body = rename_local_binders(guarded_binders, guarded_body, "GUN")
+    source_binders, source_body = rename_local_binders(source_binders, source_body, "GUS")
+    guarded_premise = raw_negative_body(guarded_body)
+    if guarded_premise is None:
+        return None
+
+    source_literals = raw_clause_literals(source_body)
+    target_literals = raw_clause_literals(target_body)
+    if len(source_literals) > 16 or len(target_literals) > 24:
+        return None
+    if not any(false_eliminator_expr(literal) for literal in target_literals):
+        return None
+
+    target_sort_by_name = {name: sort for name, sort in target_binders}
+    guarded_sort_by_name = {name: sort for name, sort in guarded_binders}
+    source_sort_by_name = {name: sort for name, sort in source_binders}
+    local_sorts = {
+        **variable_sorts,
+        **target_sort_by_name,
+        **guarded_sort_by_name,
+        **source_sort_by_name,
+    }
+    guarded_names = set(guarded_sort_by_name)
+    source_names = set(source_sort_by_name)
+    instantiation_names = guarded_names | source_names
+    target_nonfalse_literals = [
+        literal
+        for literal in target_literals
+        if not false_eliminator_expr(literal)
+    ]
+
+    def substitution_sorts_ok(subst: dict[str, Expr]) -> bool:
+        for name, value in subst.items():
+            expected_sort = guarded_sort_by_name.get(name) or source_sort_by_name.get(name)
+            if expected_sort is None:
+                continue
+            value_sort = expr_sort(value, local_sorts)
+            if value_sort is not None and not equivalent_sorts(expected_sort, value_sort):
+                return False
+        return True
+
+    def complete_substitutions(partial: dict[str, Expr], resolved_index: int) -> Iterable[dict[str, Expr]]:
+        residuals = [
+            literal
+            for index, literal in enumerate(source_literals)
+            if index != resolved_index
+        ]
+        residuals.sort(key=lambda literal: -len(expr_variables(literal) & instantiation_names))
+        seen: set[tuple[int, tuple[tuple[str, str], ...]]] = set()
+
+        def search(index: int, subst: dict[str, Expr]) -> Iterable[dict[str, Expr]]:
+            if proof_search_timed_out():
+                return
+            subst = dict(subst)
+            flatten_substitution(subst)
+            if instantiation_names <= subst.keys():
+                if (
+                    substitution_sorts_ok(subst)
+                    and not any(expr_variables(subst[name]) & instantiation_names for name in instantiation_names)
+                    and not any(raw_expr_has_synthetic_db_variable(subst[name]) for name in instantiation_names)
+                ):
+                    yield subst
+                return
+            if index >= len(residuals):
+                return
+            key = (
+                index,
+                tuple(sorted((name, expr_key(value)) for name, value in subst.items())),
+            )
+            if key in seen:
+                return
+            seen.add(key)
+            literal = substitute_expr(residuals[index], subst)
+            matched = False
+            for target_literal in target_nonfalse_literals:
+                trial = dict(subst)
+                if raw_unify_expr_instantiating(literal, target_literal, instantiation_names, trial):
+                    flatten_substitution(trial)
+                    if substitution_sorts_ok(trial):
+                        matched = True
+                        yield from search(index + 1, trial)
+            if not matched:
+                yield from search(index + 1, subst)
+
+        yield from search(0, partial)
+
+    def instantiated_body_options() -> Iterable[tuple[Expr, str, Expr, dict[str, Expr]]]:
+        seen: set[tuple[tuple[str, str], ...]] = set()
+        for resolved_index, source_literal in enumerate(source_literals):
+            source_premises, source_conclusion = split_arrows(source_literal)
+            if len(source_premises) == 1 and false_eliminator_expr(source_conclusion):
+                continue
+            partial: dict[str, Expr] = {}
+            if not raw_unify_expr_instantiating(
+                source_literal,
+                guarded_premise,
+                instantiation_names,
+                partial,
+            ):
+                continue
+            flatten_substitution(partial)
+            for subst in complete_substitutions(partial, resolved_index):
+                if any(name not in subst for name in instantiation_names):
+                    continue
+                key = tuple(sorted((name, expr_key(subst[name])) for name in instantiation_names))
+                if key in seen:
+                    continue
+                seen.add(key)
+                source_instance = substitute_expr(source_body, subst)
+                guarded_instance = substitute_expr(guarded_body, subst)
+                if not raw_clause_replay_budget_ok(
+                    source_instance,
+                    guarded_instance,
+                    target_body,
+                    max_literals=18,
+                    max_literal_product=512,
+                ):
+                    continue
+                source_instance_proof = source_proof
+                for name, _sort in source_binders:
+                    source_instance_proof = f"({proof_head(source_instance_proof)} {proof_arg_text(subst[name])})"
+                yield source_instance, source_instance_proof, guarded_instance, subst
+
+    def quantified_target_proof(guarded_quantified_proof: str) -> str | None:
+        for source_instance, source_instance_proof, guarded_instance, subst in instantiated_body_options():
+            guarded_instance_proof = guarded_quantified_proof
+            for name, _sort in guarded_binders:
+                guarded_instance_proof = f"({proof_head(guarded_instance_proof)} {proof_arg_text(subst[name])})"
+            proof = raw_clause_multi_resolution_proof(
+                source_instance,
+                target_body,
+                source_instance_proof,
+                [(guarded_instance, guarded_instance_proof)],
+            )
+            if proof is None:
+                proof = raw_flat_clause_resolution_proof(
+                    source_instance,
+                    target_body,
+                    source_instance_proof,
+                    guarded_instance,
+                    guarded_instance_proof,
+                    avoid_text=guarded_instance_proof,
+                )
+            if proof is None:
+                continue
+            for name, sort in reversed(target_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
+            return proof
+        return None
+
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target)
+    target_top_literals = raw_clause_literals(target)
+
+    def guarded_handler(literal: Expr, literal_proof: str) -> str | None:
+        direct = raw_literal_to_clause_proof(literal, target, literal_proof, target_top_literals, ())
+        if direct is not None:
+            return direct
+        if not expr_same_mod_alpha(literal, guarded_quantified):
+            return None
+        quantified = quantified_target_proof(literal_proof)
+        if quantified is None:
+            return None
+        return raw_or_intro_literal_at(target, target_quantified_index, quantified)
+
+    try:
+        return raw_clause_cases_with_handler(
+            guarded,
+            guarded_proof,
+            guarded_handler,
+            avoid_text=f"{source_proof} HL HR",
+        )
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_guarded_quantified_clause_resolution_superposition_proof(
     guarded: Expr,
     target: Expr,
@@ -41301,6 +41565,26 @@ def raw_tptp_superposition_proof(
             if proof is not None:
                 return proof
             proof = raw_guarded_quantified_resolver_clause_superposition_proof(
+                early_parent_exprs[1][0],
+                early_target_expr,
+                early_parent_exprs[1][1],
+                early_parent_exprs[0][0],
+                early_parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_guarded_universal_negative_clause_superposition_proof(
+                early_parent_exprs[0][0],
+                early_target_expr,
+                early_parent_exprs[0][1],
+                early_parent_exprs[1][0],
+                early_parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_guarded_universal_negative_clause_superposition_proof(
                 early_parent_exprs[1][0],
                 early_target_expr,
                 early_parent_exprs[1][1],
@@ -51425,6 +51709,23 @@ def raw_trusted_predicate_definition_parts(expr: Expr) -> tuple[list[tuple[str, 
         if split.kind == "var":
             return list(binders), split, component
         if split.kind != "app" or not split.args or split.args[0].kind != "var":
+            continue
+        return list(binders), split, component
+    literals = raw_clause_literals(body)
+    if len(literals) < 2:
+        return None
+    for index in range(len(literals) - 1, -1, -1):
+        negative_split = literals[index]
+        premises, conclusion = split_arrows(negative_split)
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
+            continue
+        split = premises[0]
+        if split.kind == "var":
+            pass
+        elif split.kind != "app" or not split.args or split.args[0].kind != "var":
+            continue
+        component = raw_clause_from_literals(literals[:index] + literals[index + 1 :])
+        if component is None:
             continue
         return list(binders), split, component
     return None
