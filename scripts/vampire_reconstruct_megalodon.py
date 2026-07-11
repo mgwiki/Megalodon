@@ -30806,6 +30806,8 @@ def raw_negated_forall_implication_to_exists_conjunction_proof(
                     local_sorts,
                 )
         if proof is None:
+            proof = raw_normal_form_side_proof(source_component, component, component_source_proof, local_sorts, 0)
+        if proof is None:
             proof = raw_deep_formula_transform_proof(source_component, component, component_source_proof, local_sorts)
         if proof is None:
             proof = raw_classical_implication_to_or_transform_proof(source_component, component, component_source_proof)
@@ -65217,6 +65219,70 @@ def raw_structural_normal_form_transform_proof(
     )
     if ordered_or_flattening is not None:
         return ordered_or_flattening
+
+    negated_implication_chain = raw_negated_implication_chain_to_ennf_conjunction_proof(
+        source,
+        target,
+        source_proof,
+        variable_sorts,
+    )
+    if negated_implication_chain is not None:
+        return negated_implication_chain
+    negated_implication_chain = raw_negated_implication_chain_to_conjunction_proof(
+        source,
+        target,
+        source_proof,
+        variable_sorts,
+    )
+    if negated_implication_chain is not None:
+        return negated_implication_chain
+
+    target_or = raw_or_parts(target)
+    if source.kind == "arrow" and target_or is not None:
+        source_premise, source_conclusion = source.args
+        negated_premise = Expr("arrow", args=(source_premise, Expr("var", value="False")))
+        left_name = fresh_identifier("HnotEnnfImp", expr_text(source_premise), expr_text(target_or[0]), source_proof)
+        right_name = fresh_identifier("HposEnnfImp", expr_text(source_premise), expr_text(source_conclusion), source_proof)
+        right_source_proof = f"({proof_head(source_proof)} {right_name})"
+
+        left_proof = raw_structural_normal_form_transform_proof(
+            negated_premise,
+            target_or[0],
+            left_name,
+            variable_sorts,
+            rewrites,
+            depth + 1,
+        )
+        if left_proof is None:
+            left_proof = raw_negated_forall_implication_to_exists_conjunction_proof(
+                negated_premise,
+                target_or[0],
+                left_name,
+                variable_sorts,
+            )
+        if left_proof is None:
+            left_proof = raw_negated_forall_to_exists_negation_proof(
+                negated_premise,
+                target_or[0],
+                left_name,
+                variable_sorts,
+            )
+
+        right_proof = raw_structural_normal_form_transform_proof(
+            source_conclusion,
+            target_or[1],
+            right_source_proof,
+            variable_sorts,
+            rewrites,
+            depth + 1,
+        )
+        if left_proof is not None and right_proof is not None:
+            return (
+                f"(xm {proof_arg_text(source_premise)} {proof_arg_text(target)} "
+                f"(fun {right_name} => fun P Hleft Hright => Hright {proof_term_text(right_proof)}) "
+                f"(fun {left_name} => fun P Hleft Hright => Hleft {proof_term_text(left_proof)}))"
+            )
+
     source_exists = raw_exists_transform_parts(source)
     target_exists = raw_exists_transform_parts(target)
     if source_exists is not None and target_exists is not None:
