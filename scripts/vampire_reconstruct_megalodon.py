@@ -573,6 +573,10 @@ def proof_has_reconstruction_payload(text: str, proof_mode: str) -> bool:
 def raw_tptp_proof_has_reconstructable_content(text: str) -> bool:
     if collect_tptp_declarations(text):
         return True
+    if "SZS output start Proof" in text and "inference(" in text:
+        return True
+    if "Termination reason: Refutation" in text and "inference(" in text:
+        return True
     if (
         "% format: vampire-megalodon-proof-outline-v1" in text
         and "megalodon_reconstruction_start." in text
@@ -26136,6 +26140,7 @@ def raw_fast_or_assoc_transform_proof(
     target: Expr,
     source_proof: str,
     variable_sorts: dict[str, str],
+    rewrites: tuple[RawSplitRewrite, ...] = (),
     depth: int = 0,
 ) -> str | None:
     if depth > 80 or proof_search_timed_out():
@@ -26144,11 +26149,12 @@ def raw_fast_or_assoc_transform_proof(
         return source_proof
 
     def transform(component_source: Expr, component_target: Expr, proof: str) -> str | None:
-        return raw_fast_or_assoc_transform_proof(
+        return raw_structural_normal_form_transform_proof(
             component_source,
             component_target,
             proof,
             variable_sorts,
+            rewrites,
             depth + 1,
         )
 
@@ -26252,11 +26258,12 @@ def raw_fast_or_assoc_transform_proof(
         witness = fresh_identifier("wassoc", expr_text(source), expr_text(target), source_proof)
         source_body = rename_expr_variables(source_body, {source_name: witness})
         target_body = rename_expr_variables(target_body, {target_name: witness})
-        body_proof = raw_fast_or_assoc_transform_proof(
+        body_proof = raw_structural_normal_form_transform_proof(
             source_body,
             target_body,
             "HassocBody",
             {**variable_sorts, witness: source_sort},
+            rewrites,
             depth + 1,
         )
         if body_proof is None:
@@ -26274,11 +26281,12 @@ def raw_fast_or_assoc_transform_proof(
         target_body = target.args[0]
         if source.value != binder:
             source_body = rename_expr_variables(source_body, {source.value: binder})
-        inner = raw_fast_or_assoc_transform_proof(
+        inner = raw_structural_normal_form_transform_proof(
             source_body,
             target_body,
             f"({proof_head(source_proof)} {binder})",
             {**variable_sorts, binder: target.sort},
+            rewrites,
             depth + 1,
         )
         if inner is None:
@@ -51757,6 +51765,8 @@ def raw_tptp_trusted_definition_rewrites(
         if definition is None:
             continue
         binders, split, component = definition
+        split = raw_surface_boolean_alias_expr(split)
+        component = raw_surface_boolean_alias_expr(component)
         parent_name = raw_tptp_claim_name(parent)
         suffix = "_local" if local else ""
         binder_args = " ".join(name for name, _sort in binders)
@@ -53600,7 +53610,35 @@ def raw_structural_normal_form_transform_proof(
     rewrite_proof = raw_split_rewrite_proof(source, target, source_proof, rewrites)
     if rewrite_proof is not None:
         return rewrite_proof
-    fast_assoc = raw_fast_or_assoc_transform_proof(source, target, source_proof, variable_sorts, depth + 1)
+    for rewrite in rewrites:
+        if not rewrite.binders:
+            if not expr_same_mod_alpha(target, rewrite.split):
+                continue
+            component = rewrite.component
+            projection = raw_split_projection_proof(rewrite, component_to_split=True)
+        else:
+            variables = {name for name, _sort in rewrite.binders}
+            subst: dict[str, Expr] = {}
+            if not match_expr(rewrite.split, target, variables, subst):
+                continue
+            flatten_substitution(subst)
+            if not variables <= set(subst):
+                continue
+            component = substitute_expr(rewrite.component, subst)
+            projection = raw_split_projection_proof(rewrite, component_to_split=True, subst=subst)
+        if projection is None or expr_same_mod_alpha(component, target):
+            continue
+        component_proof = raw_structural_normal_form_transform_proof(
+            source,
+            component,
+            source_proof,
+            variable_sorts,
+            rewrites,
+            depth + 1,
+        )
+        if component_proof is not None:
+            return f"({proof_head(projection)} {proof_term_text(component_proof)})"
+    fast_assoc = raw_fast_or_assoc_transform_proof(source, target, source_proof, variable_sorts, rewrites, depth + 1)
     if fast_assoc is not None:
         return fast_assoc
 
