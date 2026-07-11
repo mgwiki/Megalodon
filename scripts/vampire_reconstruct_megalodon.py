@@ -998,6 +998,7 @@ def prune_unreachable_claims(lines: list[str]) -> list[str]:
 
 
 def proposition_after_colon(line: str, prefix: str) -> tuple[str, str] | None:
+    line = line.strip()
     if not line.startswith(prefix):
         return None
     rest = line[len(prefix):]
@@ -19917,6 +19918,18 @@ def infer_missing_raw_tptp_sorts(expr: Expr, variables: dict[str, str], local_so
             if head_sort is not None and len(expr.args) - 1 >= len(split_sort_arrows(head_sort)):
                 stale_head_sort = True
                 head_sort = None
+            if (
+                head_sort is not None
+                and expected in {"set", "prop"}
+                and head.value is not None
+                and VAMPIRE_DEPENDENCY_RE.match(head.value)
+            ):
+                result_sort = sort_after_arguments(head_sort, len(expr.args) - 1)
+                if result_sort is not None and result_sort != expected:
+                    arg_sorts = [expr_sort(arg, known_sorts) for arg in expr.args[1:]]
+                    if arg_sorts and all(sort is not None for sort in arg_sorts):
+                        variables[head.value] = join_sort_arrows([*(sort for sort in arg_sorts if sort is not None), expected])
+                        head_sort = variables[head.value]
             if head_sort is None and expected is not None and (head.value not in local_sorts or stale_head_sort):
                 arg_sorts = [expr_sort(arg, known_sorts) for arg in expr.args[1:]]
                 if expected in {"set", "prop"} and any(sort is None for sort in arg_sorts):
@@ -20407,15 +20420,17 @@ def raw_clause_cases_proof(
     rewrites: tuple[RawSplitRewrite, ...],
     source_proof: str,
     deep_literals: bool = False,
+    variable_sorts: dict[str, str] | None = None,
 ) -> str | None:
+    variable_sorts = variable_sorts or {}
     parts = raw_or_parts(source)
     if parts is None:
-        return raw_literal_to_clause_proof(source, target, source_proof, target_literals, rewrites, deep_literals)
+        return raw_literal_to_clause_proof(source, target, source_proof, target_literals, rewrites, deep_literals, variable_sorts)
     left, right = parts
     left_name = fresh_identifier("HL", expr_text(source), expr_text(target), source_proof)
     right_name = fresh_identifier("HR", expr_text(source), expr_text(target), source_proof, left_name)
-    left_target = raw_clause_cases_proof(left, target, target_literals, rewrites, left_name, deep_literals)
-    right_target = raw_clause_cases_proof(right, target, target_literals, rewrites, right_name, deep_literals)
+    left_target = raw_clause_cases_proof(left, target, target_literals, rewrites, left_name, deep_literals, variable_sorts)
+    right_target = raw_clause_cases_proof(right, target, target_literals, rewrites, right_name, deep_literals, variable_sorts)
     if left_target is None or right_target is None:
         return None
     return (
@@ -20526,7 +20541,9 @@ def raw_clause_subsumption_transform_proof(
     source_proof: str,
     rewrites: tuple[RawSplitRewrite, ...] = (),
     deep_literals: bool = False,
+    variable_sorts: dict[str, str] | None = None,
 ) -> str | None:
+    variable_sorts = variable_sorts or {}
     if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
         assert source.value is not None and target.value is not None and target.sort is not None
         binder = target.value
@@ -20540,6 +20557,7 @@ def raw_clause_subsumption_transform_proof(
             f"({proof_head(source_proof)} {binder})",
             rewrites,
             deep_literals,
+            variable_sorts,
         )
         if inner is None:
             return None
@@ -20553,14 +20571,14 @@ def raw_clause_subsumption_transform_proof(
         target,
         source_proof,
         rewrites,
-        {},
+        variable_sorts,
     )
     if same_order is not None:
         return same_order
     for literal in source_literals:
-        if raw_literal_to_clause_proof(literal, target, "HLit", target_literals, rewrites, deep_literals) is None:
+        if raw_literal_to_clause_proof(literal, target, "HLit", target_literals, rewrites, deep_literals, variable_sorts) is None:
             return None
-    return raw_clause_cases_proof(source, target, target_literals, rewrites, source_proof, deep_literals)
+    return raw_clause_cases_proof(source, target, target_literals, rewrites, source_proof, deep_literals, variable_sorts)
 
 
 def raw_forall_prop_false_instantiation_clause_transform_proof(
@@ -32687,6 +32705,14 @@ def native_equality_transport_proof(
     equality_sort: str,
     context: Expr,
 ) -> str | None:
+    normalized_sort = normalized_sort_key(equality_sort)
+    if normalized_sort == "set->prop":
+        sort_text = binder_sort_text(equality_sort)
+        return (
+            f"({proof_term_text(proof)} "
+            f"(fun {hole_name} :{sort_text} => {expr_text(context)}) "
+            f"{proof_term_text(source_proof)})"
+        )
     suffix = native_eq_helper_suffix(equality_sort)
     if suffix is None:
         return None
@@ -37065,7 +37091,7 @@ def raw_guarded_prop_equality_to_negative_demodulation_proof(
             return proof
 
         def handler(literal: Expr, literal_proof: str) -> str | None:
-            direct = raw_literal_to_clause_proof(literal, target_body, literal_proof, target_literals, ())
+            direct = raw_literal_to_clause_proof(literal, target_body, literal_proof, target_literals, (), variable_sorts=variable_sorts)
             if direct is not None:
                 return direct
             sides = equality_like_sides(literal)
@@ -48651,6 +48677,7 @@ def raw_ground_quantified_clause_equality_superposition_proof(
                         target_body,
                         rewritten_proof,
                         deep_literals=True,
+                        variable_sorts=variable_sorts,
                     )
                     if proof is not None:
                         return proof
@@ -71937,6 +71964,10 @@ LOCAL_SET_DECL_RE = re.compile(
     r"^\s*set\s+(?P<name>[_A-Za-z][_A-Za-z0-9']*)"
     r"(?:\s*:\s*(?P<sort>.*?))?\s*:=\s*(?P<body>.*?)\s*\.\s*$"
 )
+LOCAL_LET_ALIAS_RE = re.compile(
+    r"^\s*Let\s+(?P<name>[_A-Za-z][_A-Za-z0-9']*)"
+    r"(?:\s*:\s*(?P<sort>.*?))?\s*:=\s*(?P<body>.*?)\s*\.\s*$"
+)
 LOCAL_SOURCE_FACT_RE = re.compile(
     r"^\s*(?:(?:[-+*])\s*)?(?:assume|claim)\s+(?P<body>.*?)\s*\.\s*$"
 )
@@ -71987,8 +72018,31 @@ def source_local_set_definitions(source: Path | None, line: int | None) -> dict[
     if theorem_line is None:
         return {}
     rows = source.read_text(encoding="utf-8", errors="replace").splitlines()
+    section_stack: list[int] = []
+    for index, row in enumerate(rows[: theorem_line - 1]):
+        stripped = row.strip()
+        if re.match(r"^Section\b", stripped):
+            section_stack.append(index)
+        elif re.match(r"^End\b", stripped) and section_stack:
+            section_stack.pop()
+    section_start = section_stack[-1] + 1 if section_stack else 0
+    declared_sorts = source_declared_sorts(source)
     scanned_rows = rows[theorem_line - 1 : min(line, len(rows))]
-    definitions: dict[str, tuple[str, str, int, int]] = {}
+    definitions: dict[str, tuple[str, str, int, int, bool]] = {}
+    for offset, row in enumerate(rows[section_start : theorem_line - 1]):
+        match = LOCAL_LET_ALIAS_RE.match(row)
+        if match is None:
+            continue
+        body = match.group("body").strip()
+        if not body:
+            continue
+        sort = match.group("sort")
+        if sort is None:
+            sort = declared_sorts.get(body, "set")
+        sort = normalize_megalodon_sort(sort)
+        if not sort:
+            continue
+        definitions[match.group("name")] = (sort, body, offset, len(row) - len(row.lstrip()), True)
     for offset, row in enumerate(scanned_rows):
         match = LOCAL_SET_DECL_RE.match(row)
         if match is None:
@@ -71997,7 +72051,7 @@ def source_local_set_definitions(source: Path | None, line: int | None) -> dict[
         body = match.group("body").strip()
         if not sort or not body:
             continue
-        definitions[match.group("name")] = (sort, body, offset, len(row) - len(row.lstrip()))
+        definitions[match.group("name")] = (sort, body, offset, len(row) - len(row.lstrip()), False)
     if not definitions:
         return {}
 
@@ -72011,8 +72065,8 @@ def source_local_set_definitions(source: Path | None, line: int | None) -> dict[
         return bool(re.match(r"^[-+*](?:\s|$)", stripped))
 
     in_scope: dict[str, tuple[str, str]] = {}
-    for name, (sort, body, offset, indent) in definitions.items():
-        if any(branch_or_scope_boundary(row, indent) for row in scanned_rows[offset + 1 :]):
+    for name, (sort, body, offset, indent, section_alias) in definitions.items():
+        if not section_alias and any(branch_or_scope_boundary(row, indent) for row in scanned_rows[offset + 1 :]):
             continue
         in_scope[name] = (sort, body)
     return in_scope
@@ -72060,13 +72114,26 @@ def source_local_set_definition_locations(source: Path | None, line: int | None)
     if theorem_line is None:
         return {}
     rows = source.read_text(encoding="utf-8", errors="replace").splitlines()
+    section_stack: list[int] = []
+    for index, row in enumerate(rows[: theorem_line - 1]):
+        stripped = row.strip()
+        if re.match(r"^Section\b", stripped):
+            section_stack.append(index)
+        elif re.match(r"^End\b", stripped) and section_stack:
+            section_stack.pop()
+    section_start = section_stack[-1] + 1 if section_stack else 0
     scanned_rows = rows[theorem_line - 1 : min(line, len(rows))]
-    definitions: dict[str, tuple[int, int, int]] = {}
+    definitions: dict[str, tuple[int, int, int, bool]] = {}
+    for offset, row in enumerate(rows[section_start : theorem_line - 1]):
+        match = LOCAL_LET_ALIAS_RE.match(row)
+        if match is None:
+            continue
+        definitions[match.group("name")] = (section_start + offset + 1, offset, len(row) - len(row.lstrip()), True)
     for offset, row in enumerate(scanned_rows):
         match = LOCAL_SET_DECL_RE.match(row)
         if match is None:
             continue
-        definitions[match.group("name")] = (theorem_line + offset, offset, len(row) - len(row.lstrip()))
+        definitions[match.group("name")] = (theorem_line + offset, offset, len(row) - len(row.lstrip()), False)
     if not definitions:
         return {}
 
@@ -72080,8 +72147,8 @@ def source_local_set_definition_locations(source: Path | None, line: int | None)
         return bool(re.match(r"^[-+*](?:\s|$)", stripped))
 
     in_scope: dict[str, int] = {}
-    for name, (source_line, offset, indent) in definitions.items():
-        if any(branch_or_scope_boundary(row, indent) for row in scanned_rows[offset + 1 :]):
+    for name, (source_line, offset, indent, section_alias) in definitions.items():
+        if not section_alias and any(branch_or_scope_boundary(row, indent) for row in scanned_rows[offset + 1 :]):
             continue
         in_scope[name] = source_line
     return in_scope
@@ -72397,12 +72464,28 @@ def source_fact_infix_function(symbol: str, target_text: str) -> str | None:
     return candidates[0]
 
 
-def parse_source_fact_simple_term(text: str, variable_renames: dict[str, str], target_text: str) -> Expr | None:
+def parse_source_fact_simple_term(
+    text: str,
+    variable_renames: dict[str, str],
+    target_text: str,
+    source_aliases: dict[str, tuple[str, str]] | None = None,
+    depth: int = 0,
+) -> Expr | None:
+    if depth > 16:
+        return None
     text = strip_outer_source_parens(text)
     if not text:
         return None
-    if text == "0":
-        return Expr("var", value="Empty")
+    if re.fullmatch(r"[0-9]+", text):
+        value = Expr("var", value="Empty")
+        for _index in range(int(text)):
+            value = append_application_args(Expr("var", value="ordsucc"), [value])
+        return value
+    if text.startswith("{") and text.endswith("}"):
+        inner = parse_source_fact_simple_term(text[1:-1], variable_renames, target_text, source_aliases, depth + 1)
+        if inner is None:
+            return None
+        return append_application_args(Expr("var", value="Sing"), [inner])
     for symbol in ("+", "*", "^"):
         parts = split_top_level_operator(text, symbol)
         if parts is None:
@@ -72410,32 +72493,90 @@ def parse_source_fact_simple_term(text: str, variable_renames: dict[str, str], t
         function_name = source_fact_infix_function(symbol, target_text)
         if function_name is None:
             return None
-        left = parse_source_fact_simple_term(parts[0], variable_renames, target_text)
-        right = parse_source_fact_simple_term(parts[1], variable_renames, target_text)
+        left = parse_source_fact_simple_term(parts[0], variable_renames, target_text, source_aliases, depth + 1)
+        right = parse_source_fact_simple_term(parts[1], variable_renames, target_text, source_aliases, depth + 1)
         if left is None or right is None:
             return None
         return append_application_args(Expr("var", value=function_name), [left, right])
     pieces = split_top_level_whitespace(text)
     if len(pieces) > 1:
-        head = parse_source_fact_simple_term(pieces[0], variable_renames, target_text)
+        head = parse_source_fact_simple_term(pieces[0], variable_renames, target_text, source_aliases, depth + 1)
         if head is None:
             return None
         result = head
         for piece in pieces[1:]:
-            argument = parse_source_fact_simple_term(piece, variable_renames, target_text)
+            argument = parse_source_fact_simple_term(piece, variable_renames, target_text, source_aliases, depth + 1)
             if argument is None:
                 return None
             result = append_application_args(result, [argument])
         return result
     if re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", text):
+        if source_aliases is not None and text in source_aliases:
+            aliased = parse_source_fact_simple_term(
+                source_aliases[text][1],
+                variable_renames,
+                target_text,
+                source_aliases,
+                depth + 1,
+            )
+            if aliased is not None:
+                return aliased
         return Expr("var", value=variable_renames.get(text, text))
     return None
+
+
+def source_fact_subq_premise_matches(
+    source_premise: str,
+    target_premise: Expr,
+    variable_renames: dict[str, str],
+    target_text: str,
+    source_aliases: dict[str, tuple[str, str]] | None,
+) -> bool:
+    parts = split_top_level_operator(source_premise, "c=")
+    if parts is None:
+        return False
+    source_left = parse_source_fact_simple_term(parts[0], variable_renames, target_text, source_aliases)
+    source_right = parse_source_fact_simple_term(parts[1], variable_renames, target_text, source_aliases)
+    if source_left is None or source_right is None:
+        return False
+    binders, body = collect_foralls(target_premise)
+    premises, conclusion = split_arrows(body)
+    if len(binders) != 1 or len(premises) != 1:
+        return False
+    premise_sides = app_args(premises[0], "In", 2)
+    conclusion_sides = app_args(conclusion, "In", 2)
+    if premise_sides is None or conclusion_sides is None:
+        return False
+    premise_element, premise_set = premise_sides
+    conclusion_element, conclusion_set = conclusion_sides
+    if not expr_same_mod_alpha(premise_element, conclusion_element):
+        return False
+    return expr_same_mod_alpha(premise_set, source_left) and expr_same_mod_alpha(conclusion_set, source_right)
+
+
+def source_fact_membership_premise_matches(
+    source_premise: str,
+    target_premise: Expr,
+    variable_renames: dict[str, str],
+    target_text: str,
+    source_aliases: dict[str, tuple[str, str]] | None,
+) -> bool:
+    parts = split_top_level_operator(source_premise, ":e")
+    if parts is None:
+        return False
+    source_element = parse_source_fact_simple_term(parts[0], variable_renames, target_text, source_aliases)
+    source_set = parse_source_fact_simple_term(parts[1], variable_renames, target_text, source_aliases)
+    target_sides = app_args(target_premise, "In", 2)
+    if source_element is None or source_set is None or target_sides is None:
+        return False
+    return expr_same_mod_alpha(source_element, target_sides[0]) and expr_same_mod_alpha(source_set, target_sides[1])
 
 
 def raw_tptp_unparsed_source_equality_proof(
     proposition: str,
     source_name: str,
     source_proposition: str | None,
+    source_aliases: dict[str, tuple[str, str]] | None = None,
 ) -> str | None:
     if source_proposition is None or "=" not in source_proposition:
         return None
@@ -72444,8 +72585,6 @@ def raw_tptp_unparsed_source_equality_proof(
         return None
     target_binders, target_body = collect_foralls(target)
     target_premises, target_conclusion = split_arrows(target_body)
-    if target_premises:
-        return None
     target_sides = equality_like_sides(target_conclusion)
     if target_sides is None:
         return None
@@ -72469,7 +72608,7 @@ def raw_tptp_unparsed_source_equality_proof(
             break
         source_premises.append(parts[0].strip())
         body = parts[1].strip()
-    if source_premises or len(source_binder_names) != len(target_binders):
+    if len(source_premises) != len(target_premises) or len(source_binder_names) > len(target_binders):
         return None
     equality = split_top_level_equality(body)
     if equality is None:
@@ -72479,13 +72618,42 @@ def raw_tptp_unparsed_source_equality_proof(
         for source_name, (target_name, _sort) in zip(source_binder_names, target_binders)
     }
     target_text = expr_text(target)
-    left = parse_source_fact_simple_term(equality[0], variable_renames, target_text)
-    right = parse_source_fact_simple_term(equality[1], variable_renames, target_text)
+    for source_premise, target_premise in zip(source_premises, target_premises):
+        if source_fact_subq_premise_matches(
+            source_premise,
+            target_premise,
+            variable_renames,
+            target_text,
+            source_aliases,
+        ):
+            continue
+        if source_fact_membership_premise_matches(
+            source_premise,
+            target_premise,
+            variable_renames,
+            target_text,
+            source_aliases,
+        ):
+            continue
+        parsed_source_premise = parse_expr(source_premise)
+        if parsed_source_premise is not None:
+            if not expr_same_mod_alpha(rename_expr_variables(parsed_source_premise, variable_renames), target_premise):
+                return None
+            continue
+        return None
+    left = parse_source_fact_simple_term(equality[0], variable_renames, target_text, source_aliases)
+    right = parse_source_fact_simple_term(equality[1], variable_renames, target_text, source_aliases)
     if left is None or right is None:
         return None
     proof = source_name
-    for name, _sort in target_binders:
+    for name, _sort in target_binders[: len(source_binder_names)]:
         proof = f"({proof_head(proof)} {name})"
+    premise_names = [
+        fresh_identifier(f"Hsource{index}", proposition, source_name, str(index))
+        for index, _premise in enumerate(target_premises)
+    ]
+    for premise_name in premise_names:
+        proof = f"({proof_head(proof)} {premise_name})"
     if expr_same_mod_alpha(left, target_sides[0]) and expr_same_mod_alpha(right, target_sides[1]):
         body_proof = proof
     elif expr_same_mod_alpha(left, target_sides[1]) and expr_same_mod_alpha(right, target_sides[0]):
@@ -72493,7 +72661,31 @@ def raw_tptp_unparsed_source_equality_proof(
         sort = expr_sort(target_sides[0], local_sorts) or expr_sort(target_sides[1], local_sorts) or "set"
         body_proof = native_eq_symmetry_proof(proof, target_sides[1], target_sides[0], sort)
     else:
-        return None
+        shared_args: tuple[Expr, ...] | None = None
+        for arity in range(1, 4):
+            candidate_args = raw_expr_application_head_args(target_sides[0])
+            if candidate_args is None or len(candidate_args[1]) < arity:
+                continue
+            suffix = candidate_args[1][-arity:]
+            if (
+                expr_same_mod_alpha(append_application_args(left, list(suffix)), target_sides[0])
+                and expr_same_mod_alpha(append_application_args(right, list(suffix)), target_sides[1])
+            ):
+                shared_args = suffix
+                break
+        if shared_args is None:
+            return None
+        result_sort = "set"
+        function_sort = join_sort_arrows(["set" for _arg in shared_args] + [result_sort])
+        hole = fresh_identifier("zz", proposition, source_name)
+        body_proof = (
+            f"({proof_term_text(proof)} "
+            f"(fun zl zr => "
+            f"{expr_text(append_application_args(Expr('var', value='zr'), list(shared_args)))} = {proof_arg_text(target_sides[1])}) "
+            f"{native_reflexivity_proof(target_sides[1], result_sort)})"
+        )
+    for name, premise in reversed(list(zip(premise_names, target_premises))):
+        body_proof = f"(fun {name} :{proof_arg_text(premise)} => {body_proof})"
     for name, sort in reversed(target_binders):
         body_proof = f"(fun {name} :{sort} => {body_proof})"
     return body_proof
@@ -72504,6 +72696,7 @@ def raw_tptp_source_fact_proof(
     source_name: str | None,
     source_fact_names: set[str],
     source_fact_propositions: dict[str, str],
+    source_aliases: dict[str, tuple[str, str]] | None = None,
 ) -> str | None:
     if source_name is None or source_name not in source_fact_names:
         return None
@@ -72528,6 +72721,7 @@ def raw_tptp_source_fact_proof(
         proposition,
         source_name,
         source_proposition,
+        source_aliases,
     )
     if unparsed_equality_proof is not None:
         return unparsed_equality_proof
@@ -72817,10 +73011,15 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         proof_or_problem_obligation_line(proof, problem),
     )
     if source_context_variable_names:
+        declared_source_sorts = source_declared_sorts(source)
         all_local_set_definitions = {
             name: value
             for name, value in all_local_set_definitions.items()
             if name not in source_context_variable_names
+            or (
+                re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", value[1])
+                and value[1] in declared_source_sorts
+            )
         }
     local_set_sorts = {name: sort for name, (sort, _body) in all_local_set_definitions.items()}
     standard_tptp_proof = bool(declarations)
@@ -73026,6 +73225,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     )
     predicate_definitions.update(rewrite_predicate_definitions)
     predicate_definition_keys_by_step.update(rewrite_definition_keys_by_step)
+    variable_sorts.update({name: definition.sort for name, definition in predicate_definitions.items()})
     predicate_definition_equalities: dict[str, str] = {}
     for definition_name, definition in predicate_definitions.items():
         equality_proposition = raw_tptp_predicate_definition_equality_proposition(definition_name, definition)
@@ -73100,10 +73300,23 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         local_identifier_renames.get(name, name): location
         for name, location in all_local_set_locations.items()
     }
+    source_fact_propositions = source_toplevel_fact_propositions(source)
+    used_source_annotations = {
+        source_name
+        for _name, _role, _proposition, _rule, source_name, _parents, _trusted_definition in entries
+        if source_name is not None
+    }
     local_set_definition_roots = (
         local_set_reflexivity_roots(entries, set(renamed_all_local_set_definitions))
         | local_set_usage_roots(entries, set(renamed_all_local_set_definitions))
     )
+    for source_annotation in used_source_annotations:
+        source_proposition = source_fact_propositions.get(source_annotation)
+        if source_proposition is None:
+            continue
+        for name in renamed_all_local_set_definitions:
+            if re.search(rf"(?<![A-Za-z0-9_']){re.escape(name)}(?![A-Za-z0-9_'])", source_proposition):
+                local_set_definition_roots.add(name)
     local_set_definitions = local_set_definition_closure(
         renamed_all_local_set_definitions,
         local_set_definition_roots,
@@ -73571,6 +73784,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 source_name,
                 source_fact_names,
                 source_fact_propositions,
+                local_set_definitions,
             )
         ) is not None:
             lines.append(f"Theorem {claim_name}: {proposition}.")
