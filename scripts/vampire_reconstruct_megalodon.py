@@ -72675,7 +72675,13 @@ def source_surface_term_argument(text: str) -> str:
 
 
 def normalize_source_surface_numerals(text: str) -> str:
-    return re.sub(r"(?<![_A-Za-z0-9'])0(?![_A-Za-z0-9'])", "Empty", text)
+    def replace(match: re.Match[str]) -> str:
+        value = int(match.group(0))
+        if value == 0:
+            return "Empty"
+        return f"({successor_term_text(value)})"
+
+    return re.sub(r"(?<![_A-Za-z0-9'])[0-9]+(?![_A-Za-z0-9'])", replace, text)
 
 
 def desugar_source_bounded_foralls(proposition: str) -> str:
@@ -72806,19 +72812,6 @@ def source_surface_expr_text(text: str) -> str:
     )
     if not stripped:
         return stripped
-    repl_match = re.match(
-        r"^\{\s*(?P<body>.+?)\s*\|\s*(?P<var>[_A-Za-z][_A-Za-z0-9']*)\s*:e\s*(?P<set>.+?)\s*\}$",
-        stripped,
-    )
-    if repl_match is not None:
-        var = repl_match.group("var")
-        body_text = source_surface_expr_text(repl_match.group("body"))
-        eta_match = re.fullmatch(r"(?P<fn>[_A-Za-z][_A-Za-z0-9']*)\s+" + re.escape(var), body_text)
-        function_text = eta_match.group("fn") if eta_match is not None else f"(fun {var} :set => {body_text})"
-        return (
-            f"Repl ({source_surface_expr_text(repl_match.group('set'))}) "
-            f"{function_text}"
-        )
     forall_match = SOURCE_FORALL_RE.match(stripped)
     if forall_match is not None:
         body = source_surface_expr_text(forall_match.group("body"))
@@ -72863,6 +72856,12 @@ def source_surface_expr_text(text: str) -> str:
         if left_expr is not None and left_expr.kind in {"arrow", "forall", "lambda"}:
             left_text = f"({left_text})"
         return f"{left_text} -> {source_surface_expr_text(right)}"
+    if stripped.startswith("~"):
+        negated = source_surface_expr_text(stripped[1:].strip())
+        negated_expr = parse_expr(negated)
+        if negated_expr is not None and negated_expr.kind in {"arrow", "forall", "lambda"}:
+            negated = f"({negated})"
+        return f"{negated} -> False"
     subset = split_source_top_level_operator(stripped, "c=")
     if subset is not None:
         left, right = subset
@@ -72888,6 +72887,22 @@ def source_surface_expr_text(text: str) -> str:
     if membership is not None:
         left, right = membership
         return f"In ({source_surface_expr_text(left)}) ({source_surface_expr_text(right)})"
+    repl_match = re.match(
+        r"^\{\s*(?P<body>.+?)\s*\|\s*(?P<var>[_A-Za-z][_A-Za-z0-9']*)\s*:e\s*(?P<set>.+?)\s*\}$",
+        stripped,
+    )
+    if repl_match is not None:
+        var = repl_match.group("var")
+        body_text = source_surface_expr_text(repl_match.group("body"))
+        eta_match = re.fullmatch(r"(?P<fn>[_A-Za-z][_A-Za-z0-9']*)\s+" + re.escape(var), body_text)
+        function_text = eta_match.group("fn") if eta_match is not None else f"(fun {var} :set => {body_text})"
+        return (
+            f"Repl ({source_surface_expr_text(repl_match.group('set'))}) "
+            f"{function_text}"
+        )
+    singleton_match = re.fullmatch(r"\{\s*(?P<body>[^{}|,]+?)\s*\}", stripped)
+    if singleton_match is not None:
+        return f"Sing ({source_surface_expr_text(singleton_match.group('body'))})"
     for operator, function_name in (
         (":\\/:", "binunion"),
         (":\\:", "setminus"),
