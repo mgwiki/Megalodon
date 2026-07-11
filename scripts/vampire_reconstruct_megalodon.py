@@ -22813,6 +22813,163 @@ def raw_tptp_outer_branch_boolean_superposition_proof(
     )
 
 
+def raw_boolean_negative_prop_argument_superposition_proof(
+    target: Expr,
+    source: Expr,
+    source_proof: str,
+    resolver: Expr,
+    resolver_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if proof_search_timed_out():
+        return None
+    target_binders, target_body = collect_foralls(target)
+    source_binders, source_body = collect_foralls(source)
+    resolver_binders, resolver_body = collect_foralls(resolver)
+    if target_binders or source_binders or resolver_binders:
+        return None
+    source_literals = raw_clause_literals(source_body)
+    resolver_literals = raw_clause_literals(resolver_body)
+    target_literals = raw_clause_literals(target_body)
+    if len(source_literals) > 12 or len(resolver_literals) > 8 or len(target_literals) > 16:
+        return None
+
+    def negative_premise(literal: Expr) -> tuple[Expr, Expr] | None:
+        premises, conclusion = split_arrows(literal)
+        if len(premises) == 1 and false_eliminator_expr(conclusion):
+            return premises[0], conclusion
+        return None
+
+    def transported_literal_proof(
+        source_literal: Expr,
+        source_literal_proof: str,
+        negative_literal: Expr,
+        negative_literal_proof: str,
+    ) -> tuple[Expr, str] | None:
+        premise = negative_premise(negative_literal)
+        if premise is None:
+            return None
+        old, false_expr = premise
+        hole_name = fresh_identifier(
+            "Qprop",
+            expr_text(source_literal),
+            expr_text(old),
+            expr_text(false_expr),
+            source_literal_proof,
+            negative_literal_proof,
+        )
+        hole = Expr("var", value=hole_name)
+        for replaced, context in single_replacement_contexts_mod_alpha(source_literal, old, false_expr, hole, limit=4):
+            if not any(expr_same_mod_alpha(replaced, target_literal) for target_literal in target_literals):
+                continue
+            local_sorts = {**variable_sorts, hole_name: "prop"}
+            if not equivalent_sorts(expr_sort(old, local_sorts), "prop"):
+                continue
+            if not equivalent_sorts(expr_sort(false_expr, local_sorts), "prop"):
+                continue
+            backward_name = fresh_identifier("Hfalse", expr_text(old), expr_text(false_expr), negative_literal_proof)
+            backward = (
+                f"(fun {backward_name} :{proof_arg_text(false_expr)} => "
+                f"{raw_false_to_expr_proof(backward_name, old, false_expr)})"
+            )
+            equality = Expr("eq", args=(old, false_expr))
+            equality_proof = raw_prop_equality_intro_proof(
+                equality,
+                old,
+                false_expr,
+                negative_literal_proof,
+                backward,
+            )
+            transported = native_equality_transport_proof(
+                equality_proof,
+                old,
+                false_expr,
+                source_literal_proof,
+                hole_name,
+                "prop",
+                context,
+            )
+            if transported is not None:
+                return replaced, transported
+        return None
+
+    target_text = proof_arg_text(target_body)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+
+    def prove_with_selected_literals(source_index: int, resolver_index: int) -> str | None:
+        selected_source = source_literals[source_index]
+        selected_resolver = resolver_literals[resolver_index]
+
+        def source_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
+            direct = raw_literal_to_clause_proof(source_literal, target_body, source_literal_proof, target_literals, ())
+            if direct is not None:
+                return direct
+            if not expr_same_mod_alpha(source_literal, selected_source):
+                return None
+
+            def resolver_handler(resolver_literal: Expr, resolver_literal_proof: str) -> str | None:
+                direct_resolver = raw_literal_to_clause_proof(
+                    resolver_literal,
+                    target_body,
+                    resolver_literal_proof,
+                    target_literals,
+                    (),
+                )
+                if direct_resolver is not None:
+                    return direct_resolver
+                if not expr_same_mod_alpha(resolver_literal, selected_resolver):
+                    return None
+                transported = transported_literal_proof(
+                    source_literal,
+                    source_literal_proof,
+                    resolver_literal,
+                    resolver_literal_proof,
+                )
+                if transported is None:
+                    return None
+                replaced_literal, replaced_proof = transported
+                return raw_literal_to_clause_proof(
+                    replaced_literal,
+                    target_body,
+                    replaced_proof,
+                    target_literals,
+                    (),
+                )
+
+            return raw_clause_cases_with_handler(
+                resolver_body,
+                resolver_proof,
+                resolver_handler,
+                avoid_text=source_literal_proof,
+            )
+
+        return raw_clause_cases_with_handler(
+            source_body,
+            source_proof,
+            source_handler,
+            avoid_text=resolver_proof,
+        )
+
+    try:
+        for source_index, source_literal in enumerate(source_literals):
+            if negative_premise(source_literal) is not None:
+                continue
+            for resolver_index, resolver_literal in enumerate(resolver_literals):
+                if negative_premise(resolver_literal) is None:
+                    continue
+                proof = prove_with_selected_literals(source_index, resolver_index)
+                if proof is not None:
+                    return proof
+        return None
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_nested_guarded_equality_rewrite_superposition_proof(
     source: Expr,
     target: Expr,
@@ -42536,6 +42693,26 @@ def raw_tptp_superposition_proof(
                 proof = raw_prop_true_false_guard_superposition_proof(target_expr, parent_expr, parent_proof)
                 if proof is not None:
                     return proof
+            proof = raw_boolean_negative_prop_argument_superposition_proof(
+                target_expr,
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_boolean_negative_prop_argument_superposition_proof(
+                target_expr,
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
             proof = raw_quantified_prop_equality_set_argument_superposition_proof(
                 target_expr,
                 parent_exprs[0][0],
