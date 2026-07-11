@@ -55896,6 +55896,22 @@ def raw_false_target_prop_instantiations(
     return instantiations
 
 
+def raw_positive_prop_literal_false_instantiations(
+    parent_body: Expr,
+    binder_sorts: dict[str, str],
+) -> list[tuple[str, Expr]]:
+    instantiations: list[tuple[str, Expr]] = []
+    seen: set[str] = set()
+    for literal in raw_clause_literals(parent_body):
+        if literal.kind != "var" or literal.value is None:
+            continue
+        if binder_sorts.get(literal.value) != "prop" or literal.value in seen:
+            continue
+        seen.add(literal.value)
+        instantiations.append((literal.value, Expr("var", value="False")))
+    return instantiations
+
+
 def raw_tptp_equality_resolution_with_instantiations_proof(
     target: Expr,
     parent_binders: list[tuple[str, str]],
@@ -56837,6 +56853,17 @@ def raw_tptp_equality_resolution_proof(
             variable_sorts,
             replay_step,
         ),
+    )
+    if proof is not None:
+        return proof
+    proof = raw_tptp_equality_resolution_with_instantiations_proof(
+        target,
+        parent_binders,
+        parent_body,
+        target_binders,
+        target_body,
+        parent_proof,
+        raw_positive_prop_literal_false_instantiations(parent_body, parent_binder_sorts),
     )
     if proof is not None:
         return proof
