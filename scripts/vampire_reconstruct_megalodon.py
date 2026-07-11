@@ -36788,11 +36788,23 @@ def raw_formula_context_demodulation_proof(
             if old_to_new is None:
                 continue
             for replaced, context in single_replacement_contexts_mod_alpha(source, old, new, hole_expr, limit=16):
-                demodulated_proof = (
-                    f"({proof_head(old_to_new)} "
-                    f"(fun {hole} :{binder_sort_text(equality_sort)} => {proof_arg_text(context)}) "
-                    f"{proof_term_text(source_proof)})"
-                )
+                demodulated_proof = None
+                if equality.kind == "eq":
+                    demodulated_proof = native_equality_transport_proof(
+                        old_to_new,
+                        old,
+                        new,
+                        source_proof,
+                        hole,
+                        equality_sort,
+                        context,
+                    )
+                if demodulated_proof is None:
+                    demodulated_proof = (
+                        f"({proof_head(old_to_new)} "
+                        f"(fun {hole} :{binder_sort_text(equality_sort)} => {proof_arg_text(context)}) "
+                        f"{proof_term_text(source_proof)})"
+                    )
                 if expr_same_mod_alpha(replaced, target):
                     return demodulated_proof
                 if raw_clause_replay_budget_ok(replaced, target, max_literals=24, max_literal_product=384):
