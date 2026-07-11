@@ -49816,6 +49816,38 @@ def raw_tptp_function_equality_clause_superposition_proof(
     return None
 
 
+def raw_tptp_instantiated_parent_clause_superposition_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parents) != 2:
+        return None
+    target_expr = parse_expr(proposition)
+    if target_expr is None:
+        return None
+    parent_exprs: list[tuple[Expr, str]] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+        if parent_expr is None:
+            return None
+        parent_exprs.append((parent_expr, raw_tptp_canonical_parent_proof_name(parent, propositions_by_name)))
+    for source_index, unit_index in ((0, 1), (1, 0)):
+        proof = raw_instantiated_parent_clause_resolution_proof(
+            parent_exprs[source_index][0],
+            target_expr,
+            parent_exprs[source_index][1],
+            parent_exprs[unit_index][0],
+            parent_exprs[unit_index][1],
+            variable_sorts,
+        )
+        if proof is not None and not raw_tptp_replay_proof_is_unsafe("superposition", proposition, proof):
+            return proof
+    return None
+
+
 def raw_tptp_superposition_proof(
     proposition: str,
     parents: list[str],
@@ -50286,6 +50318,26 @@ def raw_tptp_superposition_proof(
                 variable_sorts,
             )
             if proof is not None:
+                return proof
+            proof = raw_instantiated_parent_clause_resolution_proof(
+                parent_exprs[0][0],
+                target_expr,
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None and not raw_tptp_replay_proof_is_unsafe("superposition", proposition, proof):
+                return proof
+            proof = raw_instantiated_parent_clause_resolution_proof(
+                parent_exprs[1][0],
+                target_expr,
+                parent_exprs[1][1],
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None and not raw_tptp_replay_proof_is_unsafe("superposition", proposition, proof):
                 return proof
     proof = raw_tptp_universal_unit_contradiction_proof(
         proposition,
@@ -73342,6 +73394,13 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     proposition,
                     replay_parents,
                     propositions_by_name,
+                )
+            if replay_proof is None and rule == "superposition":
+                replay_proof = raw_tptp_instantiated_parent_clause_superposition_proof(
+                    proposition,
+                    replay_parents,
+                    propositions_by_name,
+                    variable_sorts,
                 )
             if replay_proof is None and rule == "superposition":
                 replay_proof = raw_tptp_guarded_quantified_equality_clause_superposition_proof(
