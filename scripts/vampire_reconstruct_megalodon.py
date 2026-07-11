@@ -1854,6 +1854,7 @@ def expr_sort(expr: Expr, variable_sorts: dict[str, str]) -> str | None:
             "True": "prop",
             "False": "prop",
             "Empty": "set",
+            "Eps_i": "(set->prop)->set",
             "vampire_eq_set": "set->set->prop",
             "vampire_eq_prop": "prop->prop->prop",
             "vampire_or": "prop->prop->prop",
@@ -31342,12 +31343,93 @@ def raw_fool_transform_component_proof(
     target: Expr,
     source_proof: str,
     variable_sorts: dict[str, str],
+    depth: int = 0,
 ) -> str | None:
+    if depth > 48 or proof_search_timed_out():
+        return None
     if expr_same_mod_alpha(source, target):
         return source_proof
     direct = raw_direct_conclusion_transform_proof(source, target, source_proof)
     if direct is not None:
         return direct
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
+        assert source.value is not None and target.value is not None and target.sort is not None
+        source_body = source.args[0]
+        if source.value != target.value:
+            source_body = rename_expr_variables(source_body, {source.value: target.value})
+        inner = raw_fool_transform_component_proof(
+            source_body,
+            target.args[0],
+            f"({proof_head(source_proof)} {target.value})",
+            {**variable_sorts, target.value: target.sort},
+            depth + 1,
+        )
+        if inner is not None:
+            return f"(fun {target.value} :{target.sort} => {inner})"
+    if source.kind == "arrow" and target.kind == "arrow" and len(source.args) == 2 and len(target.args) == 2:
+        premise_name = fresh_identifier("HfoolPrem", expr_text(source), expr_text(target), source_proof, str(depth))
+        premise = raw_fool_transform_component_proof(
+            target.args[0],
+            source.args[0],
+            premise_name,
+            variable_sorts,
+            depth + 1,
+        )
+        if premise is not None:
+            conclusion_source = f"({proof_head(source_proof)} {proof_term_text(premise)})"
+            conclusion = raw_fool_transform_component_proof(
+                source.args[1],
+                target.args[1],
+                conclusion_source,
+                variable_sorts,
+                depth + 1,
+            )
+            if conclusion is not None:
+                return f"(fun {premise_name} :{proof_arg_text(target.args[0])} => {conclusion})"
+    source_sides = equality_like_sides(source)
+    target_sides = equality_like_sides(target)
+    if source.kind == "eq" and target.kind == "eq" and source_sides is not None and target_sides is not None:
+        for changed_index in (0, 1):
+            fixed_index = 1 - changed_index
+            if not expr_same_mod_alpha(source_sides[fixed_index], target_sides[fixed_index]):
+                continue
+            changed_sort = raw_equality_transport_sort(
+                source_sides[changed_index],
+                target_sides[changed_index],
+                variable_sorts,
+            )
+            if changed_sort not in {"set", "prop"}:
+                continue
+            if changed_sort == "set":
+                changed_equality = raw_set_term_equality_transform_proof(
+                    source_sides[changed_index],
+                    target_sides[changed_index],
+                    variable_sorts,
+                )
+            else:
+                changed_equality = raw_native_prop_equality_proof(
+                    source_sides[changed_index],
+                    target_sides[changed_index],
+                    variable_sorts,
+                )
+            if changed_equality is None:
+                continue
+            hole = fresh_identifier("zfool", expr_text(source), expr_text(target), str(changed_index))
+            if changed_index == 0:
+                context = Expr("eq", args=(Expr("var", value=hole), source_sides[fixed_index]))
+            else:
+                context = Expr("eq", args=(source_sides[fixed_index], Expr("var", value=hole)))
+            transported = native_equality_transport_proof(
+                changed_equality,
+                source_sides[changed_index],
+                target_sides[changed_index],
+                source_proof,
+                hole,
+                changed_sort,
+                context,
+            )
+            if transported is not None:
+                return transported
     true_component = raw_prop_equality_to_true_component(source)
     if true_component is not None:
         proposition, _true_on_left = true_component
@@ -31358,6 +31440,7 @@ def raw_fool_transform_component_proof(
                 target,
                 proposition_proof,
                 variable_sorts,
+                depth + 1,
             )
             if transformed is not None:
                 return transformed
@@ -31672,7 +31755,7 @@ def raw_tptp_fool_elimination_proof(
                 raw_tptp_claim_name(parents[0]),
                 local_sorts,
             )
-            if proof is not None:
+            if proof is not None and not raw_tptp_replay_proof_is_unsafe("fool_elimination", proposition, proof):
                 return proof
             source_premises, source_conclusion = split_arrows(source)
             target_premises, target_conclusion = split_arrows(target)
@@ -31684,15 +31767,17 @@ def raw_tptp_fool_elimination_proof(
             ):
                 source_premise_proof = direct_proof_expr(source_premises[0])
                 if source_premise_proof is not None:
-                    return f"(fun Htarget => {proof_head(raw_tptp_claim_name(parents[0]))} {proof_term_text(source_premise_proof)})"
+                    proof = f"(fun Htarget => {proof_head(raw_tptp_claim_name(parents[0]))} {proof_term_text(source_premise_proof)})"
+                    if not raw_tptp_replay_proof_is_unsafe("fool_elimination", proposition, proof):
+                        return proof
+            proof = raw_fool_implication_replay_proof(source, target, raw_tptp_claim_name(parents[0]), local_sorts)
+            if proof is not None and not raw_tptp_replay_proof_is_unsafe("fool_elimination", proposition, proof):
+                return proof
             proof = raw_rectify_formula_transform_proof(source, target, raw_tptp_claim_name(parents[0]), local_sorts)
-            if proof is not None:
+            if proof is not None and not raw_tptp_replay_proof_is_unsafe("fool_elimination", proposition, proof):
                 return proof
             proof = raw_deep_formula_transform_proof(source, target, raw_tptp_claim_name(parents[0]), local_sorts)
-            if proof is not None:
-                return proof
-            proof = raw_fool_implication_replay_proof(source, target, raw_tptp_claim_name(parents[0]), local_sorts)
-            if proof is not None:
+            if proof is not None and not raw_tptp_replay_proof_is_unsafe("fool_elimination", proposition, proof):
                 return proof
     finally:
         PROOF_SEARCH_STATE.allow_two_sided_equality = previous_allow
@@ -33296,6 +33381,15 @@ def raw_prop_implication_transform_proof(
     )
     if prop_argument_rewrite is not None:
         return prop_argument_rewrite
+    prop_argument_rewrite = raw_prop_single_argument_general_rewrite_then_transform_proof(
+        source,
+        target,
+        source_proof,
+        variable_sorts,
+        depth + 1,
+    )
+    if prop_argument_rewrite is not None:
+        return prop_argument_rewrite
     prop_argument_rewrite = raw_prop_multi_argument_prop_rewrite_proof(
         source,
         target,
@@ -33324,6 +33418,46 @@ def raw_prop_implication_transform_proof(
     )
     if applied_premise is not None:
         return applied_premise
+
+    source_and = raw_church_and_parts(source)
+    target_and = raw_church_and_parts(target)
+    if source_and is not None and target_and is not None:
+        source_components = raw_conjunction_components(source)
+        target_components = raw_conjunction_components(target)
+        if len(source_components) == len(target_components) and len(source_components) <= 12:
+            component_proofs: dict[str, str] = {}
+            used: set[int] = set()
+            for target_component in target_components:
+                found_proof: str | None = None
+                for index, source_component in enumerate(source_components):
+                    if index in used:
+                        continue
+                    projection = raw_church_and_projection_from_proof(source_proof, source, source_component)
+                    if projection is None:
+                        continue
+                    transformed = raw_prop_implication_transform_proof(
+                        source_component,
+                        target_component,
+                        projection,
+                        variable_sorts,
+                        depth + 1,
+                    )
+                    if transformed is None:
+                        continue
+                    used.add(index)
+                    found_proof = transformed
+                    break
+                if found_proof is None:
+                    component_proofs.clear()
+                    break
+                component_proofs[alpha_expr_key(target_component)] = found_proof
+            if component_proofs and len(used) == len(target_components):
+                rebuilt = raw_build_conjunction_from_component_proofs(
+                    target,
+                    lambda component: component_proofs.get(alpha_expr_key(component)),
+                )
+                if rebuilt is not None:
+                    return rebuilt
 
     target_and = raw_church_and_parts(target)
     if target_and is not None:
@@ -33467,11 +33601,6 @@ def raw_prop_argument_set_rewrite_proof(
     if len(differing) != 1 or differing[0] == 0:
         return None
     index = differing[0]
-    if (
-        expr_sort(source.args[index], variable_sorts) != "set"
-        or expr_sort(target.args[index], variable_sorts) != "set"
-    ):
-        return None
     equality = raw_set_term_equality_transform_proof(source.args[index], target.args[index], variable_sorts, depth + 1)
     if equality is None:
         return None
@@ -33510,13 +33639,6 @@ def raw_prop_multi_argument_set_rewrite_proof(
     ]
     if len(differing) <= 1:
         return None
-    if any(
-        expr_sort(source.args[index], variable_sorts) != "set"
-        or expr_sort(target.args[index], variable_sorts) != "set"
-        for index in differing
-    ):
-        return None
-
     current_args = list(source.args)
     proof = source_proof
     for index in differing:
@@ -33543,6 +33665,129 @@ def raw_prop_multi_argument_set_rewrite_proof(
             return None
         current_args[index] = target_arg
     return proof
+
+
+def raw_prop_argument_set_predicate_rewrite_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 24 or proof_search_timed_out():
+        return None
+    if source.kind != "app" or target.kind != "app" or len(source.args) != len(target.args):
+        return None
+    if not source.args or not expr_same_mod_alpha(source.args[0], target.args[0]):
+        return None
+    differing = [
+        index
+        for index, (source_arg, target_arg) in enumerate(zip(source.args, target.args))
+        if index != 0 and not expr_same_mod_alpha(source_arg, target_arg)
+    ]
+    if len(differing) != 1:
+        return None
+    index = differing[0]
+    source_arg = source.args[index]
+    target_arg = target.args[index]
+    hole = fresh_identifier("Qpred", expr_text(source), expr_text(target), source_proof)
+    context_args = list(source.args)
+    context_args[index] = Expr("var", value=hole)
+    context = Expr("app", args=tuple(context_args))
+
+    set_equality = raw_set_term_equality_transform_proof(source_arg, target_arg, variable_sorts, depth + 1)
+    if set_equality is not None:
+        return native_equality_transport_proof(
+            set_equality,
+            source_arg,
+            target_arg,
+            source_proof,
+            hole,
+            "set",
+            context,
+        )
+
+    source_sort = expr_sort(source_arg, variable_sorts)
+    target_sort = expr_sort(target_arg, variable_sorts)
+    source_binders, _source_body = collect_lambdas(source_arg)
+    target_binders, _target_body = collect_lambdas(target_arg)
+    normalized_source_sort = join_sort_arrows(split_sort_arrows(source_sort)) if source_sort is not None else None
+    normalized_target_sort = join_sort_arrows(split_sort_arrows(target_sort)) if target_sort is not None else None
+    predicate_shaped = (
+        normalized_source_sort == "set->prop"
+        or normalized_target_sort == "set->prop"
+        or (
+            len(source_binders) == 1
+            and len(target_binders) == 1
+            and source_binders[0][1] == "set"
+            and target_binders[0][1] == "set"
+        )
+    )
+    if not predicate_shaped:
+        return None
+    predicate_equality = raw_fast_set_predicate_extensionality_proof(
+        source_arg,
+        target_arg,
+        variable_sorts,
+    )
+    if predicate_equality is None:
+        predicate_equality = raw_set_predicate_extensionality_proof(
+            source_arg,
+            target_arg,
+            variable_sorts,
+        )
+    if predicate_equality is None:
+        return None
+    return (
+        f"{proof_term_text(predicate_equality)} "
+        f"(fun {hole} :set->prop => {expr_text(context)}) "
+        f"{proof_term_text(source_proof)}"
+    )
+
+
+def raw_prop_single_argument_general_rewrite_then_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 12 or proof_search_timed_out():
+        return None
+    if source.kind != "app" or target.kind != "app" or len(source.args) != len(target.args):
+        return None
+    if not source.args or not expr_same_mod_alpha(source.args[0], target.args[0]):
+        return None
+    differing = [
+        index
+        for index, (source_arg, target_arg) in enumerate(zip(source.args, target.args))
+        if index != 0 and not expr_same_mod_alpha(source_arg, target_arg)
+    ]
+    if len(differing) <= 1:
+        return None
+    for index in differing:
+        intermediate_args = list(source.args)
+        intermediate_args[index] = target.args[index]
+        intermediate = Expr("app", args=tuple(intermediate_args))
+        first = raw_prop_argument_set_predicate_rewrite_proof(
+            source,
+            intermediate,
+            source_proof,
+            variable_sorts,
+            depth + 1,
+        )
+        if first is None:
+            continue
+        second = raw_prop_implication_transform_proof(
+            intermediate,
+            target,
+            first,
+            variable_sorts,
+            depth + 1,
+        )
+        if second is not None:
+            return second
+    return None
 
 
 def raw_prop_argument_sort_is_prop(expr: Expr, known_sorts: dict[str, str]) -> bool:
@@ -34023,6 +34268,19 @@ def raw_set_term_equality_transform_proof(
             f"(fun {left_hole} {right_hole} => {proof_arg_text(source)} = {expr_text(native_context)}) "
             f"{native_set_reflexivity_proof(source)}"
         )
+    if arg_sort is None:
+        argument_equality = raw_set_term_equality_transform_proof(
+            source.args[index],
+            target.args[index],
+            variable_sorts,
+            depth + 1,
+        )
+        if argument_equality is not None:
+            return (
+                f"{proof_term_text(argument_equality)} "
+                f"(fun {hole} :set => {proof_arg_text(source)} = {expr_text(context)}) "
+                f"{native_set_reflexivity_proof(source)}"
+            )
     if normalized_arg_sort in {
         "set->set",
         "set->set->set",
@@ -51246,6 +51504,8 @@ def raw_nested_quantified_literal_equality_clause_superposition_proof(
         or len(raw_clause_literals(equality_body)) > 12
         or len(target_literals) > 16
     ):
+        return None
+    if not any(target_literal.kind == "forall" for target_literal in target_literals):
         return None
     target_text = proof_arg_text(target_body)
     previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
