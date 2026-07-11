@@ -69124,6 +69124,26 @@ def local_set_reflexivity_roots(
     return roots
 
 
+def local_set_usage_roots(
+    entries: list[tuple[str, str, str, str | None, str | None, list[str], bool]],
+    local_definition_names: set[str],
+) -> set[str]:
+    roots: set[str] = set()
+    if not local_definition_names:
+        return roots
+    for _name, _role, proposition, _rule, _source_name, _parents, _trusted_definition in entries:
+        if not proposition:
+            continue
+        expr = parse_expr(proposition)
+        if expr is None:
+            for name in local_definition_names:
+                if re.search(rf"(?<![A-Za-z0-9_']){re.escape(name)}(?![A-Za-z0-9_'])", proposition):
+                    roots.add(name)
+            continue
+        roots.update(expr_variables(expr) & local_definition_names)
+    return roots
+
+
 def raw_tptp_entry_is_negated_conjecture(role: str, rule: str | None) -> bool:
     return role == "negated_conjecture" or rule in {"negated_conjecture", "negated conjecture"}
 
@@ -69654,9 +69674,13 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         )
         for name, (sort, body) in all_local_set_definitions.items()
     }
+    local_set_definition_roots = (
+        local_set_reflexivity_roots(entries, set(renamed_all_local_set_definitions))
+        | local_set_usage_roots(entries, set(renamed_all_local_set_definitions))
+    )
     local_set_definitions = local_set_definition_closure(
         renamed_all_local_set_definitions,
-        local_set_reflexivity_roots(entries, set(renamed_all_local_set_definitions)),
+        local_set_definition_roots,
     )
     local_set_definition_names = set(local_set_definitions)
     source_local_set_names = set(all_local_set_definitions) | set(renamed_all_local_set_definitions)
@@ -69797,7 +69821,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             continue
         if name in source_declared_sort_names:
             continue
-        if name in source_local_set_names:
+        if name in local_set_definition_names:
             continue
         if equivalent_sorts(sort, source_sorts.get(name)):
             continue
