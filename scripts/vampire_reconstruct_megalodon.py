@@ -72870,6 +72870,10 @@ def source_surface_expr_text(text: str) -> str:
             f"forall {element}:set, In {element} ({source_surface_expr_text(left)}) -> "
             f"In {element} ({source_surface_expr_text(right)})"
         )
+    disequality = split_source_top_level_operator(stripped, "<>")
+    if disequality is not None:
+        left, right = disequality
+        return f"{source_surface_expr_text(left)} = {source_surface_expr_text(right)} -> False"
     for operator, function_name in (("<=", "SNoLe"), ("<", "SNoLt")):
         split = split_source_top_level_operator(stripped, operator)
         if split is not None:
