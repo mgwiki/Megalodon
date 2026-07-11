@@ -49031,22 +49031,11 @@ def raw_tptp_function_equality_clause_superposition_proof(
     source_binders, source_body = collect_foralls(source)
     if len(source_binders) != len(target_binders) or len(source_binders) > 6:
         return None
-    if any(
-        not equivalent_sorts(source_sort, target_sort)
-        for (_source_name, source_sort), (_target_name, target_sort) in zip(source_binders, target_binders)
-    ):
-        return None
     if len(raw_clause_literals(source_body)) > 16 or len(raw_clause_literals(target_body)) > 18:
         return None
-
-    opened_source = source_body
-    opened_source_proof = source_proof
     local_sorts = {**variable_sorts}
-    for (source_name, _source_sort), (target_name, target_sort) in zip(source_binders, target_binders):
-        if source_name != target_name:
-            opened_source = rename_expr_variables(opened_source, {source_name: target_name})
+    for target_name, target_sort in target_binders:
         local_sorts[target_name] = target_sort
-        opened_source_proof = f"({proof_head(opened_source_proof)} {target_name})"
 
     def close(proof: str) -> str:
         closed = proof
@@ -49066,27 +49055,67 @@ def raw_tptp_function_equality_clause_superposition_proof(
                 return close(transformed)
         return None
 
-    direct = try_finish(opened_source, opened_source_proof)
-    if direct is not None:
-        return direct
+    target_by_sort: dict[str, list[tuple[str, str]]] = {}
+    for target_name, target_sort in target_binders:
+        target_by_sort.setdefault(target_sort, []).append((target_name, target_sort))
 
-    for rewritten, transported in raw_equality_rewrite_clause_steps(
-        opened_source,
-        opened_source_proof,
-        function_sides[0],
-        function_sides[1],
-        function_equality_proof,
-        function_sort,
-        native_equality=False,
-    ):
-        candidates = [rewritten]
-        normalized = beta_normalize_expr(rewritten)
-        if not expr_same_mod_alpha(normalized, rewritten):
-            candidates.append(normalized)
-        for candidate in candidates:
-            proof = try_finish(candidate, transported)
-            if proof is not None:
-                return proof
+    def candidate_target_binders(source_name: str, source_sort: str) -> list[tuple[str, str]]:
+        candidates = [
+            (target_name, target_sort)
+            for target_sort, names in target_by_sort.items()
+            if equivalent_sorts(source_sort, target_sort)
+            for target_name, _ in names
+        ]
+        candidates.sort(key=lambda item: (0 if item[0] == source_name else 1, item[0]))
+        return candidates
+
+    mappings: list[dict[str, Expr]] = []
+
+    def build_mappings(index: int, used: set[str], subst: dict[str, Expr]) -> None:
+        if len(mappings) >= 24:
+            return
+        if index >= len(source_binders):
+            mappings.append(dict(subst))
+            return
+        source_name, source_sort = source_binders[index]
+        for target_name, _target_sort in candidate_target_binders(source_name, source_sort):
+            if target_name in used:
+                continue
+            subst[source_name] = Expr("var", value=target_name)
+            build_mappings(index + 1, used | {target_name}, subst)
+            subst.pop(source_name, None)
+
+    build_mappings(0, set(), {})
+    if not mappings:
+        return None
+
+    for source_to_target in mappings:
+        opened_source = substitute_expr(source_body, source_to_target)
+        opened_source_proof = source_proof
+        for source_name, _source_sort in source_binders:
+            opened_source_proof = f"({proof_head(opened_source_proof)} {proof_arg_text(source_to_target[source_name])})"
+
+        direct = try_finish(opened_source, opened_source_proof)
+        if direct is not None:
+            return direct
+
+        for rewritten, transported in raw_equality_rewrite_clause_steps(
+            opened_source,
+            opened_source_proof,
+            function_sides[0],
+            function_sides[1],
+            function_equality_proof,
+            function_sort,
+            native_equality=False,
+        ):
+            candidates = [rewritten]
+            normalized = beta_normalize_expr(rewritten)
+            if not expr_same_mod_alpha(normalized, rewritten):
+                candidates.append(normalized)
+            for candidate in candidates:
+                proof = try_finish(candidate, transported)
+                if proof is not None:
+                    return proof
     return None
 
 
