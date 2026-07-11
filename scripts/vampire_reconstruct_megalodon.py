@@ -40867,6 +40867,97 @@ def raw_tptp_equality_factoring_proof(
     return None
 
 
+def raw_true_prop_equality_factoring_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> str | None:
+    if len(parents) != 1:
+        return None
+    parent_proposition = propositions_by_name.get(parents[0])
+    parent = parse_expr(parent_proposition) if parent_proposition is not None else None
+    target = parse_expr(proposition)
+    if parent is None or target is None:
+        return None
+    target_binders, target_body = collect_foralls(target)
+    if len(target_binders) != 1 or target_binders[0][1] != "prop":
+        return None
+    target_var = Expr("var", value=target_binders[0][0])
+    target_literals = raw_clause_literals(target_body)
+    if len(target_literals) != 2:
+        return None
+    positive_index = None
+    negated_reflexive_index = None
+    for index, literal in enumerate(target_literals):
+        if expr_same_mod_alpha(literal, target_var):
+            positive_index = index
+            continue
+        premises, conclusion = split_arrows(literal)
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
+            continue
+        sides = equality_like_sides(premises[0])
+        if sides is not None and expr_same_mod_alpha(sides[0], target_var) and expr_same_mod_alpha(sides[1], target_var):
+            negated_reflexive_index = index
+    if positive_index is None or negated_reflexive_index is None:
+        return None
+
+    parent_binders, parent_body = collect_foralls(parent)
+    if len(parent_binders) != 2 or any(sort != "prop" for _name, sort in parent_binders):
+        return None
+    true_expr = Expr("var", value="True")
+    subst = {
+        parent_binders[0][0]: true_expr,
+        parent_binders[1][0]: target_var,
+    }
+    instantiated_body = substitute_expr(parent_body, subst)
+    instantiated_literals = raw_clause_literals(instantiated_body)
+    if len(instantiated_literals) != 2:
+        return None
+    parent_proof = raw_tptp_claim_name(parents[0])
+    for name, _sort in parent_binders:
+        parent_proof = f"({proof_head(parent_proof)} {proof_arg_text(subst[name])})"
+
+    def equality_to_target_proof(equality: Expr, equality_proof: str) -> str | None:
+        sides = equality_like_sides(equality)
+        if sides is None:
+            return None
+        if raw_true_expr(sides[0]) and expr_same_mod_alpha(sides[1], target_var):
+            proof = equality_proof
+        elif expr_same_mod_alpha(sides[0], target_var) and raw_true_expr(sides[1]):
+            proof = native_eq_symmetry_proof(equality_proof, target_var, true_expr, "prop")
+        else:
+            return None
+        return (
+            f"(vampire_native_eq_transport_prop True {proof_arg_text(target_var)} "
+            f"{proof_term_text(proof)} (fun Qprop :prop => Qprop) {raw_true_intro_proof()})"
+        )
+
+    target_text = proof_arg_text(target_body)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+    try:
+        def handler(literal: Expr, literal_proof: str) -> str | None:
+            if expr_same_mod_alpha(literal, target_var):
+                return raw_or_intro_literal_at(target_body, positive_index, literal_proof)
+            transported = equality_to_target_proof(literal, literal_proof)
+            if transported is not None:
+                return raw_or_intro_literal_at(target_body, positive_index, transported)
+            return None
+
+        body_proof = raw_clause_cases_with_handler(instantiated_body, parent_proof, handler)
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+    if body_proof is None:
+        return None
+    for name, sort in reversed(target_binders):
+        body_proof = f"(fun {name} :{sort} => {body_proof})"
+    return body_proof
+
+
 def raw_tptp_instantiated_parent_clause_weaken_proof(
     proposition: str,
     parents: list[str],
@@ -45946,6 +46037,208 @@ def raw_disjunctive_equality_clause_superposition_proof(
             PROOF_SEARCH_STATE.flat_resolution_target = previous_target
 
 
+def raw_negated_prop_true_clause_superposition_proof(
+    target: Expr,
+    guarded_clause: Expr,
+    guarded_clause_proof: str,
+    equality_clause: Expr,
+    equality_clause_proof: str,
+) -> str | None:
+    target_binders, target_body = collect_foralls(target)
+    if len(target_binders) != 2 or any(sort != "prop" for _name, sort in target_binders):
+        return None
+    target_literals = raw_clause_literals(target_body)
+    if len(target_literals) < 5:
+        return None
+    left_var = Expr("var", value=target_binders[0][0])
+    right_var = Expr("var", value=target_binders[1][0])
+    target_neg_index = None
+    target_right_index = None
+    target_eq_index = None
+    for index, literal in enumerate(target_literals):
+        premises, conclusion = split_arrows(literal)
+        if len(premises) == 1 and false_eliminator_expr(conclusion) and expr_same_mod_alpha(premises[0], left_var):
+            target_neg_index = index
+        if expr_same_mod_alpha(literal, right_var):
+            target_right_index = index
+        sides = equality_like_sides(literal)
+        if sides is not None and (
+            (expr_same_mod_alpha(sides[0], left_var) and expr_same_mod_alpha(sides[1], right_var))
+            or (expr_same_mod_alpha(sides[0], right_var) and expr_same_mod_alpha(sides[1], left_var))
+        ):
+            target_eq_index = index
+    if target_neg_index is None or target_right_index is None or target_eq_index is None:
+        return None
+    target_residuals = [
+        (index, literal)
+        for index, literal in enumerate(target_literals)
+        if index not in {target_neg_index, target_right_index, target_eq_index}
+    ]
+    if len(target_residuals) != 2:
+        return None
+
+    guard_binders, guard_body = collect_foralls(guarded_clause)
+    guard_literals = raw_clause_literals(guard_body)
+    if len(guard_literals) != 3:
+        return None
+    guard_neg_candidates: list[tuple[int, Expr]] = []
+    for index, literal in enumerate(guard_literals):
+        premises, conclusion = split_arrows(literal)
+        if len(premises) == 1 and false_eliminator_expr(conclusion):
+            guard_neg_candidates.append((index, premises[0]))
+    if len(guard_neg_candidates) != 1:
+        return None
+    guard_neg_index, guard_atom = guard_neg_candidates[0]
+    guard_residuals = [
+        (index, literal)
+        for index, literal in enumerate(guard_literals)
+        if index != guard_neg_index
+    ]
+    guard_binder_names = {name for name, _sort in guard_binders}
+    matched_guard_body = None
+    matched_guard_atom = None
+    matched_guard_proof = None
+    for ordered_target_residuals in itertools.permutations(target_residuals, len(guard_residuals)):
+        subst: dict[str, Expr] = {}
+        ok = True
+        for (_guard_index, guard_literal), (_target_index, target_literal) in zip(guard_residuals, ordered_target_residuals):
+            if not match_expr_with_alpha_instantiation(guard_literal, target_literal, guard_binder_names, subst):
+                ok = False
+                break
+        if not ok:
+            continue
+        flatten_substitution(subst)
+        if not guard_binder_names <= subst.keys():
+            continue
+        if any(expr_variables(value) & guard_binder_names for value in subst.values()):
+            continue
+        instantiated_proof = guarded_clause_proof
+        for name, _sort in guard_binders:
+            instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(subst[name])})"
+        matched_guard_body = substitute_expr(guard_body, subst)
+        matched_guard_atom = substitute_expr(guard_atom, subst)
+        matched_guard_proof = instantiated_proof
+        break
+    if matched_guard_body is None or matched_guard_atom is None or matched_guard_proof is None:
+        return None
+
+    equality_binders, equality_body = collect_foralls(equality_clause)
+    if len(equality_binders) != 2 or any(sort != "prop" for _name, sort in equality_binders):
+        return None
+    false_expr = Expr("var", value="False")
+    true_expr = Expr("var", value="True")
+    equality_subst = {
+        equality_binders[0][0]: false_expr,
+        equality_binders[1][0]: true_expr,
+    }
+    instantiated_equality_body = substitute_expr(equality_body, equality_subst)
+    equality_literals = raw_clause_literals(instantiated_equality_body)
+    if len(equality_literals) != 3:
+        return None
+    atom_true_literal = None
+    false_true_literal = None
+    false_literal = None
+    for literal in equality_literals:
+        if false_eliminator_expr(literal):
+            false_literal = literal
+            continue
+        sides = equality_like_sides(literal)
+        if sides is None:
+            continue
+        if (
+            (expr_same_mod_alpha(sides[0], matched_guard_atom) and raw_true_expr(sides[1]))
+            or (expr_same_mod_alpha(sides[1], matched_guard_atom) and raw_true_expr(sides[0]))
+        ):
+            atom_true_literal = literal
+        if (
+            (false_eliminator_expr(sides[0]) and raw_true_expr(sides[1]))
+            or (false_eliminator_expr(sides[1]) and raw_true_expr(sides[0]))
+        ):
+            false_true_literal = literal
+    if atom_true_literal is None or false_true_literal is None or false_literal is None:
+        return None
+    instantiated_equality_proof = equality_clause_proof
+    for name, _sort in equality_binders:
+        instantiated_equality_proof = f"({proof_head(instantiated_equality_proof)} {proof_arg_text(equality_subst[name])})"
+
+    def proof_from_true_equality(equality: Expr, equality_proof: str, proposition: Expr) -> str | None:
+        sides = equality_like_sides(equality)
+        if sides is None:
+            return None
+        if raw_true_expr(sides[0]) and expr_same_mod_alpha(sides[1], proposition):
+            proof = equality_proof
+        elif expr_same_mod_alpha(sides[0], proposition) and raw_true_expr(sides[1]):
+            proof = native_eq_symmetry_proof(equality_proof, proposition, true_expr, "prop")
+        else:
+            return None
+        return (
+            f"(vampire_native_eq_transport_prop True {proof_arg_text(proposition)} "
+            f"{proof_term_text(proof)} (fun Qprop :prop => Qprop) {raw_true_intro_proof()})"
+        )
+
+    target_text = proof_arg_text(target_body)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+    try:
+        def equality_handler(literal: Expr, literal_proof: str) -> str | None:
+            if expr_same_mod_alpha(literal, atom_true_literal):
+                atom_proof = proof_from_true_equality(literal, literal_proof, matched_guard_atom)
+                if atom_proof is None:
+                    return None
+                return raw_false_to_expr_proof(
+                    f"(HnotGuard {proof_term_text(atom_proof)})",
+                    target_body,
+                    false_expr,
+                )
+            if expr_same_mod_alpha(literal, false_true_literal):
+                false_proof = proof_from_true_equality(literal, literal_proof, false_expr)
+                if false_proof is None:
+                    return None
+                return raw_false_to_expr_proof(false_proof, target_body, false_expr)
+            if false_eliminator_expr(literal):
+                return raw_false_to_expr_proof(literal_proof, target_body, false_expr)
+            return None
+
+        def guard_handler(literal: Expr, literal_proof: str) -> str | None:
+            premises, conclusion = split_arrows(literal)
+            if (
+                len(premises) == 1
+                and false_eliminator_expr(conclusion)
+                and expr_same_mod_alpha(premises[0], matched_guard_atom)
+            ):
+                equality_cases = raw_clause_cases_with_handler(
+                    instantiated_equality_body,
+                    instantiated_equality_proof,
+                    equality_handler,
+                    avoid_text="HnotGuard",
+                )
+                if equality_cases is None:
+                    return None
+                return f"((fun HnotGuard :{proof_arg_text(literal)} => {equality_cases}) {proof_term_text(literal_proof)})"
+            for target_index, target_literal in target_residuals:
+                if expr_same_mod_alpha(literal, target_literal):
+                    return raw_or_intro_literal_at(target_body, target_index, literal_proof)
+            return None
+
+        body_proof = raw_clause_cases_with_handler(
+            matched_guard_body,
+            matched_guard_proof,
+            guard_handler,
+            avoid_text=expr_text(target_body),
+        )
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+    if body_proof is None:
+        return None
+    for name, sort in reversed(target_binders):
+        body_proof = f"(fun {name} :{sort} => {body_proof})"
+    return body_proof
+
+
 def raw_tptp_superposition_proof(
     proposition: str,
     parents: list[str],
@@ -46019,6 +46312,24 @@ def raw_tptp_superposition_proof(
             if proof is not None:
                 return proof
             proof = raw_negative_predicate_true_from_positive_prop_superposition_proof(
+                target_expr,
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+            )
+            if proof is not None:
+                return proof
+            proof = raw_negated_prop_true_clause_superposition_proof(
+                target_expr,
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+            )
+            if proof is not None:
+                return proof
+            proof = raw_negated_prop_true_clause_superposition_proof(
                 target_expr,
                 parent_exprs[1][0],
                 parent_exprs[1][1],
@@ -64995,6 +65306,9 @@ def raw_tptp_replay_proof(
             replay_step,
         )
     if rule == "equality_factoring":
+        proof = raw_true_prop_equality_factoring_proof(proposition, parents, propositions_by_name)
+        if proof is not None:
+            return proof
         proof = raw_tptp_equality_factoring_proof(
             proposition,
             parents,
