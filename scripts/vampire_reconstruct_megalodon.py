@@ -34288,6 +34288,14 @@ def raw_equality_transport_sort(left: Expr, right: Expr, variable_sorts: dict[st
     return expr_sort(left, known_sorts) or expr_sort(right, known_sorts) or "set"
 
 
+def raw_native_equality_transport_supported(
+    equality: Expr,
+    sides: tuple[Expr, Expr],
+    variable_sorts: dict[str, str],
+) -> bool:
+    return equality.kind == "eq" and raw_equality_transport_sort(sides[0], sides[1], variable_sorts) in {"set", "prop"}
+
+
 def raw_equality_literal_transport_sort(
     equality: Expr,
     sides: tuple[Expr, Expr],
@@ -34384,6 +34392,7 @@ def raw_equality_clause_resolution_proof(
         if sides is None:
             return None
         equality_sort = raw_equality_literal_transport_sort(equality_literal, sides, variable_sorts)
+        native_equality = raw_native_equality_transport_supported(equality_literal, sides, variable_sorts)
         for replaced, transported in raw_equality_rewrite_clause_steps(
             literal,
             literal_proof,
@@ -34391,7 +34400,7 @@ def raw_equality_clause_resolution_proof(
             sides[1],
             equality_proof,
             equality_sort,
-            native_equality=equality_literal.kind == "eq",
+            native_equality=native_equality,
         ):
             proof = raw_literal_to_clause_proof(replaced, target, transported, target_literals, ())
             if proof is not None:
@@ -34855,7 +34864,7 @@ def raw_quantified_parent_equality_rewrite_clause_proof(
     equality_sides = equality_like_sides(equality_body)
     if equality_sides is None:
         return None
-    native_equality = equality_body.kind == "eq"
+    native_equality = raw_native_equality_transport_supported(equality_body, equality_sides, variable_sorts)
     equality_rewrites_propositions = app_args(equality_body, "vampire_eq_prop", 2) is not None
     equality_left_body, equality_right_body = equality_sides
     if len(source_binders) != len(target_binders):
@@ -35157,7 +35166,7 @@ def raw_instantiated_quantified_equality_rewrite_clause_proof(
                         return transformed
             continue
         equality_sort = raw_equality_literal_transport_sort(equality_body, equality_sides, variable_sorts)
-        native_equality = equality_body.kind == "eq"
+        native_equality = raw_native_equality_transport_supported(equality_body, equality_sides, variable_sorts)
         for old_side, new_side, side_proof in (
             (equality_sides[0], equality_sides[1], equality_proof),
             (
@@ -37948,7 +37957,7 @@ def raw_tptp_exported_guarded_demodulation_rewrite_proof(
                     right,
                     proof,
                     equality_sort,
-                    native_equality=equality.kind == "eq",
+                    native_equality=raw_native_equality_transport_supported(equality, (left, right), local_sorts),
                 ):
                     if expr_same_mod_alpha(replaced, target_body):
                         return transported
@@ -38168,7 +38177,7 @@ def raw_negative_implication_quantified_equality_rewrite_proof(
     sides = equality_like_sides(equality_body)
     if sides is None:
         return None
-    native_equality = equality_body.kind == "eq"
+    native_equality = raw_native_equality_transport_supported(equality_body, sides, variable_sorts)
     binder_names = {name for name, _ in binders}
     binder_sort_by_name = {name: sort for name, sort in binders}
     local_sorts = {**variable_sorts, **{name: sort for name, sort in binders}}
@@ -38727,7 +38736,7 @@ def raw_tptp_parent_equality_rewrite_proof(
                 equality_sides[1],
                 equality_proof,
                 equality_sort,
-                native_equality=equality_body.kind == "eq",
+                native_equality=raw_native_equality_transport_supported(equality_body, equality_sides, variable_sorts),
             )
             if proof is not None:
                 return proof
@@ -38749,7 +38758,7 @@ def raw_quantified_equality_rewrite_clause_steps(
     equality_sides = equality_like_sides(equality_body)
     if equality_sides is None or len(source_binders) > 6 or len(equality_binders) > 6:
         return []
-    native_equality = equality_body.kind == "eq"
+    native_equality = raw_native_equality_transport_supported(equality_body, equality_sides, variable_sorts)
     equality_left_body, equality_right_body = equality_sides
     source_body_proof = source_proof
     for source_name, _ in source_binders:
@@ -39784,7 +39793,11 @@ def raw_tptp_parent_equality_chain_rewrite_proof(
                         item for item in equality_parents if item[0] == equality_name
                     )
                     _equality_binders, equality_body = collect_foralls(equality_expr)
-                    native_equality = equality_body.kind == "eq"
+                    native_equality = raw_native_equality_transport_supported(
+                        equality_body,
+                        sides,
+                        variable_sorts,
+                    )
                     rewrite_steps = raw_quantified_equality_rewrite_clause_steps(
                         current,
                         current_proof,
@@ -40016,11 +40029,15 @@ def raw_tptp_target_guided_parent_equality_chain_rewrite_proof(
                             if proof_search_timed_out():
                                 return None
                             _equality_binders, equality_body = collect_foralls(equality)
-                            native_equality = equality_body.kind == "eq"
                             for _instantiated, instantiated_proof, sides in instantiate_equality_options(equality, equality_proof, literal):
                                 if proof_search_timed_out():
                                     return None
                                 equality_sort = raw_equality_transport_sort(sides[0], sides[1], local_sorts)
+                                native_equality = raw_native_equality_transport_supported(
+                                    equality_body,
+                                    sides,
+                                    local_sorts,
+                                )
                                 for old_side, new_side, oriented_proof in (
                                     (sides[0], sides[1], instantiated_proof),
                                     (
@@ -40096,11 +40113,15 @@ def raw_tptp_target_guided_parent_equality_chain_rewrite_proof(
                 if proof_search_timed_out():
                     return None
                 _equality_binders, equality_body = collect_foralls(equality)
-                native_equality = equality_body.kind == "eq"
                 for _instantiated, instantiated_proof, sides in instantiate_equality_options(equality, equality_proof, current):
                     if proof_search_timed_out():
                         return None
                     equality_sort = raw_equality_transport_sort(sides[0], sides[1], local_sorts)
+                    native_equality = raw_native_equality_transport_supported(
+                        equality_body,
+                        sides,
+                        local_sorts,
+                    )
                     for replaced, proof in raw_equality_rewrite_clause_steps(
                         current,
                         current_proof,
@@ -40401,8 +40422,8 @@ def raw_equality_rewrite_expr_proof(
     equality_sides = equality_like_sides(equality)
     if equality_sides is None:
         return None
-    native_equality = equality.kind == "eq"
     equality_sort = raw_equality_transport_sort(equality_sides[0], equality_sides[1], variable_sorts)
+    native_equality = raw_native_equality_transport_supported(equality, equality_sides, variable_sorts)
     reverse_proof = (
         native_eq_symmetry_proof(equality_proof, equality_sides[0], equality_sides[1], equality_sort)
         if native_equality
@@ -46489,10 +46510,14 @@ def raw_guarded_negative_prop_equality_rewrite_superposition_proof(
     equality_sides = equality_like_sides(equality_body)
     if equality_sides is None or not equality_binders or len(equality_binders) > 6:
         return None
-    native_equality = equality_body.kind == "eq"
     equality_sort = raw_equality_transport_sort(
         equality_sides[0],
         equality_sides[1],
+        {**variable_sorts, **dict(equality_binders)},
+    )
+    native_equality = raw_native_equality_transport_supported(
+        equality_body,
+        equality_sides,
         {**variable_sorts, **dict(equality_binders)},
     )
     if not equivalent_sorts(equality_sort, "prop"):
@@ -51210,7 +51235,11 @@ def raw_guarded_negative_equality_superposition_instantiated_proof(
                     equality_literal_proof,
                     equality_sort,
                     variable_sorts,
-                    native_equality=equality_literal.kind == "eq",
+                    native_equality=raw_native_equality_transport_supported(
+                        equality_literal,
+                        equality_sides,
+                        variable_sorts,
+                    ),
                 )
                 if rewritten_negative is None:
                     continue
@@ -51915,7 +51944,11 @@ def raw_guarded_quantified_equality_superposition_proof(
                 equality_sides[1],
                 equality_proof,
                 equality_sort,
-                native_equality=equality_literal.kind == "eq",
+                native_equality=raw_native_equality_transport_supported(
+                    equality_literal,
+                    equality_sides,
+                    variable_sorts,
+                ),
             )
             seen_rewrites: set[str] = set()
             for rewritten, transported in [*targeted_steps, *generic_steps]:
