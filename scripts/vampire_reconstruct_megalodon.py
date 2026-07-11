@@ -27185,6 +27185,167 @@ def raw_or_reassociation_transform_proof(
     return proof
 
 
+def raw_ordered_or_flattening_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 80 or proof_search_timed_out():
+        return None
+    if expr_same_mod_alpha(source, target):
+        return source_proof
+
+    source_exists = raw_exists_transform_parts(source)
+    target_exists = raw_exists_transform_parts(target)
+    if source_exists is not None and target_exists is not None:
+        source_head, source_sort, _source_predicate, source_name, source_body = source_exists
+        target_head, target_sort, _target_predicate, target_name, target_body = target_exists
+        if source_head != target_head or source_sort != target_sort:
+            return None
+        witness_name = fresh_identifier("w", expr_text(source), expr_text(target), source_proof)
+        source_body = rename_expr_variables(source_body, {source_name: witness_name})
+        target_body = rename_expr_variables(target_body, {target_name: witness_name})
+        body_proof = raw_ordered_or_flattening_transform_proof(
+            source_body,
+            target_body,
+            "Hbody",
+            {**variable_sorts, witness_name: source_sort},
+            depth + 1,
+        )
+        if body_proof is None:
+            return None
+        target_intro = f"(fun Q Hexists => Hexists {witness_name} {proof_term_text(body_proof)})"
+        return (
+            f"({proof_head(source_proof)} {proof_arg_text(target)} "
+            f"(fun {witness_name} :{source_sort} => fun Hbody => {target_intro}))"
+        )
+
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
+        assert source.value is not None and target.value is not None and target.sort is not None
+        binder = target.value
+        source_body = source.args[0]
+        target_body = target.args[0]
+        if source.value != binder and binder in (expr_variables(source_body) | expr_bound_variables(source_body)):
+            used_names = (
+                expr_variables(source_body)
+                | expr_bound_variables(source_body)
+                | expr_variables(target_body)
+                | expr_bound_variables(target_body)
+                | {source.value, target.value}
+            )
+            binder = fresh_identifier(target.value, " ".join(sorted(used_names)))
+            target_body = rename_expr_variables(target_body, {target.value: binder})
+        if source.value != binder:
+            source_body = rename_expr_variables(source_body, {source.value: binder})
+        inner = raw_ordered_or_flattening_transform_proof(
+            source_body,
+            target_body,
+            f"({proof_head(source_proof)} {binder})",
+            {**variable_sorts, binder: target.sort},
+            depth + 1,
+        )
+        if inner is None:
+            return None
+        return f"(fun {binder} :{target.sort} => {inner})"
+
+    source_and = vampire_and_parts(source)
+    target_and = vampire_and_parts(target)
+    if source_and is not None and target_and is not None:
+        left_projection = vampire_and_projection_from_proof(source_proof, source, source_and[0])
+        right_projection = vampire_and_projection_from_proof(source_proof, source, source_and[1])
+        if left_projection is None or right_projection is None:
+            return None
+        left = raw_ordered_or_flattening_transform_proof(
+            source_and[0],
+            target_and[0],
+            left_projection,
+            variable_sorts,
+            depth + 1,
+        )
+        right = raw_ordered_or_flattening_transform_proof(
+            source_and[1],
+            target_and[1],
+            right_projection,
+            variable_sorts,
+            depth + 1,
+        )
+        if left is None or right is None:
+            return None
+        return f"(fun P K => K {proof_term_text(left)} {proof_term_text(right)})"
+
+    source_or = raw_or_parts(source)
+    target_or = raw_or_parts(target)
+    if source_or is not None and target_or is not None:
+        source_components = raw_or_components(source)
+        target_components = raw_or_components(target)
+        if len(source_components) != len(target_components):
+            return None
+        next_component = 0
+
+        def branch_to_target(branch: Expr, branch_proof: str) -> str | None:
+            nonlocal next_component
+            branch_or = raw_or_parts(branch)
+            if branch_or is not None:
+                left_name = fresh_identifier("HorL", expr_text(branch), expr_text(target), branch_proof)
+                right_name = fresh_identifier("HorR", expr_text(branch), expr_text(target), branch_proof, left_name)
+                left = branch_to_target(branch_or[0], left_name)
+                right = branch_to_target(branch_or[1], right_name)
+                if left is None or right is None:
+                    return None
+                return (
+                    f"({proof_head(branch_proof)} {proof_arg_text(target)} "
+                    f"(fun {left_name} => {proof_term_text(left)}) "
+                    f"(fun {right_name} => {proof_term_text(right)}))"
+                )
+            if next_component >= len(target_components):
+                return None
+            target_component = target_components[next_component]
+            next_component += 1
+            transformed = raw_ordered_or_flattening_transform_proof(
+                branch,
+                target_component,
+                branch_proof,
+                variable_sorts,
+                depth + 1,
+            )
+            if transformed is None:
+                return None
+            return raw_or_intro_literal_at(target, next_component - 1, transformed)
+
+        proof = branch_to_target(source, source_proof)
+        if proof is None or next_component != len(target_components):
+            return None
+        return proof
+
+    if source.kind == "arrow" and target.kind == "arrow":
+        source_premise, source_conclusion = source.args
+        target_premise, target_conclusion = target.args
+        premise_name = fresh_identifier("Hprem", expr_text(source_premise), expr_text(target_premise), source_proof)
+        premise = raw_ordered_or_flattening_transform_proof(
+            target_premise,
+            source_premise,
+            premise_name,
+            variable_sorts,
+            depth + 1,
+        )
+        if premise is None:
+            return None
+        conclusion = raw_ordered_or_flattening_transform_proof(
+            source_conclusion,
+            target_conclusion,
+            f"({proof_head(source_proof)} {proof_term_text(premise)})",
+            variable_sorts,
+            depth + 1,
+        )
+        if conclusion is None:
+            return None
+        return f"(fun {premise_name} :{proof_arg_text(target_premise)} => {conclusion})"
+
+    return None
+
+
 def raw_conjunction_reassociation_transform_proof(
     source: Expr,
     target: Expr,
@@ -53046,7 +53207,7 @@ def raw_skolemised_forall_permutation_transform_proof(
         or len(source_binders) < 2
     ):
         return None
-    if [sort for _, sort in source_binders] == [sort for _, sort in target_binders]:
+    if source_binders == target_binders:
         return None
     if sorted(sort for _, sort in source_binders) != sorted(sort for _, sort in target_binders):
         return None
@@ -59134,6 +59295,15 @@ def raw_structural_normal_form_transform_proof(
         )
         if component_proof is not None:
             return f"({proof_head(projection)} {proof_term_text(component_proof)})"
+    ordered_or_flattening = raw_ordered_or_flattening_transform_proof(
+        source,
+        target,
+        source_proof,
+        variable_sorts,
+        depth + 1,
+    )
+    if ordered_or_flattening is not None:
+        return ordered_or_flattening
     fast_assoc = raw_fast_or_assoc_transform_proof(source, target, source_proof, variable_sorts, rewrites, depth + 1)
     if fast_assoc is not None:
         return fast_assoc
@@ -66382,6 +66552,51 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                         )
                         if replay_proof is None:
                             replay_proof = raw_implication_chain_to_ennf_or_components_proof(
+                                source_expr,
+                                target_expr,
+                                raw_tptp_claim_name(replay_parents[0]),
+                                variable_sorts,
+                            )
+                        if replay_proof is None:
+                            replay_proof = raw_negated_forall_implication_to_exists_conjunction_proof(
+                                source_expr,
+                                target_expr,
+                                raw_tptp_claim_name(replay_parents[0]),
+                                variable_sorts,
+                            )
+                    finally:
+                        if previous_deadline is None:
+                            if hasattr(PROOF_SEARCH_STATE, "deadline"):
+                                delattr(PROOF_SEARCH_STATE, "deadline")
+                        else:
+                            PROOF_SEARCH_STATE.deadline = previous_deadline
+            if (
+                replay_proof is None
+                and rule == "flattening"
+                and len(replay_parents) == 1
+                and not raw_tptp_replay_payload_size_ok(
+                    rule,
+                    proposition,
+                    replay_parents,
+                    propositions_by_name,
+                    step_info,
+                )
+            ):
+                parent_proposition = propositions_by_name.get(replay_parents[0])
+                source_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+                target_expr = parse_expr(proposition)
+                if source_expr is not None and target_expr is not None:
+                    previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+                    PROOF_SEARCH_STATE.deadline = proof_search_now() + 3.0
+                    try:
+                        replay_proof = raw_ordered_or_flattening_transform_proof(
+                            source_expr,
+                            target_expr,
+                            raw_tptp_claim_name(replay_parents[0]),
+                            variable_sorts,
+                        )
+                        if replay_proof is None:
+                            replay_proof = raw_structural_normal_form_transform_proof(
                                 source_expr,
                                 target_expr,
                                 raw_tptp_claim_name(replay_parents[0]),
