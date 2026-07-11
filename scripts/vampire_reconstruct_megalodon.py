@@ -1582,7 +1582,7 @@ def tptp_formula_to_megalodon_proposition(text: str, variable_sorts: dict[str, s
         if left_sort == "prop" or right_sort == "prop":
             if left_sort not in {None, "prop"} or right_sort not in {None, "prop"}:
                 return None
-            return f"vampire_eq_prop {proof_arg_text(left_expr)} {proof_arg_text(right_expr)} -> vampire_false"
+            return f"{proof_arg_text(left_expr)} = {proof_arg_text(right_expr)} -> vampire_false"
         if is_function_value(left_expr, left_sort) or is_function_value(right_expr, right_sort):
             return tptp_function_equality_proposition(left_expr, right_expr, left_sort, right_sort, negated=True)
         if left_sort in {None, "set"} and right_sort in {None, "set"}:
@@ -1603,7 +1603,7 @@ def tptp_formula_to_megalodon_proposition(text: str, variable_sorts: dict[str, s
         if left_sort == "prop" or right_sort == "prop":
             if left_sort not in {None, "prop"} or right_sort not in {None, "prop"}:
                 return None
-            return f"vampire_eq_prop {proof_arg_text(left_expr)} {proof_arg_text(right_expr)}"
+            return f"{proof_arg_text(left_expr)} = {proof_arg_text(right_expr)}"
         if is_function_value(left_expr, left_sort) or is_function_value(right_expr, right_sort):
             return tptp_function_equality_proposition(left_expr, right_expr, left_sort, right_sort, negated=False)
         if left_sort in {None, "set"} and right_sort in {None, "set"}:
@@ -1984,10 +1984,8 @@ def pointwise_equality_proposition(left: Expr, right: Expr, sort: str) -> str | 
         binders.append(Expr("var", value=name))
     left_app = append_application_args(left, binders)
     right_app = append_application_args(right, binders)
-    if pieces[-1] == "set":
+    if pieces[-1] in {"set", "prop"}:
         proposition = f"{proof_arg_text(left_app)} = {proof_arg_text(right_app)}"
-    else:
-        proposition = f"vampire_eq_prop {proof_arg_text(left_app)} {proof_arg_text(right_app)}"
     for binder, sort in reversed(list(zip(binders, pieces[:-1]))):
         assert binder.value is not None
         proposition = f"forall {binder.value}:{sort}, {proposition}"
@@ -5698,7 +5696,7 @@ def surface_direct_step_expr(
         left_sort = expr_sort(left, variable_sorts)
         right_sort = expr_sort(right, variable_sorts)
         if left_sort == "prop" or right_sort == "prop":
-            return Expr("app", args=(Expr("var", value="vampire_eq_prop"), left, right))
+            return Expr("eq", args=(left, right))
         return Expr("eq", args=(left, right))
     set_equality = app_args(expr, "vampire_eq_set", 2)
     if set_equality is not None:
@@ -5716,7 +5714,7 @@ def surface_direct_step_expr(
         right = surface_direct_step_expr(vampire_equality[1], variable_sorts, db_stack, left_sort, lambda_sort_hints)
         right_sort = expr_sort(right, variable_sorts)
         if left_sort == "prop" or right_sort == "prop":
-            return Expr("app", args=(Expr("var", value="vampire_eq_prop"), left, right))
+            return Expr("eq", args=(left, right))
         if equivalent_sorts(left_sort, right_sort) and left_sort is not None and is_function_value(left, left_sort):
             pointwise = pointwise_equality_proposition(left, right, left_sort)
             parsed_pointwise = parse_expr(pointwise) if pointwise is not None else None
@@ -7460,7 +7458,7 @@ def lower_function_equality_proposition(expr: Expr, variable_sorts: dict[str, st
         if left_sort == "prop" or right_sort == "prop":
             left = lower_function_equality_proposition(expr.args[0], variable_sorts)
             right = lower_function_equality_proposition(expr.args[1], variable_sorts)
-            return f"vampire_eq_prop {proposition_argument_text(left)} {proposition_argument_text(right)}"
+            return f"{proposition_argument_text(left)} = {proposition_argument_text(right)}"
         if equivalent_sorts(left_sort, right_sort) and is_function_value(expr.args[0], left_sort):
             pointwise = pointwise_equality_proposition(expr.args[0], expr.args[1], left_sort)
             if pointwise is not None:
@@ -19584,7 +19582,7 @@ def raw_tptp_inequality_split_name_definitions(
             body += f"fun {binder} :{sort} => "
         last_binder = Expr("var", value=binder_names[-1])
         if argument_sort == "prop":
-            equality_text = f"vampire_eq_prop {proof_arg_text(last_binder)} {proof_arg_text(split_arg)}"
+            equality_text = f"{proof_arg_text(last_binder)} = {proof_arg_text(split_arg)}"
         elif argument_sort == "set":
             equality_text = f"{proof_arg_text(last_binder)} = {proof_arg_text(split_arg)}"
         else:
@@ -30791,6 +30789,20 @@ def raw_prop_equality_to_true_component(expr: Expr) -> tuple[Expr, bool] | None:
     return None
 
 
+def raw_prop_equality_intro_proof(
+    template: Expr,
+    left: Expr,
+    right: Expr,
+    forward: str,
+    backward: str,
+) -> str:
+    helper = "prop_ext_2" if template.kind == "eq" else "vampire_prop_ext"
+    return (
+        f"({helper} {proof_arg_text(left)} {proof_arg_text(right)} "
+        f"{proof_term_text(forward)} {proof_term_text(backward)})"
+    )
+
+
 def raw_equivalence_conjunction_to_prop_equality_proof(source: Expr, target: Expr, source_proof: str) -> str | None:
     target_sides = equality_like_sides(target)
     source_parts = raw_church_and_parts(source)
@@ -30812,10 +30824,7 @@ def raw_equivalence_conjunction_to_prop_equality_proof(source: Expr, target: Exp
             backward = component_proof
     if forward is None or backward is None:
         return None
-    return (
-        f"(vampire_prop_ext {proof_arg_text(left)} {proof_arg_text(right)} "
-        f"{proof_term_text(forward)} {proof_term_text(backward)})"
-    )
+    return raw_prop_equality_intro_proof(target, left, right, forward, backward)
 
 
 def raw_prop_equality_to_equivalence_conjunction_proof(source: Expr, target: Expr, source_proof: str) -> str | None:
@@ -31272,17 +31281,19 @@ def raw_proof_to_prop_true_equality(source: Expr, target: Expr, source_proof: st
         return None
     true_proof = raw_true_intro_proof()
     if true_on_left:
-        return (
-            f"(vampire_prop_ext {proof_arg_text(Expr('var', value='True'))} "
-            f"{proof_arg_text(proposition)} "
-            f"(fun Htrue => {proof_term_text(source_proof)}) "
-            f"(fun Hprop => {true_proof}))"
+        return raw_prop_equality_intro_proof(
+            target,
+            Expr("var", value="True"),
+            proposition,
+            f"(fun Htrue => {proof_term_text(source_proof)})",
+            f"(fun Hprop => {true_proof})",
         )
-    return (
-        f"(vampire_prop_ext {proof_arg_text(proposition)} "
-        f"{proof_arg_text(Expr('var', value='True'))} "
-        f"(fun Hprop => {true_proof}) "
-        f"(fun Htrue => {proof_term_text(source_proof)}))"
+    return raw_prop_equality_intro_proof(
+        target,
+        proposition,
+        Expr("var", value="True"),
+        f"(fun Hprop => {true_proof})",
+        f"(fun Htrue => {proof_term_text(source_proof)})",
     )
 
 
@@ -37490,8 +37501,6 @@ def raw_tptp_extra_lambda_exprs(
 
 
 def raw_equality_goal_expr(left: Expr, right: Expr, sort: str) -> Expr:
-    if sort == "prop":
-        return Expr("app", args=(Expr("var", value="vampire_eq_prop"), left, right))
     return Expr("eq", args=(left, right))
 
 
@@ -51097,34 +51106,52 @@ def raw_eq_prop_application_term(expr: Expr, function_name: str) -> tuple[Expr, 
 
 
 def raw_prop_from_eq_true_proof(equality: Expr, equality_proof: str, proposition: Expr) -> str | None:
-    sides = app_args(equality, "vampire_eq_prop", 2)
+    sides = equality_like_sides(equality)
     if sides is None:
         return None
     left, right = sides
     if raw_app_is_true_expr(left) and expr_same_mod_alpha(right, proposition):
+        if equality.kind == "eq":
+            return (
+                f"(vampire_native_eq_transport_prop True {proof_arg_text(proposition)} "
+                f"{proof_term_text(equality_proof)} (fun Qprop :prop => Qprop) (fun P H => H))"
+            )
         return f"({proof_head(equality_proof)} (fun Qprop :prop => Qprop) (fun P H => H))"
     if expr_same_mod_alpha(left, proposition) and raw_app_is_true_expr(right):
-        symmetric = raw_eq_symmetry_proof(equality_proof, left, "prop")
+        symmetric = (
+            native_eq_symmetry_proof(equality_proof, left, right, "prop")
+            if equality.kind == "eq"
+            else raw_eq_symmetry_proof(equality_proof, left, "prop")
+        )
+        if equality.kind == "eq":
+            return (
+                f"(vampire_native_eq_transport_prop True {proof_arg_text(proposition)} "
+                f"{proof_term_text(symmetric)} (fun Qprop :prop => Qprop) (fun P H => H))"
+            )
         return f"({proof_head(symmetric)} (fun Qprop :prop => Qprop) (fun P H => H))"
     return None
 
 
 def raw_eq_true_from_prop_proof(equality: Expr, proposition_proof: str, proposition: Expr) -> str | None:
-    sides = app_args(equality, "vampire_eq_prop", 2)
+    sides = equality_like_sides(equality)
     if sides is None:
         return None
     left, right = sides
     if raw_app_is_true_expr(left) and expr_same_mod_alpha(right, proposition):
-        return (
-            f"(vampire_prop_ext True {proof_arg_text(proposition)} "
-            f"(fun _ :True => {proof_term_text(proposition_proof)}) "
-            f"(fun _ :{proof_arg_text(proposition)} => (fun P H => H)))"
+        return raw_prop_equality_intro_proof(
+            equality,
+            Expr("var", value="True"),
+            proposition,
+            f"(fun _ :True => {proof_term_text(proposition_proof)})",
+            f"(fun _ :{proof_arg_text(proposition)} => (fun P H => H))",
         )
     if expr_same_mod_alpha(left, proposition) and raw_app_is_true_expr(right):
-        return (
-            f"(vampire_prop_ext {proof_arg_text(proposition)} True "
-            f"(fun _ :{proof_arg_text(proposition)} => (fun P H => H)) "
-            f"(fun _ :True => {proof_term_text(proposition_proof)}))"
+        return raw_prop_equality_intro_proof(
+            equality,
+            proposition,
+            Expr("var", value="True"),
+            f"(fun _ :{proof_arg_text(proposition)} => (fun P H => H))",
+            f"(fun _ :True => {proof_term_text(proposition_proof)})",
         )
     return None
 
@@ -57801,7 +57828,7 @@ def raw_prop_true_exhaustiveness_superposition_proof(
     equality_literal: Expr | None = None
     negated_literal: Expr | None = None
     for left, right in (target_parts, (target_parts[1], target_parts[0])):
-        sides = app_args(left, "vampire_eq_prop", 2)
+        sides = equality_like_sides(left)
         if sides is None or not negated_target_var(right):
             continue
         if expr_same_mod_alpha(sides[1], target_var):
@@ -57810,7 +57837,7 @@ def raw_prop_true_exhaustiveness_superposition_proof(
             break
     if equality_literal is None or negated_literal is None:
         return None
-    equality_sides = app_args(equality_literal, "vampire_eq_prop", 2)
+    equality_sides = equality_like_sides(equality_literal)
     if equality_sides is None:
         return None
     function_application, equality_right = equality_sides
@@ -57865,21 +57892,33 @@ def raw_prop_true_exhaustiveness_superposition_proof(
             prop_name = fresh_identifier("Qprop", proposition, positive_name, negative_name)
             prop_var = Expr("var", value=prop_name)
             function_at_prop = flatten_applications(Expr("app", args=(function_head, prop_var)))
-            eq_true_target = (
-                f"(vampire_prop_ext True {proof_arg_text(target_var)} "
-                f"(fun _ :True => {positive_name}) "
-                f"(fun _ :{proof_arg_text(target_var)} => (fun Q H => H)))"
+            eq_true_target = raw_prop_equality_intro_proof(
+                equality_literal,
+                Expr("var", value="True"),
+                target_var,
+                f"(fun _ :True => {positive_name})",
+                f"(fun _ :{proof_arg_text(target_var)} => (fun Q H => H))",
             )
             function_at_target = proof_arg_text(function_application)
-            transported_fact = (
-                f"({proof_term_text(eq_true_target)} "
-                f"(fun {prop_name}:prop => {proof_arg_text(function_at_prop)}) "
-                f"{proof_term_text(fact_proof)})"
-            )
-            equality_proof = (
-                f"(vampire_prop_ext {function_at_target} {proof_arg_text(target_var)} "
-                f"(fun _ :{function_at_target} => {positive_name}) "
-                f"(fun _ :{proof_arg_text(target_var)} => {transported_fact}))"
+            if equality_literal.kind == "eq":
+                transported_fact = (
+                    f"(vampire_native_eq_transport_prop True {proof_arg_text(target_var)} "
+                    f"{proof_term_text(eq_true_target)} "
+                    f"(fun {prop_name}:prop => {proof_arg_text(function_at_prop)}) "
+                    f"{proof_term_text(fact_proof)})"
+                )
+            else:
+                transported_fact = (
+                    f"({proof_term_text(eq_true_target)} "
+                    f"(fun {prop_name}:prop => {proof_arg_text(function_at_prop)}) "
+                    f"{proof_term_text(fact_proof)})"
+                )
+            equality_proof = raw_prop_equality_intro_proof(
+                equality_literal,
+                function_application,
+                target_var,
+                f"(fun _ :{function_at_target} => {positive_name})",
+                f"(fun _ :{proof_arg_text(target_var)} => {transported_fact})",
             )
             left_intro = f"(fun P Hleft Hright => Hleft {proof_term_text(equality_proof)})"
             right_intro = f"(fun P Hleft Hright => Hright {negative_name})"
@@ -57951,21 +57990,33 @@ def raw_prop_equality_negative_superposition_proof(
         source_negative_proof: str,
         target_atom: Expr,
     ) -> str | None:
-        sides = app_args(equality_literal, "vampire_eq_prop", 2)
+        sides = equality_like_sides(equality_literal)
         if sides is None:
             return None
+        native_equality = equality_literal.kind == "eq"
         left, right = sides
         if expr_same_mod_alpha(left, source_atom) and expr_same_mod_alpha(right, target_atom):
-            source_from_target = raw_eq_symmetry_proof(equality_proof, source_atom, "prop")
+            source_from_target = (
+                native_eq_symmetry_proof(equality_proof, source_atom, target_atom, "prop")
+                if native_equality
+                else raw_eq_symmetry_proof(equality_proof, source_atom, "prop")
+            )
         elif expr_same_mod_alpha(left, target_atom) and expr_same_mod_alpha(right, source_atom):
             source_from_target = equality_proof
         else:
             return None
         target_name = fresh_identifier("Htarget", expr_text(target_atom), equality_proof, source_negative_proof)
+        if native_equality:
+            target_to_source = (
+                f"(vampire_native_eq_transport_prop {proof_arg_text(target_atom)} {proof_arg_text(source_atom)} "
+                f"{proof_term_text(source_from_target)} (fun Qprop :prop => Qprop) {target_name})"
+            )
+        else:
+            target_to_source = f"({proof_head(source_from_target)} (fun Qprop :prop => Qprop) {target_name})"
         return (
             f"(fun {target_name} :{proof_arg_text(target_atom)} => "
             f"{proof_head(source_negative_proof)} "
-            f"({proof_head(source_from_target)} (fun Qprop :prop => Qprop) {target_name}))"
+            f"{target_to_source})"
         )
 
     for eq_parent, neg_parent in ((0, 1), (1, 0)):
@@ -57983,7 +58034,7 @@ def raw_prop_equality_negative_superposition_proof(
         if len(eq_literals) > 8:
             continue
         for eq_literal in eq_literals:
-            sides = app_args(eq_literal, "vampire_eq_prop", 2)
+            sides = equality_like_sides(eq_literal)
             if sides is None:
                 continue
             for source_side, target_side in (sides, (sides[1], sides[0])):
@@ -58009,7 +58060,7 @@ def raw_prop_equality_negative_superposition_proof(
                     eq_parent_proof = f"({proof_head(eq_parent_proof)} {proof_arg_text(subst[name])})"
 
                 def handler(literal: Expr, literal_proof: str) -> str | None:
-                    literal_sides = app_args(literal, "vampire_eq_prop", 2)
+                    literal_sides = equality_like_sides(literal)
                     if literal_sides is not None:
                         for target_index, target_atom in matching_targets:
                             negative_proof = transported_negative_proof(
@@ -58078,7 +58129,7 @@ def raw_tptp_inequality_splitting_proof(
     if split_arg is None:
         return None
 
-    expected_prop_equality = Expr("app", args=(Expr("var", value="vampire_eq_prop"), target_arg, split_arg))
+    expected_prop_equality = Expr("eq", args=(target_arg, split_arg))
     expected_set_equality = Expr("eq", args=(target_arg, split_arg))
     for parent in parents:
         parent_expr = parse_expr(propositions_by_name.get(parent, ""))
@@ -58097,7 +58148,7 @@ def raw_tptp_inequality_splitting_proof(
             if expr_same_mod_alpha(left, split_arg) and expr_same_mod_alpha(right, target_arg):
                 assumption = fresh_identifier("Hineq", proposition, parent_proof)
                 if source_negative.kind == "eq":
-                    symmetry = eq_symmetry_proof(assumption, target_arg, split_arg)
+                    symmetry = native_eq_symmetry_proof(assumption, split_arg, target_arg, "prop")
                 else:
                     symmetry = raw_eq_symmetry_proof(assumption, target_arg, "prop")
                 return f"(fun {assumption} => {proof_head(parent_proof)} {proof_term_text(symmetry)})"
@@ -58108,7 +58159,10 @@ def raw_tptp_inequality_splitting_proof(
             continue
         assumption = fresh_identifier("Hineq", proposition, parent_proof)
         if expr_sort(target_arg, variable_sorts) == "prop" or expr_sort(split_arg, variable_sorts) == "prop":
-            transported = f"({assumption} (fun Qprop :prop => Qprop) {proof_term_text(truth_proof)})"
+            transported = (
+                f"(vampire_native_eq_transport_prop {proof_arg_text(target_arg)} {proof_arg_text(split_arg)} "
+                f"{assumption} (fun Qprop :prop => Qprop) {proof_term_text(truth_proof)})"
+            )
             return f"(fun {assumption} :{expr_text(expected_prop_equality)} => {proof_head(parent_proof)} {transported})"
         if expr_sort(target_arg, variable_sorts) == "set" or expr_sort(split_arg, variable_sorts) == "set":
             return f"(fun {assumption} :{expr_text(expected_set_equality)} => {proof_head(parent_proof)} {assumption})"
