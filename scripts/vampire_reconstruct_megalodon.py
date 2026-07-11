@@ -190,7 +190,7 @@ def raw_tptp_replay_seconds_for_rule(rule: str | None) -> float:
     if rule == "rectify":
         return max(RAW_TPTP_REPLAY_SECONDS, 1.0)
     if rule == "flattening":
-        return max(RAW_TPTP_REPLAY_SECONDS, 2.5)
+        return max(RAW_TPTP_REPLAY_SECONDS, 4.0)
     if rule in {"definition_folding", "definition_unfolding"}:
         return max(RAW_TPTP_REPLAY_SECONDS, RAW_TPTP_DEFINITION_REPLAY_SECONDS)
     if rule == "superposition":
