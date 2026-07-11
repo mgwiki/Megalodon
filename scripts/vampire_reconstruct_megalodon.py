@@ -47283,6 +47283,225 @@ def raw_prop_component_universal_excluded_superposition_proof(
             PROOF_SEARCH_STATE.flat_resolution_target = previous_target
 
 
+def raw_prop_true_component_universal_excluded_superposition_proof(
+    target: Expr,
+    component_clause: Expr,
+    component_clause_proof: str,
+    excluded_clause: Expr,
+    excluded_clause_proof: str,
+) -> str | None:
+    target_binders, target_body = collect_foralls(target)
+    if target_binders:
+        return None
+    target_literals = raw_clause_literals(target_body)
+    if len(target_literals) != 2:
+        return None
+
+    universal_index = None
+    residual_index = None
+    universal_binder = None
+    universal_body = None
+    predicate_head = None
+    equality_literal = None
+    equality_index = None
+    equality_reversed = False
+    negated_binder_index = None
+    true_expr = Expr("var", value="True")
+    for index, literal in enumerate(target_literals):
+        binders, body = collect_foralls(literal)
+        if len(binders) != 1 or binders[0][1] != "prop":
+            continue
+        binder_expr = Expr("var", value=binders[0][0])
+        body_literals = raw_clause_literals(body)
+        if len(body_literals) != 2:
+            continue
+        local_predicate_head = None
+        local_equality_literal = None
+        local_equality_index = None
+        local_equality_reversed = False
+        local_negated_binder_index = None
+        for body_index, body_literal in enumerate(body_literals):
+            premises, conclusion = split_arrows(body_literal)
+            if len(premises) == 1 and false_eliminator_expr(conclusion) and expr_same_mod_alpha(premises[0], binder_expr):
+                local_negated_binder_index = body_index
+                continue
+            sides = equality_like_sides(body_literal)
+            if sides is None:
+                continue
+            if expr_same_mod_alpha(sides[1], binder_expr):
+                component = sides[0]
+                reversed_equality = False
+            elif expr_same_mod_alpha(sides[0], binder_expr):
+                component = sides[1]
+                reversed_equality = True
+            else:
+                continue
+            if component.kind != "app" or len(component.args) != 2:
+                continue
+            if not expr_same_mod_alpha(component.args[1], binder_expr):
+                continue
+            local_predicate_head = component.args[0]
+            local_equality_literal = body_literal
+            local_equality_index = body_index
+            local_equality_reversed = reversed_equality
+        if (
+            local_predicate_head is None
+            or local_equality_literal is None
+            or local_equality_index is None
+            or local_negated_binder_index is None
+        ):
+            continue
+        universal_index = index
+        residual_index = 1 - index
+        universal_binder = binders[0]
+        universal_body = body
+        predicate_head = local_predicate_head
+        equality_literal = local_equality_literal
+        equality_index = local_equality_index
+        equality_reversed = local_equality_reversed
+        negated_binder_index = local_negated_binder_index
+        break
+    if (
+        universal_index is None
+        or residual_index is None
+        or universal_binder is None
+        or universal_body is None
+        or predicate_head is None
+        or equality_literal is None
+        or equality_index is None
+        or negated_binder_index is None
+    ):
+        return None
+
+    residual_literal = target_literals[residual_index]
+    component_true = Expr("app", args=(predicate_head, true_expr))
+    component_literals = raw_clause_literals(component_clause)
+    if len(component_literals) != 2:
+        return None
+    if expr_same_mod_alpha(component_literals[0], component_true) and expr_same_mod_alpha(component_literals[1], residual_literal):
+        pass
+    elif expr_same_mod_alpha(component_literals[1], component_true) and expr_same_mod_alpha(component_literals[0], residual_literal):
+        pass
+    else:
+        return None
+
+    excluded_binders, excluded_body = collect_foralls(excluded_clause)
+    if len(excluded_binders) != 1 or excluded_binders[0][1] != "prop":
+        return None
+    excluded_var = Expr("var", value=excluded_binders[0][0])
+    excluded_literals = raw_clause_literals(excluded_body)
+    if len(excluded_literals) != 2:
+        return None
+    if not any(expr_same_mod_alpha(literal, excluded_var) for literal in excluded_literals):
+        return None
+    if not any(
+        len(premises) == 1 and false_eliminator_expr(conclusion) and expr_same_mod_alpha(premises[0], excluded_var)
+        for premises, conclusion in (split_arrows(literal) for literal in excluded_literals)
+    ):
+        return None
+    _ = excluded_clause_proof
+
+    def typed_or_intro_literal_at(clause: Expr, index: int, literal_proof: str, depth: int = 0) -> str | None:
+        if index < 0:
+            return None
+        parts = raw_or_parts(clause)
+        if parts is None:
+            return literal_proof if index == 0 else None
+        left, right = parts
+        left_count = len(raw_clause_literals(left))
+        proof_var = fresh_identifier(f"Q{depth}", expr_text(clause), literal_proof)
+        left_var = fresh_identifier(f"Hleft{depth}", expr_text(clause), literal_proof, proof_var)
+        right_var = fresh_identifier(f"Hright{depth}", expr_text(clause), literal_proof, proof_var, left_var)
+        if index < left_count:
+            left_proof = typed_or_intro_literal_at(left, index, literal_proof, depth + 1)
+            if left_proof is None:
+                return None
+            return (
+                f"(fun {proof_var} :prop => "
+                f"fun {left_var} :{proof_arg_text(left)} -> {proof_var} => "
+                f"fun {right_var} :{proof_arg_text(right)} -> {proof_var} => "
+                f"{left_var} {proof_term_text(left_proof)})"
+            )
+        right_proof = typed_or_intro_literal_at(right, index - left_count, literal_proof, depth + 1)
+        if right_proof is None:
+            return None
+        return (
+            f"(fun {proof_var} :prop => "
+            f"fun {left_var} :{proof_arg_text(left)} -> {proof_var} => "
+            f"fun {right_var} :{proof_arg_text(right)} -> {proof_var} => "
+            f"{right_var} {proof_term_text(right_proof)})"
+        )
+
+    binder_name, binder_sort = universal_binder
+    binder_expr = Expr("var", value=binder_name)
+    component_at_binder = Expr("app", args=(predicate_head, binder_expr))
+    component_at_binder_text = proof_arg_text(component_at_binder)
+    binder_text = proof_arg_text(binder_expr)
+    predicate_hole = fresh_identifier("Y", expr_text(target_body), expr_text(component_clause), expr_text(excluded_clause))
+    positive_name = fresh_identifier("HX", expr_text(target_body), component_clause_proof)
+    negative_name = fresh_identifier("HnotX", expr_text(target_body), positive_name)
+    component_proof_name = fresh_identifier("Hcomp", expr_text(target_body), positive_name, negative_name)
+    true_proof = "(fun P :prop => fun H :P => H)"
+
+    true_to_binder = (
+        f"(prop_ext_2 True {binder_text} "
+        f"(fun Htrue :True => {positive_name}) "
+        f"(fun Hx :{binder_text} => {true_proof}))"
+    )
+    transported_component = (
+        f"(vampire_native_eq_transport_prop True {binder_text} "
+        f"{true_to_binder} "
+        f"(fun {predicate_hole} :prop => {expr_text(Expr('app', args=(predicate_head, Expr('var', value=predicate_hole))))}) "
+        f"{component_proof_name})"
+    )
+    forward = f"(fun HP :{component_at_binder_text} => {positive_name})"
+    backward = f"(fun HXsame :{binder_text} => {transported_component})"
+    equality_proof = (
+        f"(prop_ext_2 {component_at_binder_text} {binder_text} "
+        f"{forward} {backward})"
+    )
+    if equality_reversed:
+        equality_proof = native_eq_symmetry_proof(equality_proof, component_at_binder, binder_expr, "prop")
+    equality_branch = typed_or_intro_literal_at(universal_body, equality_index, equality_proof)
+    negated_branch = typed_or_intro_literal_at(universal_body, negated_binder_index, negative_name)
+    if equality_branch is None or negated_branch is None:
+        return None
+    universal_inner = (
+        f"(xm {binder_text} {proof_arg_text(universal_body)} "
+        f"(fun {positive_name} :{binder_text} => {equality_branch}) "
+        f"(fun {negative_name} :{binder_text} -> False => {negated_branch}))"
+    )
+    universal_proof = f"(fun {binder_name} :{binder_sort} => {universal_inner})"
+    universal_clause_proof = typed_or_intro_literal_at(target_body, universal_index, universal_proof)
+    residual_clause_proof_template = typed_or_intro_literal_at(target_body, residual_index, "__RESIDUAL_PROOF__")
+    if universal_clause_proof is None or residual_clause_proof_template is None:
+        return None
+
+    outer_target_text = proof_arg_text(target_body)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = outer_target_text
+    try:
+        def component_handler(literal: Expr, literal_proof: str) -> str | None:
+            if expr_same_mod_alpha(literal, residual_literal):
+                return residual_clause_proof_template.replace("__RESIDUAL_PROOF__", literal_proof)
+            if expr_same_mod_alpha(literal, component_true):
+                return f"((fun {component_proof_name} :{proof_arg_text(component_true)} => {universal_clause_proof}) {proof_term_text(literal_proof)})"
+            return None
+
+        return raw_clause_cases_with_handler(
+            component_clause,
+            component_clause_proof,
+            component_handler,
+            avoid_text=expr_text(target_body),
+        )
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_guarded_quantified_component_clause_resolution_superposition_proof(
     target: Expr,
     source: Expr,
@@ -47547,6 +47766,24 @@ def raw_tptp_superposition_proof(
             if proof is not None:
                 return proof
             proof = raw_prop_component_universal_excluded_superposition_proof(
+                target_expr,
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+            )
+            if proof is not None:
+                return proof
+            proof = raw_prop_true_component_universal_excluded_superposition_proof(
+                target_expr,
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+            )
+            if proof is not None:
+                return proof
+            proof = raw_prop_true_component_universal_excluded_superposition_proof(
                 target_expr,
                 parent_exprs[1][0],
                 parent_exprs[1][1],
