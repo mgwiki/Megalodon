@@ -40511,6 +40511,194 @@ def raw_tptp_guarded_prop_equality_factoring_fallback(
     return None
 
 
+def raw_tptp_guarded_false_prop_equality_factoring_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parents) != 1:
+        return None
+    parent_proposition = propositions_by_name.get(parents[0])
+    parent = parse_expr(parent_proposition) if parent_proposition is not None else None
+    target = parse_expr(proposition)
+    if parent is None or target is None:
+        return None
+    _parent_binders, parent_body = collect_foralls(parent)
+    _target_binders, target_body_top = collect_foralls(target)
+    if _parent_binders or _target_binders:
+        return None
+    parent_parts = raw_or_parts(parent_body)
+    target_parts = raw_or_parts(target_body_top)
+    if parent_parts is None or target_parts is None:
+        return None
+    parent_name = raw_tptp_claim_name(parents[0])
+
+    def negative_atom(literal: Expr) -> Expr | None:
+        premises, conclusion = split_arrows(literal)
+        if len(premises) == 1 and false_eliminator_expr(conclusion):
+            return premises[0]
+        return None
+
+    for parent_component, parent_guard, parent_component_first in (
+        (parent_parts[0], parent_parts[1], True),
+        (parent_parts[1], parent_parts[0], False),
+    ):
+        for target_component, target_guard, target_component_first in (
+            (target_parts[0], target_parts[1], True),
+            (target_parts[1], target_parts[0], False),
+        ):
+            if not expr_same_mod_alpha(parent_guard, target_guard):
+                continue
+            source_binders, source_body = collect_foralls(parent_component)
+            target_inner_binders, target_body = collect_foralls(target_component)
+            if (
+                len(source_binders) != 2
+                or len(target_inner_binders) != 1
+                or any(sort != "prop" for _name, sort in source_binders + target_inner_binders)
+            ):
+                continue
+            source_literals = raw_clause_literals(source_body)
+            target_literals = raw_clause_literals(target_body)
+            if len(source_literals) != 2 or len(target_literals) != 2:
+                continue
+            source_equality: Expr | None = None
+            source_negative: Expr | None = None
+            source_negative_atom: Expr | None = None
+            for literal in source_literals:
+                if equality_like_sides(literal) is not None:
+                    source_equality = literal
+                elif (atom := negative_atom(literal)) is not None:
+                    source_negative = literal
+                    source_negative_atom = atom
+            if source_equality is None or source_negative is None or source_negative_atom is None:
+                continue
+            source_sides = equality_like_sides(source_equality)
+            assert source_sides is not None
+
+            target_self_diseq: Expr | None = None
+            target_negative: Expr | None = None
+            target_negative_atom: Expr | None = None
+            for literal in target_literals:
+                atom = negative_atom(literal)
+                if atom is None:
+                    continue
+                sides = equality_like_sides(atom)
+                if sides is not None:
+                    target_self_diseq = literal
+                else:
+                    target_negative = literal
+                    target_negative_atom = atom
+            if target_self_diseq is None or target_negative is None or target_negative_atom is None:
+                continue
+
+            target_name, target_sort = target_inner_binders[0]
+            target_var = Expr("var", value=target_name)
+            if not expr_same_mod_alpha(target_negative_atom, target_var):
+                continue
+            diseq_atom = negative_atom(target_self_diseq)
+            diseq_sides = equality_like_sides(diseq_atom) if diseq_atom is not None else None
+            if diseq_sides is None or not expr_same_mod_alpha(diseq_sides[0], target_var) or not expr_same_mod_alpha(diseq_sides[1], target_var):
+                continue
+
+            first_source_name, _first_source_sort = source_binders[0]
+            second_source_name, _second_source_sort = source_binders[1]
+            first_source = Expr("var", value=first_source_name)
+            second_source = Expr("var", value=second_source_name)
+            if not expr_same_mod_alpha(source_negative_atom, first_source):
+                continue
+            if not (
+                (expr_same_mod_alpha(source_sides[0], second_source) and expr_same_mod_alpha(source_sides[1], first_source))
+                or (expr_same_mod_alpha(source_sides[0], first_source) and expr_same_mod_alpha(source_sides[1], second_source))
+            ):
+                continue
+
+            false_expr = Expr("var", value="False")
+            source_subst = {
+                first_source_name: target_var,
+                second_source_name: false_expr,
+            }
+            instantiated_source_body = substitute_expr(source_body, source_subst)
+            instantiated_source_proof = "HsourceComponent"
+            for name, _sort in source_binders:
+                instantiated_source_proof = f"({proof_head(instantiated_source_proof)} {proof_arg_text(source_subst[name])})"
+
+            target_text = proof_arg_text(target_body)
+            positive_name = fresh_identifier("HpropTrue", expr_text(target_body), parent_name)
+            negative_name = fresh_identifier("HpropFalse", expr_text(target_body), positive_name)
+            equality_name = fresh_identifier("HfalseEqProp", expr_text(source_body), parent_name)
+            right_intro_from = lambda proof: raw_or_intro_from_branch(target_body, target_negative, proof)
+            negative_direct = right_intro_from(negative_name)
+            if negative_direct is None:
+                continue
+
+            def source_handler(literal: Expr, literal_proof: str) -> str | None:
+                sides = equality_like_sides(literal)
+                if sides is not None:
+                    if not (
+                        expr_same_mod_alpha(sides[0], false_expr)
+                        and expr_same_mod_alpha(sides[1], target_var)
+                    ):
+                        return None
+                    assumption = fresh_identifier("HtargetProp", expr_text(target_var), literal_proof)
+                    if literal.kind == "eq":
+                        sym = native_eq_symmetry_proof(literal_proof, false_expr, target_var, "prop")
+                        false_proof = (
+                            f"(vampire_native_eq_transport_prop {target_name} False "
+                            f"{proof_term_text(sym)} (fun Qprop :prop => Qprop) {assumption})"
+                        )
+                    else:
+                        sym = raw_eq_symmetry_proof(literal_proof, false_expr, "prop")
+                        false_proof = f"({proof_head(sym)} (fun Qprop :prop => Qprop) {assumption})"
+                    neg_proof = f"(fun {assumption} :{target_name} => {false_proof})"
+                    return right_intro_from(neg_proof)
+                atom = negative_atom(literal)
+                if atom is not None and expr_same_mod_alpha(atom, target_var):
+                    return right_intro_from(literal_proof)
+                return None
+
+            previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+            PROOF_SEARCH_STATE.flat_resolution_target = target_text
+            try:
+                source_cases = raw_clause_cases_with_handler(
+                    instantiated_source_body,
+                    instantiated_source_proof,
+                    source_handler,
+                    avoid_text=equality_name,
+                )
+            finally:
+                if previous_target is None:
+                    if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                        delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+                else:
+                    PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+            if source_cases is None:
+                continue
+            body_proof = (
+                f"(xm {target_name} {target_text} "
+                f"(fun {positive_name} => {source_cases}) "
+                f"(fun {negative_name} => {proof_term_text(negative_direct)}))"
+            )
+            component_proof = f"(fun {target_name} :{target_sort} => {body_proof})"
+            component_intro = raw_or_intro_from_branch(target_body_top, target_component, component_proof)
+            guard_intro = raw_or_intro_from_branch(target_body_top, target_guard, "Hguard")
+            if component_intro is None or guard_intro is None:
+                continue
+
+            if parent_component_first:
+                return (
+                    f"({parent_name} {proof_arg_text(target_body_top)} "
+                    f"(fun HsourceComponent :{proof_arg_text(parent_component)} => {proof_term_text(component_intro)}) "
+                    f"(fun Hguard :{proof_arg_text(parent_guard)} => {proof_term_text(guard_intro)}))"
+                )
+            return (
+                f"({parent_name} {proof_arg_text(target_body_top)} "
+                f"(fun Hguard :{proof_arg_text(parent_guard)} => {proof_term_text(guard_intro)}) "
+                f"(fun HsourceComponent :{proof_arg_text(parent_component)} => {proof_term_text(component_intro)}))"
+            )
+    return None
+
+
 def raw_tptp_guarded_component_contradiction_resolution_proof(
     proposition: str,
     parents: list[str],
@@ -63158,6 +63346,14 @@ def raw_tptp_replay_proof(
             propositions_by_name,
             variable_sorts,
             replay_step,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_tptp_guarded_false_prop_equality_factoring_proof(
+            proposition,
+            parents,
+            propositions_by_name,
+            variable_sorts,
         )
         if proof is not None:
             return proof
