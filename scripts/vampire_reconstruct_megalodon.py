@@ -43588,6 +43588,26 @@ def raw_tptp_superposition_proof(
             )
             if proof is not None:
                 return proof
+            proof = raw_quantified_target_literal_equality_clause_superposition_proof(
+                parent_exprs[0][0],
+                target_expr,
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_quantified_target_literal_equality_clause_superposition_proof(
+                parent_exprs[1][0],
+                target_expr,
+                parent_exprs[1][1],
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
     proof = raw_tptp_universal_unit_contradiction_proof(
         proposition,
         parents,
@@ -44985,6 +45005,117 @@ def raw_nested_quantified_literal_equality_clause_superposition_proof(
     for name, sort in reversed(target_binders):
         body_proof = f"(fun {name} :{sort} => {body_proof})"
     return body_proof
+
+
+def raw_quantified_target_literal_equality_clause_superposition_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality_clause: Expr,
+    equality_clause_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if proof_search_timed_out():
+        return None
+    target_binders, target_body = collect_foralls(target)
+    target_literals = raw_clause_literals(target_body)
+    if len(target_binders) > 4 or len(target_literals) > 12:
+        return None
+    source_body = collect_foralls(source)[1]
+    equality_body = collect_foralls(equality_clause)[1]
+    if len(raw_clause_literals(source_body)) > 10 or len(raw_clause_literals(equality_body)) > 10:
+        return None
+
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+    try:
+        for target_index, target_literal in enumerate(target_literals):
+            if proof_search_timed_out():
+                return None
+            literal_binders, literal_body = collect_foralls(target_literal)
+            if not literal_binders:
+                continue
+            local_sorts = {
+                **variable_sorts,
+                **{name: sort for name, sort in target_binders},
+                **{name: sort for name, sort in literal_binders},
+            }
+            source_options = raw_superposition_target_residual_instantiated_options(
+                source,
+                source_proof,
+                target_literal,
+                max_options=24,
+            )
+            equality_options = [
+                *([] if collect_foralls(equality_clause)[0] else [(equality_clause, equality_clause_proof)]),
+                *raw_instantiated_forall_clause_options(equality_clause, equality_clause_proof, target_literal, source),
+                *raw_superposition_target_residual_instantiated_options(
+                    equality_clause,
+                    equality_clause_proof,
+                    target_literal,
+                    max_options=24,
+                ),
+            ]
+            seen_equality: set[str] = set()
+            unique_equality_options: list[tuple[Expr, str]] = []
+            for option in equality_options:
+                key = expr_key(option[0])
+                if key in seen_equality:
+                    continue
+                seen_equality.add(key)
+                unique_equality_options.append(option)
+
+            for source_option, source_option_proof in source_options[:24]:
+                if proof_search_timed_out():
+                    return None
+                for equality_option, equality_option_proof in unique_equality_options[:24]:
+                    if proof_search_timed_out():
+                        return None
+
+                    def equality_handler(equality_literal: Expr, equality_literal_proof: str) -> str | None:
+                        direct_outer = raw_literal_to_clause_proof(
+                            equality_literal,
+                            target_body,
+                            equality_literal_proof,
+                            target_literals,
+                            (),
+                        )
+                        if direct_outer is not None:
+                            return direct_outer
+                        if equality_like_sides(equality_literal) is None:
+                            return None
+                        inner_proof = raw_equality_clause_superposition_proof(
+                            source_option,
+                            literal_body,
+                            source_option_proof,
+                            equality_literal,
+                            equality_literal_proof,
+                            local_sorts,
+                        )
+                        if inner_proof is None:
+                            return None
+                        for name, sort in reversed(literal_binders):
+                            inner_proof = f"(fun {name} :{sort} => {inner_proof})"
+                        return raw_or_intro_literal_at(target_body, target_index, inner_proof)
+
+                    proof = raw_clause_cases_with_handler(
+                        equality_option,
+                        equality_option_proof,
+                        equality_handler,
+                        avoid_text=source_option_proof,
+                    )
+                    if proof is None:
+                        continue
+                    for name, sort in reversed(target_binders):
+                        proof = f"(fun {name} :{sort} => {proof})"
+                    return proof
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+    return None
 
 
 def raw_known_false_prop_equality_proof(left: Expr, right: Expr, known_false_proofs: dict[str, str]) -> str | None:
@@ -48916,6 +49047,7 @@ def raw_tptp_quantified_equality_clause_superposition_proof(
             *raw_superposition_target_residual_instantiated_options(source, source_proof, target),
         ]
         equality_options = [
+            *([] if collect_foralls(equality_clause)[0] else [(equality_clause, equality_clause_proof)]),
             *raw_replay_substituted_parent_options(equality_index, equality_clause, equality_clause_proof, replay_step, variable_sorts),
             *raw_instantiated_forall_clause_options(equality_clause, equality_clause_proof, target, source),
             *raw_superposition_target_residual_instantiated_options(equality_clause, equality_clause_proof, target),
