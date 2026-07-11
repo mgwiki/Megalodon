@@ -33594,6 +33594,7 @@ def raw_set_term_equality_transform_proof(
     context_args[index] = Expr("var", value=hole)
     context = Expr("app", args=tuple(context_args))
     arg_sort = expr_sort(source.args[index], variable_sorts) or expr_sort(target.args[index], variable_sorts)
+    normalized_arg_sort = join_sort_arrows(split_sort_arrows(arg_sort)) if arg_sort is not None else None
     if arg_sort == "prop":
         argument_equality = raw_native_prop_equality_proof(
             source.args[index],
@@ -33614,7 +33615,7 @@ def raw_set_term_equality_transform_proof(
             equality_context,
         )
         return transported
-    if arg_sort == "set":
+    if normalized_arg_sort == "set":
         left_hole = fresh_identifier("zl", expr_text(source), expr_text(target), str(index))
         right_hole = fresh_identifier("zr", expr_text(source), expr_text(target), str(index))
         native_context_args = list(source.args)
@@ -33633,8 +33634,14 @@ def raw_set_term_equality_transform_proof(
             f"(fun {left_hole} {right_hole} => {proof_arg_text(source)} = {expr_text(native_context)}) "
             f"{native_set_reflexivity_proof(source)}"
         )
-    if arg_sort in {"set->set", "set->set->set", "set->(set->set)", "set->(set->set)->set"}:
-        normalized_sort = join_sort_arrows(split_sort_arrows(arg_sort))
+    if normalized_arg_sort in {
+        "set->set",
+        "set->set->set",
+        "set->(set->set)",
+        "set->(set->set)->set",
+        "set->(set->prop)->prop",
+    }:
+        normalized_sort = normalized_arg_sort
         argument_transport = raw_function_argument_transport_proof(
             source.args[index],
             target.args[index],
@@ -33648,7 +33655,7 @@ def raw_set_term_equality_transform_proof(
             f"(fun {hole} :{binder_sort_text(normalized_sort)} => {proof_arg_text(source)} = {expr_text(context)}) "
             f"{native_set_reflexivity_proof(source)}"
         )
-    if arg_sort == "set->prop":
+    if normalized_arg_sort == "set->prop":
         if len(expr_text(source)) + len(expr_text(target)) > 3000:
             return None
         predicate_equality = raw_fast_set_predicate_extensionality_proof(
@@ -33700,10 +33707,16 @@ def raw_function_argument_transport_proof(
     binder_sorts = [strip_balanced_parens(sort) for _name, sort in source_binders]
     if binder_sorts == ["set"]:
         helper = "vampire_funext_set_set"
+        prop_valued = False
     elif binder_sorts == ["set", "set"]:
         helper = "vampire_funext_set_set_set"
+        prop_valued = False
     elif binder_sorts == ["set", "set->set"]:
         helper = "vampire_funext_set_setfun_set"
+        prop_valued = False
+    elif binder_sorts == ["set", "set->prop"]:
+        helper = "vampire_funext_set_setprop_prop"
+        prop_valued = True
     else:
         return None
     local_sorts = dict(variable_sorts)
@@ -33717,7 +33730,15 @@ def raw_function_argument_transport_proof(
         renamed_target_body = rename_expr_variables(renamed_target_body, {target_name: binder})
         local_sorts[binder] = source_sort
         binder_texts.append(f"fun {binder} :{binder_sort_text(source_sort)} => ")
-    body_proof = raw_set_term_equality_transform_proof(renamed_source_body, renamed_target_body, local_sorts, depth + 1)
+    if prop_valued:
+        body_proof = raw_prop_equivalence_proof(
+            renamed_source_body,
+            renamed_target_body,
+            local_sorts,
+            depth + 1,
+        )
+    else:
+        body_proof = raw_set_term_equality_transform_proof(renamed_source_body, renamed_target_body, local_sorts, depth + 1)
     if body_proof is None:
         return None
     proof = "".join(binder_texts) + proof_term_text(body_proof)
@@ -33751,13 +33772,14 @@ def raw_set_application_multi_argument_equality_proof(
         current_arg = current_args[index]
         target_arg = target.args[index]
         arg_sort = expr_sort(current_arg, variable_sorts) or expr_sort(target_arg, variable_sorts)
+        normalized_arg_sort = join_sort_arrows(split_sort_arrows(arg_sort)) if arg_sort is not None else None
         next_args = list(current_args)
         next_args[index] = target_arg
         hole = fresh_identifier("zz", expr_text(current_expr), expr_text(target), str(index))
         context_args = list(current_args)
         context_args[index] = Expr("var", value=hole)
         context = Expr("app", args=tuple(context_args))
-        if arg_sort == "set":
+        if normalized_arg_sort == "set":
             left_hole = fresh_identifier("zl", expr_text(current_expr), expr_text(target), str(index))
             right_hole = fresh_identifier("zr", expr_text(current_expr), expr_text(target), str(index))
             native_context_args = list(current_args)
@@ -33771,8 +33793,14 @@ def raw_set_application_multi_argument_equality_proof(
                 f"(fun {left_hole} {right_hole} => {expr_text(current_expr)} = {expr_text(native_context)}) "
                 f"{native_set_reflexivity_proof(current_expr)}"
             )
-        elif arg_sort in {"set->set", "set->set->set", "set->(set->set)", "set->(set->set)->set"}:
-            arg_sort = join_sort_arrows(split_sort_arrows(arg_sort))
+        elif normalized_arg_sort in {
+            "set->set",
+            "set->set->set",
+            "set->(set->set)",
+            "set->(set->set)->set",
+            "set->(set->prop)->prop",
+        }:
+            arg_sort = normalized_arg_sort
             argument_transport = raw_function_argument_transport_proof(current_arg, target_arg, variable_sorts, depth + 1)
             if argument_transport is None:
                 return None
@@ -33781,7 +33809,7 @@ def raw_set_application_multi_argument_equality_proof(
                 f"(fun {hole} :{binder_sort_text(arg_sort)} => {expr_text(current_expr)} = {expr_text(context)}) "
                 f"{native_set_reflexivity_proof(current_expr)}"
             )
-        elif arg_sort == "set->prop":
+        elif normalized_arg_sort == "set->prop":
             predicate_equality = raw_fast_set_predicate_extensionality_proof(
                 current_arg,
                 target_arg,
