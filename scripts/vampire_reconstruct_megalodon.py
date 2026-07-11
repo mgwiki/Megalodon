@@ -24244,11 +24244,12 @@ def raw_native_equality_to_vampire_eq_set_proof(source: Expr, target: Expr, sour
     return body_proof
 
 
-def raw_source_fact_native_equality_to_vampire_eq_set_proof(target: Expr, source_proof: str) -> str | None:
+def raw_source_fact_native_equality_proof(target: Expr, source_proof: str) -> str | None:
     target_binders, target_body = collect_foralls(target)
     target_premises, target_conclusion = split_arrows(target_body)
     target_sides = app_args(target_conclusion, "vampire_eq_set", 2)
-    if target_sides is None:
+    native_target = target_conclusion.kind == "eq"
+    if target_sides is None and not native_target:
         return None
     if any(expr_mentions_equality(premise) for premise in target_premises):
         return None
@@ -24264,6 +24265,15 @@ def raw_source_fact_native_equality_to_vampire_eq_set_proof(target: Expr, source
     for premise_name in premise_names:
         source_instance = f"({proof_head(source_instance)} {premise_name})"
 
+    if native_target:
+        body_proof = source_instance
+        for name, premise in reversed(list(zip(premise_names, target_premises))):
+            body_proof = f"(fun {name} :{proof_arg_text(premise)} => {body_proof})"
+        for name, sort in reversed(target_binders):
+            body_proof = f"(fun {name} :{sort} => {body_proof})"
+        return body_proof
+
+    assert target_sides is not None
     predicate = fresh_identifier("Pset", expr_text(target_conclusion), source_proof)
     predicate_proof = fresh_identifier("HPset", expr_text(target_conclusion), source_proof, predicate)
     body_proof = (
@@ -59401,7 +59411,7 @@ def raw_tptp_source_fact_proof(
     parsed_source_fact = parse_expr(proposition)
     if parsed_source_fact is None:
         return None
-    return raw_source_fact_native_equality_to_vampire_eq_set_proof(parsed_source_fact, source_name)
+    return raw_source_fact_native_equality_proof(parsed_source_fact, source_name)
 
 
 def raw_tptp_implication_chain(premises: list[str], conclusion: str) -> str:
