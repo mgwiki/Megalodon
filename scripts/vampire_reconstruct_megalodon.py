@@ -29822,6 +29822,20 @@ def raw_negated_implication_chain_to_ennf_conjunction_proof(
                 variable_sorts,
             )
         if proof is None:
+            proof = raw_negated_forall_to_exists_negation_proof(
+                negative_conclusion,
+                component,
+                negative_conclusion_proof,
+                variable_sorts,
+            )
+        if proof is None:
+            proof = raw_negative_formula_transform_proof(
+                negative_conclusion,
+                component,
+                negative_conclusion_proof,
+                variable_sorts,
+            )
+        if proof is None:
             continue
         matched_negative = (component_index, proof)
         break
@@ -53861,16 +53875,6 @@ def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: s
         and "(fun Q Hexists => Hexists" in proof
     ):
         return True
-    if (
-        rule in {"ennf_transformation", "nnf_transformation"}
-        and proof.startswith("(xm (vampire_exists_set")
-        and "HnotTarget" in proof
-        and "HnotSourceConclusion" in proof
-        and "HtargetNegativeBody" in proof
-        and re.search(r"forall X[0-9]+:prop, or X[0-9]+ \(vampire_exists_set", proof)
-        and "HnotExists" not in proof
-    ):
-        return True
     return False
 
 
@@ -61661,6 +61665,27 @@ def raw_tptp_replay_proof(
                         raw_tptp_claim_name(parents[0]),
                         variable_sorts,
                     )
+                    if proof is None and rule in {"ennf_transformation", "nnf_transformation"}:
+                        proof = raw_negated_forall_implication_to_exists_witness_conjunction_proof(
+                            source_expr,
+                            target_expr,
+                            raw_tptp_claim_name(parents[0]),
+                            variable_sorts,
+                        )
+                    if proof is None and rule in {"ennf_transformation", "nnf_transformation"}:
+                        proof = raw_negated_forall_implication_to_exists_conjunction_proof(
+                            source_expr,
+                            target_expr,
+                            raw_tptp_claim_name(parents[0]),
+                            variable_sorts,
+                        )
+                    if proof is None and rule in {"ennf_transformation", "nnf_transformation"}:
+                        proof = raw_negated_implication_chain_to_ennf_conjunction_proof(
+                            source_expr,
+                            target_expr,
+                            raw_tptp_claim_name(parents[0]),
+                            variable_sorts,
+                        )
                     if (
                         proof is None
                         and rule in {"ennf_transformation", "nnf_transformation"}
