@@ -1676,6 +1676,26 @@ def reconstruction_prelude_for(propositions: list[str]) -> list[str]:
         "assume Hyz:y = z.",
         "exact (Hyz (fun zl zr => x = zl) Hxy).",
         "Qed.",
+        "Theorem vampire_native_eq_sym_setprop: forall x y:set->prop, x = y -> y = x.",
+        "let x y.",
+        "assume Hxy:x = y.",
+        "let Q.",
+        "assume HQ:Q y x.",
+        "exact (Hxy (fun zl zr => Q zr zl) HQ).",
+        "Qed.",
+        "Theorem vampire_native_eq_transport_setprop: forall x y:set->prop, x = y -> forall P:(set->prop)->prop, P x -> P y.",
+        "let x y.",
+        "assume Hxy:x = y.",
+        "let P.",
+        "assume HP:P x.",
+        "exact (Hxy (fun zl zr => P zl) HP).",
+        "Qed.",
+        "Theorem vampire_native_eq_trans_setprop: forall x y z:set->prop, x = y -> y = z -> x = z.",
+        "let x y z.",
+        "assume Hxy:x = y.",
+        "assume Hyz:y = z.",
+        "exact (Hyz (fun zl zr => x = zl) Hxy).",
+        "Qed.",
         "Theorem vampire_native_eq_sym_prop: forall x y:prop, x = y -> y = x.",
         "let x y.",
         "assume Hxy:x = y.",
@@ -8716,10 +8736,26 @@ def fresh_identifier(base: str, *texts: str) -> str:
     return name
 
 
+def normalized_sort_key(sort: str | None) -> str | None:
+    return join_sort_arrows(split_sort_arrows(sort)) if sort is not None else None
+
+
+def native_eq_helper_suffix(sort: str | None) -> str | None:
+    normalized = normalized_sort_key(sort)
+    return {
+        "set": "set",
+        "prop": "prop",
+        "set->prop": "setprop",
+    }.get(normalized)
+
+
 def native_eq_symmetry_proof(proof: str, left: Expr, right: Expr | None = None, sort: str = "set") -> str:
     if right is None:
         right = left
-    helper = "vampire_native_eq_sym_prop" if sort == "prop" else "vampire_native_eq_sym_set"
+    suffix = native_eq_helper_suffix(sort)
+    if suffix is None:
+        return raw_eq_symmetry_proof(proof, left, sort)
+    helper = f"vampire_native_eq_sym_{suffix}"
     return (
         f"({helper} "
         f"{proof_arg_text(left)} "
@@ -8739,8 +8775,38 @@ def set_eq_symmetry_proof(proof: str, left: Expr) -> str:
 
 
 def native_set_reflexivity_proof(expr: Expr | str) -> str:
+    return native_reflexivity_proof(expr, "set")
+
+
+def native_reflexivity_proof(expr: Expr | str, sort: str | None) -> str:
     text = proof_arg_text(expr) if isinstance(expr, Expr) else expr
-    return f"(vampire_native_eq_refl_set {text})"
+    if normalized_sort_key(sort) == "set->prop":
+        return "(fun Q H => H)"
+    suffix = native_eq_helper_suffix(sort)
+    if suffix is None:
+        return f"(fun Q H => H)"
+    return f"(vampire_native_eq_refl_{suffix} {text})"
+
+
+def native_eq_transitivity_proof(
+    start: Expr,
+    middle: Expr,
+    end: Expr,
+    start_to_middle: str,
+    middle_to_end: str,
+    sort: str | None,
+) -> str | None:
+    suffix = native_eq_helper_suffix(sort)
+    if suffix is None:
+        return None
+    return (
+        f"(vampire_native_eq_trans_{suffix} "
+        f"{proof_arg_text(start)} "
+        f"{proof_arg_text(middle)} "
+        f"{proof_arg_text(end)} "
+        f"{proof_term_text(start_to_middle)} "
+        f"{proof_term_text(middle_to_end)})"
+    )
 
 
 def eq_transitivity_proof(proofs: list[str], start_text: str | None = None) -> str | None:
@@ -31398,20 +31464,23 @@ def raw_fool_transform_component_proof(
                 target_sides[changed_index],
                 variable_sorts,
             )
-            if changed_sort not in {"set", "prop"}:
+            if native_eq_helper_suffix(changed_sort) is None:
                 continue
-            if changed_sort == "set":
+            normalized_changed_sort = normalized_sort_key(changed_sort)
+            if normalized_changed_sort in {"set", "set->prop"}:
                 changed_equality = raw_set_term_equality_transform_proof(
                     source_sides[changed_index],
                     target_sides[changed_index],
                     variable_sorts,
                 )
-            else:
+            elif normalized_changed_sort == "prop":
                 changed_equality = raw_native_prop_equality_proof(
                     source_sides[changed_index],
                     target_sides[changed_index],
                     variable_sorts,
                 )
+            else:
+                changed_equality = None
             if changed_equality is None:
                 continue
             hole = fresh_identifier("zfool", expr_text(source), expr_text(target), str(changed_index))
@@ -32536,12 +32605,10 @@ def native_equality_transport_proof(
     equality_sort: str,
     context: Expr,
 ) -> str | None:
-    helper = {
-        "set": "vampire_native_eq_transport_set",
-        "prop": "vampire_native_eq_transport_prop",
-    }.get(equality_sort)
-    if helper is None:
+    suffix = native_eq_helper_suffix(equality_sort)
+    if suffix is None:
         return None
+    helper = f"vampire_native_eq_transport_{suffix}"
     sort_text = binder_sort_text(equality_sort)
     return (
         f"({helper} "
@@ -33604,6 +33671,11 @@ def raw_prop_argument_set_rewrite_proof(
     equality = raw_set_term_equality_transform_proof(source.args[index], target.args[index], variable_sorts, depth + 1)
     if equality is None:
         return None
+    argument_sort = normalized_sort_key(
+        expr_sort(source.args[index], variable_sorts) or expr_sort(target.args[index], variable_sorts)
+    ) or "set"
+    if native_eq_helper_suffix(argument_sort) is None:
+        return None
     hole = fresh_identifier("zz", expr_text(source), expr_text(target), source_proof)
     context_args = list(source.args)
     context_args[index] = Expr("var", value=hole)
@@ -33614,7 +33686,7 @@ def raw_prop_argument_set_rewrite_proof(
         target.args[index],
         source_proof,
         hole,
-        "set",
+        argument_sort,
         context,
     )
 
@@ -33648,6 +33720,9 @@ def raw_prop_multi_argument_set_rewrite_proof(
         equality = raw_set_term_equality_transform_proof(current_arg, target_arg, variable_sorts, depth + 1)
         if equality is None:
             return None
+        argument_sort = normalized_sort_key(expr_sort(current_arg, variable_sorts) or expr_sort(target_arg, variable_sorts)) or "set"
+        if native_eq_helper_suffix(argument_sort) is None:
+            return None
         hole = fresh_identifier("zz", expr_text(current_expr), expr_text(target), str(index), proof)
         context_args = list(current_args)
         context_args[index] = Expr("var", value=hole)
@@ -33658,7 +33733,7 @@ def raw_prop_multi_argument_set_rewrite_proof(
             target_arg,
             proof,
             hole,
-            "set",
+            argument_sort,
             context,
         )
         if proof is None:
@@ -34171,13 +34246,14 @@ def raw_set_term_equality_transform_proof(
 ) -> str | None:
     if depth > 24 or proof_search_timed_out():
         return None
+    result_sort = normalized_sort_key(expr_sort(source, variable_sorts) or expr_sort(target, variable_sorts)) or "set"
     if expr_same_mod_alpha(source, target):
-        return native_set_reflexivity_proof(source)
+        return native_reflexivity_proof(source, result_sort)
     beta_source = beta_normalize_expr(source)
     beta_target = beta_normalize_expr(target)
     if not (expr_same_mod_alpha(beta_source, source) and expr_same_mod_alpha(beta_target, target)):
         if expr_same_mod_alpha(beta_source, beta_target):
-            return native_set_reflexivity_proof(source)
+            return native_reflexivity_proof(source, result_sort)
         beta_proof = raw_set_term_equality_transform_proof(
             beta_source,
             beta_target,
@@ -34243,7 +34319,7 @@ def raw_set_term_equality_transform_proof(
             argument_equality,
             source.args[index],
             target.args[index],
-            native_set_reflexivity_proof(source),
+            native_reflexivity_proof(source, result_sort),
             hole,
             "prop",
             equality_context,
@@ -34266,7 +34342,7 @@ def raw_set_term_equality_transform_proof(
         return (
             f"{proof_term_text(argument_equality)} "
             f"(fun {left_hole} {right_hole} => {proof_arg_text(source)} = {expr_text(native_context)}) "
-            f"{native_set_reflexivity_proof(source)}"
+            f"{native_reflexivity_proof(source, result_sort)}"
         )
     if arg_sort is None:
         argument_equality = raw_set_term_equality_transform_proof(
@@ -34279,7 +34355,7 @@ def raw_set_term_equality_transform_proof(
             return (
                 f"{proof_term_text(argument_equality)} "
                 f"(fun {hole} :set => {proof_arg_text(source)} = {expr_text(context)}) "
-                f"{native_set_reflexivity_proof(source)}"
+                f"{native_reflexivity_proof(source, result_sort)}"
             )
     if normalized_arg_sort in {
         "set->set",
@@ -34300,7 +34376,7 @@ def raw_set_term_equality_transform_proof(
         return (
             f"{proof_term_text(argument_transport)} "
             f"(fun {hole} :{binder_sort_text(normalized_sort)} => {proof_arg_text(source)} = {expr_text(context)}) "
-            f"{native_set_reflexivity_proof(source)}"
+            f"{native_reflexivity_proof(source, result_sort)}"
         )
     if normalized_arg_sort == "set->prop":
         if len(expr_text(source)) + len(expr_text(target)) > 3000:
@@ -34326,7 +34402,7 @@ def raw_set_term_equality_transform_proof(
         return (
             f"{proof_term_text(predicate_equality)} "
             f"(fun {hole} :set->prop => {proof_arg_text(source)} = {expr_text(context)}) "
-            f"{native_set_reflexivity_proof(source)}"
+            f"{native_reflexivity_proof(source, result_sort)}"
         )
     return None
 
@@ -34414,6 +34490,7 @@ def raw_set_application_multi_argument_equality_proof(
     current_args = list(source.args)
     proofs: list[str] = []
     chain_terms: list[Expr] = [source]
+    result_sort = normalized_sort_key(expr_sort(source, variable_sorts) or expr_sort(target, variable_sorts)) or "set"
     for index in differing:
         current_expr = Expr("app", args=tuple(current_args))
         current_arg = current_args[index]
@@ -34438,7 +34515,7 @@ def raw_set_application_multi_argument_equality_proof(
             proof = (
                 f"{proof_term_text(argument_equality)} "
                 f"(fun {left_hole} {right_hole} => {expr_text(current_expr)} = {expr_text(native_context)}) "
-                f"{native_set_reflexivity_proof(current_expr)}"
+                f"{native_reflexivity_proof(current_expr, result_sort)}"
             )
         elif normalized_arg_sort in {
             "set->set",
@@ -34454,7 +34531,7 @@ def raw_set_application_multi_argument_equality_proof(
             proof = (
                 f"{proof_term_text(argument_transport)} "
                 f"(fun {hole} :{binder_sort_text(arg_sort)} => {expr_text(current_expr)} = {expr_text(context)}) "
-                f"{native_set_reflexivity_proof(current_expr)}"
+                f"{native_reflexivity_proof(current_expr, result_sort)}"
             )
         elif normalized_arg_sort == "set->prop":
             predicate_equality = raw_fast_set_predicate_extensionality_proof(
@@ -34467,7 +34544,7 @@ def raw_set_application_multi_argument_equality_proof(
             proof = (
                 f"{proof_term_text(predicate_equality)} "
                 f"(fun {hole} :set->prop => {expr_text(current_expr)} = {expr_text(context)}) "
-                f"{native_set_reflexivity_proof(current_expr)}"
+                f"{native_reflexivity_proof(current_expr, result_sort)}"
             )
         else:
             return None
@@ -34478,14 +34555,16 @@ def raw_set_application_multi_argument_equality_proof(
         return None
     proof = proofs[0]
     for index, next_proof in enumerate(proofs[1:], start=1):
-        proof = (
-            f"(vampire_native_eq_trans_set "
-            f"{proof_arg_text(chain_terms[0])} "
-            f"{proof_arg_text(chain_terms[index])} "
-            f"{proof_arg_text(chain_terms[index + 1])} "
-            f"{proof_term_text(proof)} "
-            f"{proof_term_text(next_proof)})"
+        proof = native_eq_transitivity_proof(
+            chain_terms[0],
+            chain_terms[index],
+            chain_terms[index + 1],
+            proof,
+            next_proof,
+            result_sort,
         )
+        if proof is None:
+            return None
     return proof
 
 
@@ -34908,7 +34987,10 @@ def raw_native_equality_transport_supported(
     sides: tuple[Expr, Expr],
     variable_sorts: dict[str, str],
 ) -> bool:
-    return equality.kind == "eq" and raw_equality_transport_sort(sides[0], sides[1], variable_sorts) in {"set", "prop"}
+    return (
+        equality.kind == "eq"
+        and native_eq_helper_suffix(raw_equality_transport_sort(sides[0], sides[1], variable_sorts)) is not None
+    )
 
 
 def raw_equality_literal_transport_sort(
@@ -72043,6 +72125,9 @@ VAMPIRE_CLOSED_HELPER_THEOREM_PREFIXES = (
     "Theorem vampire_native_eq_refl_set:",
     "Theorem vampire_native_eq_transport_set:",
     "Theorem vampire_native_eq_trans_set:",
+    "Theorem vampire_native_eq_sym_setprop:",
+    "Theorem vampire_native_eq_transport_setprop:",
+    "Theorem vampire_native_eq_trans_setprop:",
     "Theorem vampire_native_eq_sym_prop:",
     "Theorem vampire_native_eq_transport_prop:",
     "Theorem vampire_eq_transport_eq_set:",
@@ -73278,6 +73363,25 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                         propositions_by_name,
                         variable_sorts,
                     )
+                finally:
+                    if previous_deadline is None:
+                        if hasattr(PROOF_SEARCH_STATE, "deadline"):
+                            delattr(PROOF_SEARCH_STATE, "deadline")
+                    else:
+                        PROOF_SEARCH_STATE.deadline = previous_deadline
+            if replay_proof is None and rule == "fool_elimination":
+                previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+                PROOF_SEARCH_STATE.deadline = proof_search_now() + 3.0
+                try:
+                    proof = raw_tptp_fool_elimination_proof(
+                        proposition,
+                        replay_parents,
+                        propositions_by_name,
+                        variable_sorts,
+                        step_info,
+                    )
+                    if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
+                        replay_proof = proof
                 finally:
                     if previous_deadline is None:
                         if hasattr(PROOF_SEARCH_STATE, "deadline"):
