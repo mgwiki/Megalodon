@@ -46239,6 +46239,177 @@ def raw_negated_prop_true_clause_superposition_proof(
     return body_proof
 
 
+def raw_prop_component_universal_excluded_superposition_proof(
+    target: Expr,
+    component_clause: Expr,
+    component_clause_proof: str,
+    excluded_clause: Expr,
+    excluded_clause_proof: str,
+) -> str | None:
+    target_binders, target_body = collect_foralls(target)
+    if target_binders:
+        return None
+    target_literals = raw_clause_literals(target_body)
+    if len(target_literals) != 2:
+        return None
+    universal_index = None
+    residual_index = None
+    universal_binder = None
+    universal_body = None
+    component_atom = None
+    equality_index = None
+    negated_binder_index = None
+    false_index = None
+    for index, literal in enumerate(target_literals):
+        binders, body = collect_foralls(literal)
+        if len(binders) != 1 or binders[0][1] != "prop":
+            continue
+        binder_expr = Expr("var", value=binders[0][0])
+        body_literals = raw_clause_literals(body)
+        if len(body_literals) != 3:
+            continue
+        local_component = None
+        local_equality_index = None
+        local_negated_binder_index = None
+        local_false_index = None
+        for body_index, body_literal in enumerate(body_literals):
+            if false_eliminator_expr(body_literal):
+                local_false_index = body_index
+                continue
+            premises, conclusion = split_arrows(body_literal)
+            if len(premises) == 1 and false_eliminator_expr(conclusion) and expr_same_mod_alpha(premises[0], binder_expr):
+                local_negated_binder_index = body_index
+                continue
+            sides = equality_like_sides(body_literal)
+            if sides is None:
+                continue
+            if expr_same_mod_alpha(sides[0], binder_expr):
+                local_component = sides[1]
+                local_equality_index = body_index
+            elif expr_same_mod_alpha(sides[1], binder_expr):
+                local_component = sides[0]
+                local_equality_index = body_index
+        if (
+            local_component is None
+            or local_equality_index is None
+            or local_negated_binder_index is None
+            or local_false_index is None
+        ):
+            continue
+        universal_index = index
+        residual_index = 1 - index
+        universal_binder = binders[0]
+        universal_body = body
+        component_atom = local_component
+        equality_index = local_equality_index
+        negated_binder_index = local_negated_binder_index
+        false_index = local_false_index
+        break
+    if (
+        universal_index is None
+        or residual_index is None
+        or universal_binder is None
+        or universal_body is None
+        or component_atom is None
+        or equality_index is None
+        or negated_binder_index is None
+        or false_index is None
+    ):
+        return None
+    residual_literal = target_literals[residual_index]
+
+    component_literals = raw_clause_literals(component_clause)
+    if len(component_literals) != 2:
+        return None
+    if expr_same_mod_alpha(component_literals[0], component_atom) and expr_same_mod_alpha(component_literals[1], residual_literal):
+        component_index = 0
+        residual_component_index = 1
+    elif expr_same_mod_alpha(component_literals[1], component_atom) and expr_same_mod_alpha(component_literals[0], residual_literal):
+        component_index = 1
+        residual_component_index = 0
+    else:
+        return None
+    _ = residual_component_index
+
+    excluded_binders, excluded_body = collect_foralls(excluded_clause)
+    if len(excluded_binders) != 2 or any(sort != "prop" for _name, sort in excluded_binders):
+        return None
+    binder_expr = Expr("var", value=universal_binder[0])
+    excluded_subst = {
+        excluded_binders[0][0]: component_atom,
+        excluded_binders[1][0]: binder_expr,
+    }
+    instantiated_excluded_body = substitute_expr(excluded_body, excluded_subst)
+    excluded_literals = raw_clause_literals(instantiated_excluded_body)
+    if len(excluded_literals) != 3:
+        return None
+
+    excluded_proof = excluded_clause_proof
+    for name, _sort in excluded_binders:
+        excluded_proof = f"({proof_head(excluded_proof)} {proof_arg_text(excluded_subst[name])})"
+
+    outer_target_text = proof_arg_text(target_body)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = outer_target_text
+    try:
+        def component_handler(literal: Expr, literal_proof: str) -> str | None:
+            if expr_same_mod_alpha(literal, residual_literal):
+                return raw_or_intro_literal_at(target_body, residual_index, literal_proof)
+            if not expr_same_mod_alpha(literal, component_atom):
+                return None
+
+            def universal_body_proof() -> str | None:
+                inner_previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+                PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(universal_body)
+                try:
+                    def excluded_handler(excluded_literal: Expr, excluded_literal_proof: str) -> str | None:
+                        if expr_same_mod_alpha(excluded_literal, raw_clause_literals(universal_body)[equality_index]):
+                            return raw_or_intro_literal_at(universal_body, equality_index, excluded_literal_proof)
+                        if expr_same_mod_alpha(excluded_literal, raw_clause_literals(universal_body)[negated_binder_index]):
+                            return raw_or_intro_literal_at(universal_body, negated_binder_index, excluded_literal_proof)
+                        premises, conclusion = split_arrows(excluded_literal)
+                        if (
+                            len(premises) == 1
+                            and false_eliminator_expr(conclusion)
+                            and expr_same_mod_alpha(premises[0], component_atom)
+                        ):
+                            false_proof = f"({proof_head(excluded_literal_proof)} {proof_term_text(literal_proof)})"
+                            return raw_or_intro_literal_at(universal_body, false_index, false_proof)
+                        return None
+
+                    return raw_clause_cases_with_handler(
+                        instantiated_excluded_body,
+                        excluded_proof,
+                        excluded_handler,
+                        avoid_text=proof_arg_text(universal_body),
+                    )
+                finally:
+                    if inner_previous_target is None:
+                        if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                            delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+                    else:
+                        PROOF_SEARCH_STATE.flat_resolution_target = inner_previous_target
+
+            inner = universal_body_proof()
+            if inner is None:
+                return None
+            universal_proof = f"(fun {universal_binder[0]} :{universal_binder[1]} => {inner})"
+            return raw_or_intro_literal_at(target_body, universal_index, universal_proof)
+
+        return raw_clause_cases_with_handler(
+            component_clause,
+            component_clause_proof,
+            component_handler,
+            avoid_text=expr_text(target_body),
+        )
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_tptp_superposition_proof(
     proposition: str,
     parents: list[str],
@@ -46330,6 +46501,24 @@ def raw_tptp_superposition_proof(
             if proof is not None:
                 return proof
             proof = raw_negated_prop_true_clause_superposition_proof(
+                target_expr,
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+            )
+            if proof is not None:
+                return proof
+            proof = raw_prop_component_universal_excluded_superposition_proof(
+                target_expr,
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+            )
+            if proof is not None:
+                return proof
+            proof = raw_prop_component_universal_excluded_superposition_proof(
                 target_expr,
                 parent_exprs[1][0],
                 parent_exprs[1][1],
@@ -64571,12 +64760,34 @@ def raw_tptp_replay_proof(
     if rule == "superposition":
         if len(parents) == 2:
             target_expr = parse_expr(proposition)
-            parent_exprs: list[Expr] = []
+            parent_exprs_with_proofs: list[tuple[Expr, str]] = []
             for parent in parents:
                 parent_proposition = propositions_by_name.get(parent)
                 parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
                 if parent_expr is not None:
-                    parent_exprs.append(parent_expr)
+                    parent_exprs_with_proofs.append(
+                        (parent_expr, raw_tptp_canonical_parent_proof_name(parent, propositions_by_name))
+                    )
+            if target_expr is not None and len(parent_exprs_with_proofs) == 2:
+                proof = raw_prop_component_universal_excluded_superposition_proof(
+                    target_expr,
+                    parent_exprs_with_proofs[0][0],
+                    parent_exprs_with_proofs[0][1],
+                    parent_exprs_with_proofs[1][0],
+                    parent_exprs_with_proofs[1][1],
+                )
+                if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
+                    return proof
+                proof = raw_prop_component_universal_excluded_superposition_proof(
+                    target_expr,
+                    parent_exprs_with_proofs[1][0],
+                    parent_exprs_with_proofs[1][1],
+                    parent_exprs_with_proofs[0][0],
+                    parent_exprs_with_proofs[0][1],
+                )
+                if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
+                    return proof
+            parent_exprs = [parent_expr for parent_expr, _proof in parent_exprs_with_proofs]
             if target_expr is not None and len(parent_exprs) == 2 and not collect_foralls(target_expr)[0]:
                 parent_has_quantified_literal = [
                     any(collect_foralls(literal)[0] for literal in raw_clause_literals(parent_expr))
