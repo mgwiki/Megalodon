@@ -23720,6 +23720,263 @@ def raw_prop_false_unit_resulting_resolution_proof(
             PROOF_SEARCH_STATE.flat_resolution_target = previous_target
 
 
+def raw_unique_clause_literals(literals: list[Expr]) -> list[Expr]:
+    result: list[Expr] = []
+    seen: set[str] = set()
+    for literal in literals:
+        key = expr_key(literal)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(literal)
+    return result
+
+
+def raw_quantified_clause_complete_substitutions(
+    quantified_literal: Expr,
+    candidates: list[Expr],
+    limit: int = 16,
+) -> list[dict[str, Expr]]:
+    binders, body = collect_foralls(quantified_literal)
+    if not binders:
+        return []
+    binder_names = {name for name, _sort in binders}
+    source_literals = raw_clause_literals(body)
+    literal_order = sorted(
+        range(len(source_literals)),
+        key=lambda index: -len(expr_variables(source_literals[index]) & binder_names),
+    )
+    found: list[dict[str, Expr]] = []
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    attempts = 0
+
+    def remember(subst: dict[str, Expr]) -> None:
+        flatten_substitution(subst)
+        if not binder_names <= subst.keys():
+            return
+        if any(expr_variables(value) & binder_names for value in subst.values()):
+            return
+        key = tuple(sorted((name, expr_key(subst[name])) for name in binder_names))
+        if key in seen:
+            return
+        seen.add(key)
+        found.append(dict(subst))
+
+    for literal_index in literal_order:
+        source_literal = source_literals[literal_index]
+        if not (expr_variables(source_literal) & binder_names):
+            continue
+        for candidate in candidates:
+            subst: dict[str, Expr] = {}
+            if match_expr_with_alpha_instantiation(source_literal, candidate, binder_names, subst):
+                remember(subst)
+                if len(found) >= limit:
+                    return found
+
+    def search(order_index: int, subst: dict[str, Expr]) -> None:
+        nonlocal attempts
+        if proof_search_timed_out() or len(found) >= limit or attempts > 4096:
+            return
+        flatten_substitution(subst)
+        if binder_names <= subst.keys():
+            remember(subst)
+            return
+        if order_index >= len(literal_order):
+            return
+        literal = substitute_expr(source_literals[literal_order[order_index]], subst)
+        if not (expr_variables(literal) & binder_names):
+            search(order_index + 1, subst)
+            return
+        for candidate in candidates:
+            attempts += 1
+            trial = dict(subst)
+            if match_expr_with_alpha_instantiation(literal, candidate, binder_names, trial):
+                search(order_index + 1, trial)
+
+    search(0, {})
+    return found
+
+
+def raw_instantiated_quantified_component_clause_proof(
+    source: Expr,
+    source_proof: str,
+    quantified_literal: Expr,
+    subst: dict[str, Expr],
+) -> tuple[Expr, str] | None:
+    binders, body = collect_foralls(quantified_literal)
+    if not binders:
+        return None
+    binder_names = {name for name, _sort in binders}
+    if not binder_names <= subst.keys():
+        return None
+    instantiated_body = substitute_expr(body, subst)
+    source_literals = raw_clause_literals(source)
+    target_literals = raw_unique_clause_literals(
+        [
+            *raw_clause_literals(instantiated_body),
+            *(literal for literal in source_literals if not expr_same_mod_alpha(literal, quantified_literal)),
+        ]
+    )
+    target = raw_clause_from_literals(target_literals)
+    if target is None:
+        return None
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target)
+
+    def source_handler(literal: Expr, literal_proof: str) -> str | None:
+        if expr_same_mod_alpha(literal, quantified_literal):
+            instantiated_proof = literal_proof
+            for name, _sort in binders:
+                instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(subst[name])})"
+            proof = raw_clause_subsumption_transform_proof(
+                instantiated_body,
+                target,
+                instantiated_proof,
+                deep_literals=True,
+            )
+            if proof is not None:
+                return proof
+            return raw_clause_transform_proof(instantiated_body, target, instantiated_proof)
+        return raw_literal_to_clause_proof(literal, target, literal_proof, target_literals, (), deep_literals=True)
+
+    try:
+        proof = raw_clause_cases_with_handler(source, source_proof, source_handler)
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+    if proof is None:
+        return None
+    return target, proof
+
+
+def raw_resolve_clause_with_available_resolvers(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    resolvers: list[tuple[str, Expr, str]],
+) -> str | None:
+    current = source
+    current_proof = source_proof
+    remaining = list(resolvers)
+    while remaining:
+        if proof_search_timed_out():
+            return None
+        progress = False
+        current_literals = raw_clause_literals(current)
+        for resolver_index, (_resolver_name, resolver, resolver_proof) in enumerate(remaining):
+            resolver_literals = raw_clause_literals(resolver)
+            if len(resolver_literals) > 4:
+                continue
+            for current_index, current_literal in enumerate(current_literals):
+                for resolver_literal_index, resolver_literal in enumerate(resolver_literals):
+                    if not raw_complementary_literals(current_literal, resolver_literal):
+                        continue
+                    next_literals = raw_unique_clause_literals(
+                        [
+                            *(
+                                literal
+                                for index, literal in enumerate(current_literals)
+                                if index != current_index
+                            ),
+                            *(
+                                literal
+                                for index, literal in enumerate(resolver_literals)
+                                if index != resolver_literal_index
+                            ),
+                        ]
+                    )
+                    next_clause = raw_clause_from_literals(next_literals)
+                    if next_clause is None:
+                        continue
+                    proof = raw_flat_clause_resolution_proof(
+                        current,
+                        next_clause,
+                        current_proof,
+                        resolver,
+                        resolver_proof,
+                    )
+                    if proof is None:
+                        continue
+                    current = next_clause
+                    current_proof = proof
+                    del remaining[resolver_index]
+                    progress = True
+                    break
+                if progress:
+                    break
+            if progress:
+                break
+        if not progress:
+            break
+    proof = raw_clause_subsumption_transform_proof(
+        current,
+        target,
+        current_proof,
+        deep_literals=True,
+    )
+    if proof is not None:
+        return proof
+    return raw_clause_transform_proof(current, target, current_proof)
+
+
+def raw_guided_quantified_component_urr_proof(
+    target: Expr,
+    parsed: list[tuple[str, Expr, str]],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parsed) < 3:
+        return None
+    target_literals = raw_clause_literals(target)
+    if len(target_literals) > 16:
+        return None
+    for source_index, (_source_name, source, source_proof) in enumerate(parsed):
+        source_literals = raw_clause_literals(source)
+        quantified_literals = [literal for literal in source_literals if collect_foralls(literal)[0]]
+        if len(quantified_literals) != 1 or len(source_literals) > 4:
+            continue
+        quantified_literal = quantified_literals[0]
+        binders, quantified_body = collect_foralls(quantified_literal)
+        if not binders or len(binders) > 8 or len(raw_clause_literals(quantified_body)) > 16:
+            continue
+        resolvers = [entry for index, entry in enumerate(parsed) if index != source_index]
+        if any(len(raw_clause_literals(resolver)) > 4 for _name, resolver, _proof in resolvers):
+            continue
+        candidate_literals = [
+            *target_literals,
+            *(
+                literal
+                for _resolver_name, resolver, _resolver_proof in resolvers
+                for literal in raw_clause_literals(resolver)
+            ),
+        ]
+        substitutions = raw_quantified_clause_complete_substitutions(
+            quantified_literal,
+            candidate_literals,
+        )
+        for subst in substitutions:
+            instantiated = raw_instantiated_quantified_component_clause_proof(
+                source,
+                source_proof,
+                quantified_literal,
+                subst,
+            )
+            if instantiated is None:
+                continue
+            instantiated_clause, instantiated_proof = instantiated
+            proof = raw_resolve_clause_with_available_resolvers(
+                instantiated_clause,
+                target,
+                instantiated_proof,
+                resolvers,
+            )
+            if proof is not None:
+                return proof
+    return None
+
+
 def raw_tptp_unit_resulting_resolution_proof(
     proposition: str,
     parents: list[str],
@@ -23756,6 +24013,16 @@ def raw_tptp_unit_resulting_resolution_proof(
         if parent_expr is None:
             return None
         parsed.append((parent, parent_expr, raw_tptp_claim_name(parent)))
+
+    quantified_component_proof = raw_guided_quantified_component_urr_proof(
+        target_body,
+        parsed,
+        variable_sorts,
+    )
+    if quantified_component_proof is not None:
+        for name, sort in reversed(target_binders):
+            quantified_component_proof = f"(fun {name} :{sort} => {quantified_component_proof})"
+        return quantified_component_proof
 
     def source_priority(item: tuple[int, tuple[str, Expr, str]]) -> tuple[int, int]:
         index, (_name, expr, _proof) = item
@@ -43628,6 +43895,101 @@ def raw_prop_true_false_guard_superposition_proof(
     )
 
 
+def raw_negative_predicate_true_from_positive_prop_superposition_proof(
+    target: Expr,
+    negative_parent: Expr,
+    negative_parent_proof: str,
+    positive_clause: Expr,
+    positive_clause_proof: str,
+) -> str | None:
+    target_literals = raw_clause_literals(target)
+    if len(target_literals) > 8:
+        return None
+    negative_premises, negative_conclusion = split_arrows(collect_foralls(negative_parent)[1])
+    if len(negative_premises) != 1 or not false_eliminator_expr(negative_conclusion):
+        return None
+    negative_atom = negative_premises[0]
+    negative_head_args = raw_expr_application_head_args(negative_atom)
+    if negative_head_args is None or not negative_head_args[1]:
+        return None
+    negative_head, negative_args = negative_head_args
+    source_prop = negative_args[-1]
+
+    target_negative: Expr | None = None
+    target_atom: Expr | None = None
+    for literal in target_literals:
+        premises, conclusion = split_arrows(literal)
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
+            continue
+        head_args = raw_expr_application_head_args(premises[0])
+        if head_args is None:
+            continue
+        target_head, target_args = head_args
+        if (
+            target_head == negative_head
+            and len(target_args) == len(negative_args)
+            and all(
+                expr_same_mod_alpha(left, right)
+                for left, right in zip(target_args[:-1], negative_args[:-1])
+            )
+            and raw_app_is_true_expr(target_args[-1])
+        ):
+            target_negative = literal
+            target_atom = premises[0]
+            break
+    if target_negative is None or target_atom is None:
+        return None
+
+    qprop = fresh_identifier("Qprop", expr_text(target), expr_text(negative_parent))
+    predicate_body = append_application_args(
+        Expr("var", value=negative_head),
+        [*negative_args[:-1], Expr("var", value=qprop)],
+    )
+    predicate = f"(fun {qprop} :prop => {proof_arg_text(predicate_body)})"
+    true_expr = Expr("var", value="True")
+    target_text = proof_arg_text(target)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+
+    def positive_handler(branch: Expr, branch_proof: str) -> str | None:
+        if expr_same_mod_alpha(branch, source_prop):
+            premise_name = fresh_identifier(
+                "HtargetPred",
+                expr_text(target_atom),
+                expr_text(source_prop),
+                branch_proof,
+            )
+            prop_equality = (
+                f"(prop_ext_2 True {proof_arg_text(source_prop)} "
+                f"(fun _ :True => {proof_term_text(branch_proof)}) "
+                f"(fun _ :{proof_arg_text(source_prop)} => (fun P H => H)))"
+            )
+            transported = (
+                f"(vampire_native_eq_transport_prop True {proof_arg_text(source_prop)} "
+                f"{prop_equality} {predicate} {premise_name})"
+            )
+            negative_proof = (
+                f"(fun {premise_name} :{proof_arg_text(target_atom)} => "
+                f"{proof_head(negative_parent_proof)} {proof_term_text(transported)})"
+            )
+            return raw_or_intro_from_branch(target, target_negative, negative_proof)
+        return raw_literal_to_clause_proof(branch, target, branch_proof, target_literals, (), deep_literals=True)
+
+    try:
+        return raw_clause_cases_with_handler(
+            positive_clause,
+            positive_clause_proof,
+            positive_handler,
+            avoid_text=negative_parent_proof,
+        )
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_guarded_negative_prop_equality_rewrite_superposition_proof(
     target: Expr,
     source: Expr,
@@ -45026,6 +45388,24 @@ def raw_tptp_superposition_proof(
                 proof = raw_prop_true_false_guard_superposition_proof(target_expr, parent_expr, parent_proof)
                 if proof is not None:
                     return proof
+            proof = raw_negative_predicate_true_from_positive_prop_superposition_proof(
+                target_expr,
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+            )
+            if proof is not None:
+                return proof
+            proof = raw_negative_predicate_true_from_positive_prop_superposition_proof(
+                target_expr,
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+            )
+            if proof is not None:
+                return proof
             proof = raw_boolean_negative_prop_argument_superposition_proof(
                 target_expr,
                 parent_exprs[0][0],
@@ -52127,13 +52507,13 @@ def raw_tptp_rat_proof(
         len(parent_exprs) <= 24
         and len(raw_clause_literals(target)) == 1
         and all(not collect_foralls(expr)[0] for _parent, expr, _proof_name in parent_exprs)
-        and all(len(raw_clause_literals(expr)) <= 8 for _parent, expr, _proof_name in parent_exprs)
+        and all(len(raw_clause_literals(expr)) <= 12 for _parent, expr, _proof_name in parent_exprs)
     ):
         unit_propagation = raw_propositional_unit_propagation_proof(
             target,
             [(expr, proof_name) for _parent, expr, proof_name in parent_exprs],
             max_clauses=24,
-            max_clause_literals=8,
+            max_clause_literals=12,
         )
         if unit_propagation is not None:
             return unit_propagation
@@ -52147,13 +52527,13 @@ def raw_tptp_rat_proof(
         len(parent_exprs) <= 24
         and len(raw_clause_literals(target)) > 1
         and all(not collect_foralls(expr)[0] for _parent, expr, _proof_name in parent_exprs)
-        and all(len(raw_clause_literals(expr)) <= 8 for _parent, expr, _proof_name in parent_exprs)
+        and all(len(raw_clause_literals(expr)) <= 12 for _parent, expr, _proof_name in parent_exprs)
     ):
         propositional_clause = raw_propositional_clause_refutation_proof(
             target,
             [(expr, proof_name) for _parent, expr, proof_name in parent_exprs],
             max_clauses=24,
-            max_clause_literals=8,
+            max_clause_literals=12,
         )
         if propositional_clause is not None:
             return propositional_clause
