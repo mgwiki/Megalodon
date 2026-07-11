@@ -40116,7 +40116,17 @@ def raw_clause_unit_equality_superposition_proof(
     target_sort_by_name = {name: sort for name, sort in target_binders}
 
     def match_pattern(pattern: Expr, concrete: Expr, subst: dict[str, Expr]) -> bool:
-        return match_expr_with_eta_instantiation(pattern, concrete, all_binder_names, subst, local_sorts)
+        trial = dict(subst)
+        if match_expr_with_eta_instantiation(pattern, concrete, all_binder_names, trial, local_sorts):
+            subst.clear()
+            subst.update(trial)
+            return True
+        trial = dict(subst)
+        if raw_unify_expr_instantiating(pattern, concrete, all_binder_names, trial):
+            subst.clear()
+            subst.update(trial)
+            return True
+        return False
 
     def complete_substitution(subst: dict[str, Expr]) -> dict[str, Expr] | None:
         completed = dict(subst)
@@ -40156,7 +40166,7 @@ def raw_clause_unit_equality_superposition_proof(
         if len(residuals) - index > len(candidate_targets) - len(used):
             return []
         results: list[dict[str, Expr]] = []
-        literal = residuals[index]
+        literal = substitute_expr(residuals[index], subst)
         for target_index, target_literal in candidate_targets:
             if target_index in used:
                 continue
@@ -40195,6 +40205,25 @@ def raw_clause_unit_equality_superposition_proof(
                     rewritten_pattern = substitute_expr(rewritten_pattern, trial)
                     if not match_pattern(rewritten_pattern, target_literal, trial):
                         continue
+                    completed_direct = complete_substitution(trial)
+                    if completed_direct is not None:
+                        source_inst = beta_reduce_expr(flatten_applications(substitute_expr(source_body, completed_direct)))
+                        equality_inst = beta_reduce_expr(flatten_applications(substitute_expr(equality_body, completed_direct)))
+                        source_inst_proof = instantiate_proof(source_proof, source_binders, completed_direct)
+                        equality_inst_proof = instantiate_proof(equality_proof, equality_binders, completed_direct)
+                        if source_inst_proof is not None and equality_inst_proof is not None:
+                            proof = raw_equality_clause_superposition_proof(
+                                source_inst,
+                                target_body,
+                                source_inst_proof,
+                                equality_inst,
+                                equality_inst_proof,
+                                local_sorts,
+                            )
+                            if proof is not None and not raw_tptp_replay_proof_is_unsafe("superposition", expr_text(target_body), proof):
+                                for name, sort in reversed(target_binders):
+                                    proof = f"(fun {name} :{sort} => {proof})"
+                                return proof
                     for residual_subst in residual_match(residuals, candidate_targets, trial):
                         completed = complete_substitution(residual_subst)
                         if completed is None:
@@ -58355,6 +58384,26 @@ def raw_tptp_replay_proof(
                     if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
                         return proof
                     proof = raw_nested_quantified_literal_equality_clause_superposition_proof(
+                        parent_exprs[1][0],
+                        target_expr,
+                        parent_exprs[1][1],
+                        parent_exprs[0][0],
+                        parent_exprs[0][1],
+                        variable_sorts,
+                    )
+                    if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
+                        return proof
+                    proof = raw_guarded_equality_parent_quantified_clause_superposition_proof(
+                        parent_exprs[0][0],
+                        target_expr,
+                        parent_exprs[0][1],
+                        parent_exprs[1][0],
+                        parent_exprs[1][1],
+                        variable_sorts,
+                    )
+                    if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
+                        return proof
+                    proof = raw_guarded_equality_parent_quantified_clause_superposition_proof(
                         parent_exprs[1][0],
                         target_expr,
                         parent_exprs[1][1],
