@@ -23471,19 +23471,32 @@ def raw_tptp_unit_resulting_resolution_proof(
                     for target_literal in target_literals:
                         attempts += 1
                         trial = dict(subst)
-                        if raw_match_literal_mod_equality_symmetry(source_body_literal, target_literal, binder_names, trial):
+                        try:
+                            target_match = raw_match_literal_mod_equality_symmetry(
+                                source_body_literal,
+                                target_literal,
+                                binder_names,
+                                trial,
+                            )
+                        except RecursionError:
+                            target_match = False
+                        if target_match:
                             proof = search(order_index + 1, trial, selected)
                             if proof is not None:
                                 return proof
                     for resolver_literal, resolver_clause, resolver_clause_proof in resolver_literals:
                         attempts += 1
                         trial = dict(subst)
-                        if raw_match_complementary_literals_joint(
-                            source_body_literal,
-                            resolver_literal,
-                            binder_names,
-                            trial,
-                        ):
+                        try:
+                            resolver_match = raw_match_complementary_literals_joint(
+                                source_body_literal,
+                                resolver_literal,
+                                binder_names,
+                                trial,
+                            )
+                        except RecursionError:
+                            resolver_match = False
+                        if resolver_match:
                             proof = search(
                                 order_index + 1,
                                 trial,
