@@ -72630,8 +72630,7 @@ def source_surface_term_argument(text: str) -> str:
 
 
 def normalize_source_surface_numerals(text: str) -> str:
-    text = re.sub(r"(?<![_A-Za-z0-9'])0(?![_A-Za-z0-9'])", "Empty", text)
-    return re.sub(r"(?<![_A-Za-z0-9'])-\s*([_A-Za-z][_A-Za-z0-9']*)", r"minus_SNo \1", text)
+    return re.sub(r"(?<![_A-Za-z0-9'])0(?![_A-Za-z0-9'])", "Empty", text)
 
 
 def desugar_source_bounded_foralls(proposition: str) -> str:
@@ -72644,9 +72643,7 @@ def desugar_source_bounded_foralls(proposition: str) -> str:
         if not names:
             return match.group(0)
         set_text = source_surface_term_argument(match.group(2))
-        binders = "".join(f"forall {name}:set, " for name in names)
-        premises = " -> ".join(f"In {name} {set_text}" for name in names)
-        return f"{binders}{premises} -> "
+        return "".join(f"forall {name}:set, In {name} {set_text} -> " for name in names)
 
     previous = proposition
     while True:
@@ -72657,15 +72654,40 @@ def desugar_source_bounded_foralls(proposition: str) -> str:
 
 
 SOURCE_FORALL_RE = re.compile(
-    r"^forall\s+(?P<name>[_A-Za-z][_A-Za-z0-9']*)\s*:\s*(?P<sort>[^,]+),\s*(?P<body>.*)$"
+    r"^forall\s+(?P<names>[_A-Za-z][_A-Za-z0-9']*(?:\s+[_A-Za-z][_A-Za-z0-9']*)*)\s*:\s*(?P<sort>[^,]+),\s*(?P<body>.*)$"
 )
 SOURCE_UNTYPED_FORALL_RE = re.compile(
-    r"^forall\s+(?P<name>[_A-Za-z][_A-Za-z0-9']*)\s*,\s*(?P<body>.*)$"
+    r"^forall\s+(?P<names>[_A-Za-z][_A-Za-z0-9']*(?:\s+[_A-Za-z][_A-Za-z0-9']*)*)\s*,\s*(?P<body>.*)$"
 )
 SOURCE_LAMBDA_RE = re.compile(
     r"^fun\s+(?P<names>(?:\([_A-Za-z][_A-Za-z0-9']*\)|[_A-Za-z][_A-Za-z0-9']*)(?:\s+(?:\([_A-Za-z][_A-Za-z0-9']*\)|[_A-Za-z][_A-Za-z0-9']*))*)"
     r"\s*:\s*(?P<sort>[^=]+?)\s*=>\s*(?P<body>.*)$"
 )
+
+
+def split_source_logical_operator(text: str, operator: str) -> tuple[str, str] | None:
+    split = split_top_level_operator(text, operator)
+    if split is None:
+        return None
+    left, right = split
+    if left.endswith(":") or right.startswith(":"):
+        return None
+    if split_top_level_operator(left, "->") is not None:
+        return None
+    return split
+
+
+def source_surface_rewrite_parenthesized_terms(text: str) -> str:
+    result = text
+    while True:
+        match = re.search(r"\(([^()]*?(?:[:+*\\\\/]|-\s)[^()]*)\)", result)
+        if match is None:
+            return result
+        inner = match.group(1)
+        rewritten = source_surface_expr_text(inner)
+        if rewritten == inner:
+            return result
+        result = result[: match.start()] + f"({rewritten})" + result[match.end() :]
 
 
 def source_surface_expr_text(text: str) -> str:
@@ -72677,18 +72699,34 @@ def source_surface_expr_text(text: str) -> str:
     )
     if not stripped:
         return stripped
+    repl_match = re.match(
+        r"^\{\s*(?P<body>.+?)\s*\|\s*(?P<var>[_A-Za-z][_A-Za-z0-9']*)\s*:e\s*(?P<set>.+?)\s*\}$",
+        stripped,
+    )
+    if repl_match is not None:
+        var = repl_match.group("var")
+        body_text = source_surface_expr_text(repl_match.group("body"))
+        eta_match = re.fullmatch(r"(?P<fn>[_A-Za-z][_A-Za-z0-9']*)\s+" + re.escape(var), body_text)
+        function_text = eta_match.group("fn") if eta_match is not None else f"(fun {var} :set => {body_text})"
+        return (
+            f"Repl ({source_surface_expr_text(repl_match.group('set'))}) "
+            f"{function_text}"
+        )
+    if re.match(r"^-\s+", stripped):
+        return f"minus_SNo ({source_surface_expr_text(stripped[1:].strip())})"
     forall_match = SOURCE_FORALL_RE.match(stripped)
     if forall_match is not None:
-        return (
-            f"forall {forall_match.group('name')}:{normalize_megalodon_sort(forall_match.group('sort'))}, "
-            f"{source_surface_expr_text(forall_match.group('body'))}"
-        )
+        body = source_surface_expr_text(forall_match.group("body"))
+        sort = normalize_megalodon_sort(forall_match.group("sort"))
+        for name in reversed(forall_match.group("names").split()):
+            body = f"forall {name}:{sort}, {body}"
+        return body
     untyped_forall_match = SOURCE_UNTYPED_FORALL_RE.match(stripped)
     if untyped_forall_match is not None:
-        return (
-            f"forall {untyped_forall_match.group('name')}:set, "
-            f"{source_surface_expr_text(untyped_forall_match.group('body'))}"
-        )
+        body = source_surface_expr_text(untyped_forall_match.group("body"))
+        for name in reversed(untyped_forall_match.group("names").split()):
+            body = f"forall {name}:set, {body}"
+        return body
     lambda_match = SOURCE_LAMBDA_RE.match(stripped)
     if lambda_match is not None:
         names = [name.strip("()") for name in lambda_match.group("names").split()]
@@ -72697,7 +72735,7 @@ def source_surface_expr_text(text: str) -> str:
             body = f"fun {name} :{normalize_megalodon_sort(lambda_match.group('sort'))} => {body}"
         return body
     for operator, connective in (("/\\", "and"), ("\\/", "or")):
-        split = split_top_level_operator(stripped, operator)
+        split = split_source_logical_operator(stripped, operator)
         if split is not None:
             left, right = split
             return f"{connective} ({source_surface_expr_text(left)}) ({source_surface_expr_text(right)})"
@@ -72709,14 +72747,6 @@ def source_surface_expr_text(text: str) -> str:
         if left_expr is not None and left_expr.kind in {"arrow", "forall", "lambda"}:
             left_text = f"({left_text})"
         return f"{left_text} -> {source_surface_expr_text(right)}"
-    not_in = split_top_level_operator(stripped, "/:e")
-    if not_in is not None:
-        left, right = not_in
-        return f"In ({source_surface_expr_text(left)}) ({source_surface_expr_text(right)}) -> False"
-    membership = split_top_level_operator(stripped, ":e")
-    if membership is not None:
-        left, right = membership
-        return f"In ({source_surface_expr_text(left)}) ({source_surface_expr_text(right)})"
     subset = split_top_level_operator(stripped, "c=")
     if subset is not None:
         left, right = subset
@@ -72725,7 +72755,30 @@ def source_surface_expr_text(text: str) -> str:
             f"forall {element}:set, In {element} ({source_surface_expr_text(left)}) -> "
             f"In {element} ({source_surface_expr_text(right)})"
         )
-    return stripped
+    equality = split_top_level_equality(stripped)
+    if equality is not None:
+        left, right = equality
+        return f"{source_surface_expr_text(left)} = {source_surface_expr_text(right)}"
+    not_in = split_top_level_operator(stripped, "/:e")
+    if not_in is not None:
+        left, right = not_in
+        return f"In ({source_surface_expr_text(left)}) ({source_surface_expr_text(right)}) -> False"
+    membership = split_top_level_operator(stripped, ":e")
+    if membership is not None:
+        left, right = membership
+        return f"In ({source_surface_expr_text(left)}) ({source_surface_expr_text(right)})"
+    for operator, function_name in (
+        (":\\/:", "binunion"),
+        (":\\:", "setminus"),
+        ("+", "add_SNo"),
+        ("*", "mul_SNo"),
+        (":/:", "div_SNo"),
+    ):
+        split = split_top_level_operator(stripped, operator)
+        if split is not None:
+            left, right = split
+            return f"{function_name} ({source_surface_expr_text(left)}) ({source_surface_expr_text(right)})"
+    return source_surface_rewrite_parenthesized_terms(stripped)
 
 
 def source_surface_parse_text(proposition: str) -> str:
