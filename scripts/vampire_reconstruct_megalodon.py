@@ -57346,6 +57346,262 @@ def raw_tptp_inequality_splitting_proof(
     return None
 
 
+def raw_guarded_equality_clause_rewrite_to_target_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality_clause: Expr,
+    equality_clause_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    target_literals = raw_clause_literals(target)
+    if len(raw_clause_literals(source)) > 16 or len(target_literals) > 16:
+        return None
+    target_text = proof_arg_text(target)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+
+    def source_handler_with_equality(
+        equality_literal: Expr,
+        equality_literal_proof: str,
+    ) -> str | None:
+        equality_sides = equality_like_sides(equality_literal)
+        if equality_sides is None:
+            return raw_literal_to_clause_proof(
+                equality_literal,
+                target,
+                equality_literal_proof,
+                target_literals,
+                (),
+            )
+        equality_sort = raw_equality_transport_sort(equality_sides[0], equality_sides[1], variable_sorts)
+        native_equality = equality_literal.kind == "eq"
+
+        def source_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
+            direct = raw_literal_to_clause_proof(source_literal, target, source_literal_proof, target_literals, ())
+            if direct is not None:
+                return direct
+            for rewritten, rewritten_proof in raw_equality_rewrite_clause_steps(
+                source_literal,
+                source_literal_proof,
+                equality_sides[0],
+                equality_sides[1],
+                equality_literal_proof,
+                equality_sort,
+                native_equality=native_equality,
+            ):
+                introduced = raw_literal_to_clause_proof(
+                    rewritten,
+                    target,
+                    rewritten_proof,
+                    target_literals,
+                    (),
+                )
+                if introduced is not None:
+                    return introduced
+            return None
+
+        return raw_clause_cases_with_handler(
+            source,
+            source_proof,
+            source_handler,
+            avoid_text=equality_literal_proof,
+        )
+
+    try:
+        return raw_clause_cases_with_handler(
+            equality_clause,
+            equality_clause_proof,
+            source_handler_with_equality,
+            avoid_text=source_proof,
+        )
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
+def raw_tptp_guarded_quantified_equality_clause_superposition_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parents) != 2 or proof_search_timed_out():
+        return None
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    parsed: list[tuple[str, Expr, str]] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+        if parent_expr is None:
+            return None
+        parsed.append((parent, parent_expr, raw_tptp_claim_name(parent)))
+    target_literals = raw_clause_literals(target)
+    if len(target_literals) > 16:
+        return None
+
+    def has_guarded_equality(expr: Expr) -> bool:
+        for literal in raw_clause_literals(expr):
+            if equality_like_sides(literal) is not None:
+                return True
+        return False
+
+    def candidate_terms(
+        sort: str,
+        target_binders: list[tuple[str, str]],
+        candidate_exprs: tuple[Expr, ...],
+        source_names: set[str],
+    ) -> list[Expr]:
+        local_sorts = {**variable_sorts, **{name: binder_sort for name, binder_sort in target_binders}}
+        candidates: list[Expr] = [
+            Expr("var", value=name)
+            for name, binder_sort in target_binders
+            if equivalent_sorts(binder_sort, sort)
+        ]
+        candidates.extend(raw_candidate_terms_for_sort(candidate_exprs, sort, local_sorts))
+        if sort == "set":
+            for candidate_expr in candidate_exprs:
+                for subterm in expr_subterms(candidate_expr, limit=128):
+                    if (
+                        subterm.kind == "var"
+                        and isinstance(subterm.value, str)
+                        and subterm.value.startswith(("sK", "sF"))
+                    ):
+                        candidates.append(subterm)
+        inhabitant = raw_simple_inhabitant_for_sort(sort)
+        if inhabitant is not None:
+            candidates.append(inhabitant)
+        deduped: list[Expr] = []
+        seen: set[str] = set()
+        target_names = {name for name, _sort in target_binders}
+        local_names: set[str] = set()
+        for candidate_expr in candidate_exprs:
+            local_names.update(expr_variables(candidate_expr))
+        for candidate in candidates:
+            if expr_variables(candidate) & (source_names - target_names):
+                continue
+            if (
+                candidate.kind == "var"
+                and isinstance(candidate.value, str)
+                and candidate.value not in target_names
+                and candidate.value not in local_names
+                and candidate.value not in {"True", "False", "vampire_true", "vampire_false"}
+            ):
+                continue
+            if sort == "prop" and not (
+                candidate.kind == "var"
+                and candidate.value in (target_names | {"True", "False", "vampire_true", "vampire_false"})
+            ):
+                continue
+            key = expr_key(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(candidate)
+        deduped.sort(key=candidate_term_priority)
+        return deduped[:12]
+
+    for source_index, (_source_name, source, source_proof) in enumerate(parsed):
+        equality_name, equality_clause, equality_clause_proof = parsed[1 - source_index]
+        if not has_guarded_equality(equality_clause):
+            continue
+        source_binders, source_body = collect_foralls(source)
+        if not source_binders or len(source_binders) > 6 or len(raw_clause_literals(source_body)) > 16:
+            continue
+        source_names = {name for name, _sort in source_binders}
+        for target_index, target_literal in enumerate(target_literals):
+            target_binders, target_body = collect_foralls(target_literal)
+            if not target_binders or len(target_binders) > 6 or len(raw_clause_literals(target_body)) > 16:
+                continue
+            candidate_exprs = (target_body, equality_clause, source_body)
+            candidate_lists: list[list[Expr]] = []
+            product_size = 1
+            for _source_binder, source_sort in source_binders:
+                candidates = candidate_terms(source_sort, target_binders, candidate_exprs, source_names)
+                if not candidates:
+                    candidate_lists = []
+                    break
+                candidate_lists.append(candidates)
+                product_size *= len(candidates)
+                if product_size > 32768:
+                    break
+            if not candidate_lists or product_size > 32768:
+                continue
+            attempts = 0
+            for values in itertools.product(*candidate_lists):
+                if proof_search_timed_out():
+                    return None
+                attempts += 1
+                if attempts > 32768:
+                    break
+                subst = {name: value for (name, _sort), value in zip(source_binders, values)}
+                instantiated_source = flatten_applications(substitute_expr(source_body, subst))
+                if not raw_clause_replay_budget_ok(
+                    instantiated_source,
+                    target_body,
+                    max_literals=16,
+                    max_literal_product=256,
+                ):
+                    continue
+                instantiated_source_proof = source_proof
+                for name, _sort in source_binders:
+                    instantiated_source_proof = (
+                        f"({proof_head(instantiated_source_proof)} {proof_arg_text(subst[name])})"
+                    )
+                local_sorts = {
+                    **variable_sorts,
+                    **{name: binder_sort for name, binder_sort in target_binders},
+                }
+                target_text = proof_arg_text(target)
+                previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+                PROOF_SEARCH_STATE.flat_resolution_target = target_text
+
+                def equality_clause_handler(literal: Expr, literal_proof: str) -> str | None:
+                    if equality_like_sides(literal) is None:
+                        return raw_literal_to_clause_proof(
+                            literal,
+                            target,
+                            literal_proof,
+                            target_literals,
+                            (),
+                        )
+                    body_proof = raw_guarded_equality_clause_rewrite_to_target_proof(
+                        instantiated_source,
+                        target_body,
+                        instantiated_source_proof,
+                        literal,
+                        literal_proof,
+                        local_sorts,
+                    )
+                    if body_proof is None:
+                        return None
+                    for name, sort in reversed(target_binders):
+                        body_proof = f"(fun {name} :{sort} => {body_proof})"
+                    return raw_or_intro_literal_at(target, target_index, body_proof)
+
+                try:
+                    proof = raw_clause_cases_with_handler(
+                        equality_clause,
+                        equality_clause_proof,
+                        equality_clause_handler,
+                        avoid_text=instantiated_source_proof,
+                    )
+                finally:
+                    if previous_target is None:
+                        if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                            delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+                    else:
+                        PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+                if proof is not None:
+                    return proof
+    return None
+
+
 def raw_tptp_replay_proof(
     rule: str | None,
     proposition: str,
@@ -57457,6 +57713,14 @@ def raw_tptp_replay_proof(
         if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
             return proof
         proof = raw_prop_guarded_equality_superposition_proof(
+            proposition,
+            parents,
+            propositions_by_name,
+            variable_sorts,
+        )
+        if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
+            return proof
+        proof = raw_tptp_guarded_quantified_equality_clause_superposition_proof(
             proposition,
             parents,
             propositions_by_name,
@@ -60947,6 +61211,13 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     propositions_by_name,
                     variable_sorts,
                     None,
+                )
+            if replay_proof is None and rule == "superposition":
+                replay_proof = raw_tptp_guarded_quantified_equality_clause_superposition_proof(
+                    proposition,
+                    replay_parents,
+                    propositions_by_name,
+                    variable_sorts,
                 )
             if replay_proof is None:
                 if raw_tptp_replay_payload_size_ok(
