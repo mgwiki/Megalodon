@@ -57678,14 +57678,25 @@ def raw_tptp_replay_proof(
         try:
             proof = None
             if rule == "flattening" and len(parents) == 1:
-                proof = raw_tptp_one_parent_transform_proof(
-                    proposition,
-                    parents,
-                    propositions_by_name,
-                    variable_sorts,
-                    max_literals=12,
-                    max_literal_product=96,
-                )
+                parent_proposition = propositions_by_name.get(parents[0])
+                source_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+                target_expr = parse_expr(proposition)
+                if source_expr is not None and target_expr is not None:
+                    proof = raw_structural_normal_form_transform_proof(
+                        source_expr,
+                        target_expr,
+                        raw_tptp_claim_name(parents[0]),
+                        variable_sorts,
+                    )
+                if proof is None:
+                    proof = raw_tptp_one_parent_transform_proof(
+                        proposition,
+                        parents,
+                        propositions_by_name,
+                        variable_sorts,
+                        max_literals=12,
+                        max_literal_product=96,
+                    )
             if rule in {"flattening", "ennf_transformation", "nnf_transformation"} and len(parents) == 1:
                 parent_proposition = propositions_by_name.get(parents[0])
                 source_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
