@@ -5280,12 +5280,38 @@ def definition_unfolding_matches(proposition: str, definitions: dict[str, Defini
     if expr is None:
         return False
     binders, body = collect_foralls(expr)
-    if binders or body.kind != "eq":
+    if body.kind != "eq":
         return False
     original_left, original_right = body.args
     left = beta_normalize_expr(normalize_defined_expr(original_left, definitions))
     right = beta_normalize_expr(normalize_defined_expr(original_right, definitions))
     return expr_same_mod_alpha(left, right)
+
+
+def definition_reflexivity_script_lines(
+    claim_name: str,
+    proposition: str,
+    definitions: dict[str, DefinitionInfo],
+) -> list[str] | None:
+    expr = parse_expr(proposition)
+    if expr is None or not definition_unfolding_matches(proposition, definitions):
+        return None
+    referenced_definitions = expr_variables(expr) & set(definitions)
+    body_identifiers = {
+        name
+        for definition_name in referenced_definitions
+        for name in expr_variables(definitions[definition_name].body)
+    }
+    if "Repl" in body_identifiers:
+        return None
+    binders, _body = collect_foralls(expr)
+    lines = [f"Theorem {claim_name}: {proposition}."]
+    if binders:
+        binder_names = " ".join(name for name, _sort in binders)
+        lines.append(f"let {binder_names}.")
+    lines.append("reflexivity.")
+    lines.append("Qed.")
+    return lines
 
 
 def definition_reflexivity_proof(proposition: str, definitions: dict[str, DefinitionInfo]) -> str | None:
@@ -74266,8 +74292,14 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             lines.append(f"Theorem {claim_name}: {proposition}.")
             lines.append(f"exact {reflexivity_proof}.")
             lines.append("Qed.")
-        elif definition_unfolding_matches(proposition, source_definitions):
-            lines.append(f"Axiom {claim_name}: {proposition}.")
+        elif (
+            definition_script_lines := definition_reflexivity_script_lines(
+                claim_name,
+                proposition,
+                source_definitions,
+            )
+        ) is not None:
+            lines.extend(definition_script_lines)
         elif claim_name in skolem_intro_proofs:
             lines.append(f"Theorem {claim_name}: {proposition}.")
             lines.append(f"exact {skolem_intro_proofs[claim_name]}.")
