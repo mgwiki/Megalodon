@@ -59240,6 +59240,41 @@ def raw_tptp_avatar_split_from_component_parent_proof(
     return None
 
 
+def raw_tptp_avatar_split_impossible_definition_proof(
+    target: Expr,
+    rewrites: tuple[RawSplitRewrite, ...],
+) -> str | None:
+    target_binders, target_body = collect_foralls(target)
+    premises, conclusion = split_arrows(target_body)
+    if len(premises) != 1 or not false_eliminator_expr(conclusion):
+        return None
+    target_split = premises[0]
+    for rewrite in rewrites:
+        if not false_eliminator_expr(rewrite.component):
+            continue
+        projection: str | None = None
+        if expr_same_mod_alpha(rewrite.split, target_split):
+            projection = raw_split_projection_proof(rewrite, component_to_split=False)
+        elif rewrite.binders:
+            variables = {name for name, _sort in rewrite.binders}
+            subst: dict[str, Expr] = {}
+            if match_expr(rewrite.split, target_split, variables, subst):
+                flatten_substitution(subst)
+                if variables <= set(subst):
+                    projection = raw_split_projection_proof(
+                        rewrite,
+                        component_to_split=False,
+                        subst=subst,
+                    )
+        if projection is None:
+            continue
+        proof = projection
+        for name, sort in reversed(target_binders):
+            proof = f"(fun {name} :{sort} => {proof})"
+        return proof
+    return None
+
+
 def raw_or_left_intro(target: Expr, proof: str) -> str | None:
     parts = raw_or_parts(target)
     if parts is None:
@@ -63280,6 +63315,12 @@ def raw_tptp_avatar_split_clause_proof(
     rewrites = raw_tptp_split_rewrites(parents[1:], propositions_by_name)
     if not rewrites:
         return None
+    impossible_definition = raw_tptp_avatar_split_impossible_definition_proof(
+        target,
+        rewrites,
+    )
+    if impossible_definition is not None:
+        return impossible_definition
     if len(parents) <= 10 and len(raw_clause_literals(target)) <= 8:
         direct = raw_tptp_avatar_split_direct_component_proof(
             source,
