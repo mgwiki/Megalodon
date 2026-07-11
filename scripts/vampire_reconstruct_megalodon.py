@@ -6856,7 +6856,7 @@ def raw_tptp_exported_fold_steps_proof(
         if equality is not None:
             equality_proof = raw_tptp_claim_name(parent)
             parent_equalities.append((equality, equality_proof))
-            function_equality = raw_pointwise_set_function_equality(equality, equality_proof)
+            function_equality = raw_pointwise_set_function_equality(equality, equality_proof, variable_sorts)
             if function_equality is not None:
                 parent_equalities.append(function_equality)
         synthetic_definition = (propositions_by_name or {}).get(f"{parent}_def")
@@ -6869,7 +6869,7 @@ def raw_tptp_exported_fold_steps_proof(
             if synthetic_equality is not None:
                 synthetic_proof = raw_tptp_claim_name(f"{parent}_def")
                 parent_equalities.append((synthetic_equality, synthetic_proof))
-                function_equality = raw_pointwise_set_function_equality(synthetic_equality, synthetic_proof)
+                function_equality = raw_pointwise_set_function_equality(synthetic_equality, synthetic_proof, variable_sorts)
                 if function_equality is not None:
                     parent_equalities.append(function_equality)
 
@@ -7205,7 +7205,7 @@ def raw_tptp_exported_definition_chain_proof(
         if equality_like_sides(equality_body) is None:
             return
         equalities.append((equality, equality_proof))
-        pointwise = raw_pointwise_set_function_equality(equality, equality_proof)
+        pointwise = raw_pointwise_set_function_equality(equality, equality_proof, variable_sorts)
         if pointwise is None:
             return
         pointwise_equality, pointwise_proof = pointwise
@@ -7236,7 +7236,7 @@ def raw_tptp_exported_definition_chain_proof(
             and parent_expr is not None
             and not expr_same_mod_alpha(surface_equality, equality)
         ):
-            function_equality = raw_pointwise_set_function_equality(parent_expr, equality_proof)
+            function_equality = raw_pointwise_set_function_equality(parent_expr, equality_proof, variable_sorts)
             if function_equality is not None and expr_same_mod_alpha(function_equality[0], surface_equality):
                 equality, equality_proof = function_equality
         add_equality(equality, equality_proof)
@@ -20153,10 +20153,12 @@ def raw_literal_direct_transform_proof(
     target: Expr,
     source_proof: str,
     rewrites: tuple[RawSplitRewrite, ...],
+    variable_sorts: dict[str, str] | None = None,
 ) -> str | None:
+    variable_sorts = variable_sorts or {}
     if expr_same_mod_alpha(source, target):
         return source_proof
-    direct_conclusion = raw_direct_conclusion_transform_proof(source, target, source_proof)
+    direct_conclusion = raw_direct_conclusion_transform_proof(source, target, source_proof, variable_sorts)
     if direct_conclusion is not None:
         return direct_conclusion
     source_premises, source_conclusion = split_arrows(source)
@@ -20177,10 +20179,12 @@ def raw_literal_direct_transform_proof(
             and expr_same_mod_alpha(source_premise_sides[1], target_premise_sides[0])
         ):
             if target_premises[0].kind == "eq":
-                premise_proof = eq_symmetry_proof(
+                sort = raw_equality_transport_sort(target_premise_sides[0], target_premise_sides[1], variable_sorts)
+                premise_proof = native_eq_symmetry_proof(
                     premise_name,
                     target_premise_sides[0],
                     target_premise_sides[1],
+                    sort,
                 )
             else:
                 sort = "prop" if (
@@ -20273,7 +20277,8 @@ def raw_literal_direct_transform_proof(
         and expr_same_mod_alpha(source_sides[1], target_sides[0])
     ):
         if source.kind == "eq":
-            return eq_symmetry_proof(source_proof, source_sides[0], source_sides[1])
+            sort = raw_equality_transport_sort(source_sides[0], source_sides[1], variable_sorts)
+            return native_eq_symmetry_proof(source_proof, source_sides[0], source_sides[1], sort)
         sort = "prop" if source.args[0].value == "vampire_eq_prop" else "set"
         return raw_eq_symmetry_proof(source_proof, source_sides[0], sort)
     factored_forall = raw_factored_forall_literal_transform_proof(source, target, source_proof, rewrites)
@@ -20355,18 +20360,26 @@ def raw_literal_to_clause_proof(
     target_literals: list[Expr],
     rewrites: tuple[RawSplitRewrite, ...],
     deep_literals: bool = False,
+    variable_sorts: dict[str, str] | None = None,
 ) -> str | None:
+    variable_sorts = variable_sorts or {}
     false_elim = raw_false_literal_elimination_proof(literal, target, literal_proof)
     if false_elim is not None:
         return false_elim
     for index, target_literal in enumerate(target_literals):
-        target_literal_proof = raw_literal_direct_transform_proof(literal, target_literal, literal_proof, rewrites)
+        target_literal_proof = raw_literal_direct_transform_proof(
+            literal,
+            target_literal,
+            literal_proof,
+            rewrites,
+            variable_sorts,
+        )
         if (
             target_literal_proof is None
             and deep_literals
             and len(expr_text(literal)) + len(expr_text(target_literal)) <= 7000
         ):
-            target_literal_proof = raw_deep_formula_transform_proof(literal, target_literal, literal_proof, {})
+            target_literal_proof = raw_deep_formula_transform_proof(literal, target_literal, literal_proof, variable_sorts)
         if (
             target_literal_proof is None
             and rewrites
@@ -20376,7 +20389,7 @@ def raw_literal_to_clause_proof(
                 literal,
                 target_literal,
                 literal_proof,
-                {},
+                variable_sorts,
                 rewrites,
             )
         if target_literal_proof is None:
@@ -26569,7 +26582,13 @@ def raw_classical_single_implication_to_or_by_conclusion_proof(
     return None
 
 
-def raw_direct_conclusion_transform_proof(source: Expr, target: Expr, source_proof: str) -> str | None:
+def raw_direct_conclusion_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str] | None = None,
+) -> str | None:
+    variable_sorts = variable_sorts or {}
     if expr_same_mod_alpha(source, target):
         return source_proof
     true_equality_elim = raw_proof_from_prop_true_equality(source, target, source_proof)
@@ -26587,7 +26606,8 @@ def raw_direct_conclusion_transform_proof(source: Expr, target: Expr, source_pro
         and expr_same_mod_alpha(source_sides[1], target_sides[0])
     ):
         if source.kind == "eq":
-            return eq_symmetry_proof(source_proof, source_sides[0], source_sides[1])
+            sort = raw_equality_transport_sort(source_sides[0], source_sides[1], variable_sorts)
+            return native_eq_symmetry_proof(source_proof, source_sides[0], source_sides[1], sort)
         sort = "prop" if source.kind == "app" and source.args[0].kind == "var" and source.args[0].value == "vampire_eq_prop" else "set"
         return raw_eq_symmetry_proof(source_proof, source_sides[0], sort)
     return None
@@ -32682,6 +32702,18 @@ def native_equality_transport_proof(
     )
 
 
+def raw_native_prop_eq_to_vampire_eq_prop_proof(left: Expr, right: Expr, proof: str) -> str:
+    return (
+        f"(vampire_native_eq_transport_prop "
+        f"{proof_arg_text(left)} "
+        f"{proof_arg_text(right)} "
+        f"{proof_term_text(proof)} "
+        f"(fun zz :prop => vampire_eq_prop {proof_arg_text(left)} zz) "
+        f"(vampire_prop_ext {proof_arg_text(left)} {proof_arg_text(left)} "
+        f"(fun Hsrc => Hsrc) (fun Htgt => Htgt)))"
+    )
+
+
 def raw_candidate_terms_for_sort(
     exprs: tuple[Expr, ...],
     sort: str,
@@ -34490,18 +34522,17 @@ def raw_function_argument_transport_proof(
     if not all(equivalent_sorts(source_sort, target_sort) for (_source_name, source_sort), (_target_name, target_sort) in zip(source_binders, target_binders)):
         return None
     binder_sorts = [strip_balanced_parens(sort) for _name, sort in source_binders]
+    source_body_sort = expr_sort(source_body, {**variable_sorts, **{name: sort for name, sort in source_binders}})
+    target_body_sort = expr_sort(target_body, {**variable_sorts, **{name: sort for name, sort in target_binders}})
+    prop_valued = source_body_sort == "prop" or target_body_sort == "prop"
     if binder_sorts == ["set"]:
-        helper = "vampire_funext_set_set"
-        prop_valued = False
+        helper = "vampire_funext_set_prop" if prop_valued else "vampire_funext_set_set"
     elif binder_sorts == ["set", "set"]:
-        helper = "vampire_funext_set_set_set"
-        prop_valued = False
-    elif binder_sorts == ["set", "set->set"]:
+        helper = "vampire_funext_set_set_prop" if prop_valued else "vampire_funext_set_set_set"
+    elif binder_sorts == ["set", "set->set"] and not prop_valued:
         helper = "vampire_funext_set_setfun_set"
-        prop_valued = False
-    elif binder_sorts == ["set", "set->prop"]:
+    elif binder_sorts == ["set", "set->prop"] and prop_valued:
         helper = "vampire_funext_set_setprop_prop"
-        prop_valued = True
     else:
         return None
     local_sorts = dict(variable_sorts)
@@ -37695,7 +37726,7 @@ def raw_tptp_forward_demodulation_proof(
     )
     if fallback_ok(proof):
         return proof
-    pointwise_function = raw_pointwise_set_function_equality(second, second_name)
+    pointwise_function = raw_pointwise_set_function_equality(second, second_name, variable_sorts)
     if pointwise_function is not None:
         function_equality, function_equality_proof = pointwise_function
         function_sides = equality_like_sides(function_equality)
@@ -37725,7 +37756,7 @@ def raw_tptp_forward_demodulation_proof(
             )
             if fallback_ok(proof):
                 return proof
-    pointwise_function = raw_pointwise_set_function_equality(first, first_name)
+    pointwise_function = raw_pointwise_set_function_equality(first, first_name, variable_sorts)
     if pointwise_function is not None:
         function_equality, function_equality_proof = pointwise_function
         function_sides = equality_like_sides(function_equality)
@@ -38083,7 +38114,7 @@ def raw_formula_context_demodulation_options(
         equality_sort = raw_equality_transport_sort(equality_sides[0], equality_sides[1], variable_sorts)
         if equality_sort is not None:
             options.append((equality_sides[0], equality_sides[1], equality_proof, equality_sort))
-    pointwise = raw_pointwise_set_function_equality(equality, equality_proof)
+    pointwise = raw_pointwise_set_function_equality(equality, equality_proof, variable_sorts)
     if pointwise is not None:
         function_equality, function_equality_proof = pointwise
         function_sides = equality_like_sides(function_equality)
@@ -39863,12 +39894,19 @@ def raw_deep_quantified_equality_rewrite_proof(
 def raw_pointwise_set_function_equality(
     equality: Expr,
     equality_proof: str,
+    variable_sorts: dict[str, str] | None = None,
 ) -> tuple[Expr, str] | None:
     binders, body = collect_foralls(equality)
     if len(binders) not in {1, 2}:
         return None
     binder_sorts = [strip_balanced_parens(sort) for _, sort in binders]
-    prop_valued = app_args(body, "vampire_eq_prop", 2) is not None
+    sides = equality_like_sides(body)
+    if sides is None:
+        return None
+    local_sorts = {**(variable_sorts or {}), **{name: sort for name, sort in binders}}
+    body_uses_vampire_eq_prop = app_args(body, "vampire_eq_prop", 2) is not None
+    body_result_sort = raw_equality_transport_sort(sides[0], sides[1], local_sorts)
+    prop_valued = body_uses_vampire_eq_prop or body_result_sort == "prop"
     if binder_sorts == ["set"]:
         helper = "vampire_funext_set_prop" if prop_valued else "vampire_funext_set_set"
     elif binder_sorts == ["set", "set"]:
@@ -39878,9 +39916,6 @@ def raw_pointwise_set_function_equality(
     elif binder_sorts == ["set", "set->set"]:
         helper = "vampire_funext_set_setfun_set"
     else:
-        return None
-    sides = equality_like_sides(body)
-    if sides is None:
         return None
 
     def abstract_side(side: Expr) -> Expr | None:
@@ -39908,11 +39943,25 @@ def raw_pointwise_set_function_equality(
     prefix = fresh_identifier("PF", expr_text(equality), equality_proof)
     left = alpha_freshen_binders(left, avoid, prefix)
     right = alpha_freshen_binders(right, avoid | expr_bound_variables(left), prefix)
+    helper_proof = equality_proof
+    if prop_valued and body.kind == "eq" and body_result_sort == "prop":
+        body_proof = equality_proof
+        binder_vars: list[Expr] = []
+        for name, _sort in binders:
+            binder_var = Expr("var", value=name)
+            binder_vars.append(binder_var)
+            body_proof = f"({proof_head(body_proof)} {proof_arg_text(binder_var)})"
+        body_left = append_application_args(left, binder_vars)
+        body_right = append_application_args(right, binder_vars)
+        converted = raw_native_prop_eq_to_vampire_eq_prop_proof(body_left, body_right, body_proof)
+        for name, sort in reversed(binders):
+            converted = f"(fun {name} :{sort} => {converted})"
+        helper_proof = converted
     proof = (
         f"({helper} "
         f"{proof_arg_text(left)} "
         f"{proof_arg_text(right)} "
-        f"{proof_term_text(equality_proof)})"
+        f"{proof_term_text(helper_proof)})"
     )
     return Expr("eq", args=(left, right)), proof
 
@@ -39983,13 +40032,8 @@ def raw_partial_pointwise_set_function_equality_options(
             continue
         suffix_binders = binders[-suffix_len:]
         suffix_sorts = [strip_balanced_parens(sort) for _name, sort in suffix_binders]
-        if suffix_sorts == ["set"]:
-            helper = "vampire_funext_set_set"
-        elif suffix_sorts == ["set", "set"]:
-            helper = "vampire_funext_set_set_set"
-        elif suffix_sorts == ["set", "set->set"]:
-            helper = "vampire_funext_set_setfun_set"
-        else:
+        suffix_sort_key = tuple(suffix_sorts)
+        if suffix_sort_key not in {("set",), ("set", "set"), ("set", "set->set"), ("set", "set->prop")}:
             continue
         prefix_binders = binders[:-suffix_len]
         prefix_names = {name for name, _sort in prefix_binders}
@@ -40022,6 +40066,18 @@ def raw_partial_pointwise_set_function_equality_options(
 
             pointwise_left = append_application_args(old_function, suffix_vars)
             pointwise_right = append_application_args(new_function, suffix_vars)
+            pointwise_result_sort = raw_equality_transport_sort(pointwise_left, pointwise_right, local_sorts)
+            pointwise_prop_valued = app_args(body, "vampire_eq_prop", 2) is not None or pointwise_result_sort == "prop"
+            if suffix_sorts == ["set"]:
+                helper = "vampire_funext_set_prop" if pointwise_prop_valued else "vampire_funext_set_set"
+            elif suffix_sorts == ["set", "set"]:
+                helper = "vampire_funext_set_set_prop" if pointwise_prop_valued else "vampire_funext_set_set_set"
+            elif suffix_sorts == ["set", "set->prop"] and pointwise_prop_valued:
+                helper = "vampire_funext_set_setprop_prop"
+            elif suffix_sorts == ["set", "set->set"] and not pointwise_prop_valued:
+                helper = "vampire_funext_set_setfun_set"
+            else:
+                continue
             pointwise_proof = equality_proof
             ok = True
             for name, _sort in binders:
@@ -40036,8 +40092,21 @@ def raw_partial_pointwise_set_function_equality_options(
             if not ok:
                 continue
             if reverse:
-                result_sort = raw_equality_transport_sort(pointwise_right, pointwise_left, local_sorts)
-                pointwise_proof = raw_eq_symmetry_proof(pointwise_proof, pointwise_right, result_sort)
+                if body.kind == "eq" and native_eq_helper_suffix(pointwise_result_sort) is not None:
+                    pointwise_proof = native_eq_symmetry_proof(
+                        pointwise_proof,
+                        pointwise_right,
+                        pointwise_left,
+                        pointwise_result_sort,
+                    )
+                else:
+                    pointwise_proof = raw_eq_symmetry_proof(pointwise_proof, pointwise_right, pointwise_result_sort)
+            if pointwise_prop_valued and body.kind == "eq" and pointwise_result_sort == "prop":
+                pointwise_proof = raw_native_prop_eq_to_vampire_eq_prop_proof(
+                    pointwise_left,
+                    pointwise_right,
+                    pointwise_proof,
+                )
             quantified_proof = pointwise_proof
             for name, sort in reversed(suffix_binders):
                 quantified_proof = f"(fun {name} :{sort} => {quantified_proof})"
@@ -40530,7 +40599,7 @@ def raw_tptp_parent_equality_chain_rewrite_proof(
             parent_exprs.append((parent, parent_expr, raw_tptp_claim_name(parent)))
     equality_parents: list[tuple[str, Expr, str, tuple[Expr, Expr] | None]] = []
     for name, expr, proof in parent_exprs:
-        function_equality = raw_pointwise_set_function_equality(expr, proof)
+        function_equality = raw_pointwise_set_function_equality(expr, proof, variable_sorts)
         if function_equality is None:
             continue
         equality_expr, equality_proof = function_equality
@@ -40667,7 +40736,7 @@ def raw_tptp_target_guided_parent_equality_chain_rewrite_proof(
 
     equality_parents: list[tuple[str, Expr, str]] = []
     for name, expr, proof in parent_exprs:
-        function_equality = raw_pointwise_set_function_equality(expr, proof)
+        function_equality = raw_pointwise_set_function_equality(expr, proof, variable_sorts)
         if function_equality is not None:
             equality_expr, equality_proof = function_equality
             equality_parents.append((f"{name}#funext", equality_expr, equality_proof))
@@ -49773,7 +49842,7 @@ def raw_tptp_function_equality_clause_superposition_proof(
     equality_proof: str,
     variable_sorts: dict[str, str],
 ) -> str | None:
-    function_equality = raw_pointwise_set_function_equality(equality, equality_proof)
+    function_equality = raw_pointwise_set_function_equality(equality, equality_proof, variable_sorts)
     if function_equality is None:
         return None
     function_equality_expr, function_equality_proof = function_equality
@@ -49805,6 +49874,9 @@ def raw_tptp_function_equality_clause_superposition_proof(
     def try_finish(candidate: Expr, proof: str) -> str | None:
         if expr_same_mod_alpha(candidate, target_body):
             return close(proof)
+        direct = raw_literal_direct_transform_proof(candidate, target_body, proof, (), local_sorts)
+        if direct is not None:
+            return close(direct)
         transformed = raw_clause_subsumption_transform_proof(candidate, target_body, proof, deep_literals=True)
         if transformed is not None:
             return close(transformed)
@@ -49930,6 +50002,15 @@ def raw_tptp_superposition_proof(
             if parent_expr is not None:
                 parent_exprs.append((parent_expr, raw_tptp_canonical_parent_proof_name(parent, propositions_by_name)))
         if target_expr is not None and len(parent_exprs) == 2:
+            proof = raw_tptp_quantified_equality_clause_superposition_proof(
+                proposition,
+                parents,
+                propositions_by_name,
+                variable_sorts,
+                replay_step,
+            )
+            if proof is not None and not raw_tptp_replay_proof_is_unsafe("superposition", proposition, proof):
+                return proof
             proof = raw_tptp_function_equality_clause_superposition_proof(
                 target_expr,
                 parent_exprs[0][0],
@@ -51610,12 +51691,12 @@ def raw_equality_clause_superposition_proof(
     PROOF_SEARCH_STATE.flat_resolution_target = target_text
 
     def source_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
-        direct = raw_literal_to_clause_proof(source_literal, target, source_literal_proof, target_literals, ())
+        direct = raw_literal_to_clause_proof(source_literal, target, source_literal_proof, target_literals, (), variable_sorts=variable_sorts)
         if direct is not None:
             return direct
 
         def equality_clause_handler(clause_literal: Expr, clause_literal_proof: str) -> str | None:
-            direct_clause = raw_literal_to_clause_proof(clause_literal, target, clause_literal_proof, target_literals, ())
+            direct_clause = raw_literal_to_clause_proof(clause_literal, target, clause_literal_proof, target_literals, (), variable_sorts=variable_sorts)
             if direct_clause is not None:
                 return direct_clause
             source_premises, source_conclusion = split_arrows(source_literal)
@@ -51629,6 +51710,7 @@ def raw_equality_clause_superposition_proof(
                         source_premises[0],
                         clause_literal_proof,
                         (),
+                        variable_sorts,
                     )
                     if premise_proof is None and len(expr_text(clause_literal)) + len(expr_text(source_premises[0])) <= 3000:
                         premise_proof = raw_deep_formula_transform_proof(
@@ -51653,7 +51735,7 @@ def raw_equality_clause_superposition_proof(
                 equality_sort,
                 native_equality=clause_literal.kind == "eq",
             ):
-                proof = raw_literal_to_clause_proof(replaced, target, transported, target_literals, ())
+                proof = raw_literal_to_clause_proof(replaced, target, transported, target_literals, (), variable_sorts=variable_sorts)
                 if proof is not None:
                     return proof
             return None
@@ -62559,7 +62641,7 @@ def raw_function_argument_definition_fold_proof(
     pointwise_parent_names: set[str] = set()
     ordinary_equalities: list[tuple[tuple[tuple[str, str], ...], Expr, Expr, str]] = []
     for parent_name, parent_expr, parent_proof in parent_exprs:
-        function_equality = raw_pointwise_set_function_equality(parent_expr, parent_proof)
+        function_equality = raw_pointwise_set_function_equality(parent_expr, parent_proof, variable_sorts)
         if function_equality is not None:
             equality_expr, equality_proof = function_equality
             sides = equality_like_sides(equality_expr)
@@ -67675,7 +67757,7 @@ def raw_tptp_pointwise_function_clause_definition_rewrite_proof(
         equality = parse_expr(equality_proposition) if equality_proposition is not None else None
         if equality is None:
             continue
-        pointwise = raw_pointwise_set_function_equality(equality, raw_tptp_claim_name(parent))
+        pointwise = raw_pointwise_set_function_equality(equality, raw_tptp_claim_name(parent), variable_sorts)
         if pointwise is None:
             continue
         equality_expr, equality_proof = pointwise
@@ -67826,7 +67908,7 @@ def raw_tptp_definition_replay_needs_function_sorts(
         parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
         if parent_expr is None:
             continue
-        pointwise = raw_pointwise_set_function_equality(parent_expr, raw_tptp_claim_name(parent))
+        pointwise = raw_pointwise_set_function_equality(parent_expr, raw_tptp_claim_name(parent), variable_sorts)
         if pointwise is None:
             continue
         equality_expr, _proof = pointwise
