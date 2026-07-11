@@ -5275,6 +5275,19 @@ def normalize_defined_expr(expr: Expr, definitions: dict[str, DefinitionInfo]) -
     )
 
 
+def definition_unfolding_matches(proposition: str, definitions: dict[str, DefinitionInfo]) -> bool:
+    expr = parse_expr(proposition)
+    if expr is None:
+        return False
+    binders, body = collect_foralls(expr)
+    if binders or body.kind != "eq":
+        return False
+    original_left, original_right = body.args
+    left = beta_normalize_expr(normalize_defined_expr(original_left, definitions))
+    right = beta_normalize_expr(normalize_defined_expr(original_right, definitions))
+    return expr_same_mod_alpha(left, right)
+
+
 def definition_reflexivity_proof(proposition: str, definitions: dict[str, DefinitionInfo]) -> str | None:
     expr = parse_expr(proposition)
     if expr is None:
@@ -5282,12 +5295,18 @@ def definition_reflexivity_proof(proposition: str, definitions: dict[str, Defini
     binders, body = collect_foralls(expr)
     if body.kind != "eq":
         return None
-    left = normalize_defined_expr(body.args[0], definitions)
-    right = normalize_defined_expr(body.args[1], definitions)
-    if expr_key(left) != expr_key(right):
+    original_left, original_right = body.args
+    left = beta_normalize_expr(normalize_defined_expr(original_left, definitions))
+    right = beta_normalize_expr(normalize_defined_expr(original_right, definitions))
+    if not expr_same_mod_alpha(left, right):
         return None
-    args = [name for name, _ in binders] + ["Q", "H"]
-    return f"({' '.join(['fun'] + args + ['=>', 'H'])})"
+    if expr_same_mod_alpha(beta_normalize_expr(original_left), beta_normalize_expr(original_right)):
+        body_proof = "(fun Q H => H)"
+    else:
+        return None
+    for name, sort in reversed(binders):
+        body_proof = f"(fun {name} :{sort} => {body_proof})"
+    return body_proof
 
 
 def parse_definition_body(body_text: str) -> tuple[tuple[str, ...], Expr] | None:
@@ -72663,10 +72682,72 @@ SOURCE_LAMBDA_RE = re.compile(
     r"^fun\s+(?P<names>(?:\([_A-Za-z][_A-Za-z0-9']*\)|[_A-Za-z][_A-Za-z0-9']*)(?:\s+(?:\([_A-Za-z][_A-Za-z0-9']*\)|[_A-Za-z][_A-Za-z0-9']*))*)"
     r"\s*:\s*(?P<sort>[^=]+?)\s*=>\s*(?P<body>.*)$"
 )
+SOURCE_UNTYPED_LAMBDA_RE = re.compile(
+    r"^fun\s+(?P<names>(?:\([_A-Za-z][_A-Za-z0-9']*\)|[_A-Za-z][_A-Za-z0-9']*)(?:\s+(?:\([_A-Za-z][_A-Za-z0-9']*\)|[_A-Za-z][_A-Za-z0-9']*))*)"
+    r"\s*=>\s*(?P<body>.*)$"
+)
+
+
+def split_source_top_level_operator(text: str, operator: str) -> tuple[str, str] | None:
+    text = strip_balanced_parens(text)
+    depth = 0
+    bracket_depth = 0
+    brace_depth = 0
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth < 0:
+                return None
+        elif char == "[":
+            bracket_depth += 1
+        elif char == "]":
+            bracket_depth -= 1
+            if bracket_depth < 0:
+                return None
+        elif char == "{":
+            brace_depth += 1
+        elif char == "}":
+            brace_depth -= 1
+            if brace_depth < 0:
+                return None
+        elif depth == 0 and bracket_depth == 0 and brace_depth == 0 and text.startswith(operator, index):
+            return text[:index].strip(), text[index + len(operator) :].strip()
+        index += 1
+    return None
+
+
+def split_source_top_level_equality(text: str) -> tuple[str, str] | None:
+    text = strip_balanced_parens(text)
+    depth = 0
+    brace_depth = 0
+    for index, char in enumerate(text):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth < 0:
+                return None
+        elif char == "{":
+            brace_depth += 1
+        elif char == "}":
+            brace_depth -= 1
+            if brace_depth < 0:
+                return None
+        elif char == "=" and depth == 0 and brace_depth == 0:
+            if index > 0 and text[index - 1] in "!<>":
+                continue
+            if index + 1 < len(text) and text[index + 1] == ">":
+                continue
+            return text[:index].strip(), text[index + 1 :].strip()
+    return None
 
 
 def split_source_logical_operator(text: str, operator: str) -> tuple[str, str] | None:
-    split = split_top_level_operator(text, operator)
+    split = split_source_top_level_operator(text, operator)
     if split is None:
         return None
     left, right = split
@@ -72712,8 +72793,6 @@ def source_surface_expr_text(text: str) -> str:
             f"Repl ({source_surface_expr_text(repl_match.group('set'))}) "
             f"{function_text}"
         )
-    if re.match(r"^-\s+", stripped):
-        return f"minus_SNo ({source_surface_expr_text(stripped[1:].strip())})"
     forall_match = SOURCE_FORALL_RE.match(stripped)
     if forall_match is not None:
         body = source_surface_expr_text(forall_match.group("body"))
@@ -72734,12 +72813,23 @@ def source_surface_expr_text(text: str) -> str:
         for name in reversed(names):
             body = f"fun {name} :{normalize_megalodon_sort(lambda_match.group('sort'))} => {body}"
         return body
-    for operator, connective in (("/\\", "and"), ("\\/", "or")):
+    untyped_lambda_match = SOURCE_UNTYPED_LAMBDA_RE.match(stripped)
+    if untyped_lambda_match is not None:
+        body = source_surface_expr_text(untyped_lambda_match.group("body"))
+        for name in reversed([name.strip("()") for name in untyped_lambda_match.group("names").split()]):
+            body = f"fun {name} :set => {body}"
+        return body
+    for operator, connective in (("\\/", "or"), ("/\\", "and")):
         split = split_source_logical_operator(stripped, operator)
         if split is not None:
             left, right = split
             return f"{connective} ({source_surface_expr_text(left)}) ({source_surface_expr_text(right)})"
-    arrow = split_top_level_operator(stripped, "->")
+    iff = split_source_top_level_operator(stripped, "<->")
+    if iff is not None:
+        left, right = iff
+        if split_source_top_level_operator(left, "->") is None:
+            return f"iff ({source_surface_expr_text(left)}) ({source_surface_expr_text(right)})"
+    arrow = split_source_top_level_operator(stripped, "->")
     if arrow is not None:
         left, right = arrow
         left_text = source_surface_expr_text(left)
@@ -72747,7 +72837,7 @@ def source_surface_expr_text(text: str) -> str:
         if left_expr is not None and left_expr.kind in {"arrow", "forall", "lambda"}:
             left_text = f"({left_text})"
         return f"{left_text} -> {source_surface_expr_text(right)}"
-    subset = split_top_level_operator(stripped, "c=")
+    subset = split_source_top_level_operator(stripped, "c=")
     if subset is not None:
         left, right = subset
         element = "__src"
@@ -72755,15 +72845,20 @@ def source_surface_expr_text(text: str) -> str:
             f"forall {element}:set, In {element} ({source_surface_expr_text(left)}) -> "
             f"In {element} ({source_surface_expr_text(right)})"
         )
-    equality = split_top_level_equality(stripped)
+    for operator, function_name in (("<=", "SNoLe"), ("<", "SNoLt")):
+        split = split_source_top_level_operator(stripped, operator)
+        if split is not None:
+            left, right = split
+            return f"{function_name} ({source_surface_expr_text(left)}) ({source_surface_expr_text(right)})"
+    equality = split_source_top_level_equality(stripped)
     if equality is not None:
         left, right = equality
         return f"{source_surface_expr_text(left)} = {source_surface_expr_text(right)}"
-    not_in = split_top_level_operator(stripped, "/:e")
+    not_in = split_source_top_level_operator(stripped, "/:e")
     if not_in is not None:
         left, right = not_in
         return f"In ({source_surface_expr_text(left)}) ({source_surface_expr_text(right)}) -> False"
-    membership = split_top_level_operator(stripped, ":e")
+    membership = split_source_top_level_operator(stripped, ":e")
     if membership is not None:
         left, right = membership
         return f"In ({source_surface_expr_text(left)}) ({source_surface_expr_text(right)})"
@@ -72774,15 +72869,39 @@ def source_surface_expr_text(text: str) -> str:
         ("*", "mul_SNo"),
         (":/:", "div_SNo"),
     ):
-        split = split_top_level_operator(stripped, operator)
+        split = split_source_top_level_operator(stripped, operator)
         if split is not None:
             left, right = split
             return f"{function_name} ({source_surface_expr_text(left)}) ({source_surface_expr_text(right)})"
+    if re.match(r"^-\s+", stripped):
+        return f"minus_SNo ({source_surface_expr_text(stripped[1:].strip())})"
     return source_surface_rewrite_parenthesized_terms(stripped)
 
 
 def source_surface_parse_text(proposition: str) -> str:
     return source_surface_expr_text(desugar_source_bounded_foralls(proposition))
+
+
+SOURCE_DEFINITION_RE = re.compile(
+    r"^Definition\s+(?P<name>[_A-Za-z][_A-Za-z0-9']*)\s*:\s*(?P<sort>.*?)\s*:=\s*(?P<body>.*)\.$"
+)
+
+
+def source_definition_declarations(source_text: str) -> list[str]:
+    declarations: list[str] = []
+    current: list[str] = []
+    for line in source_text.splitlines():
+        stripped = line.strip()
+        if not current:
+            if not stripped.startswith("Definition "):
+                continue
+            current = [stripped]
+        else:
+            current.append(stripped)
+        if stripped.endswith("."):
+            declarations.append(" ".join(current))
+            current = []
+    return declarations
 
 
 def source_definition_infos(source: Path | None) -> dict[str, DefinitionInfo]:
@@ -72793,8 +72912,8 @@ def source_definition_infos(source: Path | None) -> dict[str, DefinitionInfo]:
     except OSError:
         return {}
     definitions: dict[str, DefinitionInfo] = {}
-    for line in text.splitlines():
-        match = DEFINITION_RE.match(line.strip())
+    for line in source_definition_declarations(text):
+        match = SOURCE_DEFINITION_RE.match(line.strip())
         if match is None:
             continue
         body_text = source_surface_parse_text(match.group("body").strip())
@@ -72885,8 +73004,8 @@ def raw_tptp_unfolded_source_fact_proof(
     target = parse_expr(proposition)
     if source is None or target is None:
         return None
-    source_unfolded = normalize_defined_expr(source, source_definitions)
-    target_unfolded = normalize_defined_expr(target, source_definitions)
+    source_unfolded = beta_normalize_expr(normalize_defined_expr(source, source_definitions))
+    target_unfolded = beta_normalize_expr(normalize_defined_expr(target, source_definitions))
     if expr_same_mod_alpha_after_sort_normalization(source_unfolded, target_unfolded):
         return source_name
     return None
@@ -74132,10 +74251,17 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 proposition,
                 local_set_definitions,
             )
+        if reflexivity_proof is None:
+            reflexivity_proof = definition_reflexivity_proof(
+                proposition,
+                source_definitions,
+            )
         if reflexivity_proof is not None:
             lines.append(f"Theorem {claim_name}: {proposition}.")
             lines.append(f"exact {reflexivity_proof}.")
             lines.append("Qed.")
+        elif definition_unfolding_matches(proposition, source_definitions):
+            lines.append(f"Axiom {claim_name}: {proposition}.")
         elif claim_name in skolem_intro_proofs:
             lines.append(f"Theorem {claim_name}: {proposition}.")
             lines.append(f"exact {skolem_intro_proofs[claim_name]}.")
