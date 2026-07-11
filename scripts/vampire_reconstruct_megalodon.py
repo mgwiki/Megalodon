@@ -26597,6 +26597,14 @@ def raw_negative_formula_transform_proof(
 
     exists_parts = raw_exists_transform_parts(target)
     if exists_parts is not None:
+        proof = raw_interleaved_forall_implication_exists_counterexample_proof(
+            source,
+            target,
+            not_source_proof,
+            variable_sorts,
+        )
+        if proof is not None:
+            return proof
         proof = raw_cps_exists_counterexample_proof(source, target, not_source_proof, variable_sorts)
         if proof is not None:
             return proof
@@ -27596,6 +27604,25 @@ def raw_cps_exists_counterexample_proof(
         return raw_clause_transform_proof(source_component, target_component, proof)
 
     for component_index, component in enumerate(target_components):
+        negated_conclusion = Expr("arrow", args=(source_conclusion, Expr("var", value="False")))
+        negated_conclusion_proof = raw_negated_forall_to_exists_negation_proof(
+            negated_conclusion,
+            component,
+            not_conclusion_name,
+            local_sorts,
+        )
+        if negated_conclusion_proof is None:
+            negated_conclusion_proof = raw_negated_forall_implication_to_exists_conjunction_proof(
+                negated_conclusion,
+                component,
+                not_conclusion_name,
+                local_sorts,
+            )
+        if negated_conclusion_proof is not None:
+            negative_component_count += 1
+            component_proofs[component_index] = negated_conclusion_proof
+            continue
+
         component_premises, component_conclusion = split_arrows(component)
         if len(component_premises) == 1 and false_eliminator_expr(component_conclusion):
             target_to_source = transform_component(component_premises[0], source_conclusion, "HtargetConclusion")
@@ -27660,6 +27687,227 @@ def raw_cps_exists_counterexample_proof(
     for source_name, source_sort in reversed(binders):
         source_function = f"(fun {source_name} :{source_sort} => {source_function})"
 
+    false_from_negative = f"({proof_head(negative_proof)} {proof_term_text(source_function)})"
+    target_from_false = raw_false_to_expr_proof(
+        false_from_negative,
+        target_exists,
+        Expr("var", value="False"),
+    )
+    return (
+        f"(xm {target_text} {target_text} "
+        f"(fun {target_name} => {target_name}) "
+        f"(fun {not_target_name} => {proof_term_text(target_from_false)}))"
+    )
+
+
+def raw_forall_implication_counterexample_steps(expr: Expr) -> tuple[list[tuple[str, object]], Expr]:
+    steps: list[tuple[str, object]] = []
+    current = expr
+    while True:
+        if current.kind == "forall" and current.value is not None and current.sort is not None:
+            body = current.args[0]
+            if body.kind not in {"forall", "arrow"}:
+                return steps, current
+            steps.append(("binder", (current.value, current.sort, current)))
+            current = body
+            continue
+        premises, conclusion = split_arrows(current)
+        if premises:
+            for premise in premises:
+                steps.append(("premise", premise))
+            current = conclusion
+            continue
+        return steps, current
+
+
+def raw_interleaved_forall_implication_exists_counterexample_proof(
+    source_premise: Expr,
+    target_exists: Expr,
+    negative_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    steps, source_conclusion = raw_forall_implication_counterexample_steps(source_premise)
+    binders = [payload for kind, payload in steps if kind == "binder"]
+    premises = [payload for kind, payload in steps if kind == "premise"]
+    if not binders or not premises or len(binders) > 8 or len(premises) > 10:
+        return None
+    if raw_exists_head_sort(target_exists) is None:
+        return None
+
+    target_text = proof_arg_text(target_exists)
+    target_name = fresh_identifier("Htarget", expr_text(source_premise), expr_text(target_exists), negative_proof)
+    not_target_name = fresh_identifier(
+        "HnotTarget",
+        expr_text(source_premise),
+        expr_text(target_exists),
+        negative_proof,
+        target_name,
+    )
+    not_conclusion_name = fresh_identifier(
+        "HnotConclusion",
+        expr_text(source_premise),
+        expr_text(target_exists),
+        negative_proof,
+        target_name,
+        not_target_name,
+    )
+    premise_names = [
+        fresh_identifier(f"HsourcePremise{index}", expr_text(source_premise), expr_text(target_exists), str(index))
+        for index, _premise in enumerate(premises)
+    ]
+    binder_names = [(name, sort) for name, sort, _expr in binders]  # type: ignore[misc]
+    local_sorts = {**variable_sorts, **{name: sort for name, sort in binder_names}}
+
+    def transform_component(source_component: Expr, target_component: Expr, proof: str) -> str | None:
+        if expr_same_mod_alpha(source_component, target_component):
+            return proof
+        transformed = raw_deep_formula_transform_proof(source_component, target_component, proof, local_sorts)
+        if transformed is not None:
+            return transformed
+        transformed = raw_classical_implication_to_or_transform_proof(source_component, target_component, proof)
+        if transformed is not None:
+            return transformed
+        return raw_clause_transform_proof(source_component, target_component, proof)
+
+    def build_target(
+        target: Expr,
+        binder_index: int,
+        used_premises: frozenset[int],
+        used_negative: bool,
+    ) -> tuple[str, int, frozenset[int], bool] | None:
+        if not used_negative:
+            negated_conclusion = Expr("arrow", args=(source_conclusion, Expr("var", value="False")))
+            negative_proof = raw_negated_forall_to_exists_negation_proof(
+                negated_conclusion,
+                target,
+                not_conclusion_name,
+                local_sorts,
+            )
+            if negative_proof is None:
+                negative_proof = raw_negated_forall_implication_to_exists_conjunction_proof(
+                    negated_conclusion,
+                    target,
+                    not_conclusion_name,
+                    local_sorts,
+                )
+            if negative_proof is not None:
+                return negative_proof, binder_index, used_premises, True
+
+        exists_parts = raw_exists_head_sort(target)
+        if exists_parts is not None:
+            _head, sort, _predicate, target_witness, body = exists_parts
+            while binder_index < len(binder_names) and binder_names[binder_index][1] != sort:
+                binder_index += 1
+            if binder_index >= len(binder_names):
+                return None
+            source_witness, _source_sort = binder_names[binder_index]
+            body_at_witness = substitute_expr(body, {target_witness: Expr("var", value=source_witness)})
+            built = build_target(body_at_witness, binder_index + 1, used_premises, used_negative)
+            if built is None:
+                return None
+            body_proof, next_binder, next_used, next_negative = built
+            return (
+                f"(fun Q Hexists => Hexists {source_witness} {proof_term_text(body_proof)})",
+                next_binder,
+                next_used,
+                next_negative,
+            )
+
+        and_parts = vampire_and_parts(target)
+        if and_parts is not None:
+            left = build_target(and_parts[0], binder_index, used_premises, used_negative)
+            if left is not None:
+                left_proof, left_binder, left_used, left_negative = left
+                right = build_target(and_parts[1], left_binder, left_used, left_negative)
+                if right is not None:
+                    right_proof, right_binder, right_used, right_negative = right
+                    return (
+                        f"(fun P K => K {proof_term_text(left_proof)} {proof_term_text(right_proof)})",
+                        right_binder,
+                        right_used,
+                        right_negative,
+                    )
+            right = build_target(and_parts[1], binder_index, used_premises, used_negative)
+            if right is None:
+                return None
+            right_proof, right_binder, right_used, right_negative = right
+            left = build_target(and_parts[0], right_binder, right_used, right_negative)
+            if left is None:
+                return None
+            left_proof, left_binder, left_used, left_negative = left
+            return (
+                f"(fun P K => K {proof_term_text(left_proof)} {proof_term_text(right_proof)})",
+                left_binder,
+                left_used,
+                left_negative,
+            )
+
+        for premise_index, premise in enumerate(premises):
+            if premise_index in used_premises:
+                continue
+            transformed = transform_component(premise, target, premise_names[premise_index])
+            if transformed is not None:
+                return transformed, binder_index, used_premises | {premise_index}, used_negative
+        return None
+
+    def build_source_function(expr: Expr, premise_index: int) -> str | None:
+        if expr.kind == "forall" and expr.value is not None and expr.sort is not None:
+            body = expr.args[0]
+            if body.kind not in {"forall", "arrow"}:
+                target_proof = build_target(target_exists, 0, frozenset(), False)
+                if target_proof is None:
+                    return None
+                proof, _binder_count, used_premises, used_negative = target_proof
+                if len(used_premises) != len(premises) or not used_negative:
+                    return None
+                false_from_target = f"({not_target_name} {proof_term_text(proof)})"
+                conclusion_from_false = raw_false_to_expr_proof(
+                    false_from_target,
+                    expr,
+                    Expr("var", value="False"),
+                )
+                conclusion_text = proof_arg_text(expr)
+                negated_conclusion = Expr("arrow", args=(expr, Expr("var", value="False")))
+                return (
+                    f"(xm {conclusion_text} {conclusion_text} "
+                    f"(fun HsourceConclusion => HsourceConclusion) "
+                    f"(fun {not_conclusion_name} :{proof_arg_text(negated_conclusion)} => "
+                    f"{proof_term_text(conclusion_from_false)}))"
+                )
+            inner = build_source_function(body, premise_index)
+            if inner is None:
+                return None
+            return f"(fun {expr.value} :{expr.sort} => {inner})"
+        if expr.kind == "arrow":
+            inner = build_source_function(expr.args[1], premise_index + 1)
+            if inner is None:
+                return None
+            premise = expr.args[0]
+            return f"(fun {premise_names[premise_index]} :{proof_arg_text(premise)} => {inner})"
+        target_proof = build_target(target_exists, 0, frozenset(), False)
+        if target_proof is None:
+            return None
+        proof, _binder_count, used_premises, used_negative = target_proof
+        if len(used_premises) != len(premises) or not used_negative:
+            return None
+        false_from_target = f"({not_target_name} {proof_term_text(proof)})"
+        conclusion_from_false = raw_false_to_expr_proof(
+            false_from_target,
+            source_conclusion,
+            Expr("var", value="False"),
+        )
+        conclusion_text = proof_arg_text(source_conclusion)
+        negated_conclusion = Expr("arrow", args=(source_conclusion, Expr("var", value="False")))
+        return (
+            f"(xm {conclusion_text} {conclusion_text} "
+            f"(fun HsourceConclusion => HsourceConclusion) "
+            f"(fun {not_conclusion_name} :{proof_arg_text(negated_conclusion)} => "
+            f"{proof_term_text(conclusion_from_false)}))"
+        )
+
+    source_function = build_source_function(source_premise, 0)
+    if source_function is None:
+        return None
     false_from_negative = f"({proof_head(negative_proof)} {proof_term_text(source_function)})"
     target_from_false = raw_false_to_expr_proof(
         false_from_negative,
@@ -28424,7 +28672,8 @@ def raw_negated_implication_chain_to_conjunction_proof(
         conclusion_text = proof_arg_text(implication_conclusion)
         body = f"(({negative_name} {premise_names[index]}) {conclusion_text})"
         for premise_index in reversed(range(len(implication_premises))):
-            body = f"(fun {premise_names[premise_index]} => {body})"
+            premise_type = proof_arg_text(implication_premises[premise_index])
+            body = f"(fun {premise_names[premise_index]} :{premise_type} => {body})"
         return body
 
     def implication_premise_proof(index: int) -> str:
@@ -28457,8 +28706,10 @@ def raw_negated_implication_chain_to_conjunction_proof(
             return None
         body = proof_term_text(conclusion_proof)
         for premise_index in reversed(range(len(implication_premises))):
-            body = f"(fun {premise_names[premise_index]} => {body})"
-        return f"(fun Hconclusion => {proof_head(source_proof)} {proof_term_text(body)})"
+            premise_type = proof_arg_text(implication_premises[premise_index])
+            body = f"(fun {premise_names[premise_index]} :{premise_type} => {body})"
+        conclusion_type = proof_arg_text(premises[0])
+        return f"(fun Hconclusion :{conclusion_type} => {proof_head(source_proof)} {proof_term_text(body)})"
 
     def component_proof(component: Expr) -> str | None:
         negative_conclusion = conclusion_refutation(component)
@@ -60244,6 +60495,20 @@ def raw_implication_to_ennf_or_proof(
     )
     if component_clause is not None:
         return component_clause
+    source_premises, source_conclusion = split_arrows(source)
+    if (
+        len(source_premises) == 1
+        and false_eliminator_expr(source_conclusion)
+        and raw_exists_head_sort(target) is not None
+    ):
+        interleaved_exists = raw_interleaved_forall_implication_exists_counterexample_proof(
+            source_premises[0],
+            target,
+            source_proof,
+            variable_sorts,
+        )
+        if interleaved_exists is not None:
+            return interleaved_exists
     if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort == "prop":
         proof = raw_tptp_peirce_implication_ennf_proof(
             expr_text(target),
