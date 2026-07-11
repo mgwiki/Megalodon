@@ -59935,10 +59935,6 @@ def raw_structural_normal_form_transform_proof(
     )
     if ordered_or_flattening is not None:
         return ordered_or_flattening
-    fast_assoc = raw_fast_or_assoc_transform_proof(source, target, source_proof, variable_sorts, rewrites, depth + 1)
-    if fast_assoc is not None:
-        return fast_assoc
-
     source_exists = raw_exists_transform_parts(source)
     target_exists = raw_exists_transform_parts(target)
     if source_exists is not None and target_exists is not None:
@@ -60045,6 +60041,9 @@ def raw_structural_normal_form_transform_proof(
     source_or = raw_or_parts(source)
     target_or = raw_or_parts(target)
     if source_or is not None and target_or is not None:
+        fast_assoc = raw_fast_or_assoc_transform_proof(source, target, source_proof, variable_sorts, rewrites, depth + 1)
+        if fast_assoc is not None:
+            return fast_assoc
         reassociation = raw_or_reassociation_transform_proof(
             source,
             target,
