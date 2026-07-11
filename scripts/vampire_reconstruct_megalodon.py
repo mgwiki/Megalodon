@@ -190,7 +190,7 @@ def raw_tptp_replay_seconds_for_rule(rule: str | None) -> float:
     if rule == "rectify":
         return max(RAW_TPTP_REPLAY_SECONDS, 1.0)
     if rule == "flattening":
-        return max(RAW_TPTP_REPLAY_SECONDS, 0.8)
+        return max(RAW_TPTP_REPLAY_SECONDS, 1.5)
     if rule in {"definition_folding", "definition_unfolding"}:
         return max(RAW_TPTP_REPLAY_SECONDS, RAW_TPTP_DEFINITION_REPLAY_SECONDS)
     if rule == "superposition":
@@ -56623,6 +56623,134 @@ def raw_tptp_parent_negated_tautology_exfalso_proof(
     return None
 
 
+def raw_prop_true_exhaustiveness_superposition_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> str | None:
+    if len(parents) != 2:
+        return None
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    target_binders, target_body = collect_foralls(target)
+    if len(target_binders) != 1 or target_binders[0][1] != "prop":
+        return None
+    target_name, _target_sort = target_binders[0]
+    target_var = Expr("var", value=target_name)
+    target_parts = raw_or_parts(target_body)
+    if target_parts is None:
+        return None
+
+    def negated_target_var(expr: Expr) -> bool:
+        premises, conclusion = split_arrows(expr)
+        return (
+            len(premises) == 1
+            and false_eliminator_expr(conclusion)
+            and expr_same_mod_alpha(premises[0], target_var)
+        )
+
+    equality_literal: Expr | None = None
+    negated_literal: Expr | None = None
+    for left, right in (target_parts, (target_parts[1], target_parts[0])):
+        sides = app_args(left, "vampire_eq_prop", 2)
+        if sides is None or not negated_target_var(right):
+            continue
+        if expr_same_mod_alpha(sides[1], target_var):
+            equality_literal = left
+            negated_literal = right
+            break
+    if equality_literal is None or negated_literal is None:
+        return None
+    equality_sides = app_args(equality_literal, "vampire_eq_prop", 2)
+    if equality_sides is None:
+        return None
+    function_application, equality_right = equality_sides
+    if not expr_same_mod_alpha(equality_right, target_var):
+        return None
+    if function_application.kind != "app" or len(function_application.args) < 2:
+        return None
+    if not expr_same_mod_alpha(function_application.args[-1], target_var):
+        return None
+    function_head = (
+        function_application.args[0]
+        if len(function_application.args) == 2
+        else Expr("app", args=tuple(function_application.args[:-1]))
+    )
+    true_expr = Expr("var", value="True")
+    expected_fact = flatten_applications(Expr("app", args=(function_head, true_expr)))
+
+    def exhaustiveness_parent(expr: Expr) -> bool:
+        binders, body = collect_foralls(expr)
+        if len(binders) != 1 or binders[0][1] != "prop":
+            return False
+        binder = Expr("var", value=binders[0][0])
+        parts = raw_or_parts(body)
+        if parts is None:
+            return False
+        return (
+            (
+                expr_same_mod_alpha(parts[0], binder)
+                and negated_target_var(rename_expr_variables(parts[1], {binders[0][0]: target_name}))
+            )
+            or (
+                expr_same_mod_alpha(parts[1], binder)
+                and negated_target_var(rename_expr_variables(parts[0], {binders[0][0]: target_name}))
+            )
+        )
+
+    parsed_parents: list[tuple[str, Expr, str]] = []
+    for parent in parents:
+        parent_expr = parse_expr(propositions_by_name.get(parent, ""))
+        if parent_expr is None:
+            return None
+        parsed_parents.append((parent, parent_expr, raw_tptp_canonical_parent_proof_name(parent, propositions_by_name)))
+
+    for fact_parent, fact_expr, fact_proof in parsed_parents:
+        if not expr_same_mod_alpha(flatten_applications(fact_expr), expected_fact):
+            continue
+        for exhaust_parent, exhaust_expr, exhaust_proof in parsed_parents:
+            if exhaust_parent == fact_parent or not exhaustiveness_parent(exhaust_expr):
+                continue
+            positive_name = fresh_identifier("Hpos", proposition, fact_parent, exhaust_parent)
+            negative_name = fresh_identifier("Hneg", proposition, positive_name)
+            prop_name = fresh_identifier("Qprop", proposition, positive_name, negative_name)
+            prop_var = Expr("var", value=prop_name)
+            function_at_prop = flatten_applications(Expr("app", args=(function_head, prop_var)))
+            eq_true_target = (
+                f"(vampire_prop_ext True {proof_arg_text(target_var)} "
+                f"(fun _ :True => {positive_name}) "
+                f"(fun _ :{proof_arg_text(target_var)} => (fun Q H => H)))"
+            )
+            function_at_target = proof_arg_text(function_application)
+            transported_fact = (
+                f"({proof_term_text(eq_true_target)} "
+                f"(fun {prop_name}:prop => {proof_arg_text(function_at_prop)}) "
+                f"{proof_term_text(fact_proof)})"
+            )
+            equality_proof = (
+                f"(vampire_prop_ext {function_at_target} {proof_arg_text(target_var)} "
+                f"(fun _ :{function_at_target} => {positive_name}) "
+                f"(fun _ :{proof_arg_text(target_var)} => {transported_fact}))"
+            )
+            left_intro = f"(fun P Hleft Hright => Hleft {proof_term_text(equality_proof)})"
+            right_intro = f"(fun P Hleft Hright => Hright {negative_name})"
+            if expr_same_mod_alpha(target_parts[0], equality_literal):
+                positive_branch = left_intro
+                negative_branch = right_intro
+            else:
+                positive_branch = f"(fun P Hleft Hright => Hright {proof_term_text(equality_proof)})"
+                negative_branch = f"(fun P Hleft Hright => Hleft {negative_name})"
+            exhaust_instance = f"({proof_head(exhaust_proof)} {target_name})"
+            body_proof = (
+                f"({proof_head(exhaust_instance)} {proof_arg_text(target_body)} "
+                f"(fun {positive_name} :{proof_arg_text(target_var)} => {positive_branch}) "
+                f"(fun {negative_name} :{proof_arg_text(negated_literal)} => {negative_branch}))"
+            )
+            return f"(fun {target_name} :prop => {body_proof})"
+    return None
+
+
 def raw_tptp_inequality_splitting_proof(
     proposition: str,
     parents: list[str],
@@ -56758,6 +56886,13 @@ def raw_tptp_replay_proof(
             if previous_deadline is not None:
                 PROOF_SEARCH_STATE.deadline = previous_deadline
     if rule == "superposition":
+        proof = raw_prop_true_exhaustiveness_superposition_proof(
+            proposition,
+            parents,
+            propositions_by_name,
+        )
+        if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
+            return proof
         target_expr = parse_expr(proposition)
         if target_expr is not None:
             for parent in parents:
