@@ -55042,6 +55042,376 @@ def raw_tptp_avatar_split_guarded_product_forall_clause_proof(
     return build(0, [], "")
 
 
+def raw_forall_prop_identity_component(expr: Expr) -> bool:
+    binders, body = collect_foralls(expr)
+    return (
+        len(binders) == 1
+        and binders[0][1] == "prop"
+        and body.kind == "var"
+        and body.value == binders[0][0]
+    )
+
+
+def raw_tptp_avatar_split_nested_refutation_component_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rewrites: tuple[RawSplitRewrite, ...],
+) -> str | None:
+    if proof_search_timed_out() or len(expr_text(source)) + len(expr_text(target)) > 14000:
+        return None
+    target_literals = raw_clause_literals(target)
+    if len(target_literals) < 4 or len(target_literals) > 12:
+        return None
+    rewrite_by_split = {raw_split_atom_name(rewrite.split): rewrite for rewrite in rewrites}
+    positive_entries: list[tuple[int, RawSplitRewrite]] = []
+    negative_entries: list[tuple[int, RawSplitRewrite]] = []
+    for index, literal in enumerate(target_literals):
+        split = raw_split_literal_parts(literal)
+        if split is None:
+            continue
+        rewrite = rewrite_by_split.get(split[0])
+        if rewrite is None:
+            continue
+        if split[1]:
+            positive_entries.append((index, rewrite))
+        else:
+            negative_entries.append((index, rewrite))
+    if len(positive_entries) < 3 or not negative_entries:
+        return None
+
+    target_text = proof_arg_text(target)
+    taut_rewrites = [
+        rewrite
+        for _index, rewrite in positive_entries
+        if raw_forall_prop_identity_component(rewrite.component)
+    ]
+    if not taut_rewrites:
+        return None
+    taut_by_split = {
+        raw_split_atom_name(rewrite.split): rewrite
+        for rewrite in taut_rewrites
+        if raw_split_atom_name(rewrite.split) is not None
+    }
+
+    def split_name(rewrite: RawSplitRewrite) -> str | None:
+        return raw_split_atom_name(rewrite.split)
+
+    def make_clause_component_proof(
+        desired_rewrite: RawSplitRewrite,
+        clause_rewrite: RawSplitRewrite,
+        not_by_split: dict[str, str],
+        split_true_refutations: list[tuple[RawSplitRewrite, str]],
+    ) -> str | None:
+        desired_binders, desired_body = collect_foralls(desired_rewrite.component)
+        clause_binders, clause_body = collect_foralls(clause_rewrite.component)
+        if len(desired_binders) != 1 or len(clause_binders) != 1:
+            return None
+        desired_name, desired_sort = desired_binders[0]
+        clause_name, clause_sort = clause_binders[0]
+        desired_premises, desired_conclusion = split_arrows(desired_body)
+        if len(desired_premises) != 1 or not false_eliminator_expr(desired_conclusion):
+            return None
+        clause_body_literals = raw_clause_literals(clause_body)
+        if len(clause_body_literals) < 2 or len(clause_body_literals) > 8:
+            return None
+        clause_split_name = split_name(clause_rewrite)
+        if clause_split_name is None or clause_split_name not in not_by_split:
+            return None
+        available_taut_refutations = {
+            name: not_by_split[name]
+            for name in taut_by_split
+            if name in not_by_split
+        }
+        if not available_taut_refutations:
+            return None
+
+        desired_var = Expr("var", value=desired_name)
+        clause_var = Expr("var", value=clause_name)
+
+        def prove_from_source_literal(source_literal: Expr, literal_proof: str, premise_name: str) -> str | None:
+            for split, split_proof_name in split_true_refutations:
+                refuted = raw_literal_refutation_from_split_true_assumption(
+                    source_literal,
+                    literal_proof,
+                    clause_body,
+                    split,
+                    split_proof_name,
+                )
+                if refuted is not None:
+                    return refuted
+            source_binders, source_body = collect_foralls(source_literal)
+            source_literals = raw_clause_literals(source_body)
+            if len(source_binders) < 2 or len(source_binders) > 7 or len(source_literals) > 12:
+                return None
+            source_sorts = {name: sort for name, sort in source_binders}
+            desired_sources = [name for name, sort in source_binders if sort == desired_sort]
+            clause_sources = [name for name, sort in source_binders if sort == clause_sort]
+            if not desired_sources or not clause_sources:
+                return None
+            local_sorts = {**source_sorts, desired_name: desired_sort, clause_name: clause_sort}
+            avoid_names = {desired_name, clause_name}
+
+            for desired_source in desired_sources:
+                for clause_source in clause_sources:
+                    substitutions: dict[str, Expr] = {}
+                    for source_name, source_sort in source_binders:
+                        if source_name == desired_source:
+                            substitutions[source_name] = desired_var
+                        elif source_name == clause_source:
+                            substitutions[source_name] = clause_var
+                        elif source_sort == "prop":
+                            substitutions[source_name] = taut_rewrites[0].component
+                        else:
+                            replacement = raw_tptp_constant_for_sort(source_sort, local_sorts, avoid_names)
+                            if replacement is None:
+                                substitutions = {}
+                                break
+                            substitutions[source_name] = replacement
+                    if not substitutions:
+                        continue
+                    instantiated_body = substitute_expr(source_body, substitutions)
+                    if len(raw_clause_literals(instantiated_body)) > 12:
+                        continue
+                    applied_source = literal_proof
+                    for source_name, _source_sort in source_binders:
+                        applied_source = f"({proof_head(applied_source)} {proof_arg_text(substitutions[source_name])})"
+
+                    def prove_clause_body(branch: Expr, branch_proof: str) -> str | None:
+                        direct = raw_literal_to_clause_proof(branch, clause_body, branch_proof, clause_body_literals, ())
+                        if direct is not None:
+                            return direct
+                        desired_branch = raw_literal_direct_transform_proof(branch, desired_body, branch_proof, ())
+                        if desired_branch is not None:
+                            false_proof = f"({proof_head(desired_branch)} {premise_name})"
+                            return raw_false_to_expr_proof(false_proof, clause_body, desired_conclusion)
+                        for taut_split_name, not_taut in available_taut_refutations.items():
+                            taut_rewrite = taut_by_split[taut_split_name]
+                            taut_branch = raw_literal_direct_transform_proof(
+                                branch,
+                                taut_rewrite.component,
+                                branch_proof,
+                                (),
+                            )
+                            if taut_branch is None:
+                                continue
+                            taut_split = f"({proof_head(taut_rewrite.component_to_split)} {proof_term_text(taut_branch)})"
+                            false_proof = f"({not_taut} {proof_term_text(taut_split)})"
+                            return raw_false_to_expr_proof(false_proof, clause_body)
+                        for split, split_proof_name in split_true_refutations:
+                            refuted = raw_literal_refutation_from_split_true_assumption(
+                                branch,
+                                branch_proof,
+                                clause_body,
+                                split,
+                                split_proof_name,
+                            )
+                            if refuted is not None:
+                                return refuted
+                        return None
+
+                    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+                    PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(clause_body)
+                    try:
+                        clause_body_proof = raw_clause_cases_with_handler(
+                            instantiated_body,
+                            applied_source,
+                            prove_clause_body,
+                            avoid_text="avatar_nested_refutation",
+                        )
+                    finally:
+                        if previous_target is None:
+                            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+                        else:
+                            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+                    if clause_body_proof is not None:
+                        return clause_body_proof
+            return None
+
+        premise_name = fresh_identifier(
+            "Hprem",
+            expr_text(desired_body),
+            expr_text(clause_body),
+            source_proof,
+        )
+
+        def source_handler(source_literal: Expr, literal_proof: str) -> str | None:
+            return prove_from_source_literal(source_literal, literal_proof, premise_name)
+
+        previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+        PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(clause_body)
+        try:
+            clause_body_proof = raw_clause_cases_with_handler(
+                source,
+                source_proof,
+                source_handler,
+                avoid_text="avatar_nested_source",
+            )
+        finally:
+            if previous_target is None:
+                if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                    delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+            else:
+                PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+        if clause_body_proof is None:
+            return None
+        clause_component_proof = f"(fun {clause_name} :{clause_sort} => {clause_body_proof})"
+        clause_split_proof = (
+            f"({proof_head(clause_rewrite.component_to_split)} "
+            f"{proof_term_text(clause_component_proof)})"
+        )
+        contradiction = f"({not_by_split[clause_split_name]} {proof_term_text(clause_split_proof)})"
+        desired_body_proof = raw_false_to_expr_proof(contradiction, desired_conclusion)
+        return f"(fun {desired_name} :{desired_sort} => (fun {premise_name} => {desired_body_proof}))"
+
+    def desired_split_proof(
+        desired_rewrite: RawSplitRewrite,
+        not_by_split: dict[str, str],
+        split_true_refutations: list[tuple[RawSplitRewrite, str]],
+    ) -> str | None:
+        desired_name = split_name(desired_rewrite)
+        if desired_name is None:
+            return None
+        for _clause_index, clause_rewrite in positive_entries:
+            clause_name = split_name(clause_rewrite)
+            if clause_name is None or clause_name == desired_name:
+                continue
+            if clause_name not in not_by_split:
+                continue
+            if raw_forall_prop_identity_component(clause_rewrite.component):
+                continue
+            component_proof = make_clause_component_proof(
+                desired_rewrite,
+                clause_rewrite,
+                not_by_split,
+                split_true_refutations,
+            )
+            if component_proof is None:
+                continue
+            return f"({proof_head(desired_rewrite.component_to_split)} {proof_term_text(component_proof)})"
+        return None
+
+    def build_positive_chain(
+        desired_index: int,
+        entries: list[tuple[int, RawSplitRewrite]],
+        position: int,
+        not_by_split: dict[str, str],
+        avoid_text: str,
+        split_true_refutations: list[tuple[RawSplitRewrite, str]],
+    ) -> str | None:
+        if position >= len(entries):
+            target_index, desired_rewrite = positive_entries[desired_index]
+            proof = desired_split_proof(desired_rewrite, not_by_split, split_true_refutations)
+            if proof is None:
+                return None
+            return raw_or_intro_literal_at(target, target_index, proof)
+        target_index, rewrite = entries[position]
+        split = rewrite.split
+        true_branch = raw_or_intro_literal_at(target, target_index, "Hsplit")
+        if true_branch is None:
+            return None
+        not_name = fresh_identifier(
+            "HnotSplit",
+            expr_text(target),
+            expr_text(split),
+            source_proof,
+            avoid_text,
+            str(position),
+        )
+        name = split_name(rewrite)
+        next_not = dict(not_by_split)
+        if name is not None:
+            next_not[name] = not_name
+        false_branch = build_positive_chain(
+            desired_index,
+            entries,
+            position + 1,
+            next_not,
+            f"{avoid_text} {not_name}",
+            split_true_refutations,
+        )
+        if false_branch is None:
+            return None
+        return (
+            f"(xm {proof_arg_text(split)} {target_text} "
+            f"(fun Hsplit => {proof_term_text(true_branch)}) "
+            f"(fun {not_name} => {proof_term_text(false_branch)}))"
+        )
+
+    def build_after_guards(
+        split_true_refutations: list[tuple[RawSplitRewrite, str]],
+    ) -> str | None:
+        for desired_position, (_target_index, desired_rewrite) in enumerate(positive_entries):
+            desired_binders, desired_body = collect_foralls(desired_rewrite.component)
+            desired_premises, desired_conclusion = split_arrows(desired_body)
+            if (
+                len(desired_binders) != 1
+                or len(desired_premises) != 1
+                or not false_eliminator_expr(desired_conclusion)
+            ):
+                continue
+            other_entries = [
+                entry
+                for index, entry in enumerate(positive_entries)
+                if index != desired_position
+            ]
+            proof = build_positive_chain(
+                desired_position,
+                other_entries,
+                0,
+                {},
+                "",
+                split_true_refutations,
+            )
+            if proof is not None:
+                return proof
+        return None
+
+    def build_guards(
+        position: int,
+        split_true_refutations: list[tuple[RawSplitRewrite, str]],
+        avoid_text: str,
+    ) -> str | None:
+        if position >= len(negative_entries):
+            return build_after_guards(split_true_refutations)
+        target_index, rewrite = negative_entries[position]
+        split_true_name = fresh_identifier(
+            "Hsplit",
+            expr_text(target),
+            expr_text(rewrite.split),
+            source_proof,
+            avoid_text,
+            str(position),
+        )
+        true_branch = build_guards(
+            position + 1,
+            [*split_true_refutations, (rewrite, split_true_name)],
+            f"{avoid_text} {split_true_name}",
+        )
+        if true_branch is None:
+            return None
+        not_name = fresh_identifier(
+            "HnotSplit",
+            expr_text(target),
+            expr_text(rewrite.split),
+            source_proof,
+            avoid_text,
+            split_true_name,
+            str(position),
+        )
+        false_branch = raw_or_intro_literal_at(target, target_index, not_name)
+        if false_branch is None:
+            return None
+        return (
+            f"(xm {proof_arg_text(rewrite.split)} {target_text} "
+            f"(fun {split_true_name} => {proof_term_text(true_branch)}) "
+            f"(fun {not_name} => {proof_term_text(false_branch)}))"
+        )
+
+    return build_guards(0, [], "")
+
+
 def raw_tptp_avatar_split_multi_binder_product_proof(
     source: Expr,
     target: Expr,
@@ -55441,6 +55811,14 @@ def raw_tptp_avatar_split_clause_proof(
     )
     if guarded_product is not None:
         return guarded_product
+    nested_refutation = raw_tptp_avatar_split_nested_refutation_component_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+        rewrites,
+    )
+    if nested_refutation is not None:
+        return nested_refutation
     sequential_positive = raw_tptp_avatar_split_sequential_positive_component_proof(
         source,
         target,
