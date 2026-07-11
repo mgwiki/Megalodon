@@ -195,6 +195,8 @@ def raw_tptp_replay_seconds_for_rule(rule: str | None) -> float:
         return max(RAW_TPTP_REPLAY_SECONDS, RAW_TPTP_DEFINITION_REPLAY_SECONDS)
     if rule == "superposition":
         return max(RAW_TPTP_REPLAY_SECONDS, 1.0)
+    if rule == "avatar_component_clause":
+        return max(RAW_TPTP_REPLAY_SECONDS, 1.0)
     if rule in {"forward_subsumption_resolution", "backward_subsumption_resolution"}:
         return RAW_TPTP_FORWARD_SUBSUMPTION_REPLAY_SECONDS
     return RAW_TPTP_REPLAY_SECONDS
