@@ -62406,6 +62406,177 @@ def raw_prop_equality_negative_superposition_proof(
     return None
 
 
+def raw_tptp_clause_inequality_splitting_proof(
+    target: Expr,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    target_binders, target_body = collect_foralls(target)
+    target_literals = raw_clause_literals(target_body)
+    if len(target_literals) <= 1 or len(target_literals) > 24:
+        return None
+
+    split_args_by_name: dict[str, tuple[Expr, ...]] = {}
+    source_candidates: list[tuple[list[tuple[str, str]], Expr, str]] = []
+    for parent in parents:
+        parent_expr = parse_expr(propositions_by_name.get(parent, ""))
+        if parent_expr is None:
+            continue
+        parent_binders, parent_body = collect_foralls(parent_expr)
+        negative = raw_negative_body(parent_body)
+        app = raw_app_head_and_args(negative) if negative is not None else None
+        if app is not None and app[1]:
+            split_args_by_name[app[0]] = app[1]
+            continue
+        if len(raw_clause_literals(parent_body)) > 1:
+            source_candidates.append(
+                (
+                    parent_binders,
+                    parent_body,
+                    raw_tptp_canonical_parent_proof_name(parent, propositions_by_name),
+                )
+            )
+    if not split_args_by_name or not source_candidates:
+        return None
+
+    target_sort_env = {**variable_sorts, **{name: sort for name, sort in target_binders}}
+
+    def split_literal_proof(
+        source_literal: Expr,
+        source_literal_proof: str,
+        target_literal: Expr,
+    ) -> str | None:
+        app = raw_app_head_and_args(target_literal)
+        if app is None:
+            return None
+        split_name, target_args = app
+        split_args = split_args_by_name.get(split_name)
+        if split_args is None or not target_args or len(split_args) != len(target_args):
+            return None
+
+        target_arg = target_args[-1]
+        split_arg = split_args[-1]
+        source_premises, source_conclusion = split_arrows(source_literal)
+        if len(source_premises) != 1 or not false_eliminator_expr(source_conclusion):
+            return None
+        source_negative = source_premises[0]
+        source_sides = equality_like_sides(source_negative)
+
+        if source_sides is not None and source_negative.kind == "eq":
+            left, right = source_sides
+            if expr_same_mod_alpha(left, target_arg) and expr_same_mod_alpha(right, split_arg):
+                return source_literal_proof
+            if expr_same_mod_alpha(left, split_arg) and expr_same_mod_alpha(right, target_arg):
+                assumption = fresh_identifier(
+                    "Hineq",
+                    expr_text(source_literal),
+                    expr_text(target_literal),
+                    source_literal_proof,
+                )
+                equality_sort = raw_equality_transport_sort(target_arg, split_arg, target_sort_env)
+                symmetry = native_eq_symmetry_proof(assumption, target_arg, split_arg, equality_sort)
+                return (
+                    f"(fun {assumption} :{proof_arg_text(Expr('eq', args=(target_arg, split_arg)))} => "
+                    f"{proof_head(source_literal_proof)} {proof_term_text(symmetry)})"
+                )
+
+        if expr_same_mod_alpha(source_negative, split_arg) and raw_true_expr(target_arg):
+            assumption = fresh_identifier(
+                "Hineq",
+                expr_text(source_literal),
+                expr_text(target_literal),
+                source_literal_proof,
+            )
+            true_proof = raw_true_intro_proof()
+            transported = (
+                f"(vampire_native_eq_transport_prop "
+                f"{proof_arg_text(target_arg)} "
+                f"{proof_arg_text(split_arg)} "
+                f"{assumption} "
+                f"(fun Qprop :prop => Qprop) "
+                f"{proof_term_text(true_proof)})"
+            )
+            return (
+                f"(fun {assumption} :{proof_arg_text(Expr('eq', args=(target_arg, split_arg)))} => "
+                f"{proof_head(source_literal_proof)} {transported})"
+            )
+        return None
+
+    def source_body_for_target_binders(
+        source_binders: list[tuple[str, str]],
+        source_body: Expr,
+        source_proof: str,
+    ) -> tuple[Expr, str] | None:
+        if len(source_binders) != len(target_binders):
+            return None
+        if any(source_sort != target_sort for (_source_name, source_sort), (_target_name, target_sort) in zip(source_binders, target_binders)):
+            return None
+        opened_source = source_body
+        opened_proof = source_proof
+        for (source_name, _source_sort), (target_name, _target_sort) in zip(source_binders, target_binders):
+            if source_name != target_name:
+                opened_source = rename_expr_variables(opened_source, {source_name: target_name})
+            opened_proof = f"({proof_head(opened_proof)} {target_name})"
+        return opened_source, opened_proof
+
+    for source_binders, source_body, source_proof in source_candidates:
+        if source_binders or target_binders:
+            opened = source_body_for_target_binders(source_binders, source_body, source_proof)
+            if opened is None:
+                continue
+            opened_source, opened_proof = opened
+        else:
+            opened_source, opened_proof = source_body, source_proof
+        if not raw_clause_replay_budget_ok(
+            opened_source,
+            target_body,
+            max_literals=24,
+            max_literal_product=384,
+        ):
+            continue
+
+        def handler(source_literal: Expr, source_literal_proof: str) -> str | None:
+            direct = raw_literal_to_clause_proof(
+                source_literal,
+                target_body,
+                source_literal_proof,
+                target_literals,
+                (),
+            )
+            if direct is not None:
+                return direct
+            for target_index, target_literal in enumerate(target_literals):
+                proof = split_literal_proof(source_literal, source_literal_proof, target_literal)
+                if proof is None:
+                    continue
+                introduced = raw_or_intro_literal_at(target_body, target_index, proof)
+                if introduced is not None:
+                    return introduced
+            return None
+
+        previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+        PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+        try:
+            body_proof = raw_clause_cases_with_handler(
+                opened_source,
+                opened_proof,
+                handler,
+            )
+        finally:
+            if previous_target is None:
+                if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                    delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+            else:
+                PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+        if body_proof is None:
+            continue
+        for name, sort in reversed(target_binders):
+            body_proof = f"(fun {name} :{sort} => {body_proof})"
+        return body_proof
+    return None
+
+
 def raw_tptp_inequality_splitting_proof(
     proposition: str,
     parents: list[str],
@@ -62413,6 +62584,16 @@ def raw_tptp_inequality_splitting_proof(
     variable_sorts: dict[str, str],
 ) -> str | None:
     target = parse_expr(proposition)
+    if target is None:
+        return None
+    clause_proof = raw_tptp_clause_inequality_splitting_proof(
+        target,
+        parents,
+        propositions_by_name,
+        variable_sorts,
+    )
+    if clause_proof is not None:
+        return clause_proof
     target_app = raw_app_head_and_args(target) if target is not None else None
     if target_app is None:
         return None
