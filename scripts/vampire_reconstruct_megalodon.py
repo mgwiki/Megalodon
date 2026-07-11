@@ -70936,6 +70936,9 @@ LOCAL_SET_DECL_RE = re.compile(
     r"^\s*set\s+(?P<name>[_A-Za-z][_A-Za-z0-9']*)"
     r"(?:\s*:\s*(?P<sort>.*?))?\s*:=\s*(?P<body>.*?)\s*\.\s*$"
 )
+LOCAL_SOURCE_FACT_RE = re.compile(
+    r"^\s*(?:(?:[-+*])\s*)?(?:assume|claim)\s+(?P<body>.*?)\s*\.\s*$"
+)
 
 
 def proof_or_problem_obligation_line(proof: Path | None, problem: Path | None) -> int | None:
@@ -71003,6 +71006,41 @@ def source_local_set_definitions(source: Path | None, line: int | None) -> dict[
             continue
         in_scope[name] = (sort, body)
     return in_scope
+
+
+def source_local_fact_propositions(source: Path | None, line: int | None) -> dict[str, str | None]:
+    if source is None or line is None or not source.exists():
+        return {}
+    theorem_line = source_enclosing_theorem_line(source, line)
+    if theorem_line is None:
+        return {}
+    rows = source.read_text(encoding="utf-8", errors="replace").splitlines()
+    scanned_rows = rows[theorem_line - 1 : min(line, len(rows))]
+    facts: dict[str, str | None] = {}
+    for row in scanned_rows:
+        fragments = [row]
+        fragments.extend(
+            f"{fragment.strip()}."
+            for fragment in row.split(".")
+            if fragment.strip()
+        )
+        for fragment in fragments:
+            match = LOCAL_SOURCE_FACT_RE.match(fragment)
+            if match is None:
+                continue
+            body = match.group("body").strip()
+            if not body:
+                continue
+            name_text, separator, proposition = body.partition(":")
+            if separator:
+                name = name_text.strip()
+                if re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", name):
+                    facts[name] = proposition.strip() or None
+                continue
+            for name in SOURCE_IDENTIFIER_RE.findall(name_text):
+                if name != "_":
+                    facts.setdefault(name, None)
+    return facts
 
 
 def local_set_definition_body_is_safe(body: str) -> bool:
@@ -71180,6 +71218,43 @@ def raw_tptp_source_fact_proof(
     if parsed_source_fact is None:
         return None
     return raw_source_fact_native_equality_proof(parsed_source_fact, source_name)
+
+
+def raw_tptp_local_source_fact_proof(
+    proposition: str,
+    source_name: str | None,
+    local_source_fact_propositions: dict[str, str | None],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if source_name is None or source_name not in local_source_fact_propositions:
+        return None
+    source_proposition = local_source_fact_propositions[source_name]
+    if source_proposition is None:
+        return source_name
+    if canonical_proposition(source_proposition) == canonical_proposition(proposition):
+        return source_name
+    source = parse_expr(source_proposition)
+    target = parse_expr(proposition)
+    if source is None or target is None:
+        return None
+    if expr_same_mod_alpha(source, target):
+        return source_name
+    proof = raw_structural_normal_form_transform_proof(
+        source,
+        target,
+        source_name,
+        variable_sorts,
+    )
+    if proof is not None:
+        return proof
+    if raw_clause_replay_budget_ok(source, target, max_literals=16, max_literal_product=256):
+        proof = raw_clause_subsumption_transform_proof(source, target, source_name, deep_literals=True)
+        if proof is not None:
+            return proof
+        proof = raw_clause_transform_proof(source, target, source_name)
+        if proof is not None:
+            return proof
+    return None
 
 
 def raw_tptp_implication_chain(premises: list[str], conclusion: str) -> str:
@@ -71368,6 +71443,10 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         source,
         proof_or_problem_obligation_line(proof, problem),
     )
+    all_local_source_facts = source_local_fact_propositions(
+        source,
+        proof_or_problem_obligation_line(proof, problem),
+    )
     if source_context_variable_names:
         all_local_set_definitions = {
             name: value
@@ -71516,7 +71595,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             propositions.append(proposition)
         add_missing_raw_tptp_variables(propositions, variable_sorts)
 
-    source_reserved_names = source_active_declared_names(source) | source_toplevel_declared_names(source)
+    source_reserved_names = (
+        source_active_declared_names(source)
+        | source_toplevel_declared_names(source)
+        | set(all_local_source_facts)
+    )
     local_identifier_renames: dict[str, str] = {}
     if all_local_set_definitions:
         used_reconstruction_names = (
@@ -71645,6 +71728,14 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     )
     local_set_definition_names = set(local_set_definitions)
     source_local_set_names = set(all_local_set_definitions) | set(renamed_all_local_set_definitions)
+    local_source_fact_propositions = {
+        name: (
+            use_ambient_basic_logic_text(rename_generated_identifier_text(proposition, local_identifier_renames))
+            if proposition is not None
+            else None
+        )
+        for name, proposition in all_local_source_facts.items()
+    }
 
     lines = [
         "// Raw Vampire TPTP reconstruction skeleton.",
@@ -71689,6 +71780,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     known_raw_proposition_entries: list[tuple[str, str]] = []
     axiom_claim_instantiations: dict[str, str] = {}
     local_skolem_axiom_aliases: list[tuple[str, str, str]] = []
+    emitted_local_source_facts: set[str] = set()
 
     def remember_raw_proposition(proposition: str, proof_name: str) -> None:
         canonical = canonical_proposition(proposition)
@@ -71739,6 +71831,25 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         lines.append("Qed.")
         declared_names.add(axiom_name)
         remember_raw_proposition(proposition, axiom_name)
+        return True
+
+    def emit_local_source_fact(source_name: str | None, fallback_proposition: str) -> bool:
+        if source_name is None or source_name not in local_source_fact_propositions:
+            return False
+        if source_name in emitted_local_source_facts:
+            return True
+        if not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", source_name):
+            return False
+        if source_name in declared_names:
+            return True
+        proposition = local_source_fact_propositions[source_name] or fallback_proposition
+        if not proposition:
+            return False
+        lines.append(f"// source-local fact from original Megalodon proof context: {source_name}")
+        lines.append(f"Axiom {source_name}: {proposition}.")
+        declared_names.add(source_name)
+        emitted_local_source_facts.add(source_name)
+        remember_raw_proposition(proposition, source_name)
         return True
 
     for declaration in early_source_declarations:
@@ -71956,6 +72067,17 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         elif (universal_instance_proof := known_raw_universal_instance_proof(proposition)) is not None:
             lines.append(f"Theorem {claim_name}: {proposition}.")
             lines.append(f"exact {proof_argument_text(universal_instance_proof)}.")
+            lines.append("Qed.")
+        elif (
+            source_fact_proof := raw_tptp_local_source_fact_proof(
+                proposition,
+                source_name,
+                local_source_fact_propositions,
+                variable_sorts,
+            )
+        ) is not None and emit_local_source_fact(source_name, proposition):
+            lines.append(f"Theorem {claim_name}: {proposition}.")
+            lines.append(f"exact {proof_argument_text(source_fact_proof)}.")
             lines.append("Qed.")
         elif (
             source_fact_proof := raw_tptp_source_fact_proof(
