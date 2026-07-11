@@ -22814,6 +22814,164 @@ def raw_tptp_outer_branch_boolean_superposition_proof(
     )
 
 
+def raw_nested_guarded_equality_rewrite_superposition_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality_clause: Expr,
+    equality_clause_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if proof_search_timed_out():
+        return None
+    target_binders, target_body = collect_foralls(target)
+    source_body = collect_foralls(source)[1]
+    source_literals = raw_clause_literals(source_body)
+    target_literals = raw_clause_literals(target_body)
+    if len(target_binders) > 6 or len(source_literals) > 8 or len(target_literals) > 12:
+        return None
+
+    def quantified_literal_rewrite(
+        source_literal: Expr,
+        target_literal: Expr,
+        source_literal_proof: str,
+    ) -> str | None:
+        source_binders, source_literal_body = collect_foralls(source_literal)
+        target_literal_binders, target_literal_body = collect_foralls(target_literal)
+        if (
+            not source_binders
+            or len(source_binders) != len(target_literal_binders)
+            or len(source_binders) > 6
+            or any(source_sort != target_sort for (_source_name, source_sort), (_target_name, target_sort) in zip(source_binders, target_literal_binders))
+        ):
+            return None
+        rename = {
+            source_name: target_name
+            for (source_name, _source_sort), (target_name, _target_sort) in zip(source_binders, target_literal_binders)
+            if source_name != target_name
+        }
+        if rename:
+            source_literal_body = rename_expr_variables(source_literal_body, rename)
+        source_body_proof = source_literal_proof
+        for target_name, _target_sort in target_literal_binders:
+            source_body_proof = f"({proof_head(source_body_proof)} {target_name})"
+
+        avoid = (
+            {name for name, _sort in target_binders}
+            | {name for name, _sort in target_literal_binders}
+            | expr_variables(target_body)
+            | expr_bound_variables(target_body)
+            | expr_variables(source_literal_body)
+            | expr_bound_variables(source_literal_body)
+        )
+        equality_binders, equality_body = raw_freshen_quantified_binders(equality_clause, avoid, "EQ")
+        if not equality_binders or len(equality_binders) > 5:
+            return None
+        equality_literals = raw_clause_literals(equality_body)
+        if len(equality_literals) > 6:
+            return None
+        equality_binder_names = {name for name, _sort in equality_binders}
+        local_sorts = {
+            **variable_sorts,
+            **{name: sort for name, sort in target_binders},
+            **{name: sort for name, sort in target_literal_binders},
+            **{name: sort for name, sort in equality_binders},
+        }
+
+        def complete_equality_substitution(subst: dict[str, Expr]) -> dict[str, Expr] | None:
+            completed = dict(subst)
+            flatten_substitution(completed)
+            if not equality_binder_names <= completed.keys():
+                return None
+            for name in equality_binder_names:
+                if expr_variables(completed[name]) & equality_binder_names:
+                    return None
+            return completed
+
+        def instantiate_equality_proof(subst: dict[str, Expr]) -> str | None:
+            proof = equality_clause_proof
+            for name, _sort in equality_binders:
+                value = subst.get(name)
+                if value is None:
+                    return None
+                proof = f"({proof_head(proof)} {proof_arg_text(value)})"
+            return proof
+
+        attempts = 0
+        source_subterms = expr_subterms(source_literal_body, limit=160)
+        for equality_literal in equality_literals:
+            equality_sides = equality_like_sides(equality_literal)
+            if equality_sides is None:
+                continue
+            for old_pattern, _new_pattern in (equality_sides, (equality_sides[1], equality_sides[0])):
+                for source_subterm in source_subterms:
+                    attempts += 1
+                    if attempts > 2048 or proof_search_timed_out():
+                        return None
+                    trial: dict[str, Expr] = {}
+                    if not match_expr_with_eta_instantiation(
+                        old_pattern,
+                        source_subterm,
+                        equality_binder_names,
+                        trial,
+                        local_sorts,
+                    ):
+                        continue
+                    completed = complete_equality_substitution(trial)
+                    if completed is None:
+                        continue
+                    equality_inst = beta_reduce_expr(flatten_applications(substitute_expr(equality_body, completed)))
+                    equality_inst_proof = instantiate_equality_proof(completed)
+                    if equality_inst_proof is None:
+                        continue
+                    body_proof = raw_guarded_equality_clause_rewrite_to_target_proof(
+                        source_literal_body,
+                        target_literal_body,
+                        source_body_proof,
+                        equality_inst,
+                        equality_inst_proof,
+                        local_sorts,
+                    )
+                    if body_proof is None:
+                        continue
+                    for target_name, target_sort in reversed(target_literal_binders):
+                        body_proof = f"(fun {target_name} :{target_sort} => {body_proof})"
+                    return body_proof
+        return None
+
+    def source_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
+        direct = raw_literal_to_clause_proof(source_literal, target_body, source_literal_proof, target_literals, ())
+        if direct is not None:
+            return direct
+        for target_index, target_literal in enumerate(target_literals):
+            body_proof = quantified_literal_rewrite(source_literal, target_literal, source_literal_proof)
+            if body_proof is None:
+                continue
+            return raw_or_intro_literal_at(target_body, target_index, body_proof)
+        return None
+
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+    try:
+        proof = raw_clause_cases_with_handler(
+            source_body,
+            source_proof,
+            source_handler,
+            avoid_text=equality_clause_proof,
+        )
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+    if proof is None:
+        return None
+    for name, sort in reversed(target_binders):
+        proof = f"(fun {name} :{sort} => {proof})"
+    return proof
+
+
 def raw_quantified_flat_clause_resolution_proof(
     source: Expr,
     target: Expr,
@@ -58172,6 +58330,26 @@ def raw_tptp_replay_proof(
                         parent_exprs[0][1],
                         parent_exprs[1][0],
                         parent_exprs[1][1],
+                        variable_sorts,
+                    )
+                    if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
+                        return proof
+                    proof = raw_nested_guarded_equality_rewrite_superposition_proof(
+                        parent_exprs[0][0],
+                        target_expr,
+                        parent_exprs[0][1],
+                        parent_exprs[1][0],
+                        parent_exprs[1][1],
+                        variable_sorts,
+                    )
+                    if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
+                        return proof
+                    proof = raw_nested_guarded_equality_rewrite_superposition_proof(
+                        parent_exprs[1][0],
+                        target_expr,
+                        parent_exprs[1][1],
+                        parent_exprs[0][0],
+                        parent_exprs[0][1],
                         variable_sorts,
                     )
                     if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
