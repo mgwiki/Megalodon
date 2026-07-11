@@ -40141,6 +40141,150 @@ def raw_quantified_clause_expansion_superposition_proof(
             PROOF_SEARCH_STATE.flat_resolution_target = previous_target
 
 
+def raw_guarded_quantified_body_equality_clause_superposition_proof(
+    source_clause: Expr,
+    target: Expr,
+    source_clause_proof: str,
+    equality_clause: Expr,
+    equality_clause_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    _target_binders, target_body = collect_foralls(target)
+    target_literals = raw_clause_literals(target_body)
+    if len(target_literals) > 16:
+        return None
+    target_quantified_index = -1
+    target_quantified: Expr | None = None
+    for index, literal in enumerate(target_literals):
+        if collect_foralls(literal)[0]:
+            target_quantified_index = index
+            target_quantified = literal
+            break
+    if target_quantified is None:
+        return None
+    target_inner_binders, target_inner = collect_foralls(target_quantified)
+    if not target_inner_binders or len(target_inner_binders) > 8:
+        return None
+
+    def quantified_equality_candidate(expr: Expr) -> bool:
+        binders, body = collect_foralls(expr)
+        return bool(binders) and any(equality_like_sides(literal) is not None for literal in raw_clause_literals(body))
+
+    def source_quantified_candidate(expr: Expr) -> bool:
+        return bool(collect_foralls(expr)[0])
+
+    def prove_quantified_target(
+        source_quantified: Expr,
+        source_quantified_proof: str,
+        equality_quantified: Expr,
+        equality_quantified_proof: str,
+    ) -> str | None:
+        source_options = raw_superposition_target_residual_instantiated_options(
+            source_quantified,
+            source_quantified_proof,
+            target_quantified,
+            max_options=24,
+        )
+        if not source_options:
+            return None
+        equality_options = raw_superposition_target_residual_instantiated_options(
+            equality_quantified,
+            equality_quantified_proof,
+            target_quantified,
+            max_options=24,
+        )
+        if not equality_options:
+            return None
+        local_sorts = {
+            **variable_sorts,
+            **{name: sort for name, sort in target_inner_binders},
+        }
+        for source_option, source_option_proof in source_options:
+            if proof_search_timed_out():
+                return None
+            for equality_option, equality_option_proof in equality_options:
+                if proof_search_timed_out():
+                    return None
+                proof = raw_equality_clause_superposition_proof(
+                    source_option,
+                    target_inner,
+                    source_option_proof,
+                    equality_option,
+                    equality_option_proof,
+                    local_sorts,
+                )
+                if proof is None:
+                    continue
+                for name, sort in reversed(target_inner_binders):
+                    proof = f"(fun {name} :{sort} => {proof})"
+                return proof
+        return None
+
+    def with_source_quantified(
+        source_quantified: Expr,
+        source_quantified_proof: str,
+        equality_quantified: Expr,
+        equality_quantified_proof: str,
+    ) -> str | None:
+        quantified = prove_quantified_target(
+            source_quantified,
+            source_quantified_proof,
+            equality_quantified,
+            equality_quantified_proof,
+        )
+        if quantified is None:
+            return None
+        return raw_or_intro_literal_at(target_body, target_quantified_index, quantified)
+
+    def with_equality_quantified(equality_quantified: Expr, equality_quantified_proof: str) -> str | None:
+        source_binders, source_body = collect_foralls(source_clause)
+        if source_binders:
+            return with_source_quantified(source_clause, source_clause_proof, equality_quantified, equality_quantified_proof)
+
+        def source_handler(literal: Expr, literal_proof: str) -> str | None:
+            direct = raw_literal_to_clause_proof(literal, target_body, literal_proof, target_literals, ())
+            if direct is not None:
+                return direct
+            if not source_quantified_candidate(literal):
+                return None
+            return with_source_quantified(literal, literal_proof, equality_quantified, equality_quantified_proof)
+
+        return raw_clause_cases_with_handler(
+            source_body,
+            source_clause_proof,
+            source_handler,
+            avoid_text=equality_quantified_proof,
+        )
+
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+    try:
+        if quantified_equality_candidate(equality_clause):
+            return with_equality_quantified(equality_clause, equality_clause_proof)
+        _equality_binders, equality_body = collect_foralls(equality_clause)
+
+        def equality_handler(literal: Expr, literal_proof: str) -> str | None:
+            direct = raw_literal_to_clause_proof(literal, target_body, literal_proof, target_literals, ())
+            if direct is not None:
+                return direct
+            if not quantified_equality_candidate(literal):
+                return None
+            return with_equality_quantified(literal, literal_proof)
+
+        return raw_clause_cases_with_handler(
+            equality_body,
+            equality_clause_proof,
+            equality_handler,
+            avoid_text=source_clause_proof,
+        )
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_tptp_guarded_prop_equality_factoring_fallback(
     proposition: str,
     parents: list[str],
@@ -43857,6 +44001,26 @@ def raw_tptp_superposition_proof(
             if proof is not None:
                 return proof
             proof = raw_quantified_target_literal_equality_clause_superposition_proof(
+                parent_exprs[1][0],
+                target_expr,
+                parent_exprs[1][1],
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_guarded_quantified_body_equality_clause_superposition_proof(
+                parent_exprs[0][0],
+                target_expr,
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_guarded_quantified_body_equality_clause_superposition_proof(
                 parent_exprs[1][0],
                 target_expr,
                 parent_exprs[1][1],
