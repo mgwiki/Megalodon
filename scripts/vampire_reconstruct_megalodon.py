@@ -20336,10 +20336,107 @@ def raw_forall_clause_transform_proof(
     transformed_body = substitute_expr(source_body, subst)
     body_proof = raw_clause_transform_proof(transformed_body, target_body, applied_proof, depth + 1, rewrites)
     if body_proof is None:
+        body_proof = raw_clause_subsumption_transform_proof(
+            transformed_body,
+            target_body,
+            applied_proof,
+            rewrites,
+            deep_literals=True,
+        )
+    if body_proof is None:
         return None
     for target_name, target_sort in reversed(target_binders):
         body_proof = f"(fun {target_name} :{target_sort} => {body_proof})"
     return body_proof
+
+
+def raw_forall_permutation_clause_subsumption_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rewrites: tuple[RawSplitRewrite, ...] = (),
+    *,
+    max_binders: int = 6,
+    max_literals: int = 24,
+    max_permutations: int = 720,
+    deep_literals: bool = False,
+) -> str | None:
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if (
+        not source_binders
+        or len(source_binders) != len(target_binders)
+        or len(source_binders) > max_binders
+    ):
+        return None
+    if sorted(sort for _name, sort in source_binders) != sorted(sort for _name, sort in target_binders):
+        return None
+    if len(raw_clause_literals(source_body)) > max_literals or len(raw_clause_literals(target_body)) > max_literals:
+        return None
+
+    target_names_by_sort: dict[str, list[str]] = {}
+    for target_name, target_sort in target_binders:
+        target_names_by_sort.setdefault(target_sort, []).append(target_name)
+    source_names_by_sort: dict[str, list[str]] = {}
+    for source_name, source_sort in source_binders:
+        source_names_by_sort.setdefault(source_sort, []).append(source_name)
+
+    sort_permutations: list[tuple[str, list[tuple[str, ...]]]] = []
+    permutation_count = 1
+    for sort, source_names in sorted(source_names_by_sort.items()):
+        target_names = target_names_by_sort.get(sort, [])
+        if len(target_names) != len(source_names):
+            return None
+        permutations = list(itertools.permutations(target_names))
+        permutations.sort(
+            key=lambda candidate: sum(
+                0 if source_name == target_name else 1
+                for source_name, target_name in zip(source_names, candidate)
+            )
+        )
+        permutation_count *= len(permutations)
+        if permutation_count > max_permutations:
+            return None
+        sort_permutations.append((sort, permutations))
+
+    def search(index: int, subst_names: dict[str, str]) -> str | None:
+        if proof_search_timed_out():
+            return None
+        if index >= len(sort_permutations):
+            subst = {
+                source_name: Expr("var", value=target_name)
+                for source_name, target_name in subst_names.items()
+            }
+            proof = source_proof
+            for source_name, _source_sort in source_binders:
+                proof = f"({proof_head(proof)} {subst_names[source_name]})"
+            instantiated = substitute_expr(source_body, subst)
+            body_proof = raw_clause_subsumption_transform_proof(
+                instantiated,
+                target_body,
+                proof,
+                rewrites,
+                deep_literals=deep_literals,
+            )
+            if body_proof is None:
+                body_proof = raw_clause_transform_proof(instantiated, target_body, proof, rewrites=rewrites)
+            if body_proof is None:
+                return None
+            for target_name, target_sort in reversed(target_binders):
+                body_proof = f"(fun {target_name} :{target_sort} => {body_proof})"
+            return body_proof
+
+        sort, permutations = sort_permutations[index]
+        source_names = source_names_by_sort[sort]
+        for target_names in permutations:
+            trial = dict(subst_names)
+            trial.update(dict(zip(source_names, target_names)))
+            found = search(index + 1, trial)
+            if found is not None:
+                return found
+        return None
+
+    return search(0, {})
 
 
 def raw_small_forall_permutation_clause_transform_proof(
@@ -56478,7 +56575,15 @@ def raw_tptp_avatar_component_clause_proof(
         transformed = raw_clause_transform_proof(component, target_left, proof)
         if transformed is not None:
             return transformed
-        return raw_forall_clause_transform_proof(component, target_left, proof, 0, ())
+        transformed = raw_forall_clause_transform_proof(component, target_left, proof, 0, ())
+        if transformed is not None:
+            return transformed
+        return raw_forall_permutation_clause_subsumption_transform_proof(
+            component,
+            target_left,
+            proof,
+            deep_literals=True,
+        )
 
     target_right_implication = implication_sides(target_right)
     if (
