@@ -20208,6 +20208,18 @@ def raw_literal_to_clause_proof(
             and len(expr_text(literal)) + len(expr_text(target_literal)) <= 7000
         ):
             target_literal_proof = raw_deep_formula_transform_proof(literal, target_literal, literal_proof, {})
+        if (
+            target_literal_proof is None
+            and rewrites
+            and len(expr_text(literal)) + len(expr_text(target_literal)) <= 5000
+        ):
+            target_literal_proof = raw_structural_normal_form_transform_proof(
+                literal,
+                target_literal,
+                literal_proof,
+                {},
+                rewrites,
+            )
         if target_literal_proof is None:
             continue
         proof = raw_or_intro_literal_at(target, index, target_literal_proof)
@@ -20241,6 +20253,101 @@ def raw_clause_cases_proof(
     )
 
 
+def raw_same_order_clause_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rewrites: tuple[RawSplitRewrite, ...],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if not rewrites or proof_search_timed_out():
+        return None
+    source_literals = raw_clause_literals(source)
+    target_literals = raw_clause_literals(target)
+    if len(source_literals) != len(target_literals) or len(source_literals) > 16:
+        return None
+    if len(source_literals) < 2:
+        return None
+    literal_proofs: list[str] = []
+    for index, (source_literal, target_literal) in enumerate(zip(source_literals, target_literals)):
+        proof_name = f"Hsame{index}"
+        proof = raw_literal_direct_transform_proof(source_literal, target_literal, proof_name, rewrites)
+        if proof is None:
+            proof = raw_structural_normal_form_transform_proof(
+                source_literal,
+                target_literal,
+                proof_name,
+                variable_sorts,
+                rewrites,
+            )
+        if proof is None:
+            return None
+        introduced = raw_or_intro_literal_at(target, index, proof)
+        if introduced is None:
+            return None
+        literal_proofs.append(introduced)
+
+    def build(node: Expr, node_proof: str, start: int) -> str | None:
+        parts = raw_or_parts(node)
+        if parts is None:
+            if start >= len(literal_proofs):
+                return None
+            return literal_proofs[start].replace(f"Hsame{start}", node_proof)
+        left, right = parts
+        left_count = len(raw_clause_literals(left))
+        left_name = fresh_identifier("HLsame", expr_text(node), proof_arg_text(target), node_proof, str(start))
+        right_name = fresh_identifier("HRsame", expr_text(node), proof_arg_text(target), node_proof, left_name, str(start))
+        left_proof = build(left, left_name, start)
+        right_proof = build(right, right_name, start + left_count)
+        if left_proof is None or right_proof is None:
+            return None
+        return (
+            f"({proof_head(node_proof)} {proof_arg_text(target)} "
+            f"(fun {left_name} :{proof_arg_text(left)} => {left_proof}) "
+            f"(fun {right_name} :{proof_arg_text(right)} => {right_proof}))"
+        )
+
+    return build(source, source_proof, 0)
+
+
+def raw_same_order_conjunction_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rewrites: tuple[RawSplitRewrite, ...],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_and = vampire_and_parts(source)
+    target_and = vampire_and_parts(target)
+    if source_and is None or target_and is None or proof_search_timed_out():
+        return None
+    left_name = fresh_identifier("HLsameAnd", expr_text(source), expr_text(target), source_proof)
+    right_name = fresh_identifier("HRsameAnd", expr_text(source), expr_text(target), source_proof, left_name)
+    left_proof = raw_structural_normal_form_transform_proof(
+        source_and[0],
+        target_and[0],
+        left_name,
+        variable_sorts,
+        rewrites,
+    )
+    if left_proof is None:
+        return None
+    right_proof = raw_structural_normal_form_transform_proof(
+        source_and[1],
+        target_and[1],
+        right_name,
+        variable_sorts,
+        rewrites,
+    )
+    if right_proof is None:
+        return None
+    return (
+        f"({proof_head(source_proof)} {proof_arg_text(target)} "
+        f"(fun {left_name} {right_name} => "
+        f"(fun P K => K {proof_term_text(left_proof)} {proof_term_text(right_proof)})))"
+    )
+
+
 def raw_clause_subsumption_transform_proof(
     source: Expr,
     target: Expr,
@@ -20269,6 +20376,15 @@ def raw_clause_subsumption_transform_proof(
     target_literals = raw_clause_literals(target)
     if len(source_literals) > 24 or len(target_literals) > 24:
         return None
+    same_order = raw_same_order_clause_transform_proof(
+        source,
+        target,
+        source_proof,
+        rewrites,
+        {},
+    )
+    if same_order is not None:
+        return same_order
     for literal in source_literals:
         if raw_literal_to_clause_proof(literal, target, "HLit", target_literals, rewrites, deep_literals) is None:
             return None
@@ -61530,6 +61646,15 @@ def raw_tptp_avatar_split_clause_proof(
     rewrites = raw_tptp_split_rewrites(parents[1:], propositions_by_name)
     if not rewrites:
         return None
+    if len(parents) <= 10 and len(raw_clause_literals(target)) <= 8:
+        direct = raw_tptp_avatar_split_direct_component_proof(
+            source,
+            target,
+            raw_tptp_claim_name(parents[0]),
+            rewrites,
+        )
+        if direct is not None:
+            return direct
     branching = raw_tptp_avatar_split_branching_component_proof(
         source,
         target,
@@ -61873,6 +61998,15 @@ def raw_structural_normal_form_transform_proof(
     source_and = vampire_and_parts(source)
     target_and = vampire_and_parts(target)
     if source_and is not None and target_and is not None:
+        same_order = raw_same_order_conjunction_transform_proof(
+            source,
+            target,
+            source_proof,
+            rewrites,
+            variable_sorts,
+        )
+        if same_order is not None:
+            return same_order
         reassociation = raw_conjunction_reassociation_transform_proof(
             source,
             target,
@@ -61921,6 +62055,15 @@ def raw_structural_normal_form_transform_proof(
     source_or = raw_or_parts(source)
     target_or = raw_or_parts(target)
     if source_or is not None and target_or is not None:
+        same_order = raw_same_order_clause_transform_proof(
+            source,
+            target,
+            source_proof,
+            rewrites,
+            variable_sorts,
+        )
+        if same_order is not None:
+            return same_order
         fast_assoc = raw_fast_or_assoc_transform_proof(source, target, source_proof, variable_sorts, rewrites, depth + 1)
         if fast_assoc is not None:
             return fast_assoc
