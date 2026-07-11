@@ -62188,6 +62188,16 @@ def raw_tptp_large_smolka_ennf_needs_fallback(proposition: str) -> bool:
     )
 
 
+def raw_tptp_large_quantified_smolka_ennf_needs_fallback(proposition: str) -> bool:
+    if not raw_tptp_large_smolka_ennf_needs_fallback(proposition):
+        return False
+    expr = parse_expr(proposition)
+    if expr is None:
+        return False
+    binders, body = collect_foralls(expr)
+    return bool(binders) and raw_or_parts(body) is not None
+
+
 def raw_tptp_entry_is_fallback_axiom(rule: str | None, proposition: str | None) -> bool:
     if proposition is None:
         return False
@@ -62198,7 +62208,7 @@ def raw_tptp_entry_is_fallback_axiom(rule: str | None, proposition: str | None) 
         return True
     if (
         rule in {"ennf_transformation", "nnf_transformation"}
-        and raw_tptp_large_smolka_ennf_needs_fallback(proposition)
+        and raw_tptp_large_quantified_smolka_ennf_needs_fallback(proposition)
     ):
         return True
     return rule in {"superposition", "trivial_inequality_removal"} and raw_tptp_eq_prop_true_clause_needs_fallback(proposition)
@@ -74338,7 +74348,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if (
             fallback_axiom
             and rule in {"ennf_transformation", "nnf_transformation"}
-            and raw_tptp_large_smolka_ennf_needs_fallback(proposition)
+            and raw_tptp_large_quantified_smolka_ennf_needs_fallback(proposition)
         ):
             lines.append(
                 "// fallback axiom for a large unannotated Smolka-style ENNF transformation; "
