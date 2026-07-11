@@ -43909,6 +43909,280 @@ def raw_unit_equality_chain_superposition_proof(
     return None
 
 
+def raw_quantified_clause_resolution_superposition_proof(
+    target: Expr,
+    negative_parent: Expr,
+    negative_parent_proof: str,
+    positive_parent: Expr,
+    positive_parent_proof: str,
+) -> str | None:
+    if proof_search_timed_out():
+        return None
+    target_literals = raw_clause_literals(target)
+    positive_literals = raw_clause_literals(positive_parent)
+    negative_literals = raw_clause_literals(negative_parent)
+    if len(target_literals) > 16 or len(positive_literals) > 12 or len(negative_literals) != 1:
+        return None
+
+    target_quantified = [
+        (index, literal, *collect_foralls(literal))
+        for index, literal in enumerate(target_literals)
+        if collect_foralls(literal)[0]
+    ]
+    positive_quantified = [
+        (literal, *collect_foralls(literal))
+        for literal in positive_literals
+        if collect_foralls(literal)[0]
+    ]
+    negative_quantified = [
+        (literal, *collect_foralls(literal))
+        for literal in negative_literals
+        if collect_foralls(literal)[0]
+    ]
+    if len(target_quantified) != 1 or len(positive_quantified) != 1 or len(negative_quantified) != 1:
+        return None
+
+    target_index, _target_quantified_literal, target_binders, target_body = target_quantified[0]
+    positive_quantified_literal, positive_binders, positive_body = positive_quantified[0]
+    negative_quantified_literal = negative_quantified[0][0]
+    avoid_negative_names = (
+        {name for name, _sort in target_binders}
+        | {name for name, _sort in positive_binders}
+        | expr_variables(target_body)
+        | expr_bound_variables(target_body)
+        | expr_variables(positive_body)
+        | expr_bound_variables(positive_body)
+    )
+    negative_binders, negative_body = raw_freshen_quantified_binders(
+        negative_quantified_literal,
+        avoid_negative_names,
+        "NQ",
+    )
+    if len(target_binders) != len(positive_binders) or len(target_binders) > 4 or len(negative_binders) > 8:
+        return None
+    if len(raw_clause_literals(target_body)) > 16 or len(raw_clause_literals(positive_body)) > 12:
+        return None
+    if len(raw_clause_literals(negative_body)) > 12:
+        return None
+
+    negative_binder_names = {name for name, _sort in negative_binders}
+
+    def instantiated_negative_clause(
+        positive_literal: Expr,
+    ) -> tuple[Expr, Expr, str, Expr] | None:
+        for negative_literal in raw_clause_literals(negative_body):
+            premises, conclusion = split_arrows(negative_literal)
+            if len(premises) != 1 or not false_eliminator_expr(conclusion):
+                continue
+            subst: dict[str, Expr] = {}
+            if not match_expr_with_alpha_instantiation(premises[0], positive_literal, negative_binder_names, subst):
+                continue
+            flatten_substitution(subst)
+            if not negative_binder_names <= subst.keys():
+                continue
+            if any(expr_variables(subst[name]) & negative_binder_names for name in negative_binder_names):
+                continue
+            instantiated_premise = substitute_expr(premises[0], subst)
+            if not expr_same_mod_alpha(beta_normalize_expr(instantiated_premise), beta_normalize_expr(positive_literal)):
+                continue
+            proof = negative_parent_proof
+            for name, _sort in negative_binders:
+                proof = f"({proof_head(proof)} {proof_arg_text(subst[name])})"
+            return substitute_expr(negative_body, subst), substitute_expr(negative_literal, subst), proof, conclusion
+        return None
+
+    def target_body_from_positive_branch(positive_literal: Expr, positive_literal_proof: str) -> str | None:
+        direct = raw_or_intro_from_branch(target_body, positive_literal, positive_literal_proof)
+        if direct is not None:
+            return direct
+        negative_instance = instantiated_negative_clause(positive_literal)
+        if negative_instance is None:
+            return None
+        negative_instance_body, negative_instance_literal, negative_instance_proof, negative_conclusion = negative_instance
+
+        def negative_handler(negative_literal: Expr, negative_literal_proof: str) -> str | None:
+            premises, conclusion = split_arrows(negative_literal)
+            if (
+                len(premises) == 1
+                and false_eliminator_expr(conclusion)
+                and expr_same_mod_alpha(beta_normalize_expr(premises[0]), beta_normalize_expr(positive_literal))
+            ):
+                false_proof = f"({proof_head(negative_literal_proof)} {proof_term_text(positive_literal_proof)})"
+                return raw_false_to_expr_proof(false_proof, target_body, negative_conclusion)
+            if expr_same_mod_alpha(negative_literal, negative_instance_literal):
+                false_proof = f"({proof_head(negative_literal_proof)} {proof_term_text(positive_literal_proof)})"
+                return raw_false_to_expr_proof(false_proof, target_body, negative_conclusion)
+            return raw_or_intro_from_branch(target_body, negative_literal, negative_literal_proof)
+
+        return raw_clause_cases_with_handler(
+            negative_instance_body,
+            negative_instance_proof,
+            negative_handler,
+            avoid_text=positive_literal_proof,
+        )
+
+    def quantified_target_proof(
+        positive_quantified_proof: str,
+        subst: dict[str, Expr],
+    ) -> str | None:
+        positive_instance_body = substitute_expr(positive_body, subst)
+        positive_instance_proof = positive_quantified_proof
+        for name, _sort in positive_binders:
+            positive_instance_proof = f"({proof_head(positive_instance_proof)} {proof_arg_text(subst[name])})"
+        previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+        PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+
+        def positive_handler(positive_literal: Expr, positive_literal_proof: str) -> str | None:
+            return target_body_from_positive_branch(positive_literal, positive_literal_proof)
+
+        try:
+            body_proof = raw_clause_cases_with_handler(
+                positive_instance_body,
+                positive_instance_proof,
+                positive_handler,
+                avoid_text=positive_quantified_proof,
+            )
+        finally:
+            if previous_target is None:
+                if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                    delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+            else:
+                PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+        if body_proof is None:
+            return None
+        for name, sort in reversed(target_binders):
+            body_proof = f"(fun {name} :{sort} => {body_proof})"
+        return body_proof
+
+    def prove_with_substitution(subst: dict[str, Expr]) -> str | None:
+        previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+        PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target)
+
+        def positive_top_handler(literal: Expr, literal_proof: str) -> str | None:
+            if expr_same_mod_alpha(literal, positive_quantified_literal):
+                quantified_proof = quantified_target_proof(literal_proof, subst)
+                if quantified_proof is None:
+                    return None
+                return raw_or_intro_literal_at(target, target_index, quantified_proof)
+            return raw_or_intro_from_branch(target, literal, literal_proof)
+
+        try:
+            return raw_clause_cases_with_handler(
+                positive_parent,
+                positive_parent_proof,
+                positive_top_handler,
+                avoid_text=negative_parent_proof,
+            )
+        finally:
+            if previous_target is None:
+                if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                    delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+            else:
+                PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+    for permuted_target_binders in itertools.permutations(target_binders):
+        if proof_search_timed_out():
+            return None
+        if any(
+            not equivalent_sorts(positive_sort, target_sort)
+            for (_positive_name, positive_sort), (_target_name, target_sort) in zip(positive_binders, permuted_target_binders)
+        ):
+            continue
+        subst = {
+            positive_name: Expr("var", value=target_name)
+            for (positive_name, _positive_sort), (target_name, _target_sort) in zip(positive_binders, permuted_target_binders)
+        }
+        positive_instance_body = substitute_expr(positive_body, subst)
+        if raw_clause_transform_proof(positive_instance_body, target_body, "Hprobe") is not None:
+            continue
+        proof = prove_with_substitution(subst)
+        if proof is not None:
+            return proof
+    return None
+
+
+def raw_tptp_quantified_clause_resolution_superposition_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> str | None:
+    if len(parents) != 2:
+        return None
+    target_expr = parse_expr(proposition)
+    if target_expr is None:
+        return None
+    parent_exprs: list[tuple[Expr, str]] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+        if parent_expr is not None:
+            parent_exprs.append((parent_expr, raw_tptp_canonical_parent_proof_name(parent, propositions_by_name)))
+    if len(parent_exprs) != 2:
+        return None
+    proof = raw_quantified_clause_resolution_superposition_proof(
+        target_expr,
+        parent_exprs[0][0],
+        parent_exprs[0][1],
+        parent_exprs[1][0],
+        parent_exprs[1][1],
+    )
+    if proof is not None:
+        return proof
+    return raw_quantified_clause_resolution_superposition_proof(
+        target_expr,
+        parent_exprs[1][0],
+        parent_exprs[1][1],
+        parent_exprs[0][0],
+        parent_exprs[0][1],
+    )
+
+
+def raw_tptp_quantified_clause_resolution_preferred(proposition: str) -> bool:
+    target = parse_expr(proposition)
+    if target is None:
+        return False
+    quantified = [
+        collect_foralls(literal)[0]
+        for literal in raw_clause_literals(target)
+        if collect_foralls(literal)[0]
+    ]
+    return len(quantified) == 1 and any(sort == "prop" for _name, sort in quantified[0])
+
+
+def raw_tptp_ground_quantified_resolution_preferred(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> bool:
+    if len(parents) != 2:
+        return False
+    target = parse_expr(proposition)
+    if target is None:
+        return False
+    target_quantified = [
+        collect_foralls(literal)[0]
+        for literal in raw_clause_literals(target)
+        if collect_foralls(literal)[0]
+    ]
+    if len(target_quantified) != 1 or not target_quantified[0]:
+        return False
+    if any(sort != "set" for _name, sort in target_quantified[0]):
+        return False
+    quantified_parent_count = 0
+    small_ground_parent_count = 0
+    for parent in parents:
+        parent_expr = parse_expr(propositions_by_name.get(parent, ""))
+        if parent_expr is None:
+            return False
+        literals = raw_clause_literals(parent_expr)
+        quantified_literals = [literal for literal in literals if collect_foralls(literal)[0]]
+        if len(quantified_literals) == 1:
+            quantified_parent_count += 1
+        elif not quantified_literals and len(literals) <= 2:
+            small_ground_parent_count += 1
+    return quantified_parent_count == 1 and small_ground_parent_count == 1
+
+
 def raw_tptp_superposition_proof(
     proposition: str,
     parents: list[str],
@@ -43929,6 +44203,25 @@ def raw_tptp_superposition_proof(
             if parent_expr is not None:
                 parent_exprs.append((parent_expr, raw_tptp_canonical_parent_proof_name(parent, propositions_by_name)))
         if target_expr is not None and len(parent_exprs) == 2:
+            if raw_tptp_quantified_clause_resolution_preferred(proposition):
+                proof = raw_quantified_clause_resolution_superposition_proof(
+                    target_expr,
+                    parent_exprs[0][0],
+                    parent_exprs[0][1],
+                    parent_exprs[1][0],
+                    parent_exprs[1][1],
+                )
+                if proof is not None:
+                    return proof
+                proof = raw_quantified_clause_resolution_superposition_proof(
+                    target_expr,
+                    parent_exprs[1][0],
+                    parent_exprs[1][1],
+                    parent_exprs[0][0],
+                    parent_exprs[0][1],
+                )
+                if proof is not None:
+                    return proof
             for parent_expr, parent_proof in parent_exprs:
                 proof = raw_prop_true_false_guard_superposition_proof(target_expr, parent_expr, parent_proof)
                 if proof is not None:
@@ -61808,6 +62101,25 @@ def raw_tptp_replay_proof(
                     if parent_expr is not None:
                         parent_exprs.append((parent_expr, raw_tptp_canonical_parent_proof_name(parent, propositions_by_name)))
                 if len(parent_exprs) == 2:
+                    if raw_tptp_quantified_clause_resolution_preferred(proposition):
+                        proof = raw_quantified_clause_resolution_superposition_proof(
+                            target_expr,
+                            parent_exprs[0][0],
+                            parent_exprs[0][1],
+                            parent_exprs[1][0],
+                            parent_exprs[1][1],
+                        )
+                        if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
+                            return proof
+                        proof = raw_quantified_clause_resolution_superposition_proof(
+                            target_expr,
+                            parent_exprs[1][0],
+                            parent_exprs[1][1],
+                            parent_exprs[0][0],
+                            parent_exprs[0][1],
+                        )
+                        if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
+                            return proof
                     proof = raw_unit_equality_chain_superposition_proof(
                         target_expr,
                         parent_exprs[0][0],
@@ -65553,6 +65865,16 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                             delattr(PROOF_SEARCH_STATE, "deadline")
                     else:
                         PROOF_SEARCH_STATE.deadline = previous_deadline
+            if (
+                replay_proof is None
+                and rule == "superposition"
+                and raw_tptp_quantified_clause_resolution_preferred(proposition)
+            ):
+                replay_proof = raw_tptp_quantified_clause_resolution_superposition_proof(
+                    proposition,
+                    replay_parents,
+                    propositions_by_name,
+                )
             if replay_proof is None and rule == "superposition":
                 replay_proof = raw_tptp_guarded_quantified_equality_clause_superposition_proof(
                     proposition,
@@ -65569,6 +65891,31 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                         replay_parents,
                         propositions_by_name,
                         variable_sorts,
+                    )
+                finally:
+                    if previous_deadline is None:
+                        if hasattr(PROOF_SEARCH_STATE, "deadline"):
+                            delattr(PROOF_SEARCH_STATE, "deadline")
+                    else:
+                        PROOF_SEARCH_STATE.deadline = previous_deadline
+            if (
+                replay_proof is None
+                and rule == "superposition"
+                and raw_tptp_ground_quantified_resolution_preferred(
+                    proposition,
+                    replay_parents,
+                    propositions_by_name,
+                )
+            ):
+                previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+                PROOF_SEARCH_STATE.deadline = proof_search_now() + 2.0
+                try:
+                    replay_proof = raw_tptp_superposition_proof(
+                        proposition,
+                        replay_parents,
+                        propositions_by_name,
+                        variable_sorts,
+                        step_info,
                     )
                 finally:
                     if previous_deadline is None:
