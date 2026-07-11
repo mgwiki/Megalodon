@@ -44837,6 +44837,132 @@ def raw_tptp_ground_quantified_resolution_preferred(
     return quantified_parent_count == 1 and small_ground_parent_count == 1
 
 
+def raw_ground_quantified_clause_equality_superposition_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality_clause: Expr,
+    equality_clause_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if proof_search_timed_out():
+        return None
+    target_binders, target_body = collect_foralls(target)
+    if target_binders:
+        return None
+    source_literals = raw_clause_literals(source)
+    target_literals = raw_clause_literals(target_body)
+    if len(source_literals) > 16 or len(target_literals) > 24:
+        return None
+    quantified_literals = [literal for literal in source_literals if collect_foralls(literal)[0]]
+    if len(quantified_literals) != 1:
+        return None
+    quantified_source = quantified_literals[0]
+    source_binders, source_body = collect_foralls(quantified_source)
+    if not source_binders or len(source_binders) > 8 or len(raw_clause_literals(source_body)) > 16:
+        return None
+
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+
+    def prove_with_equality_literal(equality_literal: Expr, equality_literal_proof: str) -> str | None:
+        equality_sides = equality_like_sides(equality_literal)
+        if equality_sides is None:
+            return raw_literal_to_clause_proof(
+                equality_literal,
+                target_body,
+                equality_literal_proof,
+                target_literals,
+                (),
+            )
+        equality_sort = raw_equality_transport_sort(equality_sides[0], equality_sides[1], variable_sorts)
+        native_equality = equality_literal.kind == "eq"
+
+        def source_handler(literal: Expr, literal_proof: str) -> str | None:
+            direct = raw_literal_to_clause_proof(literal, target_body, literal_proof, target_literals, ())
+            if direct is not None:
+                return direct
+            if not expr_same_mod_alpha(literal, quantified_source):
+                return None
+            source_options = raw_instantiated_forall_clause_options(
+                literal,
+                literal_proof,
+                target_body,
+                equality_literal,
+                variable_sorts,
+            )
+            source_binders, source_body = collect_foralls(literal)
+            source_binder_names = {name for name, _sort in source_binders}
+            seen_options = {expr_key(option) for option, _proof in source_options}
+            for source_subterm in expr_subterms(source_body, limit=192):
+                if not (expr_variables(source_subterm) & source_binder_names):
+                    continue
+                for equality_side in equality_sides:
+                    subst: dict[str, Expr] = {}
+                    if not match_expr_with_alpha_instantiation(
+                        source_subterm,
+                        equality_side,
+                        source_binder_names,
+                        subst,
+                    ):
+                        continue
+                    flatten_substitution(subst)
+                    if not source_binder_names <= subst.keys():
+                        continue
+                    source_instance = substitute_expr(source_body, subst)
+                    key = expr_key(source_instance)
+                    if key in seen_options:
+                        continue
+                    source_instance_proof = literal_proof
+                    for name, _sort in source_binders:
+                        source_instance_proof = f"({proof_head(source_instance_proof)} {proof_arg_text(subst[name])})"
+                    seen_options.add(key)
+                    source_options.append((source_instance, source_instance_proof))
+            for source_instance, source_instance_proof in source_options[:48]:
+                for rewritten, rewritten_proof in raw_equality_rewrite_clause_steps(
+                    source_instance,
+                    source_instance_proof,
+                    equality_sides[0],
+                    equality_sides[1],
+                    equality_literal_proof,
+                    equality_sort,
+                    native_equality=native_equality,
+                ):
+                    proof = raw_clause_subsumption_transform_proof(
+                        rewritten,
+                        target_body,
+                        rewritten_proof,
+                        deep_literals=True,
+                    )
+                    if proof is not None:
+                        return proof
+                    proof = raw_clause_transform_proof(rewritten, target_body, rewritten_proof)
+                    if proof is not None:
+                        return proof
+            return None
+
+        return raw_clause_cases_with_handler(
+            source,
+            source_proof,
+            source_handler,
+            avoid_text=equality_literal_proof,
+        )
+
+    try:
+        return raw_clause_cases_with_handler(
+            equality_clause,
+            equality_clause_proof,
+            prove_with_equality_literal,
+            avoid_text=source_proof,
+        )
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_tptp_superposition_proof(
     proposition: str,
     parents: list[str],
@@ -44876,6 +45002,26 @@ def raw_tptp_superposition_proof(
                 )
                 if proof is not None:
                     return proof
+            proof = raw_ground_quantified_clause_equality_superposition_proof(
+                parent_exprs[0][0],
+                target_expr,
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_ground_quantified_clause_equality_superposition_proof(
+                parent_exprs[1][0],
+                target_expr,
+                parent_exprs[1][1],
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
             for parent_expr, parent_proof in parent_exprs:
                 proof = raw_prop_true_false_guard_superposition_proof(target_expr, parent_expr, parent_proof)
                 if proof is not None:
@@ -63086,6 +63232,33 @@ def raw_tptp_replay_proof(
             if previous_deadline is not None:
                 PROOF_SEARCH_STATE.deadline = previous_deadline
     if rule == "superposition":
+        if len(parents) == 2:
+            target_expr = parse_expr(proposition)
+            parent_exprs: list[Expr] = []
+            for parent in parents:
+                parent_proposition = propositions_by_name.get(parent)
+                parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+                if parent_expr is not None:
+                    parent_exprs.append(parent_expr)
+            if target_expr is not None and len(parent_exprs) == 2 and not collect_foralls(target_expr)[0]:
+                parent_has_quantified_literal = [
+                    any(collect_foralls(literal)[0] for literal in raw_clause_literals(parent_expr))
+                    for parent_expr in parent_exprs
+                ]
+                parent_has_equality_literal = [
+                    any(equality_like_sides(literal) is not None for literal in raw_clause_literals(parent_expr))
+                    for parent_expr in parent_exprs
+                ]
+                if any(parent_has_quantified_literal) and any(parent_has_equality_literal):
+                    proof = raw_tptp_superposition_proof(
+                        proposition,
+                        parents,
+                        propositions_by_name,
+                        variable_sorts,
+                        replay_step,
+                    )
+                    if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
+                        return proof
         proof = raw_prop_true_exhaustiveness_superposition_proof(
             proposition,
             parents,
