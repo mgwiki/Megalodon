@@ -40958,6 +40958,162 @@ def raw_true_prop_equality_factoring_proof(
     return body_proof
 
 
+def raw_universal_negated_prop_demodulation_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> str | None:
+    if len(parents) != 2:
+        return None
+    target = parse_expr(proposition)
+    parent_exprs: list[tuple[Expr, str]] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+        if parent_expr is None:
+            return None
+        parent_exprs.append((parent_expr, raw_tptp_claim_name(parent)))
+    if target is None:
+        return None
+    _target_binders, target_body = collect_foralls(target)
+    if _target_binders:
+        return None
+    target_literals = raw_clause_literals(target_body)
+    if len(target_literals) != 2:
+        return None
+
+    def universal_negated_atom(literal: Expr) -> tuple[tuple[str, str], Expr] | None:
+        binders, body = collect_foralls(literal)
+        if len(binders) != 1:
+            return None
+        premises, conclusion = split_arrows(body)
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
+            return None
+        return binders[0], premises[0]
+
+    target_universal_index = None
+    target_residual_index = None
+    target_universal = None
+    target_atom = None
+    for index, literal in enumerate(target_literals):
+        parts = universal_negated_atom(literal)
+        if parts is not None:
+            target_universal_index = index
+            target_residual_index = 1 - index
+            target_universal, target_atom = parts
+            break
+    if (
+        target_universal_index is None
+        or target_residual_index is None
+        or target_universal is None
+        or target_atom is None
+    ):
+        return None
+    target_residual = target_literals[target_residual_index]
+
+    for source_expr, source_proof in parent_exprs:
+        source_literals = raw_clause_literals(collect_foralls(source_expr)[1])
+        if len(source_literals) != 2:
+            continue
+        source_universal_index = None
+        source_residual_index = None
+        source_universal = None
+        source_atom = None
+        for index, literal in enumerate(source_literals):
+            parts = universal_negated_atom(literal)
+            if parts is not None:
+                source_universal_index = index
+                source_residual_index = 1 - index
+                source_universal, source_atom = parts
+                break
+        if (
+            source_universal_index is None
+            or source_residual_index is None
+            or source_universal is None
+            or source_atom is None
+            or not expr_same_mod_alpha(source_literals[source_residual_index], target_residual)
+            or source_universal[1] != target_universal[1]
+        ):
+            continue
+        renamed_source_atom = rename_expr_variables(source_atom, {source_universal[0]: target_universal[0]})
+        for equality_expr, equality_proof in parent_exprs:
+            if equality_expr is source_expr:
+                continue
+            equality_binders, equality_body = collect_foralls(equality_expr)
+            equality_sides = equality_like_sides(equality_body)
+            if equality_sides is None:
+                continue
+            binder_names = {name for name, _sort in equality_binders}
+            for source_side, target_side, reverse in (
+                (equality_sides[0], equality_sides[1], False),
+                (equality_sides[1], equality_sides[0], True),
+            ):
+                subst: dict[str, Expr] = {}
+                if not match_expr_with_alpha_instantiation(source_side, renamed_source_atom, binder_names, subst):
+                    continue
+                if not match_expr_with_alpha_instantiation(target_side, target_atom, binder_names, subst):
+                    continue
+                flatten_substitution(subst)
+                if not binder_names <= subst.keys():
+                    continue
+                if any(expr_variables(value) & binder_names for value in subst.values()):
+                    continue
+                instantiated_equality = equality_proof
+                for name, _sort in equality_binders:
+                    instantiated_equality = f"({proof_head(instantiated_equality)} {proof_arg_text(subst[name])})"
+                if not reverse:
+                    target_to_source = native_eq_symmetry_proof(instantiated_equality, renamed_source_atom, target_atom, "prop")
+                else:
+                    target_to_source = instantiated_equality
+
+                target_text = proof_arg_text(target_body)
+                previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+                PROOF_SEARCH_STATE.flat_resolution_target = target_text
+                try:
+                    def handler(literal: Expr, literal_proof: str) -> str | None:
+                        parts = universal_negated_atom(literal)
+                        if parts is not None:
+                            binder, _atom = parts
+                            if binder[1] != target_universal[1]:
+                                return None
+                            premise_name = fresh_identifier(
+                                "Hdemod",
+                                expr_text(target_atom),
+                                expr_text(renamed_source_atom),
+                                literal_proof,
+                            )
+                            transported = (
+                                f"(vampire_native_eq_transport_prop {proof_arg_text(target_atom)} "
+                                f"{proof_arg_text(renamed_source_atom)} {proof_term_text(target_to_source)} "
+                                f"(fun Qprop :prop => Qprop) {premise_name})"
+                            )
+                            inner = (
+                                f"(fun {target_universal[0]} :{target_universal[1]} => "
+                                f"fun {premise_name} :{proof_arg_text(target_atom)} => "
+                                f"(({proof_head(literal_proof)} {target_universal[0]}) {transported}))"
+                            )
+                            return raw_or_intro_literal_at(target_body, target_universal_index, inner)
+                        if expr_same_mod_alpha(literal, target_residual):
+                            return raw_or_intro_literal_at(target_body, target_residual_index, literal_proof)
+                        return None
+
+                    body_proof = raw_clause_cases_with_handler(
+                        collect_foralls(source_expr)[1],
+                        source_proof,
+                        handler,
+                        avoid_text=expr_text(target_body),
+                    )
+                finally:
+                    if previous_target is None:
+                        if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                            delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+                    else:
+                        PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+                if body_proof is not None:
+                    return body_proof
+    return None
+
+
 def raw_tptp_instantiated_parent_clause_weaken_proof(
     proposition: str,
     parents: list[str],
@@ -65501,6 +65657,10 @@ def raw_tptp_replay_proof(
             replay_step=replay_step,
         )
     if rule in {"forward_demodulation", "backward_demodulation", "forward_subsumption_demodulation"}:
+        if rule == "forward_demodulation":
+            proof = raw_universal_negated_prop_demodulation_proof(proposition, parents, propositions_by_name)
+            if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
+                return proof
         return raw_tptp_forward_demodulation_proof(
             proposition,
             parents,
@@ -68894,13 +69054,19 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 "backward_demodulation",
                 "forward_subsumption_demodulation",
             }:
+                if rule == "forward_demodulation":
+                    replay_proof = raw_universal_negated_prop_demodulation_proof(
+                        proposition,
+                        replay_parents,
+                        propositions_by_name,
+                    )
                 replay_proof = raw_tptp_forward_demodulation_proof(
                     proposition,
                     replay_parents,
                     propositions_by_name,
                     variable_sorts,
                     None,
-                )
+                ) if replay_proof is None else replay_proof
             if replay_proof is None and rule in {"forward_subsumption_resolution", "backward_subsumption_resolution"}:
                 replay_proof = raw_tptp_guarded_component_contradiction_resolution_proof(
                     proposition,
