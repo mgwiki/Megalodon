@@ -40285,6 +40285,38 @@ def raw_guarded_quantified_body_equality_clause_superposition_proof(
             PROOF_SEARCH_STATE.flat_resolution_target = previous_target
 
 
+def raw_tptp_guarded_quantified_body_equality_clause_superposition_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parents) != 2:
+        return None
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    parent_exprs: list[tuple[Expr, str]] = []
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+        if parent_expr is None:
+            return None
+        parent_exprs.append((parent_expr, raw_tptp_canonical_parent_proof_name(parent, propositions_by_name)))
+    for source_index, equality_index in ((0, 1), (1, 0)):
+        proof = raw_guarded_quantified_body_equality_clause_superposition_proof(
+            parent_exprs[source_index][0],
+            target,
+            parent_exprs[source_index][1],
+            parent_exprs[equality_index][0],
+            parent_exprs[equality_index][1],
+            variable_sorts,
+        )
+        if proof is not None:
+            return proof
+    return None
+
+
 def raw_tptp_guarded_prop_equality_factoring_fallback(
     proposition: str,
     parents: list[str],
@@ -65400,6 +65432,22 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     propositions_by_name,
                     variable_sorts,
                 )
+            if replay_proof is None and rule == "superposition":
+                previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+                PROOF_SEARCH_STATE.deadline = proof_search_now() + 2.0
+                try:
+                    replay_proof = raw_tptp_guarded_quantified_body_equality_clause_superposition_proof(
+                        proposition,
+                        replay_parents,
+                        propositions_by_name,
+                        variable_sorts,
+                    )
+                finally:
+                    if previous_deadline is None:
+                        if hasattr(PROOF_SEARCH_STATE, "deadline"):
+                            delattr(PROOF_SEARCH_STATE, "deadline")
+                    else:
+                        PROOF_SEARCH_STATE.deadline = previous_deadline
             if replay_proof is None:
                 if raw_tptp_replay_payload_size_ok(
                     rule,
