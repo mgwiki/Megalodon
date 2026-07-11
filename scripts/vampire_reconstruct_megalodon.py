@@ -20423,6 +20423,94 @@ def raw_clause_subsumption_transform_proof(
     return raw_clause_cases_proof(source, target, target_literals, rewrites, source_proof, deep_literals)
 
 
+def raw_forall_prop_false_instantiation_clause_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    depth: int,
+    rewrites: tuple[RawSplitRewrite, ...],
+) -> str | None:
+    if depth > 16 or proof_search_timed_out():
+        return None
+    if source.kind != "forall" or source.value is None or source.sort != "prop" or not source.args:
+        return None
+    instantiated = substitute_expr(source.args[0], {source.value: Expr("var", value="False")})
+    instantiated_proof = f"({proof_head(source_proof)} False)"
+    if expr_same_mod_alpha(instantiated, target):
+        return instantiated_proof
+    proof = raw_clause_transform_proof(
+        instantiated,
+        target,
+        instantiated_proof,
+        depth + 1,
+        rewrites,
+    )
+    if proof is not None:
+        return proof
+    return raw_clause_subsumption_transform_proof(
+        instantiated,
+        target,
+        instantiated_proof,
+        rewrites,
+        deep_literals=True,
+    )
+
+
+def raw_condensation_clause_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    depth: int = 0,
+) -> str | None:
+    if depth > 16 or proof_search_timed_out():
+        return None
+    prop_false = raw_forall_prop_false_instantiation_clause_transform_proof(
+        source,
+        target,
+        source_proof,
+        depth + 1,
+        (),
+    )
+    if prop_false is not None:
+        return prop_false
+    direct = raw_clause_subsumption_transform_proof(source, target, source_proof, deep_literals=True)
+    if direct is not None:
+        return direct
+    direct = raw_clause_transform_proof(source, target, source_proof)
+    if direct is not None:
+        return direct
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
+        assert source.value is not None and target.value is not None and target.sort is not None
+        binder = target.value
+        source_body = source.args[0]
+        if source.value != binder:
+            source_body = rename_expr_variables(source_body, {source.value: binder})
+        inner = raw_condensation_clause_transform_proof(
+            source_body,
+            target.args[0],
+            f"({proof_head(source_proof)} {binder})",
+            depth + 1,
+        )
+        if inner is None:
+            return None
+        return f"(fun {binder} :{binder_sort_text(target.sort)} => {inner})"
+    source_parts = app_args(source, "vampire_or", 2)
+    if source_parts is None:
+        return None
+    left, right = source_parts
+    left_name = fresh_identifier("HL", expr_text(source), expr_text(target), source_proof)
+    right_name = fresh_identifier("HR", expr_text(source), expr_text(target), source_proof, left_name)
+    left_proof = raw_condensation_clause_transform_proof(left, target, left_name, depth + 1)
+    right_proof = raw_condensation_clause_transform_proof(right, target, right_name, depth + 1)
+    if left_proof is None or right_proof is None:
+        return None
+    return (
+        f"({proof_head(source_proof)} {proof_arg_text(target)} "
+        f"(fun {left_name} => {left_proof}) "
+        f"(fun {right_name} => {right_proof}))"
+    )
+
+
 def raw_forall_permutation_transform_proof(source: Expr, target: Expr, source_proof: str) -> str | None:
     source_binders, source_body = collect_foralls(source)
     target_binders, target_body = collect_foralls(target)
@@ -26014,12 +26102,22 @@ def raw_tptp_condensation_proof(
     )
     if factored is not None:
         return factored
-    return raw_quantified_clause_instantiation_transform_proof(
+    quantified = raw_quantified_clause_instantiation_transform_proof(
         source,
         target,
         raw_tptp_claim_name(parents[0]),
         variable_sorts,
     )
+    if quantified is not None:
+        return quantified
+    condensed = raw_condensation_clause_transform_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+    )
+    if condensed is not None:
+        return condensed
+    return None
 
 
 def raw_quantified_clause_instantiation_transform_proof(
