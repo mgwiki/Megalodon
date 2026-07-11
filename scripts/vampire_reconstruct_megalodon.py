@@ -27882,6 +27882,69 @@ def raw_component_lists_same_mod_alpha(left: list[Expr], right: list[Expr]) -> b
     )
 
 
+def raw_same_except_conjunction_permutation(
+    source: Expr,
+    target: Expr,
+    depth: int = 0,
+) -> bool:
+    if depth > 64:
+        return False
+    if expr_same_mod_alpha(source, target):
+        return False
+
+    source_and = vampire_and_parts(source)
+    target_and = vampire_and_parts(target)
+    if source_and is not None and target_and is not None:
+        source_components = raw_conjunction_components(source)
+        target_components = raw_conjunction_components(target)
+        if len(source_components) != len(target_components) or len(source_components) > 16:
+            return False
+        used: set[int] = set()
+        for target_component in target_components:
+            found = False
+            for index, source_component in enumerate(source_components):
+                if index in used:
+                    continue
+                if expr_same_mod_alpha(source_component, target_component):
+                    used.add(index)
+                    found = True
+                    break
+            if not found:
+                return False
+        return not raw_component_lists_same_mod_alpha(source_components, target_components)
+
+    if source.kind != target.kind or len(source.args) != len(target.args):
+        return False
+    if source.kind == "app":
+        if not source.args or not target.args or not expr_same_mod_alpha(source.args[0], target.args[0]):
+            return False
+        changed = False
+        for source_arg, target_arg in zip(source.args[1:], target.args[1:]):
+            if expr_same_mod_alpha(source_arg, target_arg):
+                continue
+            if not raw_same_except_conjunction_permutation(source_arg, target_arg, depth + 1):
+                return False
+            changed = True
+        return changed
+    if source.kind in {"arrow", "eq"}:
+        changed = False
+        for source_arg, target_arg in zip(source.args, target.args):
+            if expr_same_mod_alpha(source_arg, target_arg):
+                continue
+            if not raw_same_except_conjunction_permutation(source_arg, target_arg, depth + 1):
+                return False
+            changed = True
+        return changed
+    if source.kind in {"forall", "lambda"}:
+        if source.sort != target.sort or source.value is None or target.value is None:
+            return False
+        binder = fresh_identifier("Xperm", expr_text(source), expr_text(target), str(depth))
+        source_body = rename_expr_variables(source.args[0], {source.value: binder})
+        target_body = rename_expr_variables(target.args[0], {target.value: binder})
+        return raw_same_except_conjunction_permutation(source_body, target_body, depth + 1)
+    return False
+
+
 def raw_or_reassociation_transform_proof(
     source: Expr,
     target: Expr,
@@ -33593,6 +33656,17 @@ def raw_set_term_equality_transform_proof(
             target.args[index],
             variable_sorts,
         )
+        predicate_text = expr_text(source.args[index]) + expr_text(target.args[index])
+        if (
+            predicate_equality is None
+            and len(predicate_text) <= 700
+            and raw_same_except_conjunction_permutation(source.args[index], target.args[index])
+        ):
+            predicate_equality = raw_set_predicate_extensionality_proof(
+                source.args[index],
+                target.args[index],
+                variable_sorts,
+            )
         if predicate_equality is None:
             return None
         return (
