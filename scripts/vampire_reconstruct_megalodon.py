@@ -58847,6 +58847,154 @@ def raw_tptp_definition_fold_rewrite_proof(
     )
 
 
+def raw_function_argument_definition_fold_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parents) < 4:
+        return None
+    source_proposition = propositions_by_name.get(parents[0])
+    source = parse_expr(source_proposition) if source_proposition is not None else None
+    target = parse_expr(proposition)
+    if source is None or target is None:
+        return None
+    source_premises, source_conclusion = split_arrows(source)
+    target_premises, target_conclusion = split_arrows(target)
+    if (
+        len(source_premises) != 1
+        or len(target_premises) != 1
+        or not false_eliminator_expr(source_conclusion)
+        or not false_eliminator_expr(target_conclusion)
+    ):
+        return None
+    source_sides = equality_like_sides(source_premises[0])
+    target_sides = equality_like_sides(target_premises[0])
+    if source_sides is None or target_sides is None:
+        return None
+    if not expr_same_mod_alpha(source_sides[0], target_sides[0]):
+        return None
+    subject = source_sides[0]
+    old_term = source_sides[1]
+    new_term = target_sides[1]
+    if expr_sort(old_term, variable_sorts) != "set" or expr_sort(new_term, variable_sorts) != "set":
+        return None
+
+    parent_exprs: list[tuple[str, Expr, str]] = []
+    for parent in parents[1:]:
+        parent_proposition = propositions_by_name.get(parent)
+        parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+        if parent_expr is not None:
+            parent_exprs.append((parent, parent_expr, raw_tptp_claim_name(parent)))
+
+    function_equalities: list[tuple[Expr, Expr, str]] = []
+    pointwise_parent_names: set[str] = set()
+    ordinary_equalities: list[tuple[tuple[tuple[str, str], ...], Expr, Expr, str]] = []
+    for parent_name, parent_expr, parent_proof in parent_exprs:
+        function_equality = raw_pointwise_set_function_equality(parent_expr, parent_proof)
+        if function_equality is not None:
+            equality_expr, equality_proof = function_equality
+            sides = equality_like_sides(equality_expr)
+            if sides is not None:
+                function_equalities.append((sides[0], sides[1], equality_proof))
+                pointwise_parent_names.add(parent_name)
+        binders, body = collect_foralls(parent_expr)
+        sides = equality_like_sides(body)
+        if sides is not None:
+            ordinary_equalities.append((tuple(binders), sides[0], sides[1], parent_proof))
+
+    for old_function, new_function_arg, function_equality_proof in function_equalities:
+        def replace_alpha(expr: Expr, needle: Expr, replacement: Expr) -> tuple[Expr, bool]:
+            if expr_same_mod_alpha(expr, needle):
+                return replacement, True
+            if not expr.args:
+                return expr, False
+            changed = False
+            args: list[Expr] = []
+            for arg in expr.args:
+                replaced, arg_changed = replace_alpha(arg, needle, replacement)
+                args.append(replaced)
+                changed = changed or arg_changed
+            if not changed:
+                return expr, False
+            return Expr(expr.kind, value=expr.value, args=tuple(args), sort=expr.sort), True
+
+        replaced_old, changed = replace_alpha(old_term, old_function, new_function_arg)
+        if not changed or expr_same_mod_alpha(replaced_old, old_term):
+            continue
+        function_sort = expr_sort(old_function, variable_sorts)
+        if function_sort is None:
+            continue
+        hole = fresh_identifier("HfunFold", expr_text(old_term), expr_text(replaced_old), function_equality_proof)
+        context, context_changed = replace_alpha(old_term, old_function, Expr("var", value=hole))
+        if not context_changed:
+            continue
+        old_to_replaced = (
+            f"({proof_head(function_equality_proof)} "
+            f"(fun {hole} :{binder_sort_text(function_sort)} => "
+            f"{proof_arg_text(old_term)} = {proof_arg_text(context)}) "
+            f"(vampire_native_eq_refl_set {proof_arg_text(old_term)}))"
+        )
+
+        second_steps: list[tuple[Expr, str]] = []
+        for binders, left, right, equality_proof in ordinary_equalities:
+            if binders:
+                if len(binders) != 1:
+                    continue
+                binder_name, _binder_sort = binders[0]
+                subst: dict[str, Expr] = {}
+                if match_expr_with_alpha_instantiation(left, replaced_old, {binder_name}, subst):
+                    instantiated_right = substitute_expr(right, subst)
+                    instantiated_proof = f"({proof_head(equality_proof)} {proof_arg_text(subst[binder_name])})"
+                    second_steps.append((instantiated_right, instantiated_proof))
+                subst = {}
+                if match_expr_with_alpha_instantiation(right, replaced_old, {binder_name}, subst):
+                    instantiated_left = substitute_expr(left, subst)
+                    instantiated_proof = f"({proof_head(equality_proof)} {proof_arg_text(subst[binder_name])})"
+                    second_steps.append((
+                        instantiated_left,
+                        native_eq_symmetry_proof(instantiated_proof, instantiated_left, replaced_old, "set"),
+                    ))
+                continue
+            if expr_same_mod_alpha(left, replaced_old):
+                second_steps.append((right, equality_proof))
+            elif expr_same_mod_alpha(right, replaced_old):
+                second_steps.append((left, native_eq_symmetry_proof(equality_proof, left, replaced_old, "set")))
+
+        for middle_term, replaced_to_middle in second_steps:
+            for binders, left, right, equality_proof in ordinary_equalities:
+                if binders:
+                    continue
+                middle_to_new = None
+                if expr_same_mod_alpha(left, middle_term) and expr_same_mod_alpha(right, new_term):
+                    middle_to_new = equality_proof
+                elif expr_same_mod_alpha(right, middle_term) and expr_same_mod_alpha(left, new_term):
+                    middle_to_new = native_eq_symmetry_proof(equality_proof, new_term, middle_term, "set")
+                if middle_to_new is None:
+                    continue
+                old_to_middle = (
+                    f"(vampire_native_eq_trans_set {proof_arg_text(old_term)} {proof_arg_text(replaced_old)} "
+                    f"{proof_arg_text(middle_term)} {proof_term_text(old_to_replaced)} "
+                    f"{proof_term_text(replaced_to_middle)})"
+                )
+                old_to_new = (
+                    f"(vampire_native_eq_trans_set {proof_arg_text(old_term)} {proof_arg_text(middle_term)} "
+                    f"{proof_arg_text(new_term)} {proof_term_text(old_to_middle)} {proof_term_text(middle_to_new)})"
+                )
+                new_to_old = native_eq_symmetry_proof(old_to_new, old_term, new_term, "set")
+                premise_name = fresh_identifier("HfoldDef", proposition, expr_text(old_term), expr_text(new_term))
+                source_premise = (
+                    f"(vampire_native_eq_trans_set {proof_arg_text(subject)} {proof_arg_text(new_term)} "
+                    f"{proof_arg_text(old_term)} {premise_name} {proof_term_text(new_to_old)})"
+                )
+                return (
+                    f"(fun {premise_name} :{proof_arg_text(target_premises[0])} => "
+                    f"{raw_tptp_claim_name(parents[0])} {proof_term_text(source_premise)})"
+                )
+    return None
+
+
 def raw_tptp_trusted_definition_rewrite_proof(
     proposition: str,
     parents: list[str],
@@ -61117,6 +61265,14 @@ def raw_tptp_definition_rewrite_proof(
             if proof is not None:
                 return proof
             proof = raw_tptp_exported_definition_chain_proof(fields, parents, local_sorts, propositions_by_name)
+            if proof is not None:
+                return proof
+            proof = raw_function_argument_definition_fold_proof(
+                expr_text(exported_target),
+                parents,
+                propositions_by_name,
+                local_sorts,
+            )
             if proof is not None:
                 return proof
             proof = raw_tptp_definition_fold_rewrite_proof(
@@ -68887,12 +69043,19 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                         definition_key = predicate_definition_keys_by_step.get(parent)
                         if definition_key is not None and definition_key not in replay_parents:
                             replay_parents.append(definition_key)
-                    replay_proof = raw_tptp_definition_fold_rewrite_proof(
+                    replay_proof = raw_function_argument_definition_fold_proof(
                         proposition,
                         replay_parents,
                         propositions_by_name,
                         variable_sorts,
                     )
+                    if replay_proof is None:
+                        replay_proof = raw_tptp_definition_fold_rewrite_proof(
+                            proposition,
+                            replay_parents,
+                            propositions_by_name,
+                            variable_sorts,
+                        )
                     if replay_proof is None:
                         replay_proof = raw_tptp_trusted_definition_rewrite_proof(
                             proposition,
@@ -69297,6 +69460,13 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     propositions_by_name,
                     variable_sorts,
                 )
+                if replay_proof is None:
+                    replay_proof = raw_function_argument_definition_fold_proof(
+                        proposition,
+                        replay_parents,
+                        propositions_by_name,
+                        variable_sorts,
+                    )
                 if replay_proof is None:
                     replay_proof = raw_tptp_definition_fold_rewrite_proof(
                         proposition,
