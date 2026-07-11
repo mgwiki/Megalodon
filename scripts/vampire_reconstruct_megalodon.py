@@ -71763,6 +71763,15 @@ def source_enclosing_theorem_name(source: Path | None, line: int | None) -> str 
     return match.group("name") if match is not None else None
 
 
+def source_line_text(source: Path | None, line: int | None) -> str | None:
+    if source is None or line is None or not source.exists():
+        return None
+    rows = source.read_text(encoding="utf-8", errors="replace").splitlines()
+    if line < 1 or line > len(rows):
+        return None
+    return rows[line - 1].strip()
+
+
 def source_local_set_definitions(source: Path | None, line: int | None) -> dict[str, tuple[str, str]]:
     if source is None or line is None or not source.exists():
         return {}
@@ -72175,6 +72184,37 @@ def raw_tptp_reconstructed_conjecture_name(source: Path | None, problem: Path | 
     if not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", sanitized):
         sanitized = f"conjecture_{sanitized}"
     return f"vampire_reconstructed_{sanitized}_tptp"
+
+
+def raw_tptp_source_map_wrapped_lines(label: str, names: Iterable[str], limit: int = 80) -> list[str]:
+    ordered = sorted({name for name in names if name})
+    if not ordered:
+        return []
+    shown = ordered[:limit]
+    suffix = f" (+{len(ordered) - limit} more)" if len(ordered) > limit else ""
+    lines: list[str] = []
+    current = f"// {label}:"
+    for name in shown:
+        piece = f" {name}"
+        if len(current) + len(piece) > 118:
+            lines.append(current)
+            current = "//   " + name
+        else:
+            current += piece
+    current += suffix
+    lines.append(current)
+    return lines
+
+
+def raw_tptp_proposition_names(propositions: Iterable[str]) -> set[str]:
+    names: set[str] = set()
+    for proposition in propositions:
+        parsed = parse_expr(proposition)
+        if parsed is None:
+            names.update(SOURCE_IDENTIFIER_RE.findall(proposition))
+        else:
+            names.update(expr_variables(parsed))
+    return names
 
 
 def ordered_named_definition_bodies(definitions: dict[str, tuple[str, str]]) -> list[tuple[str, tuple[str, str]]]:
@@ -72677,6 +72717,95 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     source_fact_names = source_toplevel_fact_names(source)
     source_fact_propositions = source_toplevel_fact_propositions(source)
     source_fact_locations = source_toplevel_fact_locations(source)
+
+    def source_line_suffix(location: int | None) -> str:
+        if source is None or location is None:
+            return ""
+        return f" at {source}:{location}"
+
+    obligation_line = proof_or_problem_obligation_line(proof, problem)
+    source_theorem_line = source_enclosing_theorem_line(source, obligation_line)
+    source_theorem_name = source_enclosing_theorem_name(source, obligation_line)
+    source_theorem_text = source_line_text(source, source_theorem_line)
+    used_source_annotations = {
+        source_name
+        for _name, _role, _proposition, _rule, source_name, _parents, _trusted_definition in entries
+        if source_name is not None
+    }
+    conjecture_source_annotations = {
+        source_name
+        for _name, role, _proposition, rule, source_name, _parents, _trusted_definition in entries
+        if source_name is not None and (role == "conjecture" or raw_tptp_entry_is_negated_conjecture(role, rule))
+    }
+    proposition_names = raw_tptp_proposition_names(propositions)
+    source_definition_names = set(source_definition_sorts(source))
+    source_map_lines: list[str] = ["// Source reconstruction map."]
+    if source_theorem_name is not None:
+        source_map_lines.append(f"// source theorem: {source_theorem_name}{source_line_suffix(source_theorem_line)}")
+    elif obligation_line is not None and source is not None:
+        source_map_lines.append(f"// source obligation line: {source}:{obligation_line}")
+    if source_theorem_text:
+        source_map_lines.append(f"// source theorem text: {source_theorem_text[:400]}")
+    source_map_lines.extend(
+        raw_tptp_source_map_wrapped_lines(
+            "source top-level facts used",
+            used_source_annotations & source_fact_names,
+        )
+    )
+    source_map_lines.extend(
+        raw_tptp_source_map_wrapped_lines(
+            "source local proof facts used",
+            used_source_annotations & set(local_source_fact_propositions),
+        )
+    )
+    source_map_lines.extend(
+        raw_tptp_source_map_wrapped_lines(
+            "source local set definitions used",
+            local_set_definition_names,
+        )
+    )
+    source_map_lines.extend(
+        raw_tptp_source_map_wrapped_lines(
+            "source definitions/constants occurring in proof formulas",
+            proposition_names & source_definition_names,
+            limit=120,
+        )
+    )
+    source_map_lines.extend(
+        raw_tptp_source_map_wrapped_lines(
+            "source conjecture annotations",
+            conjecture_source_annotations,
+        )
+    )
+    source_map_lines.extend(
+        raw_tptp_source_map_wrapped_lines(
+            "skolem definitions reconstructed by choice",
+            set(skolem_epsilon_definitions),
+        )
+    )
+    source_map_lines.extend(
+        raw_tptp_source_map_wrapped_lines(
+            "skolem introduction facts proved",
+            set(skolem_intro_proofs),
+        )
+    )
+    source_map_lines.extend(
+        raw_tptp_source_map_wrapped_lines(
+            "generated avatar split definitions",
+            set(avatar_split_definitions),
+            limit=80,
+        )
+    )
+    unlinked_source_annotations = used_source_annotations - source_fact_names - set(local_source_fact_propositions)
+    unlinked_source_annotations -= conjecture_source_annotations
+    unlinked_source_annotations -= set(all_local_set_definitions) | set(renamed_all_local_set_definitions)
+    source_map_lines.extend(
+        raw_tptp_source_map_wrapped_lines(
+            "unlinked source annotations",
+            unlinked_source_annotations,
+        )
+    )
+    lines.extend(source_map_lines)
     early_source_declarations: list[str] = []
     later_source_declarations: list[str] = []
     for declaration in source_declarations:
@@ -72690,11 +72819,6 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     axiom_claim_instantiations: dict[str, str] = {}
     local_skolem_axiom_aliases: list[tuple[str, str, str]] = []
     emitted_local_source_facts: set[str] = set()
-
-    def source_line_suffix(location: int | None) -> str:
-        if source is None or location is None:
-            return ""
-        return f" at {source}:{location}"
 
     def remember_raw_proposition(proposition: str, proof_name: str) -> None:
         canonical = canonical_proposition(proposition)
