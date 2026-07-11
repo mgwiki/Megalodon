@@ -2063,7 +2063,6 @@ def add_recovered_input_equalities(lines: list[str], proof_text: str | None) -> 
     if not propositions:
         return list(lines)
 
-    has_equality_prelude = any(line.startswith("Definition vampire_eq_set ") for line in lines)
     used_axiom_names = {
         axiom[0]
         for line in lines
@@ -2089,13 +2088,9 @@ def add_recovered_input_equalities(lines: list[str], proof_text: str | None) -> 
         target.append("Qed.")
 
     result: list[str] = []
-    inserted_prelude = has_equality_prelude
     inserted_axioms = False
     axiom_index = 0
     for line in lines:
-        if not inserted_prelude and (line.startswith("Variable ") or line.startswith("Axiom ") or line.startswith("Theorem ")):
-            result.append("Definition vampire_eq_set : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y.")
-            inserted_prelude = True
         if not inserted_axioms and line.startswith("Theorem "):
             for proposition in propositions:
                 while f"ax_recovered_{axiom_index}" in used_axiom_names:
@@ -2107,8 +2102,6 @@ def add_recovered_input_equalities(lines: list[str], proof_text: str | None) -> 
             inserted_axioms = True
         result.append(line)
 
-    if not inserted_prelude:
-        result.append("Definition vampire_eq_set : set->set->prop := fun x y:set => forall Q:set->prop, Q x -> Q y.")
     if not inserted_axioms:
         for proposition in propositions:
             while f"ax_recovered_{axiom_index}" in used_axiom_names:
