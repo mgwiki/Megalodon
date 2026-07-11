@@ -48217,11 +48217,16 @@ def raw_propositional_unit_propagation_proof(
 def raw_propositional_clause_refutation_proof(
     target: Expr,
     clauses: list[tuple[Expr, str]],
+    *,
+    max_clauses: int = 12,
+    max_clause_literals: int = 8,
 ) -> str | None:
     target_literals = raw_clause_literals(target)
     if len(target_literals) <= 1 or len(target_literals) > 8:
         return None
-    if len(clauses) > 12 or any(len(raw_clause_literals(clause)) > 8 for clause, _proof in clauses):
+    if len(clauses) > max_clauses or any(
+        len(raw_clause_literals(clause)) > max_clause_literals for clause, _proof in clauses
+    ):
         return None
     if any(collect_foralls(clause)[0] for clause, _proof in clauses):
         return None
@@ -48437,6 +48442,20 @@ def raw_tptp_rat_proof(
     )
     if propositional_clause is not None:
         return propositional_clause
+    if (
+        len(parent_exprs) <= 24
+        and len(raw_clause_literals(target)) > 1
+        and all(not collect_foralls(expr)[0] for _parent, expr, _proof_name in parent_exprs)
+        and all(len(raw_clause_literals(expr)) <= 8 for _parent, expr, _proof_name in parent_exprs)
+    ):
+        propositional_clause = raw_propositional_clause_refutation_proof(
+            target,
+            [(expr, proof_name) for _parent, expr, proof_name in parent_exprs],
+            max_clauses=24,
+            max_clause_literals=8,
+        )
+        if propositional_clause is not None:
+            return propositional_clause
     if 2 < len(parent_exprs) <= 16:
         for source_index, (_, source, source_proof) in enumerate(parent_exprs[:8]):
             if len(raw_clause_literals(source)) > 24:
