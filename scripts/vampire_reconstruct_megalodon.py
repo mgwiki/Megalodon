@@ -46566,6 +46566,161 @@ def raw_prop_component_universal_excluded_superposition_proof(
             PROOF_SEARCH_STATE.flat_resolution_target = previous_target
 
 
+def raw_guarded_quantified_component_clause_resolution_superposition_proof(
+    target: Expr,
+    source: Expr,
+    source_proof: str,
+    resolver: Expr,
+    resolver_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if proof_search_timed_out() or len(expr_text(source)) + len(expr_text(resolver)) + len(expr_text(target)) > 18000:
+        return None
+    _ = variable_sorts
+    _target_binders, target_body = collect_foralls(target)
+    target_literals = raw_clause_literals(target_body)
+    if len(target_literals) > 12:
+        return None
+    quantified_targets = [
+        (index, literal)
+        for index, literal in enumerate(target_literals)
+        if collect_foralls(literal)[0]
+    ]
+    if not quantified_targets:
+        return None
+    target_text = proof_arg_text(target_body)
+
+    def instantiated_options(expr: Expr, proof: str, target_quantified: Expr) -> list[tuple[Expr, str]]:
+        options = raw_superposition_target_residual_instantiated_options(
+            expr,
+            proof,
+            target_quantified,
+            max_options=16,
+        )
+        if options:
+            return options
+        binders, body = collect_foralls(expr)
+        if binders:
+            return []
+        return [(body, proof)]
+
+    def prove_quantified_target(
+        target_index: int,
+        target_quantified: Expr,
+        left: Expr,
+        left_proof: str,
+        right: Expr,
+        right_proof: str,
+    ) -> str | None:
+        target_inner_binders, target_inner = collect_foralls(target_quantified)
+        if not target_inner_binders:
+            return None
+        left_options = instantiated_options(left, left_proof, target_quantified)
+        right_options = instantiated_options(right, right_proof, target_quantified)
+        if not left_options or not right_options:
+            return None
+        inner_text = proof_arg_text(target_inner)
+        previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+        PROOF_SEARCH_STATE.flat_resolution_target = inner_text
+        try:
+            for left_clause, left_clause_proof in left_options:
+                if proof_search_timed_out():
+                    return None
+                for right_clause, right_clause_proof in right_options:
+                    if proof_search_timed_out():
+                        return None
+                    if not raw_clause_replay_budget_ok(
+                        left_clause,
+                        right_clause,
+                        target_inner,
+                        max_literals=14,
+                        max_literal_product=256,
+                    ):
+                        continue
+                    inner_proof = raw_flat_clause_resolution_proof(
+                        left_clause,
+                        target_inner,
+                        left_clause_proof,
+                        right_clause,
+                        right_clause_proof,
+                        avoid_text=right_clause_proof,
+                    )
+                    if inner_proof is None:
+                        inner_proof = raw_flat_clause_resolution_proof(
+                            right_clause,
+                            target_inner,
+                            right_clause_proof,
+                            left_clause,
+                            left_clause_proof,
+                            avoid_text=left_clause_proof,
+                        )
+                    if inner_proof is None:
+                        continue
+                    for name, sort in reversed(target_inner_binders):
+                        inner_proof = f"(fun {name} :{sort} => {inner_proof})"
+                    introduced = raw_or_intro_literal_at(target_body, target_index, inner_proof)
+                    if introduced is not None:
+                        return introduced
+        finally:
+            if previous_target is None:
+                if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                    delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+            else:
+                PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+        return None
+
+    def prove_pair(left: Expr, left_proof: str, right: Expr, right_proof: str) -> str | None:
+        for target_index, target_quantified in quantified_targets:
+            proof = prove_quantified_target(target_index, target_quantified, left, left_proof, right, right_proof)
+            if proof is not None:
+                return proof
+        return None
+
+    def prove_with_resolver(left: Expr, left_proof: str) -> str | None:
+        direct = raw_literal_to_clause_proof(left, target_body, left_proof, target_literals, ())
+        if direct is not None:
+            return direct
+        resolver_binders, resolver_body = collect_foralls(resolver)
+        if resolver_binders:
+            return prove_pair(left, left_proof, resolver, resolver_proof)
+
+        def resolver_handler(right: Expr, right_proof: str) -> str | None:
+            direct_right = raw_literal_to_clause_proof(right, target_body, right_proof, target_literals, ())
+            if direct_right is not None:
+                return direct_right
+            return prove_pair(left, left_proof, right, right_proof)
+
+        return raw_clause_cases_with_handler(
+            resolver_body,
+            resolver_proof,
+            resolver_handler,
+            avoid_text=f"guarded_quantified_component {left_proof}",
+        )
+
+    source_binders, source_body = collect_foralls(source)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+    try:
+        if source_binders:
+            return prove_with_resolver(source, source_proof)
+
+        def source_handler(left: Expr, left_proof: str) -> str | None:
+            return prove_with_resolver(left, left_proof)
+
+        return raw_clause_cases_with_handler(
+            source_body,
+            source_proof,
+            source_handler,
+            avoid_text="guarded_quantified_component",
+        )
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_tptp_superposition_proof(
     proposition: str,
     parents: list[str],
@@ -46914,6 +47069,26 @@ def raw_tptp_superposition_proof(
             if proof is not None:
                 return proof
             proof = raw_quantified_clause_expansion_superposition_proof(
+                target_expr,
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_guarded_quantified_component_clause_resolution_superposition_proof(
+                target_expr,
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_guarded_quantified_component_clause_resolution_superposition_proof(
                 target_expr,
                 parent_exprs[1][0],
                 parent_exprs[1][1],
