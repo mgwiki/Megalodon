@@ -42281,6 +42281,8 @@ def raw_quantified_prop_equality_set_argument_superposition_proof(
     if target_sides is None or target_body.kind != "eq":
         return None
     target_left, target_right = target_sides
+    if raw_equality_transport_sort(target_left, target_right, variable_sorts) != "prop":
+        return None
 
     set_binders, set_body = collect_foralls(set_equality)
     if set_binders:
@@ -42294,6 +42296,8 @@ def raw_quantified_prop_equality_set_argument_superposition_proof(
     equality_binders, equality_body = collect_foralls(quantified_equality)
     equality_sides = equality_like_sides(equality_body)
     if equality_sides is None or equality_body.kind != "eq" or len(equality_binders) > 6:
+        return None
+    if raw_equality_transport_sort(equality_sides[0], equality_sides[1], variable_sorts) != "prop":
         return None
     binder_names = {name for name, _sort in equality_binders}
 
@@ -42368,6 +42372,146 @@ def raw_quantified_prop_equality_set_argument_superposition_proof(
     return None
 
 
+def raw_unit_equality_chain_superposition_proof(
+    target: Expr,
+    first_equality: Expr,
+    first_equality_proof: str,
+    second_equality: Expr,
+    second_equality_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    target_binders, target_body = collect_foralls(target)
+    if target_binders:
+        return None
+    target_sides = equality_like_sides(target_body)
+    if target_sides is None or target_body.kind != "eq":
+        return None
+    target_left, target_right = target_sides
+
+    avoid = expr_variables(target_body) | expr_bound_variables(target_body)
+    first_binders, first_body = raw_freshen_quantified_binders(first_equality, avoid, "EQ1")
+    avoid |= {name for name, _sort in first_binders} | expr_variables(first_body) | expr_bound_variables(first_body)
+    second_binders, second_body = raw_freshen_quantified_binders(second_equality, avoid, "EQ2")
+    if len(first_binders) + len(second_binders) > 8:
+        return None
+
+    first_sides = equality_like_sides(first_body)
+    second_sides = equality_like_sides(second_body)
+    if first_sides is None or second_sides is None:
+        return None
+    if first_body.kind != "eq" or second_body.kind != "eq":
+        return None
+
+    local_sorts = {
+        **variable_sorts,
+        **{name: sort for name, sort in first_binders},
+        **{name: sort for name, sort in second_binders},
+    }
+    equality_sort = raw_equality_transport_sort(target_left, target_right, local_sorts)
+    if equality_sort not in {"set", "prop"}:
+        return None
+    all_binders = first_binders + second_binders
+    binder_names = {name for name, _sort in all_binders}
+
+    def complete_substitution(subst: dict[str, Expr]) -> dict[str, Expr] | None:
+        completed = dict(subst)
+        flatten_substitution(completed)
+        for name in list(completed):
+            completed[name] = beta_reduce_expr(flatten_applications(completed[name]))
+        for name, sort in all_binders:
+            if name in completed:
+                continue
+            inhabitant = raw_simple_inhabitant_for_sort(sort)
+            if inhabitant is None:
+                return None
+            completed[name] = inhabitant
+        flatten_substitution(completed)
+        for name, value in completed.items():
+            if name in binder_names and expr_variables(value) & binder_names:
+                return None
+        return completed
+
+    def instantiate_proof(proof: str, binders: list[tuple[str, str]], subst: dict[str, Expr]) -> str | None:
+        result = proof
+        for name, _sort in binders:
+            value = subst.get(name)
+            if value is None:
+                return None
+            result = f"({proof_head(result)} {proof_arg_text(value)})"
+        return result
+
+    for first_start, first_end, first_reversed in (
+        (first_sides[0], first_sides[1], False),
+        (first_sides[1], first_sides[0], True),
+    ):
+        for second_start, second_end, second_reversed in (
+            (second_sides[0], second_sides[1], False),
+            (second_sides[1], second_sides[0], True),
+        ):
+            subst: dict[str, Expr] = {}
+            if not raw_unify_expr_instantiating(first_start, target_left, binder_names, subst):
+                continue
+            if not raw_unify_expr_instantiating(second_end, target_right, binder_names, subst):
+                continue
+            if not raw_unify_expr_instantiating(first_end, second_start, binder_names, subst):
+                continue
+            completed = complete_substitution(subst)
+            if completed is None:
+                continue
+
+            concrete_first_left = beta_reduce_expr(flatten_applications(substitute_expr(first_sides[0], completed)))
+            concrete_first_right = beta_reduce_expr(flatten_applications(substitute_expr(first_sides[1], completed)))
+            concrete_second_left = beta_reduce_expr(flatten_applications(substitute_expr(second_sides[0], completed)))
+            concrete_second_right = beta_reduce_expr(flatten_applications(substitute_expr(second_sides[1], completed)))
+            concrete_first_start = concrete_first_right if first_reversed else concrete_first_left
+            concrete_first_end = concrete_first_left if first_reversed else concrete_first_right
+            concrete_second_start = concrete_second_right if second_reversed else concrete_second_left
+            concrete_second_end = concrete_second_left if second_reversed else concrete_second_right
+            if not expr_same_mod_alpha(concrete_first_start, target_left):
+                continue
+            if not expr_same_mod_alpha(concrete_second_end, target_right):
+                continue
+            if not expr_same_mod_alpha(concrete_first_end, concrete_second_start):
+                continue
+
+            first_proof = instantiate_proof(first_equality_proof, first_binders, completed)
+            second_proof = instantiate_proof(second_equality_proof, second_binders, completed)
+            if first_proof is None or second_proof is None:
+                continue
+            if first_reversed:
+                first_proof = native_eq_symmetry_proof(
+                    first_proof,
+                    concrete_first_left,
+                    concrete_first_right,
+                    equality_sort,
+                )
+            if second_reversed:
+                second_proof = native_eq_symmetry_proof(
+                    second_proof,
+                    concrete_second_left,
+                    concrete_second_right,
+                    equality_sort,
+                )
+
+            hole_name = fresh_identifier(
+                "zz",
+                expr_text(target_left),
+                expr_text(target_right),
+                expr_text(concrete_first_end),
+            )
+            context = Expr("eq", args=(target_left, Expr("var", value=hole_name)))
+            return native_equality_transport_proof(
+                second_proof,
+                concrete_first_end,
+                target_right,
+                first_proof,
+                hole_name,
+                equality_sort,
+                context,
+            )
+    return None
+
+
 def raw_tptp_superposition_proof(
     proposition: str,
     parents: list[str],
@@ -42403,6 +42547,26 @@ def raw_tptp_superposition_proof(
             if proof is not None:
                 return proof
             proof = raw_quantified_prop_equality_set_argument_superposition_proof(
+                target_expr,
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_unit_equality_chain_superposition_proof(
+                target_expr,
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_unit_equality_chain_superposition_proof(
                 target_expr,
                 parent_exprs[1][0],
                 parent_exprs[1][1],
@@ -58681,6 +58845,26 @@ def raw_tptp_replay_proof(
                     if parent_expr is not None:
                         parent_exprs.append((parent_expr, raw_tptp_canonical_parent_proof_name(parent, propositions_by_name)))
                 if len(parent_exprs) == 2:
+                    proof = raw_unit_equality_chain_superposition_proof(
+                        target_expr,
+                        parent_exprs[0][0],
+                        parent_exprs[0][1],
+                        parent_exprs[1][0],
+                        parent_exprs[1][1],
+                        variable_sorts,
+                    )
+                    if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
+                        return proof
+                    proof = raw_unit_equality_chain_superposition_proof(
+                        target_expr,
+                        parent_exprs[1][0],
+                        parent_exprs[1][1],
+                        parent_exprs[0][0],
+                        parent_exprs[0][1],
+                        variable_sorts,
+                    )
+                    if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
+                        return proof
                     proof = raw_guarded_unit_equality_quantified_clause_superposition_proof(
                         parent_exprs[0][0],
                         target_expr,
