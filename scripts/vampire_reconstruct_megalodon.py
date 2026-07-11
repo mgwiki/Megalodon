@@ -44814,6 +44814,330 @@ def raw_guarded_quantified_clause_resolution_superposition_proof(
     return None
 
 
+def raw_double_guarded_quantified_clause_resolution_superposition_proof(
+    first: Expr,
+    target: Expr,
+    first_proof: str,
+    second: Expr,
+    second_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if proof_search_timed_out():
+        return None
+
+    def quantified_guard_split(expr: Expr) -> tuple[int, Expr, Expr] | None:
+        parts = raw_or_parts(expr)
+        if parts is None:
+            return None
+        for quantified_index, guard_index in ((0, 1), (1, 0)):
+            quantified = parts[quantified_index]
+            if collect_foralls(quantified)[0]:
+                return quantified_index, quantified, parts[guard_index]
+        return None
+
+    target_split = quantified_guard_split(target)
+    first_split = quantified_guard_split(first)
+    second_split = quantified_guard_split(second)
+    if target_split is None or first_split is None or second_split is None:
+        return None
+
+    target_quantified_index, target_quantified, _target_guard = target_split
+    first_quantified_index, first_quantified, first_guard = first_split
+    second_quantified_index, second_quantified, second_guard = second_split
+    target_binders, target_body = collect_foralls(target_quantified)
+    first_binders, first_body = collect_foralls(first_quantified)
+    second_binders, second_body = collect_foralls(second_quantified)
+    if (
+        not target_binders
+        or not first_binders
+        or not second_binders
+        or len(target_binders) > 8
+        or len(first_binders) > 8
+        or len(second_binders) > 8
+    ):
+        return None
+
+    target_literals = raw_clause_literals(target_body)
+    first_literals = raw_clause_literals(first_body)
+    second_literals = raw_clause_literals(second_body)
+    if len(target_literals) > 24 or len(first_literals) > 12 or len(second_literals) > 12:
+        return None
+    if not any(raw_false_clause_literal(literal) for literal in target_literals):
+        return None
+
+    target_names = {name for name, _sort in target_binders}
+    used_names = (
+        target_names
+        | expr_variables(target_body)
+        | expr_bound_variables(target_body)
+        | expr_variables(first_guard)
+        | expr_bound_variables(first_guard)
+        | expr_variables(second_guard)
+        | expr_bound_variables(second_guard)
+    )
+
+    def rename_local_binders(
+        binders: list[tuple[str, str]],
+        body: Expr,
+        prefix: str,
+    ) -> tuple[list[tuple[str, str]], Expr]:
+        renamed: list[tuple[str, str]] = []
+        renames: dict[str, str] = {}
+        for index, (name, sort) in enumerate(binders):
+            replacement = name
+            if replacement in used_names:
+                replacement = fresh_identifier(prefix + str(index), expr_text(first), expr_text(second), expr_text(target))
+                while replacement in used_names:
+                    replacement = fresh_identifier(replacement, expr_text(first), expr_text(second), expr_text(target))
+            used_names.add(replacement)
+            renamed.append((replacement, sort))
+            if replacement != name:
+                renames[name] = replacement
+        if renames:
+            body = rename_expr_variables(body, renames)
+        return renamed, body
+
+    first_original_binders = list(first_binders)
+    second_original_binders = list(second_binders)
+    first_binders, first_body = rename_local_binders(first_binders, first_body, "DGQF")
+    second_binders, second_body = rename_local_binders(second_binders, second_body, "DGQS")
+    first_literals = raw_clause_literals(first_body)
+    second_literals = raw_clause_literals(second_body)
+
+    target_sort_by_name = {name: sort for name, sort in target_binders}
+    first_sort_by_name = {name: sort for name, sort in first_binders}
+    second_sort_by_name = {name: sort for name, sort in second_binders}
+    instantiation_names = set(first_sort_by_name) | set(second_sort_by_name)
+    local_sorts = {
+        **variable_sorts,
+        **target_sort_by_name,
+        **first_sort_by_name,
+        **second_sort_by_name,
+    }
+    target_nonfalse_literals = [
+        literal
+        for literal in target_literals
+        if not raw_false_clause_literal(literal)
+    ]
+
+    def substitution_sorts_ok(subst: dict[str, Expr]) -> bool:
+        for name, value in subst.items():
+            expected_sort = first_sort_by_name.get(name) or second_sort_by_name.get(name)
+            if expected_sort is None:
+                continue
+            value_sort = expr_sort(value, local_sorts)
+            if value_sort is not None and not equivalent_sorts(expected_sort, value_sort):
+                return False
+        return True
+
+    def complement_partial_substitution(left: Expr, right: Expr) -> dict[str, Expr] | None:
+        left_premises, left_conclusion = split_arrows(left)
+        right_premises, right_conclusion = split_arrows(right)
+        candidates: list[tuple[Expr, Expr]] = []
+        if len(left_premises) == 1 and false_eliminator_expr(left_conclusion):
+            candidates.append((left_premises[0], right))
+        if len(right_premises) == 1 and false_eliminator_expr(right_conclusion):
+            candidates.append((right_premises[0], left))
+        for negative_atom, positive_atom in candidates:
+            subst: dict[str, Expr] = {}
+            if raw_unify_expr_instantiating(negative_atom, positive_atom, instantiation_names, subst):
+                flatten_substitution(subst)
+                if substitution_sorts_ok(subst):
+                    return subst
+            subst = {}
+            if raw_unify_expr_instantiating(
+                beta_reduce_expr(flatten_applications(negative_atom)),
+                beta_reduce_expr(flatten_applications(positive_atom)),
+                instantiation_names,
+                subst,
+            ):
+                flatten_substitution(subst)
+                if substitution_sorts_ok(subst):
+                    return subst
+        return None
+
+    def complete_substitutions(
+        partial: dict[str, Expr],
+        first_resolved_index: int,
+        second_resolved_index: int,
+    ) -> Iterable[dict[str, Expr]]:
+        residuals = [
+            literal
+            for index, literal in enumerate(first_literals)
+            if index != first_resolved_index
+        ] + [
+            literal
+            for index, literal in enumerate(second_literals)
+            if index != second_resolved_index
+        ]
+        residuals.sort(key=lambda literal: -len(expr_variables(literal) & instantiation_names))
+        seen: set[tuple[int, tuple[tuple[str, str], ...]]] = set()
+
+        def search(index: int, subst: dict[str, Expr]) -> Iterable[dict[str, Expr]]:
+            if proof_search_timed_out():
+                return
+            subst = dict(subst)
+            flatten_substitution(subst)
+            if instantiation_names <= subst.keys():
+                if (
+                    substitution_sorts_ok(subst)
+                    and not any(expr_variables(subst[name]) & instantiation_names for name in instantiation_names)
+                    and not any(raw_expr_has_synthetic_db_variable(subst[name]) for name in instantiation_names)
+                ):
+                    yield subst
+                return
+            if index >= len(residuals):
+                return
+            key = (
+                index,
+                tuple(sorted((name, expr_key(value)) for name, value in subst.items())),
+            )
+            if key in seen:
+                return
+            seen.add(key)
+            literal = beta_reduce_expr(flatten_applications(substitute_expr(residuals[index], subst)))
+            matched = False
+            for target_literal in target_nonfalse_literals:
+                trial = dict(subst)
+                if raw_unify_expr_instantiating(literal, target_literal, instantiation_names, trial):
+                    flatten_substitution(trial)
+                    if substitution_sorts_ok(trial):
+                        matched = True
+                        yield from search(index + 1, trial)
+                        continue
+                trial = dict(subst)
+                if raw_unify_expr_instantiating(
+                    beta_reduce_expr(flatten_applications(literal)),
+                    beta_reduce_expr(flatten_applications(target_literal)),
+                    instantiation_names,
+                    trial,
+                ):
+                    flatten_substitution(trial)
+                    if substitution_sorts_ok(trial):
+                        matched = True
+                        yield from search(index + 1, trial)
+            if not matched:
+                yield from search(index + 1, subst)
+
+        yield from search(0, partial)
+
+    def instantiated_pairs() -> Iterable[tuple[Expr, str, Expr, str]]:
+        seen: set[tuple[tuple[str, str], ...]] = set()
+        attempts = 0
+        for first_index, first_literal in enumerate(first_literals):
+            for second_index, second_literal in enumerate(second_literals):
+                if proof_search_timed_out():
+                    return
+                partial = complement_partial_substitution(first_literal, second_literal)
+                if partial is None:
+                    continue
+                for subst in complete_substitutions(partial, first_index, second_index):
+                    attempts += 1
+                    if attempts > 128:
+                        return
+                    if any(name not in subst for name in instantiation_names):
+                        continue
+                    key = tuple(sorted((name, expr_key(subst[name])) for name in instantiation_names))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    first_instance = beta_reduce_expr(flatten_applications(substitute_expr(first_body, subst)))
+                    second_instance = beta_reduce_expr(flatten_applications(substitute_expr(second_body, subst)))
+                    if not raw_clause_replay_budget_ok(
+                        first_instance,
+                        second_instance,
+                        target_body,
+                        max_literals=18,
+                        max_literal_product=512,
+                    ):
+                        continue
+                    first_instance_proof = "HfirstQuant"
+                    for (_original_name, _original_sort), (name, _sort) in zip(first_original_binders, first_binders):
+                        first_instance_proof = f"({proof_head(first_instance_proof)} {proof_arg_text(subst[name])})"
+                    second_instance_proof = "HsecondQuant"
+                    for (_original_name, _original_sort), (name, _sort) in zip(second_original_binders, second_binders):
+                        second_instance_proof = f"({proof_head(second_instance_proof)} {proof_arg_text(subst[name])})"
+                    yield first_instance, first_instance_proof, second_instance, second_instance_proof
+
+    def quantified_target_proof() -> str | None:
+        previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+        PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+        try:
+            for first_instance, first_instance_proof, second_instance, second_instance_proof in instantiated_pairs():
+                proof = raw_clause_multi_resolution_proof(
+                    first_instance,
+                    target_body,
+                    first_instance_proof,
+                    [(second_instance, second_instance_proof)],
+                )
+                if proof is None:
+                    proof = raw_clause_multi_resolution_proof(
+                        second_instance,
+                        target_body,
+                        second_instance_proof,
+                        [(first_instance, first_instance_proof)],
+                    )
+                if proof is None:
+                    proof = raw_flat_clause_resolution_proof(
+                        first_instance,
+                        target_body,
+                        first_instance_proof,
+                        second_instance,
+                        second_instance_proof,
+                        avoid_text=second_instance_proof,
+                    )
+                if proof is None:
+                    continue
+                for name, sort in reversed(target_binders):
+                    proof = f"(fun {name} :{sort} => {proof})"
+                return proof
+            return None
+        finally:
+            if previous_target is None:
+                if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                    delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+            else:
+                PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+    quantified_proof = quantified_target_proof()
+    if quantified_proof is None:
+        return None
+    quantified_intro = raw_or_intro_literal_at(target, target_quantified_index, quantified_proof)
+    if quantified_intro is None:
+        return None
+    target_top_literals = raw_clause_literals(target)
+    first_guard_intro = raw_literal_to_clause_proof(first_guard, target, "HfirstGuard", target_top_literals, ())
+    second_guard_intro = raw_literal_to_clause_proof(second_guard, target, "HsecondGuard", target_top_literals, ())
+    if first_guard_intro is None or second_guard_intro is None:
+        return None
+
+    def second_case() -> str:
+        if second_quantified_index == 0:
+            return (
+                f"{proof_term_text(second_proof)} {proof_arg_text(target)} "
+                f"(fun HsecondQuant => {proof_term_text(quantified_intro)}) "
+                f"(fun HsecondGuard => {proof_term_text(second_guard_intro)})"
+            )
+        return (
+            f"{proof_term_text(second_proof)} {proof_arg_text(target)} "
+            f"(fun HsecondGuard => {proof_term_text(second_guard_intro)}) "
+            f"(fun HsecondQuant => {proof_term_text(quantified_intro)})"
+        )
+
+    second_branch = second_case()
+    if first_quantified_index == 0:
+        return (
+            f"{proof_term_text(first_proof)} {proof_arg_text(target)} "
+            f"(fun HfirstQuant => {proof_term_text(second_branch)}) "
+            f"(fun HfirstGuard => {proof_term_text(first_guard_intro)})"
+        )
+    return (
+        f"{proof_term_text(first_proof)} {proof_arg_text(target)} "
+        f"(fun HfirstGuard => {proof_term_text(first_guard_intro)}) "
+        f"(fun HfirstQuant => {proof_term_text(second_branch)})"
+    )
+
+
 def raw_guarded_unit_quantified_clause_resolution_superposition_proof(
     source: Expr,
     target: Expr,
@@ -48352,6 +48676,26 @@ def raw_tptp_superposition_proof(
             proof = raw_guarded_quantified_component_clause_resolution_superposition_proof(
                 target_expr,
                 parent_exprs[1][0],
+                parent_exprs[1][1],
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_double_guarded_quantified_clause_resolution_superposition_proof(
+                parent_exprs[0][0],
+                target_expr,
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_double_guarded_quantified_clause_resolution_superposition_proof(
+                parent_exprs[1][0],
+                target_expr,
                 parent_exprs[1][1],
                 parent_exprs[0][0],
                 parent_exprs[0][1],
