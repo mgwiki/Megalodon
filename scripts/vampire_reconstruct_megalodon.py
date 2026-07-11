@@ -48466,6 +48466,34 @@ def raw_tptp_rat_proof(
     return None
 
 
+def raw_tptp_small_propositional_rat_candidate(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> bool:
+    if not 2 <= len(parents) <= 6:
+        return False
+    target = parse_expr(proposition)
+    if target is None or collect_foralls(target)[0]:
+        return False
+    target_literals = raw_clause_literals(target)
+    if not 1 <= len(target_literals) <= 8:
+        return False
+    if any(raw_literal_polarity(literal) is None for literal in target_literals):
+        return False
+    for parent in parents:
+        parent_proposition = propositions_by_name.get(parent)
+        parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+        if parent_expr is None or collect_foralls(parent_expr)[0]:
+            return False
+        parent_literals = raw_clause_literals(parent_expr)
+        if not 1 <= len(parent_literals) <= 8:
+            return False
+        if any(raw_literal_polarity(literal) is None for literal in parent_literals):
+            return False
+    return True
+
+
 def raw_negative_equality_instantiations(body: Expr, binder_names: set[str]) -> list[tuple[str, Expr]]:
     instantiations: list[tuple[str, Expr]] = []
     seen: set[tuple[str, str]] = set()
@@ -61212,6 +61240,29 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     variable_sorts,
                     None,
                 )
+            if (
+                replay_proof is None
+                and rule == "rat"
+                and raw_tptp_small_propositional_rat_candidate(
+                    proposition,
+                    replay_parents,
+                    propositions_by_name,
+                )
+            ):
+                previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+                PROOF_SEARCH_STATE.deadline = proof_search_now() + 2.5
+                try:
+                    replay_proof = raw_tptp_rat_proof(
+                        proposition,
+                        replay_parents,
+                        propositions_by_name,
+                    )
+                finally:
+                    if previous_deadline is None:
+                        if hasattr(PROOF_SEARCH_STATE, "deadline"):
+                            delattr(PROOF_SEARCH_STATE, "deadline")
+                    else:
+                        PROOF_SEARCH_STATE.deadline = previous_deadline
             if replay_proof is None and rule == "superposition":
                 replay_proof = raw_tptp_guarded_quantified_equality_clause_superposition_proof(
                     proposition,
