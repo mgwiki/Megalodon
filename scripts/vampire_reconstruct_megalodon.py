@@ -39917,6 +39917,230 @@ def raw_tptp_instantiated_parent_clause_weaken_proof(
     return None
 
 
+def raw_quantified_negative_clause_expansion_proof(
+    target_body: Expr,
+    positive_literal: Expr,
+    positive_proof: str,
+    expansion_parent: Expr,
+    expansion_proof: str,
+    local_sorts: dict[str, str],
+) -> str | None:
+    expansion_binders, expansion_body = collect_foralls(expansion_parent)
+    if not expansion_binders or len(expansion_binders) > 6:
+        return None
+    expansion_literals = raw_clause_literals(expansion_body)
+    if len(expansion_literals) > 12 or len(raw_clause_literals(target_body)) > 16:
+        return None
+    binder_names = {name for name, _sort in expansion_binders}
+    matched_negative: tuple[Expr, dict[str, Expr]] | None = None
+    for literal in expansion_literals:
+        premises, conclusion = split_arrows(literal)
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
+            continue
+        subst: dict[str, Expr] = {}
+        if not match_expr_with_alpha_instantiation(premises[0], positive_literal, binder_names, subst):
+            continue
+        matched_negative = (literal, subst)
+        break
+    if matched_negative is None:
+        return None
+    negative_literal, base_subst = matched_negative
+    target_terms = (target_body, positive_literal)
+    target_variables = expr_variables(target_body) | expr_variables(positive_literal)
+    candidate_by_binder: list[list[Expr]] = []
+    for name, sort in expansion_binders:
+        if name in base_subst:
+            candidate_by_binder.append([base_subst[name]])
+            continue
+        candidates: list[Expr] = []
+        seen: set[str] = set()
+
+        def add(candidate: Expr) -> None:
+            if expr_variables(candidate) & binder_names:
+                return
+            if not (expr_variables(candidate) <= target_variables):
+                return
+            if not equivalent_sorts(expr_sort(candidate, local_sorts), sort):
+                return
+            key = expr_key(candidate)
+            if key in seen:
+                return
+            seen.add(key)
+            candidates.append(candidate)
+
+        for variable in sorted(target_variables):
+            add(Expr("var", value=variable))
+        for candidate in raw_candidate_terms_for_sort(target_terms, sort, local_sorts):
+            add(candidate)
+        inhabitant = raw_simple_inhabitant_for_sort(sort)
+        if inhabitant is not None:
+            add(inhabitant)
+        if not candidates:
+            return None
+        candidate_by_binder.append(candidates[:10])
+
+    attempts = 0
+    for values in itertools.product(*candidate_by_binder):
+        attempts += 1
+        if attempts > 512 or proof_search_timed_out():
+            return None
+        subst = {name: value for (name, _sort), value in zip(expansion_binders, values)}
+        instantiated_body = flatten_applications(substitute_expr(expansion_body, subst))
+        instantiated_negative = flatten_applications(substitute_expr(negative_literal, subst))
+        if not raw_clause_replay_budget_ok(instantiated_body, target_body, max_literals=16, max_literal_product=256):
+            continue
+        instantiated_proof = expansion_proof
+        for name, _sort in expansion_binders:
+            instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(subst[name])})"
+
+        def handler(literal: Expr, literal_proof: str) -> str | None:
+            premises, conclusion = split_arrows(literal)
+            if (
+                len(premises) == 1
+                and false_eliminator_expr(conclusion)
+                and expr_same_mod_alpha(literal, instantiated_negative)
+            ):
+                positive_to_premise = raw_literal_direct_transform_proof(
+                    positive_literal,
+                    premises[0],
+                    positive_proof,
+                    (),
+                )
+                if positive_to_premise is None:
+                    positive_to_premise = raw_deep_formula_transform_proof(
+                        positive_literal,
+                        premises[0],
+                        positive_proof,
+                        local_sorts,
+                    )
+                if positive_to_premise is None:
+                    return None
+                false_proof = f"({proof_head(literal_proof)} {proof_term_text(positive_to_premise)})"
+                return raw_false_to_expr_proof(false_proof, target_body, conclusion)
+            intro = raw_or_intro_from_branch(target_body, literal, literal_proof)
+            if intro is not None:
+                return intro
+            return raw_clause_transform_proof(literal, target_body, literal_proof)
+
+        previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+        PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+        try:
+            proof = raw_clause_cases_with_handler(instantiated_body, instantiated_proof, handler)
+        finally:
+            if previous_target is None:
+                if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                    delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+            else:
+                PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+        if proof is not None:
+            return proof
+    return None
+
+
+def raw_quantified_clause_expansion_component_proof(
+    branch: Expr,
+    target_component: Expr,
+    branch_proof: str,
+    expansion_parent: Expr,
+    expansion_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    branch_binders, branch_body = collect_foralls(branch)
+    target_binders, target_body = collect_foralls(target_component)
+    if not branch_binders or len(branch_binders) > len(target_binders) or len(target_binders) > 6:
+        return None
+    target_sorts = {name: sort for name, sort in target_binders}
+    branch_subst: dict[str, Expr] = {}
+    for name, sort in branch_binders:
+        if not equivalent_sorts(target_sorts.get(name), sort):
+            return None
+        branch_subst[name] = Expr("var", value=name)
+    local_sorts = {**variable_sorts, **target_sorts}
+    branch_body_at_target = flatten_applications(substitute_expr(branch_body, branch_subst))
+    branch_body_proof = branch_proof
+    for name, _sort in branch_binders:
+        branch_body_proof = f"({proof_head(branch_body_proof)} {name})"
+
+    def handler(literal: Expr, literal_proof: str) -> str | None:
+        direct = raw_or_intro_from_branch(target_body, literal, literal_proof)
+        if direct is not None:
+            return direct
+        return raw_quantified_negative_clause_expansion_proof(
+            target_body,
+            literal,
+            literal_proof,
+            expansion_parent,
+            expansion_proof,
+            local_sorts,
+        )
+
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+    try:
+        body_proof = raw_clause_cases_with_handler(branch_body_at_target, branch_body_proof, handler)
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+    if body_proof is None:
+        return None
+    for name, sort in reversed(target_binders):
+        body_proof = f"(fun {name} :{sort} => {body_proof})"
+    return body_proof
+
+
+def raw_quantified_clause_expansion_superposition_proof(
+    target: Expr,
+    expansion_parent: Expr,
+    expansion_proof: str,
+    branch_parent: Expr,
+    branch_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if not collect_foralls(expansion_parent)[0]:
+        return None
+    _target_binders, target_body = collect_foralls(target)
+    branch_binders, branch_body = collect_foralls(branch_parent)
+    if branch_binders:
+        return None
+    target_literals = raw_clause_literals(target_body)
+    if len(target_literals) > 16 or len(raw_clause_literals(branch_body)) > 8:
+        return None
+
+    def handler(literal: Expr, literal_proof: str) -> str | None:
+        direct = raw_or_intro_from_branch(target_body, literal, literal_proof)
+        if direct is not None:
+            return direct
+        for target_literal in target_literals:
+            component_proof = raw_quantified_clause_expansion_component_proof(
+                literal,
+                target_literal,
+                literal_proof,
+                expansion_parent,
+                expansion_proof,
+                variable_sorts,
+            )
+            if component_proof is None:
+                continue
+            intro = raw_or_intro_from_branch(target_body, target_literal, component_proof)
+            if intro is not None:
+                return intro
+        return None
+
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+    try:
+        return raw_clause_cases_with_handler(branch_body, branch_proof, handler)
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_tptp_guarded_prop_equality_factoring_fallback(
     proposition: str,
     parents: list[str],
@@ -43635,6 +43859,26 @@ def raw_tptp_superposition_proof(
             proof = raw_quantified_target_literal_equality_clause_superposition_proof(
                 parent_exprs[1][0],
                 target_expr,
+                parent_exprs[1][1],
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_quantified_clause_expansion_superposition_proof(
+                target_expr,
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_quantified_clause_expansion_superposition_proof(
+                target_expr,
+                parent_exprs[1][0],
                 parent_exprs[1][1],
                 parent_exprs[0][0],
                 parent_exprs[0][1],
