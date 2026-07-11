@@ -48069,8 +48069,13 @@ def raw_propositional_clause_entailment_proof(
 def raw_propositional_unit_propagation_proof(
     target: Expr,
     clauses: list[tuple[Expr, str]],
+    *,
+    max_clauses: int = 12,
+    max_clause_literals: int = 8,
 ) -> str | None:
-    if len(clauses) > 12 or any(len(raw_clause_literals(clause)) > 8 for clause, _proof in clauses):
+    if len(clauses) > max_clauses or any(
+        len(raw_clause_literals(clause)) > max_clause_literals for clause, _proof in clauses
+    ):
         return None
     if any(collect_foralls(clause)[0] for clause, _proof in clauses):
         return None
@@ -48430,6 +48435,20 @@ def raw_tptp_rat_proof(
     )
     if unit_propagation is not None:
         return unit_propagation
+    if (
+        len(parent_exprs) <= 24
+        and len(raw_clause_literals(target)) == 1
+        and all(not collect_foralls(expr)[0] for _parent, expr, _proof_name in parent_exprs)
+        and all(len(raw_clause_literals(expr)) <= 8 for _parent, expr, _proof_name in parent_exprs)
+    ):
+        unit_propagation = raw_propositional_unit_propagation_proof(
+            target,
+            [(expr, proof_name) for _parent, expr, proof_name in parent_exprs],
+            max_clauses=24,
+            max_clause_literals=8,
+        )
+        if unit_propagation is not None:
+            return unit_propagation
     propositional = raw_propositional_clause_entailment_proof(
         target,
         [(expr, proof_name) for _parent, expr, proof_name in parent_exprs],
