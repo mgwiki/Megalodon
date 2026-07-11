@@ -36633,6 +36633,111 @@ def raw_formula_context_demodulation_options(
     return options
 
 
+def raw_universal_formula_context_demodulation_options(
+    equality: Expr,
+    equality_proof: str,
+    source: Expr,
+    target: Expr,
+    variable_sorts: dict[str, str],
+) -> list[tuple[Expr, Expr, str, str]]:
+    binders, body = collect_foralls(equality)
+    if not binders or len(binders) > 6:
+        return []
+    sides = equality_like_sides(body)
+    if sides is None:
+        return []
+    binder_names = {name for name, _sort in binders}
+    source_subterms = expr_subterms(source, limit=256)
+    target_subterms = expr_subterms(target, limit=256)
+    local_sorts = {**variable_sorts, **{name: sort for name, sort in binders}}
+    options: list[tuple[Expr, Expr, str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def add_from_match(
+        left_pattern: Expr,
+        left_target: Expr,
+        right_pattern: Expr,
+        right_target: Expr,
+    ) -> None:
+        subst: dict[str, Expr] = {}
+        if not match_expr_with_eta_instantiation(left_pattern, left_target, binder_names, subst, local_sorts):
+            return
+        if not match_expr_with_eta_instantiation(right_pattern, right_target, binder_names, subst, local_sorts):
+            return
+        if not binder_names <= set(subst):
+            return
+        for name, sort in binders:
+            actual_sort = expr_sort(subst[name], local_sorts)
+            if actual_sort is not None and not equivalent_sorts(actual_sort, sort):
+                return
+        instantiated_left = substitute_expr(sides[0], subst)
+        instantiated_right = substitute_expr(sides[1], subst)
+        equality_sort = raw_equality_transport_sort(instantiated_left, instantiated_right, local_sorts)
+        if equality_sort is None:
+            return
+        proof = equality_proof
+        for name, _sort in binders:
+            proof = f"({proof_term_text(proof)} {proof_arg_text(subst[name])})"
+        key = (expr_key(instantiated_left), expr_key(instantiated_right), proof)
+        if key in seen:
+            return
+        seen.add(key)
+        options.append((instantiated_left, instantiated_right, proof, equality_sort))
+
+    for source_subterm in source_subterms:
+        for target_subterm in target_subterms:
+            add_from_match(sides[0], source_subterm, sides[1], target_subterm)
+            add_from_match(sides[1], source_subterm, sides[0], target_subterm)
+            if len(options) >= 32:
+                return options
+    return options
+
+
+def raw_context_hole_sort(
+    context: Expr,
+    hole_name: str,
+    variable_sorts: dict[str, str],
+    expected_sort: str = "prop",
+) -> str | None:
+    if context.kind == "var" and context.value == hole_name:
+        return expected_sort
+    if context.kind == "arrow":
+        for arg in context.args:
+            found = raw_context_hole_sort(arg, hole_name, variable_sorts, "prop")
+            if found is not None:
+                return found
+        return None
+    if context.kind == "forall" and context.args:
+        return raw_context_hole_sort(context.args[0], hole_name, variable_sorts, "prop")
+    if context.kind == "eq" and len(context.args) == 2:
+        left, right = context.args
+        if expr_mentions_any(left, {hole_name}):
+            return raw_context_hole_sort(left, hole_name, variable_sorts, expr_sort(right, variable_sorts) or "set")
+        if expr_mentions_any(right, {hole_name}):
+            return raw_context_hole_sort(right, hole_name, variable_sorts, expr_sort(left, variable_sorts) or "set")
+        return None
+    if context.kind == "app" and context.args:
+        head = context.args[0]
+        if head.kind == "var" and head.value in {"or", "and", "vOR", "vAND"}:
+            for arg in context.args[1:]:
+                found = raw_context_hole_sort(arg, hole_name, variable_sorts, "prop")
+                if found is not None:
+                    return found
+            return None
+        head_sort = expr_sort(head, variable_sorts)
+        argument_sorts = split_sort_arrows(head_sort)[:-1] if head_sort is not None else []
+        for index, arg in enumerate(context.args[1:]):
+            arg_expected = argument_sorts[index] if index < len(argument_sorts) else None
+            found = raw_context_hole_sort(arg, hole_name, variable_sorts, arg_expected or "set")
+            if found is not None:
+                return found
+    for arg in context.args:
+        found = raw_context_hole_sort(arg, hole_name, variable_sorts, "set")
+        if found is not None:
+            return found
+    return None
+
+
 def raw_binary_equality_chain_demodulation_proof(
     source: Expr,
     target: Expr,
@@ -36767,11 +36872,15 @@ def raw_formula_context_demodulation_proof(
     )
     hole_expr = Expr("var", value=hole)
     seen: set[tuple[str, str, str]] = set()
-    for equality_left, equality_right, equality_proof_term, equality_sort in raw_formula_context_demodulation_options(
+    options = raw_universal_formula_context_demodulation_options(
         equality,
         equality_proof,
+        source,
+        target,
         variable_sorts,
-    ):
+    )
+    options.extend(raw_formula_context_demodulation_options(equality, equality_proof, variable_sorts))
+    for equality_left, equality_right, equality_proof_term, equality_sort in options:
         key = (expr_key(equality_left), expr_key(equality_right), equality_proof_term)
         if key in seen:
             continue
@@ -36788,21 +36897,23 @@ def raw_formula_context_demodulation_proof(
             if old_to_new is None:
                 continue
             for replaced, context in single_replacement_contexts_mod_alpha(source, old, new, hole_expr, limit=16):
+                context_sort = raw_context_hole_sort(context, hole, variable_sorts)
+                transport_sort = context_sort if context_sort in {"set", "prop"} else equality_sort
                 demodulated_proof = None
-                if equality.kind == "eq":
+                if equality.kind == "eq" or equality_proof_term != equality_proof:
                     demodulated_proof = native_equality_transport_proof(
                         old_to_new,
                         old,
                         new,
                         source_proof,
                         hole,
-                        equality_sort,
+                        transport_sort,
                         context,
                     )
                 if demodulated_proof is None:
                     demodulated_proof = (
                         f"({proof_head(old_to_new)} "
-                        f"(fun {hole} :{binder_sort_text(equality_sort)} => {proof_arg_text(context)}) "
+                        f"(fun {hole} :{binder_sort_text(transport_sort)} => {proof_arg_text(context)}) "
                         f"{proof_term_text(source_proof)})"
                     )
                 if expr_same_mod_alpha(replaced, target):
