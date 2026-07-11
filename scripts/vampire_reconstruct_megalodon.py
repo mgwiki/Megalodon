@@ -54282,6 +54282,31 @@ def raw_literal_to_clause_with_split_refutations(
         proof = raw_literal_refutation_from_split_true_assumption(literal, literal_proof, target, split, split_proof_name)
         if proof is not None:
             return proof
+    binders, body = collect_foralls(literal)
+    if (
+        binders
+        and len(binders) <= 6
+        and {name for name, _sort in binders} <= expr_variables(target)
+        and len(raw_clause_literals(body)) <= 16
+    ):
+        instantiated_proof = literal_proof
+        subst: dict[str, Expr] = {}
+        for name, _sort in binders:
+            variable = Expr("var", value=name)
+            subst[name] = variable
+            instantiated_proof = f"({proof_head(instantiated_proof)} {name})"
+        instantiated_body = substitute_expr(body, subst)
+        proof = raw_clause_cases_with_split_refutations(
+            instantiated_body,
+            target,
+            target_literals,
+            rewrites,
+            refutations,
+            split_true_refutations,
+            instantiated_proof,
+        )
+        if proof is not None:
+            return proof
     return None
 
 
