@@ -34754,6 +34754,63 @@ def raw_guarded_false_condition_equality_demodulation_proof(
             PROOF_SEARCH_STATE.flat_resolution_target = previous_target
 
 
+def raw_direct_false_from_fact_and_negation_proof(
+    fact: Expr,
+    fact_proof: str,
+    negation: Expr,
+    negation_proof: str,
+    target: Expr,
+) -> str | None:
+    if not false_eliminator_expr(target):
+        return None
+    premises, conclusion = split_arrows(negation)
+    if len(premises) != 1 or not false_eliminator_expr(conclusion):
+        return None
+    if not expr_same_mod_alpha(beta_normalize_expr(premises[0]), beta_normalize_expr(fact)):
+        return None
+    return f"({proof_head(negation_proof)} {proof_term_text(fact_proof)})"
+
+
+def raw_clause_demodulate_negated_fact_proof(
+    source: Expr,
+    source_proof: str,
+    fact: Expr,
+    fact_proof: str,
+    target: Expr,
+) -> str | None:
+    source_literals = raw_clause_literals(source)
+    if len(source_literals) > 16 or len(raw_clause_literals(target)) > 16:
+        return None
+
+    def negates_fact(literal: Expr) -> bool:
+        premises, conclusion = split_arrows(literal)
+        return (
+            len(premises) == 1
+            and false_eliminator_expr(conclusion)
+            and expr_same_mod_alpha(beta_normalize_expr(premises[0]), beta_normalize_expr(fact))
+        )
+
+    if not any(negates_fact(literal) for literal in source_literals):
+        return None
+
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target)
+    try:
+        def handler(branch: Expr, branch_proof: str) -> str | None:
+            if negates_fact(branch):
+                false_proof = f"({proof_head(branch_proof)} {proof_term_text(fact_proof)})"
+                return raw_false_to_expr_proof(false_proof, target)
+            return raw_or_intro_from_branch(target, branch, branch_proof)
+
+        return raw_clause_cases_with_handler(source, source_proof, handler, avoid_text=fact_proof)
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_tptp_forward_demodulation_proof(
     proposition: str,
     parents: list[str],
@@ -34776,6 +34833,18 @@ def raw_tptp_forward_demodulation_proof(
     second_sides = equality_like_sides(second)
     first_name = raw_tptp_claim_name(parents[0])
     second_name = raw_tptp_claim_name(parents[1])
+    proof = raw_direct_false_from_fact_and_negation_proof(first, first_name, second, second_name, target)
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_direct_false_from_fact_and_negation_proof(second, second_name, first, first_name, target)
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_clause_demodulate_negated_fact_proof(first, first_name, second, second_name, target)
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_clause_demodulate_negated_fact_proof(second, second_name, first, first_name, target)
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
     for source, source_name in ((first, first_name), (second, second_name)):
         proof = raw_or_negative_equality_collapse_transform_proof(
             source,
