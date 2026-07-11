@@ -25779,12 +25779,28 @@ def raw_clause_literal_instantiation_subst(
             return fill_missing(current)
         source_literal = source_literals[index]
         for target_literal in target_literals:
-            trial = dict(current)
-            if not raw_match_literal_mod_equality_symmetry(source_literal, target_literal, binder_names, trial):
-                continue
-            found = search(index + 1, trial)
-            if found is not None:
-                return found
+            trials: list[dict[str, Expr]] = []
+            direct_trial = dict(current)
+            if raw_match_literal_mod_equality_symmetry(source_literal, target_literal, binder_names, direct_trial):
+                trials.append(direct_trial)
+            source_sides = equality_like_sides(source_literal)
+            target_sides = equality_like_sides(target_literal)
+            if source_sides is not None and target_sides is not None:
+                symmetric_trial = dict(current)
+                if (
+                    match_expr_with_alpha_instantiation(source_sides[0], target_sides[1], binder_names, symmetric_trial)
+                    and match_expr_with_alpha_instantiation(source_sides[1], target_sides[0], binder_names, symmetric_trial)
+                    and not any(
+                        set(candidate) == set(symmetric_trial)
+                        and all(expr_same_mod_alpha(candidate[name], symmetric_trial[name]) for name in symmetric_trial)
+                        for candidate in trials
+                    )
+                ):
+                    trials.append(symmetric_trial)
+            for trial in trials:
+                found = search(index + 1, trial)
+                if found is not None:
+                    return found
         return None
 
     result = search(0, subst)
