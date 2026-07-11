@@ -36053,6 +36053,149 @@ def raw_guarded_universal_prop_explosion_demodulation_proof(
     return None
 
 
+def raw_guarded_positive_prop_argument_false_demodulation_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rule: Expr,
+    rule_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    _source_binders, source_body_top = collect_foralls(source)
+    _target_binders, target_body_top = collect_foralls(target)
+    _rule_binders, rule_body_top = collect_foralls(rule)
+    if _source_binders or _target_binders or _rule_binders:
+        return None
+    source_parts = raw_or_parts(source_body_top)
+    target_parts = raw_or_parts(target_body_top)
+    rule_parts = raw_or_parts(rule_body_top)
+    if source_parts is None or target_parts is None or rule_parts is None:
+        return None
+
+    def component_proof(source_component: Expr, target_component: Expr, rule_component: Expr) -> str | None:
+        source_binders, source_body = collect_foralls(source_component)
+        target_binders, target_body = collect_foralls(target_component)
+        rule_binders, rule_body = collect_foralls(rule_component)
+        if (
+            not source_binders
+            or len(source_binders) != len(target_binders)
+            or len(source_binders) > 6
+            or len(rule_binders) > 6
+            or len(raw_clause_literals(source_body)) != 1
+            or len(raw_clause_literals(target_body)) != 1
+        ):
+            return None
+        if any(not equivalent_sorts(left[1], right[1]) for left, right in zip(source_binders, target_binders)):
+            return None
+        rule_premises, rule_conclusion = split_arrows(rule_body)
+        if len(rule_premises) != 1 or not false_eliminator_expr(rule_conclusion):
+            return None
+
+        source_subst = {
+            source_name: Expr("var", value=target_name)
+            for (source_name, _source_sort), (target_name, _target_sort) in zip(source_binders, target_binders)
+        }
+        source_instantiated = substitute_expr(source_body, source_subst)
+        source_instantiated_proof = "HsourceComponent"
+        for target_name, _target_sort in target_binders:
+            source_instantiated_proof = f"({proof_head(source_instantiated_proof)} {target_name})"
+
+        local_sorts = {
+            **variable_sorts,
+            **dict(target_binders),
+            **dict(rule_binders),
+            "False": "prop",
+        }
+        rule_variables = {name for name, _sort in rule_binders}
+        for redex in expr_subterms(source_instantiated, limit=128):
+            if expr_sort(redex, local_sorts) != "prop":
+                continue
+            replaced, changed = replace_expr(source_instantiated, redex, Expr("var", value="False"))
+            if not changed or not expr_same_mod_alpha(replaced, target_body):
+                continue
+            rule_subst: dict[str, Expr] = {}
+            if not match_expr_with_alpha_instantiation(rule_premises[0], redex, rule_variables, rule_subst):
+                continue
+            flatten_substitution(rule_subst)
+            if not rule_variables <= rule_subst.keys():
+                continue
+            if any(expr_variables(rule_subst[name]) & rule_variables for name in rule_variables):
+                continue
+            rule_instantiated_proof = "HruleComponent"
+            for name, _sort in rule_binders:
+                rule_instantiated_proof = f"({proof_head(rule_instantiated_proof)} {proof_arg_text(rule_subst[name])})"
+            hole = fresh_identifier("Qdemod", expr_text(source_instantiated), expr_text(target_body), expr_text(redex))
+            context, context_changed = replace_expr(source_instantiated, redex, Expr("var", value=hole))
+            if not context_changed:
+                continue
+            false_to_redex = f"(fun Hfalse :False => ((FalseE Hfalse) {proof_arg_text(redex)}))"
+            redex_eq_false = (
+                f"(prop_ext_2 {proof_arg_text(redex)} False "
+                f"{proof_term_text(rule_instantiated_proof)} "
+                f"{false_to_redex})"
+            )
+            proof = (
+                f"(vampire_native_eq_transport_prop {proof_arg_text(redex)} False "
+                f"{redex_eq_false} "
+                f"(fun {hole} :prop => {proof_arg_text(context)}) "
+                f"{proof_term_text(source_instantiated_proof)})"
+            )
+            for name, sort in reversed(target_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
+            return proof
+        return None
+
+    for source_component, source_guard, source_first in (
+        (source_parts[0], source_parts[1], True),
+        (source_parts[1], source_parts[0], False),
+    ):
+        for rule_component, rule_guard, rule_first in (
+            (rule_parts[0], rule_parts[1], True),
+            (rule_parts[1], rule_parts[0], False),
+        ):
+            for target_component, target_guard in (target_parts, (target_parts[1], target_parts[0])):
+                source_guard_intro = raw_or_intro_from_branch(target_body_top, source_guard, "HsourceGuard")
+                rule_guard_intro = raw_or_intro_from_branch(target_body_top, rule_guard, "HruleGuard")
+                if source_guard_intro is None or rule_guard_intro is None:
+                    continue
+                target_guard_literals = raw_clause_literals(target_guard)
+                if not any(expr_same_mod_alpha(literal, source_guard) for literal in target_guard_literals):
+                    continue
+                if not any(expr_same_mod_alpha(literal, rule_guard) for literal in target_guard_literals):
+                    continue
+                body_proof = component_proof(source_component, target_component, rule_component)
+                if body_proof is None:
+                    continue
+                component_intro = raw_or_intro_from_branch(target_body_top, target_component, body_proof)
+                if component_intro is None:
+                    continue
+                target_text = proof_arg_text(target_body_top)
+                if rule_first:
+                    rule_case = (
+                        f"({rule_proof} {target_text} "
+                        f"(fun HruleComponent => {proof_term_text(component_intro)}) "
+                        f"(fun HruleGuard => {proof_term_text(rule_guard_intro)}))"
+                    )
+                else:
+                    rule_case = (
+                        f"({rule_proof} {target_text} "
+                        f"(fun HruleGuard => {proof_term_text(rule_guard_intro)}) "
+                        f"(fun HruleComponent => {proof_term_text(component_intro)}))"
+                    )
+                if source_first:
+                    return (
+                        f"({source_proof} {target_text} "
+                        f"(fun HsourceComponent => {rule_case}) "
+                        f"(fun HsourceGuard => {proof_term_text(source_guard_intro)}))"
+                    )
+                return (
+                    f"({source_proof} {target_text} "
+                    f"(fun HsourceGuard => {proof_term_text(source_guard_intro)}) "
+                    f"(fun HsourceComponent => {rule_case}))"
+                )
+    return None
+
+
 def raw_tptp_forward_demodulation_proof(
     proposition: str,
     parents: list[str],
@@ -36265,6 +36408,26 @@ def raw_tptp_forward_demodulation_proof(
     if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
         return proof
     proof = raw_guarded_universal_prop_explosion_demodulation_proof(target, second, second_name)
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_guarded_positive_prop_argument_false_demodulation_proof(
+        first,
+        target,
+        first_name,
+        second,
+        second_name,
+        variable_sorts,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_guarded_positive_prop_argument_false_demodulation_proof(
+        second,
+        target,
+        second_name,
+        first,
+        first_name,
+        variable_sorts,
+    )
     if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
         return proof
     proof = raw_guarded_negative_prop_demodulation_proof(
