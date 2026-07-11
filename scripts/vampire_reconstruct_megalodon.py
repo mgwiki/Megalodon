@@ -71316,6 +71316,76 @@ def source_local_fact_propositions(source: Path | None, line: int | None) -> dic
     return facts
 
 
+def source_local_set_definition_locations(source: Path | None, line: int | None) -> dict[str, int]:
+    if source is None or line is None or not source.exists():
+        return {}
+    theorem_line = source_enclosing_theorem_line(source, line)
+    if theorem_line is None:
+        return {}
+    rows = source.read_text(encoding="utf-8", errors="replace").splitlines()
+    scanned_rows = rows[theorem_line - 1 : min(line, len(rows))]
+    definitions: dict[str, tuple[int, int, int]] = {}
+    for offset, row in enumerate(scanned_rows):
+        match = LOCAL_SET_DECL_RE.match(row)
+        if match is None:
+            continue
+        definitions[match.group("name")] = (theorem_line + offset, offset, len(row) - len(row.lstrip()))
+    if not definitions:
+        return {}
+
+    def branch_or_scope_boundary(row: str, definition_indent: int) -> bool:
+        stripped = row.lstrip()
+        indent = len(row) - len(stripped)
+        if indent > definition_indent:
+            return False
+        if stripped.startswith("}"):
+            return True
+        return bool(re.match(r"^[-+*](?:\s|$)", stripped))
+
+    in_scope: dict[str, int] = {}
+    for name, (source_line, offset, indent) in definitions.items():
+        if any(branch_or_scope_boundary(row, indent) for row in scanned_rows[offset + 1 :]):
+            continue
+        in_scope[name] = source_line
+    return in_scope
+
+
+def source_local_fact_locations(source: Path | None, line: int | None) -> dict[str, int]:
+    if source is None or line is None or not source.exists():
+        return {}
+    theorem_line = source_enclosing_theorem_line(source, line)
+    if theorem_line is None:
+        return {}
+    rows = source.read_text(encoding="utf-8", errors="replace").splitlines()
+    scanned_rows = rows[theorem_line - 1 : min(line, len(rows))]
+    locations: dict[str, int] = {}
+    for offset, row in enumerate(scanned_rows):
+        source_line = theorem_line + offset
+        fragments = [row]
+        fragments.extend(
+            f"{fragment.strip()}."
+            for fragment in row.split(".")
+            if fragment.strip()
+        )
+        for fragment in fragments:
+            match = LOCAL_SOURCE_FACT_RE.match(fragment)
+            if match is None:
+                continue
+            body = match.group("body").strip()
+            if not body:
+                continue
+            name_text, separator, _proposition = body.partition(":")
+            if separator:
+                name = name_text.strip()
+                if re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", name):
+                    locations[name] = source_line
+                continue
+            for name in SOURCE_IDENTIFIER_RE.findall(name_text):
+                if name != "_":
+                    locations.setdefault(name, source_line)
+    return locations
+
+
 def local_set_definition_body_is_safe(body: str) -> bool:
     return not any(token in body for token in ("+", "*", ":/:", " -", "- "))
 
@@ -71738,7 +71808,15 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         source,
         proof_or_problem_obligation_line(proof, problem),
     )
+    all_local_set_locations = source_local_set_definition_locations(
+        source,
+        proof_or_problem_obligation_line(proof, problem),
+    )
     all_local_source_facts = source_local_fact_propositions(
+        source,
+        proof_or_problem_obligation_line(proof, problem),
+    )
+    all_local_source_fact_locations = source_local_fact_locations(
         source,
         proof_or_problem_obligation_line(proof, problem),
     )
@@ -72013,6 +72091,10 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         )
         for name, (sort, body) in all_local_set_definitions.items()
     }
+    renamed_all_local_set_locations = {
+        local_identifier_renames.get(name, name): location
+        for name, location in all_local_set_locations.items()
+    }
     local_set_definition_roots = (
         local_set_reflexivity_roots(entries, set(renamed_all_local_set_definitions))
         | local_set_usage_roots(entries, set(renamed_all_local_set_definitions))
@@ -72077,6 +72159,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     local_skolem_axiom_aliases: list[tuple[str, str, str]] = []
     emitted_local_source_facts: set[str] = set()
 
+    def source_line_suffix(location: int | None) -> str:
+        if source is None or location is None:
+            return ""
+        return f" at {source}:{location}"
+
     def remember_raw_proposition(proposition: str, proof_name: str) -> None:
         canonical = canonical_proposition(proposition)
         if canonical not in known_raw_propositions:
@@ -72140,7 +72227,10 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         proposition = local_source_fact_propositions[source_name] or fallback_proposition
         if not proposition:
             return False
-        lines.append(f"// source-local fact from original Megalodon proof context: {source_name}")
+        lines.append(
+            f"// source-local fact from original Megalodon proof context: "
+            f"{source_name}{source_line_suffix(all_local_source_fact_locations.get(source_name))}"
+        )
         lines.append(f"Axiom {source_name}: {proposition}.")
         declared_names.add(source_name)
         emitted_local_source_facts.add(source_name)
@@ -72215,6 +72305,10 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if name in declared_names:
             continue
         resolved_sort = variable_sorts.get(name, sort)
+        lines.append(
+            f"// source-local set definition from original Megalodon proof context: "
+            f"{name}{source_line_suffix(renamed_all_local_set_locations.get(name))}"
+        )
         lines.append(f"Definition {name} : {resolved_sort} := {body}.")
         declared_names.add(name)
     for name, definition in ordered_definitions(function_definitions):
@@ -72325,6 +72419,12 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         parent_text = f", parents {' '.join(parents)}" if parents else ""
         if source_name:
             lines.append(f"// raw vampire node {name}: {role}, {rule_text}{parent_text}, source {source_name}")
+            source_location = (
+                all_local_source_fact_locations.get(source_name)
+                or all_local_set_locations.get(source_name)
+            )
+            if source_location is not None:
+                lines.append(f"// source local location: {source}:{source_location}")
         else:
             lines.append(f"// raw vampire node {name}: {role}, {rule_text}{parent_text}")
         if not proposition:
