@@ -55291,6 +55291,189 @@ def raw_implication_chain_to_ennf_or_components_proof(
     return build(0)
 
 
+def raw_two_premise_implication_chain_ennf_by_contradiction_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 16 or proof_search_timed_out():
+        return None
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort and source.value and target.value:
+        binder = target.value
+        source_body = source.args[0]
+        if source.value != binder:
+            source_body = rename_expr_variables(source_body, {source.value: binder})
+        inner = raw_two_premise_implication_chain_ennf_by_contradiction_proof(
+            source_body,
+            target.args[0],
+            f"({proof_head(source_proof)} {binder})",
+            {**variable_sorts, binder: target.sort},
+            depth + 1,
+        )
+        if inner is None:
+            return None
+        return f"(fun {binder} :{target.sort} => {inner})"
+
+    premises, conclusion = split_arrows(source)
+    if len(premises) != 2:
+        return None
+    target_disjuncts = raw_or_components(target)
+    if len(target_disjuncts) != 3:
+        return None
+
+    def negative_transform(negative: Expr, disjunct: Expr, proof_name: str) -> str | None:
+        if expr_same_mod_alpha(negative, disjunct):
+            return proof_name
+        proof = raw_negative_formula_transform_proof(negative, disjunct, proof_name, variable_sorts)
+        if proof is not None:
+            return proof
+        proof = raw_negated_forall_implication_to_exists_conjunction_proof(
+            negative,
+            disjunct,
+            proof_name,
+            variable_sorts,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_negated_forall_to_exists_negation_proof(
+            negative,
+            disjunct,
+            proof_name,
+            variable_sorts,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_deep_formula_transform_proof(
+            negative,
+            disjunct,
+            proof_name,
+            variable_sorts,
+            depth + 1,
+        )
+        if proof is not None:
+            return proof
+        return raw_clause_transform_proof(negative, disjunct, proof_name)
+
+    def positive_transform(source_expr: Expr, disjunct: Expr, proof_name: str) -> str | None:
+        proof = raw_deep_formula_transform_proof(
+            source_expr,
+            disjunct,
+            proof_name,
+            variable_sorts,
+            depth + 1,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_classical_implication_to_or_transform_proof(
+            source_expr,
+            disjunct,
+            proof_name,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_tptp_peirce_implication_ennf_proof(
+            expr_text(disjunct),
+            ["source"],
+            {"source": expr_text(source_expr)},
+            variable_sorts,
+            source_proof_override=proof_name,
+            depth=depth + 1,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_implication_to_ennf_or_proof(
+            source_expr,
+            disjunct,
+            proof_name,
+            variable_sorts,
+            depth + 1,
+        )
+        if proof is not None:
+            return proof
+        return raw_clause_transform_proof(source_expr, disjunct, proof_name)
+
+    used_disjuncts: set[int] = set()
+    negative_matches: list[tuple[int, Expr]] = []
+    for premise_index, premise in enumerate(premises):
+        negative = Expr("arrow", args=(premise, Expr("var", value="False")))
+        proof_name = fresh_identifier(
+            f"HnotSourcePrem{premise_index}",
+            expr_text(source),
+            expr_text(target),
+            source_proof,
+        )
+        matched: tuple[int, Expr] | None = None
+        for disjunct_index, disjunct in enumerate(target_disjuncts):
+            if disjunct_index in used_disjuncts:
+                continue
+            if negative_transform(negative, disjunct, proof_name) is None:
+                continue
+            matched = (disjunct_index, disjunct)
+            break
+        if matched is None:
+            return None
+        used_disjuncts.add(matched[0])
+        negative_matches.append(matched)
+
+    conclusion_match: tuple[int, Expr] | None = None
+    for disjunct_index, disjunct in enumerate(target_disjuncts):
+        if disjunct_index in used_disjuncts:
+            continue
+        if positive_transform(conclusion, disjunct, "HsourceConclusion") is not None:
+            conclusion_match = (disjunct_index, disjunct)
+            break
+    if conclusion_match is None:
+        return None
+
+    not_target_name = fresh_identifier("HnotTarget", expr_text(source), expr_text(target), source_proof)
+    target_name = fresh_identifier("Htarget", expr_text(source), expr_text(target), source_proof, not_target_name)
+
+    premise_proofs: list[str] = []
+    for premise_index, premise in enumerate(premises):
+        disjunct_index, disjunct = negative_matches[premise_index]
+        not_premise_name = fresh_identifier(
+            f"HnotSourcePrem{premise_index}",
+            expr_text(source),
+            expr_text(target),
+            source_proof,
+            not_target_name,
+            *premise_proofs,
+        )
+        negative = Expr("arrow", args=(premise, Expr("var", value="False")))
+        negative_proof = negative_transform(negative, disjunct, not_premise_name)
+        if negative_proof is None:
+            return None
+        negative_intro = raw_or_intro_literal_at(target, disjunct_index, negative_proof)
+        if negative_intro is None:
+            return None
+        contradiction = f"({not_target_name} {proof_term_text(negative_intro)})"
+        premise_proof = (
+            f"(xm {proof_arg_text(premise)} {proof_arg_text(premise)} "
+            f"(fun HdirectPremise => HdirectPremise) "
+            f"(fun {not_premise_name} :{proof_arg_text(premise)} -> False => "
+            f"{proof_term_text(raw_false_to_expr_proof(contradiction, premise))}))"
+        )
+        premise_proofs.append(premise_proof)
+
+    conclusion_proof = source_proof
+    for premise_proof in premise_proofs:
+        conclusion_proof = f"({proof_head(conclusion_proof)} {proof_term_text(premise_proof)})"
+    conclusion_index, conclusion_disjunct = conclusion_match
+    transformed_conclusion = positive_transform(conclusion, conclusion_disjunct, conclusion_proof)
+    if transformed_conclusion is None:
+        return None
+    conclusion_intro = raw_or_intro_literal_at(target, conclusion_index, transformed_conclusion)
+    if conclusion_intro is None:
+        return None
+    return (
+        f"(xm {proof_arg_text(target)} {proof_arg_text(target)} "
+        f"(fun {target_name} :{proof_arg_text(target)} => {target_name}) "
+        f"(fun {not_target_name} :{proof_arg_text(target)} -> False => {proof_term_text(conclusion_intro)}))"
+    )
+
+
 def raw_peirce_cps_exists_ennf_proof(
     source: Expr,
     target: Expr,
@@ -65787,12 +65970,19 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
                     PROOF_SEARCH_STATE.deadline = proof_search_now() + 3.0
                     try:
-                        replay_proof = raw_implication_chain_to_ennf_or_components_proof(
+                        replay_proof = raw_two_premise_implication_chain_ennf_by_contradiction_proof(
                             source_expr,
                             target_expr,
                             raw_tptp_claim_name(replay_parents[0]),
                             variable_sorts,
                         )
+                        if replay_proof is None:
+                            replay_proof = raw_implication_chain_to_ennf_or_components_proof(
+                                source_expr,
+                                target_expr,
+                                raw_tptp_claim_name(replay_parents[0]),
+                                variable_sorts,
+                            )
                     finally:
                         if previous_deadline is None:
                             if hasattr(PROOF_SEARCH_STATE, "deadline"):
