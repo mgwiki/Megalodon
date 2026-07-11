@@ -22463,6 +22463,61 @@ def raw_tptp_boolean_clause_superposition_resolution_proof(
                 else:
                     PROOF_SEARCH_STATE.flat_resolution_target = previous_target
 
+        def quantified_source_literal_branch_proof() -> str | None:
+            if source_binders:
+                return None
+            resolver_quantified = resolver_body
+            for name, sort in reversed(resolver_binders):
+                resolver_quantified = Expr("forall", value=name, sort=sort, args=(resolver_quantified,))
+            for source_literal in source_literals:
+                source_qbinders, _source_qbody = collect_foralls(source_literal)
+                if not source_qbinders:
+                    continue
+                for target_index, target_literal in enumerate(target_literals):
+                    target_qbinders, _target_qbody = collect_foralls(target_literal)
+                    if not target_qbinders:
+                        continue
+
+                    def handler(literal: Expr, literal_proof: str) -> str | None:
+                        if expr_same_mod_alpha(literal, source_literal):
+                            return raw_quantified_literal_body_resolution_intro(
+                                literal,
+                                target_literal,
+                                target_body,
+                                target_index,
+                                literal_proof,
+                                resolver_quantified,
+                                resolver_name,
+                            )
+                        return raw_literal_to_clause_proof(
+                            literal,
+                            target_body,
+                            literal_proof,
+                            target_literals,
+                            (),
+                        )
+
+                    target_text = proof_arg_text(target_body)
+                    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+                    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+                    try:
+                        proof = raw_clause_cases_with_handler(source_body, source_name, handler)
+                    finally:
+                        if previous_target is None:
+                            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+                        else:
+                            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+                    if proof is not None:
+                        for name, sort in reversed(target_binders):
+                            proof = f"(fun {name} :{sort} => {proof})"
+                        return proof
+            return None
+
+        quantified_source_branch = quantified_source_literal_branch_proof()
+        if quantified_source_branch is not None:
+            return quantified_source_branch
+
         for source_index, source_literal in enumerate(source_literals):
             source_premise = negative_premise(source_literal)
             if source_premise is None:
