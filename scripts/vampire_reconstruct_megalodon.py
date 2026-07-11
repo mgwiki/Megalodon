@@ -23336,6 +23336,200 @@ def raw_tptp_unit_resulting_resolution_proof(
                 prop_false_proof = f"(fun {name} :{sort} => {prop_false_proof})"
             return prop_false_proof
 
+        def quantified_source_clause_multi_resolution_proof() -> str | None:
+            source_literals = raw_clause_literals(source)
+            if len(source_literals) > 16:
+                return None
+            target_literals = raw_clause_literals(target_body)
+            if len(target_literals) > 16:
+                return None
+            resolver_clauses: list[tuple[Expr, str]] = []
+            for options in resolver_option_lists:
+                for resolver_clause, resolver_clause_proof in options[:16]:
+                    if collect_foralls(resolver_clause)[0]:
+                        continue
+                    if len(raw_clause_literals(resolver_clause)) > 12:
+                        continue
+                    resolver_clauses.append((resolver_clause, resolver_clause_proof))
+            if not resolver_clauses:
+                return None
+            resolver_literals = [
+                (literal, resolver_clause, resolver_clause_proof)
+                for resolver_clause, resolver_clause_proof in resolver_clauses
+                for literal in raw_clause_literals(resolver_clause)
+            ]
+            if not resolver_literals:
+                return None
+
+            target_text = proof_arg_text(target_body)
+            previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+            PROOF_SEARCH_STATE.flat_resolution_target = target_text
+
+            def quantified_branch_proof(source_literal: Expr, literal_proof: str) -> str | None:
+                source_binders, source_body = collect_foralls(source_literal)
+                if not source_binders or len(source_binders) > 6:
+                    return None
+                binder_names = {name for name, _sort in source_binders}
+                source_body_literals = raw_clause_literals(source_body)
+                if not source_body_literals or len(source_body_literals) > 16:
+                    return None
+                literal_order = sorted(
+                    range(len(source_body_literals)),
+                    key=lambda index: -len(expr_variables(source_body_literals[index]) & binder_names),
+                )
+                attempts = 0
+                seen: set[tuple[tuple[str, str], tuple[str, ...]]] = set()
+
+                def selected_key(selected: list[tuple[Expr, str]]) -> tuple[str, ...]:
+                    return tuple(sorted(expr_key(resolver_clause) for resolver_clause, _proof in selected))
+
+                def try_finish(subst: dict[str, Expr], selected: list[tuple[Expr, str]]) -> str | None:
+                    flatten_substitution(subst)
+                    if not binder_names <= subst.keys():
+                        return None
+                    if any(expr_variables(subst[name]) & binder_names for name in binder_names):
+                        return None
+                    key = (
+                        tuple(sorted((name, expr_key(subst[name])) for name in binder_names)),
+                        selected_key(selected),
+                    )
+                    if key in seen:
+                        return None
+                    seen.add(key)
+                    instantiated_source = flatten_applications(substitute_expr(source_body, subst))
+                    if not raw_clause_replay_budget_ok(
+                        instantiated_source,
+                        target_body,
+                        max_literals=16,
+                        max_literal_product=256,
+                    ):
+                        return None
+                    instantiated_source_proof = literal_proof
+                    for name, _sort in source_binders:
+                        instantiated_source_proof = (
+                            f"({proof_head(instantiated_source_proof)} {proof_arg_text(subst[name])})"
+                        )
+                    unique_selected: list[tuple[Expr, str]] = []
+                    selected_seen: set[str] = set()
+                    for resolver_clause, resolver_clause_proof in selected:
+                        resolver_key = expr_key(resolver_clause)
+                        if resolver_key in selected_seen:
+                            continue
+                        selected_seen.add(resolver_key)
+                        unique_selected.append((resolver_clause, resolver_clause_proof))
+                    proof = raw_clause_multi_resolution_proof(
+                        instantiated_source,
+                        target_body,
+                        instantiated_source_proof,
+                        unique_selected,
+                    )
+                    if proof is not None:
+                        return proof
+                    return raw_clause_multi_resolution_proof(
+                        instantiated_source,
+                        target_body,
+                        instantiated_source_proof,
+                        resolver_clauses[:24],
+                    )
+
+                def search(
+                    order_index: int,
+                    subst: dict[str, Expr],
+                    selected: list[tuple[Expr, str]],
+                ) -> str | None:
+                    nonlocal attempts
+                    if proof_search_timed_out() or attempts > 4096:
+                        return None
+                    flatten_substitution(subst)
+                    if order_index >= len(literal_order):
+                        return try_finish(dict(subst), selected)
+                    source_body_literal = substitute_expr(source_body_literals[literal_order[order_index]], subst)
+                    unresolved = expr_variables(source_body_literal) & binder_names
+                    if not unresolved:
+                        if raw_literal_to_clause_proof(
+                            source_body_literal,
+                            target_body,
+                            "HquantLiteral",
+                            target_literals,
+                            (),
+                        ) is not None:
+                            proof = search(order_index + 1, dict(subst), selected)
+                            if proof is not None:
+                                return proof
+                        for resolver_literal, resolver_clause, resolver_clause_proof in resolver_literals:
+                            attempts += 1
+                            if raw_complementary_literals(source_body_literal, resolver_literal):
+                                proof = search(
+                                    order_index + 1,
+                                    dict(subst),
+                                    selected + [(resolver_clause, resolver_clause_proof)],
+                                )
+                                if proof is not None:
+                                    return proof
+                        return None
+
+                    for target_literal in target_literals:
+                        attempts += 1
+                        trial = dict(subst)
+                        if raw_match_literal_mod_equality_symmetry(source_body_literal, target_literal, binder_names, trial):
+                            proof = search(order_index + 1, trial, selected)
+                            if proof is not None:
+                                return proof
+                    for resolver_literal, resolver_clause, resolver_clause_proof in resolver_literals:
+                        attempts += 1
+                        trial = dict(subst)
+                        if raw_match_complementary_literals_joint(
+                            source_body_literal,
+                            resolver_literal,
+                            binder_names,
+                            trial,
+                        ):
+                            proof = search(
+                                order_index + 1,
+                                trial,
+                                selected + [(resolver_clause, resolver_clause_proof)],
+                            )
+                            if proof is not None:
+                                return proof
+                    return None
+
+                return search(0, {}, [])
+
+            def branch_handler(source_literal: Expr, literal_proof: str) -> str | None:
+                direct = raw_literal_to_clause_proof(
+                    source_literal,
+                    target_body,
+                    literal_proof,
+                    target_literals,
+                    (),
+                )
+                if direct is not None:
+                    return direct
+                return quantified_branch_proof(source_literal, literal_proof)
+
+            try:
+                proof = raw_clause_cases_with_handler(
+                    source,
+                    source_proof,
+                    branch_handler,
+                    avoid_text="quantified_urr",
+                )
+            finally:
+                if previous_target is None:
+                    if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                        delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+                else:
+                    PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+            if proof is None:
+                return None
+            for name, sort in reversed(target_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
+            return proof
+
+        quantified_source_proof = quantified_source_clause_multi_resolution_proof()
+        if quantified_source_proof is not None:
+            return quantified_source_proof
+
         def direct_unit_resulting_resolution_proof() -> str | None:
             source_binders, source_body = collect_foralls(source)
             if len(source_binders) > 4:
