@@ -24173,6 +24173,260 @@ def raw_tptp_unit_resulting_resolution_proof(
                 options.append((instantiated, instantiated_proof))
             return options
 
+        def quantified_target_literal_resolution_proof() -> str | None:
+            target_literals = raw_clause_literals(target_body)
+            if len(target_literals) != 2:
+                return None
+            quantified_entries = [
+                (index, literal, collect_foralls(literal))
+                for index, literal in enumerate(target_literals)
+                if collect_foralls(literal)[0]
+            ]
+            if len(quantified_entries) != 1:
+                return None
+            quantified_index, quantified_literal, (quantified_binders, quantified_body) = quantified_entries[0]
+            if not quantified_binders or len(quantified_binders) > 3:
+                return None
+            residual_index = 1 - quantified_index
+            residual_literal = target_literals[residual_index]
+            source_binders, source_body = collect_foralls(source)
+            if not source_binders or len(source_binders) > 6:
+                return None
+            source_binder_names = {name for name, _sort in source_binders}
+            if any(name in source_binder_names for name, _sort in quantified_binders):
+                used_names = (
+                    source_binder_names
+                    | expr_variables(quantified_body)
+                    | expr_bound_variables(quantified_body)
+                    | expr_variables(source)
+                    | expr_bound_variables(source)
+                    | expr_variables(residual_literal)
+                )
+                renamed_binders: list[tuple[str, str]] = []
+                renames: dict[str, str] = {}
+                for index, (name, sort) in enumerate(quantified_binders):
+                    if name not in source_binder_names:
+                        renamed_binders.append((name, sort))
+                        used_names.add(name)
+                        continue
+                    candidate = f"QT{index}"
+                    suffix = 0
+                    while candidate in used_names:
+                        suffix += 1
+                        candidate = f"QT{index}_{suffix}"
+                    used_names.add(candidate)
+                    renames[name] = candidate
+                    renamed_binders.append((candidate, sort))
+                if renames:
+                    quantified_body = rename_expr_variables(quantified_body, renames)
+                    quantified_binders = renamed_binders
+            point_target = raw_clause_from_literals([quantified_body, residual_literal])
+            if point_target is None:
+                return None
+            source_body_literals = raw_clause_literals(source_body)
+            if not source_body_literals or len(source_body_literals) > 16:
+                return None
+            binder_names = {name for name, _sort in source_binders}
+            local_sorts = {
+                **variable_sorts,
+                **{name: sort for name, sort in quantified_binders},
+                **{name: sort for name, sort in source_binders},
+            }
+            dynamic_resolver_clauses: list[tuple[Expr, str]] = []
+            dynamic_seen: set[str] = set()
+            dynamic_candidate_base = (point_target, quantified_body, residual_literal, source, *all_resolver_exprs)
+            for (_resolver_name, resolver, resolver_proof), options in zip(resolver_entries, resolver_option_lists):
+                dynamic_options = list(options[:16])
+                for option in [
+                    *raw_instantiated_forall_clause_options(resolver, resolver_proof, point_target, source),
+                    *raw_prop_false_forall_clause_options(resolver, resolver_proof, point_target, source),
+                    *raw_sort_instantiated_forall_clause_options(
+                        resolver,
+                        resolver_proof,
+                        point_target,
+                        source,
+                        dynamic_candidate_base,
+                        local_sorts,
+                        limit=12,
+                    ),
+                ]:
+                    if all(expr_key(option[0]) != expr_key(existing[0]) for existing in dynamic_options):
+                        dynamic_options.append(option)
+                dynamic_options.sort(key=instantiated_clause_priority)
+                for resolver_clause, resolver_clause_proof in dynamic_options[:20]:
+                    if len(raw_clause_literals(resolver_clause)) > 12:
+                        continue
+                    key = expr_key(resolver_clause)
+                    if key in dynamic_seen:
+                        continue
+                    dynamic_seen.add(key)
+                    dynamic_resolver_clauses.append((resolver_clause, resolver_clause_proof))
+            if not dynamic_resolver_clauses:
+                return None
+            resolver_literals = [
+                (literal, resolver_clause, resolver_clause_proof)
+                for resolver_clause, resolver_clause_proof in dynamic_resolver_clauses
+                for literal in raw_clause_literals(resolver_clause)
+            ]
+            literal_order = sorted(
+                range(len(source_body_literals)),
+                key=lambda index: -len(expr_variables(source_body_literals[index]) & binder_names),
+            )
+            attempts = 0
+            seen_finishes: set[tuple[tuple[str, str], tuple[str, ...]]] = set()
+
+            def selected_key(selected: list[tuple[Expr, str]]) -> tuple[str, ...]:
+                return tuple(sorted(expr_key(resolver_clause) for resolver_clause, _proof in selected))
+
+            def try_finish(subst: dict[str, Expr], selected: list[tuple[Expr, str]]) -> str | None:
+                flatten_substitution(subst)
+                if not binder_names <= subst.keys():
+                    return None
+                if any(expr_variables(subst[name]) & binder_names for name in binder_names):
+                    return None
+                key = (
+                    tuple(sorted((name, expr_key(subst[name])) for name in binder_names)),
+                    selected_key(selected),
+                )
+                if key in seen_finishes:
+                    return None
+                seen_finishes.add(key)
+                instantiated_source = flatten_applications(substitute_expr(source_body, subst))
+                if not raw_clause_replay_budget_ok(
+                    instantiated_source,
+                    point_target,
+                    max_literals=16,
+                    max_literal_product=256,
+                ):
+                    return None
+                instantiated_source_proof = source_proof
+                for name, _sort in source_binders:
+                    instantiated_source_proof = (
+                        f"({proof_head(instantiated_source_proof)} {proof_arg_text(subst[name])})"
+                    )
+                unique_selected: list[tuple[Expr, str]] = []
+                selected_seen: set[str] = set()
+                for resolver_clause, resolver_clause_proof in selected:
+                    resolver_key = expr_key(resolver_clause)
+                    if resolver_key in selected_seen:
+                        continue
+                    selected_seen.add(resolver_key)
+                    unique_selected.append((resolver_clause, resolver_clause_proof))
+                proof = raw_clause_multi_resolution_proof(
+                    instantiated_source,
+                    point_target,
+                    instantiated_source_proof,
+                    unique_selected,
+                )
+                if proof is None:
+                    proof = raw_clause_multi_resolution_proof(
+                        instantiated_source,
+                        point_target,
+                        instantiated_source_proof,
+                        dynamic_resolver_clauses[:24],
+                    )
+                return proof
+
+            def search(
+                order_index: int,
+                subst: dict[str, Expr],
+                selected: list[tuple[Expr, str]],
+            ) -> str | None:
+                nonlocal attempts
+                if proof_search_timed_out() or attempts > 4096:
+                    return None
+                flatten_substitution(subst)
+                if order_index >= len(literal_order):
+                    return try_finish(dict(subst), selected)
+                source_literal = substitute_expr(source_body_literals[literal_order[order_index]], subst)
+                unresolved = expr_variables(source_literal) & binder_names
+                if not unresolved:
+                    if raw_literal_to_clause_proof(
+                        source_literal,
+                        point_target,
+                        "HpointLiteral",
+                        raw_clause_literals(point_target),
+                        (),
+                    ) is not None:
+                        proof = search(order_index + 1, dict(subst), selected)
+                        if proof is not None:
+                            return proof
+                    for resolver_literal, resolver_clause, resolver_clause_proof in resolver_literals:
+                        attempts += 1
+                        if raw_complementary_literals(source_literal, resolver_literal):
+                            proof = search(
+                                order_index + 1,
+                                dict(subst),
+                                selected + [(resolver_clause, resolver_clause_proof)],
+                            )
+                            if proof is not None:
+                                return proof
+                    return None
+                for target_literal in raw_clause_literals(point_target):
+                    attempts += 1
+                    trial = dict(subst)
+                    if raw_match_literal_mod_equality_symmetry(source_literal, target_literal, binder_names, trial):
+                        proof = search(order_index + 1, trial, selected)
+                        if proof is not None:
+                            return proof
+                for resolver_literal, resolver_clause, resolver_clause_proof in resolver_literals:
+                    attempts += 1
+                    trial = dict(subst)
+                    if raw_match_complementary_literals_joint(source_literal, resolver_literal, binder_names, trial):
+                        proof = search(
+                            order_index + 1,
+                            trial,
+                            selected + [(resolver_clause, resolver_clause_proof)],
+                        )
+                        if proof is not None:
+                            return proof
+                return None
+
+            point_proof = search(0, {}, [])
+            if point_proof is None:
+                return None
+            residual_name = fresh_identifier(
+                "HurrResidual",
+                expr_text(target_body),
+                expr_text(source),
+                source_proof,
+            )
+            not_residual_name = fresh_identifier(
+                "HnotUrrResidual",
+                expr_text(target_body),
+                expr_text(source),
+                source_proof,
+                residual_name,
+            )
+            residual_intro = raw_or_intro_literal_at(target_body, residual_index, residual_name)
+            if residual_intro is None:
+                return None
+            body_name = fresh_identifier("HurrBody", expr_text(quantified_body), point_proof)
+            residual_case_name = fresh_identifier("HurrResidualCase", expr_text(residual_literal), point_proof, body_name)
+            body_from_point = (
+                f"({proof_head(point_proof)} {proof_arg_text(quantified_body)} "
+                f"(fun {body_name} => {body_name}) "
+                f"(fun {residual_case_name} => "
+                f"((FalseE ({not_residual_name} {residual_case_name})) {proof_arg_text(quantified_body)})))"
+            )
+            quantified_proof = body_from_point
+            for name, sort in reversed(quantified_binders):
+                quantified_proof = f"(fun {name} :{sort} => {quantified_proof})"
+            quantified_intro = raw_or_intro_literal_at(target_body, quantified_index, quantified_proof)
+            if quantified_intro is None:
+                return None
+            return (
+                f"(xm {proof_arg_text(residual_literal)} {proof_arg_text(target_body)} "
+                f"(fun {residual_name} => {residual_intro}) "
+                f"(fun {not_residual_name} => {quantified_intro}))"
+            )
+
+        quantified_target_proof = quantified_target_literal_resolution_proof()
+        if quantified_target_proof is not None:
+            for name, sort in reversed(target_binders):
+                quantified_target_proof = f"(fun {name} :{sort} => {quantified_target_proof})"
+            return quantified_target_proof
+
         prop_false_proof = raw_prop_false_unit_resulting_resolution_proof(
             target_body,
             source,
@@ -35352,6 +35606,150 @@ def raw_clause_demodulate_negated_fact_proof(
             PROOF_SEARCH_STATE.flat_resolution_target = previous_target
 
 
+def raw_quantified_prop_false_argument_demodulation_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rule: Expr,
+    rule_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_body = collect_foralls(source)[1]
+    target_body = collect_foralls(target)[1]
+    source_literals = raw_clause_literals(source_body)
+    target_literals = raw_clause_literals(target_body)
+    if len(source_literals) != 2 or len(target_literals) != 2:
+        return None
+    quantified_entries = [
+        (index, literal, collect_foralls(literal))
+        for index, literal in enumerate(source_literals)
+        if collect_foralls(literal)[0]
+    ]
+    if len(quantified_entries) != 1:
+        return None
+    quantified_index, quantified_literal, (quantified_binders, quantified_body) = quantified_entries[0]
+    if not quantified_binders or len(quantified_binders) > 3:
+        return None
+    source_residual = source_literals[1 - quantified_index]
+    target_residual_index = next(
+        (index for index, literal in enumerate(target_literals) if expr_same_mod_alpha(literal, source_residual)),
+        None,
+    )
+    if target_residual_index is None:
+        return None
+    target_atom_index = 1 - target_residual_index
+    target_atom = target_literals[target_atom_index]
+    rule_binders, rule_body = collect_foralls(rule)
+    rule_premises, rule_conclusion = split_arrows(rule_body)
+    if not rule_binders or len(rule_binders) > 3 or len(rule_premises) != 1 or not false_eliminator_expr(rule_conclusion):
+        return None
+    rule_premise = rule_premises[0]
+    local_sorts = {
+        **variable_sorts,
+        **{name: sort for name, sort in quantified_binders},
+        **{name: sort for name, sort in rule_binders},
+    }
+    candidate_exprs = (source_body, target_body, rule_body)
+    candidate_lists: list[list[Expr]] = []
+    for _name, sort in quantified_binders:
+        candidates = raw_candidate_terms_for_sort(candidate_exprs, sort, local_sorts)
+        inhabitant = raw_simple_inhabitant_for_sort(sort)
+        if inhabitant is not None and equivalent_sorts(expr_sort(inhabitant, local_sorts), sort):
+            candidates.append(inhabitant)
+        seen_terms: set[str] = set()
+        candidates = [
+            candidate
+            for candidate in candidates
+            if not (expr_key(candidate) in seen_terms or seen_terms.add(expr_key(candidate)))
+        ]
+        candidates.sort(key=candidate_term_priority)
+        if not candidates:
+            return None
+        candidate_lists.append(candidates[:12])
+
+    for values in itertools.product(*candidate_lists):
+        if proof_search_timed_out():
+            return None
+        quantified_subst = {
+            name: value
+            for (name, _sort), value in zip(quantified_binders, values)
+        }
+        instantiated_body = substitute_expr(quantified_body, quantified_subst)
+        for redex in expr_subterms(instantiated_body, limit=96):
+            if expr_sort(redex, local_sorts) not in {None, "prop"}:
+                continue
+            replaced, changed = replace_expr(instantiated_body, redex, Expr("var", value="False"))
+            if not changed or not expr_same_mod_alpha(replaced, target_atom):
+                continue
+            rule_subst: dict[str, Expr] = {}
+            if not match_expr_with_alpha_instantiation(
+                rule_premise,
+                redex,
+                {name for name, _sort in rule_binders},
+                rule_subst,
+            ):
+                continue
+            flatten_substitution(rule_subst)
+            if not {name for name, _sort in rule_binders} <= rule_subst.keys():
+                continue
+            if any(expr_variables(rule_subst[name]) & {name for name, _sort in rule_binders} for name, _sort in rule_binders):
+                continue
+            instantiated_rule_proof = rule_proof
+            for name, _sort in rule_binders:
+                instantiated_rule_proof = (
+                    f"({proof_head(instantiated_rule_proof)} {proof_arg_text(rule_subst[name])})"
+                )
+            hole = fresh_identifier(
+                "Qdemod",
+                expr_text(instantiated_body),
+                expr_text(target_atom),
+                expr_text(redex),
+            )
+            context, context_changed = replace_expr(instantiated_body, redex, Expr("var", value=hole))
+            if not context_changed:
+                continue
+            redex_eq_false = (
+                f"(prop_ext_2 {proof_arg_text(redex)} False "
+                f"{proof_term_text(instantiated_rule_proof)} "
+                f"(fun Hfalse :False => ((FalseE Hfalse) {proof_arg_text(redex)})))"
+            )
+            previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+            PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+            try:
+                def handler(branch: Expr, branch_proof: str) -> str | None:
+                    if expr_same_mod_alpha(branch, quantified_literal):
+                        quantified_application = branch_proof
+                        for name, _sort in quantified_binders:
+                            quantified_application = (
+                                f"({proof_head(quantified_application)} {proof_arg_text(quantified_subst[name])})"
+                            )
+                        target_atom_proof = (
+                            f"(vampire_native_eq_transport_prop "
+                            f"{proof_arg_text(redex)} "
+                            f"False "
+                            f"{redex_eq_false} "
+                            f"(fun {hole} :prop => {expr_text(context)}) "
+                            f"{proof_term_text(quantified_application)})"
+                        )
+                        return raw_or_intro_literal_at(target_body, target_atom_index, target_atom_proof)
+                    if expr_same_mod_alpha(branch, source_residual):
+                        return raw_or_intro_literal_at(target_body, target_residual_index, branch_proof)
+                    return raw_or_intro_from_branch(target_body, branch, branch_proof)
+
+                return raw_clause_cases_with_handler(
+                    source_body,
+                    source_proof,
+                    handler,
+                )
+            finally:
+                if previous_target is None:
+                    if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                        delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+                else:
+                    PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+    return None
+
+
 def raw_tptp_forward_demodulation_proof(
     proposition: str,
     parents: list[str],
@@ -35491,6 +35889,26 @@ def raw_tptp_forward_demodulation_proof(
     if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
         return proof
     proof = raw_guarded_negative_prop_demodulation_proof(
+        second,
+        target,
+        second_name,
+        first,
+        first_name,
+        variable_sorts,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_quantified_prop_false_argument_demodulation_proof(
+        first,
+        target,
+        first_name,
+        second,
+        second_name,
+        variable_sorts,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_quantified_prop_false_argument_demodulation_proof(
         second,
         target,
         second_name,
