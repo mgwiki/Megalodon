@@ -34806,6 +34806,26 @@ def raw_tptp_forward_demodulation_proof(
     )
     if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
         return proof
+    proof = raw_guarded_quantified_native_equality_demodulation_proof(
+        first,
+        target,
+        first_name,
+        second,
+        second_name,
+        variable_sorts,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_guarded_quantified_native_equality_demodulation_proof(
+        second,
+        target,
+        second_name,
+        first,
+        first_name,
+        variable_sorts,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
     proof = raw_guarded_false_condition_equality_demodulation_proof(
         first,
         target,
@@ -50977,6 +50997,300 @@ def raw_guarded_forall_true_negative_literal_demodulation_proof(
     )
 
 
+def raw_native_single_demodulated_equality_proof(
+    source_equality: Expr,
+    target_equality: Expr,
+    rewrite_equality: Expr,
+    source_proof: str,
+    rewrite_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if source_equality.kind != "eq" or target_equality.kind != "eq" or rewrite_equality.kind != "eq":
+        return None
+    source_sides = equality_like_sides(source_equality)
+    target_sides = equality_like_sides(target_equality)
+    rewrite_sides = equality_like_sides(rewrite_equality)
+    if source_sides is None or target_sides is None or rewrite_sides is None:
+        return None
+    source_sort = raw_equality_transport_sort(source_sides[0], source_sides[1], variable_sorts)
+    target_sort = raw_equality_transport_sort(target_sides[0], target_sides[1], variable_sorts)
+    if source_sort not in {"set", "prop"} or target_sort not in {"set", "prop"}:
+        return None
+
+    source_orientations = [
+        (source_sides[0], source_sides[1], source_proof),
+        (
+            source_sides[1],
+            source_sides[0],
+            native_eq_symmetry_proof(source_proof, source_sides[0], source_sides[1], source_sort),
+        ),
+    ]
+    rewrite_sort = raw_equality_transport_sort(rewrite_sides[0], rewrite_sides[1], variable_sorts)
+    if rewrite_sort not in {"set", "prop"}:
+        return None
+    rewrite_orientations = [
+        (rewrite_sides[0], rewrite_sides[1], rewrite_proof),
+        (
+            rewrite_sides[1],
+            rewrite_sides[0],
+            native_eq_symmetry_proof(rewrite_proof, rewrite_sides[0], rewrite_sides[1], rewrite_sort),
+        ),
+    ]
+
+    def orient_to_target(proof: str, left: Expr, right: Expr) -> str | None:
+        if expr_same_mod_alpha(left, target_sides[0]) and expr_same_mod_alpha(right, target_sides[1]):
+            return proof
+        if expr_same_mod_alpha(left, target_sides[1]) and expr_same_mod_alpha(right, target_sides[0]):
+            return native_eq_symmetry_proof(proof, left, right, target_sort)
+        return None
+
+    for base_left, base_right, base_proof in source_orientations:
+        for old, new, old_to_new in rewrite_orientations:
+            hole = Expr("var", value=fresh_identifier("zz", expr_text(base_left), expr_text(base_right), expr_text(old), expr_text(new)))
+            for replaced_left, context_left in single_replacement_contexts_mod_alpha(base_left, old, new, hole, limit=8):
+                context = Expr("eq", args=(context_left, base_right))
+                transported = native_equality_transport_proof(
+                    old_to_new,
+                    old,
+                    new,
+                    base_proof,
+                    hole.value or "zz",
+                    rewrite_sort,
+                    context,
+                )
+                if transported is None:
+                    continue
+                result = orient_to_target(transported, replaced_left, base_right)
+                if result is not None:
+                    return result
+            hole = Expr("var", value=fresh_identifier("zz", expr_text(base_right), expr_text(base_left), expr_text(old), expr_text(new)))
+            for replaced_right, context_right in single_replacement_contexts_mod_alpha(base_right, old, new, hole, limit=8):
+                context = Expr("eq", args=(base_left, context_right))
+                transported = native_equality_transport_proof(
+                    old_to_new,
+                    old,
+                    new,
+                    base_proof,
+                    hole.value or "zz",
+                    rewrite_sort,
+                    context,
+                )
+                if transported is None:
+                    continue
+                result = orient_to_target(transported, base_left, replaced_right)
+                if result is not None:
+                    return result
+    return None
+
+
+def raw_guarded_quantified_native_equality_demodulation_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    resolver: Expr,
+    resolver_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_body = collect_foralls(source)[1]
+    target_body = collect_foralls(target)[1]
+    resolver_body = collect_foralls(resolver)[1]
+    source_parts = raw_or_parts(source_body)
+    target_parts = raw_or_parts(target_body)
+    resolver_parts = raw_or_parts(resolver_body)
+    if source_parts is None or target_parts is None or resolver_parts is None:
+        return None
+
+    source_variants = (source_parts, (source_parts[1], source_parts[0]))
+    target_variants = (target_parts, (target_parts[1], target_parts[0]))
+    resolver_variants = (resolver_parts, (resolver_parts[1], resolver_parts[0]))
+
+    for source_quant, _source_guard in source_variants:
+        source_binders, source_inner = collect_foralls(source_quant)
+        if not source_binders:
+            continue
+        for target_quant, _target_guard in target_variants:
+            target_binders, target_inner = collect_foralls(target_quant)
+            if len(source_binders) != len(target_binders):
+                continue
+            if any(source_sort != target_sort for (_, source_sort), (_, target_sort) in zip(source_binders, target_binders)):
+                continue
+            renamed_source_inner = source_inner
+            rename = {
+                source_name: target_name
+                for (source_name, _), (target_name, _) in zip(source_binders, target_binders)
+                if source_name != target_name
+            }
+            if rename:
+                renamed_source_inner = rename_expr_variables(renamed_source_inner, rename)
+            target_literals = raw_clause_literals(target_inner)
+            target_equalities = [literal for literal in target_literals if literal.kind == "eq"]
+            if not target_equalities:
+                continue
+            local_sorts = {
+                **variable_sorts,
+                **{name: sort for name, sort in target_binders},
+            }
+            source_quant_intro = raw_or_intro_from_branch(target_body, target_quant, "HtargetQuant")
+            if source_quant_intro is None:
+                continue
+
+            for resolver_quant, _resolver_guard in resolver_variants:
+                resolver_binders, resolver_inner = collect_foralls(resolver_quant)
+                if not resolver_binders:
+                    continue
+                if len(resolver_binders) > 3:
+                    continue
+                resolver_local_sorts = {
+                    **local_sorts,
+                    **{name: sort for name, sort in resolver_binders},
+                }
+                candidate_lists = [
+                    raw_candidate_terms_for_sort(
+                        (renamed_source_inner, target_inner, resolver_inner),
+                        sort,
+                        resolver_local_sorts,
+                    )[:16]
+                    for _name, sort in resolver_binders
+                ]
+                if any(not candidates for candidates in candidate_lists):
+                    continue
+
+                def target_quant_proof(source_quant_proof: str, resolver_quant_proof: str) -> str | None:
+                    opened_source_proof = source_quant_proof
+                    for _source_binder, (target_name, _target_sort) in zip(source_binders, target_binders):
+                        opened_source_proof = f"({proof_head(opened_source_proof)} {target_name})"
+
+                    def source_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
+                        direct = raw_literal_to_clause_proof(source_literal, target_inner, source_literal_proof, target_literals, ())
+                        if direct is not None:
+                            return direct
+                        if source_literal.kind != "eq":
+                            return None
+                        for target_literal in target_equalities:
+                            attempts = 0
+                            for values in itertools.product(*candidate_lists):
+                                attempts += 1
+                                if attempts > 128 or proof_search_timed_out():
+                                    return None
+                                subst = {name: value for (name, _sort), value in zip(resolver_binders, values)}
+                                instantiated_resolver_inner = beta_reduce_expr(
+                                    flatten_applications(substitute_expr(resolver_inner, subst))
+                                )
+                                instantiated_resolver_proof = resolver_quant_proof
+                                for name, _sort in resolver_binders:
+                                    instantiated_resolver_proof = (
+                                        f"({proof_head(instantiated_resolver_proof)} {proof_arg_text(subst[name])})"
+                                    )
+
+                                def resolver_handler(resolver_literal: Expr, resolver_literal_proof: str) -> str | None:
+                                    direct_resolver = raw_literal_to_clause_proof(
+                                        resolver_literal,
+                                        target_inner,
+                                        resolver_literal_proof,
+                                        target_literals,
+                                        (),
+                                    )
+                                    if direct_resolver is not None:
+                                        return direct_resolver
+                                    equality_proof = raw_native_single_demodulated_equality_proof(
+                                        source_literal,
+                                        target_literal,
+                                        resolver_literal,
+                                        source_literal_proof,
+                                        resolver_literal_proof,
+                                        local_sorts,
+                                    )
+                                    if equality_proof is None:
+                                        return None
+                                    return raw_literal_to_clause_proof(
+                                        target_literal,
+                                        target_inner,
+                                        equality_proof,
+                                        target_literals,
+                                        (),
+                                    )
+
+                                body_proof = raw_clause_cases_with_handler(
+                                    instantiated_resolver_inner,
+                                    instantiated_resolver_proof,
+                                    resolver_handler,
+                                    avoid_text=source_literal_proof,
+                                )
+                                if body_proof is not None:
+                                    return body_proof
+                        return None
+
+                    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+                    PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_inner)
+                    try:
+                        body_proof = raw_clause_cases_with_handler(
+                            renamed_source_inner,
+                            opened_source_proof,
+                            source_handler,
+                            avoid_text=resolver_quant_proof,
+                        )
+                    finally:
+                        if previous_target is None:
+                            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+                        else:
+                            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+                    if body_proof is None:
+                        return None
+                    for name, sort in reversed(target_binders):
+                        body_proof = f"(fun {name} :{sort} => {body_proof})"
+                    return body_proof
+
+                def source_outer_proof(resolver_quant_proof: str) -> str | None:
+                    def source_outer_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
+                        if expr_same_mod_alpha(source_literal, source_quant):
+                            quant_proof = target_quant_proof(source_literal_proof, resolver_quant_proof)
+                            if quant_proof is None:
+                                return None
+                            return raw_or_intro_from_branch(target_body, target_quant, quant_proof)
+                        return raw_or_intro_from_branch(target_body, source_literal, source_literal_proof)
+
+                    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+                    PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+                    try:
+                        return raw_clause_cases_with_handler(
+                            source_body,
+                            source_proof,
+                            source_outer_handler,
+                            avoid_text=resolver_quant_proof,
+                        )
+                    finally:
+                        if previous_target is None:
+                            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+                        else:
+                            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+                def resolver_outer_handler(resolver_literal: Expr, resolver_literal_proof: str) -> str | None:
+                    if expr_same_mod_alpha(resolver_literal, resolver_quant):
+                        return source_outer_proof(resolver_literal_proof)
+                    return raw_or_intro_from_branch(target_body, resolver_literal, resolver_literal_proof)
+
+                previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+                PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+                try:
+                    proof = raw_clause_cases_with_handler(
+                        resolver_body,
+                        resolver_proof,
+                        resolver_outer_handler,
+                        avoid_text=source_proof,
+                    )
+                finally:
+                    if previous_target is None:
+                        if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                            delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+                    else:
+                        PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+                if proof is not None:
+                    return proof
+    return None
+
+
 def raw_guarded_prop_equality_fact_demodulation_proof(
     source: Expr,
     target: Expr,
@@ -61365,7 +61679,7 @@ def raw_tptp_replay_proof(
             variable_sorts,
             replay_step=replay_step,
         )
-    if rule in {"forward_demodulation", "backward_demodulation"}:
+    if rule in {"forward_demodulation", "backward_demodulation", "forward_subsumption_demodulation"}:
         return raw_tptp_forward_demodulation_proof(
             proposition,
             parents,
@@ -64444,7 +64758,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                                 delattr(PROOF_SEARCH_STATE, "deadline")
                         else:
                             PROOF_SEARCH_STATE.deadline = previous_deadline
-            if replay_proof is None and rule in {"forward_demodulation", "backward_demodulation"}:
+            if replay_proof is None and rule in {
+                "forward_demodulation",
+                "backward_demodulation",
+                "forward_subsumption_demodulation",
+            }:
                 replay_proof = raw_tptp_forward_demodulation_proof(
                     proposition,
                     replay_parents,
