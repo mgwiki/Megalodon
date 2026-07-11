@@ -56816,6 +56816,153 @@ def raw_prop_true_exhaustiveness_superposition_proof(
     return None
 
 
+def raw_prop_equality_negative_superposition_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+) -> str | None:
+    if len(parents) != 2:
+        return None
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    target_binders, target_body = collect_foralls(target)
+    target_literals = raw_clause_literals(target_body)
+    if len(target_binders) > 3 or len(target_literals) > 8:
+        return None
+
+    def negated_atom(expr: Expr) -> Expr | None:
+        premises, conclusion = split_arrows(expr)
+        if len(premises) == 1 and false_eliminator_expr(conclusion):
+            return premises[0]
+        return None
+
+    target_negatives = [
+        (index, atom)
+        for index, literal in enumerate(target_literals)
+        if (atom := negated_atom(literal)) is not None
+    ]
+    if not target_negatives:
+        return None
+
+    parsed_parents: list[tuple[str, Expr, str]] = []
+    for parent in parents:
+        parent_expr = parse_expr(propositions_by_name.get(parent, ""))
+        if parent_expr is None:
+            return None
+        parsed_parents.append((parent, parent_expr, raw_tptp_canonical_parent_proof_name(parent, propositions_by_name)))
+
+    def negative_parent_instance(parent_expr: Expr, parent_proof: str) -> tuple[Expr, str] | None:
+        binders, body = collect_foralls(parent_expr)
+        if binders or len(raw_clause_literals(body)) != 1:
+            return None
+        atom = negated_atom(body)
+        if atom is None:
+            return None
+        return atom, parent_proof
+
+    def transported_negative_proof(
+        equality_literal: Expr,
+        equality_proof: str,
+        source_atom: Expr,
+        source_negative_proof: str,
+        target_atom: Expr,
+    ) -> str | None:
+        sides = app_args(equality_literal, "vampire_eq_prop", 2)
+        if sides is None:
+            return None
+        left, right = sides
+        if expr_same_mod_alpha(left, source_atom) and expr_same_mod_alpha(right, target_atom):
+            source_from_target = raw_eq_symmetry_proof(equality_proof, source_atom, "prop")
+        elif expr_same_mod_alpha(left, target_atom) and expr_same_mod_alpha(right, source_atom):
+            source_from_target = equality_proof
+        else:
+            return None
+        target_name = fresh_identifier("Htarget", expr_text(target_atom), equality_proof, source_negative_proof)
+        return (
+            f"(fun {target_name} :{proof_arg_text(target_atom)} => "
+            f"{proof_head(source_negative_proof)} "
+            f"({proof_head(source_from_target)} (fun Qprop :prop => Qprop) {target_name}))"
+        )
+
+    for eq_parent, neg_parent in ((0, 1), (1, 0)):
+        eq_name, eq_expr, eq_proof_name = parsed_parents[eq_parent]
+        _neg_name, neg_expr, neg_proof_name = parsed_parents[neg_parent]
+        negative_instance = negative_parent_instance(neg_expr, neg_proof_name)
+        if negative_instance is None:
+            continue
+        source_atom, source_negative_proof = negative_instance
+        eq_binders, eq_body = collect_foralls(eq_expr)
+        if not eq_binders or len(eq_binders) > 3 or any(sort != "prop" for _name, sort in eq_binders):
+            continue
+        binder_names = {name for name, _sort in eq_binders}
+        eq_literals = raw_clause_literals(eq_body)
+        if len(eq_literals) > 8:
+            continue
+        for eq_literal in eq_literals:
+            sides = app_args(eq_literal, "vampire_eq_prop", 2)
+            if sides is None:
+                continue
+            for source_side, target_side in (sides, (sides[1], sides[0])):
+                subst: dict[str, Expr] = {}
+                if not raw_unify_expr_instantiating(source_side, source_atom, binder_names, subst):
+                    continue
+                flatten_substitution(subst)
+                if not binder_names <= subst.keys():
+                    continue
+                if any(expr_variables(value) & binder_names for value in subst.values()):
+                    continue
+                instantiated_target_atom = substitute_expr(target_side, subst)
+                matching_targets = [
+                    (index, atom)
+                    for index, atom in target_negatives
+                    if expr_same_mod_alpha(atom, instantiated_target_atom)
+                ]
+                if not matching_targets:
+                    continue
+                instantiated_body = substitute_expr(eq_body, subst)
+                eq_parent_proof = eq_proof_name
+                for name, _sort in eq_binders:
+                    eq_parent_proof = f"({proof_head(eq_parent_proof)} {proof_arg_text(subst[name])})"
+
+                def handler(literal: Expr, literal_proof: str) -> str | None:
+                    literal_sides = app_args(literal, "vampire_eq_prop", 2)
+                    if literal_sides is not None:
+                        for target_index, target_atom in matching_targets:
+                            negative_proof = transported_negative_proof(
+                                literal,
+                                literal_proof,
+                                source_atom,
+                                source_negative_proof,
+                                target_atom,
+                            )
+                            if negative_proof is not None:
+                                return raw_or_intro_literal_at(target_body, target_index, negative_proof)
+                    literal_atom = negated_atom(literal)
+                    if literal_atom is not None:
+                        for target_index, target_atom in matching_targets:
+                            if expr_same_mod_alpha(literal_atom, target_atom):
+                                return raw_or_intro_literal_at(target_body, target_index, literal_proof)
+                    return raw_literal_to_clause_proof(literal, target_body, literal_proof, target_literals, ())
+
+                previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+                PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+                try:
+                    proof = raw_clause_cases_with_handler(instantiated_body, eq_parent_proof, handler)
+                finally:
+                    if previous_target is None:
+                        if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                            delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+                    else:
+                        PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+                if proof is None:
+                    continue
+                for name, sort in reversed(target_binders):
+                    proof = f"(fun {name} :{sort} => {proof})"
+                return proof
+    return None
+
+
 def raw_tptp_inequality_splitting_proof(
     proposition: str,
     parents: list[str],
@@ -56952,6 +57099,13 @@ def raw_tptp_replay_proof(
                 PROOF_SEARCH_STATE.deadline = previous_deadline
     if rule == "superposition":
         proof = raw_prop_true_exhaustiveness_superposition_proof(
+            proposition,
+            parents,
+            propositions_by_name,
+        )
+        if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
+            return proof
+        proof = raw_prop_equality_negative_superposition_proof(
             proposition,
             parents,
             propositions_by_name,
