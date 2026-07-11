@@ -19989,6 +19989,38 @@ def raw_or_intro_literal_at(target: Expr, index: int, literal_proof: str) -> str
     return f"(fun P Hleft Hright => Hright {proof_term_text(right_proof)})"
 
 
+def raw_typed_or_intro_literal_at(target: Expr, index: int, literal_proof: str, depth: int = 0) -> str | None:
+    if index < 0:
+        return None
+    parts = raw_or_parts(target)
+    if parts is None:
+        return literal_proof if index == 0 else None
+    left, right = parts
+    left_count = len(raw_clause_literals(left))
+    proof_var = fresh_identifier(f"Q{depth}", expr_text(target), literal_proof)
+    left_var = fresh_identifier(f"Hleft{depth}", expr_text(target), literal_proof, proof_var)
+    right_var = fresh_identifier(f"Hright{depth}", expr_text(target), literal_proof, proof_var, left_var)
+    if index < left_count:
+        left_proof = raw_typed_or_intro_literal_at(left, index, literal_proof, depth + 1)
+        if left_proof is None:
+            return None
+        return (
+            f"(fun {proof_var} :prop => "
+            f"fun {left_var} :{proof_arg_text(left)} -> {proof_var} => "
+            f"fun {right_var} :{proof_arg_text(right)} -> {proof_var} => "
+            f"{left_var} {proof_term_text(left_proof)})"
+        )
+    right_proof = raw_typed_or_intro_literal_at(right, index - left_count, literal_proof, depth + 1)
+    if right_proof is None:
+        return None
+    return (
+        f"(fun {proof_var} :prop => "
+        f"fun {left_var} :{proof_arg_text(left)} -> {proof_var} => "
+        f"fun {right_var} :{proof_arg_text(right)} -> {proof_var} => "
+        f"{right_var} {proof_term_text(right_proof)})"
+    )
+
+
 def raw_literal_direct_transform_proof(
     source: Expr,
     target: Expr,
@@ -47401,37 +47433,6 @@ def raw_prop_true_component_universal_excluded_superposition_proof(
         return None
     _ = excluded_clause_proof
 
-    def typed_or_intro_literal_at(clause: Expr, index: int, literal_proof: str, depth: int = 0) -> str | None:
-        if index < 0:
-            return None
-        parts = raw_or_parts(clause)
-        if parts is None:
-            return literal_proof if index == 0 else None
-        left, right = parts
-        left_count = len(raw_clause_literals(left))
-        proof_var = fresh_identifier(f"Q{depth}", expr_text(clause), literal_proof)
-        left_var = fresh_identifier(f"Hleft{depth}", expr_text(clause), literal_proof, proof_var)
-        right_var = fresh_identifier(f"Hright{depth}", expr_text(clause), literal_proof, proof_var, left_var)
-        if index < left_count:
-            left_proof = typed_or_intro_literal_at(left, index, literal_proof, depth + 1)
-            if left_proof is None:
-                return None
-            return (
-                f"(fun {proof_var} :prop => "
-                f"fun {left_var} :{proof_arg_text(left)} -> {proof_var} => "
-                f"fun {right_var} :{proof_arg_text(right)} -> {proof_var} => "
-                f"{left_var} {proof_term_text(left_proof)})"
-            )
-        right_proof = typed_or_intro_literal_at(right, index - left_count, literal_proof, depth + 1)
-        if right_proof is None:
-            return None
-        return (
-            f"(fun {proof_var} :prop => "
-            f"fun {left_var} :{proof_arg_text(left)} -> {proof_var} => "
-            f"fun {right_var} :{proof_arg_text(right)} -> {proof_var} => "
-            f"{right_var} {proof_term_text(right_proof)})"
-        )
-
     binder_name, binder_sort = universal_binder
     binder_expr = Expr("var", value=binder_name)
     component_at_binder = Expr("app", args=(predicate_head, binder_expr))
@@ -47462,8 +47463,8 @@ def raw_prop_true_component_universal_excluded_superposition_proof(
     )
     if equality_reversed:
         equality_proof = native_eq_symmetry_proof(equality_proof, component_at_binder, binder_expr, "prop")
-    equality_branch = typed_or_intro_literal_at(universal_body, equality_index, equality_proof)
-    negated_branch = typed_or_intro_literal_at(universal_body, negated_binder_index, negative_name)
+    equality_branch = raw_typed_or_intro_literal_at(universal_body, equality_index, equality_proof)
+    negated_branch = raw_typed_or_intro_literal_at(universal_body, negated_binder_index, negative_name)
     if equality_branch is None or negated_branch is None:
         return None
     universal_inner = (
@@ -47472,8 +47473,8 @@ def raw_prop_true_component_universal_excluded_superposition_proof(
         f"(fun {negative_name} :{binder_text} -> False => {negated_branch}))"
     )
     universal_proof = f"(fun {binder_name} :{binder_sort} => {universal_inner})"
-    universal_clause_proof = typed_or_intro_literal_at(target_body, universal_index, universal_proof)
-    residual_clause_proof_template = typed_or_intro_literal_at(target_body, residual_index, "__RESIDUAL_PROOF__")
+    universal_clause_proof = raw_typed_or_intro_literal_at(target_body, universal_index, universal_proof)
+    residual_clause_proof_template = raw_typed_or_intro_literal_at(target_body, residual_index, "__RESIDUAL_PROOF__")
     if universal_clause_proof is None or residual_clause_proof_template is None:
         return None
 
@@ -47500,6 +47501,105 @@ def raw_prop_true_component_universal_excluded_superposition_proof(
                 delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
         else:
             PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
+def raw_negative_predicate_argument_true_excluded_superposition_proof(
+    target: Expr,
+    source: Expr,
+    source_proof: str,
+    excluded_clause: Expr,
+    excluded_clause_proof: str,
+) -> str | None:
+    target_binders, target_body = collect_foralls(target)
+    if target_binders:
+        return None
+    target_literals = raw_clause_literals(target_body)
+    if len(target_literals) != 2:
+        return None
+
+    excluded_binders, excluded_body = collect_foralls(excluded_clause)
+    if len(excluded_binders) != 1 or excluded_binders[0][1] != "prop":
+        return None
+    excluded_var = Expr("var", value=excluded_binders[0][0])
+    excluded_literals = raw_clause_literals(excluded_body)
+    if len(excluded_literals) != 2:
+        return None
+    if not any(expr_same_mod_alpha(literal, excluded_var) for literal in excluded_literals):
+        return None
+    if not any(
+        len(premises) == 1 and false_eliminator_expr(conclusion) and expr_same_mod_alpha(premises[0], excluded_var)
+        for premises, conclusion in (split_arrows(literal) for literal in excluded_literals)
+    ):
+        return None
+    _ = excluded_clause_proof
+
+    true_expr = Expr("var", value="True")
+    negated_predicate_index = None
+    negated_argument_index = None
+    predicate_head = None
+    argument = None
+    for index, literal in enumerate(target_literals):
+        premises, conclusion = split_arrows(literal)
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
+            continue
+        premise = premises[0]
+        if premise.kind == "app" and len(premise.args) == 2 and expr_same_mod_alpha(premise.args[1], true_expr):
+            negated_predicate_index = index
+            predicate_head = premise.args[0]
+        else:
+            negated_argument_index = index
+            argument = premise
+    if (
+        negated_predicate_index is None
+        or negated_argument_index is None
+        or predicate_head is None
+        or argument is None
+    ):
+        return None
+
+    source_premises, source_conclusion = split_arrows(source)
+    if len(source_premises) != 1 or not false_eliminator_expr(source_conclusion):
+        return None
+    source_atom = source_premises[0]
+    if source_atom.kind != "app" or len(source_atom.args) != 2:
+        return None
+    if not expr_same_mod_alpha(source_atom.args[0], predicate_head):
+        return None
+    if not expr_same_mod_alpha(source_atom.args[1], argument):
+        return None
+
+    argument_text = proof_arg_text(argument)
+    predicate_true = Expr("app", args=(predicate_head, true_expr))
+    predicate_true_text = proof_arg_text(predicate_true)
+    predicate_hole = fresh_identifier("Y", expr_text(target_body), expr_text(source), expr_text(excluded_clause))
+    positive_name = fresh_identifier("HA", expr_text(target_body), source_proof)
+    negative_name = fresh_identifier("HnotA", expr_text(target_body), positive_name)
+    predicate_true_name = fresh_identifier("HPtrue", expr_text(target_body), positive_name, negative_name)
+    true_proof = "(fun P :prop => fun H :P => H)"
+    true_to_argument = (
+        f"(prop_ext_2 True {argument_text} "
+        f"(fun Htrue :True => {positive_name}) "
+        f"(fun Harg :{argument_text} => {true_proof}))"
+    )
+    transported_predicate = (
+        f"(vampire_native_eq_transport_prop True {argument_text} "
+        f"{true_to_argument} "
+        f"(fun {predicate_hole} :prop => {expr_text(Expr('app', args=(predicate_head, Expr('var', value=predicate_hole))))}) "
+        f"{predicate_true_name})"
+    )
+    negated_predicate_proof = (
+        f"(fun {predicate_true_name} :{predicate_true_text} => "
+        f"{proof_head(source_proof)} {transported_predicate})"
+    )
+    left_branch = raw_typed_or_intro_literal_at(target_body, negated_predicate_index, negated_predicate_proof)
+    right_branch = raw_typed_or_intro_literal_at(target_body, negated_argument_index, negative_name)
+    if left_branch is None or right_branch is None:
+        return None
+    return (
+        f"(xm {argument_text} {proof_arg_text(target_body)} "
+        f"(fun {positive_name} :{argument_text} => {left_branch}) "
+        f"(fun {negative_name} :{argument_text} -> False => {right_branch}))"
+    )
 
 
 def raw_guarded_quantified_component_clause_resolution_superposition_proof(
@@ -47784,6 +47884,24 @@ def raw_tptp_superposition_proof(
             if proof is not None:
                 return proof
             proof = raw_prop_true_component_universal_excluded_superposition_proof(
+                target_expr,
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+            )
+            if proof is not None:
+                return proof
+            proof = raw_negative_predicate_argument_true_excluded_superposition_proof(
+                target_expr,
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+            )
+            if proof is not None:
+                return proof
+            proof = raw_negative_predicate_argument_true_excluded_superposition_proof(
                 target_expr,
                 parent_exprs[1][0],
                 parent_exprs[1][1],
