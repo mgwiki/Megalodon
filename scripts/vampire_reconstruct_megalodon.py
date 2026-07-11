@@ -1985,7 +1985,7 @@ def pointwise_equality_proposition(left: Expr, right: Expr, sort: str) -> str | 
     left_app = append_application_args(left, binders)
     right_app = append_application_args(right, binders)
     if pieces[-1] == "set":
-        proposition = f"vampire_eq_set {proof_arg_text(left_app)} {proof_arg_text(right_app)}"
+        proposition = f"{proof_arg_text(left_app)} = {proof_arg_text(right_app)}"
     else:
         proposition = f"vampire_eq_prop {proof_arg_text(left_app)} {proof_arg_text(right_app)}"
     for binder, sort in reversed(list(zip(binders, pieces[:-1]))):
