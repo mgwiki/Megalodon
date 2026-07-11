@@ -49378,12 +49378,6 @@ def raw_tptp_rat_proof(
         )
         if unit_propagation is not None:
             return unit_propagation
-    propositional = raw_propositional_clause_entailment_proof(
-        target,
-        [(expr, proof_name) for _parent, expr, proof_name in parent_exprs],
-    )
-    if propositional is not None:
-        return propositional
     propositional_clause = raw_propositional_clause_refutation_proof(
         target,
         [(expr, proof_name) for _parent, expr, proof_name in parent_exprs],
@@ -49404,6 +49398,12 @@ def raw_tptp_rat_proof(
         )
         if propositional_clause is not None:
             return propositional_clause
+    propositional = raw_propositional_clause_entailment_proof(
+        target,
+        [(expr, proof_name) for _parent, expr, proof_name in parent_exprs],
+    )
+    if propositional is not None:
+        return propositional
     if 2 < len(parent_exprs) <= 16:
         for source_index, (_, source, source_proof) in enumerate(parent_exprs[:8]):
             if len(raw_clause_literals(source)) > 24:
