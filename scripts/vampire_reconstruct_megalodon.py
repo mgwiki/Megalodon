@@ -19947,6 +19947,33 @@ def raw_literal_direct_transform_proof(
         and source.args[0].kind == "var"
         and source.args[0].value == "vampire_eq_prop"
         and source_sides is not None
+        and len(target_premises) == 1
+        and false_eliminator_expr(target_conclusion)
+    ):
+        target_premise = target_premises[0]
+        prop_name = fresh_identifier("Qprop", expr_text(source), expr_text(target), source_proof)
+        premise_name = fresh_identifier("Hprem", expr_text(source), expr_text(target), source_proof, prop_name)
+        if false_eliminator_expr(source_sides[0]) and expr_same_mod_alpha(source_sides[1], target_premise):
+            false_to_false = f"(fun Hfalse :{proof_arg_text(source_sides[0])} => Hfalse)"
+            neg_proof = (
+                f"({proof_head(source_proof)} "
+                f"(fun {prop_name} :prop => {prop_name} -> {proof_arg_text(target_conclusion)}) "
+                f"{false_to_false})"
+            )
+            return f"(fun {premise_name} :{proof_arg_text(target_premise)} => {proof_head(neg_proof)} {premise_name})"
+        if expr_same_mod_alpha(source_sides[0], target_premise) and false_eliminator_expr(source_sides[1]):
+            neg_proof = (
+                f"({proof_head(source_proof)} "
+                f"(fun {prop_name} :prop => {prop_name}) "
+                f"{premise_name})"
+            )
+            return f"(fun {premise_name} :{proof_arg_text(target_premise)} => {neg_proof})"
+    if (
+        source.kind == "app"
+        and len(source.args) == 3
+        and source.args[0].kind == "var"
+        and source.args[0].value == "vampire_eq_prop"
+        and source_sides is not None
         and target_sides is None
     ):
         true_expr = Expr("var", value="vampire_true")
@@ -33056,6 +33083,142 @@ def raw_guarded_multi_literal_equality_composition_clause_proof(
     return None
 
 
+def raw_guarded_false_condition_equality_demodulation_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    guard: Expr,
+    guard_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if source.kind != "eq":
+        return None
+    source_sides = equality_like_sides(source)
+    if source_sides is None:
+        return None
+    target_literals = raw_clause_literals(target)
+    if len(target_literals) > 12 or len(raw_clause_literals(guard)) > 12:
+        return None
+
+    false_expr = Expr("var", value="False")
+    local_sorts = dict(variable_sorts)
+    for expr in (source, target, guard):
+        infer_missing_raw_tptp_sorts(expr, local_sorts, local_sorts, "prop")
+
+    candidates: list[tuple[Expr, Expr, Expr, Expr, Expr, str, str, int, Expr]] = []
+    source_orientations = [
+        (source_sides[0], source_sides[1], source_proof),
+        (source_sides[1], source_sides[0], eq_symmetry_proof(source_proof, source_sides[0], source_sides[1])),
+    ]
+    for target_literal in target_literals:
+        if target_literal.kind != "eq":
+            continue
+        target_sides = equality_like_sides(target_literal)
+        if target_sides is None:
+            continue
+        for oriented_left, oriented_right, oriented_source_proof in source_orientations:
+            oriented_sides = (oriented_left, oriented_right)
+            for changed_index in (0, 1):
+                unchanged_index = 1 - changed_index
+                if not expr_same_mod_alpha(oriented_sides[unchanged_index], target_sides[unchanged_index]):
+                    continue
+                old_side = oriented_sides[changed_index]
+                new_side = target_sides[changed_index]
+                for redex in expr_subterms(old_side, limit=96):
+                    if expr_same_mod_alpha(redex, false_expr):
+                        continue
+                    if expr_sort(redex, local_sorts) != "prop":
+                        continue
+                    replaced, changed = replace_expr(old_side, redex, false_expr)
+                    if not changed or not expr_same_mod_alpha(replaced, new_side):
+                        continue
+                    hole = fresh_identifier("Bprop", expr_text(old_side), expr_text(new_side), expr_text(redex))
+                    context, context_changed = replace_expr(old_side, redex, Expr("var", value=hole))
+                    if not context_changed:
+                        continue
+                    candidates.append(
+                        (
+                            target_literal,
+                            redex,
+                            old_side,
+                            new_side,
+                            context,
+                            hole,
+                            oriented_source_proof,
+                            changed_index,
+                            oriented_sides[unchanged_index],
+                        )
+                    )
+
+    if not candidates:
+        return None
+
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target)
+    try:
+        def handler(branch: Expr, branch_proof: str) -> str | None:
+            direct = raw_or_intro_from_branch(target, branch, branch_proof)
+            if direct is not None:
+                return direct
+            branch_premises, branch_conclusion = split_arrows(branch)
+            if len(branch_premises) != 1 or not false_eliminator_expr(branch_conclusion):
+                return None
+            for (
+                target_literal,
+                redex,
+                old_side,
+                new_side,
+                context,
+                hole,
+                oriented_source_proof,
+                changed_index,
+                unchanged_side,
+            ) in candidates:
+                if not expr_same_mod_alpha(branch_premises[0], redex):
+                    continue
+                condition_eq_false = (
+                    f"(prop_ext_2 {proof_arg_text(redex)} False "
+                    f"{proof_term_text(branch_proof)} "
+                    f"(fun Hfalse :False => ((FalseE Hfalse) {proof_arg_text(redex)})))"
+                )
+                old_to_new = (
+                    f"(vampire_native_eq_transport_prop "
+                    f"{proof_arg_text(redex)} "
+                    f"False "
+                    f"{condition_eq_false} "
+                    f"(fun {hole} :prop => {proof_arg_text(old_side)} = {proof_arg_text(context)}) "
+                    f"{native_set_reflexivity_proof(old_side)})"
+                )
+                if changed_index == 0:
+                    target_literal_proof = (
+                        f"(vampire_native_eq_transport_set "
+                        f"{proof_arg_text(old_side)} "
+                        f"{proof_arg_text(new_side)} "
+                        f"{old_to_new} "
+                        f"(fun zz:set => zz = {proof_arg_text(unchanged_side)}) "
+                        f"{proof_term_text(oriented_source_proof)})"
+                    )
+                else:
+                    target_literal_proof = (
+                        f"(vampire_native_eq_transport_set "
+                        f"{proof_arg_text(old_side)} "
+                        f"{proof_arg_text(new_side)} "
+                        f"{old_to_new} "
+                        f"(fun zz:set => {proof_arg_text(unchanged_side)} = zz) "
+                        f"{proof_term_text(oriented_source_proof)})"
+                    )
+                return raw_or_intro_from_branch(target, target_literal, target_literal_proof)
+            return None
+
+        return raw_clause_cases_with_handler(guard, guard_proof, handler)
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_tptp_forward_demodulation_proof(
     proposition: str,
     parents: list[str],
@@ -33121,6 +33284,26 @@ def raw_tptp_forward_demodulation_proof(
         second_name,
         first,
         first_name,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_guarded_false_condition_equality_demodulation_proof(
+        first,
+        target,
+        first_name,
+        second,
+        second_name,
+        variable_sorts,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_guarded_false_condition_equality_demodulation_proof(
+        second,
+        target,
+        second_name,
+        first,
+        first_name,
+        variable_sorts,
     )
     if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
         return proof
@@ -45885,6 +46068,106 @@ def raw_tptp_forward_subsumption_resolver_search_proof(
     return None
 
 
+def raw_tptp_forall_prop_equality_contradiction_resolution_proof(
+    target: Expr,
+    parsed: list[tuple[Expr, str]],
+) -> str | None:
+    target_binders, target_body = collect_foralls(target)
+    if target_binders or len(parsed) != 2:
+        return None
+
+    false_expr = Expr("var", value="False")
+
+    def prop_equality_kind(expr: Expr) -> str | None:
+        binders, body = collect_foralls(expr)
+        if len(binders) != 2 or any(sort != "prop" for _name, sort in binders):
+            return None
+        binder_names = {name for name, _sort in binders}
+        sides = app_args(body, "vampire_eq_prop", 2)
+        if sides is not None and all(side.kind == "var" and side.value in binder_names for side in sides):
+            return "positive"
+        premises, conclusion = split_arrows(body)
+        if len(premises) != 1 or not false_eliminator_expr(conclusion):
+            return None
+        sides = app_args(premises[0], "vampire_eq_prop", 2)
+        if sides is not None and all(side.kind == "var" and side.value in binder_names for side in sides):
+            return "negative"
+        return None
+
+    def guarded_literal_options(expr: Expr) -> list[tuple[Expr, Expr | None]]:
+        parts = raw_or_parts(collect_foralls(expr)[1])
+        if parts is None:
+            return [(collect_foralls(expr)[1], None)]
+        return [(parts[0], parts[1]), (parts[1], parts[0])]
+
+    def component_instance_proof(proof: str) -> str:
+        return f"(({proof_head(proof)} False) False)"
+
+    def contradiction_proof(positive_proof: str, negative_proof: str) -> str:
+        return f"({component_instance_proof(negative_proof)} {component_instance_proof(positive_proof)})"
+
+    for source_index, resolver_index in ((0, 1), (1, 0)):
+        source, source_proof = parsed[source_index]
+        resolver, resolver_proof = parsed[resolver_index]
+        for source_component, source_guard in guarded_literal_options(source):
+            source_kind = prop_equality_kind(source_component)
+            if source_kind is None:
+                continue
+            for resolver_component, resolver_guard in guarded_literal_options(resolver):
+                resolver_kind = prop_equality_kind(resolver_component)
+                if resolver_kind is None or resolver_kind == source_kind:
+                    continue
+                if source_guard is None or resolver_guard is None:
+                    continue
+                if not expr_same_mod_alpha(source_guard, resolver_guard):
+                    continue
+
+                previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+                PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+                try:
+                    def resolver_handler(branch: Expr, branch_proof: str, source_component_proof: str) -> str | None:
+                        if expr_same_mod_alpha(branch, source_guard):
+                            guard_intro = raw_or_intro_from_branch(target_body, source_guard, branch_proof)
+                            if guard_intro is not None:
+                                return guard_intro
+                        if not expr_same_mod_alpha(branch, resolver_component):
+                            return None
+                        if source_kind == "positive":
+                            false_proof = contradiction_proof(source_component_proof, branch_proof)
+                        else:
+                            false_proof = contradiction_proof(branch_proof, source_component_proof)
+                        return raw_or_intro_from_branch(target_body, false_expr, false_proof)
+
+                    def source_handler(branch: Expr, branch_proof: str) -> str | None:
+                        if expr_same_mod_alpha(branch, source_guard):
+                            guard_intro = raw_or_intro_from_branch(target_body, source_guard, branch_proof)
+                            if guard_intro is not None:
+                                return guard_intro
+                        if not expr_same_mod_alpha(branch, source_component):
+                            return None
+                        return raw_clause_cases_with_handler(
+                            resolver,
+                            resolver_proof,
+                            lambda resolver_branch, resolver_branch_proof: resolver_handler(
+                                resolver_branch,
+                                resolver_branch_proof,
+                                branch_proof,
+                            ),
+                            avoid_text=branch_proof,
+                        )
+
+                    proof = raw_clause_cases_with_handler(source, source_proof, source_handler)
+                    if proof is not None:
+                        return proof
+                finally:
+                    if previous_target is None:
+                        if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                            delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+                    else:
+                        PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+    return None
+
+
 def raw_tptp_forward_subsumption_resolution_proof(
     proposition: str,
     parents: list[str],
@@ -45924,6 +46207,13 @@ def raw_tptp_forward_subsumption_resolution_proof(
         )
         if avatar_split_proof is not None:
             return avatar_split_proof
+
+    prop_equality_contradiction = raw_tptp_forall_prop_equality_contradiction_resolution_proof(
+        target,
+        parsed,
+    )
+    if prop_equality_contradiction is not None:
+        return prop_equality_contradiction
 
     selected_literal_proof = raw_tptp_selected_literal_subsumption_resolution_proof(
         target,
