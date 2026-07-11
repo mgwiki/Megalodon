@@ -36196,6 +36196,178 @@ def raw_guarded_positive_prop_argument_false_demodulation_proof(
     return None
 
 
+def raw_guarded_prop_equality_to_negative_demodulation_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rule: Expr,
+    rule_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    _source_binders, source_body_top = collect_foralls(source)
+    _target_binders, target_body_top = collect_foralls(target)
+    _rule_binders, rule_body_top = collect_foralls(rule)
+    if _source_binders or _target_binders or _rule_binders:
+        return None
+    source_parts = raw_or_parts(source_body_top)
+    target_parts = raw_or_parts(target_body_top)
+    rule_parts = raw_or_parts(rule_body_top)
+    if source_parts is None or target_parts is None or rule_parts is None:
+        return None
+
+    def negative_atom(literal: Expr) -> Expr | None:
+        premises, conclusion = split_arrows(literal)
+        if len(premises) == 1 and false_eliminator_expr(conclusion):
+            return premises[0]
+        return None
+
+    def component_proof(source_component: Expr, target_component: Expr, rule_component: Expr) -> str | None:
+        source_binders, source_body = collect_foralls(source_component)
+        target_binders, target_body = collect_foralls(target_component)
+        rule_binders, rule_body = collect_foralls(rule_component)
+        if (
+            not source_binders
+            or len(source_binders) != len(target_binders)
+            or len(source_binders) > 4
+            or len(rule_binders) > 4
+        ):
+            return None
+        if any(not equivalent_sorts(left[1], right[1]) for left, right in zip(source_binders, target_binders)):
+            return None
+        rule_atom = negative_atom(rule_body)
+        if rule_atom is None:
+            return None
+
+        source_subst = {
+            source_name: Expr("var", value=target_name)
+            for (source_name, _source_sort), (target_name, _target_sort) in zip(source_binders, target_binders)
+        }
+        source_instantiated = substitute_expr(source_body, source_subst)
+        source_instantiated_proof = "HsourceComponent"
+        for target_name, _target_sort in target_binders:
+            source_instantiated_proof = f"({proof_head(source_instantiated_proof)} {target_name})"
+
+        local_sorts = {**variable_sorts, **dict(target_binders), **dict(rule_binders)}
+        target_literals = raw_clause_literals(target_body)
+        rule_variables = {name for name, _sort in rule_binders}
+
+        def instantiate_rule_for(redex: Expr) -> str | None:
+            rule_subst: dict[str, Expr] = {}
+            if not match_expr_with_alpha_instantiation(rule_atom, redex, rule_variables, rule_subst):
+                return None
+            flatten_substitution(rule_subst)
+            if not rule_variables <= rule_subst.keys():
+                return None
+            if any(expr_variables(rule_subst[name]) & rule_variables for name in rule_variables):
+                return None
+            proof = "HruleComponent"
+            for name, _sort in rule_binders:
+                proof = f"({proof_head(proof)} {proof_arg_text(rule_subst[name])})"
+            return proof
+
+        def handler(literal: Expr, literal_proof: str) -> str | None:
+            direct = raw_literal_to_clause_proof(literal, target_body, literal_proof, target_literals, ())
+            if direct is not None:
+                return direct
+            sides = equality_like_sides(literal)
+            if sides is None:
+                return None
+            for redex, target_atom, equality_proof in (
+                (sides[0], sides[1], literal_proof),
+                (sides[1], sides[0], native_eq_symmetry_proof(literal_proof, sides[0], sides[1], "prop")),
+            ):
+                rule_instantiated = instantiate_rule_for(redex)
+                if rule_instantiated is None:
+                    continue
+                negative_index = next(
+                    (
+                        index
+                        for index, target_literal in enumerate(target_literals)
+                        if (atom := negative_atom(target_literal)) is not None
+                        and expr_same_mod_alpha(atom, target_atom)
+                    ),
+                    None,
+                )
+                if negative_index is None:
+                    continue
+                if expr_sort(redex, local_sorts) != "prop" or expr_sort(target_atom, local_sorts) != "prop":
+                    continue
+                hole = fresh_identifier("Qneg", expr_text(redex), expr_text(target_atom), expr_text(target_body))
+                transported = native_equality_transport_proof(
+                    equality_proof,
+                    redex,
+                    target_atom,
+                    rule_instantiated,
+                    hole,
+                    "prop",
+                    Expr("arrow", args=(Expr("var", value=hole), Expr("var", value="False"))),
+                )
+                if transported is None:
+                    continue
+                return raw_or_intro_literal_at(target_body, negative_index, transported)
+            return None
+
+        previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+        PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+        try:
+            proof = raw_clause_cases_with_handler(source_instantiated, source_instantiated_proof, handler)
+        finally:
+            if previous_target is None:
+                if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                    delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+            else:
+                PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+        if proof is None:
+            return None
+        for name, sort in reversed(target_binders):
+            proof = f"(fun {name} :{sort} => {proof})"
+        return proof
+
+    for source_component, source_guard, source_first in (
+        (source_parts[0], source_parts[1], True),
+        (source_parts[1], source_parts[0], False),
+    ):
+        for rule_component, rule_guard, rule_first in (
+            (rule_parts[0], rule_parts[1], True),
+            (rule_parts[1], rule_parts[0], False),
+        ):
+            for target_component, target_guard in (target_parts, (target_parts[1], target_parts[0])):
+                if not expr_same_mod_alpha(source_guard, target_guard) or not expr_same_mod_alpha(rule_guard, target_guard):
+                    continue
+                body_proof = component_proof(source_component, target_component, rule_component)
+                if body_proof is None:
+                    continue
+                component_intro = raw_or_intro_from_branch(target_body_top, target_component, body_proof)
+                guard_intro = raw_or_intro_from_branch(target_body_top, target_guard, "Hguard")
+                if component_intro is None or guard_intro is None:
+                    continue
+                target_text = proof_arg_text(target_body_top)
+                if rule_first:
+                    rule_case = (
+                        f"({rule_proof} {target_text} "
+                        f"(fun HruleComponent => {proof_term_text(component_intro)}) "
+                        f"(fun Hguard => {proof_term_text(guard_intro)}))"
+                    )
+                else:
+                    rule_case = (
+                        f"({rule_proof} {target_text} "
+                        f"(fun Hguard => {proof_term_text(guard_intro)}) "
+                        f"(fun HruleComponent => {proof_term_text(component_intro)}))"
+                    )
+                if source_first:
+                    return (
+                        f"({source_proof} {target_text} "
+                        f"(fun HsourceComponent => {rule_case}) "
+                        f"(fun Hguard => {proof_term_text(guard_intro)}))"
+                    )
+                return (
+                    f"({source_proof} {target_text} "
+                    f"(fun Hguard => {proof_term_text(guard_intro)}) "
+                    f"(fun HsourceComponent => {rule_case}))"
+                )
+    return None
+
+
 def raw_tptp_forward_demodulation_proof(
     proposition: str,
     parents: list[str],
@@ -36421,6 +36593,26 @@ def raw_tptp_forward_demodulation_proof(
     if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
         return proof
     proof = raw_guarded_positive_prop_argument_false_demodulation_proof(
+        second,
+        target,
+        second_name,
+        first,
+        first_name,
+        variable_sorts,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_guarded_prop_equality_to_negative_demodulation_proof(
+        first,
+        target,
+        first_name,
+        second,
+        second_name,
+        variable_sorts,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_guarded_prop_equality_to_negative_demodulation_proof(
         second,
         target,
         second_name,
