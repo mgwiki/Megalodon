@@ -1703,6 +1703,10 @@ def reconstruction_prelude_for(propositions: list[str]) -> list[str]:
         "assume HQ:Q y x.",
         "exact (Hxy (fun zl zr => Q zr zl) HQ).",
         "Qed.",
+        "Theorem vampire_native_eq_refl_prop: forall x:prop, x = x.",
+        "let x.",
+        "reflexivity.",
+        "Qed.",
         "Theorem vampire_native_eq_transport_prop: forall x y:prop, x = y -> forall P:prop->prop, P x -> P y.",
         "let x y.",
         "assume Hxy:x = y.",
@@ -8716,6 +8720,34 @@ def canonical_proposition(proposition: str) -> str:
     if expr is not None:
         return canonical_expr_text(expr, {}, [0])
     return canonicalize_segment(proposition, [0])
+
+
+def source_map_canonical_expr(expr: Expr) -> Expr:
+    if expr.kind in {"var"}:
+        return expr
+    if expr.kind == "eq":
+        left = source_map_canonical_expr(expr.args[0])
+        right = source_map_canonical_expr(expr.args[1])
+        left_key = canonical_expr_text(left, {}, [0])
+        right_key = canonical_expr_text(right, {}, [0])
+        if right_key < left_key:
+            left, right = right, left
+        return Expr("eq", args=(left, right))
+    if expr.kind in {"app", "arrow"}:
+        return Expr(expr.kind, value=expr.value, args=tuple(source_map_canonical_expr(arg) for arg in expr.args), sort=expr.sort)
+    if expr.kind in {"forall", "fun"}:
+        body = source_map_canonical_expr(expr.args[0])
+        if expr.kind == "forall" and expr.value not in expr_variables(body):
+            return body
+        return Expr(expr.kind, value=expr.value, args=(body,), sort=expr.sort)
+    return expr
+
+
+def source_map_canonical_proposition(proposition: str) -> str:
+    expr = parse_expr(proposition)
+    if expr is not None:
+        return canonical_expr_text(source_map_canonical_expr(expr), {}, [0])
+    return canonical_proposition(proposition)
 
 
 def proof_head(proof: str) -> str:
@@ -19468,7 +19500,9 @@ def collect_tptp_declarations(text: str) -> list[str]:
     depth = 0
     active = False
     for raw in text.splitlines():
-        stripped = raw.strip()
+        stripped = raw.split("%", 1)[0].strip()
+        if not stripped:
+            continue
         if not active:
             if not re.match(r"^(?:thf|tff|cnf)\(", stripped):
                 continue
@@ -19487,7 +19521,7 @@ def collect_tptp_declarations(text: str) -> list[str]:
 
 
 def tptp_decl_formula_parts(text: str) -> tuple[str, str, str, list[str]] | None:
-    stripped = text.strip()
+    stripped = "\n".join(line.split("%", 1)[0] for line in text.strip().splitlines()).strip()
     match = re.match(r"^(?:thf|tff|cnf)\((?P<body>.*)\)\.\s*$", stripped, re.DOTALL)
     if match is None:
         return None
@@ -19559,6 +19593,32 @@ def tptp_formula_source_name(annotations: list[str]) -> str | None:
     text = ",".join(annotations)
     match = re.search(r"\bfile\([^,]+,\s*([^)]+)\)", text)
     return decode_tptp_identifier(match.group(1).strip()) if match else None
+
+
+def raw_tptp_problem_source_names_by_proposition(
+    problem: Path | None,
+    variable_sorts: dict[str, str],
+) -> dict[str, str]:
+    if problem is None or not problem.exists():
+        return {}
+    text = problem.read_text(encoding="utf-8", errors="replace")
+    declarations = collect_tptp_declarations(text)
+    problem_sorts = {**variable_sorts, **raw_tptp_type_variables(declarations)}
+    names_by_proposition: dict[str, str] = {}
+    for declaration in declarations:
+        parsed = tptp_decl_formula_parts(declaration)
+        if parsed is None:
+            continue
+        name, role, formula, annotations = parsed
+        if role == "type":
+            continue
+        proposition = tptp_formula_to_megalodon_proposition(formula, problem_sorts)
+        if proposition is None:
+            continue
+        proposition = raw_tptp_normalize_step_proposition(proposition, problem_sorts)
+        source_name = tptp_formula_source_name(annotations) or decode_tptp_identifier(name)
+        names_by_proposition.setdefault(source_map_canonical_proposition(proposition), source_name)
+    return names_by_proposition
 
 
 def tptp_introduced_definition(annotations: list[str]) -> bool:
@@ -72106,20 +72166,18 @@ def raw_tptp_source_fact_proof(
     )
     if unfolded_subq_proof is not None:
         return unfolded_subq_proof
-    if not raw_proposition_mentions_equality(proposition):
+    source_proposition = source_fact_propositions.get(source_name)
+    if source_proposition is not None and canonical_proposition(source_proposition) == canonical_proposition(proposition):
         return source_name
+    if not raw_proposition_mentions_equality(proposition):
+        return None
     parsed_source_fact = parse_expr(proposition)
     if parsed_source_fact is None:
-        return source_name
+        return None
     equality_proof = raw_source_fact_native_equality_proof(parsed_source_fact, source_name)
     if equality_proof is not None:
         return equality_proof
-    # The TH0 problem axiom was exported from this top-level Megalodon fact.
-    # Even when the reconstruction-side parser cannot relate surface notation
-    # such as conjunctions or order to the impredicative TH0 encoding,
-    # Megalodon's checker can elaborate the original fact at the normalized
-    # target type.
-    return source_name
+    return None
 
 
 def raw_tptp_local_source_fact_proof(
@@ -72257,6 +72315,7 @@ VAMPIRE_CLOSED_HELPER_THEOREM_PREFIXES = (
     "Theorem vampire_native_eq_transport_setprop:",
     "Theorem vampire_native_eq_trans_setprop:",
     "Theorem vampire_native_eq_sym_prop:",
+    "Theorem vampire_native_eq_refl_prop:",
     "Theorem vampire_native_eq_transport_prop:",
     "Theorem vampire_eq_transport_eq_set:",
 )
@@ -72311,6 +72370,8 @@ def raw_tptp_exported_source_declarations(proof_text: str) -> list[str]:
             ):
                 continue
             line = normalize_vampire_boolean_literals([line])[0]
+            if line.startswith("Definition vampire_eq : ") or line == "Infix = 502 := vampire_eq.":
+                continue
             if line in seen_lines:
                 continue
             seen_lines.add(line)
@@ -72416,6 +72477,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         function_definitions = tptp_function_definition_infos(text, variable_sorts)
         variable_sorts.update(raw_tptp_function_definition_sorts(function_definitions, variable_sorts))
         raw_tptp_adjust_section_parameterized_sorts(text, variable_sorts, replay_steps)
+        problem_source_names_by_proposition = raw_tptp_problem_source_names_by_proposition(problem, variable_sorts)
         raw_entries: list[tuple[str, str, str, str | None, str | None, str | None, list[str], bool]] = []
         propositions: list[str] = []
         for declaration in declarations:
@@ -72446,6 +72508,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 unsupported += 1
             else:
                 proposition = raw_tptp_normalize_step_proposition(proposition, variable_sorts)
+                if source_name is None:
+                    source_name = problem_source_names_by_proposition.get(source_map_canonical_proposition(proposition))
                 decoded_propositions.append(proposition)
             if rule == "skolem_symbol_introduction" and not parents:
                 role = "axiom"
@@ -72466,6 +72530,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         function_definitions = tptp_function_definition_infos(text, variable_sorts)
         variable_sorts.update(raw_tptp_function_definition_sorts(function_definitions, variable_sorts))
         raw_tptp_adjust_section_parameterized_sorts(text, variable_sorts, replay_steps)
+        problem_source_names_by_proposition = raw_tptp_problem_source_names_by_proposition(problem, variable_sorts)
         entries = []
         propositions = []
         axiom_like_rules = {"input", "skolem symbol introduction", "predicate definition introduction", "function definition"}
@@ -72535,7 +72600,12 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     if target_expr is not None:
                         proposition = expr_text(target_expr)
                         break
-            entries.append((name, role, proposition, rule, None, list(step.parents), False))
+            source_name = (
+                problem_source_names_by_proposition.get(source_map_canonical_proposition(proposition))
+                if proposition
+                else None
+            )
+            entries.append((name, role, proposition, rule, source_name, list(step.parents), False))
             propositions.append(proposition)
         add_missing_raw_tptp_variables(propositions, variable_sorts)
 
