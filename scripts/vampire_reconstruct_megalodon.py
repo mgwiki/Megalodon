@@ -36188,6 +36188,26 @@ def raw_tptp_forward_demodulation_proof(
     )
     if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
         return proof
+    proof = raw_guarded_negative_prop_context_forward_demodulation_proof(
+        first,
+        target,
+        first_name,
+        second,
+        second_name,
+        variable_sorts,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
+    proof = raw_guarded_negative_prop_context_forward_demodulation_proof(
+        second,
+        target,
+        second_name,
+        first,
+        first_name,
+        variable_sorts,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
     proof = raw_guarded_negative_prop_demodulation_proof(
         first,
         target,
@@ -36636,6 +36656,131 @@ def raw_tptp_forward_demodulation_proof(
     if fallback_ok(proof):
         return proof
     return None
+
+
+def raw_guarded_negative_prop_context_forward_demodulation_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    demodulator: Expr,
+    demodulator_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_binders, source_body = collect_foralls(source)
+    demodulator_binders, demodulator_body = collect_foralls(demodulator)
+    target_binders, target_body = collect_foralls(target)
+    if source_binders or demodulator_binders or target_binders or proof_search_timed_out():
+        return None
+    source_literals = raw_clause_literals(source_body)
+    demodulator_literals = raw_clause_literals(demodulator_body)
+    target_literals = raw_clause_literals(target_body)
+    if len(source_literals) > 16 or len(demodulator_literals) > 8 or len(target_literals) > 24:
+        return None
+
+    false_expr = Expr("var", value="False")
+    hole_name = fresh_identifier("zz", expr_text(source), expr_text(target), expr_text(demodulator))
+    hole = Expr("var", value=hole_name)
+    candidates: list[tuple[Expr, Expr, Expr, Expr]] = []
+    for source_literal in source_literals:
+        if raw_false_clause_literal(source_literal):
+            continue
+        for demodulator_literal in demodulator_literals:
+            premises, conclusion = split_arrows(demodulator_literal)
+            if len(premises) != 1 or not false_eliminator_expr(conclusion):
+                continue
+            redex = premises[0]
+            if expr_sort(redex, variable_sorts) not in {None, "prop"}:
+                continue
+            replaced, changed = replace_expr(source_literal, redex, false_expr)
+            if not changed:
+                continue
+            context, context_changed = replace_expr(source_literal, redex, hole)
+            if not context_changed:
+                continue
+            for target_literal in target_literals:
+                if expr_same_mod_alpha(beta_normalize_expr(replaced), beta_normalize_expr(target_literal)):
+                    candidates.append((source_literal, demodulator_literal, target_literal, context))
+    if not candidates:
+        return None
+
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+    try:
+        def source_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
+            direct = raw_literal_to_clause_proof(source_literal, target_body, source_literal_proof, target_literals, ())
+            if direct is not None:
+                return direct
+            matching_candidates = [
+                candidate
+                for candidate in candidates
+                if expr_same_mod_alpha(candidate[0], source_literal)
+            ]
+            if not matching_candidates:
+                return None
+
+            def demodulator_handler(demodulator_literal: Expr, demodulator_literal_proof: str) -> str | None:
+                direct_demodulator = raw_literal_to_clause_proof(
+                    demodulator_literal,
+                    target_body,
+                    demodulator_literal_proof,
+                    target_literals,
+                    (),
+                )
+                if direct_demodulator is not None:
+                    return direct_demodulator
+                premises, conclusion = split_arrows(demodulator_literal)
+                if len(premises) != 1 or not false_eliminator_expr(conclusion):
+                    return None
+                redex = premises[0]
+                for _source_literal, candidate_demodulator, target_literal, context in matching_candidates:
+                    if not expr_same_mod_alpha(candidate_demodulator, demodulator_literal):
+                        continue
+                    target_index = next(
+                        (
+                            index
+                            for index, literal in enumerate(target_literals)
+                            if expr_same_mod_alpha(literal, target_literal)
+                        ),
+                        -1,
+                    )
+                    if target_index < 0:
+                        continue
+                    false_to_redex = f"(fun Hfalse :False => ((FalseE Hfalse) {proof_arg_text(redex)}))"
+                    redex_to_false = (
+                        f"(prop_ext_2 {proof_arg_text(redex)} False "
+                        f"{proof_term_text(demodulator_literal_proof)} "
+                        f"{false_to_redex})"
+                    )
+                    rewritten_proof = (
+                        f"(vampire_native_eq_transport_prop {proof_arg_text(redex)} False "
+                        f"{redex_to_false} "
+                        f"(fun {hole_name} :prop => {proof_arg_text(context)}) "
+                        f"{proof_term_text(source_literal_proof)})"
+                    )
+                    introduced = raw_or_intro_literal_at(target_body, target_index, rewritten_proof)
+                    if introduced is not None:
+                        return introduced
+                return None
+
+            return raw_clause_cases_with_handler(
+                demodulator_body,
+                demodulator_proof,
+                demodulator_handler,
+                avoid_text=source_literal_proof,
+            )
+
+        return raw_clause_cases_with_handler(
+            source_body,
+            source_proof,
+            source_handler,
+            avoid_text=demodulator_proof,
+        )
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
 
 
 def raw_guarded_negative_prop_demodulation_proof(
