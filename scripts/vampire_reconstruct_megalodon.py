@@ -71575,6 +71575,34 @@ def source_toplevel_fact_propositions(source: Path | None) -> dict[str, str]:
     return propositions
 
 
+def source_toplevel_fact_locations(source: Path | None) -> dict[str, int]:
+    if source is None:
+        return {}
+    try:
+        text = source.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    locations: dict[str, int] = {}
+    prefixes = (
+        "Axiom ",
+        "Theorem ",
+        "Lemma ",
+        "Example ",
+        "Fact ",
+        "Remark ",
+        "Corollary ",
+        "Proposition ",
+        "Property ",
+    )
+    for index, line in enumerate(text.splitlines(), start=1):
+        for prefix in prefixes:
+            parsed = proposition_after_colon(line, prefix)
+            if parsed is not None:
+                locations.setdefault(parsed[0], index)
+                break
+    return locations
+
+
 def normalize_megalodon_sort(sort: str) -> str:
     text = sort.strip()
     text = re.sub(r"\s*->\s*", "->", text)
@@ -72021,8 +72049,16 @@ def raw_tptp_source_fact_proof(
         return source_name
     parsed_source_fact = parse_expr(proposition)
     if parsed_source_fact is None:
-        return None
-    return raw_source_fact_native_equality_proof(parsed_source_fact, source_name)
+        return source_name
+    equality_proof = raw_source_fact_native_equality_proof(parsed_source_fact, source_name)
+    if equality_proof is not None:
+        return equality_proof
+    # The TH0 problem axiom was exported from this top-level Megalodon fact.
+    # Even when the reconstruction-side parser cannot relate surface notation
+    # such as conjunctions or order to the impredicative TH0 encoding,
+    # Megalodon's checker can elaborate the original fact at the normalized
+    # target type.
+    return source_name
 
 
 def raw_tptp_local_source_fact_proof(
@@ -72588,6 +72624,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     source_declared_sort_names = set(source_declared_sorts(source))
     source_fact_names = source_toplevel_fact_names(source)
     source_fact_propositions = source_toplevel_fact_propositions(source)
+    source_fact_locations = source_toplevel_fact_locations(source)
     early_source_declarations: list[str] = []
     later_source_declarations: list[str] = []
     for declaration in source_declarations:
@@ -72865,9 +72902,10 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             source_location = (
                 all_local_source_fact_locations.get(source_name)
                 or all_local_set_locations.get(source_name)
+                or source_fact_locations.get(source_name)
             )
             if source_location is not None:
-                lines.append(f"// source local location: {source}:{source_location}")
+                lines.append(f"// source location: {source}:{source_location}")
         else:
             lines.append(f"// raw vampire node {name}: {role}, {rule_text}{parent_text}")
         if not proposition:
