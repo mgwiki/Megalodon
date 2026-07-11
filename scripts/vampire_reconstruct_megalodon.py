@@ -45759,6 +45759,125 @@ def raw_ground_quantified_clause_equality_superposition_proof(
             PROOF_SEARCH_STATE.flat_resolution_target = previous_target
 
 
+def raw_disjunctive_equality_clause_superposition_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality_clause: Expr,
+    equality_clause_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if proof_search_timed_out():
+        return None
+    target_binders, target_body = collect_foralls(target)
+    if target_binders:
+        return None
+    source_literals = raw_clause_literals(source)
+    target_literals = raw_clause_literals(target_body)
+    if not source_literals or len(source_literals) > 12 or len(target_literals) > 16:
+        return None
+    equality_binders, equality_body = collect_foralls(equality_clause)
+    if len(equality_binders) > 6:
+        return None
+    binder_names = {name for name, _sort in equality_binders}
+    equality_literals = [
+        literal
+        for literal in raw_clause_literals(equality_body)
+        if equality_like_sides(literal) is not None
+    ]
+    if not equality_literals:
+        return None
+    target_text = proof_arg_text(target_body)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+
+    def instantiated_clause_proof(subst: dict[str, Expr]) -> str | None:
+        flatten_substitution(subst)
+        if not binder_names <= subst.keys():
+            return None
+        if any(expr_variables(subst[name]) & binder_names for name in binder_names):
+            return None
+        proof = equality_clause_proof
+        for name, _sort in equality_binders:
+            proof = f"({proof_head(proof)} {proof_arg_text(subst[name])})"
+        return proof
+
+    def prove_from_instantiated_equality_clause(instantiated_body: Expr, instantiated_proof: str) -> str | None:
+        def equality_handler(literal: Expr, literal_proof: str) -> str | None:
+            direct = raw_literal_to_clause_proof(literal, target_body, literal_proof, target_literals, (), deep_literals=True)
+            if direct is not None:
+                return direct
+            sides = equality_like_sides(literal)
+            if sides is None:
+                return None
+            equality_sort = raw_equality_transport_sort(sides[0], sides[1], variable_sorts)
+            for old_side, new_side in (sides, (sides[1], sides[0])):
+                for rewritten, rewritten_proof in raw_equality_rewrite_clause_steps(
+                    source,
+                    source_proof,
+                    old_side,
+                    new_side,
+                    literal_proof,
+                    equality_sort,
+                    native_equality=literal.kind == "eq",
+                ):
+                    proof = raw_clause_subsumption_transform_proof(
+                        rewritten,
+                        target_body,
+                        rewritten_proof,
+                        deep_literals=True,
+                    )
+                    if proof is not None:
+                        return proof
+                    proof = raw_clause_transform_proof(rewritten, target_body, rewritten_proof)
+                    if proof is not None:
+                        return proof
+            return None
+
+        return raw_clause_cases_with_handler(
+            instantiated_body,
+            instantiated_proof,
+            equality_handler,
+            avoid_text=source_proof,
+        )
+
+    try:
+        seen_substitutions: set[tuple[tuple[str, str], ...]] = set()
+        for equality_literal in equality_literals:
+            sides = equality_like_sides(equality_literal)
+            if sides is None:
+                continue
+            for source_literal in source_literals:
+                for source_subterm in expr_subterms(source_literal, limit=160):
+                    if not (expr_variables(source_subterm) & binder_names or binder_names):
+                        continue
+                    for old_side in sides:
+                        subst: dict[str, Expr] = {}
+                        if not match_expr_with_alpha_instantiation(old_side, source_subterm, binder_names, subst):
+                            continue
+                        flatten_substitution(subst)
+                        if not binder_names <= subst.keys():
+                            continue
+                        key = tuple(sorted((name, expr_key(subst[name])) for name in binder_names))
+                        if key in seen_substitutions:
+                            continue
+                        seen_substitutions.add(key)
+                        instantiated_proof = instantiated_clause_proof(subst)
+                        if instantiated_proof is None:
+                            continue
+                        instantiated_body = substitute_expr(equality_body, subst)
+                        proof = prove_from_instantiated_equality_clause(instantiated_body, instantiated_proof)
+                        if proof is not None:
+                            return proof
+        return None
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_tptp_superposition_proof(
     proposition: str,
     parents: list[str],
@@ -45837,6 +45956,26 @@ def raw_tptp_superposition_proof(
                 parent_exprs[1][1],
                 parent_exprs[0][0],
                 parent_exprs[0][1],
+            )
+            if proof is not None:
+                return proof
+            proof = raw_disjunctive_equality_clause_superposition_proof(
+                parent_exprs[0][0],
+                target_expr,
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_disjunctive_equality_clause_superposition_proof(
+                parent_exprs[1][0],
+                target_expr,
+                parent_exprs[1][1],
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                variable_sorts,
             )
             if proof is not None:
                 return proof
