@@ -39158,6 +39158,27 @@ def raw_pointwise_set_function_equality(
     return Expr("eq", args=(left, right)), proof
 
 
+def raw_pointwise_set_function_sort(equality: Expr) -> str | None:
+    binders, body = collect_foralls(equality)
+    if len(binders) not in {1, 2}:
+        return None
+    binder_sorts = [strip_balanced_parens(sort) for _, sort in binders]
+    prop_valued = app_args(body, "vampire_eq_prop", 2) is not None
+    if binder_sorts == ["set"]:
+        result_sort = "prop" if prop_valued else "set"
+    elif binder_sorts == ["set", "set"]:
+        result_sort = "prop" if prop_valued else "set"
+    elif binder_sorts == ["set", "set->prop"] and prop_valued:
+        result_sort = "prop"
+    elif binder_sorts == ["set", "set->set"] and not prop_valued:
+        result_sort = "set"
+    else:
+        return None
+    if equality_like_sides(body) is None:
+        return None
+    return join_sort_arrows([*binder_sorts, result_sort])
+
+
 def raw_partial_pointwise_set_function_equality_options(
     equality: Expr,
     equality_proof: str,
@@ -48985,6 +49006,90 @@ def raw_guarded_quantified_component_clause_resolution_superposition_proof(
             PROOF_SEARCH_STATE.flat_resolution_target = previous_target
 
 
+def raw_tptp_function_equality_clause_superposition_proof(
+    target: Expr,
+    source: Expr,
+    source_proof: str,
+    equality: Expr,
+    equality_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    function_equality = raw_pointwise_set_function_equality(equality, equality_proof)
+    if function_equality is None:
+        return None
+    function_equality_expr, function_equality_proof = function_equality
+    function_sides = equality_like_sides(function_equality_expr)
+    if function_sides is None:
+        return None
+    function_sort = raw_equality_transport_sort(function_sides[0], function_sides[1], variable_sorts)
+    if "->" not in function_sort:
+        function_sort = raw_pointwise_set_function_sort(equality) or function_sort
+    if "->" not in function_sort:
+        return None
+
+    target_binders, target_body = collect_foralls(target)
+    source_binders, source_body = collect_foralls(source)
+    if len(source_binders) != len(target_binders) or len(source_binders) > 6:
+        return None
+    if any(
+        not equivalent_sorts(source_sort, target_sort)
+        for (_source_name, source_sort), (_target_name, target_sort) in zip(source_binders, target_binders)
+    ):
+        return None
+    if len(raw_clause_literals(source_body)) > 16 or len(raw_clause_literals(target_body)) > 18:
+        return None
+
+    opened_source = source_body
+    opened_source_proof = source_proof
+    local_sorts = {**variable_sorts}
+    for (source_name, _source_sort), (target_name, target_sort) in zip(source_binders, target_binders):
+        if source_name != target_name:
+            opened_source = rename_expr_variables(opened_source, {source_name: target_name})
+        local_sorts[target_name] = target_sort
+        opened_source_proof = f"({proof_head(opened_source_proof)} {target_name})"
+
+    def close(proof: str) -> str:
+        closed = proof
+        for name, sort in reversed(target_binders):
+            closed = f"(fun {name} :{sort} => {closed})"
+        return closed
+
+    def try_finish(candidate: Expr, proof: str) -> str | None:
+        if expr_same_mod_alpha(candidate, target_body):
+            return close(proof)
+        transformed = raw_clause_subsumption_transform_proof(candidate, target_body, proof, deep_literals=True)
+        if transformed is not None:
+            return close(transformed)
+        if raw_clause_replay_budget_ok(candidate, target_body, max_literals=18, max_literal_product=384):
+            transformed = raw_clause_transform_proof(candidate, target_body, proof)
+            if transformed is not None:
+                return close(transformed)
+        return None
+
+    direct = try_finish(opened_source, opened_source_proof)
+    if direct is not None:
+        return direct
+
+    for rewritten, transported in raw_equality_rewrite_clause_steps(
+        opened_source,
+        opened_source_proof,
+        function_sides[0],
+        function_sides[1],
+        function_equality_proof,
+        function_sort,
+        native_equality=False,
+    ):
+        candidates = [rewritten]
+        normalized = beta_normalize_expr(rewritten)
+        if not expr_same_mod_alpha(normalized, rewritten):
+            candidates.append(normalized)
+        for candidate in candidates:
+            proof = try_finish(candidate, transported)
+            if proof is not None:
+                return proof
+    return None
+
+
 def raw_tptp_superposition_proof(
     proposition: str,
     parents: list[str],
@@ -49005,6 +49110,26 @@ def raw_tptp_superposition_proof(
             if parent_expr is not None:
                 parent_exprs.append((parent_expr, raw_tptp_canonical_parent_proof_name(parent, propositions_by_name)))
         if target_expr is not None and len(parent_exprs) == 2:
+            proof = raw_tptp_function_equality_clause_superposition_proof(
+                target_expr,
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_tptp_function_equality_clause_superposition_proof(
+                target_expr,
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
             if raw_tptp_quantified_clause_resolution_preferred(proposition):
                 proof = raw_quantified_clause_resolution_superposition_proof(
                     target_expr,
