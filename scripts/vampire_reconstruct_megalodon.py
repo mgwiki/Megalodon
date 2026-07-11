@@ -42425,6 +42425,323 @@ def raw_guarded_prop_equality_clause_resolution_superposition_proof(
     return None
 
 
+def raw_guarded_prop_equality_negative_clause_superposition_proof(
+    target: Expr,
+    source: Expr,
+    source_proof: str,
+    equality_source: Expr,
+    equality_source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    target_body_top = collect_foralls(target)[1]
+    target_parts = raw_or_parts(target_body_top)
+    source_parts = raw_or_parts(collect_foralls(source)[1])
+    equality_parts = raw_or_parts(collect_foralls(equality_source)[1])
+    if target_parts is None or source_parts is None or equality_parts is None:
+        return None
+
+    def negative_atom(literal: Expr) -> Expr | None:
+        premises, conclusion = split_arrows(literal)
+        if len(premises) == 1 and false_eliminator_expr(conclusion):
+            return premises[0]
+        return None
+
+    def proof_of_target_guard(branch: Expr, branch_proof: str) -> str | None:
+        return raw_or_intro_from_branch(target_body_top, branch, branch_proof)
+
+    def negative_rewrite_proof(
+        equality_literal: Expr,
+        equality_proof: str,
+        equality_left: Expr,
+        equality_right: Expr,
+        source_atom: Expr,
+        source_negative_proof: str,
+        target_atom: Expr,
+    ) -> str | None:
+        native_equality = equality_literal.kind == "eq"
+        if expr_same_mod_alpha(equality_left, source_atom) and expr_same_mod_alpha(equality_right, target_atom):
+            target_to_source = (
+                native_eq_symmetry_proof(equality_proof, source_atom, target_atom, "prop")
+                if native_equality
+                else raw_eq_symmetry_proof(equality_proof, source_atom, "prop")
+            )
+        elif expr_same_mod_alpha(equality_left, target_atom) and expr_same_mod_alpha(equality_right, source_atom):
+            target_to_source = equality_proof
+        else:
+            return None
+        target_name = fresh_identifier("HtargetProp", expr_text(target_atom), equality_proof, source_negative_proof)
+        if native_equality:
+            transported = (
+                f"(vampire_native_eq_transport_prop {proof_arg_text(target_atom)} {proof_arg_text(source_atom)} "
+                f"{proof_term_text(target_to_source)} (fun Qprop :prop => Qprop) {target_name})"
+            )
+        else:
+            transported = f"({proof_head(target_to_source)} (fun Qprop :prop => Qprop) {target_name})"
+        return (
+            f"(fun {target_name} :{proof_arg_text(target_atom)} => "
+            f"{proof_head(source_negative_proof)} {proof_term_text(transported)})"
+        )
+
+    for target_component, _target_guard in (target_parts, (target_parts[1], target_parts[0])):
+        target_binders, target_body = collect_foralls(target_component)
+        if not target_binders or len(target_binders) > 6:
+            continue
+        target_literals = raw_clause_literals(target_body)
+        if len(target_literals) > 12:
+            continue
+        target_negative_atoms = [
+            (literal, atom)
+            for literal in target_literals
+            if (atom := negative_atom(literal)) is not None
+        ]
+        if not target_negative_atoms:
+            continue
+        target_sorts = {name: sort for name, sort in target_binders}
+
+        for source_component, source_guard, source_component_first in (
+            (source_parts[0], source_parts[1], True),
+            (source_parts[1], source_parts[0], False),
+        ):
+            source_binders, source_body = collect_foralls(source_component)
+            if not source_binders or len(source_binders) > 8:
+                continue
+            source_literals = raw_clause_literals(source_body)
+            if len(source_literals) > 12:
+                continue
+            source_variables = {name for name, _sort in source_binders}
+            source_negative_literals = [
+                (literal, atom)
+                for literal in source_literals
+                if (atom := negative_atom(literal)) is not None
+            ]
+            if not source_negative_literals:
+                continue
+
+            for equality_component, equality_guard, equality_component_first in (
+                (equality_parts[0], equality_parts[1], True),
+                (equality_parts[1], equality_parts[0], False),
+            ):
+                equality_binders, equality_body = collect_foralls(equality_component)
+                if not equality_binders or len(equality_binders) > 6:
+                    continue
+                equality_literals = raw_clause_literals(equality_body)
+                if len(equality_literals) > 8:
+                    continue
+                equality_variables = {name for name, _sort in equality_binders}
+                equality_negative_literals = [
+                    (literal, atom)
+                    for literal in equality_literals
+                    if (atom := negative_atom(literal)) is not None
+                ]
+                equality_literals_with_sides = [
+                    (literal, sides)
+                    for literal in equality_literals
+                    if (sides := equality_like_sides(literal)) is not None
+                    and (
+                        raw_equality_literal_transport_sort(literal, sides, {**variable_sorts, **target_sorts}) == "prop"
+                        or expr_sort(sides[0], {**variable_sorts, **target_sorts}) == "prop"
+                        or expr_sort(sides[1], {**variable_sorts, **target_sorts}) == "prop"
+                    )
+                ]
+                if not equality_negative_literals or not equality_literals_with_sides:
+                    continue
+
+                for target_negative, target_atom in target_negative_atoms:
+                    for _equality_negative, equality_negative_atom in equality_negative_literals:
+                        equality_subst: dict[str, Expr] = {}
+                        if not match_expr_with_alpha_instantiation(
+                            equality_negative_atom,
+                            target_atom,
+                            equality_variables,
+                            equality_subst,
+                        ):
+                            continue
+                        for equality_literal, equality_sides in equality_literals_with_sides:
+                            for equality_old, equality_new in (equality_sides, (equality_sides[1], equality_sides[0])):
+                                oriented_subst = dict(equality_subst)
+                                if not match_expr_with_alpha_instantiation(
+                                    equality_new,
+                                    target_atom,
+                                    equality_variables,
+                                    oriented_subst,
+                                ):
+                                    continue
+                                flatten_substitution(oriented_subst)
+                                if not equality_variables <= set(oriented_subst):
+                                    continue
+                                instantiated_old = substitute_expr(equality_old, oriented_subst)
+
+                                for source_negative, source_negative_atom in source_negative_literals:
+                                    source_subst: dict[str, Expr] = {}
+                                    if not match_expr_with_alpha_instantiation(
+                                        source_negative_atom,
+                                        instantiated_old,
+                                        source_variables,
+                                        source_subst,
+                                    ):
+                                        continue
+                                    flatten_substitution(source_subst)
+                                    if not source_variables <= set(source_subst):
+                                        continue
+                                    known_sorts = {**variable_sorts, **target_sorts}
+                                    equality_sort_mismatch = False
+                                    for name, sort in equality_binders:
+                                        inferred_sort = expr_sort(oriented_subst[name], known_sorts)
+                                        if inferred_sort is not None and not equivalent_sorts(inferred_sort, sort):
+                                            equality_sort_mismatch = True
+                                            break
+                                    if equality_sort_mismatch:
+                                        continue
+                                    source_sort_mismatch = False
+                                    for name, sort in source_binders:
+                                        inferred_sort = expr_sort(source_subst[name], known_sorts)
+                                        if inferred_sort is not None and not equivalent_sorts(inferred_sort, sort):
+                                            source_sort_mismatch = True
+                                            break
+                                    if source_sort_mismatch:
+                                        continue
+
+                                    instantiated_equality_body = substitute_expr(equality_body, oriented_subst)
+                                    instantiated_source_body = substitute_expr(source_body, source_subst)
+                                    instantiated_source_proof = "HsourceComponent"
+                                    for name, _sort in source_binders:
+                                        instantiated_source_proof = (
+                                            f"({proof_head(instantiated_source_proof)} {proof_arg_text(source_subst[name])})"
+                                        )
+
+                                    def source_component_body_proof(equality_literal_proof: str) -> str | None:
+                                        def source_handler(literal: Expr, literal_proof: str) -> str | None:
+                                            direct = raw_literal_to_clause_proof(
+                                                literal,
+                                                target_body,
+                                                literal_proof,
+                                                target_literals,
+                                                (),
+                                            )
+                                            if direct is not None:
+                                                return direct
+                                            if not expr_same_mod_alpha(literal, substitute_expr(source_negative, source_subst)):
+                                                return None
+                                            rewritten_negative = negative_rewrite_proof(
+                                                equality_literal,
+                                                equality_literal_proof,
+                                                substitute_expr(equality_sides[0], oriented_subst),
+                                                substitute_expr(equality_sides[1], oriented_subst),
+                                                substitute_expr(source_negative_atom, source_subst),
+                                                literal_proof,
+                                                target_atom,
+                                            )
+                                            if rewritten_negative is None:
+                                                return None
+                                            return raw_literal_to_clause_proof(
+                                                target_negative,
+                                                target_body,
+                                                rewritten_negative,
+                                                target_literals,
+                                                (),
+                                            )
+
+                                        previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+                                        PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+                                        try:
+                                            return raw_clause_cases_with_handler(
+                                                instantiated_source_body,
+                                                instantiated_source_proof,
+                                                source_handler,
+                                                avoid_text=equality_literal_proof,
+                                            )
+                                        finally:
+                                            if previous_target is None:
+                                                if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                                                    delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+                                            else:
+                                                PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+                                    def target_component_from_source_component(equality_component_proof: str) -> str | None:
+                                        scoped_equality_proof = equality_component_proof
+                                        for name, _sort in equality_binders:
+                                            scoped_equality_proof = (
+                                                f"({proof_head(scoped_equality_proof)} {proof_arg_text(oriented_subst[name])})"
+                                            )
+
+                                        def equality_handler(literal: Expr, literal_proof: str) -> str | None:
+                                            direct = raw_literal_to_clause_proof(
+                                                literal,
+                                                target_body,
+                                                literal_proof,
+                                                target_literals,
+                                                (),
+                                            )
+                                            if direct is not None:
+                                                return direct
+                                            if not expr_same_mod_alpha(literal, substitute_expr(equality_literal, oriented_subst)):
+                                                return None
+                                            return source_component_body_proof(literal_proof)
+
+                                        previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+                                        PROOF_SEARCH_STATE.flat_resolution_target = proof_arg_text(target_body)
+                                        try:
+                                            body_proof = raw_clause_cases_with_handler(
+                                                instantiated_equality_body,
+                                                scoped_equality_proof,
+                                                equality_handler,
+                                                avoid_text=source_proof,
+                                            )
+                                        finally:
+                                            if previous_target is None:
+                                                if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                                                    delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+                                            else:
+                                                PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+                                        if body_proof is None:
+                                            return None
+                                        for name, sort in reversed(target_binders):
+                                            body_proof = f"(fun {name} :{sort} => {body_proof})"
+                                        return raw_or_intro_from_branch(
+                                            target_body_top,
+                                            target_component,
+                                            body_proof,
+                                        )
+
+                                    def source_parent_top_proof(equality_component_proof: str) -> str | None:
+                                        component_intro = target_component_from_source_component(equality_component_proof)
+                                        source_guard_intro = proof_of_target_guard(source_guard, "HsourceGuard")
+                                        if component_intro is None or source_guard_intro is None:
+                                            return None
+                                        target_text = proof_arg_text(target_body_top)
+                                        if source_component_first:
+                                            return (
+                                                f"({source_proof} {target_text} "
+                                                f"(fun HsourceComponent :{proof_arg_text(source_component)} => {proof_term_text(component_intro)}) "
+                                                f"(fun HsourceGuard :{proof_arg_text(source_guard)} => {proof_term_text(source_guard_intro)}))"
+                                            )
+                                        return (
+                                            f"({source_proof} {target_text} "
+                                            f"(fun HsourceGuard :{proof_arg_text(source_guard)} => {proof_term_text(source_guard_intro)}) "
+                                            f"(fun HsourceComponent :{proof_arg_text(source_component)} => {proof_term_text(component_intro)}))"
+                                        )
+
+                                    equality_component_proof = source_parent_top_proof("HequalityComponent")
+                                    if equality_component_proof is None:
+                                        continue
+                                    equality_guard_intro = proof_of_target_guard(equality_guard, "HequalityGuard")
+                                    if equality_guard_intro is None:
+                                        continue
+                                    target_text = proof_arg_text(target_body_top)
+                                    if equality_component_first:
+                                        return (
+                                            f"({equality_source_proof} {target_text} "
+                                            f"(fun HequalityComponent :{proof_arg_text(equality_component)} => {proof_term_text(equality_component_proof)}) "
+                                            f"(fun HequalityGuard :{proof_arg_text(equality_guard)} => {proof_term_text(equality_guard_intro)}))"
+                                        )
+                                    return (
+                                        f"({equality_source_proof} {target_text} "
+                                        f"(fun HequalityGuard :{proof_arg_text(equality_guard)} => {proof_term_text(equality_guard_intro)}) "
+                                        f"(fun HequalityComponent :{proof_arg_text(equality_component)} => {proof_term_text(equality_component_proof)}))"
+                                    )
+    return None
+
+
 def raw_quantified_prop_equality_set_argument_superposition_proof(
     target: Expr,
     quantified_equality: Expr,
@@ -42806,6 +43123,26 @@ def raw_tptp_superposition_proof(
             if proof is not None:
                 return proof
             proof = raw_guarded_prop_equality_clause_resolution_superposition_proof(
+                target_expr,
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_guarded_prop_equality_negative_clause_superposition_proof(
+                target_expr,
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                variable_sorts,
+            )
+            if proof is not None:
+                return proof
+            proof = raw_guarded_prop_equality_negative_clause_superposition_proof(
                 target_expr,
                 parent_exprs[1][0],
                 parent_exprs[1][1],
@@ -63829,6 +64166,8 @@ def check_raw_tptp_skeleton(task: tuple[Path, Path, Path, Path, Path, int, bool]
         skeleton.write_text("\n".join(skeleton_lines) + "\n", encoding="utf-8")
         context.write_text("\n".join(source_lines + [""] + skeleton_lines) + "\n", encoding="utf-8")
 
+    demoted_exact_lines: dict[int, str] = {}
+
     def demote_failed_exact(stdout: str) -> bool:
         if not allow_admits:
             return False
@@ -63846,6 +64185,7 @@ def check_raw_tptp_skeleton(task: tuple[Path, Path, Path, Path, Path, int, bool]
                 and index > 0
                 and skeleton_lines[index - 1].startswith("claim ")
             ):
+                demoted_exact_lines.setdefault(index, skeleton_lines[index])
                 skeleton_lines[index] = "{ admit. }"
                 write_context()
                 return True
@@ -63853,10 +64193,42 @@ def check_raw_tptp_skeleton(task: tuple[Path, Path, Path, Path, Path, int, bool]
         while claim_index >= 0 and not skeleton_lines[claim_index].startswith("claim "):
             claim_index -= 1
         if claim_index >= 0 and claim_index + 1 < len(skeleton_lines) and skeleton_lines[claim_index + 1].startswith("{ exact "):
+            demoted_exact_lines.setdefault(claim_index + 1, skeleton_lines[claim_index + 1])
             skeleton_lines[claim_index + 1] = "{ admit. }"
             write_context()
             return True
         return False
+
+    def restore_independent_demotions(command: list[str]) -> str | None:
+        if not demoted_exact_lines:
+            return None
+        for index, original in list(demoted_exact_lines.items()):
+            if not (0 <= index < len(skeleton_lines)) or skeleton_lines[index] != "{ admit. }":
+                continue
+            skeleton_lines[index] = original
+            write_context()
+            result = subprocess.run(
+                command,
+                cwd=str(repo),
+                timeout=timeout,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            if result.returncode != 0:
+                skeleton_lines[index] = "{ admit. }"
+                write_context()
+        final_result = subprocess.run(
+            command,
+            cwd=str(repo),
+            timeout=timeout,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        return final_result.stdout
 
     write_context()
     command = [str(megalodon), "-allowincompleteqed", str(context)]
@@ -63873,6 +64245,9 @@ def check_raw_tptp_skeleton(task: tuple[Path, Path, Path, Path, Path, int, bool]
             )
             log.write_text(result.stdout, encoding="utf-8")
             if result.returncode == 0:
+                restore_stdout = restore_independent_demotions(command)
+                if restore_stdout is not None:
+                    log.write_text(restore_stdout, encoding="utf-8")
                 return skeleton, True, log
             if not demote_failed_exact(result.stdout):
                 return skeleton, False, log
