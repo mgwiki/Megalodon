@@ -72217,6 +72217,206 @@ def raw_tptp_source_fact_unfolded_subq_proof(
     return proof
 
 
+def raw_tptp_oriented_source_fact_proof(
+    proposition: str,
+    source_name: str,
+    source_proposition: str | None,
+) -> str | None:
+    if source_proposition is None:
+        return None
+    source = parse_expr(source_proposition)
+    target = parse_expr(proposition)
+    if source is None or target is None:
+        return None
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if len(source_binders) != len(target_binders) or [sort for _name, sort in source_binders] != [sort for _name, sort in target_binders]:
+        return None
+    rename = {
+        source_name: target_name
+        for (source_name, _source_sort), (target_name, _target_sort) in zip(source_binders, target_binders)
+        if source_name != target_name
+    }
+    if rename:
+        source_body = rename_expr_variables(source_body, rename)
+    source_premises, source_conclusion = split_arrows(source_body)
+    target_premises, target_conclusion = split_arrows(target_body)
+    if len(source_premises) != len(target_premises):
+        return None
+    if any(not expr_same_mod_alpha(source_premise, target_premise) for source_premise, target_premise in zip(source_premises, target_premises)):
+        return None
+    if expr_same_mod_alpha(source_conclusion, target_conclusion):
+        return source_name
+    source_sides = equality_like_sides(source_conclusion)
+    target_sides = equality_like_sides(target_conclusion)
+    if source_sides is None or target_sides is None:
+        return None
+    if not (
+        expr_same_mod_alpha(source_sides[0], target_sides[1])
+        and expr_same_mod_alpha(source_sides[1], target_sides[0])
+    ):
+        return None
+
+    proof = source_name
+    for name, _sort in target_binders:
+        proof = f"({proof_head(proof)} {name})"
+    premise_names = [
+        fresh_identifier(f"Hsource{index}", proposition, source_name, str(index))
+        for index, _premise in enumerate(target_premises)
+    ]
+    for premise_name in premise_names:
+        proof = f"({proof_head(proof)} {premise_name})"
+    local_sorts = {name: sort for name, sort in target_binders}
+    sort = expr_sort(target_sides[0], local_sorts) or expr_sort(target_sides[1], local_sorts) or "set"
+    body_proof = native_eq_symmetry_proof(proof, target_sides[1], target_sides[0], sort)
+    for name, premise in reversed(list(zip(premise_names, target_premises))):
+        body_proof = f"(fun {name} :{proof_arg_text(premise)} => {body_proof})"
+    for name, sort in reversed(target_binders):
+        body_proof = f"(fun {name} :{sort} => {body_proof})"
+    return body_proof
+
+
+def strip_outer_source_parens(text: str) -> str:
+    return strip_balanced_parens(text.strip())
+
+
+def split_top_level_whitespace(text: str) -> list[str]:
+    pieces: list[str] = []
+    start: int | None = None
+    depth = 0
+    for index, char in enumerate(text):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        if char.isspace() and depth == 0:
+            if start is not None:
+                pieces.append(text[start:index].strip())
+                start = None
+            continue
+        if start is None and not char.isspace():
+            start = index
+    if start is not None:
+        pieces.append(text[start:].strip())
+    return pieces
+
+
+def source_fact_infix_function(symbol: str, target_text: str) -> str | None:
+    candidates = {
+        "+": ("add_nat", "add_SNo"),
+        "*": ("mul_nat", "mul_SNo", "M"),
+        "^": ("exp_nat", "exp_SNo_nat"),
+    }.get(symbol)
+    if candidates is None:
+        return None
+    for candidate in candidates:
+        if re.search(rf"(?<![A-Za-z0-9_']){re.escape(candidate)}(?![A-Za-z0-9_'])", target_text):
+            return candidate
+    return candidates[0]
+
+
+def parse_source_fact_simple_term(text: str, variable_renames: dict[str, str], target_text: str) -> Expr | None:
+    text = strip_outer_source_parens(text)
+    if not text:
+        return None
+    if text == "0":
+        return Expr("var", value="Empty")
+    for symbol in ("+", "*", "^"):
+        parts = split_top_level_operator(text, symbol)
+        if parts is None:
+            continue
+        function_name = source_fact_infix_function(symbol, target_text)
+        if function_name is None:
+            return None
+        left = parse_source_fact_simple_term(parts[0], variable_renames, target_text)
+        right = parse_source_fact_simple_term(parts[1], variable_renames, target_text)
+        if left is None or right is None:
+            return None
+        return append_application_args(Expr("var", value=function_name), [left, right])
+    pieces = split_top_level_whitespace(text)
+    if len(pieces) > 1:
+        head = parse_source_fact_simple_term(pieces[0], variable_renames, target_text)
+        if head is None:
+            return None
+        result = head
+        for piece in pieces[1:]:
+            argument = parse_source_fact_simple_term(piece, variable_renames, target_text)
+            if argument is None:
+                return None
+            result = append_application_args(result, [argument])
+        return result
+    if re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", text):
+        return Expr("var", value=variable_renames.get(text, text))
+    return None
+
+
+def raw_tptp_unparsed_source_equality_proof(
+    proposition: str,
+    source_name: str,
+    source_proposition: str | None,
+) -> str | None:
+    if source_proposition is None or "=" not in source_proposition:
+        return None
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    target_binders, target_body = collect_foralls(target)
+    target_premises, target_conclusion = split_arrows(target_body)
+    if target_premises:
+        return None
+    target_sides = equality_like_sides(target_conclusion)
+    if target_sides is None:
+        return None
+
+    body = source_proposition.strip()
+    source_binder_names: list[str] = []
+    while body.startswith("forall "):
+        binder_parts = split_top_level_operator(body[len("forall "):], ",")
+        if binder_parts is None:
+            return None
+        binder_text, rest = binder_parts
+        for piece in binder_text.split():
+            name = piece.split(":", 1)[0].strip()
+            if re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", name):
+                source_binder_names.append(name)
+        body = rest.strip()
+    source_premises: list[str] = []
+    while True:
+        parts = split_top_level_operator(body, "->")
+        if parts is None:
+            break
+        source_premises.append(parts[0].strip())
+        body = parts[1].strip()
+    if source_premises or len(source_binder_names) != len(target_binders):
+        return None
+    equality = split_top_level_equality(body)
+    if equality is None:
+        return None
+    variable_renames = {
+        source_name: target_name
+        for source_name, (target_name, _sort) in zip(source_binder_names, target_binders)
+    }
+    target_text = expr_text(target)
+    left = parse_source_fact_simple_term(equality[0], variable_renames, target_text)
+    right = parse_source_fact_simple_term(equality[1], variable_renames, target_text)
+    if left is None or right is None:
+        return None
+    proof = source_name
+    for name, _sort in target_binders:
+        proof = f"({proof_head(proof)} {name})"
+    if expr_same_mod_alpha(left, target_sides[0]) and expr_same_mod_alpha(right, target_sides[1]):
+        body_proof = proof
+    elif expr_same_mod_alpha(left, target_sides[1]) and expr_same_mod_alpha(right, target_sides[0]):
+        local_sorts = {name: sort for name, sort in target_binders}
+        sort = expr_sort(target_sides[0], local_sorts) or expr_sort(target_sides[1], local_sorts) or "set"
+        body_proof = native_eq_symmetry_proof(proof, target_sides[1], target_sides[0], sort)
+    else:
+        return None
+    for name, sort in reversed(target_binders):
+        body_proof = f"(fun {name} :{sort} => {body_proof})"
+    return body_proof
+
+
 def raw_tptp_source_fact_proof(
     proposition: str,
     source_name: str | None,
@@ -72235,6 +72435,22 @@ def raw_tptp_source_fact_proof(
     source_proposition = source_fact_propositions.get(source_name)
     if source_proposition is not None and canonical_proposition(source_proposition) == canonical_proposition(proposition):
         return source_name
+    oriented_source_fact = raw_tptp_oriented_source_fact_proof(
+        proposition,
+        source_name,
+        source_proposition,
+    )
+    if oriented_source_fact is not None:
+        return oriented_source_fact
+    unparsed_equality_proof = raw_tptp_unparsed_source_equality_proof(
+        proposition,
+        source_name,
+        source_proposition,
+    )
+    if unparsed_equality_proof is not None:
+        return unparsed_equality_proof
+    if source_proposition is not None and parse_expr(source_proposition) is None and "=" in source_proposition:
+        return None
     if not raw_proposition_mentions_equality(proposition):
         return None
     parsed_source_fact = parse_expr(proposition)
