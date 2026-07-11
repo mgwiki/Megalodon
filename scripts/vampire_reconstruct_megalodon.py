@@ -63069,6 +63069,9 @@ def raw_tptp_replay_proof_from_step(
     reflexivity_proof = raw_reflexivity_proof_for_proposition(proposition)
     if reflexivity_proof is not None:
         return reflexivity_proof
+    prop_clause_proof = raw_prop_clause_truth_table_proof(proposition, variable_sorts)
+    if prop_clause_proof is not None:
+        return prop_clause_proof
     for rule in raw_tptp_replay_rule_candidates(step):
         proof = raw_tptp_replay_proof(
             rule,
@@ -64225,6 +64228,9 @@ def raw_tptp_replay_proof(
         if proof is not None:
             return proof
     proof = raw_prop_eq_middle_clause_proof(proposition)
+    if proof is not None:
+        return proof
+    proof = raw_prop_clause_truth_table_proof(proposition, variable_sorts)
     if proof is not None:
         return proof
     proof = raw_prop_equality_truth_table_clause_proof(proposition, variable_sorts)
@@ -65969,6 +65975,244 @@ def raw_prop_equality_truth_table_clause_proof(proposition: str, variable_sorts:
             return None
         return (
             f"(xm {name} {target_text} "
+            f"(fun {positive_name} => {positive_branch}) "
+            f"(fun {negative_name} => {negative_branch}))"
+        )
+
+    body_proof = prove_with_env({}, 0)
+    if body_proof is None:
+        return None
+    for name, sort in reversed(binders):
+        body_proof = f"(fun {name} :{sort} => {body_proof})"
+    return body_proof
+
+
+def raw_prop_clause_truth_table_proof(proposition: str, variable_sorts: dict[str, str] | None = None) -> str | None:
+    variable_sorts = variable_sorts or {}
+    expr = parse_expr(proposition)
+    if expr is None:
+        return None
+    binders, body = collect_foralls(expr)
+    if len(binders) > 8:
+        return None
+    local_sorts = {**variable_sorts, **{name: sort for name, sort in binders}}
+    literals = raw_clause_literals(body)
+    if not literals or len(literals) > 12:
+        return None
+
+    atoms: list[Expr] = []
+    seen_atoms: set[str] = set()
+
+    def add_atom(atom: Expr) -> bool:
+        if raw_true_expr(atom) or false_eliminator_expr(atom):
+            return True
+        if expr_sort(atom, local_sorts) != "prop":
+            return False
+        key = expr_key(atom)
+        if key not in seen_atoms:
+            seen_atoms.add(key)
+            atoms.append(atom)
+        return True
+
+    def collect_literal_atoms(literal: Expr) -> bool:
+        premises, conclusion = split_arrows(literal)
+        if len(premises) == 1 and false_eliminator_expr(conclusion):
+            return collect_literal_atoms(premises[0])
+        sides = equality_like_sides(literal)
+        if sides is not None:
+            return add_atom(sides[0]) and add_atom(sides[1])
+        return add_atom(literal)
+
+    for literal in literals:
+        if not collect_literal_atoms(literal):
+            return None
+    if not atoms or len(atoms) > 8:
+        return None
+
+    binder_order = {name: index for index, (name, sort) in enumerate(binders) if sort == "prop"}
+
+    def atom_priority(atom: Expr) -> tuple[int, int, str]:
+        if atom.kind == "var" and atom.value in binder_order:
+            return 0, binder_order[str(atom.value)], str(atom.value)
+        text = expr_text(atom)
+        return 1, len(text), text
+
+    atoms.sort(key=atom_priority)
+
+    def constant_false_proof(atom: Expr) -> str:
+        assumption = fresh_identifier("Hfalse", expr_text(atom))
+        return (
+            f"(fun {assumption} :{proof_arg_text(atom)} => "
+            f"{raw_false_to_expr_proof(assumption, Expr('var', value='False'), Expr('var', value='False'))})"
+        )
+
+    def truth_of(atom: Expr, env: dict[str, tuple[Expr, bool, str]]) -> tuple[bool, str] | None:
+        if raw_true_expr(atom):
+            return True, raw_true_intro_proof()
+        if false_eliminator_expr(atom):
+            return False, constant_false_proof(atom)
+        entry = env.get(expr_key(atom))
+        if entry is None:
+            return None
+        _expr, truth, proof = entry
+        return truth, proof
+
+    def positive_equality_proof(
+        template: Expr,
+        left: Expr,
+        right: Expr,
+        env: dict[str, tuple[Expr, bool, str]],
+    ) -> str | None:
+        if expr_same_mod_alpha(left, right):
+            if template.kind == "eq":
+                return (
+                    f"(prop_ext_2 {proof_arg_text(left)} {proof_arg_text(right)} "
+                    f"(fun Hsrc => Hsrc) (fun Htgt => Htgt))"
+                )
+            return "(fun Q H => H)"
+        left_truth = truth_of(left, env)
+        right_truth = truth_of(right, env)
+        if left_truth is None or right_truth is None:
+            return None
+        left_value, left_proof = left_truth
+        right_value, right_proof = right_truth
+        if left_value != right_value:
+            return None
+        if left_value:
+            return raw_prop_equality_intro_proof(
+                template,
+                left,
+                right,
+                f"(fun Hleft => {proof_term_text(right_proof)})",
+                f"(fun Hright => {proof_term_text(left_proof)})",
+            )
+        left_false_name = fresh_identifier("Hleft", expr_text(left), expr_text(right), left_proof, right_proof)
+        right_false_name = fresh_identifier(
+            "Hright",
+            expr_text(left),
+            expr_text(right),
+            left_proof,
+            right_proof,
+            left_false_name,
+        )
+        left_false = raw_false_to_expr_proof(
+            f"({proof_head(left_proof)} {left_false_name})",
+            right,
+            Expr("var", value="False"),
+        )
+        right_false = raw_false_to_expr_proof(
+            f"({proof_head(right_proof)} {right_false_name})",
+            left,
+            Expr("var", value="False"),
+        )
+        return raw_prop_equality_intro_proof(
+            template,
+            left,
+            right,
+            f"(fun {left_false_name} => {left_false})",
+            f"(fun {right_false_name} => {right_false})",
+        )
+
+    def negative_equality_false_proof(
+        template: Expr,
+        left: Expr,
+        right: Expr,
+        env: dict[str, tuple[Expr, bool, str]],
+        equality_proof: str,
+    ) -> str | None:
+        if expr_same_mod_alpha(left, right):
+            return None
+        left_truth = truth_of(left, env)
+        right_truth = truth_of(right, env)
+        if left_truth is None or right_truth is None:
+            return None
+        left_value, left_proof = left_truth
+        right_value, right_proof = right_truth
+        if left_value == right_value:
+            return None
+        if left_value and not right_value:
+            if template.kind == "eq":
+                right_from_left = (
+                    f"(vampire_native_eq_transport_prop {proof_arg_text(left)} {proof_arg_text(right)} "
+                    f"{equality_proof} (fun zz :prop => zz) {proof_term_text(left_proof)})"
+                )
+            else:
+                right_from_left = f"({proof_head(equality_proof)} (fun zz :prop => zz) {proof_term_text(left_proof)})"
+            return f"({proof_head(right_proof)} {right_from_left})"
+        if template.kind == "eq":
+            not_right_from_not_left = (
+                f"(vampire_native_eq_transport_prop {proof_arg_text(left)} {proof_arg_text(right)} "
+                f"{equality_proof} (fun zz :prop => zz -> False) {proof_term_text(left_proof)})"
+            )
+        else:
+            not_right_from_not_left = (
+                f"({proof_head(equality_proof)} "
+                f"(fun zz :prop => zz -> False) "
+                f"{proof_term_text(left_proof)})"
+            )
+        return f"({not_right_from_not_left} {proof_term_text(right_proof)})"
+
+    def literal_proof(index: int, env: dict[str, tuple[Expr, bool, str]]) -> str | None:
+        literal = literals[index]
+        premises, conclusion = split_arrows(literal)
+        if len(premises) == 1 and false_eliminator_expr(conclusion):
+            premise = premises[0]
+            premise_truth = truth_of(premise, env)
+            if premise_truth is not None:
+                truth, proof = premise_truth
+                return proof if not truth else None
+            sides = equality_like_sides(premise)
+            if sides is None:
+                return None
+            equality_name = fresh_identifier("Heq", expr_text(premise), str(index))
+            false_proof = negative_equality_false_proof(premise, sides[0], sides[1], env, equality_name)
+            if false_proof is None:
+                return None
+            return f"(fun {equality_name} :{proof_arg_text(premise)} => {false_proof})"
+        literal_truth = truth_of(literal, env)
+        if literal_truth is not None:
+            truth, proof = literal_truth
+            return proof if truth else None
+        sides = equality_like_sides(literal)
+        if sides is None:
+            return None
+        return positive_equality_proof(literal, sides[0], sides[1], env)
+
+    def prove_with_env(env: dict[str, tuple[Expr, bool, str]], index: int) -> str | None:
+        if proof_search_timed_out():
+            return None
+        if index == len(atoms):
+            for literal_index, _literal in enumerate(literals):
+                proof = literal_proof(literal_index, env)
+                if proof is None:
+                    continue
+                return raw_or_intro_literal_at(body, literal_index, proof)
+            return None
+        atom = atoms[index]
+        atom_key = expr_key(atom)
+        target_text = proof_arg_text(body)
+        used_env_names = " ".join(proof for _expr, _truth, proof in env.values())
+        positive_name = fresh_identifier("Hatom", expr_text(atom), expr_text(body), str(index), "true", used_env_names)
+        negative_name = fresh_identifier(
+            "Hnatom",
+            expr_text(atom),
+            expr_text(body),
+            str(index),
+            positive_name,
+            used_env_names,
+        )
+        positive_env = dict(env)
+        positive_env[atom_key] = (atom, True, positive_name)
+        positive_branch = prove_with_env(positive_env, index + 1)
+        if positive_branch is None:
+            return None
+        negative_env = dict(env)
+        negative_env[atom_key] = (atom, False, negative_name)
+        negative_branch = prove_with_env(negative_env, index + 1)
+        if negative_branch is None:
+            return None
+        return (
+            f"(xm {proof_arg_text(atom)} {target_text} "
             f"(fun {positive_name} => {positive_branch}) "
             f"(fun {negative_name} => {negative_branch}))"
         )
@@ -67938,6 +68182,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         step_info = replay_steps.get(name)
         replay_proof = known_raw_propositions.get(canonical_proposition(proposition))
         trusted_definition_replay = False
+        if replay_proof is None:
+            replay_proof = raw_prop_clause_truth_table_proof(proposition, variable_sorts)
         if replay_proof is None and rule in {"forward_subsumption_resolution", "backward_subsumption_resolution"}:
             target_expr = parse_expr(proposition)
             if target_expr is not None and raw_split_definition_name(collect_foralls(target_expr)[1]) is not None:
