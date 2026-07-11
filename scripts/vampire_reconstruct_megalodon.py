@@ -30838,6 +30838,217 @@ def raw_or_transform_proof(
     )
 
 
+def raw_cps_disjunction_ennf_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int,
+) -> str | None:
+    if depth > 80 or proof_search_timed_out():
+        return None
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if len(source_binders) != 1 or len(target_binders) != 1:
+        return None
+    source_name, source_sort = source_binders[0]
+    target_name, target_sort = target_binders[0]
+    if source_sort != "prop" or target_sort != "prop":
+        return None
+    if source_name != target_name:
+        source_body = rename_expr_variables(source_body, {source_name: target_name})
+    target_var = Expr("var", value=target_name)
+    source_premises, source_conclusion = split_arrows(source_body)
+    if len(source_premises) < 2 or len(source_premises) > 8:
+        return None
+    if not expr_same_mod_alpha(source_conclusion, target_var):
+        return None
+
+    source_disjuncts: list[Expr] = []
+    for premise in source_premises:
+        premise_parts, premise_conclusion = split_arrows(premise)
+        if len(premise_parts) != 1 or not expr_same_mod_alpha(premise_conclusion, target_var):
+            return None
+        source_disjuncts.append(premise_parts[0])
+
+    target_disjuncts = raw_or_components(target_body)
+    positive_index = next(
+        (index for index, disjunct in enumerate(target_disjuncts) if expr_same_mod_alpha(disjunct, target_var)),
+        None,
+    )
+    if positive_index is None:
+        return None
+    negative_target = Expr("arrow", args=(target_var, Expr("var", value="False")))
+    local_sorts = {**variable_sorts, target_name: target_sort}
+    used_targets: set[int] = {positive_index}
+    matched_components: list[tuple[int, Expr, Expr]] = []
+
+    for source_disjunct in source_disjuncts:
+        matched: tuple[int, Expr, Expr] | None = None
+        for target_index, target_disjunct in enumerate(target_disjuncts):
+            if target_index in used_targets:
+                continue
+            components = raw_conjunction_components(target_disjunct)
+            negative_component_index = next(
+                (
+                    index
+                    for index, component in enumerate(components)
+                    if expr_same_mod_alpha(component, negative_target)
+                ),
+                None,
+            )
+            if negative_component_index is None or len(components) != 2:
+                continue
+            target_positive = components[1 - negative_component_index]
+            candidate = raw_deep_formula_transform_proof(
+                source_disjunct,
+                target_positive,
+                "HsourceDisjunct",
+                local_sorts,
+                depth + 1,
+            )
+            if candidate is None:
+                candidate = raw_classical_implication_to_or_transform_proof(
+                    source_disjunct,
+                    target_positive,
+                    "HsourceDisjunct",
+                )
+            if candidate is None:
+                candidate = raw_tptp_peirce_implication_ennf_proof(
+                    expr_text(target_positive),
+                    ["source"],
+                    {"source": expr_text(source_disjunct)},
+                    local_sorts,
+                    source_proof_override="HsourceDisjunct",
+                    depth=depth + 1,
+                )
+            if candidate is None:
+                candidate = raw_implication_to_ennf_or_proof(
+                    source_disjunct,
+                    target_positive,
+                    "HsourceDisjunct",
+                    local_sorts,
+                    depth + 1,
+                )
+            if candidate is None:
+                candidate = raw_clause_transform_proof(source_disjunct, target_positive, "HsourceDisjunct")
+            if candidate is None:
+                continue
+            matched = (target_index, target_disjunct, target_positive)
+            break
+        if matched is None:
+            return None
+        used_targets.add(matched[0])
+        matched_components.append(matched)
+
+    positive_intro = raw_or_intro_literal_at(target_body, positive_index, "Htarget")
+    if positive_intro is None:
+        return None
+
+    negative_names: list[str | None] = [None] * len(source_disjuncts)
+
+    def terminal_from_all_negative() -> str:
+        applied_source = f"({proof_head(source_proof)} {target_name})"
+        for index, source_disjunct in enumerate(source_disjuncts):
+            source_positive_name = fresh_identifier(
+                f"HsourceDisjunct{index}",
+                expr_text(source_disjunct),
+                expr_text(target_body),
+                source_proof,
+            )
+            not_name = negative_names[index]
+            if not_name is None:
+                return "Htarget"
+            false_from_negative = f"({not_name} {source_positive_name})"
+            source_premise = (
+                f"(fun {source_positive_name} :{proof_arg_text(source_disjunct)} => "
+                f"{raw_false_to_expr_proof(false_from_negative, target_var)})"
+            )
+            applied_source = f"({proof_head(applied_source)} {proof_term_text(source_premise)})"
+        contradiction = f"(HnotTarget {proof_term_text(applied_source)})"
+        return raw_false_to_expr_proof(contradiction, target_body)
+
+    def prove_from(index: int) -> str:
+        if index >= len(source_disjuncts):
+            return terminal_from_all_negative()
+        source_disjunct = source_disjuncts[index]
+        target_index, target_disjunct, target_positive = matched_components[index]
+        positive_name = fresh_identifier(
+            f"HsourceDisjunct{index}",
+            expr_text(source_disjunct),
+            expr_text(target_positive),
+            source_proof,
+        )
+        negative_name = fresh_identifier(
+            f"HnotSourceDisjunct{index}",
+            expr_text(source_disjunct),
+            expr_text(target_positive),
+            source_proof,
+            positive_name,
+        )
+        transformed = raw_deep_formula_transform_proof(
+            source_disjunct,
+            target_positive,
+            positive_name,
+            local_sorts,
+            depth + 1,
+        )
+        if transformed is None:
+            transformed = raw_classical_implication_to_or_transform_proof(
+                source_disjunct,
+                target_positive,
+                positive_name,
+            )
+        if transformed is None:
+            transformed = raw_tptp_peirce_implication_ennf_proof(
+                expr_text(target_positive),
+                ["source"],
+                {"source": expr_text(source_disjunct)},
+                local_sorts,
+                source_proof_override=positive_name,
+                depth=depth + 1,
+            )
+        if transformed is None:
+            transformed = raw_implication_to_ennf_or_proof(
+                source_disjunct,
+                target_positive,
+                positive_name,
+                local_sorts,
+                depth + 1,
+            )
+        if transformed is None:
+            transformed = raw_clause_transform_proof(source_disjunct, target_positive, positive_name)
+        if transformed is None:
+            return terminal_from_all_negative()
+
+        def component_proof(component: Expr) -> str | None:
+            if expr_same_mod_alpha(component, negative_target):
+                return "HnotTarget"
+            if expr_same_mod_alpha(component, target_positive):
+                return transformed
+            return None
+
+        conjunction_proof = raw_build_conjunction_from_component_proofs(target_disjunct, component_proof)
+        positive_branch = raw_or_intro_literal_at(target_body, target_index, conjunction_proof) if conjunction_proof else None
+        if positive_branch is None:
+            return terminal_from_all_negative()
+        negative_names[index] = negative_name
+        negative_branch = prove_from(index + 1)
+        negative_names[index] = None
+        return (
+            f"(xm {proof_arg_text(source_disjunct)} {proof_arg_text(target_body)} "
+            f"(fun {positive_name} :{proof_arg_text(source_disjunct)} => {proof_term_text(positive_branch)}) "
+            f"(fun {negative_name} :{proof_arg_text(source_disjunct)} -> False => {proof_term_text(negative_branch)}))"
+        )
+
+    proof = (
+        f"(xm {target_name} {proof_arg_text(target_body)} "
+        f"(fun Htarget :{target_name} => {proof_term_text(positive_intro)}) "
+        f"(fun HnotTarget :{target_name} -> False => {proof_term_text(prove_from(0))}))"
+    )
+    return f"(fun {target_name} :{target_sort} => {proof})"
+
+
 def raw_eq_symmetry_proof(proof: str, left: Expr, sort: str) -> str:
     left_text = expr_text(left)
     name = fresh_identifier("zz", left_text, sort)
@@ -32815,6 +33026,16 @@ def raw_deep_formula_transform_proof(
         if source.kind == "app" and source.args[0].kind == "var" and source.args[0].value == "vampire_eq_prop":
             sort = "prop"
         return raw_eq_symmetry_proof(source_proof, source_sides[0], sort)
+
+    cps_disjunction = raw_cps_disjunction_ennf_transform_proof(
+        source,
+        target,
+        source_proof,
+        variable_sorts,
+        depth + 1,
+    )
+    if cps_disjunction is not None:
+        return cps_disjunction
 
     if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
         assert source.value is not None and target.value is not None and target.sort is not None
@@ -53480,6 +53701,24 @@ def raw_implication_to_ennf_or_proof(
         return None
     if expr_same_mod_alpha(source, target):
         return source_proof
+    cps_disjunction = raw_cps_disjunction_ennf_transform_proof(
+        source,
+        target,
+        source_proof,
+        variable_sorts,
+        depth + 1,
+    )
+    if cps_disjunction is not None:
+        return cps_disjunction
+    component_clause = raw_implication_chain_to_ennf_or_components_proof(
+        source,
+        target,
+        source_proof,
+        variable_sorts,
+        depth + 1,
+    )
+    if component_clause is not None:
+        return component_clause
     if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort == "prop":
         proof = raw_tptp_peirce_implication_ennf_proof(
             expr_text(target),
@@ -53556,6 +53795,189 @@ def raw_implication_to_ennf_or_proof(
         f"(fun {premise_name} => {proof_term_text(conclusion_intro)}) "
         f"(fun {not_premise_name} => {proof_term_text(negative_intro)}))"
     )
+
+
+def raw_implication_chain_to_ennf_or_components_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 16 or proof_search_timed_out():
+        return None
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort and source.value and target.value:
+        binder = target.value
+        source_body = source.args[0]
+        if source.value != binder:
+            source_body = rename_expr_variables(source_body, {source.value: binder})
+        inner = raw_implication_chain_to_ennf_or_components_proof(
+            source_body,
+            target.args[0],
+            f"({proof_head(source_proof)} {binder})",
+            {**variable_sorts, binder: target.sort},
+            depth + 1,
+        )
+        if inner is None:
+            return None
+        return f"(fun {binder} :{target.sort} => {inner})"
+
+    premises, conclusion = split_arrows(source)
+    if len(premises) < 3 or len(premises) > 8:
+        return None
+    target_disjuncts = raw_or_components(target)
+    if len(target_disjuncts) < len(premises) + 1 or len(target_disjuncts) > 12:
+        return None
+
+    def negative_transform(negative: Expr, disjunct: Expr, proof_name: str) -> str | None:
+        if expr_same_mod_alpha(negative, disjunct):
+            return proof_name
+        proof = raw_negative_formula_transform_proof(negative, disjunct, proof_name, variable_sorts)
+        if proof is not None:
+            return proof
+        proof = raw_negated_forall_implication_to_exists_conjunction_proof(
+            negative,
+            disjunct,
+            proof_name,
+            variable_sorts,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_negated_forall_to_exists_negation_proof(
+            negative,
+            disjunct,
+            proof_name,
+            variable_sorts,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_deep_formula_transform_proof(
+            negative,
+            disjunct,
+            proof_name,
+            variable_sorts,
+            depth + 1,
+        )
+        if proof is not None:
+            return proof
+        return raw_clause_transform_proof(negative, disjunct, proof_name)
+
+    def positive_transform(source_expr: Expr, disjunct: Expr, proof_name: str) -> str | None:
+        proof = raw_deep_formula_transform_proof(
+            source_expr,
+            disjunct,
+            proof_name,
+            variable_sorts,
+            depth + 1,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_classical_implication_to_or_transform_proof(
+            source_expr,
+            disjunct,
+            proof_name,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_tptp_peirce_implication_ennf_proof(
+            expr_text(disjunct),
+            ["source"],
+            {"source": expr_text(source_expr)},
+            variable_sorts,
+            source_proof_override=proof_name,
+            depth=depth + 1,
+        )
+        if proof is not None:
+            return proof
+        proof = raw_implication_to_ennf_or_proof(
+            source_expr,
+            disjunct,
+            proof_name,
+            variable_sorts,
+            depth + 1,
+        )
+        if proof is not None:
+            return proof
+        return raw_clause_transform_proof(source_expr, disjunct, proof_name)
+
+    used_disjuncts: set[int] = set()
+    matched_negatives: list[tuple[int, Expr]] = []
+    for premise_index, premise in enumerate(premises):
+        negative = Expr("arrow", args=(premise, Expr("var", value="False")))
+        probe_name = f"HnotPrem{premise_index}"
+        matched: tuple[int, Expr] | None = None
+        for disjunct_index, disjunct in enumerate(target_disjuncts):
+            if disjunct_index in used_disjuncts:
+                continue
+            if negative_transform(negative, disjunct, probe_name) is None:
+                continue
+            matched = (disjunct_index, disjunct)
+            break
+        if matched is None:
+            return None
+        used_disjuncts.add(matched[0])
+        matched_negatives.append(matched)
+
+    conclusion_match: tuple[int, Expr] | None = None
+    for disjunct_index, disjunct in enumerate(target_disjuncts):
+        if disjunct_index in used_disjuncts:
+            continue
+        if positive_transform(conclusion, disjunct, "HsourceConclusion") is not None:
+            conclusion_match = (disjunct_index, disjunct)
+            break
+    if conclusion_match is None:
+        return None
+
+    premise_names: list[str] = []
+    target_text = proof_arg_text(target)
+
+    def build(index: int) -> str | None:
+        if proof_search_timed_out():
+            return None
+        if index >= len(premises):
+            conclusion_index, conclusion_disjunct = conclusion_match
+            conclusion_source = source_proof
+            for premise_name in premise_names:
+                conclusion_source = f"({proof_head(conclusion_source)} {premise_name})"
+            conclusion_proof = positive_transform(conclusion, conclusion_disjunct, conclusion_source)
+            if conclusion_proof is None:
+                return None
+            return raw_or_intro_literal_at(target, conclusion_index, conclusion_proof)
+
+        premise = premises[index]
+        negative = Expr("arrow", args=(premise, Expr("var", value="False")))
+        negative_index, negative_disjunct = matched_negatives[index]
+        premise_name = fresh_identifier(
+            f"Hprem{index}",
+            expr_text(premise),
+            expr_text(target),
+            source_proof,
+        )
+        not_premise_name = fresh_identifier(
+            f"HnotPrem{index}",
+            expr_text(premise),
+            expr_text(target),
+            source_proof,
+            premise_name,
+        )
+        negative_proof = negative_transform(negative, negative_disjunct, not_premise_name)
+        if negative_proof is None:
+            return None
+        negative_intro = raw_or_intro_literal_at(target, negative_index, negative_proof)
+        if negative_intro is None:
+            return None
+        premise_names.append(premise_name)
+        positive_branch = build(index + 1)
+        premise_names.pop()
+        if positive_branch is None:
+            return None
+        return (
+            f"(xm {proof_arg_text(premise)} {target_text} "
+            f"(fun {premise_name} :{proof_arg_text(premise)} => {proof_term_text(positive_branch)}) "
+            f"(fun {not_premise_name} :{proof_arg_text(premise)} -> False => {proof_term_text(negative_intro)}))"
+        )
+
+    return build(0)
 
 
 def raw_peirce_cps_exists_ennf_proof(
@@ -63839,6 +64261,26 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                             delattr(PROOF_SEARCH_STATE, "deadline")
                     else:
                         PROOF_SEARCH_STATE.deadline = previous_deadline
+            if replay_proof is None and rule in {"ennf_transformation", "nnf_transformation"} and len(replay_parents) == 1:
+                parent_proposition = propositions_by_name.get(replay_parents[0])
+                source_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+                target_expr = parse_expr(proposition)
+                if source_expr is not None and target_expr is not None:
+                    previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+                    PROOF_SEARCH_STATE.deadline = proof_search_now() + 3.0
+                    try:
+                        replay_proof = raw_implication_chain_to_ennf_or_components_proof(
+                            source_expr,
+                            target_expr,
+                            raw_tptp_claim_name(replay_parents[0]),
+                            variable_sorts,
+                        )
+                    finally:
+                        if previous_deadline is None:
+                            if hasattr(PROOF_SEARCH_STATE, "deadline"):
+                                delattr(PROOF_SEARCH_STATE, "deadline")
+                        else:
+                            PROOF_SEARCH_STATE.deadline = previous_deadline
             if replay_proof is None and step_info is None and rule in {"ennf_transformation", "nnf_transformation"}:
                 parent_proposition = propositions_by_name.get(replay_parents[0]) if len(replay_parents) == 1 else None
                 source_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
