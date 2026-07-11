@@ -61190,6 +61190,147 @@ def raw_tptp_avatar_split_sequential_positive_component_proof(
             PROOF_SEARCH_STATE.flat_resolution_target = previous_target
 
 
+def raw_tptp_avatar_split_exhaustive_positive_component_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    rewrites: tuple[RawSplitRewrite, ...],
+) -> str | None:
+    if proof_search_timed_out() or len(expr_text(source)) + len(expr_text(target)) > 16000:
+        return None
+    target_literals = raw_clause_literals(target)
+    if len(target_literals) < 2 or len(target_literals) > 12:
+        return None
+    rewrite_by_split = {raw_split_atom_name(rewrite.split): rewrite for rewrite in rewrites}
+    positive_entries: list[tuple[int, RawSplitRewrite]] = []
+    for index, literal in enumerate(target_literals):
+        split = raw_split_literal_parts(literal)
+        if split is None or not split[1]:
+            continue
+        rewrite = rewrite_by_split.get(split[0])
+        if rewrite is not None:
+            positive_entries.append((index, rewrite))
+    if len(positive_entries) < 2 or len(positive_entries) > 8:
+        return None
+
+    target_text = proof_arg_text(target)
+
+    def prove_final_branch(refutations: list[tuple[int, RawSplitRewrite, str]]) -> str | None:
+        split_refutations = [(rewrite, name) for _index, rewrite, name in refutations]
+
+        def prove_from_source_literal(source_literal: Expr, literal_proof: str) -> str | None:
+            direct = raw_literal_to_clause_with_split_refutations(
+                source_literal,
+                target,
+                literal_proof,
+                target_literals,
+                rewrites,
+                split_refutations,
+                [],
+            )
+            if direct is not None:
+                return direct
+
+            binders, body = collect_foralls(source_literal)
+            if binders and len(binders) <= 4 and all(sort == "prop" for _name, sort in binders):
+                subst = {name: target for name, _sort in binders}
+                instantiated_body = substitute_expr(body, subst)
+                instantiated_proof = literal_proof
+                for name, _sort in binders:
+                    instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(subst[name])})"
+                direct = raw_clause_cases_with_split_refutations(
+                    instantiated_body,
+                    target,
+                    target_literals,
+                    rewrites,
+                    split_refutations,
+                    [],
+                    instantiated_proof,
+                )
+                if direct is not None:
+                    return direct
+
+            for target_index, rewrite in positive_entries:
+                component_refutations = [
+                    (other_rewrite, name)
+                    for _other_index, other_rewrite, name in refutations
+                    if not expr_same_mod_alpha(other_rewrite.split, rewrite.split)
+                ]
+                component_proof = raw_avatar_split_component_from_source_proof(
+                    source_literal,
+                    literal_proof,
+                    rewrite.component,
+                    component_refutations,
+                    [],
+                    rewrites,
+                )
+                if component_proof is None:
+                    continue
+                projection = raw_split_projection_proof(rewrite, component_to_split=True)
+                if projection is None:
+                    continue
+                split_proof = f"({proof_head(projection)} {proof_term_text(component_proof)})"
+                intro = raw_or_intro_literal_at(target, target_index, split_proof)
+                if intro is not None:
+                    return intro
+            return None
+
+        previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+        PROOF_SEARCH_STATE.flat_resolution_target = target_text
+        try:
+            return raw_clause_cases_with_handler(
+                source,
+                source_proof,
+                prove_from_source_literal,
+                avoid_text="avatar_split_exhaustive_positive",
+            )
+        finally:
+            if previous_target is None:
+                if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                    delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+            else:
+                PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+    def build_cases(index: int, refutations: list[tuple[int, RawSplitRewrite, str]], avoid_text: str) -> str | None:
+        if proof_search_timed_out():
+            return None
+        if index >= len(positive_entries):
+            return prove_final_branch(refutations)
+        target_index, rewrite = positive_entries[index]
+        split_name = fresh_identifier(
+            "Hsplit",
+            expr_text(target),
+            expr_text(rewrite.split),
+            avoid_text,
+            str(index),
+        )
+        true_branch = raw_or_intro_literal_at(target, target_index, split_name)
+        if true_branch is None:
+            return None
+        not_split_name = fresh_identifier(
+            "HnotSplit",
+            expr_text(target),
+            expr_text(rewrite.split),
+            avoid_text,
+            split_name,
+            str(index),
+        )
+        false_branch = build_cases(
+            index + 1,
+            [*refutations, (target_index, rewrite, not_split_name)],
+            f"{avoid_text} {split_name} {not_split_name}",
+        )
+        if false_branch is None:
+            return None
+        return (
+            f"(xm {proof_arg_text(rewrite.split)} {target_text} "
+            f"(fun {split_name} => {proof_term_text(true_branch)}) "
+            f"(fun {not_split_name} => {proof_term_text(false_branch)}))"
+        )
+
+    return build_cases(0, [], "")
+
+
 def raw_tptp_avatar_split_clause_proof(
     proposition: str,
     parents: list[str],
@@ -61270,6 +61411,14 @@ def raw_tptp_avatar_split_clause_proof(
     )
     if sequential_positive is not None:
         return sequential_positive
+    exhaustive_positive = raw_tptp_avatar_split_exhaustive_positive_component_proof(
+        source,
+        target,
+        raw_tptp_claim_name(parents[0]),
+        rewrites,
+    )
+    if exhaustive_positive is not None:
+        return exhaustive_positive
     product_forall = raw_tptp_avatar_split_product_forall_clause_proof(
         source,
         target,
