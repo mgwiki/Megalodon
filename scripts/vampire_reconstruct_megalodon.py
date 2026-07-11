@@ -191,6 +191,8 @@ def raw_tptp_replay_seconds_for_rule(rule: str | None) -> float:
         return max(RAW_TPTP_REPLAY_SECONDS, 1.0)
     if rule == "flattening":
         return max(RAW_TPTP_REPLAY_SECONDS, 4.0)
+    if rule in {"ennf_transformation", "nnf_transformation"}:
+        return max(RAW_TPTP_REPLAY_SECONDS, 1.0)
     if rule in {"definition_folding", "definition_unfolding"}:
         return max(RAW_TPTP_REPLAY_SECONDS, RAW_TPTP_DEFINITION_REPLAY_SECONDS)
     if rule == "superposition":
