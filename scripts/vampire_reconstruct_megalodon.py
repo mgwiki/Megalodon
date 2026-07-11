@@ -62105,12 +62105,39 @@ def raw_tptp_eq_prop_true_clause_needs_fallback(proposition: str) -> bool:
     return raw_or_parts(body) is not None
 
 
+def raw_tptp_large_smolka_ennf_needs_fallback(proposition: str) -> bool:
+    if len(proposition) < 1500:
+        return False
+    if "vampire_exists_" not in proposition:
+        return False
+    prop_binders = len(
+        re.findall(r"\b(?:forall|fun)\s+[A-Za-z][A-Za-z0-9_']*\s*:\s*prop\b", proposition)
+    )
+    if prop_binders < 4 or proposition.count("vampire_exists_") < 2:
+        return False
+    expr = parse_expr(proposition)
+    if expr is None:
+        return False
+    return any(
+        subterm.kind in {"forall", "lambda"} and subterm.sort == "prop"
+        for subterm in expr_subterms(expr, limit=512)
+    ) and any(
+        subterm.kind == "var" and subterm.value in {"vampire_exists_set", "vampire_exists_prop"}
+        for subterm in expr_subterms(expr, limit=512)
+    )
+
+
 def raw_tptp_entry_is_fallback_axiom(rule: str | None, proposition: str | None) -> bool:
     if proposition is None:
         return False
     if (
         rule in {"ennf_transformation", "nnf_transformation", "flattening"}
         and raw_tptp_quantified_eq_prop_disjunction_ennf_needs_fallback(proposition)
+    ):
+        return True
+    if (
+        rule in {"ennf_transformation", "nnf_transformation"}
+        and raw_tptp_large_smolka_ennf_needs_fallback(proposition)
     ):
         return True
     return rule in {"superposition", "trivial_inequality_removal"} and raw_tptp_eq_prop_true_clause_needs_fallback(proposition)
@@ -73734,6 +73761,15 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if not proposition:
             lines.append(f"// unsupported raw vampire formula {name}.")
             continue
+        if (
+            fallback_axiom
+            and rule in {"ennf_transformation", "nnf_transformation"}
+            and raw_tptp_large_smolka_ennf_needs_fallback(proposition)
+        ):
+            lines.append(
+                "// fallback axiom for a large unannotated Smolka-style ENNF transformation; "
+                "rich Vampire normal-form metadata is needed for checked replay."
+            )
         if raw_tptp_entry_is_negated_conjecture(role, rule):
             negated_conjecture_assumptions.append((claim_name, proposition))
             remember_raw_proposition(proposition, claim_name)
