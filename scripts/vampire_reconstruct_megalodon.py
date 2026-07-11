@@ -60615,6 +60615,14 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                                 delattr(PROOF_SEARCH_STATE, "deadline")
                         else:
                             PROOF_SEARCH_STATE.deadline = previous_deadline
+            if replay_proof is None and rule in {"forward_demodulation", "backward_demodulation"}:
+                replay_proof = raw_tptp_forward_demodulation_proof(
+                    proposition,
+                    replay_parents,
+                    propositions_by_name,
+                    variable_sorts,
+                    None,
+                )
             if replay_proof is None:
                 if raw_tptp_replay_payload_size_ok(
                     rule,
