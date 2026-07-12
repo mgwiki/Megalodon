@@ -760,8 +760,14 @@ def vampire_step_exported_lambda_capture_contexts(proof_text: str | None) -> dic
             db_sorts = [
                 str(field).split("=", 1)[1]
                 for field in fields
-                if re.search(r"_component_clause_db_sort_[0-9]+=", str(field))
+                if re.search(r"_scoped_split_certificate_db_sort_[0-9]+=", str(field))
             ]
+            if not db_sorts:
+                db_sorts = [
+                    str(field).split("=", 1)[1]
+                    for field in fields
+                    if re.search(r"_component_clause_db_sort_[0-9]+=", str(field))
+                ]
             if db_sorts:
                 split_dependency_db_sorts.setdefault(step, []).extend(db_sorts)
             continue
@@ -838,7 +844,64 @@ def raw_tptp_replay_step_split_dependency_db_sorts(replay_step: MegalodonReplayS
     return tuple(sorted(set(db_sorts)))
 
 
+def raw_tptp_replay_step_scoped_split_certificates(
+    replay_step: MegalodonReplayStep | None,
+) -> tuple[tuple[str | None, str | None, str | None, tuple[str, ...]], ...]:
+    if replay_step is None:
+        return ()
+    certificates: list[tuple[str | None, str | None, str | None, tuple[str, ...]]] = []
+    for kind, fields in replay_step.extras:
+        if kind != "split_dependency":
+            continue
+        values: dict[str, str] = {}
+        for field in fields:
+            if "=" in field:
+                key, value = field.split("=", 1)
+                values[key] = value
+        prefixes = sorted(
+            {
+                match.group(1)
+                for key in values
+                if (match := re.match(r"(dependency_[0-9]+)_scoped_split_certificate$", key))
+            }
+        )
+        for prefix in prefixes:
+            db_sorts = tuple(
+                values[key]
+                for key in sorted(values)
+                if re.match(rf"{re.escape(prefix)}_scoped_split_certificate_db_sort_[0-9]+$", key)
+            )
+            certificates.append(
+                (
+                    values.get(f"{prefix}_split_level"),
+                    values.get(f"{prefix}_split_var"),
+                    values.get(f"{prefix}_split_positive"),
+                    db_sorts,
+                )
+            )
+    return tuple(certificates)
+
+
 def raw_tptp_replay_step_scoped_split_dependency_comment(replay_step: MegalodonReplayStep | None) -> str | None:
+    certificates = raw_tptp_replay_step_scoped_split_certificates(replay_step)
+    if certificates:
+        details: list[str] = []
+        all_db_sorts: list[str] = []
+        for split_level, split_var, split_positive, db_sorts in certificates:
+            polarity = (
+                "positive" if split_positive == "1" else "negative" if split_positive == "0" else "unknown-polarity"
+            )
+            split_text = f"split_{split_var}" if split_var is not None else "unknown split"
+            level_text = f"level {split_level}" if split_level is not None else "unknown level"
+            details.append(f"{split_text} ({level_text}, {polarity})")
+            all_db_sorts.extend(db_sorts)
+        db_text = ", ".join(sorted(set(all_db_sorts))) if all_db_sorts else "unknown de-Bruijn sort"
+        return (
+            "replay blocker: scoped AVATAR split dependency: Vampire exported "
+            f"a scoped split certificate for {', '.join(details)}; component "
+            f"de-Bruijn variables are ({db_text}). Replay needs to use that "
+            "certificate rather than pointwise closure over an unrelated outer binder."
+        )
     db_sorts = raw_tptp_replay_step_split_dependency_db_sorts(replay_step)
     if not db_sorts:
         return None
@@ -79485,6 +79548,13 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         trusted_definition_replay = False
         if replay_proof is None:
             replay_proof = raw_prop_clause_truth_table_proof(proposition, variable_sorts)
+        if replay_proof is None and rule == "avatar_sat_refutation":
+            replay_proof = raw_tptp_avatar_sat_refutation_proof(
+                proposition,
+                replay_parents,
+                propositions_by_name,
+                variable_sorts,
+            )
         if replay_proof is None and rule in {"forward_subsumption_resolution", "backward_subsumption_resolution"}:
             target_expr = parse_expr(proposition)
             if target_expr is not None and raw_split_definition_name(collect_foralls(target_expr)[1]) is not None:
