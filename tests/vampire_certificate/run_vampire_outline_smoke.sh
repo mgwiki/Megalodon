@@ -71,6 +71,16 @@ run_outline_case() {
       exit 1
     fi
   fi
+  if [[ "$label" == *"_superposition" ]]; then
+    if ! rg -q 'megalodon_step\([0-9]+,"superposition"' "$outline"; then
+      echo "outline did not contain a Vampire superposition inference" >&2
+      exit 1
+    fi
+    if ! rg -q 'megalodon_certificate_steps\([0-9]+,\[.*"rule":"paramodulate"' "$outline"; then
+      echo "outline did not contain Vampire-side superposition certificate expansion" >&2
+      exit 1
+    fi
+  fi
 
   python3 scripts/vampire_certificate.py \
     "$outline" \
@@ -93,6 +103,7 @@ thf_problem="$TMPDIR/vampire_outline_smoke_thf.p"
 equality_resolution_problem="$TMPDIR/vampire_outline_smoke_equality_resolution.p"
 factor_problem="$TMPDIR/vampire_outline_smoke_factor.p"
 substituted_resolution_problem="$TMPDIR/vampire_outline_smoke_substituted_resolution.p"
+superposition_problem="$TMPDIR/vampire_outline_smoke_superposition.p"
 
 cat >"$fof_problem" <<'PROBLEM'
 fof(a1, axiom, p(a)).
@@ -122,10 +133,17 @@ fof(a2,axiom,~p(f(a))).
 fof(c,conjecture,$false).
 PROBLEM
 
+cat >"$superposition_problem" <<'PROBLEM'
+fof(eq,axiom,f(a)=b).
+fof(pa,axiom,p(f(a))).
+fof(c,conjecture,p(b)).
+PROBLEM
+
 run_outline_case vampire_outline_smoke_fof "$fof_problem"
 run_outline_case vampire_outline_smoke_thf "$thf_problem"
 run_outline_case vampire_outline_smoke_equality_resolution "$equality_resolution_problem"
 run_outline_case vampire_outline_smoke_factor "$factor_problem"
 run_outline_case vampire_outline_smoke_substituted_resolution "$substituted_resolution_problem"
+run_outline_case vampire_outline_smoke_superposition "$superposition_problem"
 
 echo "vampire outline smoke test passed"
