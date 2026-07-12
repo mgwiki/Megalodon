@@ -62390,7 +62390,11 @@ def raw_tptp_parameterize_split_expr(
         return expr
     if expr.kind in {"forall", "lambda"} and expr.value is not None:
         shadowed = {
-            split_name: tuple((name, sort) for name, sort in params if name != expr.value)
+            split_name: tuple(
+                (name, sort)
+                for name, sort in params
+                if name != expr.value or RAW_TPTP_SYNTHETIC_DB_RE.fullmatch(name)
+            )
             for split_name, params in split_parameters.items()
         }
     else:
@@ -62498,12 +62502,42 @@ def raw_tptp_synthetic_db_split_parameters(
     )
 
 
+def raw_tptp_avatar_exported_db_split_parameters(
+    step: MegalodonReplayStep | None,
+    body: Expr,
+    variable_sorts: dict[str, str],
+) -> tuple[tuple[str, str], ...]:
+    if step is None:
+        return ()
+    body_variables = expr_variables(body)
+    result: dict[str, str] = {}
+    for fields in megalodon_replay_extra_fields(step, "avatar_definition"):
+        try:
+            count = int(fields.get("component_clause_db_sort_count", "0"))
+        except ValueError:
+            count = 0
+        for index in range(max(0, count)):
+            item = fields.get(f"component_clause_db_sort_{index}")
+            if item is None or ":" not in item:
+                continue
+            name, sort = item.split(":", 1)
+            if not RAW_TPTP_SYNTHETIC_DB_RE.fullmatch(name) or not sort:
+                continue
+            if name not in body_variables:
+                continue
+            result[name] = sort
+            variable_sorts.setdefault(name, sort)
+    return tuple((name, result[name]) for name in sorted(result))
+
+
 def raw_tptp_avatar_split_parameter_map(
     entries: list[tuple[str, str, str | None, str | None, str | None, list[str], bool]],
     variable_sorts: dict[str, str],
+    replay_steps: dict[str, MegalodonReplayStep] | None = None,
 ) -> dict[str, tuple[tuple[str, str], ...]]:
     result: dict[str, tuple[tuple[str, str], ...]] = {}
-    for _name, _role, proposition, rule, _source_name, _parents, _trusted_definition in entries:
+    replay_steps = replay_steps or {}
+    for name, _role, proposition, rule, _source_name, _parents, _trusted_definition in entries:
         if rule != "avatar_definition" or not proposition:
             continue
         components = raw_tptp_avatar_definition_components(proposition)
@@ -62515,6 +62549,17 @@ def raw_tptp_avatar_split_parameter_map(
             continue
         split_name, args = split_parts
         if not args:
+            parameters = raw_tptp_avatar_exported_db_split_parameters(
+                replay_steps.get(name),
+                body,
+                variable_sorts,
+            )
+            if not parameters:
+                parameters = raw_tptp_synthetic_db_split_parameters(body, variable_sorts)
+            if parameters:
+                result.setdefault(split_name, parameters)
+                variable_sorts[split_name] = join_sort_arrows([*(sort for _name, sort in parameters), "prop"])
+                continue
             variable_sorts.setdefault(split_name, "prop")
             continue
         parameters = tuple(
@@ -78191,7 +78236,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         renamed_entries.append((name, role, proposition, rule, source_name, parents, trusted_definition))
     entries = renamed_entries
     propositions = renamed_propositions
-    avatar_split_parameters = raw_tptp_avatar_split_parameter_map(entries, variable_sorts)
+    avatar_split_parameters = raw_tptp_avatar_split_parameter_map(entries, variable_sorts, replay_steps)
     entries, propositions = raw_tptp_parameterize_avatar_split_entries(
         entries,
         propositions,
