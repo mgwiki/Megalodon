@@ -72342,11 +72342,13 @@ def local_set_definition_closure(
         for name, value in definitions.items()
         if local_set_definition_body_is_safe(value[1])
     }
-    needed = set(roots) & safe_definitions.keys()
+    needed = set(roots) & definitions.keys()
     changed = True
     while changed:
         changed = False
         for name in list(needed):
+            if name not in safe_definitions:
+                continue
             _sort, body = safe_definitions[name]
             for token in SOURCE_IDENTIFIER_RE.findall(body):
                 if token in safe_definitions and token not in needed:
@@ -72817,14 +72819,18 @@ def split_source_logical_operator(text: str, operator: str) -> tuple[str, str] |
     return split
 
 
-def source_surface_rewrite_parenthesized_terms(text: str, target_text: str | None = None) -> str:
+def source_surface_rewrite_parenthesized_terms(
+    text: str,
+    target_text: str | None = None,
+    local_sorts: dict[str, str] | None = None,
+) -> str:
     result = text
     while True:
         match = re.search(r"\(([^()]*?(?:[:+*\\\\/]|-\s)[^()]*)\)", result)
         if match is None:
             return result
         inner = match.group(1)
-        rewritten = source_surface_expr_text(inner, target_text)
+        rewritten = source_surface_expr_text(inner, target_text, local_sorts)
         if rewritten == inner:
             return result
         result = result[: match.start()] + f"({rewritten})" + result[match.end() :]
@@ -72845,8 +72851,43 @@ def source_surface_if_function(target_text: str | None) -> str:
     return "If_i"
 
 
-def source_surface_expr_text(text: str, target_text: str | None = None) -> str:
-    stripped = strip_balanced_parens(normalize_source_surface_numerals(text.strip()))
+def source_surface_head_is_function(head: str, local_sorts: dict[str, str] | None) -> bool:
+    if local_sorts is None:
+        return False
+    sort = local_sorts.get(head)
+    return sort is not None and len(split_sort_arrows(sort)) > 1
+
+
+def source_surface_expr_text(
+    text: str,
+    target_text: str | None = None,
+    local_sorts: dict[str, str] | None = None,
+) -> str:
+    raw_stripped = strip_balanced_parens(text.strip())
+    indexed_projection = re.fullmatch(
+        r"(?P<head>[_A-Za-z][_A-Za-z0-9']*)\s+(?P<index>[0-9]+)",
+        raw_stripped,
+    )
+    if indexed_projection is not None:
+        index = int(indexed_projection.group("index"))
+        head = indexed_projection.group("head")
+        argument = f"({successor_term_text(index)})"
+        if source_surface_head_is_function(head, local_sorts):
+            return f"{head} {argument}"
+        return f"ap {head} {argument}"
+    stripped = strip_balanced_parens(normalize_source_surface_numerals(raw_stripped))
+    normalized_indexed_projection = re.fullmatch(
+        r"(?P<head>[_A-Za-z][_A-Za-z0-9']*)\s+(?P<index>Empty|\(ordsucc Empty\)|ordsucc Empty)",
+        stripped,
+    )
+    if normalized_indexed_projection is not None:
+        head = normalized_indexed_projection.group("head")
+        index = normalized_indexed_projection.group("index")
+        if not index.startswith("(") and " " in index:
+            index = f"({index})"
+        if source_surface_head_is_function(head, local_sorts):
+            return f"{head} {index}"
+        return f"ap {head} {index}"
     stripped = re.sub(
         r"^fun\s+\((?P<name>[_A-Za-z][_A-Za-z0-9']*)\s*:\s*(?P<sort>[^)]+)\)\s*=>\s*",
         r"fun \g<name>:\g<sort> => ",
@@ -72858,56 +72899,78 @@ def source_surface_expr_text(text: str, target_text: str | None = None) -> str:
     if if_match is not None:
         function_name = source_surface_if_function(target_text)
         return (
-            f"{function_name} ({source_surface_expr_text(if_match.group('condition'), target_text)}) "
-            f"({source_surface_expr_text(if_match.group('then_branch'), target_text)}) "
-            f"({source_surface_expr_text(if_match.group('else_branch'), target_text)})"
+            f"{function_name} ({source_surface_expr_text(if_match.group('condition'), target_text, local_sorts)}) "
+            f"({source_surface_expr_text(if_match.group('then_branch'), target_text, local_sorts)}) "
+            f"({source_surface_expr_text(if_match.group('else_branch'), target_text, local_sorts)})"
         )
     forall_match = SOURCE_FORALL_RE.match(stripped)
     if forall_match is not None:
-        body = source_surface_expr_text(forall_match.group("body"), target_text)
         sort = normalize_megalodon_sort(forall_match.group("sort"))
-        for name in reversed(forall_match.group("names").split()):
+        names = forall_match.group("names").split()
+        scoped_sorts = {**(local_sorts or {})}
+        for name in names:
+            scoped_sorts[name] = sort
+        body = source_surface_expr_text(forall_match.group("body"), target_text, scoped_sorts)
+        for name in reversed(names):
             body = f"forall {name}:{sort}, {body}"
         return body
     untyped_forall_match = SOURCE_UNTYPED_FORALL_RE.match(stripped)
     if untyped_forall_match is not None:
-        body = source_surface_expr_text(untyped_forall_match.group("body"), target_text)
-        for name in reversed(untyped_forall_match.group("names").split()):
+        names = untyped_forall_match.group("names").split()
+        scoped_sorts = {**(local_sorts or {})}
+        for name in names:
+            scoped_sorts[name] = "set"
+        body = source_surface_expr_text(untyped_forall_match.group("body"), target_text, scoped_sorts)
+        for name in reversed(names):
             body = f"forall {name}:set, {body}"
         return body
     lambda_match = SOURCE_LAMBDA_RE.match(stripped)
     if lambda_match is not None:
         names = [name.strip("()") for name in lambda_match.group("names").split()]
-        body = source_surface_expr_text(lambda_match.group("body"), target_text)
+        sort = normalize_megalodon_sort(lambda_match.group("sort"))
+        scoped_sorts = {**(local_sorts or {})}
+        for name in names:
+            scoped_sorts[name] = sort
+        body = source_surface_expr_text(lambda_match.group("body"), target_text, scoped_sorts)
         for name in reversed(names):
-            body = f"fun {name} :{normalize_megalodon_sort(lambda_match.group('sort'))} => {body}"
+            body = f"fun {name} :{sort} => {body}"
         return body
     untyped_lambda_match = SOURCE_UNTYPED_LAMBDA_RE.match(stripped)
     if untyped_lambda_match is not None:
-        body = source_surface_expr_text(untyped_lambda_match.group("body"), target_text)
-        for name in reversed([name.strip("()") for name in untyped_lambda_match.group("names").split()]):
+        names = [name.strip("()") for name in untyped_lambda_match.group("names").split()]
+        scoped_sorts = {**(local_sorts or {})}
+        for name in names:
+            scoped_sorts[name] = "set"
+        body = source_surface_expr_text(untyped_lambda_match.group("body"), target_text, scoped_sorts)
+        for name in reversed(names):
             body = f"fun {name} :set => {body}"
         return body
     for operator, connective in (("\\/", "or"), ("/\\", "and")):
         split = split_source_logical_operator(stripped, operator)
         if split is not None:
             left, right = split
-            return f"{connective} ({source_surface_expr_text(left, target_text)}) ({source_surface_expr_text(right, target_text)})"
+            return (
+                f"{connective} ({source_surface_expr_text(left, target_text, local_sorts)}) "
+                f"({source_surface_expr_text(right, target_text, local_sorts)})"
+            )
     iff = split_source_top_level_operator(stripped, "<->")
     if iff is not None:
         left, right = iff
         if split_source_top_level_operator(left, "->") is None:
-            return f"iff ({source_surface_expr_text(left, target_text)}) ({source_surface_expr_text(right, target_text)})"
+            return (
+                f"iff ({source_surface_expr_text(left, target_text, local_sorts)}) "
+                f"({source_surface_expr_text(right, target_text, local_sorts)})"
+            )
     arrow = split_source_top_level_operator(stripped, "->")
     if arrow is not None:
         left, right = arrow
-        left_text = source_surface_expr_text(left, target_text)
+        left_text = source_surface_expr_text(left, target_text, local_sorts)
         left_expr = parse_expr(left_text)
         if left_expr is not None and left_expr.kind in {"arrow", "forall", "lambda"}:
             left_text = f"({left_text})"
-        return f"{left_text} -> {source_surface_expr_text(right, target_text)}"
+        return f"{left_text} -> {source_surface_expr_text(right, target_text, local_sorts)}"
     if stripped.startswith("~"):
-        negated = source_surface_expr_text(stripped[1:].strip(), target_text)
+        negated = source_surface_expr_text(stripped[1:].strip(), target_text, local_sorts)
         negated_expr = parse_expr(negated)
         if negated_expr is not None and negated_expr.kind in {"arrow", "forall", "lambda"}:
             negated = f"({negated})"
@@ -72917,79 +72980,90 @@ def source_surface_expr_text(text: str, target_text: str | None = None) -> str:
         left, right = subset
         element = "__src"
         return (
-            f"forall {element}:set, In {element} ({source_surface_expr_text(left, target_text)}) -> "
-            f"In {element} ({source_surface_expr_text(right, target_text)})"
+            f"forall {element}:set, In {element} ({source_surface_expr_text(left, target_text, local_sorts)}) -> "
+            f"In {element} ({source_surface_expr_text(right, target_text, local_sorts)})"
         )
     disequality = split_source_top_level_operator(stripped, "<>")
     if disequality is not None:
         left, right = disequality
-        return f"{source_surface_expr_text(left, target_text)} = {source_surface_expr_text(right, target_text)} -> False"
+        return (
+            f"{source_surface_expr_text(left, target_text, local_sorts)} = "
+            f"{source_surface_expr_text(right, target_text, local_sorts)} -> False"
+        )
     for operator, function_name in (("<=", "SNoLe"), ("<", "SNoLt")):
         split = split_source_top_level_operator(stripped, operator)
         if split is not None:
             left, right = split
-            return f"{function_name} ({source_surface_expr_text(left, target_text)}) ({source_surface_expr_text(right, target_text)})"
+            return (
+                f"{function_name} ({source_surface_expr_text(left, target_text, local_sorts)}) "
+                f"({source_surface_expr_text(right, target_text, local_sorts)})"
+            )
     equality = split_source_top_level_equality(stripped)
     if equality is not None:
         left, right = equality
-        return f"{source_surface_expr_text(left, target_text)} = {source_surface_expr_text(right, target_text)}"
+        return f"{source_surface_expr_text(left, target_text, local_sorts)} = {source_surface_expr_text(right, target_text, local_sorts)}"
     not_in = split_source_top_level_operator(stripped, "/:e")
     if not_in is not None:
         left, right = not_in
-        return f"In ({source_surface_expr_text(left, target_text)}) ({source_surface_expr_text(right, target_text)}) -> False"
+        return f"In ({source_surface_expr_text(left, target_text, local_sorts)}) ({source_surface_expr_text(right, target_text, local_sorts)}) -> False"
     membership = split_source_top_level_operator(stripped, ":e")
     if membership is not None:
         left, right = membership
-        return f"In ({source_surface_expr_text(left, target_text)}) ({source_surface_expr_text(right, target_text)})"
+        return f"In ({source_surface_expr_text(left, target_text, local_sorts)}) ({source_surface_expr_text(right, target_text, local_sorts)})"
     repl_match = re.match(
         r"^\{\s*(?P<body>.+?)\s*\|\s*(?P<var>[_A-Za-z][_A-Za-z0-9']*)\s*:e\s*(?P<set>.+?)\s*\}$",
         stripped,
     )
     if repl_match is not None:
         var = repl_match.group("var")
-        body_text = source_surface_expr_text(repl_match.group("body"), target_text)
+        scoped_sorts = {**(local_sorts or {}), var: "set"}
+        body_text = source_surface_expr_text(repl_match.group("body"), target_text, scoped_sorts)
         eta_match = re.fullmatch(r"(?P<fn>[_A-Za-z][_A-Za-z0-9']*)\s+" + re.escape(var), body_text)
         function_text = eta_match.group("fn") if eta_match is not None else f"(fun {var} :set => {body_text})"
         return (
-            f"Repl ({source_surface_expr_text(repl_match.group('set'), target_text)}) "
+            f"Repl ({source_surface_expr_text(repl_match.group('set'), target_text, local_sorts)}) "
             f"{function_text}"
         )
     singleton_match = re.fullmatch(r"\{\s*(?P<body>[^{}|,]+?)\s*\}", stripped)
     if singleton_match is not None:
-        return f"Sing ({source_surface_expr_text(singleton_match.group('body'), target_text)})"
+        return f"Sing ({source_surface_expr_text(singleton_match.group('body'), target_text, local_sorts)})"
     for operator, function_name in (
         (":\\/:", "binunion"),
         (":\\:", "setminus"),
+        (":*:", "setprod"),
     ):
         split = split_source_top_level_operator(stripped, operator)
         if split is not None:
             left, right = split
-            return f"{function_name} ({source_surface_expr_text(left, target_text)}) ({source_surface_expr_text(right, target_text)})"
+            return (
+                f"{function_name} ({source_surface_expr_text(left, target_text, local_sorts)}) "
+                f"({source_surface_expr_text(right, target_text, local_sorts)})"
+            )
     plus = split_source_top_level_operator(stripped, "+")
     if plus is not None:
         left, right = plus
         function_name = source_surface_infix_function("+", "add_SNo", target_text)
-        return f"{function_name} ({source_surface_expr_text(left, target_text)}) ({source_surface_expr_text(right, target_text)})"
+        return f"{function_name} ({source_surface_expr_text(left, target_text, local_sorts)}) ({source_surface_expr_text(right, target_text, local_sorts)})"
     if re.match(r"^-\s+", stripped):
-        return f"minus_SNo ({source_surface_expr_text(stripped[1:].strip(), target_text)})"
+        return f"minus_SNo ({source_surface_expr_text(stripped[1:].strip(), target_text, local_sorts)})"
     for operator, function_name in (
         (":/:", "div_SNo"),
     ):
         split = split_source_top_level_operator(stripped, operator)
         if split is not None:
             left, right = split
-            return f"{function_name} ({source_surface_expr_text(left, target_text)}) ({source_surface_expr_text(right, target_text)})"
+            return f"{function_name} ({source_surface_expr_text(left, target_text, local_sorts)}) ({source_surface_expr_text(right, target_text, local_sorts)})"
     times = split_source_top_level_operator(stripped, "*")
     if times is not None:
         left, right = times
         function_name = source_surface_infix_function("*", "mul_SNo", target_text)
-        return f"{function_name} ({source_surface_expr_text(left, target_text)}) ({source_surface_expr_text(right, target_text)})"
+        return f"{function_name} ({source_surface_expr_text(left, target_text, local_sorts)}) ({source_surface_expr_text(right, target_text, local_sorts)})"
     power = split_source_top_level_operator(stripped, "^")
     if power is not None:
         left, right = power
         function_name = source_surface_infix_function("^", "exp_SNo_nat", target_text)
-        return f"{function_name} ({source_surface_expr_text(left, target_text)}) ({source_surface_expr_text(right, target_text)})"
-    return source_surface_rewrite_parenthesized_terms(stripped, target_text)
+        return f"{function_name} ({source_surface_expr_text(left, target_text, local_sorts)}) ({source_surface_expr_text(right, target_text, local_sorts)})"
+    return source_surface_rewrite_parenthesized_terms(stripped, target_text, local_sorts)
 
 
 def source_surface_parse_text(proposition: str, target_text: str | None = None) -> str:
@@ -73638,12 +73712,20 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         source,
         proof_or_problem_obligation_line(proof, problem),
     )
+    local_set_names_in_local_source_facts: set[str] = set()
+    for source_proposition in all_local_source_facts.values():
+        if source_proposition is None:
+            continue
+        for name in all_local_set_definitions:
+            if re.search(rf"(?<![A-Za-z0-9_']){re.escape(name)}(?![A-Za-z0-9_'])", source_proposition):
+                local_set_names_in_local_source_facts.add(name)
     if source_context_variable_names:
         declared_source_sorts = source_declared_sorts(source)
         all_local_set_definitions = {
             name: value
             for name, value in all_local_set_definitions.items()
             if name not in source_context_variable_names
+            or name in local_set_names_in_local_source_facts
             or (
                 re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", value[1])
                 and value[1] in declared_source_sorts
@@ -73920,7 +74002,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     renamed_all_local_set_definitions = {
         local_identifier_renames.get(name, name): (
             sort,
-            rename_generated_identifier_text(body, local_identifier_renames),
+            rename_generated_identifier_text(source_surface_parse_text(body), local_identifier_renames),
         )
         for name, (sort, body) in all_local_set_definitions.items()
     }
