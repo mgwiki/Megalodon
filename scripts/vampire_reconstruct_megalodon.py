@@ -61856,16 +61856,30 @@ def implication_sides(expr: Expr) -> tuple[Expr, Expr] | None:
 
 
 def raw_split_definition_name(expr: Expr) -> str | None:
-    if expr.kind == "var" and expr.value is not None and (expr.value.startswith("split_") or expr.value.startswith("spl")):
-        return expr.value
+    parts = raw_split_application_parts(expr)
+    if parts is not None:
+        return parts[0]
     return None
 
 
-def raw_tptp_avatar_definition_parts(proposition: str) -> tuple[str, Expr] | None:
+def raw_split_application_parts(expr: Expr) -> tuple[str, tuple[Expr, ...]] | None:
+    if expr.kind == "var" and expr.value is not None and (expr.value.startswith("split_") or expr.value.startswith("spl")):
+        return expr.value, ()
+    if expr.kind == "app" and expr.args:
+        head = expr.args[0]
+        if head.kind == "var" and head.value is not None and (
+            head.value.startswith("split_") or head.value.startswith("spl")
+        ):
+            return head.value, tuple(expr.args[1:])
+    return None
+
+
+def raw_tptp_avatar_definition_components(proposition: str) -> tuple[list[tuple[str, str]], Expr, Expr] | None:
     expr = parse_expr(proposition)
     if expr is None:
         return None
-    parts = vampire_and_parts(expr)
+    binders, body = collect_foralls(expr)
+    parts = vampire_and_parts(body)
     if parts is None:
         return None
     first = implication_sides(parts[0])
@@ -61875,13 +61889,188 @@ def raw_tptp_avatar_definition_parts(proposition: str) -> tuple[str, Expr] | Non
     left, right = first
     right2, left2 = second
     if expr_key(left) == expr_key(left2) and expr_key(right) == expr_key(right2):
-        split_name = raw_split_definition_name(left)
-        if split_name is not None:
-            return split_name, right
+        if raw_split_application_parts(left) is not None:
+            return list(binders), left, right
     if expr_key(left) == expr_key(right2) and expr_key(right) == expr_key(left2):
-        split_name = raw_split_definition_name(right)
-        if split_name is not None:
-            return split_name, left
+        if raw_split_application_parts(right) is not None:
+            return list(binders), right, left
+    return None
+
+
+def raw_tptp_avatar_projection_type_text(
+    binders: list[tuple[str, str]],
+    premise: Expr,
+    conclusion: Expr,
+) -> str:
+    return raw_forall_wrapped_implication(binders, premise, conclusion)
+
+
+def raw_tptp_avatar_projection_proof_text(
+    claim_name: str,
+    binders: list[tuple[str, str]],
+    premise: Expr,
+    conclusion: Expr,
+    forward: bool,
+) -> str:
+    proof = claim_name
+    for name, _sort in binders:
+        proof = f"({proof_head(proof)} {name})"
+    proof = (
+        f"({proof_head(proof)} {proof_arg_text(Expr('arrow', args=(premise, conclusion)))} "
+        f"(fun Hforward Hback => {'Hforward' if forward else 'Hback'}))"
+    )
+    for name, sort in reversed(binders):
+        proof = f"(fun {name} :{sort} => {proof})"
+    return proof
+
+
+def raw_tptp_parameterize_split_expr(
+    expr: Expr,
+    split_parameters: dict[str, tuple[tuple[str, str], ...]],
+) -> Expr:
+    if expr.kind == "var" and expr.value is not None and expr.value in split_parameters:
+        args = (Expr("var", value=expr.value),) + tuple(
+            Expr("var", value=name, sort=sort)
+            for name, sort in split_parameters[expr.value]
+        )
+        return flatten_applications(Expr("app", args=args, sort="prop"))
+    if not expr.args:
+        return expr
+    if expr.kind in {"forall", "lambda"} and expr.value is not None:
+        shadowed = {
+            split_name: tuple((name, sort) for name, sort in params if name != expr.value)
+            for split_name, params in split_parameters.items()
+        }
+    else:
+        shadowed = split_parameters
+    return Expr(
+        expr.kind,
+        value=expr.value,
+        sort=expr.sort,
+        args=tuple(raw_tptp_parameterize_split_expr(arg, shadowed) for arg in expr.args),
+    )
+
+
+def raw_tptp_quantify_free_synthetic_db_expr(expr: Expr, variable_sorts: dict[str, str]) -> Expr:
+    free_synthetic = sorted(
+        name
+        for name in expr_variables(expr)
+        if RAW_TPTP_SYNTHETIC_DB_RE.fullmatch(name)
+    )
+    result = expr
+    for name in reversed(free_synthetic):
+        result = Expr(
+            "forall",
+            value=name,
+            sort=variable_sorts.get(name, "set"),
+            args=(result,),
+        )
+    return result
+
+
+def raw_tptp_parameterize_avatar_split_proposition(
+    proposition: str | None,
+    split_parameters: dict[str, tuple[tuple[str, str], ...]],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if proposition is None:
+        return None
+    parsed = parse_expr(proposition)
+    if parsed is None:
+        return proposition
+    parameterized = raw_tptp_parameterize_split_expr(parsed, split_parameters)
+    closed = raw_tptp_quantify_free_synthetic_db_expr(parameterized, variable_sorts)
+    return expr_text(closed)
+
+
+def raw_tptp_avatar_split_definition_sort_and_body(
+    body: str,
+    parameters: tuple[tuple[str, str], ...],
+) -> tuple[str, str]:
+    sort = join_sort_arrows([*(sort for _name, sort in parameters), "prop"])
+    rendered = body
+    for name, param_sort in reversed(parameters):
+        rendered = f"fun {name} :{binder_sort_text(param_sort)} => {rendered}"
+    return sort, rendered
+
+
+def raw_tptp_synthetic_db_split_parameters(
+    body: Expr,
+    variable_sorts: dict[str, str],
+) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (name, variable_sorts.get(name, "set"))
+        for name in sorted(expr_variables(body))
+        if RAW_TPTP_SYNTHETIC_DB_RE.fullmatch(name)
+    )
+
+
+def raw_tptp_avatar_split_parameter_map(
+    entries: list[tuple[str, str, str | None, str | None, str | None, list[str], bool]],
+    variable_sorts: dict[str, str],
+) -> dict[str, tuple[tuple[str, str], ...]]:
+    result: dict[str, tuple[tuple[str, str], ...]] = {}
+    for _name, _role, proposition, rule, _source_name, _parents, _trusted_definition in entries:
+        if rule != "avatar_definition" or not proposition:
+            continue
+        components = raw_tptp_avatar_definition_components(proposition)
+        if components is None:
+            continue
+        _binders, split, body = components
+        split_parts = raw_split_application_parts(split)
+        if split_parts is None:
+            continue
+        split_name, _args = split_parts
+        parameters = raw_tptp_synthetic_db_split_parameters(body, variable_sorts)
+        if parameters:
+            result.setdefault(split_name, parameters)
+            variable_sorts[split_name] = join_sort_arrows([*(sort for _name, sort in parameters), "prop"])
+    return result
+
+
+def raw_tptp_parameterize_avatar_split_entries(
+    entries: list[tuple[str, str, str | None, str | None, str | None, list[str], bool]],
+    propositions: list[str],
+    split_parameters: dict[str, tuple[tuple[str, str], ...]],
+    variable_sorts: dict[str, str],
+) -> tuple[
+    list[tuple[str, str, str | None, str | None, str | None, list[str], bool]],
+    list[str],
+]:
+    if not split_parameters:
+        return entries, propositions
+    rewritten_entries = [
+        (
+            name,
+            role,
+            raw_tptp_parameterize_avatar_split_proposition(proposition, split_parameters, variable_sorts),
+            rule,
+            source_name,
+            parents,
+            trusted_definition,
+        )
+        for name, role, proposition, rule, source_name, parents, trusted_definition in entries
+    ]
+    rewritten_propositions = [
+        rewritten
+        for proposition in propositions
+        if (rewritten := raw_tptp_parameterize_avatar_split_proposition(
+            proposition,
+            split_parameters,
+            variable_sorts,
+        ))
+    ]
+    return rewritten_entries, rewritten_propositions
+
+
+def raw_tptp_avatar_definition_parts(proposition: str) -> tuple[str, Expr] | None:
+    components = raw_tptp_avatar_definition_components(proposition)
+    if components is None:
+        return None
+    _binders, split, body = components
+    split_parts = raw_split_application_parts(split)
+    if split_parts is not None:
+        return split_parts[0], body
     return None
 
 
@@ -62062,9 +62251,14 @@ def raw_tptp_standard_replay_proof_is_unsafe(rule: str | None, proposition: str,
 
 
 def raw_tptp_avatar_definition_proof(proposition: str) -> str | None:
-    if raw_tptp_avatar_definition_parts(proposition) is None:
+    components = raw_tptp_avatar_definition_components(proposition)
+    if components is None:
         return None
-    return "(fun P K => K (fun H => H) (fun H => H))"
+    binders, _split, _component = components
+    proof = "(fun P K => K (fun H => H) (fun H => H))"
+    for name, sort in reversed(binders):
+        proof = f"(fun {name} :{sort} => {proof})"
+    return proof
 
 
 def raw_tptp_component_proof_from_parent(
@@ -63381,8 +63575,18 @@ def raw_tptp_avatar_component_clause_proof(
     target = parse_expr(proposition)
     if parent_expr is None or target is None:
         return None
-    parent_parts = vampire_and_parts(parent_expr)
+    parent_binders, parent_body = collect_foralls(parent_expr)
     target_binders, target_body = collect_foralls(target)
+    if parent_binders:
+        if len(parent_binders) > len(target_binders):
+            return None
+        binder_subst: dict[str, Expr] = {}
+        for (parent_name, parent_sort), (target_name, target_sort) in zip(parent_binders, target_binders[: len(parent_binders)]):
+            if normalize_megalodon_sort(parent_sort) != normalize_megalodon_sort(target_sort):
+                return None
+            binder_subst[parent_name] = Expr("var", value=target_name, sort=target_sort)
+        parent_body = substitute_expr(parent_body, binder_subst)
+    parent_parts = vampire_and_parts(parent_body)
     target_parts = raw_or_parts(target_body)
     if parent_parts is None or target_parts is None:
         return None
@@ -63396,6 +63600,8 @@ def raw_tptp_avatar_component_clause_proof(
         return None
     target_left, target_right = target_parts
     parent_name = raw_tptp_claim_name(parents[0])
+    for name, _sort in target_binders[: len(parent_binders)]:
+        parent_name = f"({proof_head(parent_name)} {name})"
     target_text = proof_arg_text(target_body)
     local_sorts = {name: sort for name, sort in target_binders}
 
@@ -63405,6 +63611,23 @@ def raw_tptp_avatar_component_clause_proof(
         return proof
 
     def component_to_target_left(proof: str) -> str | None:
+        component_binders, component_body = collect_foralls(component)
+        if component_binders:
+            binder_subst: dict[str, Expr] = {}
+            proof_inst = proof
+            available_binders = {name: sort for name, sort in target_binders}
+            for name, sort in component_binders:
+                if normalize_megalodon_sort(available_binders.get(name, "")) != normalize_megalodon_sort(sort):
+                    break
+                binder_subst[name] = Expr("var", value=name, sort=sort)
+                proof_inst = f"({proof_head(proof_inst)} {name})"
+            else:
+                instantiated = substitute_expr(component_body, binder_subst)
+                transformed = raw_clause_subsumption_transform_proof(instantiated, target_left, proof_inst)
+                if transformed is None:
+                    transformed = raw_clause_transform_proof(instantiated, target_left, proof_inst)
+                if transformed is not None:
+                    return transformed
         transformed = raw_specialize_forall_transform_proof(component, target_left, proof, local_sorts)
         if transformed is not None:
             return transformed
@@ -63467,12 +63690,12 @@ def raw_tptp_avatar_component_clause_proof(
         if target_to_component is None:
             return None
         negative_component_proof = f"(fun Htargetcomponent => Hnotcomponent {proof_term_text(target_to_component)})"
-        return (
+        return wrap_target_binders(
             f"({parent_name} {target_text} "
             f"(fun Hforward Hback => "
             f"(xm {proof_arg_text(component)} {target_text} "
-            f"(fun Hcomponent => {proof_term_text(raw_or_right_intro(target, '(Hback Hcomponent)') or '')}) "
-            f"(fun Hnotcomponent => {proof_term_text(raw_or_left_intro(target, negative_component_proof) or '')}))))"
+            f"(fun Hcomponent => {proof_term_text(raw_or_right_intro(target_body, '(Hback Hcomponent)') or '')}) "
+            f"(fun Hnotcomponent => {proof_term_text(raw_or_left_intro(target_body, negative_component_proof) or '')}))))"
         )
     component_implication = implication_sides(component)
     if (
@@ -63509,24 +63732,28 @@ def raw_tptp_split_rewrites(parents: list[str], propositions_by_name: dict[str, 
         parent_proposition = propositions_by_name.get(parent)
         if parent_proposition is None:
             continue
-        parent_expr = parse_expr(parent_proposition)
-        if parent_expr is None:
+        components = raw_tptp_avatar_definition_components(parent_proposition)
+        if components is None:
             continue
-        parts = app_args(parent_expr, "vampire_and", 2)
-        if parts is None:
-            continue
-        forward = implication_sides(parts[0])
-        backward = implication_sides(parts[1])
-        if forward is None or backward is None:
-            continue
-        split, component = forward
-        component2, split2 = backward
-        if expr_key(split) != expr_key(split2) or expr_key(component) != expr_key(component2):
-            continue
+        binders, split, component = components
         parent_name = raw_tptp_claim_name(parent)
+        binder_args = " ".join(name for name, _sort in binders)
         split_to_component = f"{parent_name}_split_to_component_local"
         component_to_split = f"{parent_name}_component_to_split_local"
-        rewrites.append(RawSplitRewrite(split, component, split_to_component, component_to_split))
+        if binder_args:
+            split_to_component = f"({split_to_component} {binder_args})"
+            component_to_split = f"({component_to_split} {binder_args})"
+        rewrites.append(
+            RawSplitRewrite(
+                split,
+                component,
+                split_to_component,
+                component_to_split,
+                tuple(binders),
+                f"{parent_name}_split_to_component_local",
+                f"{parent_name}_component_to_split_local",
+            )
+        )
     return tuple(rewrites)
 
 
@@ -64340,13 +64567,13 @@ def raw_literal_refutation_from_split_assumption(
     split_proof = raw_literal_direct_transform_proof(literal, rewrite.split, literal_proof, (), variable_sorts)
     if split_proof is not None:
         false_proof = f"({not_split_name} {proof_term_text(split_proof)})"
-        return f"({proof_head(false_proof)} {proof_arg_text(target)})"
+        return raw_false_to_expr_proof(false_proof, target, Expr("var", value="False"))
     component_proof = raw_literal_direct_transform_proof(literal, rewrite.component, literal_proof, (), variable_sorts)
     if component_proof is None:
         return None
     split_proof = f"({proof_head(rewrite.component_to_split)} {proof_term_text(component_proof)})"
     false_proof = f"({not_split_name} {proof_term_text(split_proof)})"
-    return f"({proof_head(false_proof)} {proof_arg_text(target)})"
+    return raw_false_to_expr_proof(false_proof, target, Expr("var", value="False"))
 
 
 def raw_literal_refutation_from_split_true_assumption(
@@ -64376,7 +64603,7 @@ def raw_literal_refutation_from_split_true_assumption(
     if premise_proof is None:
         return None
     false_proof = f"({proof_head(literal_proof)} {proof_term_text(premise_proof)})"
-    return f"({proof_head(false_proof)} {proof_arg_text(target)})"
+    return raw_false_to_expr_proof(false_proof, target, Expr("var", value="False"))
 
 
 def raw_literal_to_clause_with_split_refutations(
@@ -66323,6 +66550,157 @@ def raw_tptp_avatar_split_clause_proof(
     )
     if impossible_definition is not None:
         return impossible_definition
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+
+    def try_split_clause_constructors(source_expr: Expr, target_expr: Expr, source_proof: str) -> str | None:
+        if len(parents) <= 10 and len(raw_clause_literals(target_expr)) <= 8:
+            direct_proof = raw_tptp_avatar_split_direct_component_proof(
+                source_expr,
+                target_expr,
+                source_proof,
+                rewrites,
+            )
+            if direct_proof is not None:
+                return direct_proof
+        branching_proof = raw_tptp_avatar_split_branching_component_proof(
+            source_expr,
+            target_expr,
+            source_proof,
+            rewrites,
+        )
+        if branching_proof is not None:
+            return branching_proof
+        duplicate_component_proof = raw_tptp_avatar_split_duplicate_component_proof(
+            source_expr,
+            target_expr,
+            source_proof,
+            rewrites,
+        )
+        if duplicate_component_proof is not None:
+            return duplicate_component_proof
+        multi_binder_product_proof = raw_tptp_avatar_split_multi_binder_product_proof(
+            source_expr,
+            target_expr,
+            source_proof,
+            rewrites,
+        )
+        if multi_binder_product_proof is not None:
+            return multi_binder_product_proof
+        guarded_product_proof = raw_tptp_avatar_split_guarded_product_forall_clause_proof(
+            source_expr,
+            target_expr,
+            source_proof,
+            rewrites,
+        )
+        if guarded_product_proof is not None:
+            return guarded_product_proof
+        nested_refutation_proof = raw_tptp_avatar_split_nested_refutation_component_proof(
+            source_expr,
+            target_expr,
+            source_proof,
+            rewrites,
+        )
+        if nested_refutation_proof is not None:
+            return nested_refutation_proof
+        guarded_taut_proof = raw_tptp_avatar_split_guarded_taut_component_proof(
+            source_expr,
+            target_expr,
+            source_proof,
+            rewrites,
+        )
+        if guarded_taut_proof is not None:
+            return guarded_taut_proof
+        sequential_positive_proof = raw_tptp_avatar_split_sequential_positive_component_proof(
+            source_expr,
+            target_expr,
+            source_proof,
+            rewrites,
+        )
+        if sequential_positive_proof is not None:
+            return sequential_positive_proof
+        exhaustive_positive_proof = raw_tptp_avatar_split_exhaustive_positive_component_proof(
+            source_expr,
+            target_expr,
+            source_proof,
+            rewrites,
+        )
+        if exhaustive_positive_proof is not None:
+            return exhaustive_positive_proof
+        product_forall_proof = raw_tptp_avatar_split_product_forall_clause_proof(
+            source_expr,
+            target_expr,
+            source_proof,
+            rewrites,
+        )
+        if product_forall_proof is not None:
+            return product_forall_proof
+        positive_atom_proof = raw_tptp_avatar_split_positive_atom_proof(
+            source_expr,
+            target_expr,
+            source_proof,
+            rewrites,
+        )
+        if positive_atom_proof is not None:
+            return positive_atom_proof
+        subsumption_proof = raw_clause_subsumption_transform_proof(source_expr, target_expr, source_proof, rewrites=rewrites)
+        if subsumption_proof is not None:
+            return subsumption_proof
+        if not raw_clause_replay_budget_ok(source_expr, target_expr):
+            return None
+        instantiated_proof = raw_tptp_avatar_split_forall_instantiation_proof(
+            source_expr,
+            target_expr,
+            source_proof,
+            rewrites,
+        )
+        if instantiated_proof is not None:
+            return instantiated_proof
+        component_instantiated_proof = raw_tptp_avatar_split_component_instantiation_proof(
+            source_expr,
+            target_expr,
+            source_proof,
+            rewrites,
+        )
+        if component_instantiated_proof is not None:
+            return component_instantiated_proof
+        if len(parents) <= 3:
+            direct_proof = raw_tptp_avatar_split_direct_component_proof(
+                source_expr,
+                target_expr,
+                source_proof,
+                rewrites,
+            )
+            if direct_proof is not None:
+                return direct_proof
+        return raw_clause_transform_proof(source_expr, target_expr, source_proof, rewrites=rewrites)
+
+    if source_binders and target_binders:
+        common: list[tuple[str, str, str]] = []
+        for (source_name, source_sort), (target_name, target_sort) in zip(source_binders, target_binders):
+            if normalize_megalodon_sort(source_sort) != normalize_megalodon_sort(target_sort):
+                break
+            common.append((source_name, target_name, target_sort))
+        if common:
+            source_subst = {
+                source_name: Expr("var", value=target_name, sort=sort)
+                for source_name, target_name, sort in common
+            }
+            opened_source = source_body
+            for source_name, source_sort in reversed(source_binders[len(common) :]):
+                opened_source = Expr("forall", value=source_name, sort=source_sort, args=(opened_source,))
+            opened_source = substitute_expr(opened_source, source_subst)
+            opened_target = target_body
+            for target_name, target_sort in reversed(target_binders[len(common) :]):
+                opened_target = Expr("forall", value=target_name, sort=target_sort, args=(opened_target,))
+            opened_source_proof = raw_tptp_claim_name(parents[0])
+            for _source_name, target_name, _sort in common:
+                opened_source_proof = f"({proof_head(opened_source_proof)} {target_name})"
+            opened = try_split_clause_constructors(opened_source, opened_target, opened_source_proof)
+            if opened is not None:
+                for _source_name, target_name, sort in reversed(common):
+                    opened = f"(fun {target_name} :{sort} => {opened})"
+                return opened
     if len(parents) <= 10 and len(raw_clause_literals(target)) <= 8:
         direct = raw_tptp_avatar_split_direct_component_proof(
             source,
@@ -77006,6 +77384,13 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         renamed_entries.append((name, role, proposition, rule, source_name, parents, trusted_definition))
     entries = renamed_entries
     propositions = renamed_propositions
+    avatar_split_parameters = raw_tptp_avatar_split_parameter_map(entries, variable_sorts)
+    entries, propositions = raw_tptp_parameterize_avatar_split_entries(
+        entries,
+        propositions,
+        avatar_split_parameters,
+        variable_sorts,
+    )
     propositions_by_name = {name: proposition for name, _, proposition, _, _, _, _ in entries if proposition}
     exported_step_propositions_by_name = {
         name: rename_generated_identifier_text(step.proposition, local_identifier_renames)
@@ -77612,6 +77997,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             continue
         if name.startswith("vampire_"):
             continue
+        if RAW_TPTP_SYNTHETIC_DB_RE.fullmatch(name):
+            continue
         if name in {"vAND", "vOR", "vIMP", "vNOT"}:
             continue
         if name in source_names:
@@ -77651,6 +78038,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if name in RAW_TPTP_AMBIENT_CONSTANTS:
             continue
         if name.startswith("vampire_") or name in {"vAND", "vOR", "vIMP", "vNOT"}:
+            continue
+        if RAW_TPTP_SYNTHETIC_DB_RE.fullmatch(name):
             continue
         if name in declared_names:
             continue
@@ -77759,7 +78148,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         lines.append(f"Definition {name} : {sort} := {body}.")
         declared_names.add(name)
     for name, body in sorted(avatar_split_definitions.items()):
-        lines.append(f"Definition {name} : prop := {body}.")
+        split_sort, split_body = raw_tptp_avatar_split_definition_sort_and_body(
+            body,
+            avatar_split_parameters.get(name, ()),
+        )
+        lines.append(f"Definition {name} : {split_sort} := {split_body}.")
     for declaration in later_source_declarations:
         declared_name = megalodon_declared_name(declaration)
         declared_sort = megalodon_declared_sort(declaration)
@@ -77928,12 +78321,17 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     lines.append(
                         f"Axiom {claim_name}_component_to_split: {raw_forall_wrapped_implication(binders, component, split)}."
                     )
-        avatar_definition = raw_tptp_avatar_definition_parts(proposition)
-        if avatar_definition is not None:
-            split_name, component = avatar_definition
-            component_text = proof_arg_text(component)
-            lines.append(f"Axiom {claim_name}_split_to_component: {split_name} -> {component_text}.")
-            lines.append(f"Axiom {claim_name}_component_to_split: {component_text} -> {split_name}.")
+        avatar_components = raw_tptp_avatar_definition_components(proposition)
+        if avatar_components is not None:
+            binders, split, component = avatar_components
+            lines.append(
+                f"Axiom {claim_name}_split_to_component: "
+                f"{raw_tptp_avatar_projection_type_text(binders, split, component)}."
+            )
+            lines.append(
+                f"Axiom {claim_name}_component_to_split: "
+                f"{raw_tptp_avatar_projection_type_text(binders, component, split)}."
+            )
         remember_raw_proposition(proposition, claim_name)
 
     theorem_name = "vampire_raw_tptp_reconstruction"
@@ -77978,14 +78376,19 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             continue
         if claim_name in emitted_local_avatar_projections:
             continue
-        avatar_definition = raw_tptp_avatar_definition_parts(proposition)
-        if avatar_definition is None:
+        avatar_components = raw_tptp_avatar_definition_components(proposition)
+        if avatar_components is None:
             continue
-        split_name, component = avatar_definition
-        component_text = proof_arg_text(component)
-        lines.append(f"claim {claim_name}_split_to_component_local: {split_name} -> {component_text}.")
+        binders, split, component = avatar_components
+        lines.append(
+            f"claim {claim_name}_split_to_component_local: "
+            f"{raw_tptp_avatar_projection_type_text(binders, split, component)}."
+        )
         lines.append(f"{{ exact {claim_name}_split_to_component. }}")
-        lines.append(f"claim {claim_name}_component_to_split_local: {component_text} -> {split_name}.")
+        lines.append(
+            f"claim {claim_name}_component_to_split_local: "
+            f"{raw_tptp_avatar_projection_type_text(binders, component, split)}."
+        )
         lines.append(f"{{ exact {claim_name}_component_to_split. }}")
         emitted_local_avatar_projections.add(claim_name)
 
@@ -78633,19 +79036,22 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         else:
             lines.append(f"{{ exact {proof_argument_text(replay_proof)}. }}")
         remember_raw_proposition(proposition, claim_name)
-        avatar_definition = raw_tptp_avatar_definition_parts(proposition)
-        if avatar_definition is not None and claim_name not in emitted_local_avatar_projections:
-            split_name, component = avatar_definition
-            component_text = proof_arg_text(component)
-            lines.append(f"claim {claim_name}_split_to_component_local: {split_name} -> {component_text}.")
+        avatar_components = raw_tptp_avatar_definition_components(proposition)
+        if avatar_components is not None and claim_name not in emitted_local_avatar_projections:
+            binders, split, component = avatar_components
             lines.append(
-                f"{{ exact ({claim_name} ({split_name} -> {component_text}) "
-                f"(fun Hforward Hback => Hforward)). }}"
+                f"claim {claim_name}_split_to_component_local: "
+                f"{raw_tptp_avatar_projection_type_text(binders, split, component)}."
             )
-            lines.append(f"claim {claim_name}_component_to_split_local: {component_text} -> {split_name}.")
             lines.append(
-                f"{{ exact ({claim_name} ({component_text} -> {split_name}) "
-                f"(fun Hforward Hback => Hback)). }}"
+                f"{{ exact {raw_tptp_avatar_projection_proof_text(claim_name, binders, split, component, True)}. }}"
+            )
+            lines.append(
+                f"claim {claim_name}_component_to_split_local: "
+                f"{raw_tptp_avatar_projection_type_text(binders, component, split)}."
+            )
+            lines.append(
+                f"{{ exact {raw_tptp_avatar_projection_proof_text(claim_name, binders, component, split, False)}. }}"
             )
             emitted_local_avatar_projections.add(claim_name)
 
