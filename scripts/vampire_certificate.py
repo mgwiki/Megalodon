@@ -48,6 +48,7 @@ DERIVED_ASSUMPTION_REPLAY_KINDS = {
     "forward_demodulation",
     "generic",
     "generic_clause",
+    "normal_form",
 }
 PROOF_NAME_COUNTER = itertools.count()
 
@@ -1696,11 +1697,13 @@ def positive_equality_symmetry_proof(literal: Literal, proof: str) -> str:
         raise CertificateError("equality symmetry needs a positive equality proof")
     left = term_text(literal.atom.args[0])
     right = term_text(literal.atom.args[1])
-    if literal.atom.name == "prop":
-        return f"(fun Q:prop->prop => fun H:Q {right} => ({proof} (fun cert_z:prop => Q cert_z -> Q {left}) (fun Hx => Hx) H))"
     if literal.atom.name == "set":
         return f"(fun Q:set->set->prop => fun H:Q {right} {left} => ({proof} (fun cert_x cert_y:set => Q cert_y cert_x) H))"
-    raise CertificateError(f"unsupported equality symmetry sort {literal.atom.name!r}")
+    sort_text = sort_type_text(literal.atom.name)
+    return (
+        f"(fun Q:{sort_text}->prop => fun H:Q {right} => "
+        f"({proof} (fun cert_z:{sort_text} => Q cert_z -> Q {left}) (fun Hx => Hx) H))"
+    )
 
 
 def equality_symmetry_literal_proof(literal: Literal, proof: str) -> str:
@@ -1997,7 +2000,7 @@ def paramodulation_proof_text(
                 transported = f"({equality_literal_proof} {forward_context} {proof})"
             else:
                 rewritten_proof = fresh_proof_name("Hrewrite")
-                if prop_equality:
+                if equality_sort != "set":
                     symmetric_equality = positive_equality_symmetry_proof(instantiated_equality, equality_literal_proof)
                     transported = f"(fun {rewritten_proof} => ({proof} ({symmetric_equality} {forward_context} {rewritten_proof})))"
                 else:
