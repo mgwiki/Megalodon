@@ -38785,9 +38785,38 @@ def raw_formula_context_demodulation_proof(
     equality: Expr,
     equality_proof: str,
     variable_sorts: dict[str, str],
+    depth: int = 0,
 ) -> str | None:
-    if proof_search_timed_out() or len(expr_text(source)) + len(expr_text(target)) > 12000:
+    if depth > 16 or proof_search_timed_out() or len(expr_text(source)) + len(expr_text(target)) > 12000:
         return None
+    if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
+        assert source.value is not None and target.value is not None and target.sort is not None
+        binder = target.value
+        source_body = source.args[0]
+        target_body = target.args[0]
+        if source.value != binder and binder in (expr_variables(source_body) | expr_bound_variables(source_body)):
+            used_names = (
+                expr_variables(source_body)
+                | expr_bound_variables(source_body)
+                | expr_variables(target_body)
+                | expr_bound_variables(target_body)
+                | {source.value, target.value}
+            )
+            binder = fresh_identifier(target.value, " ".join(sorted(used_names)))
+            target_body = rename_expr_variables(target_body, {target.value: binder})
+        if source.value != binder:
+            source_body = rename_expr_variables(source_body, {source.value: binder})
+        inner = raw_formula_context_demodulation_proof(
+            source_body,
+            target_body,
+            f"({proof_head(source_proof)} {binder})",
+            equality,
+            equality_proof,
+            {**variable_sorts, binder: target.sort},
+            depth + 1,
+        )
+        if inner is not None:
+            return f"(fun {binder} :{target.sort} => {inner})"
     hole = fresh_identifier(
         "zz",
         expr_text(source),
@@ -73720,7 +73749,13 @@ def source_surface_expr_text(
     equality = split_source_top_level_equality(stripped)
     if equality is not None:
         left, right = equality
-        return f"{source_surface_expr_text(left, target_text, local_sorts, source_binders)} = {source_surface_expr_text(right, target_text, local_sorts, source_binders)}"
+        target_equality = split_top_level_equality(target_text) if target_text is not None else None
+        left_target = target_equality[0] if target_equality is not None else target_text
+        right_target = target_equality[1] if target_equality is not None else target_text
+        return (
+            f"{source_surface_expr_text(left, left_target, local_sorts, source_binders)} = "
+            f"{source_surface_expr_text(right, right_target, local_sorts, source_binders)}"
+        )
     not_in = split_source_top_level_operator(stripped, "/:e")
     if not_in is not None:
         left, right = not_in
