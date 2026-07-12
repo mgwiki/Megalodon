@@ -5249,29 +5249,83 @@ def ordered_definitions(definitions: dict[str, DefinitionInfo]) -> list[tuple[st
     return ordered
 
 
-def normalize_defined_expr(expr: Expr, definitions: dict[str, DefinitionInfo]) -> Expr:
+def normalize_defined_expr(
+    expr: Expr,
+    definitions: dict[str, DefinitionInfo],
+    active: frozenset[str] = frozenset(),
+    fuel: int = 5000,
+) -> Expr:
+    if fuel <= 0 or proof_search_timed_out():
+        return expr
     if expr.kind == "var":
         assert expr.value is not None
         definition = definitions.get(expr.value)
         if definition is not None and not definition.binders:
-            return normalize_defined_expr(definition.body, definitions)
+            if expr.value in active:
+                return expr
+            return normalize_defined_expr(
+                definition.body,
+                definitions,
+                active | frozenset((expr.value,)),
+                fuel - 1,
+            )
         return expr
     if expr.kind == "app" and expr.args and expr.args[0].kind == "var":
         head = expr.args[0]
         assert head.value is not None
-        args = tuple(normalize_defined_expr(arg, definitions) for arg in expr.args[1:])
+        args = tuple(
+            normalize_defined_expr(arg, definitions, active, fuel - 1)
+            for arg in expr.args[1:]
+        )
         definition = definitions.get(head.value)
         if definition is not None and len(definition.binders) == len(args):
+            if head.value in active:
+                return Expr("app", args=(head,) + args)
             subst = dict(zip(definition.binders, args))
-            return normalize_defined_expr(substitute_expr(definition.body, subst), definitions)
+            return normalize_defined_expr(
+                substitute_expr(definition.body, subst),
+                definitions,
+                active | frozenset((head.value,)),
+                fuel - 1,
+            )
         return Expr("app", args=(head,) + args)
     if not expr.args:
         return expr
     return Expr(
         expr.kind,
         value=expr.value,
-        args=tuple(normalize_defined_expr(arg, definitions) for arg in expr.args),
+        args=tuple(
+            normalize_defined_expr(arg, definitions, active, fuel - 1)
+            for arg in expr.args
+        ),
         sort=expr.sort,
+    )
+
+
+def eta_contract_expr(expr: Expr) -> Expr:
+    if expr.kind == "lambda" and expr.value is not None and len(expr.args) == 1:
+        body = eta_contract_expr(expr.args[0])
+        if body.kind == "app" and len(body.args) >= 2:
+            last = body.args[-1]
+            if last.kind == "var" and last.value == expr.value:
+                contracted = body.args[0] if len(body.args) == 2 else Expr("app", args=body.args[:-1])
+                if expr.value not in expr_variables(contracted):
+                    return contracted
+        return Expr(expr.kind, value=expr.value, args=(body,), sort=expr.sort)
+    if not expr.args:
+        return expr
+    return Expr(
+        expr.kind,
+        value=expr.value,
+        args=tuple(eta_contract_expr(arg) for arg in expr.args),
+        sort=expr.sort,
+    )
+
+
+def expr_same_mod_alpha_eta(left: Expr, right: Expr) -> bool:
+    return expr_same_mod_alpha(left, right) or expr_same_mod_alpha(
+        eta_contract_expr(left),
+        eta_contract_expr(right),
     )
 
 
@@ -5285,7 +5339,11 @@ def definition_unfolding_matches(proposition: str, definitions: dict[str, Defini
     original_left, original_right = body.args
     left = beta_normalize_expr(normalize_defined_expr(original_left, definitions))
     right = beta_normalize_expr(normalize_defined_expr(original_right, definitions))
-    return expr_same_mod_alpha(left, right)
+    if expr_same_mod_alpha_eta(left, right):
+        return True
+    left_eta_first = beta_normalize_expr(normalize_defined_expr(eta_contract_expr(original_left), definitions))
+    right_eta_first = beta_normalize_expr(normalize_defined_expr(eta_contract_expr(original_right), definitions))
+    return expr_same_mod_alpha_eta(left_eta_first, right_eta_first)
 
 
 def definition_reflexivity_script_lines(
@@ -5325,7 +5383,12 @@ def definition_reflexivity_proof(proposition: str, definitions: dict[str, Defini
     original_left, original_right = body.args
     left = beta_normalize_expr(normalize_defined_expr(original_left, definitions))
     right = beta_normalize_expr(normalize_defined_expr(original_right, definitions))
-    if not expr_same_mod_alpha(left, right):
+    left_eta_first = beta_normalize_expr(normalize_defined_expr(eta_contract_expr(original_left), definitions))
+    right_eta_first = beta_normalize_expr(normalize_defined_expr(eta_contract_expr(original_right), definitions))
+    if not (
+        expr_same_mod_alpha_eta(left, right)
+        or expr_same_mod_alpha_eta(left_eta_first, right_eta_first)
+    ):
         return None
     if expr_same_mod_alpha(beta_normalize_expr(original_left), beta_normalize_expr(original_right)):
         body_proof = "(fun Q H => H)"
@@ -71927,6 +71990,9 @@ MEGALODON_SORT_DECL_RE = re.compile(
     r"(?P<name>[_A-Za-z][_A-Za-z0-9']*)\s*:\s*"
     r"(?P<sort>.*?)(?::=|\.|$)"
 )
+MEGALODON_BINDER_DECL_RE = re.compile(
+    r"^\s*Binder\s+(?P<symbol>.+?)\s*,\s*:=\s*(?P<name>[_A-Za-z][_A-Za-z0-9']*)\s*\.\s*$"
+)
 
 
 def source_declared_names(source: Path | None) -> set[str]:
@@ -71942,6 +72008,21 @@ def source_declared_names(source: Path | None) -> set[str]:
         if match is not None:
             names.add(match.group("name"))
     return names
+
+
+def source_binder_functions(source: Path | None) -> dict[str, str]:
+    if source is None:
+        return {}
+    try:
+        text = source.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    binders: dict[str, str] = {}
+    for line in text.splitlines():
+        match = MEGALODON_BINDER_DECL_RE.match(line)
+        if match is not None:
+            binders[match.group("symbol").strip()] = match.group("name")
+    return binders
 
 
 def source_active_declared_names(source: Path | None) -> set[str]:
@@ -72877,6 +72958,8 @@ def split_source_logical_operator(text: str, operator: str) -> tuple[str, str] |
     if split is None:
         return None
     left, right = split
+    if operator == "\\/" and right.startswith("_"):
+        return None
     if left.endswith(":") or right.startswith(":"):
         return None
     if not source_text_is_wrapped_in_parens(left) and split_top_level_operator(left, "->") is not None:
@@ -72888,6 +72971,7 @@ def source_surface_rewrite_parenthesized_terms(
     text: str,
     target_text: str | None = None,
     local_sorts: dict[str, str] | None = None,
+    source_binders: dict[str, str] | None = None,
 ) -> str:
     result = text
     while True:
@@ -72895,7 +72979,7 @@ def source_surface_rewrite_parenthesized_terms(
         if match is None:
             return result
         inner = match.group(1)
-        rewritten = source_surface_expr_text(inner, target_text, local_sorts)
+        rewritten = source_surface_expr_text(inner, target_text, local_sorts, source_binders)
         if rewritten == inner:
             return result
         result = result[: match.start()] + f"({rewritten})" + result[match.end() :]
@@ -72923,10 +73007,48 @@ def source_surface_head_is_function(head: str, local_sorts: dict[str, str] | Non
     return sort is not None and len(split_sort_arrows(sort)) > 1
 
 
+def source_surface_binder_expr_text(
+    stripped: str,
+    target_text: str | None = None,
+    local_sorts: dict[str, str] | None = None,
+    source_binders: dict[str, str] | None = None,
+) -> str | None:
+    if not source_binders:
+        return None
+    for symbol, function_name in sorted(source_binders.items(), key=lambda item: len(item[0]), reverse=True):
+        if not stripped.startswith(symbol):
+            continue
+        if len(stripped) > len(symbol) and not stripped[len(symbol)].isspace():
+            continue
+        rest = stripped[len(symbol) :].strip()
+        split = split_source_top_level_operator(rest, ",")
+        if split is None:
+            continue
+        domain_text, body = split
+        domain_match = re.match(
+            r"^(?P<var>[_A-Za-z][_A-Za-z0-9']*)\s*:e\s*(?P<set>.+)$",
+            domain_text,
+        )
+        if domain_match is None:
+            continue
+        var = domain_match.group("var")
+        scoped_sorts = {**(local_sorts or {}), var: "set"}
+        set_text = source_surface_expr_text(domain_match.group("set"), target_text, local_sorts, source_binders)
+        body_text = source_surface_expr_text(body, target_text, scoped_sorts, source_binders)
+        eta_match = re.fullmatch(rf"(?P<fn>[_A-Za-z][_A-Za-z0-9']*)\s+{re.escape(var)}", body_text)
+        if eta_match is not None and source_surface_head_is_function(eta_match.group("fn"), local_sorts):
+            function_text = eta_match.group("fn")
+        else:
+            function_text = f"(fun {var} :set => {body_text})"
+        return f"{function_name} ({set_text}) {function_text}"
+    return None
+
+
 def source_surface_expr_text(
     text: str,
     target_text: str | None = None,
     local_sorts: dict[str, str] | None = None,
+    source_binders: dict[str, str] | None = None,
 ) -> str:
     raw_stripped = strip_balanced_parens(text.strip())
     indexed_projection = re.fullmatch(
@@ -72964,9 +73086,9 @@ def source_surface_expr_text(
     if if_match is not None:
         function_name = source_surface_if_function(target_text)
         return (
-            f"{function_name} ({source_surface_expr_text(if_match.group('condition'), target_text, local_sorts)}) "
-            f"({source_surface_expr_text(if_match.group('then_branch'), target_text, local_sorts)}) "
-            f"({source_surface_expr_text(if_match.group('else_branch'), target_text, local_sorts)})"
+            f"{function_name} ({source_surface_expr_text(if_match.group('condition'), target_text, local_sorts, source_binders)}) "
+            f"({source_surface_expr_text(if_match.group('then_branch'), target_text, local_sorts, source_binders)}) "
+            f"({source_surface_expr_text(if_match.group('else_branch'), target_text, local_sorts, source_binders)})"
         )
     forall_match = SOURCE_FORALL_RE.match(stripped)
     if forall_match is not None:
@@ -72975,7 +73097,7 @@ def source_surface_expr_text(
         scoped_sorts = {**(local_sorts or {})}
         for name in names:
             scoped_sorts[name] = sort
-        body = source_surface_expr_text(forall_match.group("body"), target_text, scoped_sorts)
+        body = source_surface_expr_text(forall_match.group("body"), target_text, scoped_sorts, source_binders)
         for name in reversed(names):
             body = f"forall {name}:{sort}, {body}"
         return body
@@ -72985,7 +73107,7 @@ def source_surface_expr_text(
         scoped_sorts = {**(local_sorts or {})}
         for name in names:
             scoped_sorts[name] = "set"
-        body = source_surface_expr_text(untyped_forall_match.group("body"), target_text, scoped_sorts)
+        body = source_surface_expr_text(untyped_forall_match.group("body"), target_text, scoped_sorts, source_binders)
         for name in reversed(names):
             body = f"forall {name}:set, {body}"
         return body
@@ -72996,7 +73118,7 @@ def source_surface_expr_text(
         scoped_sorts = {**(local_sorts or {})}
         for name in names:
             scoped_sorts[name] = sort
-        body = source_surface_expr_text(lambda_match.group("body"), target_text, scoped_sorts)
+        body = source_surface_expr_text(lambda_match.group("body"), target_text, scoped_sorts, source_binders)
         for name in reversed(names):
             body = f"fun {name} :{sort} => {body}"
         return body
@@ -73006,36 +73128,39 @@ def source_surface_expr_text(
         scoped_sorts = {**(local_sorts or {})}
         for name in names:
             scoped_sorts[name] = "set"
-        body = source_surface_expr_text(untyped_lambda_match.group("body"), target_text, scoped_sorts)
+        body = source_surface_expr_text(untyped_lambda_match.group("body"), target_text, scoped_sorts, source_binders)
         for name in reversed(names):
             body = f"fun {name} :set => {body}"
         return body
+    binder_text = source_surface_binder_expr_text(stripped, target_text, local_sorts, source_binders)
+    if binder_text is not None:
+        return binder_text
     for operator, connective in (("\\/", "or"), ("/\\", "and")):
         split = split_source_logical_operator(stripped, operator)
         if split is not None:
             left, right = split
             return (
-                f"{connective} ({source_surface_expr_text(left, target_text, local_sorts)}) "
-                f"({source_surface_expr_text(right, target_text, local_sorts)})"
+                f"{connective} ({source_surface_expr_text(left, target_text, local_sorts, source_binders)}) "
+                f"({source_surface_expr_text(right, target_text, local_sorts, source_binders)})"
             )
     iff = split_source_top_level_operator(stripped, "<->")
     if iff is not None:
         left, right = iff
         if split_source_top_level_operator(left, "->") is None:
             return (
-                f"iff ({source_surface_expr_text(left, target_text, local_sorts)}) "
-                f"({source_surface_expr_text(right, target_text, local_sorts)})"
+                f"iff ({source_surface_expr_text(left, target_text, local_sorts, source_binders)}) "
+                f"({source_surface_expr_text(right, target_text, local_sorts, source_binders)})"
             )
     arrow = split_source_top_level_operator(stripped, "->")
     if arrow is not None:
         left, right = arrow
-        left_text = source_surface_expr_text(left, target_text, local_sorts)
+        left_text = source_surface_expr_text(left, target_text, local_sorts, source_binders)
         left_expr = parse_expr(left_text)
         if left_expr is not None and left_expr.kind in {"arrow", "forall", "lambda"}:
             left_text = f"({left_text})"
-        return f"{left_text} -> {source_surface_expr_text(right, target_text, local_sorts)}"
+        return f"{left_text} -> {source_surface_expr_text(right, target_text, local_sorts, source_binders)}"
     if stripped.startswith("~"):
-        negated = source_surface_expr_text(stripped[1:].strip(), target_text, local_sorts)
+        negated = source_surface_expr_text(stripped[1:].strip(), target_text, local_sorts, source_binders)
         negated_expr = parse_expr(negated)
         if negated_expr is not None and negated_expr.kind in {"arrow", "forall", "lambda"}:
             negated = f"({negated})"
@@ -73045,36 +73170,50 @@ def source_surface_expr_text(
         left, right = subset
         element = "__src"
         return (
-            f"forall {element}:set, In {element} ({source_surface_expr_text(left, target_text, local_sorts)}) -> "
-            f"In {element} ({source_surface_expr_text(right, target_text, local_sorts)})"
+            f"forall {element}:set, In {element} ({source_surface_expr_text(left, target_text, local_sorts, source_binders)}) -> "
+            f"In {element} ({source_surface_expr_text(right, target_text, local_sorts, source_binders)})"
         )
     disequality = split_source_top_level_operator(stripped, "<>")
     if disequality is not None:
         left, right = disequality
         return (
-            f"{source_surface_expr_text(left, target_text, local_sorts)} = "
-            f"{source_surface_expr_text(right, target_text, local_sorts)} -> False"
+            f"{source_surface_expr_text(left, target_text, local_sorts, source_binders)} = "
+            f"{source_surface_expr_text(right, target_text, local_sorts, source_binders)} -> False"
         )
     for operator, function_name in (("<=", "SNoLe"), ("<", "SNoLt")):
         split = split_source_top_level_operator(stripped, operator)
         if split is not None:
             left, right = split
             return (
-                f"{function_name} ({source_surface_expr_text(left, target_text, local_sorts)}) "
-                f"({source_surface_expr_text(right, target_text, local_sorts)})"
+                f"{function_name} ({source_surface_expr_text(left, target_text, local_sorts, source_binders)}) "
+                f"({source_surface_expr_text(right, target_text, local_sorts, source_binders)})"
             )
     equality = split_source_top_level_equality(stripped)
     if equality is not None:
         left, right = equality
-        return f"{source_surface_expr_text(left, target_text, local_sorts)} = {source_surface_expr_text(right, target_text, local_sorts)}"
+        return f"{source_surface_expr_text(left, target_text, local_sorts, source_binders)} = {source_surface_expr_text(right, target_text, local_sorts, source_binders)}"
     not_in = split_source_top_level_operator(stripped, "/:e")
     if not_in is not None:
         left, right = not_in
-        return f"In ({source_surface_expr_text(left, target_text, local_sorts)}) ({source_surface_expr_text(right, target_text, local_sorts)}) -> False"
+        return f"In ({source_surface_expr_text(left, target_text, local_sorts, source_binders)}) ({source_surface_expr_text(right, target_text, local_sorts, source_binders)}) -> False"
     membership = split_source_top_level_operator(stripped, ":e")
     if membership is not None:
         left, right = membership
-        return f"In ({source_surface_expr_text(left, target_text, local_sorts)}) ({source_surface_expr_text(right, target_text, local_sorts)})"
+        return f"In ({source_surface_expr_text(left, target_text, local_sorts, source_binders)}) ({source_surface_expr_text(right, target_text, local_sorts, source_binders)})"
+    sep_match = re.match(
+        r"^\{\s*(?P<var>[_A-Za-z][_A-Za-z0-9']*)\s*:e\s*(?P<set>.+?)\s*\|\s*(?P<body>.+?)\s*\}$",
+        stripped,
+    )
+    if sep_match is not None:
+        var = sep_match.group("var")
+        scoped_sorts = {**(local_sorts or {}), var: "set"}
+        body_text = source_surface_expr_text(sep_match.group("body"), target_text, scoped_sorts, source_binders)
+        eta_match = re.fullmatch(rf"(?P<fn>[_A-Za-z][_A-Za-z0-9']*)\s+{re.escape(var)}", body_text)
+        predicate_text = eta_match.group("fn") if eta_match is not None else f"(fun {var} :set => {body_text})"
+        return (
+            f"Sep ({source_surface_expr_text(sep_match.group('set'), target_text, local_sorts, source_binders)}) "
+            f"{predicate_text}"
+        )
     repl_match = re.match(
         r"^\{\s*(?P<body>.+?)\s*\|\s*(?P<var>[_A-Za-z][_A-Za-z0-9']*)\s*:e\s*(?P<set>.+?)\s*\}$",
         stripped,
@@ -73082,16 +73221,16 @@ def source_surface_expr_text(
     if repl_match is not None:
         var = repl_match.group("var")
         scoped_sorts = {**(local_sorts or {}), var: "set"}
-        body_text = source_surface_expr_text(repl_match.group("body"), target_text, scoped_sorts)
+        body_text = source_surface_expr_text(repl_match.group("body"), target_text, scoped_sorts, source_binders)
         eta_match = re.fullmatch(r"(?P<fn>[_A-Za-z][_A-Za-z0-9']*)\s+" + re.escape(var), body_text)
         function_text = eta_match.group("fn") if eta_match is not None else f"(fun {var} :set => {body_text})"
         return (
-            f"Repl ({source_surface_expr_text(repl_match.group('set'), target_text, local_sorts)}) "
+            f"Repl ({source_surface_expr_text(repl_match.group('set'), target_text, local_sorts, source_binders)}) "
             f"{function_text}"
         )
     singleton_match = re.fullmatch(r"\{\s*(?P<body>[^{}|,]+?)\s*\}", stripped)
     if singleton_match is not None:
-        return f"Sing ({source_surface_expr_text(singleton_match.group('body'), target_text, local_sorts)})"
+        return f"Sing ({source_surface_expr_text(singleton_match.group('body'), target_text, local_sorts, source_binders)})"
     for operator, function_name in (
         (":\\/:", "binunion"),
         (":\\:", "setminus"),
@@ -73101,42 +73240,48 @@ def source_surface_expr_text(
         if split is not None:
             left, right = split
             return (
-                f"{function_name} ({source_surface_expr_text(left, target_text, local_sorts)}) "
-                f"({source_surface_expr_text(right, target_text, local_sorts)})"
+                f"{function_name} ({source_surface_expr_text(left, target_text, local_sorts, source_binders)}) "
+                f"({source_surface_expr_text(right, target_text, local_sorts, source_binders)})"
             )
     plus = split_source_top_level_operator(stripped, "+")
     if plus is not None:
         left, right = plus
         function_name = source_surface_infix_function("+", "add_SNo", target_text)
-        return f"{function_name} ({source_surface_expr_text(left, target_text, local_sorts)}) ({source_surface_expr_text(right, target_text, local_sorts)})"
+        return f"{function_name} ({source_surface_expr_text(left, target_text, local_sorts, source_binders)}) ({source_surface_expr_text(right, target_text, local_sorts, source_binders)})"
     if re.match(r"^-\s+", stripped):
-        return f"minus_SNo ({source_surface_expr_text(stripped[1:].strip(), target_text, local_sorts)})"
+        return f"minus_SNo ({source_surface_expr_text(stripped[1:].strip(), target_text, local_sorts, source_binders)})"
     for operator, function_name in (
         (":/:", "div_SNo"),
     ):
         split = split_source_top_level_operator(stripped, operator)
         if split is not None:
             left, right = split
-            return f"{function_name} ({source_surface_expr_text(left, target_text, local_sorts)}) ({source_surface_expr_text(right, target_text, local_sorts)})"
+            return f"{function_name} ({source_surface_expr_text(left, target_text, local_sorts, source_binders)}) ({source_surface_expr_text(right, target_text, local_sorts, source_binders)})"
     times = split_source_top_level_operator(stripped, "*")
     if times is not None:
         left, right = times
         function_name = source_surface_infix_function("*", "mul_SNo", target_text)
-        return f"{function_name} ({source_surface_expr_text(left, target_text, local_sorts)}) ({source_surface_expr_text(right, target_text, local_sorts)})"
+        return f"{function_name} ({source_surface_expr_text(left, target_text, local_sorts, source_binders)}) ({source_surface_expr_text(right, target_text, local_sorts, source_binders)})"
     power = split_source_top_level_operator(stripped, "^")
     if power is not None:
         left, right = power
         function_name = source_surface_infix_function("^", "exp_SNo_nat", target_text)
-        return f"{function_name} ({source_surface_expr_text(left, target_text, local_sorts)}) ({source_surface_expr_text(right, target_text, local_sorts)})"
-    return source_surface_rewrite_parenthesized_terms(stripped, target_text, local_sorts)
+        return f"{function_name} ({source_surface_expr_text(left, target_text, local_sorts, source_binders)}) ({source_surface_expr_text(right, target_text, local_sorts, source_binders)})"
+    return source_surface_rewrite_parenthesized_terms(stripped, target_text, local_sorts, source_binders)
 
 
 def source_surface_parse_text(
     proposition: str,
     target_text: str | None = None,
     local_sorts: dict[str, str] | None = None,
+    source_binders: dict[str, str] | None = None,
 ) -> str:
-    return source_surface_expr_text(desugar_source_bounded_foralls(proposition), target_text, local_sorts)
+    return source_surface_expr_text(
+        desugar_source_bounded_foralls(proposition),
+        target_text,
+        local_sorts,
+        source_binders,
+    )
 
 
 SOURCE_DEFINITION_RE = re.compile(
@@ -73169,11 +73314,12 @@ def source_definition_infos(source: Path | None) -> dict[str, DefinitionInfo]:
     except OSError:
         return {}
     definitions: dict[str, DefinitionInfo] = {}
+    source_binders = source_binder_functions(source)
     for line in source_definition_declarations(text):
         match = SOURCE_DEFINITION_RE.match(line.strip())
         if match is None:
             continue
-        body_text = source_surface_parse_text(match.group("body").strip())
+        body_text = source_surface_parse_text(match.group("body").strip(), source_binders=source_binders)
         parsed = parse_definition_body(body_text)
         if parsed is None:
             continue
@@ -73188,10 +73334,13 @@ def source_definition_infos(source: Path | None) -> dict[str, DefinitionInfo]:
     return definitions
 
 
-def local_set_definition_infos(definitions: dict[str, tuple[str, str]]) -> dict[str, DefinitionInfo]:
+def local_set_definition_infos(
+    definitions: dict[str, tuple[str, str]],
+    source_binders: dict[str, str] | None = None,
+) -> dict[str, DefinitionInfo]:
     infos: dict[str, DefinitionInfo] = {}
     for name, (sort, body) in definitions.items():
-        body_text = source_surface_parse_text(body)
+        body_text = source_surface_parse_text(body, source_binders=source_binders)
         parsed = parse_definition_body(body_text)
         if parsed is None:
             continue
@@ -73267,6 +73416,120 @@ def raw_tptp_desugared_source_fact_proof(
     return None
 
 
+def raw_curried_continuation_to_conjunction_proof(
+    source: Expr,
+    target: Expr,
+    source_name: str,
+) -> str | None:
+    def conjunction_expr_parts(expr: Expr) -> tuple[Expr, Expr] | None:
+        direct = app_args(expr, "and", 2)
+        if direct is not None:
+            return direct
+        binders, body = collect_foralls(expr)
+        if len(binders) != 1 or binders[0][1] != "prop":
+            return None
+        prop_name, _prop_sort = binders[0]
+        premises, conclusion = split_arrows(body)
+        if len(premises) != 1 or conclusion.kind != "var" or conclusion.value != prop_name:
+            return None
+        parts, inner_conclusion = split_arrows(premises[0])
+        if len(parts) != 2 or inner_conclusion.kind != "var" or inner_conclusion.value != prop_name:
+            return None
+        return parts[0], parts[1]
+
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if len(source_binders) != len(target_binders):
+        return None
+    binder_renames: dict[str, str] = {}
+    for (source_binder, source_sort), (target_binder, target_sort) in zip(source_binders, target_binders):
+        if normalize_megalodon_sort(source_sort) != normalize_megalodon_sort(target_sort):
+            return None
+        binder_renames[source_binder] = target_binder
+    source_body = rename_expr_variables(source_body, binder_renames)
+    source_premises, source_conclusion = split_arrows(source_body)
+    target_premises, target_conclusion = split_arrows(target_body)
+    if len(source_premises) != len(target_premises):
+        return None
+    for source_premise, target_premise in zip(source_premises, target_premises):
+        if not expr_same_mod_alpha(source_premise, target_premise):
+            return None
+
+    source_prop_binders, source_prop_body = collect_foralls(source_conclusion)
+    target_prop_binders, target_prop_body = collect_foralls(target_conclusion)
+    if len(source_prop_binders) != 1 or len(target_prop_binders) != 1:
+        return None
+    source_prop_name, source_prop_sort = source_prop_binders[0]
+    target_prop_name, target_prop_sort = target_prop_binders[0]
+    if source_prop_sort != "prop" or target_prop_sort != "prop":
+        return None
+    source_prop_body = rename_expr_variables(source_prop_body, {source_prop_name: target_prop_name})
+    source_continuations, source_final = split_arrows(source_prop_body)
+    target_continuations, target_final = split_arrows(target_prop_body)
+    if len(source_continuations) != 1 or len(target_continuations) != 1:
+        return None
+    if not expr_same_mod_alpha(source_final, target_final):
+        return None
+
+    source_witness_binders, source_witness_body = collect_foralls(source_continuations[0])
+    target_witness_binders, target_witness_body = collect_foralls(target_continuations[0])
+    if len(source_witness_binders) != 1 or len(target_witness_binders) != 1:
+        return None
+    source_witness_name, source_witness_sort = source_witness_binders[0]
+    target_witness_name, target_witness_sort = target_witness_binders[0]
+    if normalize_megalodon_sort(source_witness_sort) != normalize_megalodon_sort(target_witness_sort):
+        return None
+    source_witness_body = rename_expr_variables(source_witness_body, {source_witness_name: target_witness_name})
+    source_parts, source_witness_final = split_arrows(source_witness_body)
+    target_parts, target_witness_final = split_arrows(target_witness_body)
+    if len(source_parts) != 2 or len(target_parts) != 1:
+        return None
+    conjunction_parts = conjunction_expr_parts(target_parts[0])
+    if conjunction_parts is None:
+        return None
+    if not expr_same_mod_alpha(source_witness_final, target_witness_final):
+        return None
+    if not (
+        expr_same_mod_alpha(source_parts[0], conjunction_parts[0])
+        and expr_same_mod_alpha(source_parts[1], conjunction_parts[1])
+    ):
+        return None
+
+    proof = source_name
+    for name, _sort in target_binders:
+        proof = f"({proof_head(proof)} {name})"
+    premise_names = [
+        fresh_identifier(f"Hsource{index}", expr_text(target), source_name)
+        for index, _premise in enumerate(target_premises)
+    ]
+    for premise_name in premise_names:
+        proof = f"({proof_head(proof)} {premise_name})"
+    prop_name = target_prop_name
+    continuation_name = fresh_identifier("Hsource_cont", expr_text(target), source_name)
+    left_name = fresh_identifier("Hsource_left", expr_text(target), source_name)
+    right_name = fresh_identifier("Hsource_right", expr_text(target), source_name)
+    witness_name = target_witness_name
+    left_text = proof_arg_text(conjunction_parts[0])
+    right_text = proof_arg_text(conjunction_parts[1])
+    target_continuation_text = proof_arg_text(target_continuations[0])
+    conjunction_proof = f"andI {left_text} {right_text} {left_name} {right_name}"
+    converted_continuation = (
+        f"(fun {witness_name} :{target_witness_sort} => "
+        f"(fun {left_name} :{left_text} => "
+        f"(fun {right_name} :{right_text} => "
+        f"{continuation_name} {witness_name} ({conjunction_proof}))))"
+    )
+    body_proof = f"({proof_head(proof)} {prop_name} {converted_continuation})"
+    body_proof = f"(fun {continuation_name} :{target_continuation_text} => {body_proof})"
+    for name, sort in reversed(target_prop_binders):
+        body_proof = f"(fun {name} :{sort} => {body_proof})"
+    for name, premise in reversed(list(zip(premise_names, target_premises))):
+        body_proof = f"(fun {name} :{proof_arg_text(premise)} => {body_proof})"
+    for name, sort in reversed(target_binders):
+        body_proof = f"(fun {name} :{sort} => {body_proof})"
+    return body_proof
+
+
 def raw_tptp_unfolded_source_fact_proof(
     proposition: str,
     source_name: str,
@@ -73275,6 +73538,7 @@ def raw_tptp_unfolded_source_fact_proof(
     source_sorts: dict[str, str] | None = None,
     variable_sorts: dict[str, str] | None = None,
     alias_definition_names: set[str] | None = None,
+    source_binders: dict[str, str] | None = None,
 ) -> str | None:
     if source_proposition is None or not source_definitions:
         return None
@@ -73292,12 +73556,19 @@ def raw_tptp_unfolded_source_fact_proof(
     }
 
     for source_text in (
-        source_surface_parse_text(source_proposition, local_sorts=parse_sorts),
-        source_surface_parse_text(source_proposition, proposition, parse_sorts),
+        source_surface_parse_text(source_proposition, local_sorts=parse_sorts, source_binders=source_binders),
+        source_surface_parse_text(source_proposition, proposition, parse_sorts, source_binders),
     ):
         source = parse_expr(source_text)
         if source is None:
             continue
+        transformed_continuation = raw_curried_continuation_to_conjunction_proof(
+            source,
+            target,
+            source_name,
+        )
+        if transformed_continuation is not None:
+            return transformed_continuation
         source_head_args = raw_expr_application_head_args(source)
         source_is_top_defined_application = (
             source_head_args is not None
@@ -73496,6 +73767,7 @@ def raw_tptp_source_fact_proof(
     source_aliases: dict[str, tuple[str, str]] | None = None,
     source_sorts: dict[str, str] | None = None,
     alias_definition_names: set[str] | None = None,
+    source_binders: dict[str, str] | None = None,
 ) -> str | None:
     if source_name is None or source_name not in source_fact_names:
         return None
@@ -73533,6 +73805,7 @@ def raw_tptp_source_fact_proof(
         source_sorts,
         variable_sorts,
         alias_definition_names,
+        source_binders,
     )
     if unfolded_source_fact is not None:
         return unfolded_source_fact
@@ -73543,6 +73816,22 @@ def raw_tptp_source_fact_proof(
     )
     if oriented_source_fact is not None:
         return oriented_source_fact
+    impred_source_name = f"{source_name}_impred"
+    if not source_name.endswith("_impred") and impred_source_name in source_fact_names:
+        impred_source_fact = raw_tptp_source_fact_proof(
+            proposition,
+            impred_source_name,
+            source_fact_names,
+            source_fact_propositions,
+            variable_sorts,
+            source_definitions,
+            source_aliases,
+            source_sorts,
+            alias_definition_names,
+            source_binders,
+        )
+        if impred_source_fact is not None:
+            return impred_source_fact
     unparsed_equality_proof = raw_tptp_unparsed_source_equality_proof(
         proposition,
         source_name,
@@ -73572,6 +73861,7 @@ def raw_tptp_local_source_fact_proof(
     source_definitions: dict[str, DefinitionInfo],
     source_sorts: dict[str, str] | None = None,
     alias_definition_names: set[str] | None = None,
+    source_binders: dict[str, str] | None = None,
 ) -> str | None:
     if source_name is None or source_name not in local_source_fact_propositions:
         return None
@@ -73603,6 +73893,7 @@ def raw_tptp_local_source_fact_proof(
         source_sorts,
         variable_sorts,
         alias_definition_names,
+        source_binders,
     )
     if unfolded_source_fact is not None:
         return unfolded_source_fact
@@ -74152,10 +74443,14 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             final_proposition = proposition
             break
 
+    source_binders = source_binder_functions(source)
     renamed_all_local_set_definitions = {
         local_identifier_renames.get(name, name): (
             sort,
-            rename_generated_identifier_text(source_surface_parse_text(body), local_identifier_renames),
+            rename_generated_identifier_text(
+                source_surface_parse_text(body, source_binders=source_binders),
+                local_identifier_renames,
+            ),
         )
         for name, (sort, body) in all_local_set_definitions.items()
     }
@@ -74195,7 +74490,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     local_set_definition_names = set(local_set_definitions)
     source_and_local_definitions = {
         **source_definitions,
-        **local_set_definition_infos(local_set_definitions),
+        **local_set_definition_infos(local_set_definitions, source_binders),
     }
     source_local_set_names = set(all_local_set_definitions) | set(renamed_all_local_set_definitions)
     local_source_fact_propositions = {
@@ -74211,7 +74506,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if proposition is None:
             continue
         normalized = use_ambient_basic_logic_text(
-            source_surface_parse_text(proposition, local_sorts=variable_sorts)
+            source_surface_parse_text(proposition, local_sorts=variable_sorts, source_binders=source_binders)
         )
         parsed_normalized = parse_expr(normalized)
         if (
@@ -74693,6 +74988,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 source_and_local_definitions,
                 source_sorts,
                 local_set_definition_names,
+                source_binders,
             )
         ) is not None and emit_local_source_fact(source_name, proposition):
             lines.append(f"Theorem {claim_name}: {proposition}.")
@@ -74709,6 +75005,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 local_set_definitions,
                 source_sorts,
                 local_set_definition_names,
+                source_binders,
             )
         ) is not None:
             lines.append(f"Theorem {claim_name}: {proposition}.")
