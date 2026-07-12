@@ -4113,6 +4113,14 @@ def proof_arrow_domain_text(expr: Expr) -> str:
     return f"({proof_arg_text(expr)})"
 
 
+def proof_negation_type_text(expr: Expr) -> str:
+    return f"({proof_arrow_domain_text(expr)} -> False)"
+
+
+def proof_negation_type_from_text(text: str) -> str:
+    return f"({text} -> False)"
+
+
 def proof_term_text(proof: str) -> str:
     return proof if re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", proof) else f"({proof})"
 
@@ -6581,7 +6589,7 @@ def raw_tptp_predicate_definition_intro_proof(
     proof = (
         f"(xm {proof_arg_text(component)} {proof_arg_text(body)} "
         f"(fun Hbody :{proof_arg_text(component)} => {component_intro}) "
-        f"(fun HnotBody :{proof_arrow_domain_text(component)} -> False => {negative_intro}))"
+        f"(fun HnotBody :{proof_negation_type_text(component)} => {negative_intro}))"
     )
     for binder, sort in reversed(binders):
         proof = f"(fun {binder} :{sort} => {proof})"
@@ -26044,7 +26052,7 @@ def raw_tptp_dne_implication_parent_proof(
             consequent_proof = (
                 f"(xm {witness_text} {consequent_text} "
                 f"(fun {witness_name} :{witness_text} => {proof_head(implication_proof)} {witness_name}) "
-                f"(fun {not_witness_name} :{witness_text} -> False => {false_proof} {consequent_text}))"
+                f"(fun {not_witness_name} :{proof_negation_type_from_text(witness_text)} => {false_proof} {consequent_text}))"
             )
             if expr_same_mod_alpha(rebuilt_conclusion, target):
                 return consequent_proof
@@ -29381,7 +29389,7 @@ def raw_negated_implication_chain_to_conjunction_proof(
         return (
             f"(xm {premise_text} {premise_text} "
             f"(fun {premise_names[index]} :{premise_text} => {premise_names[index]}) "
-            f"(fun {negative_name} :{premise_text} -> False => {premise_from_false}))"
+            f"(fun {negative_name} :{proof_negation_type_from_text(premise_text)} => {premise_from_false}))"
         )
 
     def conclusion_refutation(component: Expr) -> str | None:
@@ -29838,7 +29846,7 @@ def raw_explosive_implication_double_negated_exists_proof(
         exists_proof = f"(fun Q Hexists => Hexists {source_name} {proof_term_text(exists_proof)})"
     false_from_not_exists = f"(HnotExists {proof_term_text(exists_proof)})"
     prop_from_false = raw_false_to_expr_proof(false_from_not_exists, prop_var)
-    negative_branch = f"(fun HnotProp :{prop_name} -> False => {prop_from_false})"
+    negative_branch = f"(fun HnotProp :{proof_negation_type_from_text(prop_name)} => {prop_from_false})"
     positive_branch = f"(fun Hprop :{prop_name} => Hprop)"
     arbitrary_prop_proof = (
         f"(xm {prop_name} {prop_name} "
@@ -33020,11 +33028,11 @@ def raw_cps_disjunction_ennf_transform_proof(
             false_from_negative = f"({not_name} {source_positive_name})"
             source_premise = (
                 f"(fun {source_positive_name} :{proof_arg_text(source_disjunct)} => "
-                f"{raw_false_to_expr_proof(false_from_negative, target_var)})"
+                f"{raw_false_to_expr_proof(false_from_negative, target_var, Expr('var', value='False'))})"
             )
             applied_source = f"({proof_head(applied_source)} {proof_term_text(source_premise)})"
         contradiction = f"(HnotTarget {proof_term_text(applied_source)})"
-        return raw_false_to_expr_proof(contradiction, target_body)
+        return raw_false_to_expr_proof(contradiction, target_body, Expr("var", value="False"))
 
     def prove_from(index: int) -> str:
         if index >= len(source_disjuncts):
@@ -33096,13 +33104,13 @@ def raw_cps_disjunction_ennf_transform_proof(
         return (
             f"(xm {proof_arg_text(source_disjunct)} {proof_arg_text(target_body)} "
             f"(fun {positive_name} :{proof_arg_text(source_disjunct)} => {proof_term_text(positive_branch)}) "
-            f"(fun {negative_name} :{proof_arrow_domain_text(source_disjunct)} -> False => {proof_term_text(negative_branch)}))"
+            f"(fun {negative_name} :{proof_negation_type_text(source_disjunct)} => {proof_term_text(negative_branch)}))"
         )
 
     proof = (
         f"(xm {target_name} {proof_arg_text(target_body)} "
         f"(fun Htarget :{target_name} => {proof_term_text(positive_intro)}) "
-        f"(fun HnotTarget :{target_name} -> False => {proof_term_text(prove_from(0))}))"
+        f"(fun HnotTarget :{proof_negation_type_from_text(target_name)} => {proof_term_text(prove_from(0))}))"
     )
     return f"(fun {target_name} :{target_sort} => {proof})"
 
@@ -45016,7 +45024,7 @@ def raw_guarded_prop_equality_factoring_equal_binders_proof(
             return (
                 f"(xm {proof_arg_text(negative_side)} {proof_arg_text(target_body)} "
                 f"(fun {side_name} :{proof_arg_text(negative_side)} => {proof_term_text(positive_intro)}) "
-                f"(fun HnotFactorSide :{proof_arrow_domain_text(negative_side)} -> False => {proof_term_text(negative_intro)}))"
+                f"(fun HnotFactorSide :{proof_negation_type_text(negative_side)} => {proof_term_text(negative_intro)}))"
             )
         return None
 
@@ -49932,7 +49940,7 @@ def raw_prop_true_component_universal_excluded_superposition_proof(
     universal_inner = (
         f"(xm {binder_text} {proof_arg_text(universal_body)} "
         f"(fun {positive_name} :{binder_text} => {equality_branch}) "
-        f"(fun {negative_name} :{binder_text} -> False => {negated_branch}))"
+        f"(fun {negative_name} :{proof_negation_type_from_text(binder_text)} => {negated_branch}))"
     )
     universal_proof = f"(fun {binder_name} :{binder_sort} => {universal_inner})"
     universal_clause_proof = raw_typed_or_intro_literal_at(target_body, universal_index, universal_proof)
@@ -50060,7 +50068,7 @@ def raw_negative_predicate_argument_true_excluded_superposition_proof(
     return (
         f"(xm {argument_text} {proof_arg_text(target_body)} "
         f"(fun {positive_name} :{argument_text} => {left_branch}) "
-        f"(fun {negative_name} :{argument_text} -> False => {right_branch}))"
+        f"(fun {negative_name} :{proof_negation_type_from_text(argument_text)} => {right_branch}))"
     )
 
 
@@ -50190,7 +50198,7 @@ def raw_negative_predicate_from_universal_prop_equality_superposition_proof(
         f"{proof_head(source_proof)} {transported_argument})"
     )
     negation_branch = (
-        f"(fun {negation_proof_name} :{argument_text} -> False => "
+        f"(fun {negation_proof_name} :{proof_negation_type_from_text(argument_text)} => "
         f"{negation_proof_name} {argument_proof})"
     )
     negated_argument_proof_template = (
@@ -61950,7 +61958,7 @@ def raw_implication_chain_with_positive_ennf_proof(
         return (
             f"(xm {proof_arg_text(premise)} {proof_arg_text(target)} "
             f"(fun {premise_name} :{proof_arg_text(premise)} => {proof_term_text(conclusion_intro)}) "
-            f"(fun {not_premise_name} :{proof_arrow_domain_text(premise)} -> False => {proof_term_text(negative_intro)}))"
+            f"(fun {not_premise_name} :{proof_negation_type_text(premise)} => {proof_term_text(negative_intro)}))"
         )
     return None
 
@@ -62132,7 +62140,7 @@ def raw_implication_chain_to_ennf_or_components_proof(
         return (
             f"(xm {proof_arg_text(premise)} {target_text} "
             f"(fun {premise_name} :{proof_arg_text(premise)} => {proof_term_text(positive_branch)}) "
-            f"(fun {not_premise_name} :{proof_arrow_domain_text(premise)} -> False => {proof_term_text(negative_intro)}))"
+            f"(fun {not_premise_name} :{proof_negation_type_text(premise)} => {proof_term_text(negative_intro)}))"
         )
 
     return build(0)
@@ -62299,7 +62307,7 @@ def raw_two_premise_implication_chain_ennf_by_contradiction_proof(
         premise_proof = (
             f"(xm {proof_arg_text(premise)} {proof_arg_text(premise)} "
             f"(fun HdirectPremise => HdirectPremise) "
-            f"(fun {not_premise_name} :{proof_arrow_domain_text(premise)} -> False => "
+            f"(fun {not_premise_name} :{proof_negation_type_text(premise)} => "
             f"{proof_term_text(raw_false_to_expr_proof(contradiction, premise))}))"
         )
         premise_proofs.append(premise_proof)
@@ -62317,7 +62325,7 @@ def raw_two_premise_implication_chain_ennf_by_contradiction_proof(
     return (
         f"(xm {proof_arg_text(target)} {proof_arg_text(target)} "
         f"(fun {target_name} :{proof_arg_text(target)} => {target_name}) "
-        f"(fun {not_target_name} :{proof_arrow_domain_text(target)} -> False => {proof_term_text(conclusion_intro)}))"
+        f"(fun {not_target_name} :{proof_negation_type_text(target)} => {proof_term_text(conclusion_intro)}))"
     )
 
 
