@@ -56,6 +56,7 @@ IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_']*")
 STEP_RE = re.compile(r'^megalodon_step\((\d+),("(?:\\.|[^"\\])*"),("(?:\\.|[^"\\])*"),\[([0-9,]*)\],')
 CLAUSE_RE = re.compile(r"^megalodon_certificate_clause\((\d+),(.+)\)\.$")
 CERTIFICATE_STEP_RE = re.compile(r"^megalodon_certificate_step\((\d+),(.+)\)\.$")
+CERTIFICATE_STEPS_RE = re.compile(r"^megalodon_certificate_steps\((\d+),(.+)\)\.$")
 REPLAY_KIND_RE = re.compile(r'^megalodon_step_replay_kind\((\d+),("(?:\\.|[^"\\])*")\)\.$')
 FINAL_STEP_RE = re.compile(r"^megalodon_final_step\((\d+)\)\.$")
 SYMBOL_DECL_RE = re.compile(r'^megalodon_symbol_declaration\(("(?:\\.|[^"\\])*")\)\.$')
@@ -714,6 +715,7 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
     step_meta: dict[int, dict[str, Any]] = {}
     clause_json: dict[int, list[Any]] = {}
     certificate_steps: dict[int, dict[str, Any]] = {}
+    certificate_step_lists: dict[int, list[dict[str, Any]]] = {}
     replay_kinds: dict[int, str] = {}
     extras: dict[int, dict[str, list[str]]] = {}
     declarations: list[str] = []
@@ -754,6 +756,23 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
                 raise CertificateError(f"line {lineno}: unsupported explicit certificate step rule {rule!r}")
             certificate_steps[step_no] = step_value
             continue
+        match = CERTIFICATE_STEPS_RE.match(line)
+        if match:
+            step_no = int(match.group(1))
+            try:
+                step_values = json.loads(match.group(2))
+            except json.JSONDecodeError as exc:
+                raise CertificateError(f"line {lineno}: malformed certificate steps JSON: {exc}") from exc
+            if not isinstance(step_values, list) or not all(isinstance(item, dict) for item in step_values):
+                raise CertificateError(f"line {lineno}: certificate steps must be a JSON object list")
+            for index, step_value in enumerate(step_values):
+                rule = step_value.get("rule")
+                if not isinstance(rule, str) or rule not in MVP_RULES:
+                    raise CertificateError(
+                        f"line {lineno}: unsupported explicit certificate step rule at index {index}: {rule!r}"
+                    )
+            certificate_step_lists[step_no] = step_values
+            continue
         match = REPLAY_KIND_RE.match(line)
         if match:
             replay_kinds[int(match.group(1))] = json.loads(match.group(2))
@@ -792,7 +811,20 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
         replay_kind = replay_kinds.get(step_no, "")
         step_id = f"u{step_no}"
 
+        explicit_steps = certificate_step_lists.get(step_no)
         explicit_step = certificate_steps.get(step_no)
+        if explicit_steps is not None:
+            for index, explicit in enumerate(explicit_steps):
+                step = dict(explicit)
+                if "id" not in step and index == len(explicit_steps) - 1:
+                    step["id"] = step_id
+                if "clause" not in step and index == len(explicit_steps) - 1:
+                    step["clause"] = clause_json[step_no]
+                if "id" not in step or "clause" not in step:
+                    raise CertificateError(f"{step_id}: explicit certificate substep {index} needs id and clause")
+                steps.append(step)
+            clauses[step_no] = clause
+            continue
         if explicit_step is not None:
             step = dict(explicit_step)
             step["id"] = step_id

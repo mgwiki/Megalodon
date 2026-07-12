@@ -39,7 +39,9 @@ inputs/derived preprocessing assumptions, Vampire-side `definition_input`
 function-definition records, Vampire-side exact `resolve` records,
 Vampire-side exact `equality_resolution` records, Vampire-side exact `factor`
 records for duplicate-literal contraction, Vampire-side top-level
-empty-substitution `paramodulate` records for simple demodulation, typed
+empty-substitution `paramodulate` records for simple demodulation, and
+Vampire-side `paramodulate` plus `equality_symmetry` multi-step records for
+definition folding that needs an atomic symmetry step. It also covers typed
 proposition equality, higher-order application terms, and uniquely determined
 resolution-like clause endings. Resolution/equality-resolution/factoring/
 paramodulation steps that need explicit substitutions or nested rewrite
