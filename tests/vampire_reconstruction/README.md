@@ -1,5 +1,17 @@
 # Vampire Reconstruction Suite
 
+Status: prototype/legacy.
+
+This suite is retained for corpus generation, source-linking diagnostics, and
+analysis of the old rich-export experiment. It must not be used as the primary
+success gate for the `vampire/megalodon1` effort. In particular, checks that
+require `-allowincompleteqed` or contain `admit` validate plumbing only; they
+are not proof-reconstruction successes.
+
+The replacement path is the small certificate calculus described in
+`reports/vampire-megalodon-certificate-spec.md`, with initial smoke tests in
+`tests/vampire_certificate/`.
+
 This suite checks Megalodon's TH0 hammer obligations against Vampire proof
 output.
 

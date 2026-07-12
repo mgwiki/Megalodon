@@ -1,0 +1,25 @@
+{
+  "format": "vampire-megalodon-certificate",
+  "version": 1,
+  "problem": "malformed-substitution-smoke",
+  "steps": [
+    {
+      "id": "c1",
+      "rule": "input",
+      "clause": [
+        {"polarity": true, "atom": "P(x)"}
+      ],
+      "source": {"kind": "axiom", "name": "a1"}
+    },
+    {
+      "id": "c2",
+      "rule": "substitute",
+      "parents": ["c1"],
+      "substitution": [["x", "a"]],
+      "clause": [
+        {"polarity": true, "atom": "P(a)"}
+      ]
+    }
+  ]
+}
+

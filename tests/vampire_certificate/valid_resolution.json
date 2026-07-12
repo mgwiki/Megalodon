@@ -1,0 +1,55 @@
+{
+  "format": "vampire-megalodon-certificate",
+  "version": 1,
+  "problem": "valid-resolution-smoke",
+  "steps": [
+    {
+      "id": "c1",
+      "rule": "input",
+      "clause": [
+        {"polarity": true, "atom": "P"},
+        {"polarity": true, "atom": "Q"}
+      ],
+      "source": {"kind": "axiom", "name": "a1"}
+    },
+    {
+      "id": "c2",
+      "rule": "input",
+      "clause": [
+        {"polarity": false, "atom": "P"}
+      ],
+      "source": {"kind": "axiom", "name": "a2"}
+    },
+    {
+      "id": "c3",
+      "rule": "resolve",
+      "parents": ["c1", "c2"],
+      "pivot": {"polarity": true, "atom": "P"},
+      "clause": [
+        {"polarity": true, "atom": "Q"}
+      ]
+    },
+    {
+      "id": "c4",
+      "rule": "input",
+      "clause": [
+        {"polarity": false, "atom": "Q"}
+      ],
+      "source": {"kind": "axiom", "name": "a3"}
+    },
+    {
+      "id": "c5",
+      "rule": "resolve",
+      "parents": ["c3", "c4"],
+      "pivot": {"polarity": true, "atom": "Q"},
+      "clause": []
+    },
+    {
+      "id": "c6",
+      "rule": "contradiction",
+      "parents": ["c5"],
+      "clause": []
+    }
+  ]
+}
+

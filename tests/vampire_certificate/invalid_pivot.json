@@ -1,0 +1,31 @@
+{
+  "format": "vampire-megalodon-certificate",
+  "version": 1,
+  "problem": "invalid-pivot-smoke",
+  "steps": [
+    {
+      "id": "c1",
+      "rule": "input",
+      "clause": [
+        {"polarity": true, "atom": "P"}
+      ],
+      "source": {"kind": "axiom", "name": "a1"}
+    },
+    {
+      "id": "c2",
+      "rule": "input",
+      "clause": [
+        {"polarity": true, "atom": "Q"}
+      ],
+      "source": {"kind": "axiom", "name": "a2"}
+    },
+    {
+      "id": "c3",
+      "rule": "resolve",
+      "parents": ["c1", "c2"],
+      "pivot": {"polarity": true, "atom": "P"},
+      "clause": []
+    }
+  ]
+}
+
