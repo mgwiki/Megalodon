@@ -6269,6 +6269,8 @@ BOOLEAN_EXT_HELPERS = [
     "Axiom vampire_funext_set_set: forall vmf:set->set, forall vmg:set->set, (forall vmx:set, vmf vmx = vmg vmx) -> forall vmq:(set->set)->prop, vmq vmf -> vmq vmg.",
     "Axiom vampire_funext_set_set_prop: forall vmf:set->set->prop, forall vmg:set->set->prop, (forall vmx:set, forall vmy:set, vampire_eq_prop (vmf vmx vmy) (vmg vmx vmy)) -> forall vmq:(set->set->prop)->prop, vmq vmf -> vmq vmg.",
     "Axiom vampire_funext_set_set_set: forall vmf:set->set->set, forall vmg:set->set->set, (forall vmx:set, forall vmy:set, vmf vmx vmy = vmg vmx vmy) -> forall vmq:(set->set->set)->prop, vmq vmf -> vmq vmg.",
+    "Axiom vampire_funext_set_set_set_prop: forall vmf:set->set->set->prop, forall vmg:set->set->set->prop, (forall vmx:set, forall vmy:set, forall vmz:set, vampire_eq_prop (vmf vmx vmy vmz) (vmg vmx vmy vmz)) -> forall vmq:(set->set->set->prop)->prop, vmq vmf -> vmq vmg.",
+    "Axiom vampire_funext_set_set_set_set: forall vmf:set->set->set->set, forall vmg:set->set->set->set, (forall vmx:set, forall vmy:set, forall vmz:set, vmf vmx vmy vmz = vmg vmx vmy vmz) -> forall vmq:(set->set->set->set)->prop, vmq vmf -> vmq vmg.",
     "Axiom vampire_funext_set_setprop_prop: forall vmf:set->(set->prop)->prop, forall vmg:set->(set->prop)->prop, (forall vmx:set, forall vmy:set->prop, vampire_eq_prop (vmf vmx vmy) (vmg vmx vmy)) -> forall vmq:(set->(set->prop)->prop)->prop, vmq vmf -> vmq vmg.",
     "Axiom vampire_funext_set_setfun_set: forall vmf:set->(set->set)->set, forall vmg:set->(set->set)->set, (forall vmx:set, forall vmy:set->set, vmf vmx vmy = vmg vmx vmy) -> forall vmq:(set->(set->set)->set)->prop, vmq vmf -> vmq vmg.",
 ]
@@ -35018,7 +35020,7 @@ def raw_function_argument_transport_proof(
         return f"(fun Q:({source_sort})->prop => fun H:Q ({proof_arg_text(source)}) => H)"
     source_binders, source_body = collect_lambdas(source)
     target_binders, target_body = collect_lambdas(target)
-    if len(source_binders) != len(target_binders) or len(source_binders) not in {1, 2}:
+    if len(source_binders) != len(target_binders) or len(source_binders) not in {1, 2, 3}:
         return None
     if not all(equivalent_sorts(source_sort, target_sort) for (_source_name, source_sort), (_target_name, target_sort) in zip(source_binders, target_binders)):
         return None
@@ -35030,6 +35032,8 @@ def raw_function_argument_transport_proof(
         helper = "vampire_funext_set_prop" if prop_valued else "vampire_funext_set_set"
     elif binder_sorts == ["set", "set"]:
         helper = "vampire_funext_set_set_prop" if prop_valued else "vampire_funext_set_set_set"
+    elif binder_sorts == ["set", "set", "set"]:
+        helper = "vampire_funext_set_set_set_prop" if prop_valued else "vampire_funext_set_set_set_set"
     elif binder_sorts == ["set", "set->set"] and not prop_valued:
         helper = "vampire_funext_set_setfun_set"
     elif binder_sorts == ["set", "set->prop"] and prop_valued:
@@ -40445,6 +40449,39 @@ def raw_quantified_equality_rewrite_clause_steps(
             steps.append((replaced, proof))
             if len(steps) >= limit:
                 return steps
+    for old_subterm in expr_subterms(source_body, limit=192):
+        for function_equality, function_equality_proof in raw_partial_pointwise_set_function_equality_options(
+            equality,
+            equality_proof,
+            old_subterm,
+            local_sorts,
+            limit=4,
+        ):
+            function_sides = equality_like_sides(function_equality)
+            if function_sides is None:
+                continue
+            function_sort = raw_equality_transport_sort(function_sides[0], function_sides[1], local_sorts)
+            for replaced_body, transported in raw_equality_rewrite_clause_steps(
+                source_body,
+                source_body_proof,
+                function_sides[0],
+                function_sides[1],
+                function_equality_proof,
+                function_sort,
+            ):
+                proof = transported
+                for name, sort in reversed(source_binders):
+                    proof = f"(fun {name} :{sort} => {proof})"
+                replaced = replaced_body
+                for name, sort in reversed(source_binders):
+                    replaced = Expr("forall", value=name, sort=sort, args=(replaced,))
+                key = expr_key(replaced)
+                if key in seen:
+                    continue
+                seen.add(key)
+                steps.append((replaced, proof))
+                if len(steps) >= limit:
+                    return steps
     return steps
 
 
@@ -40718,6 +40755,8 @@ def raw_pointwise_set_function_equality(
         helper = "vampire_funext_set_prop" if prop_valued else "vampire_funext_set_set"
     elif binder_sorts == ["set", "set"]:
         helper = "vampire_funext_set_set_prop" if prop_valued else "vampire_funext_set_set_set"
+    elif binder_sorts == ["set", "set", "set"]:
+        helper = "vampire_funext_set_set_set_prop" if prop_valued else "vampire_funext_set_set_set_set"
     elif binder_sorts == ["set", "set->prop"] and prop_valued:
         helper = "vampire_funext_set_setprop_prop"
     elif binder_sorts == ["set", "set->set"]:
@@ -40783,6 +40822,8 @@ def raw_pointwise_set_function_sort(equality: Expr) -> str | None:
         result_sort = "prop" if prop_valued else "set"
     elif binder_sorts == ["set", "set"]:
         result_sort = "prop" if prop_valued else "set"
+    elif binder_sorts == ["set", "set", "set"]:
+        result_sort = "prop" if prop_valued else "set"
     elif binder_sorts == ["set", "set->prop"] and prop_valued:
         result_sort = "prop"
     elif binder_sorts == ["set", "set->set"] and not prop_valued:
@@ -40834,13 +40875,19 @@ def raw_partial_pointwise_set_function_equality_options(
     def leaks_old_locals(expr: Expr) -> bool:
         return bool(old_local_names & (expr_variables(expr) | expr_bound_variables(expr)))
 
-    for suffix_len in (2, 1):
+    for suffix_len in (3, 2, 1):
         if suffix_len >= len(binders):
             continue
         suffix_binders = binders[-suffix_len:]
         suffix_sorts = [strip_balanced_parens(sort) for _name, sort in suffix_binders]
         suffix_sort_key = tuple(suffix_sorts)
-        if suffix_sort_key not in {("set",), ("set", "set"), ("set", "set->set"), ("set", "set->prop")}:
+        if suffix_sort_key not in {
+            ("set",),
+            ("set", "set"),
+            ("set", "set", "set"),
+            ("set", "set->set"),
+            ("set", "set->prop"),
+        }:
             continue
         prefix_binders = binders[:-suffix_len]
         prefix_names = {name for name, _sort in prefix_binders}
@@ -40858,7 +40905,14 @@ def raw_partial_pointwise_set_function_equality_options(
             flatten_substitution(subst)
             if any(name not in subst for name, _sort in prefix_binders):
                 continue
-            if any(expr_variables(subst[name]) & prefix_names for name, _sort in prefix_binders):
+            if any(
+                (expr_variables(subst[name]) & prefix_names) - {name}
+                or (
+                    name in expr_variables(subst[name])
+                    and not (subst[name].kind == "var" and subst[name].value == name)
+                )
+                for name, _sort in prefix_binders
+            ):
                 continue
             if any(suffix_names & (expr_variables(subst[name]) | expr_bound_variables(subst[name])) for name, _sort in prefix_binders):
                 continue
@@ -40879,6 +40933,8 @@ def raw_partial_pointwise_set_function_equality_options(
                 helper = "vampire_funext_set_prop" if pointwise_prop_valued else "vampire_funext_set_set"
             elif suffix_sorts == ["set", "set"]:
                 helper = "vampire_funext_set_set_prop" if pointwise_prop_valued else "vampire_funext_set_set_set"
+            elif suffix_sorts == ["set", "set", "set"]:
+                helper = "vampire_funext_set_set_set_prop" if pointwise_prop_valued else "vampire_funext_set_set_set_set"
             elif suffix_sorts == ["set", "set->prop"] and pointwise_prop_valued:
                 helper = "vampire_funext_set_setprop_prop"
             elif suffix_sorts == ["set", "set->set"] and not pointwise_prop_valued:
