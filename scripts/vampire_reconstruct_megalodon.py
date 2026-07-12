@@ -69310,10 +69310,11 @@ def raw_tptp_inequality_splitting_proof(
                 return parent_proof
             if expr_same_mod_alpha(left, split_arg) and expr_same_mod_alpha(right, target_arg):
                 assumption = fresh_identifier("Hineq", proposition, parent_proof)
+                equality_sort = raw_equality_transport_sort(target_arg, split_arg, variable_sorts)
                 if source_negative.kind == "eq":
-                    symmetry = native_eq_symmetry_proof(assumption, split_arg, target_arg, "prop")
+                    symmetry = native_eq_symmetry_proof(assumption, target_arg, split_arg, equality_sort)
                 else:
-                    symmetry = raw_eq_symmetry_proof(assumption, target_arg, "prop")
+                    symmetry = raw_eq_symmetry_proof(assumption, target_arg, equality_sort)
                 return f"(fun {assumption} => {proof_head(parent_proof)} {proof_term_text(symmetry)})"
         if not expr_same_mod_alpha(source_negative, split_arg):
             continue
@@ -72671,7 +72672,11 @@ def source_local_set_definitions(source: Path | None, line: int | None) -> dict[
 
     def branch_or_scope_boundary(row: str, definition_indent: int) -> bool:
         stripped = row.lstrip()
+        if not stripped:
+            return False
         indent = len(row) - len(stripped)
+        if indent < definition_indent:
+            return True
         if indent > definition_indent:
             return False
         return stripped.startswith("}")
@@ -73404,6 +73409,21 @@ def source_surface_if_function(target_text: str | None) -> str:
     return "If_i"
 
 
+def source_surface_postfix_application_text(symbol: str, body_text: str, target_text: str | None) -> str | None:
+    if symbol == "'":
+        return f"SetAdjoin ({body_text}) (Sing (ordsucc Empty))"
+    candidates = {
+        "''": ("ctag",),
+    }.get(symbol)
+    if candidates is None:
+        return None
+    if target_text is not None:
+        for candidate in candidates:
+            if re.search(rf"(?<![A-Za-z0-9_']){re.escape(candidate)}(?![A-Za-z0-9_'])", target_text):
+                return f"{candidate} ({body_text})"
+    return f"{candidates[0]} ({body_text})"
+
+
 def source_surface_head_is_function(head: str, local_sorts: dict[str, str] | None) -> bool:
     if local_sorts is None:
         return False
@@ -73521,6 +73541,18 @@ def source_surface_expr_text(
     )
     if not stripped:
         return stripped
+    postfix_match = re.fullmatch(r"(?P<body>.+?)\s+(?P<op>''|')", stripped)
+    if postfix_match is not None:
+        body_text = source_surface_expr_text(
+            postfix_match.group("body"),
+            target_text,
+            local_sorts,
+            source_binders,
+            "set",
+        )
+        application_text = source_surface_postfix_application_text(postfix_match.group("op"), body_text, target_text)
+        if application_text is not None:
+            return application_text
     if_match = re.match(r"^if\s+(?P<condition>.+?)\s+then\s+(?P<then_branch>.+?)\s+else\s+(?P<else_branch>.+)$", stripped)
     if if_match is not None:
         function_name = source_surface_if_function(target_text)
@@ -74150,6 +74182,15 @@ def raw_tptp_unfolded_source_fact_proof(
         )
         if transformed_continuation is not None:
             return transformed_continuation
+        if len(expr_text(source)) + len(expr_text(target)) <= 30000:
+            shallow_transform = raw_deep_formula_transform_proof(
+                source,
+                target,
+                source_name,
+                proof_sorts,
+            )
+            if shallow_transform is not None:
+                return shallow_transform
         source_head_args = raw_expr_application_head_args(source)
         source_is_top_defined_application = (
             source_head_args is not None
