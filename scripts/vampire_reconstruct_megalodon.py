@@ -61968,6 +61968,47 @@ def raw_tptp_quantify_free_synthetic_db_expr(expr: Expr, variable_sorts: dict[st
     return result
 
 
+def raw_forall_wrapped_expr(binders: list[tuple[str, str]], body: Expr) -> Expr:
+    result = body
+    for name, sort in reversed(binders):
+        result = Expr("forall", value=name, sort=sort, args=(result,))
+    return result
+
+
+def raw_vampire_and_expr(left: Expr, right: Expr) -> Expr:
+    return Expr(
+        "app",
+        args=(Expr("var", value="vampire_and"), left, right),
+    )
+
+
+def raw_tptp_hoist_nullary_avatar_definition_binders(expr: Expr) -> Expr:
+    binders, body = collect_foralls(expr)
+    if not binders:
+        return expr
+    parts = vampire_and_parts(body)
+    if parts is None:
+        return expr
+    forward = implication_sides(parts[0])
+    backward = implication_sides(parts[1])
+    if forward is None or backward is None:
+        return expr
+    split: Expr | None = None
+    component: Expr | None = None
+    if expr_same_mod_alpha(forward[0], backward[1]) and expr_same_mod_alpha(forward[1], backward[0]):
+        split_parts = raw_split_application_parts(forward[0])
+        if split_parts is not None and not split_parts[1]:
+            split = forward[0]
+            component = forward[1]
+    if split is None or component is None:
+        return expr
+    quantified_component = raw_forall_wrapped_expr(list(binders), component)
+    return raw_vampire_and_expr(
+        Expr("arrow", args=(split, quantified_component)),
+        Expr("arrow", args=(quantified_component, split)),
+    )
+
+
 def raw_tptp_parameterize_avatar_split_proposition(
     proposition: str | None,
     split_parameters: dict[str, tuple[tuple[str, str], ...]],
@@ -61980,7 +62021,7 @@ def raw_tptp_parameterize_avatar_split_proposition(
         return proposition
     parameterized = raw_tptp_parameterize_split_expr(parsed, split_parameters)
     closed = raw_tptp_quantify_free_synthetic_db_expr(parameterized, variable_sorts)
-    return expr_text(closed)
+    return expr_text(raw_tptp_hoist_nullary_avatar_definition_binders(closed))
 
 
 def raw_tptp_avatar_split_definition_sort_and_body(
@@ -77628,7 +77669,10 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             continue
         split_name, split_args = split_parts
         free_body_variables = expr_variables(body) - {name for name, _sort in binders}
-        if not split_args and free_body_variables:
+        free_synthetic_body_variables = {
+            name for name in free_body_variables if RAW_TPTP_SYNTHETIC_DB_RE.fullmatch(name)
+        }
+        if not split_args and free_synthetic_body_variables:
             avatar_split_declarations.setdefault(split_name, "prop")
             continue
         body_text = raw_tptp_safe_split_definition_body(body, variable_sorts)
