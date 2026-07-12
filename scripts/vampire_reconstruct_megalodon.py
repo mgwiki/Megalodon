@@ -74572,6 +74572,71 @@ def source_local_fact_propositions(source: Path | None, line: int | None) -> dic
     return facts
 
 
+def source_local_theorem_assumption_propositions(source: Path | None, line: int | None) -> dict[str, str]:
+    if source is None or line is None or not source.exists():
+        return {}
+    theorem_line = source_enclosing_theorem_line(source, line)
+    theorem_proposition = source_theorem_proposition_text(source, line)
+    if theorem_line is None or theorem_proposition is None:
+        return {}
+    rows = source.read_text(encoding="utf-8", errors="replace").splitlines()
+    source_binders = source_binder_functions(source)
+    source_sorts = {**source_active_declared_sorts(source), **source_definition_sorts(source)}
+    goal = parse_expr(
+        use_ambient_basic_logic_text(
+            source_surface_parse_text(
+                theorem_proposition,
+                local_sorts=source_sorts,
+                source_binders=source_binders,
+            )
+        )
+    )
+    if goal is None:
+        return {}
+
+    assumptions: dict[str, str] = {}
+
+    def command_fragments(row: str) -> list[str]:
+        stripped = re.sub(r"^(?:[-+*]\s*)?(?:\{\s*)?", "", row.strip())
+        return [fragment.strip() for fragment in stripped.split(".") if fragment.strip()]
+
+    for cursor in range(theorem_line + 1, min(line, len(rows)) + 1):
+        for command in command_fragments(rows[cursor - 1]):
+            for intro_name in source_intro_command_names(command, "let"):
+                if goal.kind != "forall":
+                    break
+                bound_name = goal.value
+                body = goal.args[0]
+                if bound_name is not None and intro_name != "_":
+                    body = substitute_expr(body, {bound_name: Expr("var", value=intro_name)})
+                goal = body
+            for assume_name in source_intro_command_names(command, "assume"):
+                if goal.kind != "arrow":
+                    break
+                premise = goal.args[0]
+                if assume_name != "_":
+                    assumptions.setdefault(assume_name, expr_text(premise))
+                goal = goal.args[1]
+    return assumptions
+
+
+def source_local_theorem_assumption_locations(source: Path | None, line: int | None) -> dict[str, int]:
+    if source is None or line is None or not source.exists():
+        return {}
+    theorem_line = source_enclosing_theorem_line(source, line)
+    if theorem_line is None:
+        return {}
+    rows = source.read_text(encoding="utf-8", errors="replace").splitlines()
+    locations: dict[str, int] = {}
+    for cursor in range(theorem_line + 1, min(line, len(rows)) + 1):
+        stripped = re.sub(r"^(?:[-+*]\s*)?(?:\{\s*)?", "", rows[cursor - 1].strip())
+        for fragment in stripped.split("."):
+            for assume_name in source_intro_command_names(fragment.strip(), "assume"):
+                if assume_name != "_":
+                    locations.setdefault(assume_name, cursor)
+    return locations
+
+
 def source_local_set_definition_locations(source: Path | None, line: int | None) -> dict[str, int]:
     if source is None or line is None or not source.exists():
         return {}
@@ -76637,6 +76702,25 @@ def raw_tptp_local_source_fact_proof(
     source_proposition = local_source_fact_propositions[source_name]
     if source_proposition is None:
         return proof_ref
+    target_expr_for_unused_forall = parse_expr(proposition)
+    if target_expr_for_unused_forall is not None:
+        target_binders, target_body = collect_foralls(target_expr_for_unused_forall)
+        if target_binders and not ({name for name, _sort in target_binders} & expr_variables(target_body)):
+            body_proof = raw_tptp_local_source_fact_proof(
+                expr_text(target_body),
+                source_name,
+                local_source_fact_propositions,
+                variable_sorts,
+                source_definitions,
+                source_sorts,
+                alias_definition_names,
+                source_binders,
+                proof_ref,
+            )
+            if body_proof is not None:
+                for name, sort in reversed(target_binders):
+                    body_proof = f"(fun {name} :{binder_sort_text(sort)} => {body_proof})"
+                return body_proof
     if canonical_proposition(source_proposition) == canonical_proposition(proposition):
         return proof_ref
     desugared_source_fact = raw_tptp_desugared_source_fact_proof(
@@ -76681,6 +76765,10 @@ def raw_tptp_local_source_fact_proof(
     if source is None or target is None:
         return None
     if expr_same_mod_alpha(source, target):
+        return proof_ref
+    normalized_source = beta_normalize_expr(normalize_defined_expr(source, source_definitions))
+    normalized_target = beta_normalize_expr(normalize_defined_expr(target, source_definitions))
+    if expr_same_mod_alpha_eta_after_sort_normalization(normalized_source, normalized_target):
         return proof_ref
     context_equality = raw_source_fact_equality_context_proof(
         source,
@@ -77178,6 +77266,28 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         source,
         proof_or_problem_obligation_line(proof, problem),
     )
+    theorem_assumption_facts = source_local_theorem_assumption_propositions(
+        source,
+        proof_or_problem_obligation_line(proof, problem),
+    )
+    theorem_assumption_locations = source_local_theorem_assumption_locations(
+        source,
+        proof_or_problem_obligation_line(proof, problem),
+    )
+    all_local_source_facts.update(
+        {
+            name: proposition
+            for name, proposition in theorem_assumption_facts.items()
+            if all_local_source_facts.get(name) is None
+        }
+    )
+    all_local_source_fact_locations.update(
+        {
+            name: location
+            for name, location in theorem_assumption_locations.items()
+            if name not in all_local_source_fact_locations
+        }
+    )
     local_set_names_in_local_source_facts: set[str] = set()
     for source_proposition in all_local_source_facts.values():
         if source_proposition is None:
@@ -77560,6 +77670,44 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         translated = translated_local_source_fact_proposition(proposition)
         if translated is not None:
             local_source_fact_axiom_propositions[name] = translated
+
+    def inferred_local_source_name_for_proposition(proposition: str | None, allow_bridge: bool = False) -> str | None:
+        if not proposition:
+            return None
+        proposition_canonical = source_map_canonical_proposition(proposition)
+        source_sorts_for_linking = source_active_declared_sorts(source)
+        for source_name, source_proposition in local_source_fact_axiom_propositions.items():
+            if source_map_canonical_proposition(source_proposition) == proposition_canonical:
+                return source_name
+        if not allow_bridge:
+            return None
+        for source_name in sorted(local_source_fact_propositions):
+            if local_source_fact_propositions.get(source_name) is None:
+                continue
+            proof = raw_tptp_local_source_fact_proof(
+                proposition,
+                source_name,
+                local_source_fact_propositions,
+                variable_sorts,
+                source_and_local_definitions,
+                source_sorts_for_linking,
+                local_set_definition_names,
+                source_binders,
+                source_name,
+            )
+            if proof is not None:
+                return source_name
+        return None
+
+    relinked_entries: list[tuple[str, str, str, str | None, str | None, list[str], bool]] = []
+    for name, role, proposition, rule, source_name, parents, trusted_definition in entries:
+        if source_name is None:
+            source_name = inferred_local_source_name_for_proposition(
+                proposition,
+                role in {"axiom", "definition", "negated_conjecture"} or trusted_definition,
+            )
+        relinked_entries.append((name, role, proposition, rule, source_name, parents, trusted_definition))
+    entries = relinked_entries
 
     lines = [
         "// Raw Vampire TPTP reconstruction skeleton.",
