@@ -77407,6 +77407,40 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             continue
         lines.append(f"Variable {name}:{sort}.")
         declared_names.add(name)
+    local_definition_free_names: set[str] = set()
+    for _definition_name, (_sort, body) in local_set_definitions.items():
+        parsed_body = parse_expr(body)
+        if parsed_body is not None:
+            local_definition_free_names.update(expr_variables(parsed_body))
+        else:
+            local_definition_free_names.update(SOURCE_IDENTIFIER_RE.findall(body))
+    declared_source_sorts = source_declared_sorts(source)
+    for name in sorted(local_definition_free_names):
+        sort = variable_sorts.get(name)
+        if sort is None or sort == "SType":
+            continue
+        if name in RAW_TPTP_AMBIENT_CONSTANTS:
+            continue
+        if name.startswith("vampire_") or name in {"vAND", "vOR", "vIMP", "vNOT"}:
+            continue
+        if name in declared_names:
+            continue
+        if name in local_set_definition_names:
+            continue
+        if name in skolem_epsilon_definitions:
+            continue
+        if name in avatar_split_definitions or name.replace("__", "_") in avatar_split_definitions:
+            continue
+        if name in function_definitions or name in predicate_definitions:
+            continue
+        if name in inequality_split_name_definitions:
+            continue
+        if name in source_definition_names:
+            continue
+        if equivalent_sorts(sort, declared_source_sorts.get(name)):
+            continue
+        lines.append(f"Variable {name}:{sort}.")
+        declared_names.add(name)
     for name, definition in sorted(inequality_split_name_definitions.items()):
         if name in declared_names:
             continue
