@@ -72176,7 +72176,11 @@ def source_local_set_definitions(source: Path | None, line: int | None) -> dict[
 
     in_scope: dict[str, tuple[str, str]] = {}
     for name, (sort, body, offset, indent, section_alias) in definitions.items():
-        if not section_alias and any(branch_or_scope_boundary(row, indent) for row in scanned_rows[offset + 1 :]):
+        if (
+            not section_alias
+            and indent > 0
+            and any(branch_or_scope_boundary(row, indent) for row in scanned_rows[offset + 1 :])
+        ):
             continue
         in_scope[name] = (sort, body)
     return in_scope
@@ -73038,6 +73042,24 @@ def source_definition_infos(source: Path | None) -> dict[str, DefinitionInfo]:
             body,
         )
     return definitions
+
+
+def local_set_definition_infos(definitions: dict[str, tuple[str, str]]) -> dict[str, DefinitionInfo]:
+    infos: dict[str, DefinitionInfo] = {}
+    for name, (sort, body) in definitions.items():
+        body_text = source_surface_parse_text(body)
+        parsed = parse_definition_body(body_text)
+        if parsed is None:
+            continue
+        binders, parsed_body = parsed
+        infos[name] = DefinitionInfo(
+            normalize_megalodon_sort(sort),
+            body_text,
+            name,
+            binders,
+            parsed_body,
+        )
+    return infos
 
 
 def expr_same_mod_alpha_after_sort_normalization(left: Expr, right: Expr) -> bool:
@@ -73923,11 +73945,22 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         for name in renamed_all_local_set_definitions:
             if re.search(rf"(?<![A-Za-z0-9_']){re.escape(name)}(?![A-Za-z0-9_'])", source_proposition):
                 local_set_definition_roots.add(name)
+    for source_proposition in all_local_source_facts.values():
+        if source_proposition is None:
+            continue
+        renamed_source_proposition = rename_generated_identifier_text(source_proposition, local_identifier_renames)
+        for name in renamed_all_local_set_definitions:
+            if re.search(rf"(?<![A-Za-z0-9_']){re.escape(name)}(?![A-Za-z0-9_'])", renamed_source_proposition):
+                local_set_definition_roots.add(name)
     local_set_definitions = local_set_definition_closure(
         renamed_all_local_set_definitions,
         local_set_definition_roots,
     )
     local_set_definition_names = set(local_set_definitions)
+    source_and_local_definitions = {
+        **source_definitions,
+        **local_set_definition_infos(local_set_definitions),
+    }
     source_local_set_names = set(all_local_set_definitions) | set(renamed_all_local_set_definitions)
     local_source_fact_propositions = {
         name: (
@@ -74406,7 +74439,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 source_name,
                 local_source_fact_propositions,
                 variable_sorts,
-                source_definitions,
+                source_and_local_definitions,
             )
         ) is not None and emit_local_source_fact(source_name, proposition):
             lines.append(f"Theorem {claim_name}: {proposition}.")
@@ -74419,7 +74452,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 source_fact_names,
                 source_fact_propositions,
                 variable_sorts,
-                source_definitions,
+                source_and_local_definitions,
                 local_set_definitions,
             )
         ) is not None:
