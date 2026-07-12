@@ -85,6 +85,16 @@ class Literal:
         return Literal(not self.polarity, self.atom)
 
 
+@dataclass(frozen=True, order=True)
+class LambdaHint:
+    body: str
+    binder: str
+    binder_sort: str
+
+
+LAMBDA_HINTS: tuple[LambdaHint, ...] = ()
+
+
 def parse_term(value: Any, context: str) -> Term:
     if isinstance(value, str) and value:
         return Term("const", value)
@@ -324,6 +334,45 @@ def parse_variable_sort_entries(value: Any, context: str) -> dict[str, str]:
             )
         result[name] = normalized_sort
     return result
+
+
+def parse_key_value_fields(fields: list[str]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for field in fields:
+        key, separator, value = field.partition("=")
+        if not separator or not key:
+            continue
+        result[key] = value
+    return result
+
+
+def parse_lambda_hints(extras: dict[int, dict[str, list[str]]]) -> list[dict[str, str]]:
+    hints: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for step_no in sorted(extras):
+        fields = extras[step_no].get("lambda_sorts")
+        if not fields:
+            continue
+        keyed = parse_key_value_fields(fields)
+        try:
+            count = int(keyed.get("step_lambda_count", "0"))
+        except ValueError as exc:
+            raise CertificateError(f"u{step_no}.lambda_sorts: malformed step_lambda_count") from exc
+        for index in range(count):
+            prefix = f"step_lambda_{index}"
+            body = keyed.get(prefix + "_body")
+            binder = keyed.get(prefix + "_binder_db")
+            binder_sort = keyed.get(prefix + "_binder_sort")
+            if body is None or binder is None or binder_sort is None:
+                continue
+            require_megalodon_ident(binder, f"u{step_no}.lambda_sorts.{prefix}.binder")
+            normalized_sort = require_supported_sort(binder_sort, f"u{step_no}.lambda_sorts.{prefix}.binder_sort")
+            key = (body, binder, normalized_sort)
+            if key in seen:
+                continue
+            seen.add(key)
+            hints.append({"body": body, "binder": binder, "binder_sort": normalized_sort})
+    return hints
 
 
 def parse_substitution(value: Any, context: str) -> dict[str, Term]:
@@ -1289,10 +1338,20 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
     }
     if declarations:
         result["declarations"] = sorted(set(declarations))
+    lambda_hints = parse_lambda_hints(extras)
+    if lambda_hints:
+        result["lambda_hints"] = lambda_hints
     return result
 
 
 def term_text(term: Term) -> str:
+    lambda_hint = lambda_hint_for_term(term)
+    if lambda_hint is not None:
+        body = lambda_body_text(term.args[0], lambda_hint.binder)
+        return (
+            f"(fun {require_megalodon_ident(lambda_hint.binder, 'lambda binder')}"
+            f":{sort_type_text(lambda_hint.binder_sort)} => {body})"
+        )
     if term.kind in {"var", "const"}:
         return require_megalodon_ident(term.name, "term")
     if term.kind == "app":
@@ -1302,6 +1361,63 @@ def term_text(term: Term) -> str:
     if term.kind == "apply":
         return f"({term_text(term.args[0])} {term_text(term.args[1])})"
     raise CertificateError(f"cannot render term kind {term.kind!r}")
+
+
+def lambda_body_text(term: Term, binder: str) -> str:
+    if term.kind == "const" and term.name == binder:
+        return require_megalodon_ident(term.name, "lambda binder occurrence")
+    return term_text(term)
+
+
+def lambda_hint_for_term(term: Term) -> LambdaHint | None:
+    if term.kind != "app" or term.name != "vLAM" or len(term.args) != 1:
+        return None
+    body_key = normalize_lambda_hint_body(term_hint_text(term.args[0]))
+    for hint in LAMBDA_HINTS:
+        if normalize_lambda_hint_body(hint.body) == body_key:
+            return hint
+    unique_binders = {(hint.binder, hint.binder_sort) for hint in LAMBDA_HINTS}
+    if len(unique_binders) == 1:
+        binder, binder_sort = next(iter(unique_binders))
+        return LambdaHint(term_hint_text(term.args[0]), binder, binder_sort)
+    return None
+
+
+def lambda_binder_sorts() -> dict[str, str]:
+    result: dict[str, str] = {}
+    for hint in LAMBDA_HINTS:
+        result.setdefault(hint.binder, hint.binder_sort)
+    return result
+
+
+def term_hint_text(term: Term) -> str:
+    if term.kind in {"var", "const"}:
+        return term.name
+    if term.kind == "apply":
+        spine = application_spine(term)
+        return " ".join(parenthesize_hint_arg(item) for item in spine)
+    if term.kind == "app":
+        if not term.args:
+            return term.name
+        return term.name + " " + " ".join(parenthesize_hint_arg(arg) for arg in term.args)
+    return term.name
+
+
+def application_spine(term: Term) -> list[Term]:
+    if term.kind != "apply":
+        return [term]
+    return application_spine(term.args[0]) + [term.args[1]]
+
+
+def parenthesize_hint_arg(term: Term) -> str:
+    text = term_hint_text(term)
+    if term.kind in {"var", "const"}:
+        return text
+    return f"({text})"
+
+
+def normalize_lambda_hint_body(value: str) -> str:
+    return " ".join(value.replace("(", " ").replace(")", " ").split())
 
 
 def equality_symbol(sort: str) -> str:
@@ -1361,7 +1477,12 @@ def clause_body_text(clause: tuple[Literal, ...]) -> str:
 
 
 def term_free_vars(term: Term) -> set[str]:
+    lambda_hint = lambda_hint_for_term(term)
+    if lambda_hint is not None:
+        return term_free_vars(term.args[0]) - {lambda_hint.binder}
     if term.kind == "var":
+        return {term.name}
+    if term.kind == "const" and term.name in lambda_binder_sorts():
         return {term.name}
     result: set[str] = set()
     for arg in term.args:
@@ -1470,6 +1591,9 @@ def clause_var_sorts(
         for name, sort in explicit_var_sorts.items()
         if name in clause_vars
     }
+    for name, sort in lambda_binder_sorts().items():
+        if name in clause_vars:
+            var_sorts.setdefault(name, sort)
     locked_vars = set(var_sorts)
     for literal in clause:
         collect_atom_var_sorts(literal.atom, symbol_sorts, var_sorts, locked_vars)
@@ -1854,19 +1978,31 @@ def paramodulation_proof_text(
     return eliminate_clause_proof(instantiated_equality_parent, equality_proof, goal, equality_branch)
 
 
-def collect_term_symbols(term: Term, constants: set[str], functions: dict[str, int]) -> None:
+def collect_term_symbols(
+    term: Term,
+    constants: set[str],
+    functions: dict[str, int],
+    bound_constants: set[str] | None = None,
+) -> None:
+    bound_constants = bound_constants or set()
+    lambda_hint = lambda_hint_for_term(term)
+    if lambda_hint is not None:
+        collect_term_symbols(term.args[0], constants, functions, bound_constants | {lambda_hint.binder})
+        return
     if term.kind == "const":
+        if term.name in bound_constants or term.name in lambda_binder_sorts():
+            return
         constants.add(term.name)
     elif term.kind == "app":
         previous = functions.setdefault(term.name, len(term.args))
         if previous != len(term.args):
             raise CertificateError(f"function {term.name!r} used with inconsistent arity")
     elif term.kind == "apply":
-        collect_term_symbols(term.args[0], constants, functions)
-        collect_term_symbols(term.args[1], constants, functions)
+        collect_term_symbols(term.args[0], constants, functions, bound_constants)
+        collect_term_symbols(term.args[1], constants, functions, bound_constants)
         return
     for arg in term.args:
-        collect_term_symbols(arg, constants, functions)
+        collect_term_symbols(arg, constants, functions, bound_constants)
 
 
 def collect_atom_symbols(atom: Term, prop_atoms: set[str], predicates: dict[str, int], constants: set[str], functions: dict[str, int]) -> None:
@@ -1956,7 +2092,47 @@ def step_explicit_var_sorts(step: dict[str, Any], step_id: str) -> dict[str, str
     return result
 
 
+def certificate_lambda_hints(data: dict[str, Any]) -> tuple[LambdaHint, ...]:
+    value = data.get("lambda_hints", [])
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise CertificateError("lambda_hints must be a list")
+    hints: list[LambdaHint] = []
+    seen: set[tuple[str, str, str]] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise CertificateError(f"lambda_hints[{index}] must be an object")
+        body = item.get("body")
+        binder = item.get("binder")
+        binder_sort = item.get("binder_sort")
+        if not isinstance(body, str) or not body:
+            raise CertificateError(f"lambda_hints[{index}].body must be a non-empty string")
+        if not isinstance(binder, str) or not binder:
+            raise CertificateError(f"lambda_hints[{index}].binder must be a non-empty string")
+        require_megalodon_ident(binder, f"lambda_hints[{index}].binder")
+        if not isinstance(binder_sort, str) or not binder_sort:
+            raise CertificateError(f"lambda_hints[{index}].binder_sort must be a non-empty string")
+        hint = LambdaHint(body, binder, require_supported_sort(binder_sort, f"lambda_hints[{index}].binder_sort"))
+        key = (normalize_lambda_hint_body(hint.body), hint.binder, hint.binder_sort)
+        if key in seen:
+            continue
+        seen.add(key)
+        hints.append(hint)
+    return tuple(hints)
+
+
 def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal, ...]], theorem_name: str) -> str:
+    global LAMBDA_HINTS
+    previous_lambda_hints = LAMBDA_HINTS
+    LAMBDA_HINTS = certificate_lambda_hints(data)
+    try:
+        return emit_megalodon_smoke_with_context(data, clauses, theorem_name)
+    finally:
+        LAMBDA_HINTS = previous_lambda_hints
+
+
+def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, tuple[Literal, ...]], theorem_name: str) -> str:
     outline_declarations = data.get("declarations")
     if outline_declarations is not None:
         if not isinstance(outline_declarations, list) or not all(isinstance(item, str) and item.startswith("Variable ") for item in outline_declarations):

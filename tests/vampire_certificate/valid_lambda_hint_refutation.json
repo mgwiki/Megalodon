@@ -1,0 +1,147 @@
+{
+  "format": "vampire-megalodon-certificate",
+  "version": 1,
+  "problem": "lambda hint rendering refutation",
+  "declarations": [
+    "Variable finite:set->prop.",
+    "Variable infinite:set->prop.",
+    "Variable vNOT:prop->prop."
+  ],
+  "lambda_hints": [
+    {
+      "binder": "db0",
+      "binder_sort": "set",
+      "body": "vNOT (finite db0)"
+    }
+  ],
+  "steps": [
+    {
+      "id": "u1",
+      "rule": "input",
+      "source": {
+        "kind": "axiom",
+        "name": "lambda_positive"
+      },
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "eq": [
+              {
+                "const": "infinite"
+              },
+              {
+                "app": "vLAM",
+                "args": [
+                  {
+                    "apply": [
+                      {
+                        "const": "vNOT"
+                      },
+                      {
+                        "apply": [
+                          {
+                            "const": "finite"
+                          },
+                          {
+                            "const": "db0"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "sort": "set->prop"
+          }
+        }
+      ]
+    },
+    {
+      "id": "u2",
+      "rule": "input",
+      "source": {
+        "kind": "negated_conjecture",
+        "name": "lambda_negative"
+      },
+      "clause": [
+        {
+          "polarity": false,
+          "atom": {
+            "eq": [
+              {
+                "const": "infinite"
+              },
+              {
+                "app": "vLAM",
+                "args": [
+                  {
+                    "apply": [
+                      {
+                        "const": "vNOT"
+                      },
+                      {
+                        "apply": [
+                          {
+                            "const": "finite"
+                          },
+                          {
+                            "const": "db0"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "sort": "set->prop"
+          }
+        }
+      ]
+    },
+    {
+      "id": "u3",
+      "rule": "resolve",
+      "parents": [
+        "u1",
+        "u2"
+      ],
+      "pivot": {
+        "polarity": true,
+        "atom": {
+          "eq": [
+            {
+              "const": "infinite"
+            },
+            {
+              "app": "vLAM",
+              "args": [
+                {
+                  "apply": [
+                    {
+                      "const": "vNOT"
+                    },
+                    {
+                      "apply": [
+                        {
+                          "const": "finite"
+                        },
+                        {
+                          "const": "db0"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "sort": "set->prop"
+        }
+      },
+      "clause": []
+    }
+  ]
+}
