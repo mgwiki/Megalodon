@@ -579,6 +579,53 @@ def equality_resolution_proof_text(
     return eliminate_clause_proof(instantiated_parent, instantiated_parent_proof, goal, branch)
 
 
+def paramodulation_proof_text(
+    equality_parent_clause: tuple[Literal, ...],
+    equality_parent_proof: str,
+    target_parent_clause: tuple[Literal, ...],
+    target_parent_proof: str,
+    selected_equality: Literal,
+    selected_target: Literal,
+    position: tuple[int, ...],
+    substitution: dict[str, Term],
+    conclusion: tuple[Literal, ...],
+) -> str:
+    instantiated_equality_parent = tuple(substitute_literal(literal, substitution) for literal in equality_parent_clause)
+    instantiated_target_parent = tuple(substitute_literal(literal, substitution) for literal in target_parent_clause)
+    instantiated_equality = substitute_literal(selected_equality, substitution)
+    instantiated_target = substitute_literal(selected_target, substitution)
+    if clause_free_vars(instantiated_equality_parent) or clause_free_vars(instantiated_target_parent) or clause_free_vars(conclusion):
+        raise CertificateError("Megalodon smoke paramodulation elaboration currently requires ground instantiated clauses")
+    if normalize_clause(instantiated_equality_parent) != (instantiated_equality,):
+        raise CertificateError("Megalodon smoke paramodulation elaboration currently requires a singleton equality parent")
+    if normalize_clause(instantiated_target_parent) != (instantiated_target,):
+        raise CertificateError("Megalodon smoke paramodulation elaboration currently requires a singleton target parent")
+    if len(conclusion) != 1:
+        raise CertificateError("Megalodon smoke paramodulation elaboration currently requires a singleton conclusion")
+    if not instantiated_equality.polarity or instantiated_equality.atom.kind != "eq" or len(instantiated_equality.atom.args) != 2:
+        raise CertificateError("Megalodon smoke paramodulation selected literal must be positive equality")
+    if not instantiated_target.polarity or not conclusion[0].polarity:
+        raise CertificateError("Megalodon smoke paramodulation elaboration currently supports positive target literals only")
+
+    from_term, to_term = instantiated_equality.atom.args
+    if term_at_position(instantiated_target.atom, position, "paramodulation.position") != from_term:
+        raise CertificateError("Megalodon smoke paramodulation target position does not contain equality left side")
+    expected_atom = replace_term_at_position(instantiated_target.atom, position, to_term, "paramodulation.position")
+    if conclusion[0].atom != expected_atom:
+        raise CertificateError("Megalodon smoke paramodulation conclusion is not the rewritten target")
+
+    equality_proof = instantiate_proof(equality_parent_proof, equality_parent_clause, substitution)
+    target_proof = instantiate_proof(target_parent_proof, target_parent_clause, substitution)
+    context_atom = replace_term_at_position(
+        instantiated_target.atom,
+        position,
+        Term("var", "cert_x"),
+        "paramodulation.position",
+    )
+    context = f"(fun cert_x cert_y:set => {atom_text(context_atom)})"
+    return f"({equality_proof} {context} {target_proof})"
+
+
 def collect_term_symbols(term: Term, constants: set[str], functions: dict[str, int]) -> None:
     if term.kind == "const":
         constants.add(term.name)
@@ -702,6 +749,26 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
                     step_clauses[parent],
                     proof_names[parent],
                     selected_literal,
+                    substitution,
+                    clause,
+                ),
+            )
+        elif rule == "paramodulate":
+            parents = step["parents"]
+            selected_equality = parse_literal(step["equality"], f"{step_id}.equality")
+            selected_target = parse_literal(step["target"], f"{step_id}.target")
+            substitution = parse_substitution(step["substitution"], f"{step_id}.substitution")
+            position = parse_position(step["position"], f"{step_id}.position")
+            proof = wrap_clause_binders(
+                clause,
+                paramodulation_proof_text(
+                    step_clauses[parents[0]],
+                    proof_names[parents[0]],
+                    step_clauses[parents[1]],
+                    proof_names[parents[1]],
+                    selected_equality,
+                    selected_target,
+                    position,
                     substitution,
                     clause,
                 ),

@@ -1,0 +1,98 @@
+{
+  "format": "vampire-megalodon-certificate",
+  "version": 1,
+  "problem": "valid-paramodulation-refutation-smoke",
+  "steps": [
+    {
+      "id": "c1",
+      "rule": "input",
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "eq": [{"const": "a"}, {"const": "b"}]
+          }
+        }
+      ],
+      "source": {"kind": "axiom", "name": "eq_ab"}
+    },
+    {
+      "id": "c2",
+      "rule": "input",
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "pred": "P",
+            "args": [{"app": "f", "args": [{"const": "a"}]}]
+          }
+        }
+      ],
+      "source": {"kind": "axiom", "name": "p_fa"}
+    },
+    {
+      "id": "c3",
+      "rule": "paramodulate",
+      "parents": ["c1", "c2"],
+      "equality": {
+        "polarity": true,
+        "atom": {
+          "eq": [{"const": "a"}, {"const": "b"}]
+        }
+      },
+      "from": {"const": "a"},
+      "to": {"const": "b"},
+      "target": {
+        "polarity": true,
+        "atom": {
+          "pred": "P",
+          "args": [{"app": "f", "args": [{"const": "a"}]}]
+        }
+      },
+      "position": [0, 0],
+      "substitution": {},
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "pred": "P",
+            "args": [{"app": "f", "args": [{"const": "b"}]}]
+          }
+        }
+      ]
+    },
+    {
+      "id": "c4",
+      "rule": "input",
+      "clause": [
+        {
+          "polarity": false,
+          "atom": {
+            "pred": "P",
+            "args": [{"app": "f", "args": [{"const": "b"}]}]
+          }
+        }
+      ],
+      "source": {"kind": "negated_conjecture", "name": "not_p_fb"}
+    },
+    {
+      "id": "c5",
+      "rule": "resolve",
+      "parents": ["c3", "c4"],
+      "pivot": {
+        "polarity": true,
+        "atom": {
+          "pred": "P",
+          "args": [{"app": "f", "args": [{"const": "b"}]}]
+        }
+      },
+      "clause": []
+    },
+    {
+      "id": "c6",
+      "rule": "contradiction",
+      "parents": ["c5"],
+      "clause": []
+    }
+  ]
+}
