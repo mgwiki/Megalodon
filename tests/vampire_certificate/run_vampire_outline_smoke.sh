@@ -38,6 +38,14 @@ run_outline_case() {
     echo "outline contains an unlowered clause-wide paramodulation macro" >&2
     exit 1
   fi
+  if rg -q 'megalodon_step_extra\([0-9]+,"cnf"' "$outline"; then
+    if ! rg -q 'megalodon_step_extra\([0-9]+,"cnf".*"clause_parent_unit=' "$outline" \
+      || ! rg -q 'megalodon_step_extra\([0-9]+,"cnf".*"clause_index=' "$outline" \
+      || ! rg -q 'megalodon_step_extra\([0-9]+,"cnf".*"clause_count=' "$outline"; then
+      echo "outline CNF extra did not contain Vampire-side clause index metadata" >&2
+      exit 1
+    fi
+  fi
 
   if [[ "$label" == *"_thf" ]]; then
     if ! rg -q 'megalodon_certificate_step\([0-9]+,\{"rule":"definition_input"' "$outline"; then
