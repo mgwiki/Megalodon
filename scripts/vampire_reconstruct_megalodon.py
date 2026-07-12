@@ -7764,6 +7764,10 @@ def parenthesize_atomic_axiom_propositions(
             if parsed is None:
                 continue
             name, proposition = parsed
+            if prefix == "Theorem " and "_source" in name:
+                result.append(line)
+                rewritten = True
+                break
             stripped = proposition.strip()
             expr = parse_expr(stripped)
             if expr is None:
@@ -74548,6 +74552,10 @@ SOURCE_LAMBDA_RE = re.compile(
     r"^fun\s+(?P<names>(?:\([_A-Za-z][_A-Za-z0-9']*\)|[_A-Za-z][_A-Za-z0-9']*)(?:\s+(?:\([_A-Za-z][_A-Za-z0-9']*\)|[_A-Za-z][_A-Za-z0-9']*))*)"
     r"\s*:\s*(?P<sort>[^=]+?)\s*=>\s*(?P<body>.*)$"
 )
+SOURCE_COMPACT_TYPED_LAMBDA_RE = re.compile(
+    r"^fun\s*\((?P<names>[_A-Za-z][_A-Za-z0-9']*(?:\s+[_A-Za-z][_A-Za-z0-9']*)*)"
+    r"\s*:\s*(?P<sort>[^)]+)\)\s*=>\s*(?P<body>.*)$"
+)
 SOURCE_UNTYPED_LAMBDA_RE = re.compile(
     r"^fun\s+(?P<names>(?:\([_A-Za-z][_A-Za-z0-9']*\)|[_A-Za-z][_A-Za-z0-9']*)(?:\s+(?:\([_A-Za-z][_A-Za-z0-9']*\)|[_A-Za-z][_A-Za-z0-9']*))*)"
     r"\s*=>\s*(?P<body>.*)$"
@@ -74911,6 +74919,8 @@ def source_surface_expr_text(
             body = f"ex set (fun {name} :set => {body_text})"
         return body
     lambda_match = SOURCE_LAMBDA_RE.match(stripped)
+    if lambda_match is None:
+        lambda_match = SOURCE_COMPACT_TYPED_LAMBDA_RE.match(stripped)
     if lambda_match is not None:
         names = [name.strip("()") for name in lambda_match.group("names").split()]
         sort = normalize_megalodon_sort(lambda_match.group("sort"))
@@ -76115,6 +76125,111 @@ def raw_tptp_positive_conjecture_from_negated(proposition: str) -> str | None:
     return expr_text(premises[0])
 
 
+def raw_source_pointwise_to_function_equality_proof(
+    source_expr: Expr,
+    positive_expr: Expr,
+    positive_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_sides = equality_like_sides(source_expr)
+    if source_sides is None:
+        return None
+    left_function, right_function = source_sides
+    function_sort = expr_sort(left_function, variable_sorts) or expr_sort(right_function, variable_sorts)
+    if function_sort is None:
+        return None
+    pieces = split_sort_arrows(function_sort)
+    if len(pieces) < 2:
+        return None
+    argument_sorts = list(pieces[:-1])
+    result_sort = pieces[-1]
+    if result_sort not in {"set", "prop"}:
+        return None
+
+    pointwise_binders, pointwise_body = collect_foralls(positive_expr)
+    if len(pointwise_binders) != len(argument_sorts):
+        return None
+    if any(not equivalent_sorts(point_sort, arg_sort) for (_name, point_sort), arg_sort in zip(pointwise_binders, argument_sorts)):
+        return None
+
+    used_text = expr_text(source_expr) + expr_text(positive_expr)
+    source_binders: list[tuple[str, str, Expr]] = []
+    for index, sort in enumerate(argument_sorts):
+        name = fresh_identifier(f"X{index}", used_text, *[binder for binder, _sort, _expr in source_binders])
+        source_binders.append((name, sort, Expr("var", value=name)))
+    source_binder_vars = [var for _name, _sort, var in source_binders]
+    local_sorts = {**variable_sorts, **{name: sort for name, sort, _var in source_binders}}
+
+    target_left = beta_normalize_expr(append_application_args(left_function, source_binder_vars))
+    target_right = beta_normalize_expr(append_application_args(right_function, source_binder_vars))
+    target_body = Expr("eq", args=(target_left, target_right))
+
+    choices_by_binder: list[list[Expr]] = []
+    for _name, point_sort in pointwise_binders:
+        choices = [var for _src_name, src_sort, var in source_binders if equivalent_sorts(point_sort, src_sort)]
+        if not choices:
+            return None
+        choices_by_binder.append(choices)
+
+    body_proof: str | None = None
+    for chosen_args in itertools.product(*choices_by_binder):
+        if len({expr_key(arg) for arg in chosen_args}) != len(chosen_args):
+            continue
+        subst = {
+            point_name: arg
+            for (point_name, _point_sort), arg in zip(pointwise_binders, chosen_args)
+        }
+        instantiated = beta_normalize_expr(substitute_expr(pointwise_body, subst))
+        proof = positive_proof
+        for arg in chosen_args:
+            proof = f"({proof_head(proof)} {proof_arg_text(arg)})"
+        transformed = raw_deep_formula_transform_proof(
+            instantiated,
+            target_body,
+            proof,
+            local_sorts,
+        )
+        if transformed is not None:
+            body_proof = transformed
+            break
+        reversed_target = Expr("eq", args=(target_right, target_left))
+        transformed = raw_deep_formula_transform_proof(
+            instantiated,
+            reversed_target,
+            proof,
+            local_sorts,
+        )
+        if transformed is not None:
+            body_proof = native_eq_symmetry_proof(
+                transformed,
+                target_right,
+                target_left,
+                result_sort,
+            )
+            break
+    if body_proof is None:
+        return None
+
+    def function_equality(index: int, left_prefix: Expr, right_prefix: Expr) -> str:
+        if index == len(source_binders):
+            assert body_proof is not None
+            return body_proof
+        name, sort, var = source_binders[index]
+        left_here = beta_normalize_expr(left_prefix)
+        right_here = beta_normalize_expr(right_prefix)
+        next_left = beta_normalize_expr(append_application_args(left_here, [var]))
+        next_right = beta_normalize_expr(append_application_args(right_here, [var]))
+        tail_sort = join_sort_arrows(pieces[index + 1 :])
+        inner = function_equality(index + 1, next_left, next_right)
+        return (
+            f"(func_ext {binder_sort_text(sort)} {binder_sort_text(tail_sort)} "
+            f"{proof_arg_text(left_here)} {proof_arg_text(right_here)} "
+            f"(fun {name} :{binder_sort_text(sort)} => {proof_term_text(inner)}))"
+        )
+
+    return function_equality(0, left_function, right_function)
+
+
 def raw_tptp_reconstructed_conjecture_name(source: Path | None, problem: Path | None, proof: Path | None) -> str:
     theorem_name = source_enclosing_theorem_name(source, proof_or_problem_obligation_line(proof, problem))
     if theorem_name is None:
@@ -76132,6 +76247,7 @@ def raw_tptp_source_statement_bridge_proof(
     source_definitions: dict[str, DefinitionInfo],
     variable_sorts: dict[str, str],
     source_sorts: dict[str, str],
+    source_names: set[str] | None = None,
 ) -> str | None:
     proof_sorts = {
         **source_sorts,
@@ -76142,6 +76258,19 @@ def raw_tptp_source_statement_bridge_proof(
     normalized_positive = beta_normalize_expr(normalize_defined_expr(positive_expr, source_definitions))
     if expr_same_mod_alpha_eta_after_sort_normalization(normalized_source, normalized_positive):
         return positive_proof
+    if source_names is None or "func_ext" in source_names:
+        for function_source, function_positive in (
+            (source_expr, positive_expr),
+            (normalized_source, normalized_positive),
+        ):
+            pointwise_function = raw_source_pointwise_to_function_equality_proof(
+                function_source,
+                function_positive,
+                positive_proof,
+                proof_sorts,
+            )
+            if pointwise_function is not None:
+                return pointwise_function
 
     candidate_pairs = [
         (positive_expr, source_expr),
@@ -78417,6 +78546,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                             source_bridge_definitions,
                             variable_sorts,
                             source_sorts,
+                            source_active_declared_names(source),
                         )
                         if source_bridge_proof is not None:
                             source_statement_kind = source_bridge_kind
