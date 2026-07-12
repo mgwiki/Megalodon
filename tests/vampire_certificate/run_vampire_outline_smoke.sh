@@ -40,6 +40,10 @@ run_outline_case() {
       exit 1
     fi
   fi
+  if ! rg -q 'megalodon_certificate_step\([0-9]+,\{"rule":"resolve"' "$outline"; then
+    echo "outline did not contain Vampire-side resolve certificate step" >&2
+    exit 1
+  fi
 
   python3 scripts/vampire_certificate.py \
     "$outline" \
