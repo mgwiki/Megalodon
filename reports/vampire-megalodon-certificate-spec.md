@@ -207,16 +207,23 @@ First-order equality replacement.
 Required fields:
 
 - `parents`: equality parent and target parent,
+- `equality`: selected positive equality literal from the equality parent,
 - `from`: selected equality side,
 - `to`: selected replacement side,
+- `target`: selected literal from the target parent,
 - `position`: target position,
 - `substitution`,
 - `clause`.
 
 Side condition:
 
-- applying the exact substitution and replacing the selected subterm at the
-  exact position yields the conclusion.
+- the equality parent contains `equality`,
+- the target parent contains `target`,
+- `equality` is positive and becomes `from = to` after the exact substitution,
+- the selected target position contains `from` after the exact substitution,
+- replacing that selected occurrence by `to`, and retaining all other
+  substituted parent literals except the selected equality and target literals,
+  yields the conclusion modulo clause normalization.
 
 Demodulation must be expanded to this constructor in the MVP.
 

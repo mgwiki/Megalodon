@@ -1,0 +1,66 @@
+{
+  "format": "vampire-megalodon-certificate",
+  "version": 1,
+  "problem": "invalid-paramodulation-position-smoke",
+  "steps": [
+    {
+      "id": "c1",
+      "rule": "input",
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "eq": [{"const": "a"}, {"const": "b"}]
+          }
+        }
+      ],
+      "source": {"kind": "axiom", "name": "eq_ab"}
+    },
+    {
+      "id": "c2",
+      "rule": "input",
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "pred": "P",
+            "args": [{"app": "f", "args": [{"const": "a"}]}]
+          }
+        }
+      ],
+      "source": {"kind": "axiom", "name": "pa"}
+    },
+    {
+      "id": "c3",
+      "rule": "paramodulate",
+      "parents": ["c1", "c2"],
+      "equality": {
+        "polarity": true,
+        "atom": {
+          "eq": [{"const": "a"}, {"const": "b"}]
+        }
+      },
+      "from": {"const": "a"},
+      "to": {"const": "b"},
+      "target": {
+        "polarity": true,
+        "atom": {
+          "pred": "P",
+          "args": [{"app": "f", "args": [{"const": "a"}]}]
+        }
+      },
+      "position": [0],
+      "substitution": {},
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "pred": "P",
+            "args": [{"app": "f", "args": [{"const": "b"}]}]
+          }
+        }
+      ]
+    }
+  ]
+}
+

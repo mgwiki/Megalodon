@@ -24,6 +24,7 @@ MVP_RULES = {
     "resolve",
     "factor",
     "equality_resolution",
+    "paramodulate",
     "contradiction",
 }
 
@@ -106,6 +107,37 @@ def substitute_term(term: Term, substitution: dict[str, Term]) -> Term:
 
 def substitute_literal(literal: Literal, substitution: dict[str, Term]) -> Literal:
     return Literal(literal.polarity, substitute_term(literal.atom, substitution))
+
+
+def parse_position(value: Any, context: str) -> tuple[int, ...]:
+    if not isinstance(value, list):
+        raise CertificateError(f"{context}: position must be a list")
+    result: list[int] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, int) or item < 0:
+            raise CertificateError(f"{context}[{index}]: position entries must be non-negative integers")
+        result.append(item)
+    return tuple(result)
+
+
+def term_at_position(term: Term, position: tuple[int, ...], context: str) -> Term:
+    selected = term
+    for depth, index in enumerate(position):
+        if index >= len(selected.args):
+            raise CertificateError(f"{context}: position {list(position)} is invalid at depth {depth}")
+        selected = selected.args[index]
+    return selected
+
+
+def replace_term_at_position(term: Term, position: tuple[int, ...], replacement: Term, context: str) -> Term:
+    if not position:
+        return replacement
+    index = position[0]
+    if index >= len(term.args):
+        raise CertificateError(f"{context}: position {list(position)} is invalid")
+    args = list(term.args)
+    args[index] = replace_term_at_position(args[index], position[1:], replacement, context)
+    return Term(term.kind, term.name, tuple(args))
 
 
 def is_reflexive_equality_atom(atom: Term) -> bool:
@@ -286,6 +318,57 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
             clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
             if clause != expected:
                 raise CertificateError(f"{step_id}: equality-resolution conclusion does not match parent")
+
+        elif rule == "paramodulate":
+            allowed = {"id", "rule", "parents", "equality", "from", "to", "target", "position", "substitution", "clause"}
+            require_fields(step, allowed)
+            require_no_extra_fields(step, allowed)
+            parents = require_parents(step, 2)
+            equality_parent = clauses.get(parents[0])
+            target_parent = clauses.get(parents[1])
+            if equality_parent is None:
+                raise CertificateError(f"{step_id}: unknown parent {parents[0]}")
+            if target_parent is None:
+                raise CertificateError(f"{step_id}: unknown parent {parents[1]}")
+            equality = parse_literal(step["equality"], f"{step_id}.equality")
+            target = parse_literal(step["target"], f"{step_id}.target")
+            if equality not in equality_parent:
+                raise CertificateError(f"{step_id}: equality literal not present in equality parent")
+            if target not in target_parent:
+                raise CertificateError(f"{step_id}: target literal not present in target parent")
+            if not equality.polarity:
+                raise CertificateError(f"{step_id}: paramodulation equality must be positive")
+            substitution = parse_substitution(step["substitution"], f"{step_id}.substitution")
+            selected_equality = substitute_literal(equality, substitution)
+            if selected_equality.atom.kind != "eq" or len(selected_equality.atom.args) != 2:
+                raise CertificateError(f"{step_id}: selected equality is not an equality atom")
+            from_term = substitute_term(parse_term(step["from"], f"{step_id}.from"), substitution)
+            to_term = substitute_term(parse_term(step["to"], f"{step_id}.to"), substitution)
+            if selected_equality.atom.args != (from_term, to_term):
+                raise CertificateError(f"{step_id}: from/to do not match selected equality after substitution")
+            position = parse_position(step["position"], f"{step_id}.position")
+            selected_target = substitute_literal(target, substitution)
+            replaced = term_at_position(selected_target.atom, position, f"{step_id}.position")
+            if replaced != from_term:
+                raise CertificateError(f"{step_id}: target position does not contain the selected from term")
+            rewritten_target = Literal(
+                selected_target.polarity,
+                replace_term_at_position(selected_target.atom, position, to_term, f"{step_id}.position"),
+            )
+            expected = normalize_clause(
+                tuple(
+                    substitute_literal(item, substitution)
+                    for item in clause_without_one(equality_parent, equality)
+                )
+                + tuple(
+                    substitute_literal(item, substitution)
+                    for item in clause_without_one(target_parent, target)
+                )
+                + (rewritten_target,)
+            )
+            clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
+            if clause != expected:
+                raise CertificateError(f"{step_id}: paramodulation conclusion does not match parents")
 
         elif rule == "contradiction":
             allowed = {"id", "rule", "parents", "clause"}

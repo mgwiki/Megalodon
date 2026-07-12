@@ -9,6 +9,7 @@ mkdir -p "$TMPDIR"
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_resolution.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_substituted_resolution.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_equality_resolution.json --summary
+python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_paramodulation.json --summary
 
 if python3 scripts/vampire_certificate.py tests/vampire_certificate/invalid_pivot.json >"$TMPDIR/vampire_certificate_invalid_pivot.out" 2>"$TMPDIR/vampire_certificate_invalid_pivot.err"; then
   echo "invalid pivot certificate unexpectedly passed" >&2
@@ -32,6 +33,16 @@ fi
 
 if python3 scripts/vampire_certificate.py tests/vampire_certificate/invalid_equality_resolution_nonreflexive.json >"$TMPDIR/vampire_certificate_invalid_equality_resolution_nonreflexive.out" 2>"$TMPDIR/vampire_certificate_invalid_equality_resolution_nonreflexive.err"; then
   echo "non-reflexive equality-resolution certificate unexpectedly passed" >&2
+  exit 1
+fi
+
+if python3 scripts/vampire_certificate.py tests/vampire_certificate/invalid_paramodulation_position.json >"$TMPDIR/vampire_certificate_invalid_paramodulation_position.out" 2>"$TMPDIR/vampire_certificate_invalid_paramodulation_position.err"; then
+  echo "invalid-position paramodulation certificate unexpectedly passed" >&2
+  exit 1
+fi
+
+if python3 scripts/vampire_certificate.py tests/vampire_certificate/invalid_paramodulation_orientation.json >"$TMPDIR/vampire_certificate_invalid_paramodulation_orientation.out" 2>"$TMPDIR/vampire_certificate_invalid_paramodulation_orientation.err"; then
+  echo "wrong-orientation paramodulation certificate unexpectedly passed" >&2
   exit 1
 fi
 
