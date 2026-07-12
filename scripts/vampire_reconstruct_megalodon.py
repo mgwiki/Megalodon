@@ -745,16 +745,27 @@ def vampire_step_exported_lambda_capture_contexts(proof_text: str | None) -> dic
     if proof_text is None:
         return {}
     contexts: dict[str, str] = {}
+    split_dependency_db_sorts: dict[str, list[str]] = {}
     for line in proof_text.splitlines():
         match = MEGALODON_STEP_EXTRA_RE.match(line.strip())
         if match is None:
             continue
         kind = json.loads(f'"{match.group("kind")}"')
-        if kind not in {"rewrite", "two_literal_rewrite"}:
-            continue
         try:
             fields = json.loads(f'[{match.group("fields")}]')
         except json.JSONDecodeError:
+            continue
+        step = "S" + match.group("id")
+        if kind == "split_dependency":
+            db_sorts = [
+                str(field).split("=", 1)[1]
+                for field in fields
+                if re.search(r"_component_clause_db_sort_[0-9]+=", str(field))
+            ]
+            if db_sorts:
+                split_dependency_db_sorts.setdefault(step, []).extend(db_sorts)
+            continue
+        if kind not in {"rewrite", "two_literal_rewrite"}:
             continue
         joined = "\n".join(str(field) for field in fields)
         if "vLAM" not in joined and "^[Y" not in joined:
@@ -765,18 +776,27 @@ def vampire_step_exported_lambda_capture_contexts(proof_text: str | None) -> dic
         has_explicit_db_metadata = "_binder_db=" in joined or "_body_has_db=true" in joined
         if not (has_synthetic_db or (has_exported_substitution and has_exported_lambda)):
             continue
-        step = "S" + match.group("id")
         detail = (
             " Vampire also exported explicit binder-db metadata for this lambda."
             if has_explicit_db_metadata
             else ""
         )
+        split_detail = ""
+        if step in split_dependency_db_sorts:
+            split_detail = (
+                " The same step has an AVATAR split dependency whose component "
+                "clause contains de-Bruijn variables "
+                f"({', '.join(sorted(set(split_dependency_db_sorts[step])))}); "
+                "replay needs a scoped split certificate, not pointwise closure "
+                "over an unrelated outer binder."
+            )
         contexts[step] = (
             "exported lambda/synthetic-db substitution: Vampire's metadata uses "
             "de-Bruijn-style lambda opening here; replay must preserve that "
             "capturing substitution instead of treating dbN as an ordinary "
             "Megalodon constant."
             + detail
+            + split_detail
         )
     return contexts
 
@@ -803,6 +823,31 @@ def raw_tptp_replay_step_has_exported_lambda_capture(replay_step: MegalodonRepla
         if has_synthetic_db or (has_exported_substitution and has_exported_lambda):
             return True
     return False
+
+
+def raw_tptp_replay_step_split_dependency_db_sorts(replay_step: MegalodonReplayStep | None) -> tuple[str, ...]:
+    if replay_step is None:
+        return ()
+    db_sorts: list[str] = []
+    for kind, fields in replay_step.extras:
+        if kind != "split_dependency":
+            continue
+        for field in fields:
+            if re.search(r"_component_clause_db_sort_[0-9]+=", field):
+                db_sorts.append(field.split("=", 1)[1])
+    return tuple(sorted(set(db_sorts)))
+
+
+def raw_tptp_replay_step_scoped_split_dependency_comment(replay_step: MegalodonReplayStep | None) -> str | None:
+    db_sorts = raw_tptp_replay_step_split_dependency_db_sorts(replay_step)
+    if not db_sorts:
+        return None
+    return (
+        "replay blocker: scoped AVATAR split dependency: the split component "
+        f"clause contains de-Bruijn variables ({', '.join(db_sorts)}); replay "
+        "needs a scoped split certificate, not pointwise closure over an "
+        "unrelated outer binder."
+    )
 
 
 def annotate_remaining_admits(lines: list[str], proof_text: str | None) -> list[str]:
@@ -80036,6 +80081,9 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             if bridge_block is None:
                 if raw_tptp_replay_step_has_exported_lambda_capture(step_info):
                     lines.append(f"// {RAW_TPTP_EXPORTED_LAMBDA_CAPTURE_COMMENT}")
+                    scoped_split_comment = raw_tptp_replay_step_scoped_split_dependency_comment(step_info)
+                    if scoped_split_comment is not None:
+                        lines.append(f"// {scoped_split_comment}")
                 lines.append("{ admit. }")
             else:
                 lines.extend(bridge_block)
