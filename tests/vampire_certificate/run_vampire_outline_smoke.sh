@@ -48,6 +48,40 @@ run_outline_case() {
       echo "THF outline did not contain Vampire-side paramodulate-plus-symmetry certificate steps" >&2
       exit 1
     fi
+    python3 - "$outline" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(errors="replace").splitlines()
+cert_steps = {}
+cert_step = {}
+replay_kinds = {}
+for line in text:
+    m = re.match(r"megalodon_certificate_steps\((\d+),(.+)\)\.$", line)
+    if m:
+        cert_steps[int(m.group(1))] = m.group(2)
+        continue
+    m = re.match(r"megalodon_certificate_step\((\d+),(.+)\)\.$", line)
+    if m:
+        cert_step[int(m.group(1))] = m.group(2)
+        continue
+    m = re.match(r'megalodon_step_replay_kind\((\d+),"([^"]+)"\)\.$', line)
+    if m:
+        replay_kinds[int(m.group(1))] = m.group(2)
+
+subsumption_steps = [
+    step for step, kind in replay_kinds.items()
+    if kind == "subsumption_resolution"
+]
+if not subsumption_steps:
+    raise SystemExit("THF outline did not contain a subsumption_resolution replay step")
+for step in subsumption_steps:
+    if '"rule":"subsumption_resolution"' in cert_step.get(step, ""):
+        raise SystemExit("THF subsumption_resolution was emitted as a macro certificate step")
+    if '"rule":"resolve"' not in cert_steps.get(step, ""):
+        raise SystemExit("THF subsumption_resolution was not expanded to primitive resolve certificate steps")
+PY
   fi
   if [[ "$label" != *"_substituted_resolution" ]] \
     && ! rg -q 'megalodon_certificate_step\([0-9]+,\{"rule":"resolve"' "$outline" \
