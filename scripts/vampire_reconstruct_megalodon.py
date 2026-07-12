@@ -75695,6 +75695,86 @@ def raw_tptp_source_fact_proof(
     return None
 
 
+def raw_tptp_source_dependency_proof(
+    proposition: str,
+    source_name: str | None,
+    source_fact_names: set[str],
+    source_fact_propositions: dict[str, str],
+    variable_sorts: dict[str, str],
+    source_definitions: dict[str, DefinitionInfo],
+    source_aliases: dict[str, tuple[str, str]] | None = None,
+    source_sorts: dict[str, str] | None = None,
+    alias_definition_names: set[str] | None = None,
+    source_binders: dict[str, str] | None = None,
+) -> str | None:
+    if source_name is None or source_name not in source_fact_names:
+        return None
+    source_proposition = source_fact_propositions.get(source_name)
+    if source_proposition is None:
+        return None
+    unfolded_subq_proof = raw_tptp_source_fact_unfolded_subq_proof(
+        proposition,
+        source_name,
+        source_proposition,
+    )
+    if unfolded_subq_proof is not None:
+        return unfolded_subq_proof
+    if canonical_proposition(source_proposition) == canonical_proposition(proposition):
+        return source_name
+    desugared = desugar_source_bounded_foralls(source_proposition)
+    if desugared != source_proposition and canonical_proposition(desugared) == canonical_proposition(proposition):
+        return source_name
+    membership_source_fact = raw_tptp_source_membership_fact_proof(
+        proposition,
+        source_name,
+        source_proposition,
+        source_aliases,
+    )
+    if membership_source_fact is not None:
+        return membership_source_fact
+    oriented_source_fact = raw_tptp_oriented_source_fact_proof(
+        proposition,
+        source_name,
+        source_proposition,
+    )
+    if oriented_source_fact is not None:
+        return oriented_source_fact
+
+    target = parse_expr(proposition)
+    if target is None or not source_definitions:
+        return None
+    parse_sorts = {**(source_sorts or {})}
+    parse_sorts.update({name: definition.sort for name, definition in source_definitions.items()})
+    proof_definitions = {
+        name: definition
+        for name, definition in source_definitions.items()
+        if definition.binders and split_sort_arrows(definition.sort)[-1:] == ("prop",)
+    }
+    alias_definitions = {
+        name: definition
+        for name, definition in source_definitions.items()
+        if alias_definition_names is not None and name in alias_definition_names
+    }
+    target_unfolded = beta_normalize_expr(normalize_defined_expr(target, proof_definitions))
+    if alias_definitions:
+        target_unfolded = beta_normalize_expr(normalize_defined_expr(target_unfolded, alias_definitions))
+    for source_text in (
+        source_surface_parse_text(source_proposition, local_sorts=parse_sorts, source_binders=source_binders),
+        source_surface_parse_text(source_proposition, proposition, parse_sorts, source_binders),
+    ):
+        source = parse_expr(source_text)
+        if source is None:
+            continue
+        if expr_same_mod_alpha_eta_after_sort_normalization(source, target):
+            return source_name
+        source_unfolded = beta_normalize_expr(normalize_defined_expr(source, proof_definitions))
+        if alias_definitions:
+            source_unfolded = beta_normalize_expr(normalize_defined_expr(source_unfolded, alias_definitions))
+        if expr_same_mod_alpha_eta_after_sort_normalization(source_unfolded, target_unfolded):
+            return source_name
+    return None
+
+
 def raw_source_fact_equality_context_proof(
     source: Expr,
     target: Expr,
@@ -76702,9 +76782,9 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     if source_theorem_text:
         source_map_lines.append(f"// source theorem text: {source_theorem_text[:400]}")
     if source_local_obligation is not None:
-        obligation_kind, obligation_name, obligation_proposition, obligation_line = source_local_obligation
+        obligation_kind, obligation_name, obligation_proposition, local_obligation_line = source_local_obligation
         source_map_lines.append(
-            f"// source local obligation: {obligation_kind} {obligation_name}{source_line_suffix(obligation_line)}"
+            f"// source local obligation: {obligation_kind} {obligation_name}{source_line_suffix(local_obligation_line)}"
         )
         source_map_lines.append(f"// source local obligation text: {obligation_proposition[:400]}")
     source_map_lines.extend(
@@ -78035,6 +78115,30 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     source_statement_proposition = expr_text(positive_expr)
                     source_statement_proof = local_fact_proof
                     break
+                if source_statement_proposition is None:
+                    for dependency_name in source_dependency_names(source_line_text(source, obligation_line)):
+                        if dependency_name not in source_fact_names:
+                            continue
+                        dependency_proof = raw_tptp_source_dependency_proof(
+                            positive_conjecture,
+                            dependency_name,
+                            source_fact_names,
+                            source_fact_propositions,
+                            variable_sorts,
+                            source_and_local_definitions,
+                            local_set_definitions,
+                            source_sorts,
+                            local_set_definition_names,
+                            source_binders,
+                        )
+                        if dependency_proof is None:
+                            continue
+                        source_statement_kind = "source dependency"
+                        source_statement_name = dependency_name
+                        source_statement_line = source_fact_locations.get(dependency_name)
+                        source_statement_proposition = expr_text(positive_expr)
+                        source_statement_proof = dependency_proof
+                        break
                 source_bridge_size = len(source_statement or "") + len(positive_conjecture)
                 if (
                     source_statement_proposition is None
