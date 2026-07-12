@@ -1263,10 +1263,92 @@ def clause_free_vars(clause: tuple[Literal, ...]) -> tuple[str, ...]:
     return tuple(sorted(variables))
 
 
-def clause_prop_text(clause: tuple[Literal, ...]) -> str:
+def split_sort(sort: str) -> tuple[str, ...]:
+    sort = sort.strip()
+    if sort.startswith("(") and sort.endswith(")"):
+        sort = sort[1:-1]
+    return tuple(part.strip() for part in sort.split("->") if part.strip())
+
+
+def declaration_symbol_sorts(declarations: list[str]) -> dict[str, tuple[str, ...]]:
+    result: dict[str, tuple[str, ...]] = {}
+    for declaration in declarations:
+        match = re.fullmatch(r"Variable ([A-Za-z_][A-Za-z0-9_']*):(.+)\.", declaration)
+        if match is None:
+            continue
+        result[match.group(1)] = split_sort(match.group(2))
+    return result
+
+
+def merge_var_sort(var_sorts: dict[str, str], name: str, sort: str) -> None:
+    require_supported_sort(sort, f"sort for {name}")
+    previous = var_sorts.get(name)
+    if previous is None:
+        var_sorts[name] = sort
+    elif previous != sort:
+        raise CertificateError(f"variable {name!r} used at incompatible sorts {previous!r} and {sort!r}")
+
+
+def term_spine(term: Term) -> tuple[Term, list[Term]]:
+    args: list[Term] = []
+    current = term
+    while current.kind == "apply" and len(current.args) == 2:
+        args.append(current.args[1])
+        current = current.args[0]
+    if current.kind == "app":
+        args.extend(reversed(current.args))
+        current = Term("const", current.name)
+    args.reverse()
+    return current, args
+
+
+def collect_term_var_sorts(term: Term, expected_sort: str, symbol_sorts: dict[str, tuple[str, ...]], var_sorts: dict[str, str]) -> None:
+    if term.kind == "var":
+        merge_var_sort(var_sorts, term.name, expected_sort)
+        return
+    head, args = term_spine(term)
+    if head.kind == "var" and args:
+        merge_var_sort(var_sorts, head.name, "->".join(["set"] * len(args) + [expected_sort]))
+    if head.kind == "const" and args:
+        signature = symbol_sorts.get(head.name)
+        if signature is not None and len(signature) >= len(args) + 1:
+            for arg, arg_sort in zip(args, signature):
+                collect_term_var_sorts(arg, arg_sort, symbol_sorts, var_sorts)
+            return
+    for arg in term.args:
+        collect_term_var_sorts(arg, "set", symbol_sorts, var_sorts)
+
+
+def collect_atom_var_sorts(atom: Term, symbol_sorts: dict[str, tuple[str, ...]], var_sorts: dict[str, str]) -> None:
+    if atom.kind == "eq" and len(atom.args) == 2:
+        for arg in atom.args:
+            collect_term_var_sorts(arg, atom.name, symbol_sorts, var_sorts)
+        return
+    if atom.kind == "pred":
+        signature = symbol_sorts.get(atom.name)
+        arg_sorts = signature[:-1] if signature is not None and len(signature) == len(atom.args) + 1 else ("set",) * len(atom.args)
+        for arg, arg_sort in zip(atom.args, arg_sorts):
+            collect_term_var_sorts(arg, arg_sort, symbol_sorts, var_sorts)
+        return
+    for arg in atom.args:
+        collect_term_var_sorts(arg, "set", symbol_sorts, var_sorts)
+
+
+def clause_var_sorts(clause: tuple[Literal, ...], symbol_sorts: dict[str, tuple[str, ...]]) -> dict[str, str]:
+    var_sorts: dict[str, str] = {}
+    for literal in clause:
+        collect_atom_var_sorts(literal.atom, symbol_sorts, var_sorts)
+    for name in clause_free_vars(clause):
+        var_sorts.setdefault(name, "set")
+    return var_sorts
+
+
+def clause_prop_text(clause: tuple[Literal, ...], symbol_sorts: dict[str, tuple[str, ...]] | None = None) -> str:
+    symbol_sorts = symbol_sorts or {}
     result = clause_body_text(clause)
+    var_sorts = clause_var_sorts(clause, symbol_sorts)
     for name in reversed(clause_free_vars(clause)):
-        result = f"forall {require_megalodon_ident(name, 'binder')}:set, {result}"
+        result = f"forall {require_megalodon_ident(name, 'binder')}:{sort_type_text(var_sorts[name])}, {result}"
     return result
 
 
@@ -1578,9 +1660,11 @@ def instantiate_proof(proof_name: str, parent_clause: tuple[Literal, ...], subst
     return proof
 
 
-def wrap_clause_binders(clause: tuple[Literal, ...], proof: str) -> str:
+def wrap_clause_binders(clause: tuple[Literal, ...], proof: str, symbol_sorts: dict[str, tuple[str, ...]] | None = None) -> str:
+    symbol_sorts = symbol_sorts or {}
+    var_sorts = clause_var_sorts(clause, symbol_sorts)
     for name in reversed(clause_free_vars(clause)):
-        proof = f"(fun {require_megalodon_ident(name, 'binder')} :set => {proof})"
+        proof = f"(fun {require_megalodon_ident(name, 'binder')} :{sort_type_text(var_sorts[name])} => {proof})"
     return proof
 
 
@@ -1635,6 +1719,9 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
             lines.append(declaration)
     for symbol, (sort, value) in sorted(definitions.items()):
         lines.append(f"Definition {require_megalodon_ident(symbol, 'definition symbol')} : {require_supported_sort(sort, 'definition sort')} := {term_text(value)}.")
+    symbol_sorts = declaration_symbol_sorts(declarations)
+    for symbol, (sort, _value) in definitions.items():
+        symbol_sorts[symbol] = split_sort(sort)
     step_clauses: dict[str, tuple[Literal, ...]] = {}
     proof_names: dict[str, str] = {}
     assumptions: list[tuple[str, str]] = []
@@ -1650,12 +1737,12 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
             final_empty = step_id
         if rule == "input":
             proof_names[step_id] = step_id
-            assumptions.append((step_id, clause_prop_text(clause)))
+            assumptions.append((step_id, clause_prop_text(clause, symbol_sorts)))
             continue
         if rule == "definition_input":
-            proof = wrap_clause_binders(clause, equality_refl_proof())
+            proof = wrap_clause_binders(clause, equality_refl_proof(), symbol_sorts)
             proof_names[step_id] = step_id
-            derived.append((step_id, clause_prop_text(clause), proof))
+            derived.append((step_id, clause_prop_text(clause, symbol_sorts), proof))
             continue
         if rule == "resolve":
             parents = step["parents"]
@@ -1671,7 +1758,7 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
         elif rule == "substitute":
             parent = step["parents"][0]
             substitution = parse_substitution(step["substitution"], f"{step_id}.substitution")
-            proof = wrap_clause_binders(clause, instantiate_proof(proof_names[parent], step_clauses[parent], substitution))
+            proof = wrap_clause_binders(clause, instantiate_proof(proof_names[parent], step_clauses[parent], substitution), symbol_sorts)
         elif rule == "equality_resolution":
             parent = step["parents"][0]
             selected_literal = parse_literal(step["literal"], f"{step_id}.literal")
@@ -1685,6 +1772,7 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
                     substitution,
                     clause,
                 ),
+                symbol_sorts,
             )
         elif rule == "equality_symmetry":
             parent = step["parents"][0]
@@ -1697,6 +1785,7 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
                     selected_literal,
                     clause,
                 ),
+                symbol_sorts,
             )
         elif rule == "paramodulate":
             parents = step["parents"]
@@ -1717,6 +1806,7 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
                     substitution,
                     clause,
                 ),
+                symbol_sorts,
             )
         elif rule == "factor":
             parent = step["parents"][0]
@@ -1727,7 +1817,7 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
         else:
             raise CertificateError(f"Megalodon smoke elaboration does not yet support {rule}")
         proof_names[step_id] = step_id
-        derived.append((step_id, clause_prop_text(clause), proof))
+        derived.append((step_id, clause_prop_text(clause, symbol_sorts), proof))
 
     if final_empty is None:
         raise CertificateError("certificate has no empty-clause step to prove False")
