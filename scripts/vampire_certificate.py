@@ -1351,6 +1351,20 @@ def term_text(term: Term) -> str:
 
 
 def term_text_with_context(term: Term, db_context: tuple[str, ...]) -> str:
+    v_eq_args = named_binary_application(term, "vEQ")
+    if v_eq_args is not None:
+        left, right = v_eq_args
+        return f"({term_text_with_context(left, db_context)} = {term_text_with_context(right, db_context)})"
+    quantifier = quantifier_application(term)
+    if quantifier is not None:
+        kind, body_term, lambda_hint = quantifier
+        binder = f"db{len(db_context)}"
+        body = term_text_with_context(body_term.args[0], (*db_context, binder))
+        binder_text = require_megalodon_ident(binder, "quantifier binder")
+        sort_text = sort_type_text(lambda_hint.binder_sort)
+        if kind == "vPI":
+            return f"(forall {binder_text}:{sort_text}, {body})"
+        return f"({existential_symbol(lambda_hint.binder_sort)} (fun {binder_text}:{sort_text} => {body}))"
     lambda_hint = lambda_hint_for_term(term)
     if lambda_hint is not None:
         binder = f"db{len(db_context)}"
@@ -1374,6 +1388,45 @@ def term_text_with_context(term: Term, db_context: tuple[str, ...]) -> str:
     if term.kind == "apply":
         return f"({term_text_with_context(term.args[0], db_context)} {term_text_with_context(term.args[1], db_context)})"
     raise CertificateError(f"cannot render term kind {term.kind!r}")
+
+
+def named_binary_application(term: Term, name: str) -> tuple[Term, Term] | None:
+    if term.kind == "app" and term.name == name and len(term.args) == 2:
+        return term.args[0], term.args[1]
+    if term.kind != "apply":
+        return None
+    spine = application_spine(term)
+    if len(spine) != 3:
+        return None
+    head = spine[0]
+    if head.kind == "const" and head.name == name:
+        return spine[1], spine[2]
+    if head.kind == "app" and head.name == name and not head.args:
+        return spine[1], spine[2]
+    return None
+
+
+def quantifier_application(term: Term) -> tuple[str, Term, LambdaHint] | None:
+    head_name: str | None = None
+    body_term: Term | None = None
+    if term.kind == "app" and term.name in {"vPI", "vSIGMA"} and len(term.args) == 1:
+        head_name = term.name
+        body_term = term.args[0]
+    elif term.kind == "apply":
+        spine = application_spine(term)
+        if len(spine) == 2:
+            head, argument = spine
+            if head.kind == "const":
+                head_name = head.name
+            elif head.kind == "app" and not head.args:
+                head_name = head.name
+            body_term = argument
+    if head_name not in {"vPI", "vSIGMA"} or body_term is None:
+        return None
+    lambda_hint = lambda_hint_for_term(body_term)
+    if lambda_hint is None:
+        return None
+    return head_name, body_term, lambda_hint
 
 
 def lambda_body_text(term: Term, binder: str) -> str:
@@ -1449,11 +1502,31 @@ def equality_symbol(sort: str) -> str:
     return "vampire_eq_" + sort.replace("->", "_to_")
 
 
+def sort_symbol_suffix(sort: str) -> str:
+    normalized = require_supported_sort(sort, "sort symbol suffix")
+    normalized = normalized.replace("->", "_to_")
+    normalized = normalized.replace("(", "").replace(")", "")
+    return normalized
+
+
+def existential_symbol(sort: str) -> str:
+    return "vampire_exists_" + sort_symbol_suffix(sort)
+
+
 def sort_type_text(sort: str) -> str:
     require_supported_sort(sort, "sort")
     if "->" in sort:
         return f"({sort})"
     return sort
+
+
+def existential_definition(sort: str) -> str:
+    sort_text = sort_type_text(sort)
+    symbol = existential_symbol(sort)
+    return (
+        f"Definition {symbol} : ({sort_text}->prop)->prop := "
+        f"fun Q:{sort_text}->prop => forall P:prop, (forall x:{sort_text}, Q x -> P) -> P."
+    )
 
 
 def equality_definition(sort: str) -> str:
@@ -1501,6 +1574,11 @@ def term_free_vars(term: Term) -> set[str]:
 
 
 def term_free_vars_with_context(term: Term, db_context: tuple[str, ...]) -> set[str]:
+    quantifier = quantifier_application(term)
+    if quantifier is not None:
+        _kind, body_term, _lambda_hint = quantifier
+        binder = f"db{len(db_context)}"
+        return term_free_vars_with_context(body_term.args[0], (*db_context, binder))
     lambda_hint = lambda_hint_for_term(term)
     if lambda_hint is not None:
         binder = f"db{len(db_context)}"
@@ -1531,6 +1609,52 @@ def clause_free_vars(clause: tuple[Literal, ...]) -> tuple[str, ...]:
     for literal in clause:
         variables.update(literal_free_vars(literal))
     return tuple(sorted(variables))
+
+
+def collect_existential_sorts_in_term(term: Term, result: set[str], db_context: tuple[str, ...] = ()) -> None:
+    v_eq_args = named_binary_application(term, "vEQ")
+    if v_eq_args is not None:
+        for arg in v_eq_args:
+            collect_existential_sorts_in_term(arg, result, db_context)
+        return
+    quantifier = quantifier_application(term)
+    if quantifier is not None:
+        kind, body_term, lambda_hint = quantifier
+        if kind == "vSIGMA":
+            result.add(lambda_hint.binder_sort)
+        binder = f"db{len(db_context)}"
+        collect_existential_sorts_in_term(body_term.args[0], result, (*db_context, binder))
+        return
+    lambda_hint = lambda_hint_for_term(term)
+    if lambda_hint is not None:
+        binder = f"db{len(db_context)}"
+        collect_existential_sorts_in_term(term.args[0], result, (*db_context, binder))
+        return
+    for arg in term.args:
+        collect_existential_sorts_in_term(arg, result, db_context)
+
+
+def certificate_existential_sorts(clauses: dict[str, tuple[Literal, ...]]) -> tuple[str, ...]:
+    result: set[str] = set()
+    for clause in clauses.values():
+        for literal in clause:
+            collect_existential_sorts_in_term(literal.atom, result)
+    return tuple(sorted(result))
+
+
+def term_uses_named_binary(term: Term, name: str) -> bool:
+    v_eq_args = named_binary_application(term, name)
+    if v_eq_args is not None:
+        return True
+    return any(term_uses_named_binary(arg, name) for arg in term.args)
+
+
+def certificate_uses_named_binary(clauses: dict[str, tuple[Literal, ...]], name: str) -> bool:
+    return any(
+        term_uses_named_binary(literal.atom, name)
+        for clause in clauses.values()
+        for literal in clause
+    )
 
 
 def declaration_symbol_sorts(declarations: list[str]) -> dict[str, tuple[str, ...]]:
@@ -1573,6 +1697,11 @@ def collect_term_var_sorts(
     locked_vars: set[str] | None = None,
 ) -> None:
     locked_vars = locked_vars or set()
+    v_eq_args = named_binary_application(term, "vEQ")
+    if v_eq_args is not None:
+        for arg in v_eq_args:
+            collect_term_var_sorts(arg, "set", symbol_sorts, var_sorts, locked_vars)
+        return
     if term.kind == "var":
         if term.name not in locked_vars:
             merge_var_sort(var_sorts, term.name, expected_sort)
@@ -2038,6 +2167,17 @@ def collect_term_symbols_with_context(
     bound_constants: set[str],
     db_context: tuple[str, ...],
 ) -> None:
+    v_eq_args = named_binary_application(term, "vEQ")
+    if v_eq_args is not None:
+        for arg in v_eq_args:
+            collect_term_symbols_with_context(arg, constants, functions, bound_constants, db_context)
+        return
+    quantifier = quantifier_application(term)
+    if quantifier is not None:
+        _kind, body_term, _lambda_hint = quantifier
+        binder = f"db{len(db_context)}"
+        collect_term_symbols_with_context(body_term.args[0], constants, functions, bound_constants | {binder}, (*db_context, binder))
+        return
     lambda_hint = lambda_hint_for_term(term)
     if lambda_hint is not None:
         binder = f"db{len(db_context)}"
@@ -2207,6 +2347,9 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
             if literal.atom.kind == "eq"
         }
     )
+    if certificate_uses_named_binary(clauses, "vEQ") and "set" not in equality_sorts:
+        equality_sorts.append("set")
+        equality_sorts.sort()
     lines = [
         "Definition False : prop := forall p:prop, p.",
         "Definition or : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> p) -> (B -> p) -> p.",
@@ -2217,6 +2360,8 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
         lines.append(equality_definition(sort))
         if sort == "set":
             lines.append("Infix = 502 := eq.")
+    for sort in certificate_existential_sorts(clauses):
+        lines.append(existential_definition(sort))
     definitions = definition_input_declarations(data)
     for declaration in declarations:
         skip = False
