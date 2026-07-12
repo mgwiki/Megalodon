@@ -53,6 +53,7 @@ MVP_RULES = {
     "contradiction",
     "avatar_refutation",
     "definition_rewrite_chain",
+    "inequality_split",
 }
 RESOLUTION_LIKE_REPLAY_KINDS = {
     "resolution",
@@ -374,6 +375,26 @@ def definition_rewrite_chain_reaches(
             return False
         candidates = next_candidates
     return any(clauses_match_modulo_equality_symmetry(candidate, target_clause) for candidate in candidates)
+
+
+def bool_name_literal_term(literal: Literal, value: bool) -> Term | None:
+    if not literal.polarity or literal.atom.kind != "eq" or literal.atom.name != "prop":
+        return None
+    if len(literal.atom.args) != 2:
+        return None
+    truth = Term("const", "f__true" if value else "f__false")
+    left, right = literal.atom.args
+    if left == truth:
+        return right
+    if right == truth:
+        return left
+    return None
+
+
+def application_head_and_arg(term: Term) -> tuple[Term, Term] | None:
+    if term.kind != "apply" or len(term.args) != 2:
+        return None
+    return term.args[0], term.args[1]
 
 
 def is_reflexive_equality_atom(atom: Term) -> bool:
@@ -1280,6 +1301,84 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
             clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
             if not definition_rewrite_chain_reaches(source_clause, tuple(rewrites), clause, step_id):
                 raise CertificateError(f"{step_id}: definition rewrite chain does not reach conclusion")
+
+        elif rule == "inequality_split":
+            allowed = {"id", "rule", "parents", "source_clause", "splits", "clause"}
+            require_fields(step, allowed)
+            require_no_extra_fields(step, allowed)
+            parents = step.get("parents")
+            if not isinstance(parents, list) or len(parents) < 2:
+                raise CertificateError(f"{step_id}: inequality_split needs a source parent and at least one name parent")
+            if not all(isinstance(parent, str) and parent for parent in parents):
+                raise CertificateError(f"{step_id}: parent ids must be non-empty strings")
+            for parent in parents:
+                if parent not in clauses:
+                    raise CertificateError(f"{step_id}: unknown parent {parent}")
+            source_clause = normalize_clause(parse_clause(step["source_clause"], f"{step_id}.source_clause"))
+            if source_clause != clauses[parents[0]]:
+                raise CertificateError(f"{step_id}: source_clause does not match first parent")
+            split_values = step["splits"]
+            if not isinstance(split_values, list) or not split_values:
+                raise CertificateError(f"{step_id}: splits must be a non-empty list")
+            if len(split_values) != len(parents) - 1:
+                raise CertificateError(f"{step_id}: split count must match name parent count")
+
+            remaining_source = list(source_clause)
+            replacements: list[Literal] = []
+            used_name_parents: set[str] = set()
+            for split_index, split in enumerate(split_values):
+                if not isinstance(split, dict) or set(split) != {"name_parent", "source", "name_literal", "replacement"}:
+                    raise CertificateError(f"{step_id}.splits[{split_index}]: expected name_parent, source, name_literal, replacement")
+                name_parent = split["name_parent"]
+                if not isinstance(name_parent, str) or name_parent not in parents[1:]:
+                    raise CertificateError(f"{step_id}.splits[{split_index}]: name_parent must be one of the name parents")
+                if name_parent in used_name_parents:
+                    raise CertificateError(f"{step_id}.splits[{split_index}]: duplicate name_parent")
+                used_name_parents.add(name_parent)
+
+                name_parent_clause = clauses[name_parent]
+                if len(name_parent_clause) != 1:
+                    raise CertificateError(f"{step_id}.splits[{split_index}]: name parent must be a unit clause")
+                name_literal = parse_literal(split["name_literal"], f"{step_id}.splits[{split_index}].name_literal")
+                if name_parent_clause != (name_literal,):
+                    raise CertificateError(f"{step_id}.splits[{split_index}]: name_literal does not match name parent")
+                name_term = bool_name_literal_term(name_literal, False)
+                name_parts = application_head_and_arg(name_term) if name_term is not None else None
+                if name_parts is None:
+                    raise CertificateError(f"{step_id}.splits[{split_index}]: name_literal must be false = P(term)")
+                name_head, split_term = name_parts
+
+                source_literal = parse_literal(split["source"], f"{step_id}.splits[{split_index}].source")
+                if source_literal not in remaining_source:
+                    raise CertificateError(f"{step_id}.splits[{split_index}]: source literal not present or already used")
+                if source_literal.polarity or source_literal.atom.kind != "eq" or len(source_literal.atom.args) != 2:
+                    raise CertificateError(f"{step_id}.splits[{split_index}]: source must be a negative equality")
+                left, right = source_literal.atom.args
+                if left == split_term:
+                    other_side = right
+                elif right == split_term:
+                    other_side = left
+                else:
+                    raise CertificateError(f"{step_id}.splits[{split_index}]: name literal term is not a side of source equality")
+
+                replacement = parse_literal(split["replacement"], f"{step_id}.splits[{split_index}].replacement")
+                replacement_term = bool_name_literal_term(replacement, True)
+                replacement_parts = application_head_and_arg(replacement_term) if replacement_term is not None else None
+                if replacement_parts is None:
+                    raise CertificateError(f"{step_id}.splits[{split_index}]: replacement must be true = P(term)")
+                replacement_head, replacement_arg = replacement_parts
+                if replacement_head != name_head or replacement_arg != other_side:
+                    raise CertificateError(f"{step_id}.splits[{split_index}]: replacement does not use the same split name on the other equality side")
+
+                remaining_source.remove(source_literal)
+                replacements.append(replacement)
+
+            if used_name_parents != set(parents[1:]):
+                raise CertificateError(f"{step_id}: not all name parents were used")
+            clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
+            expected = normalize_clause(tuple(remaining_source) + tuple(replacements))
+            if clause != expected:
+                raise CertificateError(f"{step_id}: inequality split conclusion does not match replacements")
 
         elif rule == "paramodulate":
             allowed = {
