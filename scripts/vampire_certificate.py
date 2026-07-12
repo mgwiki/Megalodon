@@ -1725,20 +1725,22 @@ def normalize_lambda_hint_body(value: str) -> str:
     return " ".join(value.replace("(", " ").replace(")", " ").split())
 
 
+def sort_symbol_suffix(sort: str) -> str:
+    normalized = require_supported_sort(sort, "sort symbol suffix")
+    normalized = normalized.replace("->", "_to_")
+    normalized = normalized.replace("(", "lp_").replace(")", "_rp")
+    normalized = re.sub(r"[^A-Za-z0-9_]", "_", normalized)
+    normalized = re.sub(r"_+", "_", normalized).strip("_")
+    return normalized
+
+
 def equality_symbol(sort: str) -> str:
     require_supported_sort(sort, "equality sort")
     if sort == "set":
         return "eq"
     if sort == "prop":
         return "vampire_eq_prop"
-    return "vampire_eq_" + sort.replace("->", "_to_")
-
-
-def sort_symbol_suffix(sort: str) -> str:
-    normalized = require_supported_sort(sort, "sort symbol suffix")
-    normalized = normalized.replace("->", "_to_")
-    normalized = normalized.replace("(", "").replace(")", "")
-    return normalized
+    return "vampire_eq_" + sort_symbol_suffix(sort)
 
 
 def existential_symbol(sort: str) -> str:
@@ -2506,6 +2508,15 @@ def definition_input_declarations(data: dict[str, Any]) -> dict[str, tuple[str, 
     return definitions
 
 
+def term_has_free_db(term: Term, depth: int = 0) -> bool:
+    if term.kind == "const":
+        match = DB_NAME_RE.match(term.name)
+        return match is not None and int(match.group(1)) >= depth
+    if term.kind == "app" and term.name == "vLAM" and len(term.args) == 1:
+        return term_has_free_db(term.args[0], depth + 1)
+    return any(term_has_free_db(arg, depth) for arg in term.args)
+
+
 def step_explicit_var_sorts(step: dict[str, Any], step_id: str) -> dict[str, str]:
     value = step.get("variable_sorts", {})
     if value is None:
@@ -2602,6 +2613,11 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
     for sort in certificate_existential_sorts(clauses):
         lines.append(existential_definition(sort))
     definitions = definition_input_declarations(data)
+    definable_symbols = {
+        symbol
+        for symbol, (_sort, value) in definitions.items()
+        if not term_has_free_db(value)
+    }
     builtin_declarations = {
         "Variable f__false:prop.",
         "Variable f__true:prop.",
@@ -2613,13 +2629,15 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
         skip = False
         if declaration in builtin_declarations:
             skip = True
-        for symbol in definitions:
+        for symbol in definable_symbols:
             if declaration == f"Variable {symbol}:{definitions[symbol][0]}.":
                 skip = True
                 break
         if not skip:
             lines.append(declaration)
-    for symbol, (sort, value) in sorted(definitions.items()):
+    for symbol, (sort, value) in definitions.items():
+        if symbol not in definable_symbols:
+            continue
         lines.append(f"Definition {require_megalodon_ident(symbol, 'definition symbol')} : {require_supported_sort(sort, 'definition sort')} := {term_text(value)}.")
     symbol_sorts = declaration_symbol_sorts(declarations)
     symbol_sorts.update(
@@ -2652,6 +2670,10 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
             assumptions.append((step_id, clause_prop_text(clause, symbol_sorts, explicit_var_sorts)))
             continue
         if rule == "definition_input":
+            if step.get("symbol") not in definable_symbols:
+                proof_names[step_id] = step_id
+                assumptions.append((step_id, clause_prop_text(clause, symbol_sorts, explicit_var_sorts)))
+                continue
             proof = wrap_clause_binders(clause, equality_refl_proof(), symbol_sorts, explicit_var_sorts)
             proof_names[step_id] = step_id
             derived.append((step_id, clause_prop_text(clause, symbol_sorts, explicit_var_sorts), proof))
