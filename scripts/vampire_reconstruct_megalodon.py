@@ -8877,10 +8877,18 @@ def canonicalize_segment(text: str, next_var: list[int]) -> str:
     return "".join(result)
 
 
+CANONICAL_LOGIC_ALIASES = {
+    "vampire_false": "False",
+    "vampire_true": "True",
+    "vampire_or": "or",
+    "vampire_and": "and",
+}
+
+
 def canonical_expr_text(expr: Expr, env: dict[str, str], next_var: list[int]) -> str:
     if expr.kind == "var":
         assert expr.value is not None
-        return env.get(expr.value, expr.value)
+        return env.get(expr.value, CANONICAL_LOGIC_ALIASES.get(expr.value, expr.value))
     if expr.kind == "app":
         return " ".join(
             canonical_expr_text(arg, env, next_var)
@@ -74706,6 +74714,28 @@ def raw_tptp_source_map_wrapped_lines(label: str, names: Iterable[str], limit: i
     return lines
 
 
+def raw_tptp_source_map_location_lines(
+    label: str,
+    names: Iterable[str],
+    source: Path | None,
+    locations: dict[str, int],
+    limit: int = 80,
+) -> list[str]:
+    ordered = sorted({name for name in names if name and name in locations})
+    if not ordered:
+        return []
+    shown = ordered[:limit]
+    suffix = f" (+{len(ordered) - limit} more)" if len(ordered) > limit else ""
+    lines = [f"// {label}:"]
+    for name in shown:
+        location = locations[name]
+        source_text = f"{source}:{location}" if source is not None else f"line {location}"
+        lines.append(f"// - {name} at {source_text}")
+    if suffix:
+        lines.append(f"// {label}{suffix}")
+    return lines
+
+
 def raw_tptp_proposition_names(propositions: Iterable[str]) -> set[str]:
     names: set[str] = set()
     for proposition in propositions:
@@ -75334,15 +75364,39 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         )
     )
     source_map_lines.extend(
+        raw_tptp_source_map_location_lines(
+            "source top-level fact links",
+            used_source_annotations & source_fact_names,
+            source,
+            source_fact_locations,
+        )
+    )
+    source_map_lines.extend(
         raw_tptp_source_map_wrapped_lines(
             "source local proof facts used",
             used_source_annotations & set(local_source_fact_propositions),
         )
     )
     source_map_lines.extend(
+        raw_tptp_source_map_location_lines(
+            "source local proof fact links",
+            used_source_annotations & set(local_source_fact_propositions),
+            source,
+            all_local_source_fact_locations,
+        )
+    )
+    source_map_lines.extend(
         raw_tptp_source_map_wrapped_lines(
             "source local set definitions used",
             local_set_definition_names,
+        )
+    )
+    source_map_lines.extend(
+        raw_tptp_source_map_location_lines(
+            "source local set definition links",
+            local_set_definition_names,
+            source,
+            renamed_all_local_set_locations,
         )
     )
     source_map_lines.extend(
