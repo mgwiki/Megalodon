@@ -1423,19 +1423,30 @@ def eliminate_clause_proof(
     goal: str,
     branch_proof,
 ) -> str:
-    normalized = normalize_clause(clause)
-    if not normalized:
+    if not clause:
         return f"({proof} {goal})"
-    if len(normalized) == 1:
-        return branch_proof(normalized[0], proof)
-    head = normalized[0]
-    tail = tuple(normalized[1:])
+    if len(clause) == 1:
+        return branch_proof(clause[0], proof)
+    head = clause[0]
+    tail = tuple(clause[1:])
     head_proof = fresh_proof_name("Hlit")
     tail_proof = fresh_proof_name("Htail")
     return (
         f"({proof} {goal} "
         f"(fun {head_proof} => {branch_proof(head, head_proof)}) "
         f"(fun {tail_proof} => {eliminate_clause_proof(tail, tail_proof, goal, branch_proof)}))"
+    )
+
+
+def reorder_clause_proof_text(source_clause: tuple[Literal, ...], source_proof: str, target_clause: tuple[Literal, ...]) -> str:
+    if normalize_clause(source_clause) != normalize_clause(target_clause):
+        raise CertificateError("cannot reorder non-equivalent clauses")
+    goal = clause_body_text(target_clause)
+    return eliminate_clause_proof(
+        source_clause,
+        source_proof,
+        goal,
+        lambda literal, proof: intro_literal_proof(literal, target_clause, proof),
     )
 
 
@@ -1482,8 +1493,14 @@ def equality_resolution_proof_text(
     instantiated_selected = substitute_literal(selected_literal, substitution)
     if instantiated_selected.polarity or not is_reflexive_equality_atom(instantiated_selected.atom):
         raise CertificateError("selected equality-resolution literal is not negative reflexive equality")
-    if clause_free_vars(instantiated_parent) or clause_free_vars(conclusion):
-        raise CertificateError("Megalodon smoke equality-resolution elaboration currently requires ground instantiated clauses")
+    conclusion_vars = set(clause_free_vars(conclusion))
+    parent_vars = set(clause_free_vars(instantiated_parent))
+    uncovered_vars = sorted(parent_vars - conclusion_vars)
+    if uncovered_vars:
+        raise CertificateError(
+            "Megalodon smoke equality-resolution elaboration has parent variables not bound by conclusion: "
+            + ", ".join(uncovered_vars)
+        )
     instantiated_parent_proof = instantiate_proof(parent_proof, parent_clause, substitution)
     goal = clause_body_text(conclusion)
     reflexive_false = lambda proof: f"({proof} {equality_refl_proof()})"
@@ -1535,8 +1552,14 @@ def paramodulation_proof_text(
     instantiated_target_parent = tuple(substitute_literal(literal, substitution) for literal in target_parent_clause)
     instantiated_equality = substitute_literal(selected_equality, substitution)
     instantiated_target = substitute_literal(selected_target, substitution)
-    if clause_free_vars(instantiated_equality_parent) or clause_free_vars(instantiated_target_parent) or clause_free_vars(conclusion):
-        raise CertificateError("Megalodon smoke paramodulation elaboration currently requires ground instantiated clauses")
+    conclusion_vars = set(clause_free_vars(conclusion))
+    parent_vars = set(clause_free_vars(instantiated_equality_parent)) | set(clause_free_vars(instantiated_target_parent))
+    uncovered_vars = sorted(parent_vars - conclusion_vars)
+    if uncovered_vars:
+        raise CertificateError(
+            "Megalodon smoke paramodulation elaboration has parent variables not bound by conclusion: "
+            + ", ".join(uncovered_vars)
+        )
     if instantiated_equality not in normalize_clause(instantiated_equality_parent):
         raise CertificateError("Megalodon smoke paramodulation equality literal is not present after substitution")
     if instantiated_target not in normalize_clause(instantiated_target_parent):
@@ -1758,7 +1781,16 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
         elif rule == "substitute":
             parent = step["parents"][0]
             substitution = parse_substitution(step["substitution"], f"{step_id}.substitution")
-            proof = wrap_clause_binders(clause, instantiate_proof(proof_names[parent], step_clauses[parent], substitution), symbol_sorts)
+            instantiated_parent = tuple(substitute_literal(literal, substitution) for literal in step_clauses[parent])
+            proof = wrap_clause_binders(
+                clause,
+                reorder_clause_proof_text(
+                    instantiated_parent,
+                    instantiate_proof(proof_names[parent], step_clauses[parent], substitution),
+                    clause,
+                ),
+                symbol_sorts,
+            )
         elif rule == "equality_resolution":
             parent = step["parents"][0]
             selected_literal = parse_literal(step["literal"], f"{step_id}.literal")
