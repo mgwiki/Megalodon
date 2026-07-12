@@ -171,6 +171,8 @@ for key in (
         raise SystemExit(f"{label}: live outline used Python fallback {key}={stats[key]}")
 if stats.get("explicit_step_units", 0) == 0:
     raise SystemExit(f"{label}: live outline contained no explicit Vampire certificate units")
+if label in {"vampire_outline_smoke_fof", "vampire_outline_smoke_thf"} and stats.get("cnf_formula_exact_units", 0) == 0:
+    raise SystemExit(f"{label}: live outline did not reconstruct any exact formula-to-CNF clauses")
 PY
 
   python3 - "$outline" <<'PY'

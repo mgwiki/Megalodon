@@ -23,6 +23,11 @@ VERSION = 1
 CERTIFICATE_BUILTIN_SYMBOLS = {
     "f__false",
     "f__true",
+    "vampire_and",
+    "vampire_false",
+    "vampire_not",
+    "vampire_or",
+    "vampire_true",
     "vAND",
     "vNOT",
     "vOR",
@@ -37,6 +42,7 @@ MVP_RULES = {
     "equality_resolution",
     "equality_symmetry",
     "truth_conflict_resolution",
+    "cnf_formula_exact",
     "paramodulate",
     "paramodulate_all",
     "paramodulate_clause_all",
@@ -585,6 +591,18 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
             expected_right = Literal(True, Term("eq", sort, (Term("const", symbol), value)))
             if clause not in {(expected_left,), (expected_right,)}:
                 raise CertificateError(f"{step_id}: definition_input clause must define the introduced symbol")
+
+        elif rule == "cnf_formula_exact":
+            allowed = {"id", "rule", "formula_parent", "proposition", "clause", "source", "variable_sorts"}
+            require_fields(step, {"id", "rule", "formula_parent", "proposition", "clause"})
+            require_no_extra_fields(step, allowed)
+            formula_parent = step["formula_parent"]
+            proposition = step["proposition"]
+            if not isinstance(formula_parent, str) or not re.fullmatch(r"u[0-9]+", formula_parent):
+                raise CertificateError(f"{step_id}: formula_parent must be a Vampire unit id")
+            if not isinstance(proposition, str) or not proposition:
+                raise CertificateError(f"{step_id}: proposition must be a non-empty string")
+            clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
 
         elif rule == "factor":
             allowed = {"id", "rule", "parents", "clause"}
@@ -1331,6 +1349,32 @@ def cnf_source_metadata(
     return metadata
 
 
+def cnf_formula_exact_supported(cnf: dict[str, Any], clause: tuple[Literal, ...]) -> bool:
+    if cnf.get("parent_kind") != "formula":
+        return False
+    if cnf.get("clause_index") != 0:
+        return False
+    count = cnf.get("clause_count", cnf.get("parent_clause_count"))
+    if count != 1:
+        return False
+    source = cnf.get("source_proposition")
+    if not isinstance(source, str) or not source:
+        return False
+    blocked_fragments = (
+        "vampire_or",
+        "vampire_and",
+        "vLAM",
+        "forall ",
+        "vampire_exists",
+    )
+    if any(fragment in source for fragment in blocked_fragments):
+        return False
+    for literal in clause:
+        if literal.atom.kind == "pred" and any(arg.kind not in {"var", "const"} for arg in literal.atom.args):
+            return False
+    return True
+
+
 def infer_definition_input_step(
     step_id: str,
     clause: tuple[Literal, ...],
@@ -1607,6 +1651,29 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
                 )
                 if cnf is not None:
                     source["cnf"] = cnf
+                    source_proposition = cnf.get("source_proposition")
+                    parent = cnf.get("parent")
+                    if (
+                        cnf_formula_exact_supported(cnf, clause)
+                        and isinstance(source_proposition, str)
+                        and isinstance(parent, str)
+                    ):
+                        reconstruction_stats["cnf_formula_exact_units"] = reconstruction_stats.get("cnf_formula_exact_units", 0) + 1
+                        if source_kind == "vampire_derived_clause":
+                            reconstruction_stats["derived_assumption_units"] -= 1
+                        steps.append(
+                            {
+                                "id": step_id,
+                                "rule": "cnf_formula_exact",
+                                "formula_parent": parent,
+                                "proposition": source_proposition,
+                                "clause": clause_json[step_no],
+                                **({"variable_sorts": variable_sorts[step_no]} if step_no in variable_sorts else {}),
+                                "source": source,
+                            }
+                        )
+                        clauses[step_no] = clause
+                        continue
             steps.append(
                 {
                     "id": step_id,
@@ -2806,6 +2873,11 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
         "Definition vNOT : prop -> prop := not.",
         "Definition vAND : prop -> prop -> prop := and.",
         "Definition vOR : prop -> prop -> prop := or.",
+        "Definition vampire_false : prop := False.",
+        "Definition vampire_true : prop := True.",
+        "Definition vampire_not : prop -> prop := not.",
+        "Definition vampire_and : prop -> prop -> prop := and.",
+        "Definition vampire_or : prop -> prop -> prop := or.",
     ]
     for sort in equality_sorts:
         lines.append(equality_definition(sort))
@@ -2825,6 +2897,11 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
         "Variable vAND:prop->prop->prop.",
         "Variable vNOT:prop->prop.",
         "Variable vOR:prop->prop->prop.",
+        "Variable vampire_false:prop.",
+        "Variable vampire_true:prop.",
+        "Variable vampire_and:prop->prop->prop.",
+        "Variable vampire_not:prop->prop.",
+        "Variable vampire_or:prop->prop->prop.",
     }
     for declaration in declarations:
         skip = False
@@ -2848,15 +2925,30 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
             "vAND": split_sort("prop->prop->prop"),
             "vNOT": split_sort("prop->prop"),
             "vOR": split_sort("prop->prop->prop"),
+            "vampire_false": split_sort("prop"),
+            "vampire_true": split_sort("prop"),
+            "vampire_and": split_sort("prop->prop->prop"),
+            "vampire_not": split_sort("prop->prop"),
+            "vampire_or": split_sort("prop->prop->prop"),
         }
     )
     for symbol, (sort, _value) in definitions.items():
         symbol_sorts[symbol] = split_sort(sort)
     step_clauses: dict[str, tuple[Literal, ...]] = {}
     proof_names: dict[str, str] = {}
+    formula_proof_names: dict[str, str] = {}
     assumptions: list[tuple[str, str]] = []
     derived: list[tuple[str, str, str]] = []
     final_empty: str | None = None
+
+    def formula_parent_proof(formula_parent: str, proposition: str) -> str:
+        name = formula_proof_names.get(formula_parent)
+        if name is not None:
+            return name
+        name = f"formula_{require_megalodon_ident(formula_parent, 'formula parent')}"
+        formula_proof_names[formula_parent] = name
+        assumptions.append((name, proposition))
+        return name
 
     for step in data["steps"]:
         step_id = step["id"]
@@ -2876,6 +2968,11 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
                 assumptions.append((step_id, clause_prop_text(clause, symbol_sorts, explicit_var_sorts)))
                 continue
             proof = wrap_clause_binders(clause, equality_refl_proof(), symbol_sorts, explicit_var_sorts)
+            proof_names[step_id] = step_id
+            derived.append((step_id, clause_prop_text(clause, symbol_sorts, explicit_var_sorts), proof))
+            continue
+        if rule == "cnf_formula_exact":
+            proof = formula_parent_proof(step["formula_parent"], step["proposition"])
             proof_names[step_id] = step_id
             derived.append((step_id, clause_prop_text(clause, symbol_sorts, explicit_var_sorts), proof))
             continue
