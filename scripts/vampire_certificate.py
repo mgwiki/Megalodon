@@ -1128,6 +1128,28 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
     return "\n".join(lines) + "\n"
 
 
+def certificate_summary(data: dict[str, Any], clauses: dict[str, tuple[Literal, ...]]) -> dict[str, Any]:
+    rules: dict[str, int] = {}
+    input_sources: dict[str, int] = {}
+    derived_assumptions = 0
+    for step in data["steps"]:
+        rule = step["rule"]
+        rules[rule] = rules.get(rule, 0) + 1
+        if rule == "input":
+            source = step.get("source", {})
+            source_kind = source.get("kind", "unknown") if isinstance(source, dict) else "unknown"
+            input_sources[source_kind] = input_sources.get(source_kind, 0) + 1
+            if source_kind == "vampire_derived_clause":
+                derived_assumptions += 1
+    return {
+        "steps": len(clauses),
+        "empty_clauses": sum(1 for clause in clauses.values() if not clause),
+        "rules": dict(sorted(rules.items())),
+        "input_sources": dict(sorted(input_sources.items())),
+        "derived_assumptions": derived_assumptions,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("certificate", type=Path)
@@ -1155,8 +1177,7 @@ def main() -> int:
         args.write_certificate.parent.mkdir(parents=True, exist_ok=True)
         args.write_certificate.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if args.summary:
-        empty = sum(1 for clause in clauses.values() if not clause)
-        print(json.dumps({"steps": len(clauses), "empty_clauses": empty}, sort_keys=True))
+        print(json.dumps(certificate_summary(data, clauses), sort_keys=True))
     if args.emit_megalodon is not None:
         try:
             rendered = emit_megalodon_smoke(data, clauses, args.theorem_name)
