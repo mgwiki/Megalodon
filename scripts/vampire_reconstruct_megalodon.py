@@ -62198,6 +62198,11 @@ def raw_tptp_replay_proof_has_escaped_bound_surface_variable(proposition: str, p
 def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: str) -> bool:
     if rule == "rat" and re.search(r"\(\(\(([A-Za-z_][A-Za-z0-9_']*)\s+\1\)\)", proof):
         return True
+    if "vampire_eq_prop" in proposition and re.search(
+        r"\bfun\s+Q:\(set->prop\)\s*=>\s*fun\s+H:Q\s*\((?:False|True|vampire_false|vampire_true)\)",
+        proof,
+    ):
+        return True
     if rule in {"definition_folding", "definition_unfolding"} and RAW_TPTP_NESTED_BAD_DEFINITION_CONTEXT_RE.search(proof):
         return True
     if rule in {"definition_folding", "definition_unfolding"} and raw_tptp_claim_applied_to_function_lambda(proof):
@@ -73131,6 +73136,8 @@ def raw_tptp_avatar_sat_refutation_proof(
         parent_proof = raw_tptp_claim_name(parent)
         if false_eliminator_expr(parent_expr):
             return parent_proof
+        if collect_foralls(parent_expr)[0]:
+            return None
         parsed.append((parent, parent_expr, parent_proof))
     if len(parsed) < 2:
         return None
