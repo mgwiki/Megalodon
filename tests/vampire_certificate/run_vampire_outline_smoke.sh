@@ -146,6 +146,25 @@ PY
     --emit-megalodon "$megalodon" \
     --theorem-name "${label}_certificate_smoke"
 
+  python3 - "$certificate" "$label" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+certificate = json.loads(Path(sys.argv[1]).read_text())
+label = sys.argv[2]
+stats = certificate.get("outline_reconstruction", {})
+for key in (
+    "inferred_definition_input_units",
+    "inferred_resolution_units",
+    "inferred_paramodulation_units",
+):
+    if stats.get(key, 0) != 0:
+        raise SystemExit(f"{label}: live outline used Python fallback {key}={stats[key]}")
+if stats.get("explicit_step_units", 0) == 0:
+    raise SystemExit(f"{label}: live outline contained no explicit Vampire certificate units")
+PY
+
   python3 - "$outline" <<'PY'
 import importlib.util
 import sys
