@@ -78139,6 +78139,27 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                         source_statement_proposition = expr_text(positive_expr)
                         source_statement_proof = dependency_proof
                         break
+                if source_statement_proposition is None:
+                    source_fact_entry_names = [
+                        name
+                        for name, role, proposition, _rule, source_name, _parents, trusted_definition in entries
+                        if proposition
+                        and (role in {"axiom", "definition"} or trusted_definition)
+                        and source_name is not None
+                        and source_name in (source_fact_names | set(local_source_fact_propositions))
+                    ]
+                    source_fact_chain_proof = raw_tptp_parent_equality_chain_rewrite_proof(
+                        positive_conjecture,
+                        source_fact_entry_names,
+                        propositions_by_name,
+                        variable_sorts,
+                    )
+                    if source_fact_chain_proof is not None:
+                        source_statement_kind = "source equality facts"
+                        source_statement_name = source_theorem_name or "source_facts"
+                        source_statement_line = obligation_line
+                        source_statement_proposition = expr_text(positive_expr)
+                        source_statement_proof = source_fact_chain_proof
                 source_bridge_size = len(source_statement or "") + len(positive_conjecture)
                 if (
                     source_statement_proposition is None
