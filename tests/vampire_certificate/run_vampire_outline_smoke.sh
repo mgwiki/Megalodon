@@ -132,6 +132,10 @@ PY
       echo "outline did not contain Vampire-side bound-lambda rewrite_scope detail" >&2
       exit 1
     fi
+    if ! rg -q 'megalodon_step_extra\([0-9]+,"normal_form_clause"' "$outline"; then
+      echo "outline did not contain Vampire-side normal_form_clause detail" >&2
+      exit 1
+    fi
   fi
 
   python3 scripts/vampire_certificate.py \

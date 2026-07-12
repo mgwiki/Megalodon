@@ -1162,6 +1162,55 @@ def extra_field(fields: list[str], name: str) -> str | None:
     return None
 
 
+def normal_form_clause_source_metadata(
+    step_id: str,
+    fields: list[str],
+    parent_clause_numbers: list[int],
+    clauses: dict[int, tuple[Literal, ...]],
+    target_clause: tuple[Literal, ...],
+) -> dict[str, Any] | None:
+    if not fields:
+        return None
+    rule = extra_field(fields, "rule")
+    parent_unit_text = extra_field(fields, "parent_unit")
+    source_clause_text = extra_field(fields, "source_clause")
+    target_clause_text = extra_field(fields, "target_clause")
+    if parent_unit_text is None or source_clause_text is None or target_clause_text is None:
+        return None
+    try:
+        parent_unit = int(parent_unit_text)
+    except ValueError as exc:
+        raise CertificateError(f"{step_id}: normal_form_clause parent_unit is not an integer") from exc
+    if parent_unit not in parent_clause_numbers:
+        raise CertificateError(f"{step_id}: normal_form_clause parent u{parent_unit} is not an outline parent")
+    if parent_unit not in clauses:
+        raise CertificateError(f"{step_id}: normal_form_clause parent u{parent_unit} is not available")
+    try:
+        source_clause_json = json.loads(source_clause_text)
+        target_clause_json = json.loads(target_clause_text)
+    except json.JSONDecodeError as exc:
+        raise CertificateError(f"{step_id}: malformed normal_form_clause clause JSON: {exc}") from exc
+    source_clause = normalize_clause(parse_clause(source_clause_json, f"{step_id}.normal_form_clause.source_clause"))
+    rendered_target = normalize_clause(parse_clause(target_clause_json, f"{step_id}.normal_form_clause.target_clause"))
+    if source_clause != normalize_clause(clauses[parent_unit]):
+        raise CertificateError(f"{step_id}: normal_form_clause source_clause does not match parent u{parent_unit}")
+    if rendered_target != normalize_clause(target_clause):
+        raise CertificateError(f"{step_id}: normal_form_clause target_clause does not match conclusion")
+    metadata: dict[str, Any] = {
+        "rule": rule or "normal_form",
+        "parent": f"u{parent_unit}",
+        "source_clause_checked": True,
+        "target_clause_checked": True,
+    }
+    source_proposition = extra_field(fields, "source_proposition")
+    target_proposition = extra_field(fields, "target_proposition")
+    if source_proposition is not None:
+        metadata["source_proposition"] = source_proposition
+    if target_proposition is not None:
+        metadata["target_proposition"] = target_proposition
+    return metadata
+
+
 def infer_definition_input_step(
     step_id: str,
     clause: tuple[Literal, ...],
@@ -1393,18 +1442,29 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
                     )
         elif not parent_clause_numbers or replay_kind in DERIVED_ASSUMPTION_REPLAY_KINDS:
             source_kind = "vampire_input_clause" if not meta["parents"] else "vampire_derived_clause"
+            source: dict[str, Any] = {
+                "kind": source_kind,
+                "name": step_id,
+                "vampire_rule": meta["rule"],
+                "vampire_parents": [f"u{parent}" for parent in meta["parents"]],
+            }
+            if replay_kind == "normal_form":
+                normal_form_clause = normal_form_clause_source_metadata(
+                    step_id,
+                    extras.get(step_no, {}).get("normal_form_clause", []),
+                    parent_clause_numbers,
+                    clauses,
+                    clause,
+                )
+                if normal_form_clause is not None:
+                    source["normal_form_clause"] = normal_form_clause
             steps.append(
                 {
                     "id": step_id,
                     "rule": "input",
                     "clause": clause_json[step_no],
                     **({"variable_sorts": variable_sorts[step_no]} if step_no in variable_sorts else {}),
-                    "source": {
-                        "kind": source_kind,
-                        "name": step_id,
-                        "vampire_rule": meta["rule"],
-                        "vampire_parents": [f"u{parent}" for parent in meta["parents"]],
-                    },
+                    "source": source,
                 }
             )
         else:
@@ -2647,6 +2707,7 @@ def certificate_summary(data: dict[str, Any], clauses: dict[str, tuple[Literal, 
     rules: dict[str, int] = {}
     input_sources: dict[str, int] = {}
     derived_assumptions = 0
+    checked_normal_form_clauses = 0
     for step in data["steps"]:
         rule = step["rule"]
         rules[rule] = rules.get(rule, 0) + 1
@@ -2656,12 +2717,15 @@ def certificate_summary(data: dict[str, Any], clauses: dict[str, tuple[Literal, 
             input_sources[source_kind] = input_sources.get(source_kind, 0) + 1
             if source_kind == "vampire_derived_clause":
                 derived_assumptions += 1
+            if isinstance(source, dict) and "normal_form_clause" in source:
+                checked_normal_form_clauses += 1
     return {
         "steps": len(clauses),
         "empty_clauses": sum(1 for clause in clauses.values() if not clause),
         "rules": dict(sorted(rules.items())),
         "input_sources": dict(sorted(input_sources.items())),
         "derived_assumptions": derived_assumptions,
+        "checked_normal_form_clauses": checked_normal_form_clauses,
     }
 
 
