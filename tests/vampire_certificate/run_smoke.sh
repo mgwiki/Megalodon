@@ -10,6 +10,7 @@ python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_resolutio
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_substituted_resolution.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_equality_resolution.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_equality_resolution_refutation.json --summary
+python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_truth_conflict_resolution_refutation.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_subsumption_resolution.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_paramodulation.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_paramodulation_refutation.json --summary
@@ -32,6 +33,9 @@ python3 scripts/vampire_certificate.py \
 python3 scripts/vampire_certificate.py \
   tests/vampire_certificate/valid_equality_resolution_refutation.json \
   --emit-megalodon "$TMPDIR/vampire_certificate_valid_equality_resolution_refutation.mg"
+python3 scripts/vampire_certificate.py \
+  tests/vampire_certificate/valid_truth_conflict_resolution_refutation.json \
+  --emit-megalodon "$TMPDIR/vampire_certificate_valid_truth_conflict_resolution_refutation.mg"
 python3 scripts/vampire_certificate.py \
   tests/vampire_certificate/valid_paramodulation_refutation.json \
   --emit-megalodon "$TMPDIR/vampire_certificate_valid_paramodulation_refutation.mg"
@@ -74,6 +78,7 @@ if rg -n '\badmit\b|\baby\b|-allowincompleteqed|^Axiom xm\b' \
   "$TMPDIR/vampire_certificate_valid_resolution.mg" \
   "$TMPDIR/vampire_certificate_valid_substituted_resolution.mg" \
   "$TMPDIR/vampire_certificate_valid_equality_resolution_refutation.mg" \
+  "$TMPDIR/vampire_certificate_valid_truth_conflict_resolution_refutation.mg" \
   "$TMPDIR/vampire_certificate_valid_paramodulation_refutation.mg" \
   "$TMPDIR/vampire_certificate_valid_paramodulation_negative_refutation.mg" \
   "$TMPDIR/vampire_certificate_valid_paramodulation_side_literals_refutation.mg" \
@@ -90,6 +95,7 @@ fi
 ./bin/megalodon "$TMPDIR/vampire_certificate_valid_resolution.mg" >"$TMPDIR/vampire_certificate_valid_resolution.check.log"
 ./bin/megalodon "$TMPDIR/vampire_certificate_valid_substituted_resolution.mg" >"$TMPDIR/vampire_certificate_valid_substituted_resolution.check.log"
 ./bin/megalodon "$TMPDIR/vampire_certificate_valid_equality_resolution_refutation.mg" >"$TMPDIR/vampire_certificate_valid_equality_resolution_refutation.check.log"
+./bin/megalodon "$TMPDIR/vampire_certificate_valid_truth_conflict_resolution_refutation.mg" >"$TMPDIR/vampire_certificate_valid_truth_conflict_resolution_refutation.check.log"
 ./bin/megalodon "$TMPDIR/vampire_certificate_valid_paramodulation_refutation.mg" >"$TMPDIR/vampire_certificate_valid_paramodulation_refutation.check.log"
 ./bin/megalodon "$TMPDIR/vampire_certificate_valid_paramodulation_negative_refutation.mg" >"$TMPDIR/vampire_certificate_valid_paramodulation_negative_refutation.check.log"
 ./bin/megalodon "$TMPDIR/vampire_certificate_valid_paramodulation_side_literals_refutation.mg" >"$TMPDIR/vampire_certificate_valid_paramodulation_side_literals_refutation.check.log"
@@ -123,6 +129,11 @@ fi
 
 if python3 scripts/vampire_certificate.py tests/vampire_certificate/invalid_equality_resolution_nonreflexive.json >"$TMPDIR/vampire_certificate_invalid_equality_resolution_nonreflexive.out" 2>"$TMPDIR/vampire_certificate_invalid_equality_resolution_nonreflexive.err"; then
   echo "non-reflexive equality-resolution certificate unexpectedly passed" >&2
+  exit 1
+fi
+
+if python3 scripts/vampire_certificate.py tests/vampire_certificate/invalid_truth_conflict_nonconflict.json >"$TMPDIR/vampire_certificate_invalid_truth_conflict_nonconflict.out" 2>"$TMPDIR/vampire_certificate_invalid_truth_conflict_nonconflict.err"; then
+  echo "non-conflicting truth-conflict certificate unexpectedly passed" >&2
   exit 1
 fi
 

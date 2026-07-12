@@ -1,0 +1,53 @@
+{
+  "format": "vampire-megalodon-certificate",
+  "version": 1,
+  "steps": [
+    {
+      "id": "u1",
+      "rule": "input",
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "eq": [
+              {
+                "const": "f__true"
+              },
+              {
+                "const": "f__true"
+              }
+            ],
+            "sort": "prop"
+          }
+        }
+      ],
+      "source": {
+        "kind": "axiom",
+        "name": "not_a_truth_conflict"
+      }
+    },
+    {
+      "id": "u2",
+      "rule": "truth_conflict_resolution",
+      "parents": [
+        "u1"
+      ],
+      "literal": {
+        "polarity": true,
+        "atom": {
+          "eq": [
+            {
+              "const": "f__true"
+            },
+            {
+              "const": "f__true"
+            }
+          ],
+          "sort": "prop"
+        }
+      },
+      "substitution": {},
+      "clause": []
+    }
+  ]
+}

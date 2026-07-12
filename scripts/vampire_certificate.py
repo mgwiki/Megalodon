@@ -20,6 +20,13 @@ from typing import Any
 
 FORMAT = "vampire-megalodon-certificate"
 VERSION = 1
+CERTIFICATE_BUILTIN_SYMBOLS = {
+    "f__false",
+    "f__true",
+    "vAND",
+    "vNOT",
+    "vOR",
+}
 MVP_RULES = {
     "input",
     "definition_input",
@@ -29,6 +36,7 @@ MVP_RULES = {
     "equality_factoring",
     "equality_resolution",
     "equality_symmetry",
+    "truth_conflict_resolution",
     "paramodulate",
     "paramodulate_all",
     "paramodulate_clause_all",
@@ -710,6 +718,31 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
             clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
             if clause != expected:
                 raise CertificateError(f"{step_id}: equality-resolution conclusion does not match parent")
+
+        elif rule == "truth_conflict_resolution":
+            allowed = {"id", "rule", "parents", "literal", "substitution", "clause"}
+            require_fields(step, allowed)
+            require_no_extra_fields(step, allowed)
+            parents = require_parents(step, 1)
+            parent_clause = clauses.get(parents[0])
+            if parent_clause is None:
+                raise CertificateError(f"{step_id}: unknown parent {parents[0]}")
+            literal = parse_literal(step["literal"], f"{step_id}.literal")
+            if literal not in parent_clause:
+                raise CertificateError(f"{step_id}: truth-conflict literal not present in parent")
+            substitution = parse_substitution(step["substitution"], f"{step_id}.substitution")
+            selected = substitute_literal(literal, substitution)
+            if not selected.polarity or not is_prop_truth_conflict_atom(selected.atom):
+                raise CertificateError(f"{step_id}: selected literal is not true=false or false=true after substitution")
+            expected = normalize_clause(
+                tuple(
+                    substitute_literal(item, substitution)
+                    for item in clause_without_one(parent_clause, literal)
+                )
+            )
+            clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
+            if clause != expected:
+                raise CertificateError(f"{step_id}: truth-conflict conclusion does not match parent")
 
         elif rule == "equality_symmetry":
             allowed = {"id", "rule", "parents", "literal", "clause"}
@@ -2272,6 +2305,59 @@ def equality_resolution_proof_text(
     return eliminate_clause_proof(instantiated_parent, instantiated_parent_proof, goal, branch)
 
 
+def is_prop_truth_conflict_atom(atom: Term) -> bool:
+    if atom.kind != "eq" or atom.name != "prop" or len(atom.args) != 2:
+        return False
+    left, right = atom.args
+    return (
+        left == Term("const", "f__true") and right == Term("const", "f__false")
+    ) or (
+        left == Term("const", "f__false") and right == Term("const", "f__true")
+    )
+
+
+def false_from_prop_truth_conflict(literal: Literal, proof: str) -> str:
+    if not literal.polarity or not is_prop_truth_conflict_atom(literal.atom):
+        raise CertificateError("truth-conflict resolution needs a positive equality between true and false")
+    left, right = literal.atom.args
+    true_proof = "(fun p:prop => fun h:p => h)"
+    if left == Term("const", "f__true") and right == Term("const", "f__false"):
+        return f"({proof} (fun cert_z:prop => cert_z) {true_proof})"
+    symmetric = positive_equality_symmetry_proof(literal, proof)
+    return f"({symmetric} (fun cert_z:prop => cert_z) {true_proof})"
+
+
+def truth_conflict_resolution_proof_text(
+    parent_clause: tuple[Literal, ...],
+    parent_proof: str,
+    selected_literal: Literal,
+    substitution: dict[str, Term],
+    conclusion: tuple[Literal, ...],
+) -> str:
+    instantiated_parent = tuple(substitute_literal(literal, substitution) for literal in parent_clause)
+    instantiated_selected = substitute_literal(selected_literal, substitution)
+    if not instantiated_selected.polarity or not is_prop_truth_conflict_atom(instantiated_selected.atom):
+        raise CertificateError("selected truth-conflict literal is not true=false or false=true")
+    conclusion_vars = set(clause_free_vars(conclusion))
+    parent_vars = set(clause_free_vars(instantiated_parent))
+    uncovered_vars = sorted(parent_vars - conclusion_vars)
+    if uncovered_vars:
+        raise CertificateError(
+            "Megalodon smoke truth-conflict elaboration has parent variables not bound by conclusion: "
+            + ", ".join(uncovered_vars)
+        )
+    instantiated_parent_proof = instantiate_proof(parent_proof, parent_clause, substitution)
+    goal = clause_body_text(conclusion)
+
+    def branch(literal: Literal, proof: str) -> str:
+        if literal == instantiated_selected:
+            false_proof = false_from_prop_truth_conflict(literal, proof)
+            return f"({false_proof} {goal})"
+        return intro_literal_proof(literal, conclusion, proof)
+
+    return eliminate_clause_proof(instantiated_parent, instantiated_parent_proof, goal, branch)
+
+
 def positive_equality_trans_proof(left_eq: Literal, left_proof: str, right_eq: Literal, right_proof: str) -> str:
     if (
         not left_eq.polarity
@@ -2506,7 +2592,11 @@ def collect_term_symbols_with_context(
         db_match = DB_NAME_RE.match(term.name)
         if db_match is not None and int(db_match.group(1)) < len(db_context):
             return
-        if term.name in bound_constants or term.name in lambda_binder_sorts():
+        if (
+            term.name in bound_constants
+            or term.name in lambda_binder_sorts()
+            or term.name in CERTIFICATE_BUILTIN_SYMBOLS
+        ):
             return
         constants.add(term.name)
     elif term.kind == "app":
@@ -2665,8 +2755,6 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
         declarations = sorted(set(outline_declarations))
     else:
         declarations = certificate_symbol_declarations(clauses)
-    if not declarations:
-        raise CertificateError("Megalodon smoke elaboration needs at least one declared atom or symbol")
     equality_sorts = sorted(
         {
             literal.atom.name
@@ -2800,6 +2888,22 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
             proof = wrap_clause_binders(
                 clause,
                 equality_resolution_proof_text(
+                    step_clauses[parent],
+                    proof_names[parent],
+                    selected_literal,
+                    substitution,
+                    clause,
+                ),
+                symbol_sorts,
+                explicit_var_sorts,
+            )
+        elif rule == "truth_conflict_resolution":
+            parent = step["parents"][0]
+            selected_literal = parse_literal(step["literal"], f"{step_id}.literal")
+            substitution = parse_substitution(step["substitution"], f"{step_id}.substitution")
+            proof = wrap_clause_binders(
+                clause,
+                truth_conflict_resolution_proof_text(
                     step_clauses[parent],
                     proof_names[parent],
                     selected_literal,
