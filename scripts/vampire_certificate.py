@@ -61,6 +61,7 @@ DERIVED_ASSUMPTION_REPLAY_KINDS = {
     "backward_demodulation",
     "cnf",
     "definition_rewrite",
+    "equality_resolution",
     "forward_demodulation",
     "generic",
     "generic_clause",
