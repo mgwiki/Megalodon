@@ -1291,6 +1291,9 @@ def cnf_source_metadata(
     source_proposition = extra_field(fields, "source_proposition") or extra_field(fields, "source")
     target_proposition = extra_field(fields, "target_proposition") or extra_field(fields, "target")
     parent_clause_count = extra_field(fields, "parent_clause_count")
+    clause_index = extra_field(fields, "clause_index")
+    clause_count = extra_field(fields, "clause_count")
+    clause_parent_unit = extra_field(fields, "clause_parent_unit")
     if source_proposition is not None:
         metadata["source_proposition"] = source_proposition
     if target_proposition is not None:
@@ -1300,6 +1303,31 @@ def cnf_source_metadata(
             metadata["parent_clause_count"] = int(parent_clause_count)
         except ValueError as exc:
             raise CertificateError(f"{step_id}: cnf parent_clause_count is not an integer") from exc
+    if clause_parent_unit is not None:
+        try:
+            metadata["clause_parent_unit"] = int(clause_parent_unit)
+        except ValueError as exc:
+            raise CertificateError(f"{step_id}: cnf clause_parent_unit is not an integer") from exc
+        if metadata["clause_parent_unit"] != parent_unit:
+            raise CertificateError(f"{step_id}: cnf clause_parent_unit does not match parent_unit")
+    if clause_index is not None:
+        try:
+            metadata["clause_index"] = int(clause_index)
+        except ValueError as exc:
+            raise CertificateError(f"{step_id}: cnf clause_index is not an integer") from exc
+        if metadata["clause_index"] < 0:
+            raise CertificateError(f"{step_id}: cnf clause_index must be non-negative")
+    if clause_count is not None:
+        try:
+            metadata["clause_count"] = int(clause_count)
+        except ValueError as exc:
+            raise CertificateError(f"{step_id}: cnf clause_count is not an integer") from exc
+        if metadata["clause_count"] <= 0:
+            raise CertificateError(f"{step_id}: cnf clause_count must be positive")
+    if "clause_index" in metadata and "clause_count" in metadata and metadata["clause_index"] >= metadata["clause_count"]:
+        raise CertificateError(f"{step_id}: cnf clause_index is outside clause_count")
+    if "parent_clause_count" in metadata and "clause_count" in metadata and metadata["parent_clause_count"] != metadata["clause_count"]:
+        raise CertificateError(f"{step_id}: cnf clause_count does not match parent_clause_count")
     return metadata
 
 
