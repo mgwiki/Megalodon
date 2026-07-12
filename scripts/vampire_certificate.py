@@ -1743,6 +1743,8 @@ def lambda_hint_for_body_text(body: str) -> LambdaHint | None:
     for hint in LAMBDA_HINTS:
         if normalize_lambda_hint_body(hint.body) == body_key:
             return hint
+    if re.search(r"\bdb0\b", body):
+        return LambdaHint(body, "db0", "set")
     return None
 
 
@@ -2373,6 +2375,10 @@ def term_text_expected(
                 f"(fun {require_megalodon_ident(binder, 'lambda binder')}"
                 f":{sort_type_text(binder_sort)} => {body})"
             )
+    if expected_sort is not None:
+        eta_expanded = eta_expand_partial_application(term, expected_sort, symbol_sorts, db_context)
+        if eta_expanded is not None:
+            return eta_expanded
     if term.kind == "apply" and len(term.args) == 2:
         function = term.args[0]
         argument = term.args[1]
@@ -2386,7 +2392,7 @@ def term_text_expected(
             parts = split_sort(function_sort)
             if len(parts) >= 2:
                 argument_sort = require_supported_sort(parts[0], "application argument sort")
-                function_text = term_text_expected(function, function_sort, symbol_sorts, db_context)
+                function_text = term_text_expected(function, None, symbol_sorts, db_context)
                 argument_text = term_text_expected(argument, argument_sort, symbol_sorts, db_context)
                 return f"({function_text} {argument_text})"
         return f"({term_text_expected(function, None, symbol_sorts, db_context)} {term_text_expected(argument, None, symbol_sorts, db_context)})"
@@ -2400,6 +2406,44 @@ def term_text_expected(
             name = require_megalodon_ident(term.name, "term")
             return f"({name} {args})" if args else name
     return term_text_with_context(term, db_context)
+
+
+def eta_expand_partial_application(
+    term: Term,
+    expected_sort: str,
+    symbol_sorts: dict[str, tuple[str, ...]],
+    db_context: tuple[str, ...],
+) -> str | None:
+    expected_parts = split_sort(expected_sort)
+    if len(expected_parts) < 2:
+        return None
+    if term.kind in {"var", "const"} or (term.kind == "app" and not term.args):
+        return None
+    head, existing_args = term_spine(term)
+    if head.kind != "const":
+        return None
+    signature = symbol_sorts.get(head.name)
+    if signature is None or len(signature) <= len(existing_args):
+        return None
+    remaining_sort = sort_from_parts(signature[len(existing_args):])
+    if remaining_sort != expected_sort:
+        return None
+    binders = [
+        f"cert_eta{len(db_context) + index}"
+        for index in range(len(expected_parts) - 1)
+    ]
+    rendered_args = [
+        term_text_expected(arg, arg_sort, symbol_sorts, db_context)
+        for arg, arg_sort in zip(existing_args, signature)
+    ]
+    rendered_args.extend(require_megalodon_ident(binder, "eta binder occurrence") for binder in binders)
+    result = f"({require_megalodon_ident(head.name, 'eta-expanded head')} {' '.join(rendered_args)})"
+    for binder, binder_sort in reversed(list(zip(binders, expected_parts[:-1]))):
+        result = (
+            f"(fun {require_megalodon_ident(binder, 'eta binder')}"
+            f":{sort_type_text(binder_sort)} => {result})"
+        )
+    return result
 
 
 def term_text_with_context(term: Term, db_context: tuple[str, ...]) -> str:
@@ -2763,6 +2807,31 @@ def certificate_uses_named_binary(clauses: dict[str, tuple[Literal, ...]], name:
         for clause in clauses.values()
         for literal in clause
     )
+
+
+def certificate_metadata_uses_infix_equality(data: dict[str, Any]) -> bool:
+    metadata_keys = {
+        "proposition",
+        "source",
+        "target",
+        "source_proposition",
+        "target_proposition",
+    }
+
+    def value_uses_equality(value: Any) -> bool:
+        if isinstance(value, str):
+            return bool(re.search(r"\s=\s", value))
+        if isinstance(value, list):
+            return any(value_uses_equality(item) for item in value)
+        if isinstance(value, dict):
+            return any(
+                value_uses_equality(item)
+                for key, item in value.items()
+                if key in metadata_keys or isinstance(item, (dict, list))
+            )
+        return False
+
+    return value_uses_equality(data.get("steps", []))
 
 
 def declaration_symbol_sorts(declarations: list[str]) -> dict[str, tuple[str, ...]]:
@@ -3732,6 +3801,9 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
     if certificate_uses_named_binary(clauses, "vEQ") and "set" not in equality_sorts:
         equality_sorts.append("set")
         equality_sorts.sort()
+    if certificate_metadata_uses_infix_equality(data) and "set" not in equality_sorts:
+        equality_sorts.append("set")
+        equality_sorts.sort()
     lines = [
         "Definition False : prop := forall p:prop, p.",
         "Definition True : prop := forall p:prop, p -> p.",
@@ -3784,10 +3856,6 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
                 break
         if not skip:
             lines.append(declaration)
-    for symbol, (sort, value) in definitions.items():
-        if symbol not in definable_symbols:
-            continue
-        lines.append(f"Definition {require_megalodon_ident(symbol, 'definition symbol')} : {require_supported_sort(sort, 'definition sort')} := {term_text(value)}.")
     symbol_sorts = declaration_symbol_sorts(declarations)
     symbol_sorts.update(
         {
@@ -3805,6 +3873,14 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
     )
     for symbol, (sort, _value) in definitions.items():
         symbol_sorts[symbol] = split_sort(sort)
+    for symbol, (sort, value) in definitions.items():
+        if symbol not in definable_symbols:
+            continue
+        lines.append(
+            f"Definition {require_megalodon_ident(symbol, 'definition symbol')} "
+            f": {require_supported_sort(sort, 'definition sort')} := "
+            f"{term_text_expected(value, sort, symbol_sorts)}."
+        )
     step_clauses: dict[str, tuple[Literal, ...]] = {}
     proof_names: dict[str, str] = {}
     formula_proof_names: dict[str, str] = {}
@@ -3846,7 +3922,12 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
             derived.append((step_id, clause_prop_text(clause, symbol_sorts, explicit_var_sorts), proof))
             continue
         if rule == "cnf_formula_exact":
-            proof = formula_parent_proof(step["formula_parent"], step["proposition"])
+            source_proof = formula_parent_proof(step["formula_parent"], step["proposition"])
+            target_prop = clause_formula_prop_text(clause, None, explicit_var_sorts)
+            if prop_key(step["proposition"]) == prop_key(target_prop):
+                proof = source_proof
+            else:
+                proof = formula_projection_proof_text(source_proof, step["proposition"], target_prop)
             proof_names[step_id] = step_id
             derived.append((step_id, clause_prop_text(clause, symbol_sorts, explicit_var_sorts), proof))
             continue
