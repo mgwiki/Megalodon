@@ -75695,6 +75695,63 @@ def raw_tptp_source_fact_proof(
     return None
 
 
+def raw_source_fact_equality_context_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_sides = equality_like_sides(source)
+    target_sides = equality_like_sides(target)
+    if source_sides is None or target_sides is None or target.kind != "eq":
+        return None
+    target_left, target_right = target_sides
+
+    for old, new, equality_proof in (
+        (source_sides[0], source_sides[1], source_proof),
+        (
+            source_sides[1],
+            source_sides[0],
+            native_eq_symmetry_proof(
+                source_proof,
+                source_sides[0],
+                source_sides[1],
+                raw_equality_transport_sort(source_sides[0], source_sides[1], variable_sorts),
+            ),
+        ),
+    ):
+        equality_sort = raw_equality_transport_sort(old, new, variable_sorts)
+        for left, right, reverse in (
+            (target_left, target_right, False),
+            (target_right, target_left, True),
+        ):
+            hole_name = fresh_identifier("zz", expr_text(source), expr_text(target), source_proof)
+            hole = Expr("var", value=hole_name)
+            context, changed = replace_expr(left, old, hole)
+            if not changed:
+                continue
+            instantiated = substitute_expr(context, {hole_name: new})
+            if not expr_same_mod_alpha(instantiated, right):
+                continue
+            reflexive = native_reflexivity_proof(left, "set")
+            predicate = Expr("eq", args=(left, context))
+            transported = native_equality_transport_proof(
+                equality_proof,
+                old,
+                new,
+                reflexive,
+                hole_name,
+                equality_sort,
+                predicate,
+            )
+            if transported is None:
+                continue
+            if reverse:
+                return native_eq_symmetry_proof(transported, right, left, "set")
+            return transported
+    return None
+
+
 def raw_tptp_local_source_fact_proof(
     proposition: str,
     source_name: str | None,
@@ -75742,11 +75799,29 @@ def raw_tptp_local_source_fact_proof(
     if unfolded_source_fact is not None:
         return unfolded_source_fact
     source = parse_expr(source_proposition)
+    if source is None:
+        translated_source = use_ambient_basic_logic_text(
+            source_surface_parse_text(
+                source_proposition,
+                proposition,
+                {**(source_sorts or {}), **variable_sorts},
+                source_binders,
+            )
+        )
+        source = parse_expr(translated_source)
     target = parse_expr(proposition)
     if source is None or target is None:
         return None
     if expr_same_mod_alpha(source, target):
         return proof_ref
+    context_equality = raw_source_fact_equality_context_proof(
+        source,
+        target,
+        proof_ref,
+        variable_sorts,
+    )
+    if context_equality is not None:
+        return context_equality
     proof = raw_structural_normal_form_transform_proof(
         source,
         target,
@@ -77936,8 +78011,37 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     source_statement_line = local_line
                 source_statement_proposition = None
                 source_statement_proof = None
+                for local_source_name in sorted(emitted_local_source_facts):
+                    if local_source_fact_propositions.get(local_source_name) is None:
+                        continue
+                    local_fact_proof = raw_tptp_local_source_fact_proof(
+                        positive_conjecture,
+                        local_source_name,
+                        local_source_fact_propositions,
+                        variable_sorts,
+                        source_and_local_definitions,
+                        source_sorts,
+                        local_set_definition_names,
+                        source_binders,
+                        local_source_fact_proof_name(local_source_name),
+                    )
+                    if local_fact_proof is None:
+                        continue
+                    if not emit_local_source_fact(local_source_name, positive_conjecture):
+                        continue
+                    source_statement_kind = "local fact"
+                    source_statement_name = local_source_name
+                    source_statement_line = all_local_source_fact_locations.get(local_source_name)
+                    source_statement_proposition = expr_text(positive_expr)
+                    source_statement_proof = local_fact_proof
+                    break
                 source_bridge_size = len(source_statement or "") + len(positive_conjecture)
-                if source_statement is not None and source_statement_name is not None and source_bridge_size <= 12000:
+                if (
+                    source_statement_proposition is None
+                    and source_statement is not None
+                    and source_statement_name is not None
+                    and source_bridge_size <= 12000
+                ):
                     translated_source_statement = use_ambient_basic_logic_text(
                         replace_generated_identifier_tokens(
                             source_surface_parse_text(
