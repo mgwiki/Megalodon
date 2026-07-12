@@ -115,6 +115,7 @@ class LambdaHint:
 
 LAMBDA_HINTS: tuple[LambdaHint, ...] = ()
 DB_NAME_RE = re.compile(r"^db([0-9]+)$")
+DB_TOKEN_RE = re.compile(r"\bdb([0-9]+)\b")
 
 
 def parse_term(value: Any, context: str) -> Term:
@@ -526,6 +527,163 @@ def clause_without_one(clause: tuple[Literal, ...], literal: Literal) -> tuple[L
     if not removed:
         raise CertificateError(f"literal {literal.atom} was not present with requested polarity")
     return tuple(result)
+
+
+def clause_to_json(clause: tuple[Literal, ...]) -> list[dict[str, Any]]:
+    return [literal_to_json(literal) for literal in clause]
+
+
+def positions_are_disjoint(positions: tuple[tuple[int, ...], ...]) -> bool:
+    for left, right in itertools.combinations(positions, 2):
+        if len(left) <= len(right) and right[: len(left)] == left:
+            return False
+        if len(right) <= len(left) and left[: len(right)] == right:
+            return False
+    return True
+
+
+def expand_paramodulate_all_step(
+    step: dict[str, Any],
+    available_clauses: dict[str, tuple[Literal, ...]],
+    context: str,
+) -> list[dict[str, Any]]:
+    step_id = step.get("id")
+    if not isinstance(step_id, str) or not step_id:
+        raise CertificateError(f"{context}: paramodulate_all step needs an id before expansion")
+    parents = require_parents(step, 2)
+    equality_parent = available_clauses.get(parents[0])
+    target_parent = available_clauses.get(parents[1])
+    if equality_parent is None:
+        raise CertificateError(f"{step_id}: unknown parent {parents[0]}")
+    if target_parent is None:
+        raise CertificateError(f"{step_id}: unknown parent {parents[1]}")
+
+    equality = parse_literal(step["equality"], f"{step_id}.equality")
+    target = parse_literal(step["target"], f"{step_id}.target")
+    if equality not in equality_parent:
+        raise CertificateError(f"{step_id}: equality literal not present in equality parent")
+    if target not in target_parent:
+        raise CertificateError(f"{step_id}: target literal not present in target parent")
+    substitution_json = step["substitution"]
+    substitution = parse_substitution(substitution_json, f"{step_id}.substitution")
+    selected_equality = substitute_literal(equality, substitution)
+    if not selected_equality.polarity or selected_equality.atom.kind != "eq" or len(selected_equality.atom.args) != 2:
+        raise CertificateError(f"{step_id}: selected equality is not a positive equality atom")
+    from_term = substitute_term(parse_term(step["from"], f"{step_id}.from"), substitution)
+    to_term = substitute_term(parse_term(step["to"], f"{step_id}.to"), substitution)
+    if selected_equality.atom.args != (from_term, to_term):
+        raise CertificateError(f"{step_id}: from/to do not match selected equality after substitution")
+
+    if not isinstance(step["positions"], list):
+        raise CertificateError(f"{step_id}.positions: positions must be a list")
+    positions = tuple(parse_position(item, f"{step_id}.positions[{index}]") for index, item in enumerate(step["positions"]))
+    if not positions:
+        raise CertificateError(f"{step_id}: paramodulate_all needs at least one position")
+    selected_target = substitute_literal(target, substitution)
+    expected_positions = term_positions_matching(selected_target.atom, from_term)
+    if sorted(positions) != sorted(expected_positions):
+        raise CertificateError(f"{step_id}: positions do not match all selected redex occurrences")
+    if not positions_are_disjoint(positions):
+        raise CertificateError(f"{step_id}: overlapping simultaneous redex positions need prover-side primitive expansion")
+
+    expanded: list[dict[str, Any]] = []
+    equality_parent_id = parents[0]
+    target_parent_id = parents[1]
+    instantiated_equality_parent = normalize_clause(tuple(substitute_literal(literal, substitution) for literal in equality_parent))
+    instantiated_target_parent = normalize_clause(tuple(substitute_literal(literal, substitution) for literal in target_parent))
+    if instantiated_equality_parent != normalize_clause(equality_parent):
+        equality_parent_id = f"{step_id}_instantiate_equality_parent"
+        expanded.append(
+            {
+                "id": equality_parent_id,
+                "rule": "substitute",
+                "parents": [parents[0]],
+                "substitution": substitution_json,
+                "clause": clause_to_json(instantiated_equality_parent),
+            }
+        )
+    if instantiated_target_parent != normalize_clause(target_parent):
+        target_parent_id = f"{step_id}_instantiate_target_parent"
+        expanded.append(
+            {
+                "id": target_parent_id,
+                "rule": "substitute",
+                "parents": [parents[1]],
+                "substitution": substitution_json,
+                "clause": clause_to_json(instantiated_target_parent),
+            }
+        )
+
+    current_parent_id = target_parent_id
+    current_clause = instantiated_target_parent
+    current_target = selected_target
+    equality_parent_for_paramod = instantiated_equality_parent
+    equality_for_paramod = selected_equality
+    empty_substitution: dict[str, Any] = {}
+
+    for index, position in enumerate(positions):
+        if current_target not in current_clause:
+            raise CertificateError(f"{step_id}: intermediate target literal is not present before rewrite {index}")
+        if term_at_position(current_target.atom, position, f"{step_id}.positions[{index}]") != from_term:
+            raise CertificateError(f"{step_id}: position {index} no longer contains the selected from term")
+        rewritten_target = Literal(
+            current_target.polarity,
+            replace_term_at_position(current_target.atom, position, to_term, f"{step_id}.positions[{index}]"),
+        )
+        next_clause = normalize_clause(
+            tuple(clause_without_one(equality_parent_for_paramod, equality_for_paramod))
+            + tuple(clause_without_one(current_clause, current_target))
+            + (rewritten_target,)
+        )
+        primitive_id = step_id if index == len(positions) - 1 else f"{step_id}_paramodulate_{index}"
+        expanded.append(
+            {
+                "id": primitive_id,
+                "rule": "paramodulate",
+                "parents": [equality_parent_id, current_parent_id],
+                "equality": literal_to_json(equality_for_paramod),
+                "from": term_to_json(from_term),
+                "to": term_to_json(to_term),
+                "target": literal_to_json(current_target),
+                "position": list(position),
+                "substitution": empty_substitution,
+                "clause": clause_to_json(next_clause),
+            }
+        )
+        current_parent_id = primitive_id
+        current_clause = next_clause
+        current_target = rewritten_target
+
+    final_clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
+    if current_clause != final_clause:
+        raise CertificateError(f"{step_id}: expanded paramodulate_all sequence does not reach macro conclusion")
+    return expanded
+
+
+def expand_explicit_certificate_steps(
+    step_id: str,
+    explicit_steps: list[dict[str, Any]],
+    available_clauses: dict[str, tuple[Literal, ...]],
+) -> list[dict[str, Any]]:
+    expanded_steps: list[dict[str, Any]] = []
+    local_clauses = dict(available_clauses)
+    for index, step in enumerate(explicit_steps):
+        rule = step.get("rule")
+        if rule == "paramodulate_all":
+            new_steps = expand_paramodulate_all_step(step, local_clauses, f"{step_id}.substeps[{index}]")
+        else:
+            new_steps = [step]
+        for new_step in new_steps:
+            new_step_id = new_step.get("id")
+            if not isinstance(new_step_id, str) or not new_step_id:
+                raise CertificateError(f"{step_id}: expanded explicit substep {index} needs id")
+            if new_step_id in local_clauses:
+                raise CertificateError(f"{step_id}: expanded explicit substep duplicates id {new_step_id}")
+            if "clause" not in new_step:
+                raise CertificateError(f"{step_id}: expanded explicit substep {new_step_id} needs clause")
+            local_clauses[new_step_id] = normalize_clause(parse_clause(new_step["clause"], f"{new_step_id}.clause"))
+            expanded_steps.append(new_step)
+    return expanded_steps
 
 
 def require_fields(step: dict[str, Any], fields: set[str]) -> None:
@@ -1481,6 +1639,105 @@ def parse_parenthesized_prop(value: str, start: int) -> tuple[str, int] | None:
     return None
 
 
+def parse_prop_argument(value: str, start: int) -> tuple[str, int] | None:
+    while start < len(value) and value[start].isspace():
+        start += 1
+    if start >= len(value):
+        return None
+    if value[start] == "(":
+        return parse_parenthesized_prop(value, start)
+    index = start
+    while index < len(value) and not value[index].isspace() and value[index] != ")":
+        index += 1
+    if index == start:
+        return None
+    return value[start:index], index
+
+
+def parse_fun_prop(value: str) -> tuple[str, str, str] | None:
+    value = strip_outer_prop_parens(value.strip())
+    if not value.startswith("fun "):
+        return None
+    cursor = 4
+    name_start = cursor
+    while cursor < len(value) and (value[cursor].isalnum() or value[cursor] in "_'"):
+        cursor += 1
+    if cursor == name_start or cursor >= len(value) or value[cursor] != ":":
+        return None
+    binder = value[name_start:cursor]
+    cursor += 1
+    sort_start = cursor
+    depth = 0
+    while cursor + 1 < len(value):
+        if value[cursor] == "(":
+            depth += 1
+        elif value[cursor] == ")":
+            depth -= 1
+            if depth < 0:
+                return None
+        elif value[cursor] == "=" and value[cursor + 1] == ">" and depth == 0:
+            sort = value[sort_start:cursor].strip()
+            body = value[cursor + 2 :].strip()
+            if not sort or not body:
+                return None
+            return binder, require_supported_sort(sort, "lambda binder sort"), body
+        cursor += 1
+    return None
+
+
+def prop_token_at(value: str, index: int, token: str) -> bool:
+    if not value.startswith(token, index):
+        return False
+    before_ok = index == 0 or not (value[index - 1].isalnum() or value[index - 1] in "_'")
+    after = index + len(token)
+    after_ok = after >= len(value) or not (value[after].isalnum() or value[after] in "_'")
+    return before_ok and after_ok
+
+
+def normalize_prop_specials(value: str) -> str:
+    result: list[str] = []
+    index = 0
+    changed = False
+    while index < len(value):
+        if prop_token_at(value, index, "vPI") or prop_token_at(value, index, "vSIGMA"):
+            token = "vPI" if value.startswith("vPI", index) else "vSIGMA"
+            parsed = parse_prop_argument(value, index + len(token))
+            if parsed is not None:
+                argument, cursor = parsed
+                function = parse_fun_prop(argument)
+                if function is not None:
+                    binder, binder_sort, body = function
+                    binder = require_megalodon_ident(binder, "quantifier binder")
+                    normalized_body = normalize_prop_specials(body)
+                    if token == "vPI":
+                        result.append(f"(forall {binder}:{sort_type_text(binder_sort)}, {normalized_body})")
+                    else:
+                        result.append(
+                            f"({existential_symbol(binder_sort)} "
+                            f"(fun {binder}:{sort_type_text(binder_sort)} => {normalized_body}))"
+                        )
+                    index = cursor
+                    changed = True
+                    continue
+        if prop_token_at(value, index, "vEQ"):
+            first = parse_prop_argument(value, index + len("vEQ"))
+            if first is not None:
+                left, cursor = first
+                second = parse_prop_argument(value, cursor)
+                if second is not None:
+                    right, cursor = second
+                    result.append(f"({normalize_prop_specials(left)} = {normalize_prop_specials(right)})")
+                    index = cursor
+                    changed = True
+                    continue
+        result.append(value[index])
+        index += 1
+    normalized = "".join(result)
+    if changed and normalized != value:
+        return normalize_prop_specials(normalized)
+    return normalized
+
+
 def lambda_hint_for_body_text(body: str) -> LambdaHint | None:
     body_key = normalize_lambda_hint_body(body)
     for hint in LAMBDA_HINTS:
@@ -1489,21 +1746,39 @@ def lambda_hint_for_body_text(body: str) -> LambdaHint | None:
     return None
 
 
-def normalize_prop_lambdas(value: str) -> str:
-    if "vLAM" not in value:
+def rewrite_db_tokens(value: str, db_context: tuple[str, ...]) -> str:
+    if not db_context or "db" not in value:
         return value
+
+    def replace(match: re.Match[str]) -> str:
+        index = int(match.group(1))
+        if index < len(db_context):
+            return require_megalodon_ident(db_context[-1 - index], "lambda binder occurrence")
+        return match.group(0)
+
+    return DB_TOKEN_RE.sub(replace, value)
+
+
+def normalize_prop_lambdas(value: str, db_context: tuple[str, ...] = ()) -> str:
+    if "vLAM" not in value:
+        return normalize_prop_specials(rewrite_db_tokens(value, db_context))
     result: list[str] = []
     index = 0
     while index < len(value):
         if not value.startswith("vLAM", index):
-            result.append(value[index])
-            index += 1
+            next_lambda = value.find("vLAM", index + 1)
+            if next_lambda == -1:
+                result.append(rewrite_db_tokens(value[index:], db_context))
+                index = len(value)
+            else:
+                result.append(rewrite_db_tokens(value[index:next_lambda], db_context))
+                index = next_lambda
             continue
         before_ok = index == 0 or not (value[index - 1].isalnum() or value[index - 1] == "_")
         after = index + len("vLAM")
         after_ok = after >= len(value) or value[after].isspace()
         if not before_ok or not after_ok:
-            result.append(value[index])
+            result.append(rewrite_db_tokens(value[index : index + 1], db_context))
             index += 1
             continue
         cursor = after
@@ -1511,20 +1786,21 @@ def normalize_prop_lambdas(value: str) -> str:
             cursor += 1
         parsed = parse_parenthesized_prop(value, cursor)
         if parsed is None:
-            result.append(value[index])
+            result.append(rewrite_db_tokens(value[index : index + 1], db_context))
             index += 1
             continue
         body, cursor = parsed
         hint = lambda_hint_for_body_text(body)
         if hint is None:
-            result.append(value[index:cursor])
+            result.append(rewrite_db_tokens(value[index:cursor], db_context))
             index = cursor
             continue
-        normalized_body = normalize_prop_lambdas(body)
-        binder = require_megalodon_ident(hint.binder, "lambda binder")
+        binder = f"db{len(db_context)}"
+        normalized_body = normalize_prop_lambdas(body, (*db_context, binder))
+        require_megalodon_ident(binder, "lambda binder")
         result.append(f"(fun {binder}:{sort_type_text(hint.binder_sort)} => {normalized_body})")
         index = cursor
-    return "".join(result)
+    return normalize_prop_specials("".join(result))
 
 
 def parse_vampire_and_prop(value: str) -> tuple[str, str] | None:
@@ -1832,7 +2108,7 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
         explicit_step = certificate_steps.get(step_no)
         if explicit_steps is not None:
             reconstruction_stats["explicit_step_units"] += 1
-            reconstruction_stats["explicit_substeps"] += len(explicit_steps)
+            prepared_steps: list[dict[str, Any]] = []
             for index, explicit in enumerate(explicit_steps):
                 step = dict(explicit)
                 if "id" not in step and index == len(explicit_steps) - 1:
@@ -1843,7 +2119,17 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
                     raise CertificateError(f"{step_id}: explicit certificate substep {index} needs id and clause")
                 if step_no in variable_sorts:
                     step.setdefault("variable_sorts", variable_sorts[step_no])
-                steps.append(step)
+                prepared_steps.append(step)
+            expanded_steps = expand_explicit_certificate_steps(
+                step_id,
+                prepared_steps,
+                {f"u{parent_no}": parent_clause for parent_no, parent_clause in clauses.items()},
+            )
+            reconstruction_stats["explicit_substeps"] += len(expanded_steps)
+            if step_no in variable_sorts:
+                for step in expanded_steps:
+                    step.setdefault("variable_sorts", variable_sorts[step_no])
+            steps.extend(expanded_steps)
             clauses[step_no] = clause
             continue
         if explicit_step is not None:
@@ -2074,6 +2360,8 @@ def term_text_expected(
     symbol_sorts = symbol_sorts or {}
     if expected_sort is not None:
         expected_sort = require_supported_sort(expected_sort, "expected term sort")
+    if named_binary_application(term, "vEQ") is not None or quantifier_application(term) is not None:
+        return term_text_with_context(term, db_context)
     if term.kind == "app" and term.name == "vLAM" and len(term.args) == 1 and expected_sort is not None:
         parts = split_sort(expected_sort)
         if len(parts) >= 2:
