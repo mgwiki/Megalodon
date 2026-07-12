@@ -135,6 +135,7 @@ def parse_atom(value: Any, context: str) -> Term:
         sort = value.get("sort", "set")
         if not isinstance(sort, str) or not sort:
             raise CertificateError(f"{context}: equality sort must be a non-empty string")
+        sort = require_supported_sort(sort, f"{context}.sort")
         return Term("eq", sort, (parse_term(args[0], f"{context}.eq[0]"), parse_term(args[1], f"{context}.eq[1]")))
     raise CertificateError(f"{context}: atom must contain pred/args or eq")
 
@@ -226,11 +227,83 @@ def require_megalodon_ident(name: str, context: str) -> str:
     return name
 
 
-def require_supported_sort(sort: str, context: str) -> str:
-    parts = sort.split("->")
-    if not parts or any(part not in {"set", "prop"} for part in parts):
-        raise CertificateError(f"{context}: unsupported sort {sort!r}")
+def strip_enclosing_sort_parens(sort: str) -> str:
+    sort = sort.strip()
+    while sort.startswith("(") and sort.endswith(")"):
+        depth = 0
+        encloses_all = True
+        for index, char in enumerate(sort):
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth < 0:
+                    raise CertificateError(f"sort: unbalanced parentheses in {sort!r}")
+                if depth == 0 and index != len(sort) - 1:
+                    encloses_all = False
+                    break
+        if depth != 0:
+            raise CertificateError(f"sort: unbalanced parentheses in {sort!r}")
+        if not encloses_all:
+            break
+        sort = sort[1:-1].strip()
     return sort
+
+
+def split_sort(sort: str) -> tuple[str, ...]:
+    sort = strip_enclosing_sort_parens(sort)
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    index = 0
+    while index < len(sort):
+        char = sort[index]
+        if char == "(":
+            depth += 1
+            index += 1
+            continue
+        if char == ")":
+            depth -= 1
+            if depth < 0:
+                raise CertificateError(f"sort: unbalanced parentheses in {sort!r}")
+            index += 1
+            continue
+        if char == "-" and index + 1 < len(sort) and sort[index + 1] == ">" and depth == 0:
+            part = sort[start:index].strip()
+            if not part:
+                raise CertificateError(f"sort: empty arrow component in {sort!r}")
+            parts.append(part)
+            index += 2
+            start = index
+            continue
+        index += 1
+    if depth != 0:
+        raise CertificateError(f"sort: unbalanced parentheses in {sort!r}")
+    part = sort[start:].strip()
+    if not part:
+        raise CertificateError(f"sort: empty arrow component in {sort!r}")
+    parts.append(part)
+    return tuple(parts)
+
+
+def normalize_sort(sort: str, context: str) -> str:
+    sort = strip_enclosing_sort_parens(sort)
+    parts = split_sort(sort)
+    if len(parts) == 1:
+        atom = strip_enclosing_sort_parens(parts[0])
+        if atom not in {"set", "prop"}:
+            raise CertificateError(f"{context}: unsupported sort {sort!r}")
+        return atom
+    normalized_parts = [normalize_sort(part, context) for part in parts]
+    rendered_parts = [
+        f"({part})" if "->" in part else part
+        for part in normalized_parts
+    ]
+    return "->".join(rendered_parts)
+
+
+def require_supported_sort(sort: str, context: str) -> str:
+    return normalize_sort(sort, context)
 
 
 def parse_substitution(value: Any, context: str) -> dict[str, Term]:
@@ -366,7 +439,7 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
             require_megalodon_ident(symbol, f"{step_id}.symbol")
             if not isinstance(sort, str):
                 raise CertificateError(f"{step_id}: definition sort must be a string")
-            require_supported_sort(sort, f"{step_id}.sort")
+            sort = require_supported_sort(sort, f"{step_id}.sort")
             value = parse_term(step["value"], f"{step_id}.value")
             clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
             expected_left = Literal(True, Term("eq", sort, (value, Term("const", symbol))))
@@ -1263,25 +1336,18 @@ def clause_free_vars(clause: tuple[Literal, ...]) -> tuple[str, ...]:
     return tuple(sorted(variables))
 
 
-def split_sort(sort: str) -> tuple[str, ...]:
-    sort = sort.strip()
-    if sort.startswith("(") and sort.endswith(")"):
-        sort = sort[1:-1]
-    return tuple(part.strip() for part in sort.split("->") if part.strip())
-
-
 def declaration_symbol_sorts(declarations: list[str]) -> dict[str, tuple[str, ...]]:
     result: dict[str, tuple[str, ...]] = {}
     for declaration in declarations:
         match = re.fullmatch(r"Variable ([A-Za-z_][A-Za-z0-9_']*):(.+)\.", declaration)
         if match is None:
             continue
-        result[match.group(1)] = split_sort(match.group(2))
+        result[match.group(1)] = split_sort(require_supported_sort(match.group(2), f"declaration sort for {match.group(1)}"))
     return result
 
 
 def merge_var_sort(var_sorts: dict[str, str], name: str, sort: str) -> None:
-    require_supported_sort(sort, f"sort for {name}")
+    sort = require_supported_sort(sort, f"sort for {name}")
     previous = var_sorts.get(name)
     if previous is None:
         var_sorts[name] = sort
@@ -1458,8 +1524,16 @@ def resolve_proof_text(
     pivot: Literal,
     conclusion: tuple[Literal, ...],
 ) -> str:
-    if clause_free_vars(left_clause) or clause_free_vars(right_clause) or clause_free_vars(conclusion):
-        raise CertificateError("Megalodon smoke resolution elaboration currently requires ground clauses")
+    conclusion_vars = set(clause_free_vars(conclusion))
+    parent_vars = set(clause_free_vars(left_clause)) | set(clause_free_vars(right_clause))
+    uncovered_vars = sorted(parent_vars - conclusion_vars)
+    if uncovered_vars:
+        raise CertificateError(
+            "Megalodon smoke resolution elaboration has parent variables not bound by conclusion: "
+            + ", ".join(uncovered_vars)
+        )
+    left_proof = instantiate_proof(left_proof, left_clause, {})
+    right_proof = instantiate_proof(right_proof, right_clause, {})
     goal = clause_body_text(conclusion)
     complement = pivot.complement
 
@@ -1514,20 +1588,105 @@ def equality_resolution_proof_text(
     return eliminate_clause_proof(instantiated_parent, instantiated_parent_proof, goal, branch)
 
 
+def positive_equality_trans_proof(left_eq: Literal, left_proof: str, right_eq: Literal, right_proof: str) -> str:
+    if (
+        not left_eq.polarity
+        or not right_eq.polarity
+        or left_eq.atom.kind != "eq"
+        or right_eq.atom.kind != "eq"
+        or len(left_eq.atom.args) != 2
+        or len(right_eq.atom.args) != 2
+        or left_eq.atom.name != right_eq.atom.name
+    ):
+        raise CertificateError("equality transitivity needs positive equalities of the same sort")
+    if left_eq.atom.args[1] != right_eq.atom.args[0]:
+        raise CertificateError("equality transitivity middle terms do not match")
+    if left_eq.atom.name == "set":
+        raise CertificateError("Megalodon smoke equality-factoring for set equality is not implemented yet")
+    sort_text = sort_type_text(left_eq.atom.name)
+    left = term_text(left_eq.atom.args[0])
+    return f"(fun Q:{sort_text}->prop => fun H:Q {left} => ({right_proof} Q ({left_proof} Q H)))"
+
+
+def equality_factoring_proof_text(
+    parent_clause: tuple[Literal, ...],
+    parent_proof: str,
+    selected: Literal,
+    other: Literal,
+    selected_lhs: Term,
+    other_rhs: Term,
+    substitution: dict[str, Term],
+    conclusion: tuple[Literal, ...],
+) -> str:
+    instantiated_parent = tuple(substitute_literal(literal, substitution) for literal in parent_clause)
+    instantiated_selected = substitute_literal(selected, substitution)
+    instantiated_other = substitute_literal(other, substitution)
+    selected_lhs_subst = substitute_term(selected_lhs, substitution)
+    if selected_lhs == selected.atom.args[0]:
+        selected_rhs = selected.atom.args[1]
+    elif selected_lhs == selected.atom.args[1]:
+        selected_rhs = selected.atom.args[0]
+    else:
+        raise CertificateError("selected_lhs is not a side of selected equality")
+    if other_rhs == other.atom.args[0]:
+        other_lhs = other.atom.args[1]
+    elif other_rhs == other.atom.args[1]:
+        other_lhs = other.atom.args[0]
+    else:
+        raise CertificateError("other_rhs is not a side of other equality")
+    selected_rhs_subst = substitute_term(selected_rhs, substitution)
+    other_lhs_subst = substitute_term(other_lhs, substitution)
+    other_rhs_subst = substitute_term(other_rhs, substitution)
+    if selected_lhs_subst != other_lhs_subst:
+        raise CertificateError("equality-factoring selected and other left sides do not match")
+    if instantiated_selected.atom.kind != "eq" or instantiated_other.atom.kind != "eq":
+        raise CertificateError("equality-factoring literals must be equalities")
+    diff = Literal(True, Term("eq", selected.atom.name, (selected_rhs_subst, other_rhs_subst)))
+    introduced = diff.complement
+    if introduced not in normalize_clause(conclusion):
+        raise CertificateError("equality-factoring conclusion does not contain introduced disequality")
+    goal = clause_body_text(conclusion)
+    instantiated_parent_proof = instantiate_proof(parent_proof, parent_clause, substitution)
+
+    def prove_other_from_diff(selected_proof: str, diff_proof: str) -> str:
+        forward_other = Literal(True, Term("eq", selected.atom.name, (other_lhs_subst, other_rhs_subst)))
+        selected_forward = Literal(True, Term("eq", selected.atom.name, (selected_lhs_subst, selected_rhs_subst)))
+        if instantiated_selected != selected_forward:
+            selected_proof = equality_symmetry_literal_proof(instantiated_selected, selected_proof)
+        other_proof = positive_equality_trans_proof(selected_forward, selected_proof, diff, diff_proof)
+        if instantiated_other == forward_other:
+            return other_proof
+        if instantiated_other == swap_equality_literal(forward_other):
+            return equality_symmetry_literal_proof(forward_other, other_proof)
+        raise CertificateError("equality-factoring kept equality has unsupported orientation")
+
+    def branch(literal: Literal, proof: str) -> str:
+        if literal == instantiated_selected:
+            diff_proof = fresh_proof_name("Heqfact")
+            diseq_proof = fresh_proof_name("Hneqfact")
+            return (
+                f"((xm {literal_text(diff)}) {goal} "
+                f"(fun {diff_proof} => {intro_literal_proof(instantiated_other, conclusion, prove_other_from_diff(proof, diff_proof))}) "
+                f"(fun {diseq_proof} => {intro_literal_proof(introduced, conclusion, diseq_proof)}))"
+            )
+        return intro_literal_proof(literal, conclusion, proof)
+
+    return eliminate_clause_proof(instantiated_parent, instantiated_parent_proof, goal, branch)
+
+
 def equality_symmetry_proof_text(
     parent_clause: tuple[Literal, ...],
     parent_proof: str,
     selected_literal: Literal,
     conclusion: tuple[Literal, ...],
 ) -> str:
-    if clause_free_vars(parent_clause) or clause_free_vars(conclusion):
-        raise CertificateError("Megalodon smoke equality-symmetry elaboration currently requires ground clauses")
     if selected_literal not in normalize_clause(parent_clause):
         raise CertificateError("Megalodon smoke equality-symmetry literal is not present in parent")
     swapped = swap_equality_literal(selected_literal)
     if swapped not in normalize_clause(conclusion):
         raise CertificateError("Megalodon smoke equality-symmetry conclusion does not contain swapped literal")
     goal = clause_body_text(conclusion)
+    parent_proof = instantiate_proof(parent_proof, parent_clause, {})
 
     def branch(literal: Literal, proof: str) -> str:
         if literal == selected_literal:
@@ -1726,6 +1885,7 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
         "Definition False : prop := forall p:prop, p.",
         "Definition or : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> p) -> (B -> p) -> p.",
         "Infix \\/ 785 left := or.",
+        "Axiom xm : forall P:prop, P \\/ (P -> False).",
     ]
     for sort in equality_sorts:
         lines.append(equality_definition(sort))
@@ -1770,13 +1930,17 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
         if rule == "resolve":
             parents = step["parents"]
             pivot = parse_literal(step["pivot"], f"{step_id}.pivot")
-            proof = resolve_proof_text(
-                step_clauses[parents[0]],
-                proof_names[parents[0]],
-                step_clauses[parents[1]],
-                proof_names[parents[1]],
-                pivot,
+            proof = wrap_clause_binders(
                 clause,
+                resolve_proof_text(
+                    step_clauses[parents[0]],
+                    proof_names[parents[0]],
+                    step_clauses[parents[1]],
+                    proof_names[parents[1]],
+                    pivot,
+                    clause,
+                ),
+                symbol_sorts,
             )
         elif rule == "substitute":
             parent = step["parents"][0]
@@ -1801,6 +1965,27 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
                     step_clauses[parent],
                     proof_names[parent],
                     selected_literal,
+                    substitution,
+                    clause,
+                ),
+                symbol_sorts,
+            )
+        elif rule == "equality_factoring":
+            parent = step["parents"][0]
+            selected_literal = parse_literal(step["selected"], f"{step_id}.selected")
+            other_literal = parse_literal(step["other"], f"{step_id}.other")
+            selected_lhs = parse_term(step["selected_lhs"], f"{step_id}.selected_lhs")
+            other_rhs = parse_term(step["other_rhs"], f"{step_id}.other_rhs")
+            substitution = parse_substitution(step["substitution"], f"{step_id}.substitution")
+            proof = wrap_clause_binders(
+                clause,
+                equality_factoring_proof_text(
+                    step_clauses[parent],
+                    proof_names[parent],
+                    selected_literal,
+                    other_literal,
+                    selected_lhs,
+                    other_rhs,
                     substitution,
                     clause,
                 ),

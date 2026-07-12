@@ -1,0 +1,248 @@
+{
+  "format": "vampire-megalodon-certificate",
+  "version": 1,
+  "problem": "valid-prop-equality-factoring-smoke",
+  "declarations": [
+    "Variable f__true:prop."
+  ],
+  "steps": [
+    {
+      "id": "u1",
+      "rule": "input",
+      "source": {
+        "kind": "axiom",
+        "name": "a1"
+      },
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "eq": [
+              {
+                "const": "f__true"
+              },
+              {
+                "var": "X1"
+              }
+            ],
+            "sort": "prop"
+          }
+        },
+        {
+          "polarity": true,
+          "atom": {
+            "eq": [
+              {
+                "var": "X0"
+              },
+              {
+                "var": "X1"
+              }
+            ],
+            "sort": "prop"
+          }
+        }
+      ]
+    },
+    {
+      "id": "u2",
+      "rule": "equality_factoring",
+      "parents": [
+        "u1"
+      ],
+      "selected": {
+        "polarity": true,
+        "atom": {
+          "eq": [
+            {
+              "const": "f__true"
+            },
+            {
+              "var": "X1"
+            }
+          ],
+          "sort": "prop"
+        }
+      },
+      "other": {
+        "polarity": true,
+        "atom": {
+          "eq": [
+            {
+              "var": "X0"
+            },
+            {
+              "var": "X1"
+            }
+          ],
+          "sort": "prop"
+        }
+      },
+      "selected_lhs": {
+        "const": "f__true"
+      },
+      "other_rhs": {
+        "var": "X1"
+      },
+      "substitution": {
+        "X0": {
+          "const": "f__true"
+        },
+        "X1": {
+          "var": "X0"
+        }
+      },
+      "clause": [
+        {
+          "polarity": false,
+          "atom": {
+            "eq": [
+              {
+                "var": "X0"
+              },
+              {
+                "var": "X0"
+              }
+            ],
+            "sort": "prop"
+          }
+        },
+        {
+          "polarity": true,
+          "atom": {
+            "eq": [
+              {
+                "const": "f__true"
+              },
+              {
+                "var": "X0"
+              }
+            ],
+            "sort": "prop"
+          }
+        }
+      ]
+    },
+    {
+      "id": "u3",
+      "rule": "equality_resolution",
+      "parents": [
+        "u2"
+      ],
+      "literal": {
+        "polarity": false,
+        "atom": {
+          "eq": [
+            {
+              "var": "X0"
+            },
+            {
+              "var": "X0"
+            }
+          ],
+          "sort": "prop"
+        }
+      },
+      "substitution": {},
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "eq": [
+              {
+                "const": "f__true"
+              },
+              {
+                "var": "X0"
+              }
+            ],
+            "sort": "prop"
+          }
+        }
+      ]
+    },
+    {
+      "id": "u4",
+      "rule": "substitute",
+      "parents": [
+        "u3"
+      ],
+      "substitution": {
+        "X0": {
+          "const": "f__true"
+        }
+      },
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "eq": [
+              {
+                "const": "f__true"
+              },
+              {
+                "const": "f__true"
+              }
+            ],
+            "sort": "prop"
+          }
+        }
+      ]
+    },
+    {
+      "id": "u5",
+      "rule": "input",
+      "source": {
+        "kind": "negated_conjecture",
+        "name": "neg"
+      },
+      "clause": [
+        {
+          "polarity": false,
+          "atom": {
+            "eq": [
+              {
+                "const": "f__true"
+              },
+              {
+                "const": "f__true"
+              }
+            ],
+            "sort": "prop"
+          }
+        }
+      ]
+    },
+    {
+      "id": "u6",
+      "rule": "resolve",
+      "parents": [
+        "u4",
+        "u5"
+      ],
+      "pivot": {
+        "polarity": true,
+        "atom": {
+          "eq": [
+            {
+              "const": "f__true"
+            },
+            {
+              "const": "f__true"
+            }
+          ],
+          "sort": "prop"
+        }
+      },
+      "clause": []
+    },
+    {
+      "id": "u7",
+      "rule": "contradiction",
+      "parents": [
+        "u6"
+      ],
+      "clause": []
+    }
+  ]
+}
