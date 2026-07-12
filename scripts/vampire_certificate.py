@@ -1406,6 +1406,14 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
 
     steps: list[dict[str, Any]] = []
     clauses: dict[int, tuple[Literal, ...]] = {}
+    reconstruction_stats = {
+        "explicit_step_units": 0,
+        "explicit_substeps": 0,
+        "inferred_definition_input_units": 0,
+        "inferred_resolution_units": 0,
+        "inferred_paramodulation_units": 0,
+        "derived_assumption_units": 0,
+    }
     for step_no in sorted(clause_json):
         meta = step_meta.get(step_no)
         if meta is None:
@@ -1418,6 +1426,8 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
         explicit_steps = certificate_step_lists.get(step_no)
         explicit_step = certificate_steps.get(step_no)
         if explicit_steps is not None:
+            reconstruction_stats["explicit_step_units"] += 1
+            reconstruction_stats["explicit_substeps"] += len(explicit_steps)
             for index, explicit in enumerate(explicit_steps):
                 step = dict(explicit)
                 if "id" not in step and index == len(explicit_steps) - 1:
@@ -1432,6 +1442,8 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
             clauses[step_no] = clause
             continue
         if explicit_step is not None:
+            reconstruction_stats["explicit_step_units"] += 1
+            reconstruction_stats["explicit_substeps"] += 1
             step = dict(explicit_step)
             step["id"] = step_id
             step["clause"] = clause_json[step_no]
@@ -1449,6 +1461,7 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
         )
 
         if definition_input is not None:
+            reconstruction_stats["inferred_definition_input_units"] += 1
             if step_no in variable_sorts:
                 definition_input.setdefault("variable_sorts", variable_sorts[step_no])
             steps.append(definition_input)
@@ -1459,6 +1472,7 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
                 )
             left_no, right_no = parent_clause_numbers
             pivot = infer_resolution_pivot(step_id, clauses[left_no], clauses[right_no], clause)
+            reconstruction_stats["inferred_resolution_units"] += 1
             steps.append(
                 {
                     "id": step_id,
@@ -1472,12 +1486,14 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
         elif replay_kind in {"forward_demodulation", "backward_demodulation", "definition_rewrite"}:
             paramodulation = infer_paramodulation_step(step_id, parent_clause_numbers, clauses, clause, clause_json[step_no])
             if paramodulation is not None:
+                reconstruction_stats["inferred_paramodulation_units"] += 1
                 if step_no in variable_sorts:
                     paramodulation.setdefault("variable_sorts", variable_sorts[step_no])
                 steps.append(paramodulation)
             else:
                 paramodulation_with_symmetry = infer_paramodulation_then_symmetry_steps(step_id, parent_clause_numbers, clauses, clause)
                 if paramodulation_with_symmetry is not None:
+                    reconstruction_stats["inferred_paramodulation_units"] += 1
                     inferred_steps, _intermediate_clause = paramodulation_with_symmetry
                     if step_no in variable_sorts:
                         for inferred_step in inferred_steps:
@@ -1485,6 +1501,8 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
                     steps.extend(inferred_steps)
                 else:
                     source_kind = "vampire_input_clause" if not meta["parents"] else "vampire_derived_clause"
+                    if source_kind == "vampire_derived_clause":
+                        reconstruction_stats["derived_assumption_units"] += 1
                     steps.append(
                         {
                             "id": step_id,
@@ -1501,6 +1519,8 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
                     )
         elif not parent_clause_numbers or replay_kind in DERIVED_ASSUMPTION_REPLAY_KINDS:
             source_kind = "vampire_input_clause" if not meta["parents"] else "vampire_derived_clause"
+            if source_kind == "vampire_derived_clause":
+                reconstruction_stats["derived_assumption_units"] += 1
             source: dict[str, Any] = {
                 "kind": source_kind,
                 "name": step_id,
@@ -1551,6 +1571,7 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
     }
     if declarations:
         result["declarations"] = sorted(set(declarations))
+    result["outline_reconstruction"] = reconstruction_stats
     lambda_hints = parse_lambda_hints(extras)
     if lambda_hints:
         result["lambda_hints"] = lambda_hints
@@ -2794,7 +2815,7 @@ def certificate_summary(data: dict[str, Any], clauses: dict[str, tuple[Literal, 
                 checked_normal_form_clauses += 1
             if isinstance(source, dict) and "cnf" in source:
                 checked_cnf_clauses += 1
-    return {
+    summary = {
         "steps": len(clauses),
         "empty_clauses": sum(1 for clause in clauses.values() if not clause),
         "rules": dict(sorted(rules.items())),
@@ -2803,6 +2824,14 @@ def certificate_summary(data: dict[str, Any], clauses: dict[str, tuple[Literal, 
         "checked_normal_form_clauses": checked_normal_form_clauses,
         "checked_cnf_clauses": checked_cnf_clauses,
     }
+    reconstruction = data.get("outline_reconstruction")
+    if isinstance(reconstruction, dict):
+        summary["outline_reconstruction"] = {
+            key: value
+            for key, value in sorted(reconstruction.items())
+            if isinstance(key, str) and isinstance(value, int)
+        }
+    return summary
 
 
 def main() -> int:
