@@ -487,6 +487,68 @@ def infer_resolution_pivot(
     return unique[0]
 
 
+def term_positions(term: Term) -> tuple[tuple[int, ...], ...]:
+    result: list[tuple[int, ...]] = [()]
+    for index, arg in enumerate(term.args):
+        result.extend((index, *position) for position in term_positions(arg))
+    return tuple(result)
+
+
+def infer_paramodulation_step(
+    step_id: str,
+    parent_numbers: list[int],
+    clauses: dict[int, tuple[Literal, ...]],
+    conclusion: tuple[Literal, ...],
+    conclusion_json: list[Any],
+) -> dict[str, Any] | None:
+    candidates: list[dict[str, Any]] = []
+    for equality_parent_no in parent_numbers:
+        equality_parent = clauses[equality_parent_no]
+        for target_parent_no in parent_numbers:
+            if target_parent_no == equality_parent_no:
+                continue
+            target_parent = clauses[target_parent_no]
+            for equality in equality_parent:
+                if not equality.polarity or equality.atom.kind != "eq" or len(equality.atom.args) != 2:
+                    continue
+                from_term, to_term = equality.atom.args
+                for target in target_parent:
+                    for position in term_positions(target.atom):
+                        try:
+                            if term_at_position(target.atom, position, f"{step_id}.candidate") != from_term:
+                                continue
+                            rewritten_target = Literal(
+                                target.polarity,
+                                replace_term_at_position(target.atom, position, to_term, f"{step_id}.candidate"),
+                            )
+                            expected = normalize_clause(
+                                clause_without_one(equality_parent, equality)
+                                + clause_without_one(target_parent, target)
+                                + (rewritten_target,)
+                            )
+                        except CertificateError:
+                            continue
+                        if expected == normalize_clause(conclusion):
+                            candidates.append(
+                                {
+                                    "id": step_id,
+                                    "rule": "paramodulate",
+                                    "parents": [f"u{equality_parent_no}", f"u{target_parent_no}"],
+                                    "equality": literal_to_json(equality),
+                                    "from": term_to_json(from_term),
+                                    "to": term_to_json(to_term),
+                                    "target": literal_to_json(target),
+                                    "position": list(position),
+                                    "substitution": {},
+                                    "clause": conclusion_json,
+                                }
+                            )
+    unique = sorted(candidates, key=lambda item: json.dumps(item, sort_keys=True))
+    if len(unique) == 1:
+        return unique[0]
+    return None
+
+
 def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
     step_meta: dict[int, dict[str, Any]] = {}
     clause_json: dict[int, list[Any]] = {}
@@ -557,6 +619,25 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
                     "clause": clause_json[step_no],
                 }
             )
+        elif replay_kind in {"forward_demodulation", "backward_demodulation"}:
+            paramodulation = infer_paramodulation_step(step_id, parent_clause_numbers, clauses, clause, clause_json[step_no])
+            if paramodulation is not None:
+                steps.append(paramodulation)
+            else:
+                source_kind = "vampire_input_clause" if not meta["parents"] else "vampire_derived_clause"
+                steps.append(
+                    {
+                        "id": step_id,
+                        "rule": "input",
+                        "clause": clause_json[step_no],
+                        "source": {
+                            "kind": source_kind,
+                            "name": step_id,
+                            "vampire_rule": meta["rule"],
+                            "vampire_parents": [f"u{parent}" for parent in meta["parents"]],
+                        },
+                    }
+                )
         elif not parent_clause_numbers or replay_kind in DERIVED_ASSUMPTION_REPLAY_KINDS:
             source_kind = "vampire_input_clause" if not meta["parents"] else "vampire_derived_clause"
             steps.append(
@@ -833,6 +914,10 @@ def paramodulation_proof_text(
         "paramodulation.position",
     )
     backward_context = f"(fun cert_x cert_y:set => {atom_text(backward_context_atom)})"
+    if instantiated_equality.atom.name == "prop":
+        if not instantiated_target.polarity:
+            raise CertificateError("Megalodon smoke prop-equality paramodulation currently supports positive targets only")
+        forward_context = f"(fun cert_x:prop => {atom_text(forward_context_atom)})"
     goal = clause_body_text(conclusion)
 
     def target_branch(literal: Literal, proof: str, equality_literal_proof: str) -> str:

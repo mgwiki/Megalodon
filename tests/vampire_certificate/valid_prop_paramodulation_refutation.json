@@ -1,0 +1,152 @@
+{
+  "format": "vampire-megalodon-certificate",
+  "version": 1,
+  "problem": "valid-prop-paramodulation-refutation-smoke",
+  "declarations": [
+    "Variable a:set.",
+    "Variable f__true:prop.",
+    "Variable p:set->prop.",
+    "Variable sF0:prop."
+  ],
+  "steps": [
+    {
+      "id": "c1",
+      "rule": "input",
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "eq": [
+              {
+                "apply": [
+                  {"const": "p"},
+                  {"const": "a"}
+                ]
+              },
+              {"const": "f__true"}
+            ],
+            "sort": "prop"
+          }
+        }
+      ],
+      "source": {"kind": "derived", "name": "eq_p_a_true"}
+    },
+    {
+      "id": "c2",
+      "rule": "input",
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "eq": [
+              {
+                "apply": [
+                  {"const": "p"},
+                  {"const": "a"}
+                ]
+              },
+              {"const": "sF0"}
+            ],
+            "sort": "prop"
+          }
+        }
+      ],
+      "source": {"kind": "derived", "name": "eq_p_a_sF0"}
+    },
+    {
+      "id": "c3",
+      "rule": "paramodulate",
+      "parents": ["c1", "c2"],
+      "equality": {
+        "polarity": true,
+        "atom": {
+          "eq": [
+            {
+              "apply": [
+                {"const": "p"},
+                {"const": "a"}
+              ]
+            },
+            {"const": "f__true"}
+          ],
+          "sort": "prop"
+        }
+      },
+      "from": {
+        "apply": [
+          {"const": "p"},
+          {"const": "a"}
+        ]
+      },
+      "to": {"const": "f__true"},
+      "target": {
+        "polarity": true,
+        "atom": {
+          "eq": [
+            {
+              "apply": [
+                {"const": "p"},
+                {"const": "a"}
+              ]
+            },
+            {"const": "sF0"}
+          ],
+          "sort": "prop"
+        }
+      },
+      "position": [0],
+      "substitution": {},
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "eq": [
+              {"const": "f__true"},
+              {"const": "sF0"}
+            ],
+            "sort": "prop"
+          }
+        }
+      ]
+    },
+    {
+      "id": "c4",
+      "rule": "input",
+      "clause": [
+        {
+          "polarity": false,
+          "atom": {
+            "eq": [
+              {"const": "f__true"},
+              {"const": "sF0"}
+            ],
+            "sort": "prop"
+          }
+        }
+      ],
+      "source": {"kind": "derived", "name": "not_eq_true_sF0"}
+    },
+    {
+      "id": "c5",
+      "rule": "resolve",
+      "parents": ["c3", "c4"],
+      "pivot": {
+        "polarity": true,
+        "atom": {
+          "eq": [
+            {"const": "f__true"},
+            {"const": "sF0"}
+          ],
+          "sort": "prop"
+        }
+      },
+      "clause": []
+    },
+    {
+      "id": "c6",
+      "rule": "contradiction",
+      "parents": ["c5"],
+      "clause": []
+    }
+  ]
+}
