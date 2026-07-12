@@ -300,12 +300,15 @@ Project-level success gates:
 ## Current Prototype Elaboration
 
 `scripts/vampire_certificate.py --emit-megalodon OUT.mg` currently elaborates
-the opaque propositional subfragment to a Megalodon proof script:
+a small checked subfragment to a Megalodon proof script:
 
 - `input` clauses become theorem assumptions,
-- `resolve`, `factor`, and `contradiction` become local `claim`s,
+- opaque propositional `resolve`, `factor`, and `contradiction` steps become
+  local `claim`s,
+- structured first-order `substitute` steps are elaborated by universal
+  instantiation of their parent clause,
 - the final empty clause proves `False`.
 
-This first elaborator is intentionally limited to opaque propositional atoms.
-It is a no-admit kernel-checking smoke path, not yet the first-order
-Megalodon importer.
+This first elaborator is intentionally limited to set-sorted first-order terms
+and ground resolution after substitution. It is a no-admit kernel-checking
+smoke path, not yet the full first-order Megalodon importer.

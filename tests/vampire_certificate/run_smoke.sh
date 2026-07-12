@@ -13,11 +13,17 @@ python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_paramodul
 python3 scripts/vampire_certificate.py \
   tests/vampire_certificate/valid_resolution.json \
   --emit-megalodon "$TMPDIR/vampire_certificate_valid_resolution.mg"
-if rg -n '\badmit\b|\baby\b|-allowincompleteqed' "$TMPDIR/vampire_certificate_valid_resolution.mg"; then
+python3 scripts/vampire_certificate.py \
+  tests/vampire_certificate/valid_substituted_resolution.json \
+  --emit-megalodon "$TMPDIR/vampire_certificate_valid_substituted_resolution.mg"
+if rg -n '\badmit\b|\baby\b|-allowincompleteqed' \
+  "$TMPDIR/vampire_certificate_valid_resolution.mg" \
+  "$TMPDIR/vampire_certificate_valid_substituted_resolution.mg"; then
   echo "generated Megalodon certificate proof contains an admission marker" >&2
   exit 1
 fi
 ./bin/megalodon "$TMPDIR/vampire_certificate_valid_resolution.mg" >"$TMPDIR/vampire_certificate_valid_resolution.check.log"
+./bin/megalodon "$TMPDIR/vampire_certificate_valid_substituted_resolution.mg" >"$TMPDIR/vampire_certificate_valid_substituted_resolution.check.log"
 
 if python3 scripts/vampire_certificate.py tests/vampire_certificate/invalid_pivot.json >"$TMPDIR/vampire_certificate_invalid_pivot.out" 2>"$TMPDIR/vampire_certificate_invalid_pivot.err"; then
   echo "invalid pivot certificate unexpectedly passed" >&2

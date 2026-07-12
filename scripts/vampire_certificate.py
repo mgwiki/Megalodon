@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +32,9 @@ MVP_RULES = {
 
 class CertificateError(Exception):
     pass
+
+
+IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_']*")
 
 
 @dataclass(frozen=True, order=True)
@@ -142,6 +146,12 @@ def replace_term_at_position(term: Term, position: tuple[int, ...], replacement:
 
 def is_reflexive_equality_atom(atom: Term) -> bool:
     return atom.kind == "eq" and len(atom.args) == 2 and atom.args[0] == atom.args[1]
+
+
+def require_megalodon_ident(name: str, context: str) -> str:
+    if not IDENT_RE.fullmatch(name):
+        raise CertificateError(f"{context}: {name!r} is not a supported Megalodon identifier")
+    return name
 
 
 def parse_substitution(value: Any, context: str) -> dict[str, Term]:
@@ -390,15 +400,36 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
     return clauses
 
 
+def term_text(term: Term) -> str:
+    if term.kind in {"var", "const"}:
+        return require_megalodon_ident(term.name, "term")
+    if term.kind == "app":
+        name = require_megalodon_ident(term.name, "term")
+        args = " ".join(term_text(arg) for arg in term.args)
+        return f"({name} {args})" if args else name
+    raise CertificateError(f"cannot render term kind {term.kind!r}")
+
+
+def atom_text(atom: Term) -> str:
+    if atom.kind == "opaque":
+        return require_megalodon_ident(atom.name, "atom")
+    if atom.kind == "pred":
+        name = require_megalodon_ident(atom.name, "atom")
+        args = " ".join(term_text(arg) for arg in atom.args)
+        return f"({name} {args})" if args else name
+    if atom.kind == "eq" and len(atom.args) == 2:
+        return f"({term_text(atom.args[0])} = {term_text(atom.args[1])})"
+    raise CertificateError(f"cannot render atom kind {atom.kind!r}")
+
+
 def literal_text(literal: Literal) -> str:
-    if literal.atom.kind != "opaque":
-        raise CertificateError("Megalodon smoke elaboration currently supports only opaque propositional atoms")
+    atom = atom_text(literal.atom)
     if literal.polarity:
-        return literal.atom.name
-    return f"({literal.atom.name} -> False)"
+        return atom
+    return f"({atom} -> False)"
 
 
-def clause_text(clause: tuple[Literal, ...]) -> str:
+def clause_body_text(clause: tuple[Literal, ...]) -> str:
     normalized = normalize_clause(clause)
     if not normalized:
         return "False"
@@ -406,6 +437,33 @@ def clause_text(clause: tuple[Literal, ...]) -> str:
     result = parts[-1]
     for part in reversed(parts[:-1]):
         result = f"({part} \\/ {result})"
+    return result
+
+
+def term_free_vars(term: Term) -> set[str]:
+    if term.kind == "var":
+        return {term.name}
+    result: set[str] = set()
+    for arg in term.args:
+        result.update(term_free_vars(arg))
+    return result
+
+
+def literal_free_vars(literal: Literal) -> set[str]:
+    return term_free_vars(literal.atom)
+
+
+def clause_free_vars(clause: tuple[Literal, ...]) -> tuple[str, ...]:
+    variables: set[str] = set()
+    for literal in clause:
+        variables.update(literal_free_vars(literal))
+    return tuple(sorted(variables))
+
+
+def clause_prop_text(clause: tuple[Literal, ...]) -> str:
+    result = clause_body_text(clause)
+    for name in reversed(clause_free_vars(clause)):
+        result = f"forall {require_megalodon_ident(name, 'binder')}:set, {result}"
     return result
 
 
@@ -467,7 +525,9 @@ def resolve_proof_text(
     pivot: Literal,
     conclusion: tuple[Literal, ...],
 ) -> str:
-    goal = clause_text(conclusion)
+    if clause_free_vars(left_clause) or clause_free_vars(right_clause) or clause_free_vars(conclusion):
+        raise CertificateError("Megalodon smoke resolution elaboration currently requires ground clauses")
+    goal = clause_body_text(conclusion)
     complement = pivot.complement
 
     def right_branch(literal: Literal, proof: str, pivot_proof: str) -> str:
@@ -489,25 +549,78 @@ def resolve_proof_text(
     return eliminate_clause_proof(left_clause, left_proof, goal, left_branch)
 
 
-def certificate_opaque_atoms(clauses: dict[str, tuple[Literal, ...]]) -> list[str]:
-    atoms: set[str] = set()
+def collect_term_symbols(term: Term, constants: set[str], functions: dict[str, int]) -> None:
+    if term.kind == "const":
+        constants.add(term.name)
+    elif term.kind == "app":
+        previous = functions.setdefault(term.name, len(term.args))
+        if previous != len(term.args):
+            raise CertificateError(f"function {term.name!r} used with inconsistent arity")
+    for arg in term.args:
+        collect_term_symbols(arg, constants, functions)
+
+
+def collect_atom_symbols(atom: Term, prop_atoms: set[str], predicates: dict[str, int], constants: set[str], functions: dict[str, int]) -> None:
+    if atom.kind == "opaque":
+        prop_atoms.add(atom.name)
+    elif atom.kind == "pred":
+        previous = predicates.setdefault(atom.name, len(atom.args))
+        if previous != len(atom.args):
+            raise CertificateError(f"predicate {atom.name!r} used with inconsistent arity")
+        for arg in atom.args:
+            collect_term_symbols(arg, constants, functions)
+    elif atom.kind == "eq":
+        for arg in atom.args:
+            collect_term_symbols(arg, constants, functions)
+    else:
+        raise CertificateError(f"cannot collect symbols from atom kind {atom.kind!r}")
+
+
+def certificate_symbol_declarations(clauses: dict[str, tuple[Literal, ...]]) -> list[str]:
+    prop_atoms: set[str] = set()
+    constants: set[str] = set()
+    functions: dict[str, int] = {}
+    predicates: dict[str, int] = {}
     for clause in clauses.values():
         for literal in clause:
-            if literal.atom.kind != "opaque":
-                continue
-            atoms.add(literal.atom.name)
-    return sorted(atoms)
+            collect_atom_symbols(literal.atom, prop_atoms, predicates, constants, functions)
+    declarations: list[str] = []
+    for name in sorted(prop_atoms):
+        declarations.append(f"Variable {require_megalodon_ident(name, 'atom')}:prop.")
+    for name in sorted(constants):
+        declarations.append(f"Variable {require_megalodon_ident(name, 'constant')}:set.")
+    for name, arity in sorted(functions.items()):
+        sort = "->".join(["set"] * arity + ["set"])
+        declarations.append(f"Variable {require_megalodon_ident(name, 'function')}:{sort}.")
+    for name, arity in sorted(predicates.items()):
+        sort = "->".join(["set"] * arity + ["prop"])
+        declarations.append(f"Variable {require_megalodon_ident(name, 'predicate')}:{sort}.")
+    return declarations
+
+
+def instantiate_proof(proof_name: str, parent_clause: tuple[Literal, ...], substitution: dict[str, Term]) -> str:
+    proof = proof_name
+    for name in clause_free_vars(parent_clause):
+        term = substitution.get(name, Term("var", name))
+        proof = f"({proof} {term_text(term)})"
+    return proof
+
+
+def wrap_clause_binders(clause: tuple[Literal, ...], proof: str) -> str:
+    for name in reversed(clause_free_vars(clause)):
+        proof = f"(fun {require_megalodon_ident(name, 'binder')} :set => {proof})"
+    return proof
 
 
 def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal, ...]], theorem_name: str) -> str:
-    atoms = certificate_opaque_atoms(clauses)
-    if not atoms:
-        raise CertificateError("Megalodon smoke elaboration needs at least one opaque atom")
+    declarations = certificate_symbol_declarations(clauses)
+    if not declarations:
+        raise CertificateError("Megalodon smoke elaboration needs at least one declared atom or symbol")
     lines = [
         "Definition False : prop := forall p:prop, p.",
         "Definition or : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> p) -> (B -> p) -> p.",
         "Infix \\/ 785 left := or.",
-        f"Variable {' '.join(atoms)}:prop.",
+        *declarations,
     ]
     step_clauses: dict[str, tuple[Literal, ...]] = {}
     proof_names: dict[str, str] = {}
@@ -524,7 +637,7 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
             final_empty = step_id
         if rule == "input":
             proof_names[step_id] = step_id
-            assumptions.append((step_id, clause_text(clause)))
+            assumptions.append((step_id, clause_prop_text(clause)))
             continue
         if rule == "resolve":
             parents = step["parents"]
@@ -537,6 +650,10 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
                 pivot,
                 clause,
             )
+        elif rule == "substitute":
+            parent = step["parents"][0]
+            substitution = parse_substitution(step["substitution"], f"{step_id}.substitution")
+            proof = wrap_clause_binders(clause, instantiate_proof(proof_names[parent], step_clauses[parent], substitution))
         elif rule == "factor":
             parent = step["parents"][0]
             proof = proof_names[parent]
@@ -546,11 +663,11 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
         else:
             raise CertificateError(f"Megalodon smoke elaboration does not yet support {rule}")
         proof_names[step_id] = step_id
-        derived.append((step_id, clause_text(clause), proof))
+        derived.append((step_id, clause_prop_text(clause), proof))
 
     if final_empty is None:
         raise CertificateError("certificate has no empty-clause step to prove False")
-    theorem_type = " -> ".join([*(prop for _name, prop in assumptions), "False"])
+    theorem_type = " -> ".join([*(f"({prop})" for _name, prop in assumptions), "False"])
     lines.append(f"Theorem {theorem_name} : {theorem_type}.")
     for name, prop in assumptions:
         lines.append(f"assume {name}: {prop}.")

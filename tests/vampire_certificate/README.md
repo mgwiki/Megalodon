@@ -17,6 +17,7 @@ tests/vampire_certificate/run_smoke.sh
 ```
 
 The smoke script also uses `--emit-megalodon` on the propositional
-`valid_resolution.json` certificate and checks the generated file with
-`bin/megalodon`. That generated proof is required to contain no `admit`, no
-`aby`, and no `-allowincompleteqed`.
+`valid_resolution.json` certificate and the first-order
+`valid_substituted_resolution.json` certificate, then checks the generated
+files with `bin/megalodon`. Those generated proofs are required to contain no
+`admit`, no `aby`, and no `-allowincompleteqed`.
