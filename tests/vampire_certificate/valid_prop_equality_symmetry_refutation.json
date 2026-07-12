@@ -1,0 +1,94 @@
+{
+  "format": "vampire-megalodon-certificate",
+  "version": 1,
+  "problem": "valid-prop-equality-symmetry-refutation-smoke",
+  "declarations": [
+    "Variable A:prop.",
+    "Variable B:prop."
+  ],
+  "steps": [
+    {
+      "id": "c1",
+      "rule": "input",
+      "clause": [
+        {
+          "polarity": false,
+          "atom": {
+            "eq": [
+              {"const": "A"},
+              {"const": "B"}
+            ],
+            "sort": "prop"
+          }
+        }
+      ],
+      "source": {"kind": "axiom", "name": "not_eq_a_b"}
+    },
+    {
+      "id": "c2",
+      "rule": "equality_symmetry",
+      "parents": ["c1"],
+      "literal": {
+        "polarity": false,
+        "atom": {
+          "eq": [
+            {"const": "A"},
+            {"const": "B"}
+          ],
+          "sort": "prop"
+        }
+      },
+      "clause": [
+        {
+          "polarity": false,
+          "atom": {
+            "eq": [
+              {"const": "B"},
+              {"const": "A"}
+            ],
+            "sort": "prop"
+          }
+        }
+      ]
+    },
+    {
+      "id": "c3",
+      "rule": "input",
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "eq": [
+              {"const": "B"},
+              {"const": "A"}
+            ],
+            "sort": "prop"
+          }
+        }
+      ],
+      "source": {"kind": "axiom", "name": "eq_b_a"}
+    },
+    {
+      "id": "c4",
+      "rule": "resolve",
+      "parents": ["c3", "c2"],
+      "pivot": {
+        "polarity": true,
+        "atom": {
+          "eq": [
+            {"const": "B"},
+            {"const": "A"}
+          ],
+          "sort": "prop"
+        }
+      },
+      "clause": []
+    },
+    {
+      "id": "c5",
+      "rule": "contradiction",
+      "parents": ["c4"],
+      "clause": []
+    }
+  ]
+}

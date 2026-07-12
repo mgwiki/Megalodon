@@ -26,6 +26,7 @@ MVP_RULES = {
     "resolve",
     "factor",
     "equality_resolution",
+    "equality_symmetry",
     "paramodulate",
     "contradiction",
 }
@@ -175,6 +176,12 @@ def replace_term_at_position(term: Term, position: tuple[int, ...], replacement:
 
 def is_reflexive_equality_atom(atom: Term) -> bool:
     return atom.kind == "eq" and len(atom.args) == 2 and atom.args[0] == atom.args[1]
+
+
+def swap_equality_literal(literal: Literal) -> Literal:
+    if literal.atom.kind != "eq" or len(literal.atom.args) != 2:
+        raise CertificateError("selected literal is not an equality")
+    return Literal(literal.polarity, Term("eq", literal.atom.name, (literal.atom.args[1], literal.atom.args[0])))
 
 
 def require_megalodon_ident(name: str, context: str) -> str:
@@ -383,6 +390,23 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
             if clause != expected:
                 raise CertificateError(f"{step_id}: equality-resolution conclusion does not match parent")
 
+        elif rule == "equality_symmetry":
+            allowed = {"id", "rule", "parents", "literal", "clause"}
+            require_fields(step, allowed)
+            require_no_extra_fields(step, allowed)
+            parents = require_parents(step, 1)
+            parent_clause = clauses.get(parents[0])
+            if parent_clause is None:
+                raise CertificateError(f"{step_id}: unknown parent {parents[0]}")
+            literal = parse_literal(step["literal"], f"{step_id}.literal")
+            if literal not in parent_clause:
+                raise CertificateError(f"{step_id}: equality-symmetry literal not present in parent")
+            swapped = swap_equality_literal(literal)
+            expected = normalize_clause(clause_without_one(parent_clause, literal) + (swapped,))
+            clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
+            if clause != expected:
+                raise CertificateError(f"{step_id}: equality-symmetry conclusion does not match parent")
+
         elif rule == "paramodulate":
             allowed = {"id", "rule", "parents", "equality", "from", "to", "target", "position", "substitution", "clause"}
             require_fields(step, allowed)
@@ -549,6 +573,72 @@ def infer_paramodulation_step(
     return None
 
 
+def infer_paramodulation_then_symmetry_steps(
+    step_id: str,
+    parent_numbers: list[int],
+    clauses: dict[int, tuple[Literal, ...]],
+    conclusion: tuple[Literal, ...],
+) -> tuple[list[dict[str, Any]], tuple[Literal, ...]] | None:
+    for equality_parent_no in parent_numbers:
+        equality_parent = clauses[equality_parent_no]
+        for target_parent_no in parent_numbers:
+            if target_parent_no == equality_parent_no:
+                continue
+            target_parent = clauses[target_parent_no]
+            for equality in equality_parent:
+                if not equality.polarity or equality.atom.kind != "eq" or len(equality.atom.args) != 2:
+                    continue
+                from_term, to_term = equality.atom.args
+                for target in target_parent:
+                    for position in term_positions(target.atom):
+                        try:
+                            if term_at_position(target.atom, position, f"{step_id}.candidate") != from_term:
+                                continue
+                            rewritten_target = Literal(
+                                target.polarity,
+                                replace_term_at_position(target.atom, position, to_term, f"{step_id}.candidate"),
+                            )
+                            param_clause = normalize_clause(
+                                clause_without_one(equality_parent, equality)
+                                + clause_without_one(target_parent, target)
+                                + (rewritten_target,)
+                            )
+                            symmetric_clause = normalize_clause(
+                                clause_without_one(param_clause, rewritten_target)
+                                + (swap_equality_literal(rewritten_target),)
+                            )
+                        except CertificateError:
+                            continue
+                        if symmetric_clause != normalize_clause(conclusion):
+                            continue
+                        param_step_id = f"{step_id}_paramodulate"
+                        return (
+                            [
+                                {
+                                    "id": param_step_id,
+                                    "rule": "paramodulate",
+                                    "parents": [f"u{equality_parent_no}", f"u{target_parent_no}"],
+                                    "equality": literal_to_json(equality),
+                                    "from": term_to_json(from_term),
+                                    "to": term_to_json(to_term),
+                                    "target": literal_to_json(target),
+                                    "position": list(position),
+                                    "substitution": {},
+                                    "clause": [literal_to_json(literal) for literal in param_clause],
+                                },
+                                {
+                                    "id": step_id,
+                                    "rule": "equality_symmetry",
+                                    "parents": [param_step_id],
+                                    "literal": literal_to_json(rewritten_target),
+                                    "clause": [literal_to_json(literal) for literal in conclusion],
+                                },
+                            ],
+                            param_clause,
+                        )
+    return None
+
+
 def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
     step_meta: dict[int, dict[str, Any]] = {}
     clause_json: dict[int, list[Any]] = {}
@@ -619,25 +709,30 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
                     "clause": clause_json[step_no],
                 }
             )
-        elif replay_kind in {"forward_demodulation", "backward_demodulation"}:
+        elif replay_kind in {"forward_demodulation", "backward_demodulation", "definition_rewrite"}:
             paramodulation = infer_paramodulation_step(step_id, parent_clause_numbers, clauses, clause, clause_json[step_no])
             if paramodulation is not None:
                 steps.append(paramodulation)
             else:
-                source_kind = "vampire_input_clause" if not meta["parents"] else "vampire_derived_clause"
-                steps.append(
-                    {
-                        "id": step_id,
-                        "rule": "input",
-                        "clause": clause_json[step_no],
-                        "source": {
-                            "kind": source_kind,
-                            "name": step_id,
-                            "vampire_rule": meta["rule"],
-                            "vampire_parents": [f"u{parent}" for parent in meta["parents"]],
-                        },
-                    }
-                )
+                paramodulation_with_symmetry = infer_paramodulation_then_symmetry_steps(step_id, parent_clause_numbers, clauses, clause)
+                if paramodulation_with_symmetry is not None:
+                    inferred_steps, _intermediate_clause = paramodulation_with_symmetry
+                    steps.extend(inferred_steps)
+                else:
+                    source_kind = "vampire_input_clause" if not meta["parents"] else "vampire_derived_clause"
+                    steps.append(
+                        {
+                            "id": step_id,
+                            "rule": "input",
+                            "clause": clause_json[step_no],
+                            "source": {
+                                "kind": source_kind,
+                                "name": step_id,
+                                "vampire_rule": meta["rule"],
+                                "vampire_parents": [f"u{parent}" for parent in meta["parents"]],
+                            },
+                        }
+                    )
         elif not parent_clause_numbers or replay_kind in DERIVED_ASSUMPTION_REPLAY_KINDS:
             source_kind = "vampire_input_clause" if not meta["parents"] else "vampire_derived_clause"
             steps.append(
@@ -783,6 +878,27 @@ def equality_refl_proof() -> str:
     return "(fun Q H => H)"
 
 
+def positive_equality_symmetry_proof(literal: Literal, proof: str) -> str:
+    if not literal.polarity or literal.atom.kind != "eq" or len(literal.atom.args) != 2:
+        raise CertificateError("equality symmetry needs a positive equality proof")
+    left = term_text(literal.atom.args[0])
+    right = term_text(literal.atom.args[1])
+    if literal.atom.name == "prop":
+        return f"(fun Q:prop->prop => fun H:Q {right} => ({proof} (fun cert_z:prop => Q cert_z -> Q {left}) (fun Hx => Hx) H))"
+    if literal.atom.name == "set":
+        return f"(fun Q:set->set->prop => fun H:Q {right} {left} => ({proof} (fun cert_x cert_y:set => Q cert_y cert_x) H))"
+    raise CertificateError(f"unsupported equality symmetry sort {literal.atom.name!r}")
+
+
+def equality_symmetry_literal_proof(literal: Literal, proof: str) -> str:
+    if literal.polarity:
+        return positive_equality_symmetry_proof(literal, proof)
+    positive_swapped = Literal(True, swap_equality_literal(literal).atom)
+    swapped_proof = fresh_proof_name("Hsym")
+    positive_original = positive_equality_symmetry_proof(positive_swapped, swapped_proof)
+    return f"(fun {swapped_proof} => ({proof} {positive_original}))"
+
+
 def fresh_proof_name(prefix: str) -> str:
     return f"{prefix}_{next(PROOF_NAME_COUNTER)}"
 
@@ -867,6 +983,29 @@ def equality_resolution_proof_text(
     return eliminate_clause_proof(instantiated_parent, instantiated_parent_proof, goal, branch)
 
 
+def equality_symmetry_proof_text(
+    parent_clause: tuple[Literal, ...],
+    parent_proof: str,
+    selected_literal: Literal,
+    conclusion: tuple[Literal, ...],
+) -> str:
+    if clause_free_vars(parent_clause) or clause_free_vars(conclusion):
+        raise CertificateError("Megalodon smoke equality-symmetry elaboration currently requires ground clauses")
+    if selected_literal not in normalize_clause(parent_clause):
+        raise CertificateError("Megalodon smoke equality-symmetry literal is not present in parent")
+    swapped = swap_equality_literal(selected_literal)
+    if swapped not in normalize_clause(conclusion):
+        raise CertificateError("Megalodon smoke equality-symmetry conclusion does not contain swapped literal")
+    goal = clause_body_text(conclusion)
+
+    def branch(literal: Literal, proof: str) -> str:
+        if literal == selected_literal:
+            return intro_literal_proof(swapped, conclusion, equality_symmetry_literal_proof(literal, proof))
+        return intro_literal_proof(literal, conclusion, proof)
+
+    return eliminate_clause_proof(parent_clause, parent_proof, goal, branch)
+
+
 def paramodulation_proof_text(
     equality_parent_clause: tuple[Literal, ...],
     equality_parent_proof: str,
@@ -914,9 +1053,8 @@ def paramodulation_proof_text(
         "paramodulation.position",
     )
     backward_context = f"(fun cert_x cert_y:set => {atom_text(backward_context_atom)})"
-    if instantiated_equality.atom.name == "prop":
-        if not instantiated_target.polarity:
-            raise CertificateError("Megalodon smoke prop-equality paramodulation currently supports positive targets only")
+    prop_equality = instantiated_equality.atom.name == "prop"
+    if prop_equality:
         forward_context = f"(fun cert_x:prop => {atom_text(forward_context_atom)})"
     goal = clause_body_text(conclusion)
 
@@ -926,7 +1064,11 @@ def paramodulation_proof_text(
                 transported = f"({equality_literal_proof} {forward_context} {proof})"
             else:
                 rewritten_proof = fresh_proof_name("Hrewrite")
-                transported = f"(fun {rewritten_proof} => ({proof} ({equality_literal_proof} {backward_context} {rewritten_proof})))"
+                if prop_equality:
+                    symmetric_equality = positive_equality_symmetry_proof(instantiated_equality, equality_literal_proof)
+                    transported = f"(fun {rewritten_proof} => ({proof} ({symmetric_equality} {forward_context} {rewritten_proof})))"
+                else:
+                    transported = f"(fun {rewritten_proof} => ({proof} ({equality_literal_proof} {backward_context} {rewritten_proof})))"
             return intro_literal_proof(rewritten_target, conclusion, transported)
         return intro_literal_proof(literal, conclusion, proof)
 
@@ -1080,6 +1222,18 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
                     proof_names[parent],
                     selected_literal,
                     substitution,
+                    clause,
+                ),
+            )
+        elif rule == "equality_symmetry":
+            parent = step["parents"][0]
+            selected_literal = parse_literal(step["literal"], f"{step_id}.literal")
+            proof = wrap_clause_binders(
+                clause,
+                equality_symmetry_proof_text(
+                    step_clauses[parent],
+                    proof_names[parent],
+                    selected_literal,
                     clause,
                 ),
             )
