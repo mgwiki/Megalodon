@@ -36671,6 +36671,7 @@ def raw_guarded_equality_composition_clause_proof(
         return None
     rule_lhs: Expr | None = None
     redex: Expr | None = None
+    target_binder_sorts: dict[str, str] = {}
     local_sorts = {**variable_sorts, **target_binder_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
     for fields in megalodon_replay_extra_fields(replay_step, "rewrite"):
         rule_lhs = raw_tptp_replay_extra_expr(fields, "rule_lhs", local_sorts)
@@ -62564,15 +62565,54 @@ def raw_tptp_peirce_implication_ennf_proof(
     target_proof_name = fresh_identifier("Htarget", expr_text(source), expr_text(target), source_proof)
     not_target_name = fresh_identifier("HnotTarget", expr_text(source), expr_text(target), source_proof, target_proof_name)
 
-    def source_premise_proof(premise_index: int, premise: Expr) -> str:
+    def transform_premise_to_component(premise: Expr, component: Expr, premise_proof: str) -> str | None:
+        transformed = raw_peirce_cps_exists_ennf_proof(
+            premise,
+            component,
+            premise_proof,
+            local_sorts,
+            depth + 1,
+        )
+        if transformed is None:
+            transformed = raw_classical_implication_to_or_transform_proof(premise, component, premise_proof)
+        if transformed is None:
+            transformed = raw_deep_formula_transform_proof(premise, component, premise_proof, local_sorts)
+        if transformed is None:
+            transformed = raw_clause_transform_proof(premise, component, premise_proof)
+        if transformed is None:
+            transformed = raw_tptp_peirce_implication_ennf_proof(
+                expr_text(component),
+                ["source"],
+                {"source": expr_text(premise)},
+                local_sorts,
+                source_proof_override=premise_proof,
+                depth=depth + 1,
+            )
+        if transformed is None:
+            transformed = raw_implication_to_ennf_or_proof(
+                premise,
+                component,
+                premise_proof,
+                local_sorts,
+            )
+        return transformed
+
+    def target_component_proof(premise_index: int, premise: Expr, component: Expr) -> str | None:
         premise_names = [
             fresh_identifier(f"Hprem{index}", expr_text(premise), expr_text(target), str(premise_index))
             for index, _premise in enumerate(implication_premises)
         ]
-        not_premise_name = fresh_identifier("HnotPrem", expr_text(premise), expr_text(target), str(premise_index))
-        false_from_negated_premise = f"({not_premise_name} {premise_names[premise_index]})"
+        not_component_name = fresh_identifier("HnotComponent", expr_text(component), expr_text(target), str(premise_index))
+        transformed_premise = transform_premise_to_component(
+            premise,
+            component,
+            premise_names[premise_index],
+        )
+        if transformed_premise is None:
+            return None
+        false_from_negated_component = f"({not_component_name} {proof_term_text(transformed_premise)})"
         body = raw_false_to_expr_proof(
-            false_from_negated_premise,
+            false_from_negated_component,
             target_var,
             Expr("var", value="False"),
         )
@@ -62581,9 +62621,10 @@ def raw_tptp_peirce_implication_ennf_proof(
         source_target = f"({proof_head(parent_at_target)} {proof_term_text(body)})"
         contradiction = f"({not_target_name} {proof_term_text(source_target)})"
         return (
-            f"(xm {proof_arg_text(premise)} {proof_arg_text(premise)} "
-            f"(fun HpremDirect => HpremDirect) "
-            f"(fun {not_premise_name} => {proof_term_text(raw_false_to_expr_proof(contradiction, premise, Expr('var', value='False')))}))"
+            f"(xm {proof_arg_text(component)} {proof_arg_text(component)} "
+            f"(fun HcomponentDirect => HcomponentDirect) "
+            f"(fun {not_component_name} :{proof_negation_type_text(component)} => "
+            f"{proof_term_text(raw_false_to_expr_proof(contradiction, component, Expr('var', value='False')))}))"
         )
 
     component_proofs: list[tuple[Expr, str]] = [(components[negative_index], not_target_name)]
@@ -62593,36 +62634,7 @@ def raw_tptp_peirce_implication_ennf_proof(
         for premise_index, premise in enumerate(implication_premises):
             if premise_index in used_premises:
                 continue
-            premise_proof = source_premise_proof(premise_index, premise)
-            transformed = raw_peirce_cps_exists_ennf_proof(
-                premise,
-                component,
-                premise_proof,
-                local_sorts,
-                depth + 1,
-            )
-            if transformed is None:
-                transformed = raw_classical_implication_to_or_transform_proof(premise, component, premise_proof)
-            if transformed is None:
-                transformed = raw_deep_formula_transform_proof(premise, component, premise_proof, local_sorts)
-            if transformed is None:
-                transformed = raw_clause_transform_proof(premise, component, premise_proof)
-            if transformed is None:
-                transformed = raw_tptp_peirce_implication_ennf_proof(
-                    expr_text(component),
-                    ["source"],
-                    {"source": expr_text(premise)},
-                    local_sorts,
-                    source_proof_override=premise_proof,
-                    depth=depth + 1,
-                )
-            if transformed is None:
-                transformed = raw_implication_to_ennf_or_proof(
-                    premise,
-                    component,
-                    premise_proof,
-                    local_sorts,
-                )
+            transformed = target_component_proof(premise_index, premise, component)
             if transformed is None:
                 continue
             matched = (premise_index, transformed)
