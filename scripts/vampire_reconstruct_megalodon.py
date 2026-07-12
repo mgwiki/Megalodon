@@ -73070,6 +73070,72 @@ def source_theorem_proposition_text(source: Path | None, line: int | None) -> st
     return None
 
 
+def source_local_claim_declaration_at(rows: list[str], index: int) -> tuple[str, str, int] | None:
+    pieces: list[str] = []
+    for cursor in range(index, len(rows) + 1):
+        stripped = rows[cursor - 1].strip()
+        if not pieces:
+            stripped = re.sub(r"^(?:[-+*]\s*)?(?:\{\s*)?", "", stripped)
+            if not stripped.startswith("claim "):
+                return None
+        if not stripped:
+            continue
+        pieces.append(stripped)
+        if stripped.endswith("."):
+            parsed = proposition_after_colon(" ".join(pieces), "claim ")
+            if parsed is None:
+                return None
+            return parsed[0], parsed[1], cursor
+    return None
+
+
+def source_claim_block_contains_line(rows: list[str], declaration_end: int, line: int) -> bool:
+    if line <= declaration_end:
+        return False
+    block_start = None
+    for cursor in range(declaration_end + 1, len(rows) + 1):
+        stripped = rows[cursor - 1].strip()
+        if not stripped:
+            continue
+        if stripped.startswith("{"):
+            block_start = cursor
+        break
+    if block_start is None or line < block_start:
+        return False
+    depth = 0
+    for cursor in range(block_start, len(rows) + 1):
+        stripped = rows[cursor - 1].strip()
+        if stripped.startswith("{"):
+            depth += 1
+        if cursor == line and depth > 0:
+            return True
+        if stripped.endswith("}") or stripped == "}":
+            depth = max(0, depth - 1)
+        if depth == 0 and cursor >= block_start:
+            return False
+    return False
+
+
+def source_local_claim_obligation(
+    source: Path | None,
+    line: int | None,
+) -> tuple[str, str, int] | None:
+    if source is None or line is None or not source.exists():
+        return None
+    theorem_line = source_enclosing_theorem_line(source, line)
+    if theorem_line is None:
+        return None
+    rows = source.read_text(encoding="utf-8", errors="replace").splitlines()
+    for index in range(min(line, len(rows)), theorem_line - 1, -1):
+        declaration = source_local_claim_declaration_at(rows, index)
+        if declaration is None:
+            continue
+        _name, _proposition, declaration_end = declaration
+        if source_claim_block_contains_line(rows, declaration_end, line):
+            return declaration
+    return None
+
+
 def source_local_set_definitions(source: Path | None, line: int | None) -> dict[str, tuple[str, str]]:
     if source is None or line is None or not source.exists():
         return {}
@@ -75771,6 +75837,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     source_theorem_line = source_enclosing_theorem_line(source, obligation_line)
     source_theorem_name = source_enclosing_theorem_name(source, obligation_line)
     source_theorem_text = source_theorem_declaration_text(source, obligation_line) or source_line_text(source, source_theorem_line)
+    source_local_claim = source_local_claim_obligation(source, obligation_line)
     used_source_annotations = {
         source_name
         for _name, _role, _proposition, _rule, source_name, _parents, _trusted_definition in entries
@@ -75790,6 +75857,12 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         source_map_lines.append(f"// source obligation line: {source}:{obligation_line}")
     if source_theorem_text:
         source_map_lines.append(f"// source theorem text: {source_theorem_text[:400]}")
+    if source_local_claim is not None:
+        claim_name, claim_proposition, claim_line = source_local_claim
+        source_map_lines.append(
+            f"// source local obligation: claim {claim_name}{source_line_suffix(claim_line)}"
+        )
+        source_map_lines.append(f"// source local obligation text: {claim_proposition[:400]}")
     source_map_lines.extend(
         raw_tptp_source_map_wrapped_lines(
             "source top-level facts used",
@@ -77083,10 +77156,19 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 )
                 lines.append("Qed.")
                 source_statement = source_theorem_proposition_text(source, obligation_line)
+                source_statement_kind = "theorem"
+                source_statement_name = source_theorem_name
+                source_statement_line = source_theorem_line
+                if source_local_claim is not None:
+                    local_claim_name, local_claim_proposition, local_claim_line = source_local_claim
+                    source_statement = local_claim_proposition
+                    source_statement_kind = "local claim"
+                    source_statement_name = local_claim_name
+                    source_statement_line = local_claim_line
                 source_statement_proposition = None
                 source_statement_proof = None
                 source_bridge_size = len(source_statement or "") + len(positive_conjecture)
-                if source_statement is not None and source_theorem_name is not None and source_bridge_size <= 12000:
+                if source_statement is not None and source_statement_name is not None and source_bridge_size <= 12000:
                     translated_source_statement = use_ambient_basic_logic_text(
                         replace_generated_identifier_tokens(
                             source_surface_parse_text(
@@ -77112,12 +77194,18 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                         if source_bridge_proof is not None:
                             source_statement_proposition = expr_text(translated_source_expr)
                             source_statement_proof = source_bridge_proof
-                if source_statement_proposition is not None and source_theorem_name is not None:
+                if source_statement_proposition is not None and source_statement_name is not None:
                     source_conjecture_name = re.sub(r"_tptp$", "_source", conjecture_name)
+                    if source_statement_kind == "local claim":
+                        sanitized_source_name = re.sub(r"[^_A-Za-z0-9']", "_", source_statement_name)
+                        if not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", sanitized_source_name):
+                            sanitized_source_name = f"claim_{sanitized_source_name}"
+                        source_conjecture_name = f"{source_conjecture_name}_{sanitized_source_name}"
                     if source_conjecture_name == conjecture_name:
                         source_conjecture_name = f"{conjecture_name}_source"
                     lines.append(
-                        "// source-shaped theorem reconstructed from the original Megalodon statement."
+                        f"// source-shaped theorem reconstructed from the original Megalodon {source_statement_kind}"
+                        f"{source_line_suffix(source_statement_line)}."
                     )
                     lines.append(f"Theorem {source_conjecture_name}: {source_statement_proposition}.")
                     lines.append(f"exact {proof_argument_text(source_statement_proof or conjecture_name)}.")
