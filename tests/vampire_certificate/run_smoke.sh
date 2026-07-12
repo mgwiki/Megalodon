@@ -22,6 +22,7 @@ python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_prop_equa
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_definition_input_refutation.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_definition_input_function_sort.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_lambda_hint_refutation.json --summary
+python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_higher_order_lambda_paramodulation.json --summary
 python3 scripts/vampire_certificate.py \
   tests/vampire_certificate/valid_resolution.json \
   --emit-megalodon "$TMPDIR/vampire_certificate_valid_resolution.mg"
@@ -62,6 +63,13 @@ if rg -n '\bvLAM\b|^Variable db0:' "$TMPDIR/vampire_certificate_valid_lambda_hin
   echo "lambda-hint Megalodon output leaked raw vLAM or db0 declaration" >&2
   exit 1
 fi
+python3 scripts/vampire_certificate.py \
+  tests/vampire_certificate/valid_higher_order_lambda_paramodulation.json \
+  --emit-megalodon "$TMPDIR/vampire_certificate_valid_higher_order_lambda_paramodulation.mg"
+if rg -n '\bvLAM\b|^Variable db[0-9]+:' "$TMPDIR/vampire_certificate_valid_higher_order_lambda_paramodulation.mg"; then
+  echo "higher-order lambda Megalodon output leaked raw vLAM or db declaration" >&2
+  exit 1
+fi
 if rg -n '\badmit\b|\baby\b|-allowincompleteqed' \
   "$TMPDIR/vampire_certificate_valid_resolution.mg" \
   "$TMPDIR/vampire_certificate_valid_substituted_resolution.mg" \
@@ -74,7 +82,8 @@ if rg -n '\badmit\b|\baby\b|-allowincompleteqed' \
   "$TMPDIR/vampire_certificate_valid_prop_equality_factoring.mg" \
   "$TMPDIR/vampire_certificate_valid_definition_input_refutation.mg" \
   "$TMPDIR/vampire_certificate_valid_definition_input_function_sort.mg" \
-  "$TMPDIR/vampire_certificate_valid_lambda_hint_refutation.mg"; then
+  "$TMPDIR/vampire_certificate_valid_lambda_hint_refutation.mg" \
+  "$TMPDIR/vampire_certificate_valid_higher_order_lambda_paramodulation.mg"; then
   echo "generated Megalodon certificate proof contains an admission marker" >&2
   exit 1
 fi
@@ -90,6 +99,7 @@ fi
 ./bin/megalodon "$TMPDIR/vampire_certificate_valid_definition_input_refutation.mg" >"$TMPDIR/vampire_certificate_valid_definition_input_refutation.check.log"
 ./bin/megalodon "$TMPDIR/vampire_certificate_valid_definition_input_function_sort.mg" >"$TMPDIR/vampire_certificate_valid_definition_input_function_sort.check.log"
 ./bin/megalodon "$TMPDIR/vampire_certificate_valid_lambda_hint_refutation.mg" >"$TMPDIR/vampire_certificate_valid_lambda_hint_refutation.check.log"
+./bin/megalodon "$TMPDIR/vampire_certificate_valid_higher_order_lambda_paramodulation.mg" >"$TMPDIR/vampire_certificate_valid_higher_order_lambda_paramodulation.check.log"
 
 if python3 scripts/vampire_certificate.py tests/vampire_certificate/invalid_pivot.json >"$TMPDIR/vampire_certificate_invalid_pivot.out" 2>"$TMPDIR/vampire_certificate_invalid_pivot.err"; then
   echo "invalid pivot certificate unexpectedly passed" >&2

@@ -93,6 +93,7 @@ class LambdaHint:
 
 
 LAMBDA_HINTS: tuple[LambdaHint, ...] = ()
+DB_NAME_RE = re.compile(r"^db([0-9]+)$")
 
 
 def parse_term(value: Any, context: str) -> Term:
@@ -1345,21 +1346,32 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
 
 
 def term_text(term: Term) -> str:
+    return term_text_with_context(term, ())
+
+
+def term_text_with_context(term: Term, db_context: tuple[str, ...]) -> str:
     lambda_hint = lambda_hint_for_term(term)
     if lambda_hint is not None:
-        body = lambda_body_text(term.args[0], lambda_hint.binder)
+        binder = f"db{len(db_context)}"
+        body = term_text_with_context(term.args[0], (*db_context, binder))
         return (
-            f"(fun {require_megalodon_ident(lambda_hint.binder, 'lambda binder')}"
+            f"(fun {require_megalodon_ident(binder, 'lambda binder')}"
             f":{sort_type_text(lambda_hint.binder_sort)} => {body})"
         )
+    if term.kind == "const":
+        db_match = DB_NAME_RE.match(term.name)
+        if db_match is not None:
+            index = int(db_match.group(1))
+            if index < len(db_context):
+                return require_megalodon_ident(db_context[-1 - index], "lambda binder occurrence")
     if term.kind in {"var", "const"}:
         return require_megalodon_ident(term.name, "term")
     if term.kind == "app":
         name = require_megalodon_ident(term.name, "term")
-        args = " ".join(term_text(arg) for arg in term.args)
+        args = " ".join(term_text_with_context(arg, db_context) for arg in term.args)
         return f"({name} {args})" if args else name
     if term.kind == "apply":
-        return f"({term_text(term.args[0])} {term_text(term.args[1])})"
+        return f"({term_text_with_context(term.args[0], db_context)} {term_text_with_context(term.args[1], db_context)})"
     raise CertificateError(f"cannot render term kind {term.kind!r}")
 
 
@@ -1388,6 +1400,13 @@ def lambda_binder_sorts() -> dict[str, str]:
     for hint in LAMBDA_HINTS:
         result.setdefault(hint.binder, hint.binder_sort)
     return result
+
+
+def lambda_default_binder_sort() -> str | None:
+    sorts = {hint.binder_sort for hint in LAMBDA_HINTS}
+    if len(sorts) == 1:
+        return next(iter(sorts))
+    return None
 
 
 def term_hint_text(term: Term) -> str:
@@ -1477,16 +1496,28 @@ def clause_body_text(clause: tuple[Literal, ...]) -> str:
 
 
 def term_free_vars(term: Term) -> set[str]:
+    return term_free_vars_with_context(term, ())
+
+
+def term_free_vars_with_context(term: Term, db_context: tuple[str, ...]) -> set[str]:
     lambda_hint = lambda_hint_for_term(term)
     if lambda_hint is not None:
-        return term_free_vars(term.args[0]) - {lambda_hint.binder}
+        binder = f"db{len(db_context)}"
+        return term_free_vars_with_context(term.args[0], (*db_context, binder))
     if term.kind == "var":
         return {term.name}
+    if term.kind == "const":
+        db_match = DB_NAME_RE.match(term.name)
+        if db_match is not None:
+            index = int(db_match.group(1))
+            if index < len(db_context):
+                return set()
+            return {term.name}
     if term.kind == "const" and term.name in lambda_binder_sorts():
         return {term.name}
     result: set[str] = set()
     for arg in term.args:
-        result.update(term_free_vars(arg))
+        result.update(term_free_vars_with_context(arg, db_context))
     return result
 
 
@@ -1594,6 +1625,11 @@ def clause_var_sorts(
     for name, sort in lambda_binder_sorts().items():
         if name in clause_vars:
             var_sorts.setdefault(name, sort)
+    default_lambda_sort = lambda_default_binder_sort()
+    if default_lambda_sort is not None:
+        for name in clause_vars:
+            if DB_NAME_RE.match(name):
+                var_sorts.setdefault(name, default_lambda_sort)
     locked_vars = set(var_sorts)
     for literal in clause:
         collect_atom_var_sorts(literal.atom, symbol_sorts, var_sorts, locked_vars)
@@ -1923,6 +1959,7 @@ def paramodulation_proof_text(
     if not instantiated_equality.polarity or instantiated_equality.atom.kind != "eq" or len(instantiated_equality.atom.args) != 2:
         raise CertificateError("Megalodon smoke paramodulation selected literal must be positive equality")
     from_term, to_term = instantiated_equality.atom.args
+    equality_sort = require_supported_sort(instantiated_equality.atom.name, "paramodulation equality sort")
     if term_at_position(instantiated_target.atom, position, "paramodulation.position") != from_term:
         raise CertificateError("Megalodon smoke paramodulation target position does not contain equality left side")
     expected_atom = replace_term_at_position(instantiated_target.atom, position, to_term, "paramodulation.position")
@@ -1938,16 +1975,19 @@ def paramodulation_proof_text(
         Term("var", "cert_x"),
         "paramodulation.position",
     )
-    forward_context = f"(fun cert_x cert_y:set => {atom_text(forward_context_atom)})"
+    forward_context = f"(fun cert_x:{sort_type_text(equality_sort)} => {atom_text(forward_context_atom)})"
     backward_context_atom = replace_term_at_position(
         instantiated_target.atom,
         position,
         Term("var", "cert_y"),
         "paramodulation.position",
     )
-    backward_context = f"(fun cert_x cert_y:set => {atom_text(backward_context_atom)})"
+    backward_context = f"(fun cert_y:{sort_type_text(equality_sort)} => {atom_text(backward_context_atom)})"
     prop_equality = instantiated_equality.atom.name == "prop"
-    if prop_equality:
+    if equality_sort == "set":
+        forward_context = f"(fun cert_x cert_y:set => {atom_text(forward_context_atom)})"
+        backward_context = f"(fun cert_x cert_y:set => {atom_text(backward_context_atom)})"
+    elif prop_equality:
         forward_context = f"(fun cert_x:prop => {atom_text(forward_context_atom)})"
     goal = clause_body_text(conclusion)
 
@@ -1985,11 +2025,25 @@ def collect_term_symbols(
     bound_constants: set[str] | None = None,
 ) -> None:
     bound_constants = bound_constants or set()
+    collect_term_symbols_with_context(term, constants, functions, bound_constants, ())
+
+
+def collect_term_symbols_with_context(
+    term: Term,
+    constants: set[str],
+    functions: dict[str, int],
+    bound_constants: set[str],
+    db_context: tuple[str, ...],
+) -> None:
     lambda_hint = lambda_hint_for_term(term)
     if lambda_hint is not None:
-        collect_term_symbols(term.args[0], constants, functions, bound_constants | {lambda_hint.binder})
+        binder = f"db{len(db_context)}"
+        collect_term_symbols_with_context(term.args[0], constants, functions, bound_constants | {binder}, (*db_context, binder))
         return
     if term.kind == "const":
+        db_match = DB_NAME_RE.match(term.name)
+        if db_match is not None and int(db_match.group(1)) < len(db_context):
+            return
         if term.name in bound_constants or term.name in lambda_binder_sorts():
             return
         constants.add(term.name)
@@ -1998,11 +2052,11 @@ def collect_term_symbols(
         if previous != len(term.args):
             raise CertificateError(f"function {term.name!r} used with inconsistent arity")
     elif term.kind == "apply":
-        collect_term_symbols(term.args[0], constants, functions, bound_constants)
-        collect_term_symbols(term.args[1], constants, functions, bound_constants)
+        collect_term_symbols_with_context(term.args[0], constants, functions, bound_constants, db_context)
+        collect_term_symbols_with_context(term.args[1], constants, functions, bound_constants, db_context)
         return
     for arg in term.args:
-        collect_term_symbols(arg, constants, functions, bound_constants)
+        collect_term_symbols_with_context(arg, constants, functions, bound_constants, db_context)
 
 
 def collect_atom_symbols(atom: Term, prop_atoms: set[str], predicates: dict[str, int], constants: set[str], functions: dict[str, int]) -> None:

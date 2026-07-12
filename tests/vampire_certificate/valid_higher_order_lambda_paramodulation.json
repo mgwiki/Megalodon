@@ -1,0 +1,471 @@
+{
+  "format": "vampire-megalodon-certificate",
+  "version": 1,
+  "problem": "higher-order lambda paramodulation smoke",
+  "declarations": [
+    "Variable Empty:set.",
+    "Variable f__false:prop.",
+    "Variable PNoLt:set->set->prop.",
+    "Variable SNoLt:set->set->prop.",
+    "Variable ordsucc:set->set.",
+    "Variable sP23:prop->prop."
+  ],
+  "lambda_hints": [
+    {
+      "binder": "db0",
+      "binder_sort": "set",
+      "body": "vLAM (PNoLt db1 db0)"
+    },
+    {
+      "binder": "db0",
+      "binder_sort": "set",
+      "body": "PNoLt db1 db0"
+    }
+  ],
+  "steps": [
+    {
+      "id": "u1",
+      "rule": "input",
+      "source": {
+        "kind": "axiom",
+        "name": "function_equality"
+      },
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "eq": [
+              {
+                "const": "SNoLt"
+              },
+              {
+                "app": "vLAM",
+                "args": [
+                  {
+                    "app": "vLAM",
+                    "args": [
+                      {
+                        "apply": [
+                          {
+                            "apply": [
+                              {
+                                "const": "PNoLt"
+                              },
+                              {
+                                "const": "db1"
+                              }
+                            ]
+                          },
+                          {
+                            "const": "db0"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "sort": "set->set->prop"
+          }
+        }
+      ]
+    },
+    {
+      "id": "u2",
+      "rule": "input",
+      "source": {
+        "kind": "axiom",
+        "name": "target"
+      },
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "eq": [
+              {
+                "const": "f__false"
+              },
+              {
+                "apply": [
+                  {
+                    "const": "sP23"
+                  },
+                  {
+                    "apply": [
+                      {
+                        "apply": [
+                          {
+                            "const": "SNoLt"
+                          },
+                          {
+                            "const": "Empty"
+                          }
+                        ]
+                      },
+                      {
+                        "apply": [
+                          {
+                            "const": "ordsucc"
+                          },
+                          {
+                            "const": "Empty"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "sort": "prop"
+          }
+        }
+      ]
+    },
+    {
+      "id": "u3",
+      "rule": "paramodulate",
+      "parents": [
+        "u1",
+        "u2"
+      ],
+      "equality": {
+        "polarity": true,
+        "atom": {
+          "eq": [
+            {
+              "const": "SNoLt"
+            },
+            {
+              "app": "vLAM",
+              "args": [
+                {
+                  "app": "vLAM",
+                  "args": [
+                    {
+                      "apply": [
+                        {
+                          "apply": [
+                            {
+                              "const": "PNoLt"
+                            },
+                            {
+                              "const": "db1"
+                            }
+                          ]
+                        },
+                        {
+                          "const": "db0"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "sort": "set->set->prop"
+        }
+      },
+      "from": {
+        "const": "SNoLt"
+      },
+      "to": {
+        "app": "vLAM",
+        "args": [
+          {
+            "app": "vLAM",
+            "args": [
+              {
+                "apply": [
+                  {
+                    "apply": [
+                      {
+                        "const": "PNoLt"
+                      },
+                      {
+                        "const": "db1"
+                      }
+                    ]
+                  },
+                  {
+                    "const": "db0"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "target": {
+        "polarity": true,
+        "atom": {
+          "eq": [
+            {
+              "const": "f__false"
+            },
+            {
+              "apply": [
+                {
+                  "const": "sP23"
+                },
+                {
+                  "apply": [
+                    {
+                      "apply": [
+                        {
+                          "const": "SNoLt"
+                        },
+                        {
+                          "const": "Empty"
+                        }
+                      ]
+                    },
+                    {
+                      "apply": [
+                        {
+                          "const": "ordsucc"
+                        },
+                        {
+                          "const": "Empty"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "sort": "prop"
+        }
+      },
+      "position": [
+        1,
+        1,
+        0,
+        0
+      ],
+      "substitution": {},
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "eq": [
+              {
+                "const": "f__false"
+              },
+              {
+                "apply": [
+                  {
+                    "const": "sP23"
+                  },
+                  {
+                    "apply": [
+                      {
+                        "apply": [
+                          {
+                            "app": "vLAM",
+                            "args": [
+                              {
+                                "app": "vLAM",
+                                "args": [
+                                  {
+                                    "apply": [
+                                      {
+                                        "apply": [
+                                          {
+                                            "const": "PNoLt"
+                                          },
+                                          {
+                                            "const": "db1"
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "const": "db0"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "const": "Empty"
+                          }
+                        ]
+                      },
+                      {
+                        "apply": [
+                          {
+                            "const": "ordsucc"
+                          },
+                          {
+                            "const": "Empty"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "sort": "prop"
+          }
+        }
+      ]
+    },
+    {
+      "id": "u4",
+      "rule": "input",
+      "source": {
+        "kind": "negated_conjecture",
+        "name": "negated_rewritten_target"
+      },
+      "clause": [
+        {
+          "polarity": false,
+          "atom": {
+            "eq": [
+              {
+                "const": "f__false"
+              },
+              {
+                "apply": [
+                  {
+                    "const": "sP23"
+                  },
+                  {
+                    "apply": [
+                      {
+                        "apply": [
+                          {
+                            "app": "vLAM",
+                            "args": [
+                              {
+                                "app": "vLAM",
+                                "args": [
+                                  {
+                                    "apply": [
+                                      {
+                                        "apply": [
+                                          {
+                                            "const": "PNoLt"
+                                          },
+                                          {
+                                            "const": "db1"
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "const": "db0"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "const": "Empty"
+                          }
+                        ]
+                      },
+                      {
+                        "apply": [
+                          {
+                            "const": "ordsucc"
+                          },
+                          {
+                            "const": "Empty"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "sort": "prop"
+          }
+        }
+      ]
+    },
+    {
+      "id": "u5",
+      "rule": "resolve",
+      "parents": [
+        "u3",
+        "u4"
+      ],
+      "pivot": {
+        "polarity": true,
+        "atom": {
+          "eq": [
+            {
+              "const": "f__false"
+            },
+            {
+              "apply": [
+                {
+                  "const": "sP23"
+                },
+                {
+                  "apply": [
+                    {
+                      "apply": [
+                        {
+                          "app": "vLAM",
+                          "args": [
+                            {
+                              "app": "vLAM",
+                              "args": [
+                                {
+                                  "apply": [
+                                    {
+                                      "apply": [
+                                        {
+                                          "const": "PNoLt"
+                                        },
+                                        {
+                                          "const": "db1"
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "const": "db0"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "const": "Empty"
+                        }
+                      ]
+                    },
+                    {
+                      "apply": [
+                        {
+                          "const": "ordsucc"
+                        },
+                        {
+                          "const": "Empty"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "sort": "prop"
+        }
+      },
+      "clause": []
+    }
+  ]
+}
