@@ -72491,24 +72491,25 @@ def source_local_set_definitions(source: Path | None, line: int | None) -> dict[
             section_stack.append(index)
         elif re.match(r"^End\b", stripped) and section_stack:
             section_stack.pop()
-    section_start = section_stack[-1] + 1 if section_stack else 0
+    section_start = section_stack[-1] + 1 if section_stack else None
     declared_sorts = source_declared_sorts(source)
     scanned_rows = rows[theorem_line - 1 : min(line, len(rows))]
     definitions: dict[str, tuple[str, str, int, int, bool]] = {}
-    for offset, row in enumerate(rows[section_start : theorem_line - 1]):
-        match = LOCAL_LET_ALIAS_RE.match(row)
-        if match is None:
-            continue
-        body = match.group("body").strip()
-        if not body:
-            continue
-        sort = match.group("sort")
-        if sort is None:
-            sort = declared_sorts.get(body, "set")
-        sort = normalize_megalodon_sort(sort)
-        if not sort:
-            continue
-        definitions[match.group("name")] = (sort, body, offset, len(row) - len(row.lstrip()), True)
+    if section_start is not None:
+        for offset, row in enumerate(rows[section_start : theorem_line - 1]):
+            match = LOCAL_LET_ALIAS_RE.match(row)
+            if match is None:
+                continue
+            body = match.group("body").strip()
+            if not body:
+                continue
+            sort = match.group("sort")
+            if sort is None:
+                sort = declared_sorts.get(body, "set")
+            sort = normalize_megalodon_sort(sort)
+            if not sort:
+                continue
+            definitions[match.group("name")] = (sort, body, offset, len(row) - len(row.lstrip()), True)
     for offset, row in enumerate(scanned_rows):
         match = LOCAL_SET_DECL_RE.match(row)
         if match is None:
@@ -72589,14 +72590,15 @@ def source_local_set_definition_locations(source: Path | None, line: int | None)
             section_stack.append(index)
         elif re.match(r"^End\b", stripped) and section_stack:
             section_stack.pop()
-    section_start = section_stack[-1] + 1 if section_stack else 0
+    section_start = section_stack[-1] + 1 if section_stack else None
     scanned_rows = rows[theorem_line - 1 : min(line, len(rows))]
     definitions: dict[str, tuple[int, int, int, bool]] = {}
-    for offset, row in enumerate(rows[section_start : theorem_line - 1]):
-        match = LOCAL_LET_ALIAS_RE.match(row)
-        if match is None:
-            continue
-        definitions[match.group("name")] = (section_start + offset + 1, offset, len(row) - len(row.lstrip()), True)
+    if section_start is not None:
+        for offset, row in enumerate(rows[section_start : theorem_line - 1]):
+            match = LOCAL_LET_ALIAS_RE.match(row)
+            if match is None:
+                continue
+            definitions[match.group("name")] = (section_start + offset + 1, offset, len(row) - len(row.lstrip()), True)
     for offset, row in enumerate(scanned_rows):
         match = LOCAL_SET_DECL_RE.match(row)
         if match is None:
@@ -73304,6 +73306,7 @@ def source_surface_expr_text(
     target_text: str | None = None,
     local_sorts: dict[str, str] | None = None,
     source_binders: dict[str, str] | None = None,
+    expected_sort: str | None = None,
 ) -> str:
     raw_stripped = strip_balanced_parens(text.strip())
     indexed_projection = re.fullmatch(
@@ -73417,12 +73420,29 @@ def source_surface_expr_text(
     untyped_lambda_match = SOURCE_UNTYPED_LAMBDA_RE.match(stripped)
     if untyped_lambda_match is not None:
         names = [name.strip("()") for name in untyped_lambda_match.group("names").split()]
+        sort_pieces = split_sort_arrows(normalize_megalodon_sort(expected_sort)) if expected_sort else ()
+        expected_arg_sorts = sort_pieces[:-1] if len(sort_pieces) > 1 else ()
+        body_expected_sort = (
+            join_sort_arrows(sort_pieces[len(names) :])
+            if len(sort_pieces) > len(names)
+            else None
+        )
         scoped_sorts = {**(local_sorts or {})}
-        for name in names:
-            scoped_sorts[name] = "set"
-        body = source_surface_expr_text(untyped_lambda_match.group("body"), target_text, scoped_sorts, source_binders)
-        for name in reversed(names):
-            body = f"fun {name} :set => {body}"
+        binder_sorts: list[str] = []
+        for index, name in enumerate(names):
+            sort = expected_arg_sorts[index] if index < len(expected_arg_sorts) else "set"
+            sort = normalize_megalodon_sort(sort)
+            scoped_sorts[name] = sort
+            binder_sorts.append(sort)
+        body = source_surface_expr_text(
+            untyped_lambda_match.group("body"),
+            target_text,
+            scoped_sorts,
+            source_binders,
+            body_expected_sort,
+        )
+        for name, sort in reversed(list(zip(names, binder_sorts))):
+            body = f"fun {name} :{binder_sort_text(sort)} => {body}"
         return body
     binder_text = source_surface_binder_expr_text(stripped, target_text, local_sorts, source_binders)
     if binder_text is not None:
@@ -73504,6 +73524,35 @@ def source_surface_expr_text(
                 f"{function_name} ({source_surface_expr_text(left, target_text, local_sorts, source_binders)}) "
                 f"({source_surface_expr_text(right, target_text, local_sorts, source_binders)})"
             )
+    replsep_match = re.match(r"^\{\s*(?P<body>.+?)\s*\|\s*(?P<domain>.+?)\s*\}$", stripped)
+    if replsep_match is not None:
+        domain_split = split_source_top_level_operator(replsep_match.group("domain"), ",")
+        if domain_split is not None:
+            domain_text, predicate = domain_split
+            domain_match = re.match(
+                r"^(?P<var>[_A-Za-z][_A-Za-z0-9']*)\s*:e\s*(?P<set>.+)$",
+                domain_text,
+            )
+            if domain_match is not None:
+                var = domain_match.group("var")
+                scoped_sorts = {**(local_sorts or {}), var: "set"}
+                body_text = source_surface_expr_text(
+                    replsep_match.group("body"),
+                    target_text,
+                    scoped_sorts,
+                    source_binders,
+                )
+                predicate_text = source_surface_expr_text(predicate, target_text, scoped_sorts, source_binders)
+                body_eta = re.fullmatch(r"(?P<fn>[_A-Za-z][_A-Za-z0-9']*)\s+" + re.escape(var), body_text)
+                predicate_eta = re.fullmatch(r"(?P<fn>[_A-Za-z][_A-Za-z0-9']*)\s+" + re.escape(var), predicate_text)
+                function_text = body_eta.group("fn") if body_eta is not None else f"(fun {var} :set => {body_text})"
+                predicate_function_text = (
+                    predicate_eta.group("fn") if predicate_eta is not None else f"(fun {var} :set => {predicate_text})"
+                )
+                return (
+                    f"ReplSep ({source_surface_expr_text(domain_match.group('set'), target_text, local_sorts, source_binders)}) "
+                    f"{predicate_function_text} {function_text}"
+                )
     sep_match = re.match(
         r"^\{\s*(?P<var>[_A-Za-z][_A-Za-z0-9']*)\s*:e\s*(?P<set>.+?)\s*\|\s*(?P<body>.+?)\s*\}$",
         stripped,
@@ -73567,12 +73616,14 @@ def source_surface_parse_text(
     target_text: str | None = None,
     local_sorts: dict[str, str] | None = None,
     source_binders: dict[str, str] | None = None,
+    expected_sort: str | None = None,
 ) -> str:
     return source_surface_expr_text(
         desugar_source_bounded_foralls(proposition),
         target_text,
         local_sorts,
         source_binders,
+        expected_sort,
     )
 
 
@@ -73628,6 +73679,7 @@ def source_definition_infos(source: Path | None) -> dict[str, DefinitionInfo]:
             target_text=infix_hint,
             local_sorts=source_sorts,
             source_binders=source_binders,
+            expected_sort=match.group("sort"),
         )
         parsed = parse_definition_body(body_text)
         if parsed is None:
@@ -73648,8 +73700,14 @@ def local_set_definition_infos(
     source_binders: dict[str, str] | None = None,
 ) -> dict[str, DefinitionInfo]:
     infos: dict[str, DefinitionInfo] = {}
+    local_sorts = {name: sort for name, (sort, _body) in definitions.items()}
     for name, (sort, body) in definitions.items():
-        body_text = source_surface_parse_text(body, source_binders=source_binders)
+        body_text = source_surface_parse_text(
+            body,
+            local_sorts=local_sorts,
+            source_binders=source_binders,
+            expected_sort=sort,
+        )
         parsed = parse_definition_body(body_text)
         if parsed is None:
             continue
@@ -74776,11 +74834,20 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             break
 
     source_binders = source_binder_functions(source)
+    local_set_parse_sorts = {
+        **variable_sorts,
+        **{name: sort for name, (sort, _body) in all_local_set_definitions.items()},
+    }
     renamed_all_local_set_definitions = {
         local_identifier_renames.get(name, name): (
             sort,
             rename_generated_identifier_text(
-                source_surface_parse_text(body, source_binders=source_binders),
+                source_surface_parse_text(
+                    body,
+                    local_sorts=local_set_parse_sorts,
+                    source_binders=source_binders,
+                    expected_sort=sort,
+                ),
                 local_identifier_renames,
             ),
         )
@@ -74827,25 +74894,29 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     source_local_set_names = set(all_local_set_definitions) | set(renamed_all_local_set_definitions)
     local_source_fact_propositions = {
         name: (
-            use_ambient_basic_logic_text(rename_generated_identifier_text(proposition, local_identifier_renames))
+            use_ambient_basic_logic_text(replace_generated_identifier_tokens(proposition, local_identifier_renames))
             if proposition is not None
             else None
         )
         for name, proposition in all_local_source_facts.items()
     }
-    local_source_fact_axiom_propositions: dict[str, str] = {}
-    for name, proposition in local_source_fact_propositions.items():
+
+    def translated_local_source_fact_proposition(proposition: str | None) -> str | None:
         if proposition is None:
-            continue
+            return None
         normalized = use_ambient_basic_logic_text(
             source_surface_parse_text(proposition, local_sorts=variable_sorts, source_binders=source_binders)
         )
         parsed_normalized = parse_expr(normalized)
-        if (
-            parsed_normalized is not None
-            and raw_expr_well_sorted(parsed_normalized, variable_sorts, "prop")
-        ):
-            local_source_fact_axiom_propositions[name] = expr_text(parsed_normalized)
+        if parsed_normalized is not None:
+            return expr_text(parsed_normalized)
+        return None
+
+    local_source_fact_axiom_propositions: dict[str, str] = {}
+    for name, proposition in local_source_fact_propositions.items():
+        translated = translated_local_source_fact_proposition(proposition)
+        if translated is not None:
+            local_source_fact_axiom_propositions[name] = translated
 
     lines = [
         "// Raw Vampire TPTP reconstruction skeleton.",
@@ -75043,7 +75114,9 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if source_name in declared_names:
             return True
         source_proposition = local_source_fact_propositions[source_name]
-        proposition = local_source_fact_axiom_propositions.get(source_name)
+        proposition = translated_local_source_fact_proposition(source_proposition)
+        if proposition is None:
+            proposition = local_source_fact_axiom_propositions.get(source_name)
         if proposition is None:
             proposition = (
                 source_proposition
@@ -75214,6 +75287,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     for declaration in later_source_declarations:
         declared_name = megalodon_declared_name(declaration)
         declared_sort = megalodon_declared_sort(declaration)
+        if declared_name is not None and declared_name in local_source_fact_propositions:
+            axiom = proposition_after_colon(declaration, "Axiom ")
+            fallback_proposition = axiom[1] if axiom is not None else ""
+            if emit_local_source_fact(declared_name, fallback_proposition):
+                continue
         if declared_name is not None and declared_name in source_names and (
             declared_sort is None or equivalent_sorts(declared_sort[1], source_sorts.get(declared_name))
         ):
@@ -76165,7 +76243,13 @@ def write_raw_tptp_skeletons(
     if jobs <= 1 or len(tasks) <= 1:
         return [path for path in (write_raw_tptp_skeleton(task) for task in tasks) if path is not None]
     with concurrent.futures.ProcessPoolExecutor(max_workers=min(jobs, len(tasks))) as executor:
-        return [path for path in executor.map(write_raw_tptp_skeleton, tasks) if path is not None]
+        futures = [executor.submit(write_raw_tptp_skeleton, task) for task in tasks]
+        written = []
+        for future in concurrent.futures.as_completed(futures):
+            path = future.result()
+            if path is not None:
+                written.append(path)
+        return sorted(written)
 
 
 class RawTptpSkeletonTimeout(TimeoutError):
@@ -76450,6 +76534,43 @@ def main() -> int:
             if not args.claim_skeleton_dir.is_absolute()
             else args.claim_skeleton_dir
         )
+
+    if args.check_raw_tptp_skeletons and not args.raw_tptp_proof and args.raw_tptp_skeleton_dir is not None:
+        raw_tptp_skeleton_dir = (
+            (repo / args.raw_tptp_skeleton_dir).resolve()
+            if not args.raw_tptp_skeleton_dir.is_absolute()
+            else args.raw_tptp_skeleton_dir
+        )
+        if not raw_tptp_skeleton_dir.exists():
+            raise SystemExit(f"raw TPTP skeleton dir not found: {raw_tptp_skeleton_dir}")
+        skeletons = sorted(raw_tptp_skeleton_dir.glob("*.mg"))
+        if not skeletons:
+            raise SystemExit(f"no raw TPTP skeletons found in {raw_tptp_skeleton_dir}")
+        raw_tptp_check_dir = (
+            (repo / args.raw_tptp_check_dir).resolve()
+            if args.raw_tptp_check_dir is not None and not args.raw_tptp_check_dir.is_absolute()
+            else args.raw_tptp_check_dir
+        )
+        if raw_tptp_check_dir is None:
+            raw_tptp_check_dir = raw_tptp_skeleton_dir / "source_context_checks"
+        results = check_raw_tptp_skeletons(
+            skeletons,
+            source,
+            raw_tptp_check_dir,
+            megalodon,
+            repo,
+            args.jobs,
+            args.raw_tptp_check_timeout,
+            args.allow_raw_tptp_admits,
+        )
+        failures = 0
+        for skeleton, ok, log in results:
+            status = "ok" if ok else "fail"
+            print(f"raw TPTP source-context check {status}: {skeleton} log={log}")
+            failures += 0 if ok else 1
+        if failures:
+            return 1
+        return 0
 
     if args.raw_tptp_proof:
         if args.raw_tptp_skeleton_dir is None:
