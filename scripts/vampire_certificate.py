@@ -616,9 +616,6 @@ def paramodulation_proof_text(
         raise CertificateError("Megalodon smoke paramodulation target literal is not present after substitution")
     if not instantiated_equality.polarity or instantiated_equality.atom.kind != "eq" or len(instantiated_equality.atom.args) != 2:
         raise CertificateError("Megalodon smoke paramodulation selected literal must be positive equality")
-    if not instantiated_target.polarity:
-        raise CertificateError("Megalodon smoke paramodulation elaboration currently supports positive target literals only")
-
     from_term, to_term = instantiated_equality.atom.args
     if term_at_position(instantiated_target.atom, position, "paramodulation.position") != from_term:
         raise CertificateError("Megalodon smoke paramodulation target position does not contain equality left side")
@@ -629,18 +626,29 @@ def paramodulation_proof_text(
 
     equality_proof = instantiate_proof(equality_parent_proof, equality_parent_clause, substitution)
     target_proof = instantiate_proof(target_parent_proof, target_parent_clause, substitution)
-    context_atom = replace_term_at_position(
+    forward_context_atom = replace_term_at_position(
         instantiated_target.atom,
         position,
         Term("var", "cert_x"),
         "paramodulation.position",
     )
-    context = f"(fun cert_x cert_y:set => {atom_text(context_atom)})"
+    forward_context = f"(fun cert_x cert_y:set => {atom_text(forward_context_atom)})"
+    backward_context_atom = replace_term_at_position(
+        instantiated_target.atom,
+        position,
+        Term("var", "cert_y"),
+        "paramodulation.position",
+    )
+    backward_context = f"(fun cert_x cert_y:set => {atom_text(backward_context_atom)})"
     goal = clause_body_text(conclusion)
 
     def target_branch(literal: Literal, proof: str, equality_literal_proof: str) -> str:
         if literal == instantiated_target:
-            transported = f"({equality_literal_proof} {context} {proof})"
+            if instantiated_target.polarity:
+                transported = f"({equality_literal_proof} {forward_context} {proof})"
+            else:
+                rewritten_proof = fresh_proof_name("Hrewrite")
+                transported = f"(fun {rewritten_proof} => ({proof} ({equality_literal_proof} {backward_context} {rewritten_proof})))"
             return intro_literal_proof(rewritten_target, conclusion, transported)
         return intro_literal_proof(literal, conclusion, proof)
 

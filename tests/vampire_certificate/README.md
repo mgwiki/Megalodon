@@ -21,6 +21,7 @@ The smoke script also uses `--emit-megalodon` on the propositional
 `valid_substituted_resolution.json` and
 `valid_equality_resolution_refutation.json` and
 `valid_paramodulation_refutation.json` and
+`valid_paramodulation_negative_refutation.json` and
 `valid_paramodulation_side_literals_refutation.json` certificates, then checks
 the generated files with `bin/megalodon`. Those generated proofs are required
 to contain no `admit`, no `aby`, and no `-allowincompleteqed`.
