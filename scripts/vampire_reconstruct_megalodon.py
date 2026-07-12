@@ -72807,6 +72807,11 @@ def split_source_top_level_equality(text: str) -> tuple[str, str] | None:
     return None
 
 
+def source_text_is_wrapped_in_parens(text: str) -> bool:
+    stripped = text.strip()
+    return stripped.startswith("(") and stripped.endswith(")") and strip_balanced_parens(stripped) != stripped
+
+
 def split_source_logical_operator(text: str, operator: str) -> tuple[str, str] | None:
     split = split_source_top_level_operator(text, operator)
     if split is None:
@@ -72814,7 +72819,7 @@ def split_source_logical_operator(text: str, operator: str) -> tuple[str, str] |
     left, right = split
     if left.endswith(":") or right.startswith(":"):
         return None
-    if split_top_level_operator(left, "->") is not None:
+    if not source_text_is_wrapped_in_parens(left) and split_top_level_operator(left, "->") is not None:
         return None
     return split
 
