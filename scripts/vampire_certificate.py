@@ -197,18 +197,52 @@ def replace_term_at_position(term: Term, position: tuple[int, ...], replacement:
 
 
 def position_rewrites_bound_lambda_var(term: Term, position: tuple[int, ...], context: str) -> bool:
+    return bound_lambda_rewrite_scope(term, position, context) is not None
+
+
+def is_vlam_term(term: Term) -> bool:
+    return term.kind == "app" and term.name == "vLAM" and len(term.args) == 1
+
+
+def bound_lambda_rewrite_scope(term: Term, position: tuple[int, ...], context: str) -> tuple[int, int] | None:
     current = term
     lambda_depth = 0
     for depth, index in enumerate(position):
         if index >= len(current.args):
             raise CertificateError(f"{context}: position {list(position)} is invalid at depth {depth}")
-        if lambda_hint_for_term(current) is not None and index == 0:
+        if is_vlam_term(current) and index == 0:
             lambda_depth += 1
         current = current.args[index]
     if current.kind != "const":
-        return False
+        return None
     db_match = DB_NAME_RE.match(current.name)
-    return db_match is not None and int(db_match.group(1)) < lambda_depth
+    if db_match is None:
+        return None
+    db_index = int(db_match.group(1))
+    if db_index >= lambda_depth:
+        return None
+    return lambda_depth, db_index
+
+
+def check_rewrite_scope(step: dict[str, Any], term: Term, position: tuple[int, ...], context: str) -> None:
+    if "rewrite_scope" not in step:
+        return
+    scope = step["rewrite_scope"]
+    if not isinstance(scope, dict):
+        raise CertificateError(f"{context}.rewrite_scope: expected object")
+    if set(scope) != {"kind", "lambda_depth", "db_index"}:
+        raise CertificateError(f"{context}.rewrite_scope: expected kind, lambda_depth, and db_index")
+    if scope["kind"] != "bound_lambda_var":
+        raise CertificateError(f"{context}.rewrite_scope.kind: unsupported scope kind {scope['kind']!r}")
+    if not isinstance(scope["lambda_depth"], int) or scope["lambda_depth"] < 0:
+        raise CertificateError(f"{context}.rewrite_scope.lambda_depth: expected non-negative integer")
+    if not isinstance(scope["db_index"], int) or scope["db_index"] < 0:
+        raise CertificateError(f"{context}.rewrite_scope.db_index: expected non-negative integer")
+    actual = bound_lambda_rewrite_scope(term, position, f"{context}.position")
+    if actual is None:
+        raise CertificateError(f"{context}.rewrite_scope: position is not a bound-lambda redex")
+    if actual != (scope["lambda_depth"], scope["db_index"]):
+        raise CertificateError(f"{context}.rewrite_scope: metadata does not match target position")
 
 
 def term_positions_matching(term: Term, needle: Term, prefix: tuple[int, ...] = ()) -> tuple[tuple[int, ...], ...]:
@@ -739,11 +773,12 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
                 "to",
                 "target",
                 "rewritten_target",
+                "rewrite_scope",
                 "position",
                 "substitution",
                 "clause",
             }
-            require_fields(step, allowed - {"rewritten_target"})
+            require_fields(step, allowed - {"rewritten_target", "rewrite_scope"})
             require_no_extra_fields(step, allowed)
             parents = require_parents(step, 2)
             equality_parent = clauses.get(parents[0])
@@ -781,6 +816,7 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
                 explicit_rewritten_target = parse_literal(step["rewritten_target"], f"{step_id}.rewritten_target")
                 if explicit_rewritten_target != rewritten_target:
                     raise CertificateError(f"{step_id}: rewritten_target does not match position rewrite")
+            check_rewrite_scope(step, selected_target.atom, position, step_id)
             expected = normalize_clause(
                 tuple(
                     substitute_literal(item, substitution)
@@ -2535,6 +2571,7 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
             substitution = parse_substitution(step["substitution"], f"{step_id}.substitution")
             position = parse_position(step["position"], f"{step_id}.position")
             instantiated_target = substitute_literal(selected_target, substitution)
+            check_rewrite_scope(step, instantiated_target.atom, position, step_id)
             if position_rewrites_bound_lambda_var(instantiated_target.atom, position, f"{step_id}.position"):
                 proof_names[step_id] = step_id
                 assumptions.append((step_id, clause_prop_text(clause, symbol_sorts, explicit_var_sorts)))

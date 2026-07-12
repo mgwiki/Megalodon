@@ -89,6 +89,7 @@ for step in subsumption_steps:
 PY
   fi
   if [[ "$label" != *"_substituted_resolution" ]] \
+    && [[ "$label" != *"_bound_lambda_scope" ]] \
     && ! rg -q 'megalodon_certificate_step\([0-9]+,\{"rule":"resolve"' "$outline" \
     && ! rg -q 'megalodon_certificate_steps\([0-9]+,\[.*"rule":"resolve"' "$outline"; then
     echo "outline did not contain Vampire-side resolve certificate step" >&2
@@ -123,6 +124,12 @@ PY
     fi
     if ! rg -q '"rewritten_target":' "$outline"; then
       echo "outline did not contain Vampire-side rewritten_target detail" >&2
+      exit 1
+    fi
+  fi
+  if [[ "$label" == *"_bound_lambda_scope" ]]; then
+    if ! rg -q '"rewrite_scope":\{"kind":"bound_lambda_var"' "$outline"; then
+      echo "outline did not contain Vampire-side bound-lambda rewrite_scope detail" >&2
       exit 1
     fi
   fi
@@ -175,6 +182,7 @@ equality_resolution_problem="$TMPDIR/vampire_outline_smoke_equality_resolution.p
 factor_problem="$TMPDIR/vampire_outline_smoke_factor.p"
 substituted_resolution_problem="$TMPDIR/vampire_outline_smoke_substituted_resolution.p"
 superposition_problem="$TMPDIR/vampire_outline_smoke_superposition.p"
+bound_lambda_scope_problem="examples/hammer/hammer.321.18.th0.p"
 
 cat >"$fof_problem" <<'PROBLEM'
 fof(a1, axiom, p(a)).
@@ -216,5 +224,8 @@ run_outline_case vampire_outline_smoke_equality_resolution "$equality_resolution
 run_outline_case vampire_outline_smoke_factor "$factor_problem"
 run_outline_case vampire_outline_smoke_substituted_resolution "$substituted_resolution_problem"
 run_outline_case vampire_outline_smoke_superposition "$superposition_problem"
+if [[ -f "$bound_lambda_scope_problem" ]]; then
+  run_outline_case vampire_outline_smoke_bound_lambda_scope "$bound_lambda_scope_problem"
+fi
 
 echo "vampire outline smoke test passed"
