@@ -1416,6 +1416,8 @@ def cnf_formula_exact_supported(cnf: dict[str, Any], clause: tuple[Literal, ...]
     source = cnf.get("source_proposition")
     if not isinstance(source, str) or not source:
         return False
+    if "vLAM" not in source and cnf.get("target_clause_checked") is True and cnf.get("target_proposition") == source:
+        return True
     blocked_fragments = (
         "vampire_or",
         "vampire_and",
@@ -1427,8 +1429,6 @@ def cnf_formula_exact_supported(cnf: dict[str, Any], clause: tuple[Literal, ...]
     for literal in clause:
         if literal.atom.kind == "pred" and any(arg.kind not in {"var", "const"} for arg in literal.atom.args):
             return False
-    if cnf.get("target_clause_checked") is True and cnf.get("target_proposition") == source:
-        return True
     if "forall " in source:
         return False
     return True
@@ -3276,6 +3276,13 @@ def formula_projection_proof_text(source_proof: str, source_prop: str, target_pr
             result = project_body(instantiated, stripped_source, target_body, bound_vars)
             if result is not None:
                 return result
+        if target_binders:
+            extended_bound = bound_vars | {name for name, _sort in target_binders}
+            result = project_body(proof, source_body, stripped_target, extended_bound)
+            if result is not None:
+                for name, sort in reversed(target_binders):
+                    result = f"(fun {require_megalodon_ident(name, 'CNF projection binder')}:{sort_type_text(sort)} => {result})"
+                return result
         and_parts = parse_vampire_and_prop(source_body)
         if and_parts is not None:
             lhs, rhs = and_parts
@@ -3319,6 +3326,14 @@ def formula_projection_proof_text(source_proof: str, source_prop: str, target_pr
             proof = f"({proof} {require_megalodon_ident(name, 'CNF projection binder')})"
         bound_vars = {name for name, _sort in target_binders}
         result = project_body(proof, source_body, target_body, bound_vars)
+        if result is None:
+            raise CertificateError("CNF formula projection could not be replayed")
+        for name, sort in reversed(target_binders):
+            result = f"(fun {require_megalodon_ident(name, 'CNF projection binder')}:{sort_type_text(sort)} => {result})"
+        return result
+    if target_binders:
+        bound_vars = {name for name, _sort in target_binders}
+        result = project_body(source_proof, source_prop, target_body, bound_vars)
         if result is None:
             raise CertificateError("CNF formula projection could not be replayed")
         for name, sort in reversed(target_binders):
