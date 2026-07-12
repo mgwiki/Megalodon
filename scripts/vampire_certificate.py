@@ -22,6 +22,7 @@ FORMAT = "vampire-megalodon-certificate"
 VERSION = 1
 MVP_RULES = {
     "input",
+    "definition_input",
     "substitute",
     "resolve",
     "factor",
@@ -57,6 +58,7 @@ CLAUSE_RE = re.compile(r"^megalodon_certificate_clause\((\d+),(.+)\)\.$")
 REPLAY_KIND_RE = re.compile(r'^megalodon_step_replay_kind\((\d+),("(?:\\.|[^"\\])*")\)\.$')
 FINAL_STEP_RE = re.compile(r"^megalodon_final_step\((\d+)\)\.$")
 SYMBOL_DECL_RE = re.compile(r'^megalodon_symbol_declaration\(("(?:\\.|[^"\\])*")\)\.$')
+EXTRA_RE = re.compile(r'^megalodon_step_extra\((\d+),("(?:\\.|[^"\\])*"),(\[.*\])\)\.$')
 
 
 @dataclass(frozen=True, order=True)
@@ -190,6 +192,12 @@ def require_megalodon_ident(name: str, context: str) -> str:
     return name
 
 
+def require_supported_sort(sort: str, context: str) -> str:
+    if sort not in {"set", "prop"}:
+        raise CertificateError(f"{context}: unsupported sort {sort!r}")
+    return sort
+
+
 def parse_substitution(value: Any, context: str) -> dict[str, Term]:
     if not isinstance(value, dict):
         raise CertificateError(f"{context}: substitution must be an object")
@@ -311,6 +319,25 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
             require_fields(step, allowed)
             require_no_extra_fields(step, allowed)
             clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
+
+        elif rule == "definition_input":
+            allowed = {"id", "rule", "clause", "symbol", "sort", "value", "source"}
+            require_fields(step, allowed)
+            require_no_extra_fields(step, allowed)
+            symbol = step["symbol"]
+            sort = step["sort"]
+            if not isinstance(symbol, str):
+                raise CertificateError(f"{step_id}: definition symbol must be a string")
+            require_megalodon_ident(symbol, f"{step_id}.symbol")
+            if not isinstance(sort, str):
+                raise CertificateError(f"{step_id}: definition sort must be a string")
+            require_supported_sort(sort, f"{step_id}.sort")
+            value = parse_term(step["value"], f"{step_id}.value")
+            clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
+            expected_left = Literal(True, Term("eq", sort, (value, Term("const", symbol))))
+            expected_right = Literal(True, Term("eq", sort, (Term("const", symbol), value)))
+            if clause not in {(expected_left,), (expected_right,)}:
+                raise CertificateError(f"{step_id}: definition_input clause must define the introduced symbol")
 
         elif rule == "factor":
             allowed = {"id", "rule", "parents", "clause"}
@@ -639,10 +666,54 @@ def infer_paramodulation_then_symmetry_steps(
     return None
 
 
+def extra_field(fields: list[str], name: str) -> str | None:
+    prefix = name + "="
+    for field in fields:
+        if field.startswith(prefix):
+            return field[len(prefix):]
+    return None
+
+
+def infer_definition_input_step(
+    step_id: str,
+    clause: tuple[Literal, ...],
+    clause_json: list[Any],
+    fields: list[str],
+) -> dict[str, Any] | None:
+    introduced = extra_field(fields, "introduced_symbol")
+    sort = extra_field(fields, "sort")
+    if introduced is None or sort is None or len(clause) != 1:
+        return None
+    literal = clause[0]
+    if not literal.polarity or literal.atom.kind != "eq" or literal.atom.name != sort or len(literal.atom.args) != 2:
+        return None
+    left, right = literal.atom.args
+    symbol = Term("const", introduced)
+    if right == symbol:
+        value = left
+    elif left == symbol:
+        value = right
+    else:
+        return None
+    return {
+        "id": step_id,
+        "rule": "definition_input",
+        "clause": clause_json,
+        "symbol": introduced,
+        "sort": sort,
+        "value": term_to_json(value),
+        "source": {
+            "kind": "vampire_function_definition",
+            "name": step_id,
+        },
+    }
+
+
 def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
     step_meta: dict[int, dict[str, Any]] = {}
     clause_json: dict[int, list[Any]] = {}
     replay_kinds: dict[int, str] = {}
+    extras: dict[int, dict[str, list[str]]] = {}
     declarations: list[str] = []
     final_step: int | None = None
 
@@ -671,6 +742,18 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
         if match:
             replay_kinds[int(match.group(1))] = json.loads(match.group(2))
             continue
+        match = EXTRA_RE.match(line)
+        if match:
+            step_no = int(match.group(1))
+            kind = json.loads(match.group(2))
+            try:
+                fields = json.loads(match.group(3))
+            except json.JSONDecodeError as exc:
+                raise CertificateError(f"line {lineno}: malformed step-extra JSON: {exc}") from exc
+            if not isinstance(fields, list) or not all(isinstance(field, str) for field in fields):
+                raise CertificateError(f"line {lineno}: step-extra fields must be a string list")
+            extras.setdefault(step_no, {})[kind] = fields
+            continue
         match = FINAL_STEP_RE.match(line)
         if match:
             final_step = int(match.group(1))
@@ -693,7 +776,16 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
         replay_kind = replay_kinds.get(step_no, "")
         step_id = f"u{step_no}"
 
-        if replay_kind in RESOLUTION_LIKE_REPLAY_KINDS:
+        definition_input = infer_definition_input_step(
+            step_id,
+            clause,
+            clause_json[step_no],
+            extras.get(step_no, {}).get("function_definition", []),
+        )
+
+        if definition_input is not None:
+            steps.append(definition_input)
+        elif replay_kind in RESOLUTION_LIKE_REPLAY_KINDS:
             if len(parent_clause_numbers) != 2:
                 raise CertificateError(
                     f"{step_id}: {replay_kind} bridge requires exactly two printed clause parents"
@@ -1152,6 +1244,19 @@ def wrap_clause_binders(clause: tuple[Literal, ...], proof: str) -> str:
     return proof
 
 
+def definition_input_declarations(data: dict[str, Any]) -> dict[str, tuple[str, Term]]:
+    definitions: dict[str, tuple[str, Term]] = {}
+    for step in data.get("steps", []):
+        if not isinstance(step, dict) or step.get("rule") != "definition_input":
+            continue
+        symbol = step.get("symbol")
+        sort = step.get("sort")
+        if not isinstance(symbol, str) or not isinstance(sort, str):
+            continue
+        definitions[symbol] = (sort, parse_term(step["value"], f"{step.get('id', '<definition>')}.value"))
+    return definitions
+
+
 def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal, ...]], theorem_name: str) -> str:
     outline_declarations = data.get("declarations")
     if outline_declarations is not None:
@@ -1178,7 +1283,17 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
         )
     if uses_prop_equality:
         lines.append("Definition vampire_eq_prop : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y.")
-    lines.extend(declarations)
+    definitions = definition_input_declarations(data)
+    for declaration in declarations:
+        skip = False
+        for symbol in definitions:
+            if declaration == f"Variable {symbol}:{definitions[symbol][0]}.":
+                skip = True
+                break
+        if not skip:
+            lines.append(declaration)
+    for symbol, (sort, value) in sorted(definitions.items()):
+        lines.append(f"Definition {require_megalodon_ident(symbol, 'definition symbol')} : {require_supported_sort(sort, 'definition sort')} := {term_text(value)}.")
     step_clauses: dict[str, tuple[Literal, ...]] = {}
     proof_names: dict[str, str] = {}
     assumptions: list[tuple[str, str]] = []
@@ -1195,6 +1310,11 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
         if rule == "input":
             proof_names[step_id] = step_id
             assumptions.append((step_id, clause_prop_text(clause)))
+            continue
+        if rule == "definition_input":
+            proof = wrap_clause_binders(clause, equality_refl_proof())
+            proof_names[step_id] = step_id
+            derived.append((step_id, clause_prop_text(clause), proof))
             continue
         if rule == "resolve":
             parents = step["parents"]

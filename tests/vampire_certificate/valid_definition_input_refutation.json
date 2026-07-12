@@ -1,0 +1,70 @@
+{
+  "format": "vampire-megalodon-certificate",
+  "version": 1,
+  "problem": "valid-definition-input-refutation-smoke",
+  "declarations": [
+    "Variable A:prop.",
+    "Variable sF0:prop."
+  ],
+  "steps": [
+    {
+      "id": "c1",
+      "rule": "definition_input",
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "eq": [
+              {"const": "A"},
+              {"const": "sF0"}
+            ],
+            "sort": "prop"
+          }
+        }
+      ],
+      "symbol": "sF0",
+      "sort": "prop",
+      "value": {"const": "A"},
+      "source": {"kind": "vampire_function_definition", "name": "sF0_def"}
+    },
+    {
+      "id": "c2",
+      "rule": "input",
+      "clause": [
+        {
+          "polarity": false,
+          "atom": {
+            "eq": [
+              {"const": "A"},
+              {"const": "sF0"}
+            ],
+            "sort": "prop"
+          }
+        }
+      ],
+      "source": {"kind": "axiom", "name": "not_A_sF0"}
+    },
+    {
+      "id": "c3",
+      "rule": "resolve",
+      "parents": ["c1", "c2"],
+      "pivot": {
+        "polarity": true,
+        "atom": {
+          "eq": [
+            {"const": "A"},
+            {"const": "sF0"}
+          ],
+          "sort": "prop"
+        }
+      },
+      "clause": []
+    },
+    {
+      "id": "c4",
+      "rule": "contradiction",
+      "parents": ["c3"],
+      "clause": []
+    }
+  ]
+}
