@@ -19298,8 +19298,10 @@ def summarize_claim_skeleton(path: Path) -> dict[str, object]:
     admitted_roles: dict[str, int] = {}
     synthetic_db_claims = 0
     synthetic_db_admits = 0
+    scoped_split_dependency_admits = 0
     exported_lambda_db_metadata = 0
     exported_lambda_capture_comments = 0
+    scoped_split_dependency_comments = 0
 
     def preceding_vampire_role(index: int) -> str | None:
         cursor = index - 2
@@ -19314,6 +19316,8 @@ def summarize_claim_skeleton(path: Path) -> dict[str, object]:
             exported_lambda_db_metadata += 1
         if line.startswith("// replay blocker: exported lambda/synthetic-db substitution"):
             exported_lambda_capture_comments += 1
+        if line.startswith("// replay blocker: scoped AVATAR split dependency"):
+            scoped_split_dependency_comments += 1
         claim = proposition_after_colon(line, "claim ")
         if claim is not None and RAW_TPTP_SYNTHETIC_DB_RE.search(claim[1]):
             synthetic_db_claims += 1
@@ -19326,6 +19330,12 @@ def summarize_claim_skeleton(path: Path) -> dict[str, object]:
         proposition = claim[1] if claim is not None else ""
         if RAW_TPTP_SYNTHETIC_DB_RE.search(proposition):
             synthetic_db_admits += 1
+        if any(
+            cursor >= 0
+            and lines[cursor].startswith("// replay blocker: scoped AVATAR split dependency")
+            for cursor in range(index - 1, max(-1, index - 5), -1)
+        ):
+            scoped_split_dependency_admits += 1
         role = preceding_vampire_role(index)
         is_negated_conjecture = role is not None and "negated_conjecture" in role
         if role is not None:
@@ -19365,8 +19375,10 @@ def summarize_claim_skeleton(path: Path) -> dict[str, object]:
         "admitted_vampire_roles": admitted_roles,
         "synthetic_db_claims": synthetic_db_claims,
         "synthetic_db_admits": synthetic_db_admits,
+        "scoped_split_dependency_admits": scoped_split_dependency_admits,
         "exported_lambda_db_metadata": exported_lambda_db_metadata,
         "exported_lambda_capture_comments": exported_lambda_capture_comments,
+        "scoped_split_dependency_comments": scoped_split_dependency_comments,
         "final_admits": sum(1 for line in lines if line == "admit."),
         "aby_commands": sum(1 for line in lines if ABY_COMMAND_RE.match(line) and not line.lstrip().startswith("//")),
         "filled_claims": sum(1 for line in lines if line.startswith("{ exact ")),
@@ -19386,6 +19398,7 @@ def write_claim_skeleton_summary(index: Path, rows: list[dict[str, object]]) -> 
         "negated_conjecture_admits": sum(int(row.get("negated_conjecture_admits", 0)) for row in rows),
         "conjecture_anchor_admits": sum(int(row.get("conjecture_anchor_admits", 0)) for row in rows),
         "false_claim_admits": sum(int(row["false_claim_admits"]) for row in rows),
+        "scoped_split_dependency_admits": sum(int(row.get("scoped_split_dependency_admits", 0)) for row in rows),
         "final_admits": sum(int(row["final_admits"]) for row in rows),
         "aby_commands": sum(int(row.get("aby_commands", 0)) for row in rows),
         "filled_claims": sum(int(row["filled_claims"]) for row in rows),
