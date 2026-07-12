@@ -73181,6 +73181,70 @@ def source_local_prove_obligation(
     return None
 
 
+def source_apply_xm_condition_at(rows: list[str], index: int) -> str | None:
+    stripped = rows[index - 1].strip()
+    match = re.search(r"\bapply\s+xm\s+(?P<body>.*?)(?:\.\s*)?$", stripped)
+    if match is None:
+        return None
+    condition = match.group("body").strip()
+    if not condition:
+        return None
+    if condition.endswith("."):
+        condition = condition[:-1].strip()
+    return condition or None
+
+
+def source_xm_branch_index(rows: list[str], apply_line: int, line: int) -> int | None:
+    if line <= apply_line:
+        return None
+    apply_indent = len(rows[apply_line - 1]) - len(rows[apply_line - 1].lstrip())
+    branch_index = 0
+    active_branch: int | None = None
+    for cursor in range(apply_line + 1, min(line, len(rows)) + 1):
+        row = rows[cursor - 1]
+        stripped = row.lstrip()
+        if not stripped:
+            continue
+        indent = len(row) - len(stripped)
+        if indent < apply_indent:
+            return None
+        if indent == apply_indent and re.match(r"[-+*]\s+", stripped):
+            branch_index += 1
+            active_branch = branch_index
+        if cursor == line:
+            return active_branch
+    return active_branch
+
+
+def source_local_xm_branch_obligation(
+    source: Path | None,
+    line: int | None,
+    base_obligation: tuple[str, str, str, int] | None,
+) -> tuple[str, str, str, int] | None:
+    if source is None or line is None or base_obligation is None or not source.exists():
+        return None
+    theorem_line = source_enclosing_theorem_line(source, line)
+    if theorem_line is None:
+        return None
+    rows = source.read_text(encoding="utf-8", errors="replace").splitlines()
+    if line < 1 or line > len(rows):
+        return None
+    _base_kind, base_name, base_proposition, base_line = base_obligation
+    for index in range(min(line, len(rows)), max(theorem_line, base_line) - 1, -1):
+        condition = source_apply_xm_condition_at(rows, index)
+        if condition is None:
+            continue
+        branch_index = source_xm_branch_index(rows, index, line)
+        if branch_index not in {1, 2}:
+            continue
+        if branch_index == 1:
+            proposition = f"{condition} -> {base_proposition}"
+        else:
+            proposition = f"({condition} -> False) -> {base_proposition}"
+        return ("local xm branch", f"{base_name}_xm_{index}_{branch_index}", proposition, line)
+    return None
+
+
 def source_local_set_definitions(source: Path | None, line: int | None) -> dict[str, tuple[str, str]]:
     if source is None or line is None or not source.exists():
         return {}
@@ -75900,6 +75964,13 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         prove_name, prove_proposition, prove_line = source_local_prove
         if source_local_obligation is None or prove_line >= source_local_obligation[3]:
             source_local_obligation = ("local prove", prove_name, prove_proposition, prove_line)
+    source_xm_branch_obligation = source_local_xm_branch_obligation(
+        source,
+        obligation_line,
+        source_local_obligation,
+    )
+    if source_xm_branch_obligation is not None:
+        source_local_obligation = source_xm_branch_obligation
     used_source_annotations = {
         source_name
         for _name, _role, _proposition, _rule, source_name, _parents, _trusted_definition in entries
