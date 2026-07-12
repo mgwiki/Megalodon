@@ -31,6 +31,7 @@ MVP_RULES = {
     "equality_symmetry",
     "paramodulate",
     "paramodulate_all",
+    "paramodulate_clause_all",
     "subsumption_resolution",
     "contradiction",
 }
@@ -672,6 +673,78 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
             clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
             if clause != expected:
                 raise CertificateError(f"{step_id}: simultaneous paramodulation conclusion does not match parents")
+
+        elif rule == "paramodulate_clause_all":
+            allowed = {"id", "rule", "parents", "equality", "from", "to", "target_rewrites", "substitution", "clause"}
+            require_fields(step, allowed)
+            require_no_extra_fields(step, allowed)
+            parents = require_parents(step, 2)
+            equality_parent = clauses.get(parents[0])
+            target_parent = clauses.get(parents[1])
+            if equality_parent is None:
+                raise CertificateError(f"{step_id}: unknown parent {parents[0]}")
+            if target_parent is None:
+                raise CertificateError(f"{step_id}: unknown parent {parents[1]}")
+            equality = parse_literal(step["equality"], f"{step_id}.equality")
+            if equality not in equality_parent:
+                raise CertificateError(f"{step_id}: equality literal not present in equality parent")
+            if not equality.polarity:
+                raise CertificateError(f"{step_id}: paramodulation equality must be positive")
+            substitution = parse_substitution(step["substitution"], f"{step_id}.substitution")
+            selected_equality = substitute_literal(equality, substitution)
+            if selected_equality.atom.kind != "eq" or len(selected_equality.atom.args) != 2:
+                raise CertificateError(f"{step_id}: selected equality is not an equality atom")
+            from_term = substitute_term(parse_term(step["from"], f"{step_id}.from"), substitution)
+            to_term = substitute_term(parse_term(step["to"], f"{step_id}.to"), substitution)
+            if selected_equality.atom.args != (from_term, to_term):
+                raise CertificateError(f"{step_id}: from/to do not match selected equality after substitution")
+            if not isinstance(step["target_rewrites"], list):
+                raise CertificateError(f"{step_id}.target_rewrites: target rewrites must be a list")
+            rewrite_positions: dict[Literal, tuple[tuple[int, ...], ...]] = {}
+            for index, item in enumerate(step["target_rewrites"]):
+                if not isinstance(item, dict) or set(item) != {"literal", "positions"}:
+                    raise CertificateError(f"{step_id}.target_rewrites[{index}]: expected literal and positions")
+                literal = parse_literal(item["literal"], f"{step_id}.target_rewrites[{index}].literal")
+                if literal not in target_parent:
+                    raise CertificateError(f"{step_id}.target_rewrites[{index}]: literal not present in target parent")
+                if literal in rewrite_positions:
+                    raise CertificateError(f"{step_id}.target_rewrites[{index}]: duplicate rewritten literal")
+                if not isinstance(item["positions"], list):
+                    raise CertificateError(f"{step_id}.target_rewrites[{index}].positions: positions must be a list")
+                positions = tuple(
+                    parse_position(pos, f"{step_id}.target_rewrites[{index}].positions[{pos_index}]")
+                    for pos_index, pos in enumerate(item["positions"])
+                )
+                if not positions:
+                    raise CertificateError(f"{step_id}.target_rewrites[{index}]: positions must be nonempty")
+                rewrite_positions[literal] = positions
+
+            rewritten_target_literals: list[Literal] = []
+            for literal in target_parent:
+                selected_target = substitute_literal(literal, substitution)
+                expected_positions = term_positions_matching(selected_target.atom, from_term)
+                positions = rewrite_positions.pop(literal, ())
+                if sorted(positions) != sorted(expected_positions):
+                    raise CertificateError(f"{step_id}: target rewrite positions do not match all redex occurrences")
+                if expected_positions:
+                    rewritten_target_literals.append(
+                        Literal(selected_target.polarity, replace_all_terms(selected_target.atom, from_term, to_term))
+                    )
+                else:
+                    rewritten_target_literals.append(selected_target)
+            if rewrite_positions:
+                raise CertificateError(f"{step_id}: target rewrite literal not consumed")
+
+            expected = normalize_clause(
+                tuple(
+                    substitute_literal(item, substitution)
+                    for item in clause_without_one(equality_parent, equality)
+                )
+                + tuple(rewritten_target_literals)
+            )
+            clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
+            if clause != expected:
+                raise CertificateError(f"{step_id}: clause-wide simultaneous paramodulation conclusion does not match parents")
 
         elif rule == "contradiction":
             allowed = {"id", "rule", "parents", "clause"}

@@ -304,6 +304,34 @@ Side condition:
   parent literals except the selected equality and target literals, yields the
   conclusion modulo clause normalization.
 
+### `paramodulate_clause_all`
+
+Vampire simultaneous superposition can also rewrite every matching occurrence
+in the non-selected literals of the rewritten parent. This constructor records
+that clause-wide replacement explicitly instead of leaving the importer to infer
+which other target-parent literals changed.
+
+Required fields:
+
+- `parents`: equality parent and target parent,
+- `equality`: selected positive equality literal from the equality parent,
+- `from`: selected equality side,
+- `to`: selected replacement side,
+- `target_rewrites`: list of objects with a target-parent `literal` and all
+  `positions` at which `from` occurs in that literal after substitution,
+- `substitution`,
+- `clause`.
+
+Side condition:
+
+- the equality parent contains `equality`,
+- `equality` is positive and becomes `from = to` after the exact substitution,
+- `target_rewrites` names exactly the target-parent literals containing `from`
+  after substitution, and gives the complete set of matching positions in each,
+- replacing every occurrence of `from` by `to` in the substituted target parent,
+  and retaining all other substituted equality-parent literals except the
+  selected equality, yields the conclusion modulo clause normalization.
+
 ### `reflexive_simplify`
 
 Definitional/reflexive simplification only.
