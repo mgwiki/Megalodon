@@ -1,0 +1,36 @@
+{
+  "format": "vampire-megalodon-certificate",
+  "version": 1,
+  "problem": "invalid-subsumption-resolution-uncovered-smoke",
+  "steps": [
+    {
+      "id": "u1",
+      "rule": "input",
+      "source": {"kind": "axiom", "name": "main"},
+      "clause": [
+        {"polarity": true, "atom": "p"},
+        {"polarity": true, "atom": "q"}
+      ]
+    },
+    {
+      "id": "u2",
+      "rule": "input",
+      "source": {"kind": "axiom", "name": "side"},
+      "clause": [
+        {"polarity": false, "atom": "p"},
+        {"polarity": true, "atom": "r"}
+      ]
+    },
+    {
+      "id": "u3",
+      "rule": "subsumption_resolution",
+      "parents": ["u1", "u2"],
+      "selected": {"polarity": true, "atom": "p"},
+      "side_pivot": {"polarity": false, "atom": "p"},
+      "side_substitution": {},
+      "clause": [
+        {"polarity": true, "atom": "q"}
+      ]
+    }
+  ]
+}

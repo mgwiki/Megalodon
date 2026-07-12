@@ -200,6 +200,29 @@ Side condition:
 - the conclusion is the parent clause after applying the substitution and
   removing that selected literal, modulo clause normalization.
 
+### `subsumption_resolution`
+
+Deletes a main-parent literal justified by a side clause that subsumes the
+remaining main clause after resolving against the selected literal.
+
+Required fields:
+
+- `parents`: main parent and side parent,
+- `selected`: literal removed from the main parent,
+- `side_pivot`: substituted side-parent literal complementary to `selected`,
+- `side_substitution`: exact substitution for the side parent,
+- `clause`.
+
+Side condition:
+
+- the main parent contains `selected`,
+- the side parent contains `side_pivot` after `side_substitution`, modulo
+  equality symmetry,
+- `side_pivot` is the complement of `selected`,
+- the conclusion is the main parent with `selected` removed,
+- every remaining literal of the substituted side clause is covered by the
+  conclusion, modulo duplicate deletion, clause ordering, and equality symmetry.
+
 ### `paramodulate`
 
 First-order equality replacement.

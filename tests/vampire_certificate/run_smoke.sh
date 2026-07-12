@@ -10,6 +10,7 @@ python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_resolutio
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_substituted_resolution.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_equality_resolution.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_equality_resolution_refutation.json --summary
+python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_subsumption_resolution.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_paramodulation.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_paramodulation_refutation.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_paramodulation_negative_refutation.json --summary
@@ -95,6 +96,11 @@ fi
 
 if python3 scripts/vampire_certificate.py tests/vampire_certificate/invalid_equality_resolution_nonreflexive.json >"$TMPDIR/vampire_certificate_invalid_equality_resolution_nonreflexive.out" 2>"$TMPDIR/vampire_certificate_invalid_equality_resolution_nonreflexive.err"; then
   echo "non-reflexive equality-resolution certificate unexpectedly passed" >&2
+  exit 1
+fi
+
+if python3 scripts/vampire_certificate.py tests/vampire_certificate/invalid_subsumption_resolution_uncovered.json >"$TMPDIR/vampire_certificate_invalid_subsumption_resolution_uncovered.out" 2>"$TMPDIR/vampire_certificate_invalid_subsumption_resolution_uncovered.err"; then
+  echo "uncovered subsumption-resolution side literal unexpectedly passed" >&2
   exit 1
 fi
 

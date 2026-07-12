@@ -29,6 +29,7 @@ MVP_RULES = {
     "equality_resolution",
     "equality_symmetry",
     "paramodulate",
+    "subsumption_resolution",
     "contradiction",
 }
 RESOLUTION_LIKE_REPLAY_KINDS = {
@@ -186,6 +187,17 @@ def swap_equality_literal(literal: Literal) -> Literal:
     if literal.atom.kind != "eq" or len(literal.atom.args) != 2:
         raise CertificateError("selected literal is not an equality")
     return Literal(literal.polarity, Term("eq", literal.atom.name, (literal.atom.args[1], literal.atom.args[0])))
+
+
+def equality_symmetric_match(left: Literal, right: Literal) -> bool:
+    if left == right:
+        return True
+    if left.atom.kind != "eq":
+        return False
+    try:
+        return swap_equality_literal(left) == right
+    except CertificateError:
+        return False
 
 
 def require_megalodon_ident(name: str, context: str) -> str:
@@ -436,6 +448,52 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
             clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
             if clause != expected:
                 raise CertificateError(f"{step_id}: equality-symmetry conclusion does not match parent")
+
+        elif rule == "subsumption_resolution":
+            allowed = {"id", "rule", "parents", "selected", "side_pivot", "side_substitution", "clause"}
+            require_fields(step, allowed)
+            require_no_extra_fields(step, allowed)
+            parents = require_parents(step, 2)
+            main_parent = clauses.get(parents[0])
+            side_parent = clauses.get(parents[1])
+            if main_parent is None:
+                raise CertificateError(f"{step_id}: unknown parent {parents[0]}")
+            if side_parent is None:
+                raise CertificateError(f"{step_id}: unknown parent {parents[1]}")
+            selected = parse_literal(step["selected"], f"{step_id}.selected")
+            if selected not in main_parent:
+                raise CertificateError(f"{step_id}: selected literal not present in main parent")
+            side_substitution = parse_substitution(step["side_substitution"], f"{step_id}.side_substitution")
+            side_pivot = parse_literal(step["side_pivot"], f"{step_id}.side_pivot")
+            if side_pivot.complement != selected:
+                raise CertificateError(f"{step_id}: side pivot is not the complement of the selected literal")
+            instantiated_side = normalize_clause(tuple(substitute_literal(literal, side_substitution) for literal in side_parent))
+            pivot_indexes = [
+                index
+                for index, literal in enumerate(instantiated_side)
+                if equality_symmetric_match(literal, side_pivot)
+            ]
+            if not pivot_indexes:
+                raise CertificateError(f"{step_id}: side pivot is not present after substitution")
+            clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
+            expected = normalize_clause(clause_without_one(main_parent, selected))
+            if clause != expected:
+                raise CertificateError(f"{step_id}: subsumption-resolution conclusion does not match main parent")
+            covered = False
+            for pivot_index in pivot_indexes:
+                side_remainder = [
+                    literal
+                    for index, literal in enumerate(instantiated_side)
+                    if index != pivot_index
+                ]
+                if all(
+                    any(equality_symmetric_match(literal, conclusion_literal) for conclusion_literal in clause)
+                    for literal in side_remainder
+                ):
+                    covered = True
+                    break
+            if not covered:
+                raise CertificateError(f"{step_id}: side remainder literals are not covered by conclusion")
 
         elif rule == "paramodulate":
             allowed = {"id", "rule", "parents", "equality", "from", "to", "target", "position", "substitution", "clause"}
