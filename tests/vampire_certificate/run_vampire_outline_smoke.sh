@@ -39,7 +39,8 @@ run_outline_case() {
       echo "THF outline did not contain Vampire-side definition_input certificate step" >&2
       exit 1
     fi
-    if ! rg -q 'megalodon_certificate_step\([0-9]+,\{"rule":"paramodulate"' "$outline"; then
+    if ! rg -q 'megalodon_certificate_step\([0-9]+,\{"rule":"paramodulate"' "$outline" \
+      && ! rg -q 'megalodon_certificate_steps\([0-9]+,\[.*"rule":"paramodulate"' "$outline"; then
       echo "THF outline did not contain Vampire-side paramodulate certificate step" >&2
       exit 1
     fi
