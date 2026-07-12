@@ -37,6 +37,10 @@ class CertificateError(Exception):
 
 
 IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_']*")
+STEP_RE = re.compile(r'^megalodon_step\((\d+),("(?:\\.|[^"\\])*"),("(?:\\.|[^"\\])*"),\[([0-9,]*)\],')
+CLAUSE_RE = re.compile(r"^megalodon_certificate_clause\((\d+),(.+)\)\.$")
+REPLAY_KIND_RE = re.compile(r'^megalodon_step_replay_kind\((\d+),("(?:\\.|[^"\\])*")\)\.$')
+FINAL_STEP_RE = re.compile(r"^megalodon_final_step\((\d+)\)\.$")
 
 
 @dataclass(frozen=True, order=True)
@@ -187,6 +191,26 @@ def parse_clause(value: Any, context: str) -> tuple[Literal, ...]:
 
 def normalize_clause(clause: tuple[Literal, ...]) -> tuple[Literal, ...]:
     return tuple(sorted(set(clause)))
+
+
+def term_to_json(term: Term) -> Any:
+    if term.kind == "var":
+        return {"var": term.name}
+    if term.kind == "const":
+        return {"const": term.name}
+    if term.kind == "app":
+        return {"app": term.name, "args": [term_to_json(arg) for arg in term.args]}
+    if term.kind == "pred":
+        return {"pred": term.name, "args": [term_to_json(arg) for arg in term.args]}
+    if term.kind == "eq":
+        return {"eq": [term_to_json(term.args[0]), term_to_json(term.args[1])]}
+    if term.kind == "opaque":
+        return term.name
+    raise CertificateError(f"cannot serialize term kind {term.kind!r}")
+
+
+def literal_to_json(literal: Literal) -> dict[str, Any]:
+    return {"polarity": literal.polarity, "atom": term_to_json(literal.atom)}
 
 
 def clause_without_one(clause: tuple[Literal, ...], literal: Literal) -> tuple[Literal, ...]:
@@ -400,6 +424,131 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
         clauses[step_id] = clause
 
     return clauses
+
+
+def parse_outline_parents(value: str, context: str) -> list[int]:
+    if not value:
+        return []
+    result: list[int] = []
+    for item in value.split(","):
+        if not item.isdigit():
+            raise CertificateError(f"{context}: unsupported parent list {value!r}")
+        result.append(int(item))
+    return result
+
+
+def infer_resolution_pivot(
+    step_id: str,
+    left: tuple[Literal, ...],
+    right: tuple[Literal, ...],
+    conclusion: tuple[Literal, ...],
+) -> Literal:
+    candidates: list[Literal] = []
+    for literal in left:
+        if literal.complement not in right:
+            continue
+        expected = normalize_clause(
+            clause_without_one(left, literal)
+            + clause_without_one(right, literal.complement)
+        )
+        if expected == normalize_clause(conclusion):
+            candidates.append(literal)
+    unique = sorted(set(candidates))
+    if len(unique) != 1:
+        raise CertificateError(f"{step_id}: expected a unique resolution pivot, found {len(unique)}")
+    return unique[0]
+
+
+def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
+    step_meta: dict[int, dict[str, Any]] = {}
+    clause_json: dict[int, list[Any]] = {}
+    replay_kinds: dict[int, str] = {}
+    final_step: int | None = None
+
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        line = line.strip()
+        match = STEP_RE.match(line)
+        if match:
+            step_no = int(match.group(1))
+            rule = json.loads(match.group(2))
+            kind = json.loads(match.group(3))
+            parents = parse_outline_parents(match.group(4), f"line {lineno}")
+            step_meta[step_no] = {"rule": rule, "kind": kind, "parents": parents}
+            continue
+        match = CLAUSE_RE.match(line)
+        if match:
+            step_no = int(match.group(1))
+            try:
+                clause_value = json.loads(match.group(2))
+            except json.JSONDecodeError as exc:
+                raise CertificateError(f"line {lineno}: malformed certificate clause JSON: {exc}") from exc
+            if not isinstance(clause_value, list):
+                raise CertificateError(f"line {lineno}: certificate clause must be a JSON list")
+            clause_json[step_no] = clause_value
+            continue
+        match = REPLAY_KIND_RE.match(line)
+        if match:
+            replay_kinds[int(match.group(1))] = json.loads(match.group(2))
+            continue
+        match = FINAL_STEP_RE.match(line)
+        if match:
+            final_step = int(match.group(1))
+
+    if not clause_json:
+        raise CertificateError("Vampire outline contains no megalodon_certificate_clause records")
+
+    steps: list[dict[str, Any]] = []
+    clauses: dict[int, tuple[Literal, ...]] = {}
+    for step_no in sorted(clause_json):
+        meta = step_meta.get(step_no)
+        if meta is None:
+            raise CertificateError(f"u{step_no}: missing megalodon_step metadata")
+        clause = normalize_clause(parse_clause(clause_json[step_no], f"u{step_no}.clause"))
+        parent_clause_numbers = [parent for parent in meta["parents"] if parent in clauses]
+        replay_kind = replay_kinds.get(step_no, "")
+        step_id = f"u{step_no}"
+
+        if replay_kind == "resolution":
+            if len(parent_clause_numbers) != 2:
+                raise CertificateError(f"{step_id}: resolution bridge requires exactly two printed clause parents")
+            left_no, right_no = parent_clause_numbers
+            pivot = infer_resolution_pivot(step_id, clauses[left_no], clauses[right_no], clause)
+            steps.append(
+                {
+                    "id": step_id,
+                    "rule": "resolve",
+                    "parents": [f"u{left_no}", f"u{right_no}"],
+                    "pivot": literal_to_json(pivot),
+                    "clause": clause_json[step_no],
+                }
+            )
+        elif not parent_clause_numbers:
+            steps.append(
+                {
+                    "id": step_id,
+                    "rule": "input",
+                    "clause": clause_json[step_no],
+                    "source": {
+                        "kind": "vampire_clause",
+                        "name": step_id,
+                        "vampire_rule": meta["rule"],
+                    },
+                }
+            )
+        else:
+            raise CertificateError(f"{step_id}: unsupported outline clause rule {replay_kind or meta['rule']!r}")
+
+        clauses[step_no] = clause
+
+    if final_step is not None and final_step in clauses and clauses[final_step]:
+        raise CertificateError(f"u{final_step}: final Vampire step is not an empty clause")
+
+    return {
+        "format": FORMAT,
+        "version": VERSION,
+        "problem": problem,
+        "steps": steps,
+    }
 
 
 def term_text(term: Term) -> str:
@@ -840,18 +989,29 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("certificate", type=Path)
+    parser.add_argument("--from-vampire-outline", action="store_true")
     parser.add_argument("--summary", action="store_true")
+    parser.add_argument("--write-certificate", type=Path)
     parser.add_argument("--emit-megalodon", type=Path)
     parser.add_argument("--theorem-name", default="vampire_certificate_smoke")
     args = parser.parse_args()
 
     try:
-        data = json.loads(args.certificate.read_text(encoding="utf-8"))
+        if args.from_vampire_outline:
+            data = certificate_from_vampire_outline(
+                args.certificate.read_text(encoding="utf-8"),
+                args.certificate.stem,
+            )
+        else:
+            data = json.loads(args.certificate.read_text(encoding="utf-8"))
         clauses = check_certificate(data)
     except (OSError, json.JSONDecodeError, CertificateError) as exc:
         print(f"certificate check failed: {exc}", file=sys.stderr)
         return 1
 
+    if args.write_certificate is not None:
+        args.write_certificate.parent.mkdir(parents=True, exist_ok=True)
+        args.write_certificate.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if args.summary:
         empty = sum(1 for clause in clauses.values() if not clause)
         print(json.dumps({"steps": len(clauses), "empty_clauses": empty}, sort_keys=True))
