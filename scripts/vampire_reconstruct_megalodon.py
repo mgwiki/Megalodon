@@ -67396,6 +67396,129 @@ def raw_normal_form_side_proof(
     return None
 
 
+def raw_eq_prop_rhs_transport_proof(
+    source_eq: Expr,
+    target_eq: Expr,
+    source_eq_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_sides = equality_like_sides(source_eq)
+    target_sides = equality_like_sides(target_eq)
+    if source_sides is None or target_sides is None:
+        return None
+    source_left, source_right = source_sides
+    target_left, target_right = target_sides
+    if not expr_same_mod_alpha(source_left, target_left):
+        return None
+    if expr_same_mod_alpha(source_right, target_right):
+        return source_eq_proof
+    old_to_new = raw_prop_equivalence_proof(source_right, target_right, variable_sorts)
+    new_to_old = raw_prop_equivalence_proof(target_right, source_right, variable_sorts)
+    if old_to_new is None or new_to_old is None:
+        return None
+    carrier = fresh_identifier("zz", expr_text(source_eq), expr_text(target_eq), source_eq_proof)
+    left_name = fresh_identifier("Hleft", expr_text(source_left), expr_text(target_right), source_eq_proof)
+    target_name = fresh_identifier("Htgt", expr_text(target_right), expr_text(source_right), source_eq_proof)
+    source_to_right = (
+        f"({proof_head(old_to_new)} "
+        f"(fun {carrier} :prop => {carrier}) "
+        f"(({proof_head(source_eq_proof)} "
+        f"(fun {carrier} :prop => {carrier}) "
+        f"{left_name})))"
+    )
+    target_to_source = (
+        f"({proof_head(new_to_old)} "
+        f"(fun {carrier} :prop => {carrier}) "
+        f"{target_name})"
+    )
+    source_to_left = (
+        f"(({proof_head(source_eq_proof)} "
+        f"(fun {carrier} :prop => {carrier} -> {proof_arg_text(source_left)}) "
+        f"(fun {left_name} :{proof_arg_text(source_left)} => {left_name})) "
+        f"{proof_term_text(target_to_source)})"
+    )
+    return (
+        f"(vampire_prop_ext {proof_arg_text(source_left)} {proof_arg_text(target_right)} "
+        f"(fun {left_name} :{proof_arg_text(source_left)} => {proof_term_text(source_to_right)}) "
+        f"(fun {target_name} :{proof_arg_text(target_right)} => {proof_term_text(source_to_left)}))"
+    )
+
+
+def raw_tptp_eq_prop_rhs_normal_form_clause_proof(
+    proposition: str,
+    parents: list[str],
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> str | None:
+    if len(parents) != 1:
+        return None
+    parent_proposition = propositions_by_name.get(parents[0])
+    source = parse_expr(parent_proposition) if parent_proposition is not None else None
+    target = parse_expr(proposition)
+    if source is None or target is None:
+        return None
+    source_binders, source_body = collect_foralls(source)
+    target_binders, target_body = collect_foralls(target)
+    if len(source_binders) != len(target_binders):
+        return None
+    binder_renames: dict[str, str] = {}
+    for (source_name, source_sort), (target_name, target_sort) in zip(source_binders, target_binders):
+        if normalize_megalodon_sort(source_sort) != normalize_megalodon_sort(target_sort):
+            return None
+        if source_name != target_name:
+            binder_renames[source_name] = target_name
+    if binder_renames:
+        source_body = rename_expr_variables(source_body, binder_renames)
+    source_literals = raw_clause_literals(source_body)
+    target_literals = raw_clause_literals(target_body)
+    if len(source_literals) != 2 or len(target_literals) != 2:
+        return None
+
+    local_sorts = {**variable_sorts, **{name: sort for name, sort in target_binders}}
+    parent_proof = raw_tptp_claim_name(parents[0])
+    for name, _sort in target_binders:
+        parent_proof = f"({proof_head(parent_proof)} {name})"
+    target_text = proof_arg_text(target_body)
+
+    for source_changed_index in range(2):
+        source_other_index = 1 - source_changed_index
+        for target_changed_index in range(2):
+            target_other_index = 1 - target_changed_index
+            if not expr_same_mod_alpha(source_literals[source_other_index], target_literals[target_other_index]):
+                continue
+            source_changed = source_literals[source_changed_index]
+            target_changed = target_literals[target_changed_index]
+            if raw_eq_prop_rhs_transport_proof(source_changed, target_changed, "Hchanged", local_sorts) is None:
+                continue
+
+            def source_branch(index: int, proof_name: str) -> str | None:
+                if index == source_changed_index:
+                    transported = raw_eq_prop_rhs_transport_proof(
+                        source_changed,
+                        target_changed,
+                        proof_name,
+                        local_sorts,
+                    )
+                    if transported is None:
+                        return None
+                    return raw_or_intro_literal_at(target_body, target_changed_index, transported)
+                return raw_or_intro_literal_at(target_body, target_other_index, proof_name)
+
+            left_branch = source_branch(0, "HsrcLeft")
+            right_branch = source_branch(1, "HsrcRight")
+            if left_branch is None or right_branch is None:
+                continue
+            proof = (
+                f"({proof_head(parent_proof)} {target_text} "
+                f"(fun HsrcLeft => {proof_term_text(left_branch)}) "
+                f"(fun HsrcRight => {proof_term_text(right_branch)}))"
+            )
+            for name, sort in reversed(target_binders):
+                proof = f"(fun {name} :{sort} => {proof})"
+            return proof
+    return None
+
+
 def raw_normal_form_exported_has_path(fields: dict[str, str], path: str) -> bool:
     return path == "root" or any(
         value == path or value.startswith(f"{path}.")
@@ -71506,6 +71629,18 @@ def raw_tptp_replay_proof(
                         variable_sorts,
                         replay_step,
                     )
+            if (
+                rule in {"boolean_simplification", "true_and_false_elimination"}
+                and (proof is None or raw_tptp_replay_proof_is_unsafe(rule, proposition, proof))
+            ):
+                eq_prop_rhs_proof = raw_tptp_eq_prop_rhs_normal_form_clause_proof(
+                    proposition,
+                    parents,
+                    propositions_by_name,
+                    variable_sorts,
+                )
+                if eq_prop_rhs_proof is not None:
+                    proof = eq_prop_rhs_proof
             if raw_tptp_normal_form_allows_generic_replay(rule, replay_step):
                 if proof is None:
                     proof = raw_tptp_one_parent_transform_proof(
