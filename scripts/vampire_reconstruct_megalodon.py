@@ -5032,6 +5032,49 @@ def substitute_expr(expr: Expr, subst: dict[str, Expr]) -> Expr:
     return Expr(expr.kind, value=expr.value, args=tuple(substitute_expr(arg, subst) for arg in expr.args), sort=expr.sort)
 
 
+def substitute_sort_text(sort: str | None, subst: dict[str, str]) -> str | None:
+    if sort is None or not subst:
+        return sort
+    parts = split_sort_arrows(sort)
+    if len(parts) > 1:
+        return join_sort_arrows(substitute_sort_text(part, subst) or part for part in parts)
+    return subst.get(sort, sort)
+
+
+def substitute_expr_sorts(expr: Expr, subst: dict[str, str]) -> Expr:
+    if not subst:
+        return expr
+    return Expr(
+        expr.kind,
+        value=expr.value,
+        args=tuple(substitute_expr_sorts(arg, subst) for arg in expr.args),
+        sort=substitute_sort_text(expr.sort, subst),
+    )
+
+
+def infer_definition_sort_substitutions(pattern: str, actual: str, subst: dict[str, str]) -> None:
+    pattern = normalize_megalodon_sort(pattern)
+    actual = normalize_megalodon_sort(actual)
+    if re.fullmatch(r"[A-Z][_A-Za-z0-9']*", pattern):
+        previous = subst.get(pattern)
+        if previous is None or equivalent_sorts(previous, actual):
+            subst[pattern] = actual
+        return
+    pattern_parts = split_sort_arrows(pattern)
+    actual_parts = split_sort_arrows(actual)
+    if len(pattern_parts) == len(actual_parts) and len(pattern_parts) > 1:
+        for pattern_part, actual_part in zip(pattern_parts, actual_parts):
+            infer_definition_sort_substitutions(pattern_part, actual_part, subst)
+
+
+def definition_argument_sort(expr: Expr, expected_sort: str) -> str | None:
+    if expr.kind == "lambda" and expr.sort is not None:
+        expected_parts = split_sort_arrows(expected_sort)
+        if len(expected_parts) > 1:
+            return join_sort_arrows([expr.sort, *expected_parts[1:]])
+    return expr.sort
+
+
 def flatten_applications(expr: Expr) -> Expr:
     if not expr.args:
         return expr
@@ -5281,9 +5324,16 @@ def normalize_defined_expr(
         if definition is not None and len(definition.binders) == len(args):
             if head.value in active:
                 return Expr("app", args=(head,) + args)
+            sort_subst: dict[str, str] = {}
+            definition_arg_sorts = split_sort_arrows(definition.sort)[: len(args)]
+            for expected_sort, actual_arg in zip(definition_arg_sorts, args):
+                actual_sort = definition_argument_sort(actual_arg, expected_sort)
+                if actual_sort is not None:
+                    infer_definition_sort_substitutions(expected_sort, actual_sort, sort_subst)
+            body = substitute_expr_sorts(definition.body, sort_subst)
             subst = dict(zip(definition.binders, args))
             return normalize_defined_expr(
-                substitute_expr(definition.body, subst),
+                substitute_expr(body, subst),
                 definitions,
                 active | frozenset((head.value,)),
                 fuel - 1,
@@ -72880,6 +72930,15 @@ SOURCE_FORALL_RE = re.compile(
 SOURCE_UNTYPED_FORALL_RE = re.compile(
     r"^forall\s+(?P<names>[_A-Za-z][_A-Za-z0-9']*(?:\s+[_A-Za-z][_A-Za-z0-9']*)*)\s*,\s*(?P<body>.*)$"
 )
+SOURCE_BOUNDED_EXISTS_RE = re.compile(
+    r"^exists\s+(?P<names>[_A-Za-z][_A-Za-z0-9']*(?:\s+[_A-Za-z][_A-Za-z0-9']*)*)\s*:e\s*(?P<set>[^,]+),\s*(?P<body>.*)$"
+)
+SOURCE_EXISTS_RE = re.compile(
+    r"^exists\s+(?P<names>[_A-Za-z][_A-Za-z0-9']*(?:\s+[_A-Za-z][_A-Za-z0-9']*)*)\s*:\s*(?P<sort>[^,]+),\s*(?P<body>.*)$"
+)
+SOURCE_UNTYPED_EXISTS_RE = re.compile(
+    r"^exists\s+(?P<names>[_A-Za-z][_A-Za-z0-9']*(?:\s+[_A-Za-z][_A-Za-z0-9']*)*)\s*,\s*(?P<body>.*)$"
+)
 SOURCE_LAMBDA_RE = re.compile(
     r"^fun\s+(?P<names>(?:\([_A-Za-z][_A-Za-z0-9']*\)|[_A-Za-z][_A-Za-z0-9']*)(?:\s+(?:\([_A-Za-z][_A-Za-z0-9']*\)|[_A-Za-z][_A-Za-z0-9']*))*)"
     r"\s*:\s*(?P<sort>[^=]+?)\s*=>\s*(?P<body>.*)$"
@@ -72975,7 +73034,7 @@ def source_surface_rewrite_parenthesized_terms(
 ) -> str:
     result = text
     while True:
-        match = re.search(r"\(([^()]*?(?:[:+*\\\\/]|-\s)[^()]*)\)", result)
+        match = re.search(r"\(([^()]*?(?:[:+*\\\\/^]|-\s)[^()]*)\)", result)
         if match is None:
             return result
         inner = match.group(1)
@@ -73111,6 +73170,43 @@ def source_surface_expr_text(
         for name in reversed(names):
             body = f"forall {name}:set, {body}"
         return body
+    bounded_exists_match = SOURCE_BOUNDED_EXISTS_RE.match(stripped)
+    if bounded_exists_match is not None:
+        names = bounded_exists_match.group("names").split()
+        scoped_sorts = {**(local_sorts or {})}
+        set_text = source_surface_expr_text(
+            bounded_exists_match.group("set"),
+            target_text,
+            local_sorts,
+            source_binders,
+        )
+        body = bounded_exists_match.group("body")
+        for name in reversed(names):
+            scoped_sorts[name] = "set"
+            body_text = source_surface_expr_text(body, target_text, scoped_sorts, source_binders)
+            body = f"ex (fun {name} :set => and (In {name} ({set_text})) ({body_text}))"
+        return body
+    exists_match = SOURCE_EXISTS_RE.match(stripped)
+    if exists_match is not None:
+        sort = normalize_megalodon_sort(exists_match.group("sort"))
+        names = exists_match.group("names").split()
+        scoped_sorts = {**(local_sorts or {})}
+        body = exists_match.group("body")
+        for name in reversed(names):
+            scoped_sorts[name] = sort
+            body_text = source_surface_expr_text(body, target_text, scoped_sorts, source_binders)
+            body = f"ex (fun {name} :{sort} => {body_text})"
+        return body
+    untyped_exists_match = SOURCE_UNTYPED_EXISTS_RE.match(stripped)
+    if untyped_exists_match is not None:
+        names = untyped_exists_match.group("names").split()
+        scoped_sorts = {**(local_sorts or {})}
+        body = untyped_exists_match.group("body")
+        for name in reversed(names):
+            scoped_sorts[name] = "set"
+            body_text = source_surface_expr_text(body, target_text, scoped_sorts, source_binders)
+            body = f"ex (fun {name} :set => {body_text})"
+        return body
     lambda_match = SOURCE_LAMBDA_RE.match(stripped)
     if lambda_match is not None:
         names = [name.strip("()") for name in lambda_match.group("names").split()]
@@ -73200,6 +73296,18 @@ def source_surface_expr_text(
     if membership is not None:
         left, right = membership
         return f"In ({source_surface_expr_text(left, target_text, local_sorts, source_binders)}) ({source_surface_expr_text(right, target_text, local_sorts, source_binders)})"
+    for operator, function_name in (
+        (":\\/:", "binunion"),
+        (":\\:", "setminus"),
+        (":*:", "setprod"),
+    ):
+        split = split_source_top_level_operator(stripped, operator)
+        if split is not None:
+            left, right = split
+            return (
+                f"{function_name} ({source_surface_expr_text(left, target_text, local_sorts, source_binders)}) "
+                f"({source_surface_expr_text(right, target_text, local_sorts, source_binders)})"
+            )
     sep_match = re.match(
         r"^\{\s*(?P<var>[_A-Za-z][_A-Za-z0-9']*)\s*:e\s*(?P<set>.+?)\s*\|\s*(?P<body>.+?)\s*\}$",
         stripped,
@@ -73231,18 +73339,6 @@ def source_surface_expr_text(
     singleton_match = re.fullmatch(r"\{\s*(?P<body>[^{}|,]+?)\s*\}", stripped)
     if singleton_match is not None:
         return f"Sing ({source_surface_expr_text(singleton_match.group('body'), target_text, local_sorts, source_binders)})"
-    for operator, function_name in (
-        (":\\/:", "binunion"),
-        (":\\:", "setminus"),
-        (":*:", "setprod"),
-    ):
-        split = split_source_top_level_operator(stripped, operator)
-        if split is not None:
-            left, right = split
-            return (
-                f"{function_name} ({source_surface_expr_text(left, target_text, local_sorts, source_binders)}) "
-                f"({source_surface_expr_text(right, target_text, local_sorts, source_binders)})"
-            )
     plus = split_source_top_level_operator(stripped, "+")
     if plus is not None:
         left, right = plus
@@ -73289,20 +73385,31 @@ SOURCE_DEFINITION_RE = re.compile(
 )
 
 
-def source_definition_declarations(source_text: str) -> list[str]:
-    declarations: list[str] = []
+def source_definition_declarations(source_text: str) -> list[tuple[str, str | None]]:
+    declarations: list[tuple[str, str | None]] = []
     current: list[str] = []
+    current_infix_hint: str | None = None
+    active_infixes: dict[str, str] = {}
     for line in source_text.splitlines():
         stripped = line.strip()
         if not current:
+            infix_match = re.match(
+                r"^(?:Infix|Prefix)\s+(?P<symbol>\S+)\s+.*:=\s*(?P<name>[_A-Za-z][_A-Za-z0-9']*)\.$",
+                stripped,
+            )
+            if infix_match is not None:
+                active_infixes[infix_match.group("symbol")] = infix_match.group("name")
+                continue
             if not stripped.startswith("Definition "):
                 continue
             current = [stripped]
+            current_infix_hint = " ".join(active_infixes.values()) if active_infixes else None
         else:
             current.append(stripped)
         if stripped.endswith("."):
-            declarations.append(" ".join(current))
+            declarations.append((" ".join(current), current_infix_hint))
             current = []
+            current_infix_hint = None
     return declarations
 
 
@@ -73315,11 +73422,17 @@ def source_definition_infos(source: Path | None) -> dict[str, DefinitionInfo]:
         return {}
     definitions: dict[str, DefinitionInfo] = {}
     source_binders = source_binder_functions(source)
-    for line in source_definition_declarations(text):
+    source_sorts = {**source_active_declared_sorts(source), **source_definition_sorts(source)}
+    for line, infix_hint in source_definition_declarations(text):
         match = SOURCE_DEFINITION_RE.match(line.strip())
         if match is None:
             continue
-        body_text = source_surface_parse_text(match.group("body").strip(), source_binders=source_binders)
+        body_text = source_surface_parse_text(
+            match.group("body").strip(),
+            target_text=infix_hint,
+            local_sorts=source_sorts,
+            source_binders=source_binders,
+        )
         parsed = parse_definition_body(body_text)
         if parsed is None:
             continue
@@ -73361,6 +73474,14 @@ def expr_same_mod_alpha_after_sort_normalization(left: Expr, right: Expr) -> boo
     if left_normal is None or right_normal is None:
         return expr_same_mod_alpha(left, right)
     return expr_same_mod_alpha(left_normal, right_normal)
+
+
+def expr_same_mod_alpha_eta_after_sort_normalization(left: Expr, right: Expr) -> bool:
+    left_normal = parse_expr(expr_text(left))
+    right_normal = parse_expr(expr_text(right))
+    if left_normal is None or right_normal is None:
+        return expr_same_mod_alpha_eta(left, right)
+    return expr_same_mod_alpha_eta(left_normal, right_normal)
 
 
 def raw_tptp_source_membership_fact_proof(
@@ -73562,6 +73683,8 @@ def raw_tptp_unfolded_source_fact_proof(
         source = parse_expr(source_text)
         if source is None:
             continue
+        if expr_same_mod_alpha_eta_after_sort_normalization(source, target):
+            return source_name
         transformed_continuation = raw_curried_continuation_to_conjunction_proof(
             source,
             target,
@@ -73587,7 +73710,7 @@ def raw_tptp_unfolded_source_fact_proof(
                     shallow_target = beta_normalize_expr(normalize_defined_expr(target, alias_definitions))
                 else:
                     shallow_target = target
-                if expr_same_mod_alpha_after_sort_normalization(shallow_source, shallow_target):
+                if expr_same_mod_alpha_eta_after_sort_normalization(shallow_source, shallow_target):
                     return source_name
                 if len(expr_text(shallow_source)) + len(expr_text(shallow_target)) <= 60000:
                     transformed = raw_left_associated_three_conjunction_to_target_proof(
@@ -73613,7 +73736,7 @@ def raw_tptp_unfolded_source_fact_proof(
                     if transformed is not None:
                         return transformed
         source_unfolded = beta_normalize_expr(normalize_defined_expr(source, source_definitions))
-        if expr_same_mod_alpha_after_sort_normalization(source_unfolded, target_unfolded):
+        if expr_same_mod_alpha_eta_after_sort_normalization(source_unfolded, target_unfolded):
             return source_name
         if source_is_top_defined_application:
             continue
@@ -74980,21 +75103,6 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             lines.append(f"exact {proof_argument_text(universal_instance_proof)}.")
             lines.append("Qed.")
         elif (
-            source_fact_proof := raw_tptp_local_source_fact_proof(
-                proposition,
-                source_name,
-                local_source_fact_propositions,
-                variable_sorts,
-                source_and_local_definitions,
-                source_sorts,
-                local_set_definition_names,
-                source_binders,
-            )
-        ) is not None and emit_local_source_fact(source_name, proposition):
-            lines.append(f"Theorem {claim_name}: {proposition}.")
-            lines.append(f"exact {proof_argument_text(source_fact_proof)}.")
-            lines.append("Qed.")
-        elif (
             source_fact_proof := raw_tptp_source_fact_proof(
                 proposition,
                 source_name,
@@ -75008,6 +75116,21 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 source_binders,
             )
         ) is not None:
+            lines.append(f"Theorem {claim_name}: {proposition}.")
+            lines.append(f"exact {proof_argument_text(source_fact_proof)}.")
+            lines.append("Qed.")
+        elif (
+            source_fact_proof := raw_tptp_local_source_fact_proof(
+                proposition,
+                source_name,
+                local_source_fact_propositions,
+                variable_sorts,
+                source_and_local_definitions,
+                source_sorts,
+                local_set_definition_names,
+                source_binders,
+            )
+        ) is not None and emit_local_source_fact(source_name, proposition):
             lines.append(f"Theorem {claim_name}: {proposition}.")
             lines.append(f"exact {proof_argument_text(source_fact_proof)}.")
             lines.append("Qed.")
