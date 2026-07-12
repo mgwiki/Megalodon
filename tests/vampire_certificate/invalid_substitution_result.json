@@ -1,0 +1,39 @@
+{
+  "format": "vampire-megalodon-certificate",
+  "version": 1,
+  "problem": "invalid-substitution-result-smoke",
+  "steps": [
+    {
+      "id": "c1",
+      "rule": "input",
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "pred": "P",
+            "args": [{"var": "x"}]
+          }
+        }
+      ],
+      "source": {"kind": "axiom", "name": "a1"}
+    },
+    {
+      "id": "c2",
+      "rule": "substitute",
+      "parents": ["c1"],
+      "substitution": {
+        "x": {"const": "a"}
+      },
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "pred": "P",
+            "args": [{"const": "b"}]
+          }
+        }
+      ]
+    }
+  ]
+}
+

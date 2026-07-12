@@ -32,13 +32,90 @@ class CertificateError(Exception):
 
 
 @dataclass(frozen=True, order=True)
+class Term:
+    kind: str
+    name: str
+    args: tuple["Term", ...] = ()
+
+
+@dataclass(frozen=True, order=True)
 class Literal:
     polarity: bool
-    atom: str
+    atom: Term
 
     @property
     def complement(self) -> "Literal":
         return Literal(not self.polarity, self.atom)
+
+
+def parse_term(value: Any, context: str) -> Term:
+    if isinstance(value, str) and value:
+        return Term("const", value)
+    if not isinstance(value, dict):
+        raise CertificateError(f"{context}: term must be a string or object")
+    if set(value) == {"var"}:
+        name = value["var"]
+        if not isinstance(name, str) or not name:
+            raise CertificateError(f"{context}: variable name must be a non-empty string")
+        return Term("var", name)
+    if set(value) == {"const"}:
+        name = value["const"]
+        if not isinstance(name, str) or not name:
+            raise CertificateError(f"{context}: constant name must be a non-empty string")
+        return Term("const", name)
+    if set(value) == {"app", "args"}:
+        name = value["app"]
+        args = value["args"]
+        if not isinstance(name, str) or not name:
+            raise CertificateError(f"{context}: function name must be a non-empty string")
+        if not isinstance(args, list):
+            raise CertificateError(f"{context}: function args must be a list")
+        return Term("app", name, tuple(parse_term(arg, f"{context}.args[{index}]") for index, arg in enumerate(args)))
+    raise CertificateError(f"{context}: term must contain var, const, or app/args")
+
+
+def parse_atom(value: Any, context: str) -> Term:
+    if isinstance(value, str) and value:
+        return Term("opaque", value)
+    if not isinstance(value, dict):
+        raise CertificateError(f"{context}: atom must be a string or object")
+    if set(value) == {"pred", "args"}:
+        name = value["pred"]
+        args = value["args"]
+        if not isinstance(name, str) or not name:
+            raise CertificateError(f"{context}: predicate name must be a non-empty string")
+        if not isinstance(args, list):
+            raise CertificateError(f"{context}: predicate args must be a list")
+        return Term("pred", name, tuple(parse_term(arg, f"{context}.args[{index}]") for index, arg in enumerate(args)))
+    if set(value) == {"eq"}:
+        args = value["eq"]
+        if not isinstance(args, list) or len(args) != 2:
+            raise CertificateError(f"{context}: equality atom must contain two terms")
+        return Term("eq", "=", (parse_term(args[0], f"{context}.eq[0]"), parse_term(args[1], f"{context}.eq[1]")))
+    raise CertificateError(f"{context}: atom must contain pred/args or eq")
+
+
+def substitute_term(term: Term, substitution: dict[str, Term]) -> Term:
+    if term.kind == "var" and term.name in substitution:
+        return substitution[term.name]
+    if not term.args:
+        return term
+    return Term(term.kind, term.name, tuple(substitute_term(arg, substitution) for arg in term.args))
+
+
+def substitute_literal(literal: Literal, substitution: dict[str, Term]) -> Literal:
+    return Literal(literal.polarity, substitute_term(literal.atom, substitution))
+
+
+def parse_substitution(value: Any, context: str) -> dict[str, Term]:
+    if not isinstance(value, dict):
+        raise CertificateError(f"{context}: substitution must be an object")
+    result: dict[str, Term] = {}
+    for name, term in value.items():
+        if not isinstance(name, str) or not name:
+            raise CertificateError(f"{context}: substitution variables must be non-empty strings")
+        result[name] = parse_term(term, f"{context}.{name}")
+    return result
 
 
 def parse_literal(value: Any, context: str) -> Literal:
@@ -50,9 +127,7 @@ def parse_literal(value: Any, context: str) -> Literal:
     atom = value["atom"]
     if not isinstance(polarity, bool):
         raise CertificateError(f"{context}: literal polarity must be boolean")
-    if not isinstance(atom, str) or not atom:
-        raise CertificateError(f"{context}: literal atom must be a non-empty string")
-    return Literal(polarity, atom)
+    return Literal(polarity, parse_atom(atom, f"{context}.atom"))
 
 
 def parse_clause(value: Any, context: str) -> tuple[Literal, ...]:
@@ -150,16 +225,11 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
             parent_clause = clauses.get(parents[0])
             if parent_clause is None:
                 raise CertificateError(f"{step_id}: unknown parent {parents[0]}")
-            substitution = step["substitution"]
-            if not isinstance(substitution, dict):
-                raise CertificateError(f"{step_id}: substitution must be an object")
-            if not all(isinstance(name, str) and name for name in substitution):
-                raise CertificateError(f"{step_id}: substitution variables must be non-empty strings")
-            if substitution:
-                raise CertificateError(f"{step_id}: non-empty substitutions require the structured term phase")
+            substitution = parse_substitution(step["substitution"], f"{step_id}.substitution")
             clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
-            if clause != normalize_clause(parent_clause):
-                raise CertificateError(f"{step_id}: empty substitution cannot change the clause")
+            expected = normalize_clause(tuple(substitute_literal(literal, substitution) for literal in parent_clause))
+            if clause != expected:
+                raise CertificateError(f"{step_id}: substitution conclusion does not match parent")
 
         elif rule == "resolve":
             allowed = {"id", "rule", "parents", "pivot", "clause"}

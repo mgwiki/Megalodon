@@ -1,0 +1,72 @@
+{
+  "format": "vampire-megalodon-certificate",
+  "version": 1,
+  "problem": "valid-substituted-resolution-smoke",
+  "steps": [
+    {
+      "id": "c1",
+      "rule": "input",
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "pred": "P",
+            "args": [{"var": "x"}]
+          }
+        }
+      ],
+      "source": {"kind": "axiom", "name": "a1"}
+    },
+    {
+      "id": "c2",
+      "rule": "substitute",
+      "parents": ["c1"],
+      "substitution": {
+        "x": {"app": "f", "args": [{"const": "a"}]}
+      },
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "pred": "P",
+            "args": [{"app": "f", "args": [{"const": "a"}]}]
+          }
+        }
+      ]
+    },
+    {
+      "id": "c3",
+      "rule": "input",
+      "clause": [
+        {
+          "polarity": false,
+          "atom": {
+            "pred": "P",
+            "args": [{"app": "f", "args": [{"const": "a"}]}]
+          }
+        }
+      ],
+      "source": {"kind": "axiom", "name": "a2"}
+    },
+    {
+      "id": "c4",
+      "rule": "resolve",
+      "parents": ["c2", "c3"],
+      "pivot": {
+        "polarity": true,
+        "atom": {
+          "pred": "P",
+          "args": [{"app": "f", "args": [{"const": "a"}]}]
+        }
+      },
+      "clause": []
+    },
+    {
+      "id": "c5",
+      "rule": "contradiction",
+      "parents": ["c4"],
+      "clause": []
+    }
+  ]
+}
+

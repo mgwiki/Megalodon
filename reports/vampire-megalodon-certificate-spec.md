@@ -76,10 +76,27 @@ versioned.
 Literals have:
 
 - `polarity`: `true` for positive, `false` for negative,
-- `atom`: a normalized atom string in the prototype checker.
+- `atom`: either an opaque string for propositional smoke tests or a structured
+  atom object.
 
-The prototype checker treats atoms as opaque strings. The first-order phase
-must replace this with structured terms.
+Structured terms are:
+
+```json
+{"var": "x"}
+{"const": "a"}
+{"app": "f", "args": [{"var": "x"}]}
+```
+
+Structured atoms are:
+
+```json
+{"pred": "P", "args": [{"const": "a"}]}
+{"eq": [{"var": "x"}, {"var": "x"}]}
+```
+
+The prototype checker still accepts opaque atom strings for the first
+propositional smoke certificates, but first-order certificates should use the
+structured form.
 
 ## MVP Constructors
 
@@ -269,4 +286,3 @@ Project-level success gates:
 2. 10 real no-admit Megalodon reconstructions in the restricted fragment.
 3. 100 real no-admit Megalodon reconstructions before AVATAR or higher-order
    replay is reintroduced.
-
