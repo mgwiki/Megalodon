@@ -1,0 +1,203 @@
+{
+  "format": "vampire-megalodon-certificate",
+  "version": 1,
+  "problem": "valid-paramodulation-side-literals-refutation-smoke",
+  "steps": [
+    {
+      "id": "c1",
+      "rule": "input",
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "eq": [{"const": "a"}, {"const": "b"}]
+          }
+        },
+        {
+          "polarity": true,
+          "atom": {
+            "pred": "Q",
+            "args": [{"const": "a"}]
+          }
+        }
+      ],
+      "source": {"kind": "axiom", "name": "eq_ab_or_q_a"}
+    },
+    {
+      "id": "c2",
+      "rule": "input",
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "pred": "P",
+            "args": [{"app": "f", "args": [{"const": "a"}]}]
+          }
+        },
+        {
+          "polarity": true,
+          "atom": {
+            "pred": "R",
+            "args": [{"const": "b"}]
+          }
+        }
+      ],
+      "source": {"kind": "axiom", "name": "p_fa_or_r_b"}
+    },
+    {
+      "id": "c3",
+      "rule": "paramodulate",
+      "parents": ["c1", "c2"],
+      "equality": {
+        "polarity": true,
+        "atom": {
+          "eq": [{"const": "a"}, {"const": "b"}]
+        }
+      },
+      "from": {"const": "a"},
+      "to": {"const": "b"},
+      "target": {
+        "polarity": true,
+        "atom": {
+          "pred": "P",
+          "args": [{"app": "f", "args": [{"const": "a"}]}]
+        }
+      },
+      "position": [0, 0],
+      "substitution": {},
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "pred": "P",
+            "args": [{"app": "f", "args": [{"const": "b"}]}]
+          }
+        },
+        {
+          "polarity": true,
+          "atom": {
+            "pred": "Q",
+            "args": [{"const": "a"}]
+          }
+        },
+        {
+          "polarity": true,
+          "atom": {
+            "pred": "R",
+            "args": [{"const": "b"}]
+          }
+        }
+      ]
+    },
+    {
+      "id": "c4",
+      "rule": "input",
+      "clause": [
+        {
+          "polarity": false,
+          "atom": {
+            "pred": "Q",
+            "args": [{"const": "a"}]
+          }
+        }
+      ],
+      "source": {"kind": "negated_conjecture", "name": "not_q_a"}
+    },
+    {
+      "id": "c5",
+      "rule": "resolve",
+      "parents": ["c3", "c4"],
+      "pivot": {
+        "polarity": true,
+        "atom": {
+          "pred": "Q",
+          "args": [{"const": "a"}]
+        }
+      },
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "pred": "P",
+            "args": [{"app": "f", "args": [{"const": "b"}]}]
+          }
+        },
+        {
+          "polarity": true,
+          "atom": {
+            "pred": "R",
+            "args": [{"const": "b"}]
+          }
+        }
+      ]
+    },
+    {
+      "id": "c6",
+      "rule": "input",
+      "clause": [
+        {
+          "polarity": false,
+          "atom": {
+            "pred": "R",
+            "args": [{"const": "b"}]
+          }
+        }
+      ],
+      "source": {"kind": "negated_conjecture", "name": "not_r_b"}
+    },
+    {
+      "id": "c7",
+      "rule": "resolve",
+      "parents": ["c5", "c6"],
+      "pivot": {
+        "polarity": true,
+        "atom": {
+          "pred": "R",
+          "args": [{"const": "b"}]
+        }
+      },
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "pred": "P",
+            "args": [{"app": "f", "args": [{"const": "b"}]}]
+          }
+        }
+      ]
+    },
+    {
+      "id": "c8",
+      "rule": "input",
+      "clause": [
+        {
+          "polarity": false,
+          "atom": {
+            "pred": "P",
+            "args": [{"app": "f", "args": [{"const": "b"}]}]
+          }
+        }
+      ],
+      "source": {"kind": "negated_conjecture", "name": "not_p_fb"}
+    },
+    {
+      "id": "c9",
+      "rule": "resolve",
+      "parents": ["c7", "c8"],
+      "pivot": {
+        "polarity": true,
+        "atom": {
+          "pred": "P",
+          "args": [{"app": "f", "args": [{"const": "b"}]}]
+        }
+      },
+      "clause": []
+    },
+    {
+      "id": "c10",
+      "rule": "contradiction",
+      "parents": ["c9"],
+      "clause": []
+    }
+  ]
+}

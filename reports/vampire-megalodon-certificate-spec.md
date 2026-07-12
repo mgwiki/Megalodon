@@ -310,13 +310,14 @@ a small checked subfragment to a Megalodon proof script:
 - structured first-order `equality_resolution` steps are elaborated by
   instantiating the parent clause and closing the negative reflexive equality
   branch with the local Leibniz reflexivity proof,
-- structured first-order singleton `paramodulate` steps over positive target
-  literals are elaborated by transporting the selected target atom through the
-  selected Leibniz equality,
+- structured first-order `paramodulate` steps over positive target literals
+  are elaborated by transporting the selected target atom through the selected
+  Leibniz equality, while retained parent literals are reintroduced into the
+  conclusion clause by disjunction elimination/introduction,
 - the final empty clause proves `False`.
 
 This first elaborator is intentionally limited to set-sorted first-order terms
 and ground resolution after substitution. Paramodulation elaboration currently
-requires a singleton equality parent, singleton target parent, singleton
-positive conclusion, and a ground instantiated target. It is a no-admit
-kernel-checking smoke path, not yet the full first-order Megalodon importer.
+requires ground instantiated parent clauses and positive target literals. It is
+a no-admit kernel-checking smoke path, not yet the full first-order Megalodon
+importer.

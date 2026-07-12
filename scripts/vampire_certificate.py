@@ -9,6 +9,7 @@ It does not try to reconstruct missing pivots, substitutions, or proof steps.
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import re
 import sys
@@ -28,6 +29,7 @@ MVP_RULES = {
     "paramodulate",
     "contradiction",
 }
+PROOF_NAME_COUNTER = itertools.count()
 
 
 class CertificateError(Exception):
@@ -468,11 +470,17 @@ def clause_prop_text(clause: tuple[Literal, ...]) -> str:
 
 
 def or_left_intro_proof(proof: str) -> str:
-    return f"(fun P Hleft Hright => Hleft {proof})"
+    goal = fresh_proof_name("OrGoal")
+    left = fresh_proof_name("Hleft")
+    right = fresh_proof_name("Hright")
+    return f"(fun {goal} {left} {right} => {left} {proof})"
 
 
 def or_right_intro_proof(proof: str) -> str:
-    return f"(fun P Hleft Hright => Hright {proof})"
+    goal = fresh_proof_name("OrGoal")
+    left = fresh_proof_name("Hleft")
+    right = fresh_proof_name("Hright")
+    return f"(fun {goal} {left} {right} => {right} {proof})"
 
 
 def intro_literal_proof(literal: Literal, target: tuple[Literal, ...], proof: str) -> str:
@@ -501,6 +509,10 @@ def equality_refl_proof() -> str:
     return "(fun Q H => H)"
 
 
+def fresh_proof_name(prefix: str) -> str:
+    return f"{prefix}_{next(PROOF_NAME_COUNTER)}"
+
+
 def eliminate_clause_proof(
     clause: tuple[Literal, ...],
     proof: str,
@@ -514,10 +526,12 @@ def eliminate_clause_proof(
         return branch_proof(normalized[0], proof)
     head = normalized[0]
     tail = tuple(normalized[1:])
+    head_proof = fresh_proof_name("Hlit")
+    tail_proof = fresh_proof_name("Htail")
     return (
         f"({proof} {goal} "
-        f"(fun Hlit => {branch_proof(head, 'Hlit')}) "
-        f"(fun Htail => {eliminate_clause_proof(tail, 'Htail', goal, branch_proof)}))"
+        f"(fun {head_proof} => {branch_proof(head, head_proof)}) "
+        f"(fun {tail_proof} => {eliminate_clause_proof(tail, tail_proof, goal, branch_proof)}))"
     )
 
 
@@ -596,23 +610,22 @@ def paramodulation_proof_text(
     instantiated_target = substitute_literal(selected_target, substitution)
     if clause_free_vars(instantiated_equality_parent) or clause_free_vars(instantiated_target_parent) or clause_free_vars(conclusion):
         raise CertificateError("Megalodon smoke paramodulation elaboration currently requires ground instantiated clauses")
-    if normalize_clause(instantiated_equality_parent) != (instantiated_equality,):
-        raise CertificateError("Megalodon smoke paramodulation elaboration currently requires a singleton equality parent")
-    if normalize_clause(instantiated_target_parent) != (instantiated_target,):
-        raise CertificateError("Megalodon smoke paramodulation elaboration currently requires a singleton target parent")
-    if len(conclusion) != 1:
-        raise CertificateError("Megalodon smoke paramodulation elaboration currently requires a singleton conclusion")
+    if instantiated_equality not in normalize_clause(instantiated_equality_parent):
+        raise CertificateError("Megalodon smoke paramodulation equality literal is not present after substitution")
+    if instantiated_target not in normalize_clause(instantiated_target_parent):
+        raise CertificateError("Megalodon smoke paramodulation target literal is not present after substitution")
     if not instantiated_equality.polarity or instantiated_equality.atom.kind != "eq" or len(instantiated_equality.atom.args) != 2:
         raise CertificateError("Megalodon smoke paramodulation selected literal must be positive equality")
-    if not instantiated_target.polarity or not conclusion[0].polarity:
+    if not instantiated_target.polarity:
         raise CertificateError("Megalodon smoke paramodulation elaboration currently supports positive target literals only")
 
     from_term, to_term = instantiated_equality.atom.args
     if term_at_position(instantiated_target.atom, position, "paramodulation.position") != from_term:
         raise CertificateError("Megalodon smoke paramodulation target position does not contain equality left side")
     expected_atom = replace_term_at_position(instantiated_target.atom, position, to_term, "paramodulation.position")
-    if conclusion[0].atom != expected_atom:
-        raise CertificateError("Megalodon smoke paramodulation conclusion is not the rewritten target")
+    rewritten_target = Literal(instantiated_target.polarity, expected_atom)
+    if rewritten_target not in normalize_clause(conclusion):
+        raise CertificateError("Megalodon smoke paramodulation conclusion does not contain the rewritten target")
 
     equality_proof = instantiate_proof(equality_parent_proof, equality_parent_clause, substitution)
     target_proof = instantiate_proof(target_parent_proof, target_parent_clause, substitution)
@@ -623,7 +636,25 @@ def paramodulation_proof_text(
         "paramodulation.position",
     )
     context = f"(fun cert_x cert_y:set => {atom_text(context_atom)})"
-    return f"({equality_proof} {context} {target_proof})"
+    goal = clause_body_text(conclusion)
+
+    def target_branch(literal: Literal, proof: str, equality_literal_proof: str) -> str:
+        if literal == instantiated_target:
+            transported = f"({equality_literal_proof} {context} {proof})"
+            return intro_literal_proof(rewritten_target, conclusion, transported)
+        return intro_literal_proof(literal, conclusion, proof)
+
+    def equality_branch(literal: Literal, proof: str) -> str:
+        if literal == instantiated_equality:
+            return eliminate_clause_proof(
+                instantiated_target_parent,
+                target_proof,
+                goal,
+                lambda target_literal, target_literal_proof: target_branch(target_literal, target_literal_proof, proof),
+            )
+        return intro_literal_proof(literal, conclusion, proof)
+
+    return eliminate_clause_proof(instantiated_equality_parent, equality_proof, goal, equality_branch)
 
 
 def collect_term_symbols(term: Term, constants: set[str], functions: dict[str, int]) -> None:
