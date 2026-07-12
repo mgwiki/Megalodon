@@ -50,6 +50,12 @@ run_outline_case() {
       exit 1
     fi
   fi
+  if [[ "$label" == *"_factor" ]]; then
+    if ! rg -q 'megalodon_certificate_step\([0-9]+,\{"rule":"factor"' "$outline"; then
+      echo "outline did not contain Vampire-side factor certificate step" >&2
+      exit 1
+    fi
+  fi
 
   python3 scripts/vampire_certificate.py \
     "$outline" \
@@ -70,6 +76,7 @@ run_outline_case() {
 fof_problem="$TMPDIR/vampire_outline_smoke_fof.p"
 thf_problem="$TMPDIR/vampire_outline_smoke_thf.p"
 equality_resolution_problem="$TMPDIR/vampire_outline_smoke_equality_resolution.p"
+factor_problem="$TMPDIR/vampire_outline_smoke_factor.p"
 
 cat >"$fof_problem" <<'PROBLEM'
 fof(a1, axiom, p(a)).
@@ -88,8 +95,14 @@ fof(a1,axiom,((a != a) | p)).
 fof(c,conjecture,p).
 PROBLEM
 
+cat >"$factor_problem" <<'PROBLEM'
+fof(a1,axiom,(p | p)).
+fof(c,conjecture,p).
+PROBLEM
+
 run_outline_case vampire_outline_smoke_fof "$fof_problem"
 run_outline_case vampire_outline_smoke_thf "$thf_problem"
 run_outline_case vampire_outline_smoke_equality_resolution "$equality_resolution_problem"
+run_outline_case vampire_outline_smoke_factor "$factor_problem"
 
 echo "vampire outline smoke test passed"

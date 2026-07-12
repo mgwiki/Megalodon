@@ -37,9 +37,10 @@ the small JSON certificate fragment, emits Megalodon, and checks it with
 `bin/megalodon`. It currently covers the real-output bridge for clause
 inputs/derived preprocessing assumptions, Vampire-side `definition_input`
 function-definition records, Vampire-side exact `resolve` records,
-Vampire-side exact `equality_resolution` records, typed proposition equality,
+Vampire-side exact `equality_resolution` records, Vampire-side exact `factor`
+records for duplicate-literal contraction, typed proposition equality,
 higher-order application terms, and uniquely determined resolution-like clause
-endings. Resolution/equality-resolution steps that need explicit substitutions
-and the remaining unsupported CNF/FOOL/demodulation transformations are still
-recorded or bridged outside the final normalized Vampire certificate until
-Vampire exports richer certificate steps for them too.
+endings. Resolution/equality-resolution/factoring steps that need explicit
+substitutions and the remaining unsupported CNF/FOOL/demodulation
+transformations are still recorded or bridged outside the final normalized
+Vampire certificate until Vampire exports richer certificate steps for them too.
