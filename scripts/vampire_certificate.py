@@ -204,6 +204,17 @@ def is_vlam_term(term: Term) -> bool:
     return term.kind == "app" and term.name == "vLAM" and len(term.args) == 1
 
 
+def position_enters_lambda_body(term: Term, position: tuple[int, ...], context: str) -> bool:
+    current = term
+    for depth, index in enumerate(position):
+        if index >= len(current.args):
+            raise CertificateError(f"{context}: position {list(position)} is invalid at depth {depth}")
+        if is_vlam_term(current) and index == 0:
+            return True
+        current = current.args[index]
+    return False
+
+
 def bound_lambda_rewrite_scope(term: Term, position: tuple[int, ...], context: str) -> tuple[int, int] | None:
     current = term
     lambda_depth = 0
@@ -2557,7 +2568,6 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
         "Definition and : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> B -> p) -> p.",
         "Definition or : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> p) -> (B -> p) -> p.",
         "Infix \\/ 785 left := or.",
-        "Axiom xm : forall P:prop, P \\/ (P -> False).",
         "Definition f__false : prop := False.",
         "Definition f__true : prop := True.",
         "Definition vNOT : prop -> prop := not.",
@@ -2715,7 +2725,11 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
             position = parse_position(step["position"], f"{step_id}.position")
             instantiated_target = substitute_literal(selected_target, substitution)
             check_rewrite_scope(step, instantiated_target.atom, position, step_id)
-            if position_rewrites_bound_lambda_var(instantiated_target.atom, position, f"{step_id}.position"):
+            if position_rewrites_bound_lambda_var(
+                instantiated_target.atom,
+                position,
+                f"{step_id}.position",
+            ) or position_enters_lambda_body(instantiated_target.atom, position, f"{step_id}.position"):
                 proof_names[step_id] = step_id
                 assumptions.append((step_id, clause_prop_text(clause, symbol_sorts, explicit_var_sorts)))
                 continue
@@ -2748,9 +2762,10 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
 
     if final_empty is None:
         raise CertificateError("certificate has no empty-clause step to prove False")
-    theorem_type = " -> ".join([*(f"({prop})" for _name, prop in assumptions), "False"])
+    theorem_assumptions = [("xm", "forall P:prop, P \\/ (P -> False)"), *assumptions]
+    theorem_type = " -> ".join([*(f"({prop})" for _name, prop in theorem_assumptions), "False"])
     lines.append(f"Theorem {theorem_name} : {theorem_type}.")
-    for name, prop in assumptions:
+    for name, prop in theorem_assumptions:
         lines.append(f"assume {name}: {prop}.")
     for name, prop, proof in derived:
         lines.append(f"claim {name}: {prop}.")

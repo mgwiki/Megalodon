@@ -70,7 +70,7 @@ if rg -n '\bvLAM\b|^Variable db[0-9]+:' "$TMPDIR/vampire_certificate_valid_highe
   echo "higher-order lambda Megalodon output leaked raw vLAM or db declaration" >&2
   exit 1
 fi
-if rg -n '\badmit\b|\baby\b|-allowincompleteqed' \
+if rg -n '\badmit\b|\baby\b|-allowincompleteqed|^Axiom xm\b' \
   "$TMPDIR/vampire_certificate_valid_resolution.mg" \
   "$TMPDIR/vampire_certificate_valid_substituted_resolution.mg" \
   "$TMPDIR/vampire_certificate_valid_equality_resolution_refutation.mg" \

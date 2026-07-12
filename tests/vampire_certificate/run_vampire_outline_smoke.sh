@@ -172,7 +172,7 @@ if '"rule":"paramodulate"' in text and not any("paramodulate" in rules for rules
     raise SystemExit("raw replay parser dropped Vampire paramodulate certificate steps")
 PY
 
-  if rg -n '\badmit\b|\baby\b|-allowincompleteqed' "$megalodon"; then
+  if rg -n '\badmit\b|\baby\b|-allowincompleteqed|^Axiom xm\b' "$megalodon"; then
     echo "generated Megalodon proof contains an admission marker" >&2
     exit 1
   fi
