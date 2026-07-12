@@ -250,6 +250,35 @@ Side condition:
 
 Demodulation must be expanded to this constructor in the MVP.
 
+### `paramodulate_all`
+
+Vampire superposition uses `EqHelper::replace`, which replaces every matching
+redex in the selected target literal after the inference substitution. This
+constructor records that simultaneous replacement explicitly instead of leaving
+the importer to guess which repeated occurrences were rewritten.
+
+Required fields:
+
+- `parents`: equality parent and target parent,
+- `equality`: selected positive equality literal from the equality parent,
+- `from`: selected equality side,
+- `to`: selected replacement side,
+- `target`: selected literal from the target parent,
+- `positions`: all target positions at which `from` occurs after substitution,
+- `substitution`,
+- `clause`.
+
+Side condition:
+
+- the equality parent contains `equality`,
+- the target parent contains `target`,
+- `equality` is positive and becomes `from = to` after the exact substitution,
+- `positions` is exactly the complete set of occurrences of `from` in the
+  substituted target literal,
+- replacing all those occurrences by `to`, and retaining all other substituted
+  parent literals except the selected equality and target literals, yields the
+  conclusion modulo clause normalization.
+
 ### `reflexive_simplify`
 
 Definitional/reflexive simplification only.

@@ -16,6 +16,7 @@ python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_paramodul
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_paramodulation_negative_refutation.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_paramodulation_side_literals_refutation.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_prop_paramodulation_refutation.json --summary
+python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_paramodulation_all.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_prop_equality_symmetry_refutation.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_definition_input_refutation.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_definition_input_function_sort.json --summary
@@ -111,6 +112,11 @@ fi
 
 if python3 scripts/vampire_certificate.py tests/vampire_certificate/invalid_paramodulation_orientation.json >"$TMPDIR/vampire_certificate_invalid_paramodulation_orientation.out" 2>"$TMPDIR/vampire_certificate_invalid_paramodulation_orientation.err"; then
   echo "wrong-orientation paramodulation certificate unexpectedly passed" >&2
+  exit 1
+fi
+
+if python3 scripts/vampire_certificate.py tests/vampire_certificate/invalid_paramodulation_all_positions.json >"$TMPDIR/vampire_certificate_invalid_paramodulation_all_positions.out" 2>"$TMPDIR/vampire_certificate_invalid_paramodulation_all_positions.err"; then
+  echo "incomplete simultaneous-paramodulation positions unexpectedly passed" >&2
   exit 1
 fi
 

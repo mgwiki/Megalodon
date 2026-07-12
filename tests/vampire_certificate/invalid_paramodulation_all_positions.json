@@ -1,0 +1,97 @@
+{
+  "format": "vampire-megalodon-certificate",
+  "version": 1,
+  "problem": "invalid-paramodulation-all-positions",
+  "steps": [
+    {
+      "id": "c1",
+      "rule": "input",
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "eq": [
+              {"const": "f__true"},
+              {"var": "X0"}
+            ],
+            "sort": "prop"
+          }
+        }
+      ],
+      "source": {"kind": "axiom", "name": "eq"}
+    },
+    {
+      "id": "c2",
+      "rule": "input",
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "eq": [
+              {"const": "f__true"},
+              {
+                "apply": [
+                  {"const": "sP23"},
+                  {"const": "f__true"}
+                ]
+              }
+            ],
+            "sort": "prop"
+          }
+        }
+      ],
+      "source": {"kind": "axiom", "name": "target"}
+    },
+    {
+      "id": "c3",
+      "rule": "paramodulate_all",
+      "parents": ["c1", "c2"],
+      "equality": {
+        "polarity": true,
+        "atom": {
+          "eq": [
+            {"const": "f__true"},
+            {"var": "X0"}
+          ],
+          "sort": "prop"
+        }
+      },
+      "from": {"const": "f__true"},
+      "to": {"var": "X0"},
+      "target": {
+        "polarity": true,
+        "atom": {
+          "eq": [
+            {"const": "f__true"},
+            {
+              "apply": [
+                {"const": "sP23"},
+                {"const": "f__true"}
+              ]
+            }
+          ],
+          "sort": "prop"
+        }
+      },
+      "positions": [[0]],
+      "substitution": {},
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "eq": [
+              {"var": "X0"},
+              {
+                "apply": [
+                  {"const": "sP23"},
+                  {"var": "X0"}
+                ]
+              }
+            ],
+            "sort": "prop"
+          }
+        }
+      ]
+    }
+  ]
+}
