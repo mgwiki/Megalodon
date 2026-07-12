@@ -77585,8 +77585,27 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                             source_binders,
                             {**source_sorts, **variable_sorts},
                         ))
+                        source_bridge_expr = translated_source_expr
+                        source_bridge_kind = source_statement_kind
+                        if source_local_obligation is not None:
+                            positive_premises, positive_conclusion = split_arrows(positive_expr)
+                            normalized_source = beta_normalize_expr(
+                                normalize_defined_expr(translated_source_expr, source_bridge_definitions)
+                            )
+                            normalized_conclusion = beta_normalize_expr(
+                                normalize_defined_expr(positive_conclusion, source_bridge_definitions)
+                            )
+                            if (
+                                positive_premises
+                                and expr_same_mod_alpha_eta_after_sort_normalization(
+                                    normalized_source,
+                                    normalized_conclusion,
+                                )
+                            ):
+                                source_bridge_expr = positive_expr
+                                source_bridge_kind = f"{source_statement_kind} branch implication"
                         source_bridge_proof = raw_tptp_source_statement_bridge_proof(
-                            translated_source_expr,
+                            source_bridge_expr,
                             positive_expr,
                             conjecture_name,
                             source_bridge_definitions,
@@ -77594,7 +77613,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                             source_sorts,
                         )
                         if source_bridge_proof is not None:
-                            source_statement_proposition = expr_text(translated_source_expr)
+                            source_statement_kind = source_bridge_kind
+                            source_statement_proposition = expr_text(source_bridge_expr)
                             source_statement_proof = source_bridge_proof
                 if source_statement_proposition is not None and source_statement_name is not None:
                     source_conjecture_name = re.sub(r"_tptp$", "_source", conjecture_name)
