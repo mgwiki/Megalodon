@@ -62647,6 +62647,15 @@ def raw_tptp_replay_proof_has_unbound_synthetic_db(proof: str) -> bool:
     return bool(proof_variables - proof_binders)
 
 
+def raw_tptp_replay_proof_applies_claim_to_unbound_synthetic_db(proof: str) -> bool:
+    for match in re.finditer(r"\bR_S[0-9]+\s+((?:DB|db)[0-9]+)\b", proof):
+        name = match.group(1)
+        prefix = proof[: match.start()]
+        if re.search(rf"\b(?:fun|forall)\s+{re.escape(name)}\s*:", prefix) is None:
+            return True
+    return False
+
+
 def raw_tptp_replay_proof_has_synthetic_db(proof: str) -> bool:
     return RAW_TPTP_SYNTHETIC_DB_RE.search(proof) is not None
 
@@ -62758,6 +62767,8 @@ def raw_tptp_replay_proof_is_unsafe(rule: str | None, proposition: str, proof: s
     if raw_tptp_replay_proof_has_free_surface_variable(proposition, proof):
         return True
     if raw_tptp_replay_proof_has_free_synthetic_db(proof, proposition):
+        return True
+    if raw_tptp_replay_proof_applies_claim_to_unbound_synthetic_db(proof):
         return True
     if raw_tptp_replay_proof_has_escaped_surface_variable(proposition, proof):
         return True
