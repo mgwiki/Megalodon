@@ -1,0 +1,71 @@
+{
+  "format": "vampire-megalodon-certificate",
+  "version": 1,
+  "problem": "valid-definition-input-function-sort-smoke",
+  "declarations": [
+    "Variable A:set.",
+    "Variable p:set->prop.",
+    "Variable sF0:set->prop."
+  ],
+  "steps": [
+    {
+      "id": "c1",
+      "rule": "definition_input",
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "eq": [
+              {"const": "p"},
+              {"const": "sF0"}
+            ],
+            "sort": "set->prop"
+          }
+        }
+      ],
+      "symbol": "sF0",
+      "sort": "set->prop",
+      "value": {"const": "p"},
+      "source": {"kind": "vampire_function_definition", "name": "sF0_def"}
+    },
+    {
+      "id": "c2",
+      "rule": "input",
+      "clause": [
+        {
+          "polarity": false,
+          "atom": {
+            "eq": [
+              {"const": "p"},
+              {"const": "sF0"}
+            ],
+            "sort": "set->prop"
+          }
+        }
+      ],
+      "source": {"kind": "axiom", "name": "not_p_sF0"}
+    },
+    {
+      "id": "c3",
+      "rule": "resolve",
+      "parents": ["c1", "c2"],
+      "pivot": {
+        "polarity": true,
+        "atom": {
+          "eq": [
+            {"const": "p"},
+            {"const": "sF0"}
+          ],
+          "sort": "set->prop"
+        }
+      },
+      "clause": []
+    },
+    {
+      "id": "c4",
+      "rule": "contradiction",
+      "parents": ["c3"],
+      "clause": []
+    }
+  ]
+}

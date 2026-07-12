@@ -195,7 +195,8 @@ def require_megalodon_ident(name: str, context: str) -> str:
 
 
 def require_supported_sort(sort: str, context: str) -> str:
-    if sort not in {"set", "prop"}:
+    parts = sort.split("->")
+    if not parts or any(part not in {"set", "prop"} for part in parts):
         raise CertificateError(f"{context}: unsupported sort {sort!r}")
     return sort
 
@@ -928,6 +929,30 @@ def term_text(term: Term) -> str:
     raise CertificateError(f"cannot render term kind {term.kind!r}")
 
 
+def equality_symbol(sort: str) -> str:
+    require_supported_sort(sort, "equality sort")
+    if sort == "set":
+        return "eq"
+    if sort == "prop":
+        return "vampire_eq_prop"
+    return "vampire_eq_" + sort.replace("->", "_to_")
+
+
+def sort_type_text(sort: str) -> str:
+    require_supported_sort(sort, "sort")
+    if "->" in sort:
+        return f"({sort})"
+    return sort
+
+
+def equality_definition(sort: str) -> str:
+    symbol = equality_symbol(sort)
+    if sort == "set":
+        return "Definition eq : set->set->prop := fun x y:set => forall Q:set->set->prop, Q x y -> Q y x."
+    sort_text = sort_type_text(sort)
+    return f"Definition {symbol} : {sort_text}->{sort_text}->prop := fun x y:{sort_text} => forall Q:{sort_text}->prop, Q x -> Q y."
+
+
 def atom_text(atom: Term) -> str:
     if atom.kind == "opaque":
         return require_megalodon_ident(atom.name, "atom")
@@ -936,8 +961,8 @@ def atom_text(atom: Term) -> str:
         args = " ".join(term_text(arg) for arg in atom.args)
         return f"({name} {args})" if args else name
     if atom.kind == "eq" and len(atom.args) == 2:
-        if atom.name == "prop":
-            return f"(vampire_eq_prop {term_text(atom.args[0])} {term_text(atom.args[1])})"
+        if atom.name != "set":
+            return f"({equality_symbol(atom.name)} {term_text(atom.args[0])} {term_text(atom.args[1])})"
         return f"({term_text(atom.args[0])} = {term_text(atom.args[1])})"
     raise CertificateError(f"cannot render atom kind {atom.kind!r}")
 
@@ -1324,22 +1349,23 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
         declarations = certificate_symbol_declarations(clauses)
     if not declarations:
         raise CertificateError("Megalodon smoke elaboration needs at least one declared atom or symbol")
-    uses_equality = any(literal.atom.kind == "eq" and literal.atom.name != "prop" for clause in clauses.values() for literal in clause)
-    uses_prop_equality = any(literal.atom.kind == "eq" and literal.atom.name == "prop" for clause in clauses.values() for literal in clause)
+    equality_sorts = sorted(
+        {
+            literal.atom.name
+            for clause in clauses.values()
+            for literal in clause
+            if literal.atom.kind == "eq"
+        }
+    )
     lines = [
         "Definition False : prop := forall p:prop, p.",
         "Definition or : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> p) -> (B -> p) -> p.",
         "Infix \\/ 785 left := or.",
     ]
-    if uses_equality:
-        lines.extend(
-            [
-                "Definition eq : set->set->prop := fun x y:set => forall Q:set->set->prop, Q x y -> Q y x.",
-                "Infix = 502 := eq.",
-            ]
-        )
-    if uses_prop_equality:
-        lines.append("Definition vampire_eq_prop : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y.")
+    for sort in equality_sorts:
+        lines.append(equality_definition(sort))
+        if sort == "set":
+            lines.append("Infix = 502 := eq.")
     definitions = definition_input_declarations(data)
     for declaration in declarations:
         skip = False

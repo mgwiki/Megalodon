@@ -1,0 +1,27 @@
+{
+  "format": "vampire-megalodon-certificate",
+  "version": 1,
+  "problem": "invalid-definition-input-sort-smoke",
+  "steps": [
+    {
+      "id": "c1",
+      "rule": "definition_input",
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "eq": [
+              {"const": "A"},
+              {"const": "sF0"}
+            ],
+            "sort": "set=>prop"
+          }
+        }
+      ],
+      "symbol": "sF0",
+      "sort": "set=>prop",
+      "value": {"const": "A"},
+      "source": {"kind": "vampire_function_definition", "name": "sF0_def"}
+    }
+  ]
+}
