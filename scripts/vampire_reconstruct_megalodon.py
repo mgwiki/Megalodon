@@ -62020,9 +62020,19 @@ def raw_tptp_avatar_split_parameter_map(
         split_parts = raw_split_application_parts(split)
         if split_parts is None:
             continue
-        split_name, _args = split_parts
-        parameters = raw_tptp_synthetic_db_split_parameters(body, variable_sorts)
-        if parameters:
+        split_name, args = split_parts
+        if not args:
+            variable_sorts.setdefault(split_name, "prop")
+            continue
+        parameters = tuple(
+            (
+                expr_text(arg),
+                variable_sorts.get(expr_text(arg), expr_sort(arg, variable_sorts) or "set"),
+            )
+            for arg in args
+            if arg.kind == "var" and arg.value is not None
+        )
+        if len(parameters) == len(args):
             result.setdefault(split_name, parameters)
             variable_sorts[split_name] = join_sort_arrows([*(sort for _name, sort in parameters), "prop"])
     return result
@@ -62037,8 +62047,6 @@ def raw_tptp_parameterize_avatar_split_entries(
     list[tuple[str, str, str | None, str | None, str | None, list[str], bool]],
     list[str],
 ]:
-    if not split_parameters:
-        return entries, propositions
     rewritten_entries = [
         (
             name,
@@ -77607,13 +77615,22 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if intro_proof is not None:
             predicate_definition_intro_proofs[raw_tptp_claim_name(intro_step_name)] = intro_proof
     avatar_split_definitions: dict[str, str] = {}
+    avatar_split_declarations: dict[str, str] = {}
     for _, _, proposition, rule, _, _, _ in entries:
         if rule != "avatar_definition" or not proposition:
             continue
-        definition = raw_tptp_avatar_definition_parts(proposition)
-        if definition is None:
+        components = raw_tptp_avatar_definition_components(proposition)
+        if components is None:
             continue
-        split_name, body = definition
+        binders, split, body = components
+        split_parts = raw_split_application_parts(split)
+        if split_parts is None:
+            continue
+        split_name, split_args = split_parts
+        free_body_variables = expr_variables(body) - {name for name, _sort in binders}
+        if not split_args and free_body_variables:
+            avatar_split_declarations.setdefault(split_name, "prop")
+            continue
         body_text = raw_tptp_safe_split_definition_body(body, variable_sorts)
         if body_text is not None:
             avatar_split_definitions.setdefault(split_name, body_text)
@@ -77627,6 +77644,8 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             body_text = raw_tptp_safe_split_definition_body(body, local_sorts)
             if body_text is not None:
                 avatar_split_definitions.setdefault(split_name, body_text)
+    for name in avatar_split_definitions:
+        avatar_split_declarations.pop(name, None)
     skolem_epsilon_definitions: dict[str, tuple[str, str]] = {}
     skolem_intro_proofs: dict[str, str] = {}
     if {"Eps_i", "Eps_i_ax"} <= source_active_declared_names(source):
@@ -78356,12 +78375,20 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             continue
         lines.append(f"Definition {name} : {sort} := {body}.")
         declared_names.add(name)
+    for name, sort in sorted(avatar_split_declarations.items()):
+        if name in declared_names:
+            continue
+        lines.append(f"Variable {name}:{sort}.")
+        declared_names.add(name)
     for name, body in sorted(avatar_split_definitions.items()):
+        if name in declared_names:
+            continue
         split_sort, split_body = raw_tptp_avatar_split_definition_sort_and_body(
             body,
             avatar_split_parameters.get(name, ()),
         )
         lines.append(f"Definition {name} : {split_sort} := {split_body}.")
+        declared_names.add(name)
     for declaration in later_source_declarations:
         declared_name = megalodon_declared_name(declaration)
         declared_sort = megalodon_declared_sort(declaration)
