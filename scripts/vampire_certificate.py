@@ -34,6 +34,15 @@ RESOLUTION_LIKE_REPLAY_KINDS = {
     "subsumption_resolution",
     "unit_resulting_resolution",
 }
+DERIVED_ASSUMPTION_REPLAY_KINDS = {
+    "",
+    "backward_demodulation",
+    "cnf",
+    "definition_rewrite",
+    "forward_demodulation",
+    "generic",
+    "generic_clause",
+}
 PROOF_NAME_COUNTER = itertools.count()
 
 
@@ -46,6 +55,7 @@ STEP_RE = re.compile(r'^megalodon_step\((\d+),("(?:\\.|[^"\\])*"),("(?:\\.|[^"\\
 CLAUSE_RE = re.compile(r"^megalodon_certificate_clause\((\d+),(.+)\)\.$")
 REPLAY_KIND_RE = re.compile(r'^megalodon_step_replay_kind\((\d+),("(?:\\.|[^"\\])*")\)\.$')
 FINAL_STEP_RE = re.compile(r"^megalodon_final_step\((\d+)\)\.$")
+SYMBOL_DECL_RE = re.compile(r'^megalodon_symbol_declaration\(("(?:\\.|[^"\\])*")\)\.$')
 
 
 @dataclass(frozen=True, order=True)
@@ -88,7 +98,12 @@ def parse_term(value: Any, context: str) -> Term:
         if not isinstance(args, list):
             raise CertificateError(f"{context}: function args must be a list")
         return Term("app", name, tuple(parse_term(arg, f"{context}.args[{index}]") for index, arg in enumerate(args)))
-    raise CertificateError(f"{context}: term must contain var, const, or app/args")
+    if set(value) == {"apply"}:
+        args = value["apply"]
+        if not isinstance(args, list) or len(args) != 2:
+            raise CertificateError(f"{context}: apply term must contain function and argument")
+        return Term("apply", "", (parse_term(args[0], f"{context}.apply[0]"), parse_term(args[1], f"{context}.apply[1]")))
+    raise CertificateError(f"{context}: term must contain var, const, app/args, or apply")
 
 
 def parse_atom(value: Any, context: str) -> Term:
@@ -104,11 +119,14 @@ def parse_atom(value: Any, context: str) -> Term:
         if not isinstance(args, list):
             raise CertificateError(f"{context}: predicate args must be a list")
         return Term("pred", name, tuple(parse_term(arg, f"{context}.args[{index}]") for index, arg in enumerate(args)))
-    if set(value) == {"eq"}:
+    if set(value) in ({"eq"}, {"eq", "sort"}):
         args = value["eq"]
         if not isinstance(args, list) or len(args) != 2:
             raise CertificateError(f"{context}: equality atom must contain two terms")
-        return Term("eq", "=", (parse_term(args[0], f"{context}.eq[0]"), parse_term(args[1], f"{context}.eq[1]")))
+        sort = value.get("sort", "set")
+        if not isinstance(sort, str) or not sort:
+            raise CertificateError(f"{context}: equality sort must be a non-empty string")
+        return Term("eq", sort, (parse_term(args[0], f"{context}.eq[0]"), parse_term(args[1], f"{context}.eq[1]")))
     raise CertificateError(f"{context}: atom must contain pred/args or eq")
 
 
@@ -205,10 +223,15 @@ def term_to_json(term: Term) -> Any:
         return {"const": term.name}
     if term.kind == "app":
         return {"app": term.name, "args": [term_to_json(arg) for arg in term.args]}
+    if term.kind == "apply":
+        return {"apply": [term_to_json(term.args[0]), term_to_json(term.args[1])]}
     if term.kind == "pred":
         return {"pred": term.name, "args": [term_to_json(arg) for arg in term.args]}
     if term.kind == "eq":
-        return {"eq": [term_to_json(term.args[0]), term_to_json(term.args[1])]}
+        result = {"eq": [term_to_json(term.args[0]), term_to_json(term.args[1])]}
+        if term.name != "set":
+            result["sort"] = term.name
+        return result
     if term.kind == "opaque":
         return term.name
     raise CertificateError(f"cannot serialize term kind {term.kind!r}")
@@ -468,6 +491,7 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
     step_meta: dict[int, dict[str, Any]] = {}
     clause_json: dict[int, list[Any]] = {}
     replay_kinds: dict[int, str] = {}
+    declarations: list[str] = []
     final_step: int | None = None
 
     for lineno, line in enumerate(text.splitlines(), start=1):
@@ -498,6 +522,10 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
         match = FINAL_STEP_RE.match(line)
         if match:
             final_step = int(match.group(1))
+            continue
+        match = SYMBOL_DECL_RE.match(line)
+        if match:
+            declarations.append(json.loads(match.group(1)))
 
     if not clause_json:
         raise CertificateError("Vampire outline contains no megalodon_certificate_clause records")
@@ -529,7 +557,7 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
                     "clause": clause_json[step_no],
                 }
             )
-        elif not parent_clause_numbers:
+        elif not parent_clause_numbers or replay_kind in DERIVED_ASSUMPTION_REPLAY_KINDS:
             source_kind = "vampire_input_clause" if not meta["parents"] else "vampire_derived_clause"
             steps.append(
                 {
@@ -552,12 +580,15 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
     if final_step is not None and final_step in clauses and clauses[final_step]:
         raise CertificateError(f"u{final_step}: final Vampire step is not an empty clause")
 
-    return {
+    result = {
         "format": FORMAT,
         "version": VERSION,
         "problem": problem,
         "steps": steps,
     }
+    if declarations:
+        result["declarations"] = sorted(set(declarations))
+    return result
 
 
 def term_text(term: Term) -> str:
@@ -567,6 +598,8 @@ def term_text(term: Term) -> str:
         name = require_megalodon_ident(term.name, "term")
         args = " ".join(term_text(arg) for arg in term.args)
         return f"({name} {args})" if args else name
+    if term.kind == "apply":
+        return f"({term_text(term.args[0])} {term_text(term.args[1])})"
     raise CertificateError(f"cannot render term kind {term.kind!r}")
 
 
@@ -578,6 +611,8 @@ def atom_text(atom: Term) -> str:
         args = " ".join(term_text(arg) for arg in atom.args)
         return f"({name} {args})" if args else name
     if atom.kind == "eq" and len(atom.args) == 2:
+        if atom.name == "prop":
+            return f"(vampire_eq_prop {term_text(atom.args[0])} {term_text(atom.args[1])})"
         return f"({term_text(atom.args[0])} = {term_text(atom.args[1])})"
     raise CertificateError(f"cannot render atom kind {atom.kind!r}")
 
@@ -830,6 +865,10 @@ def collect_term_symbols(term: Term, constants: set[str], functions: dict[str, i
         previous = functions.setdefault(term.name, len(term.args))
         if previous != len(term.args):
             raise CertificateError(f"function {term.name!r} used with inconsistent arity")
+    elif term.kind == "apply":
+        collect_term_symbols(term.args[0], constants, functions)
+        collect_term_symbols(term.args[1], constants, functions)
+        return
     for arg in term.args:
         collect_term_symbols(arg, constants, functions)
 
@@ -887,10 +926,17 @@ def wrap_clause_binders(clause: tuple[Literal, ...], proof: str) -> str:
 
 
 def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal, ...]], theorem_name: str) -> str:
-    declarations = certificate_symbol_declarations(clauses)
+    outline_declarations = data.get("declarations")
+    if outline_declarations is not None:
+        if not isinstance(outline_declarations, list) or not all(isinstance(item, str) and item.startswith("Variable ") for item in outline_declarations):
+            raise CertificateError("declarations must be a list of Megalodon Variable declarations")
+        declarations = sorted(set(outline_declarations))
+    else:
+        declarations = certificate_symbol_declarations(clauses)
     if not declarations:
         raise CertificateError("Megalodon smoke elaboration needs at least one declared atom or symbol")
-    uses_equality = any(literal.atom.kind == "eq" for clause in clauses.values() for literal in clause)
+    uses_equality = any(literal.atom.kind == "eq" and literal.atom.name != "prop" for clause in clauses.values() for literal in clause)
+    uses_prop_equality = any(literal.atom.kind == "eq" and literal.atom.name == "prop" for clause in clauses.values() for literal in clause)
     lines = [
         "Definition False : prop := forall p:prop, p.",
         "Definition or : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> p) -> (B -> p) -> p.",
@@ -903,6 +949,8 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
                 "Infix = 502 := eq.",
             ]
         )
+    if uses_prop_equality:
+        lines.append("Definition vampire_eq_prop : prop->prop->prop := fun x y:prop => forall Q:prop->prop, Q x -> Q y.")
     lines.extend(declarations)
     step_clauses: dict[str, tuple[Literal, ...]] = {}
     proof_names: dict[str, str] = {}
