@@ -1072,6 +1072,10 @@ def join_sort_arrows(pieces: Iterable[str]) -> str:
     return "->".join(rendered)
 
 
+def canonical_sort_pieces(sort: str) -> tuple[str, ...]:
+    return tuple(join_sort_arrows(split_sort_arrows(piece)) for piece in split_sort_arrows(sort))
+
+
 def display_sort_text(sort: str) -> str:
     stripped = strip_balanced_parens(sort)
     pieces = split_sort_arrows(stripped)
@@ -1092,7 +1096,7 @@ def binder_sort_text(sort: str) -> str:
 
 
 def equivalent_sorts(left: str | None, right: str | None) -> bool:
-    return left is not None and right is not None and split_sort_arrows(left) == split_sort_arrows(right)
+    return left is not None and right is not None and canonical_sort_pieces(left) == canonical_sort_pieces(right)
 
 
 def split_tptp_application(text: str) -> list[str] | None:
@@ -75141,11 +75145,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         for name, proposition in all_local_source_facts.items()
     }
 
-    def translated_local_source_fact_proposition(proposition: str | None) -> str | None:
+    def translated_local_source_fact_proposition(proposition: str | None, target_text: str | None = None) -> str | None:
         if proposition is None:
             return None
         normalized = use_ambient_basic_logic_text(
-            source_surface_parse_text(proposition, local_sorts=variable_sorts, source_binders=source_binders)
+            source_surface_parse_text(proposition, target_text, variable_sorts, source_binders)
         )
         parsed_normalized = parse_expr(normalized)
         if parsed_normalized is not None:
@@ -75354,7 +75358,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if source_name in declared_names:
             return True
         source_proposition = local_source_fact_propositions[source_name]
-        proposition = translated_local_source_fact_proposition(source_proposition)
+        proposition = translated_local_source_fact_proposition(source_proposition, fallback_proposition)
         if proposition is None:
             proposition = local_source_fact_axiom_propositions.get(source_name)
         if proposition is None:
