@@ -73243,6 +73243,11 @@ def source_apply_set_ext_at(rows: list[str], index: int) -> bool:
     return re.search(r"\bapply\s+set_ext\b", stripped) is not None
 
 
+def source_apply_int_sno_cases_at(rows: list[str], index: int) -> bool:
+    stripped = rows[index - 1].strip()
+    return re.search(r"\bapply\s+int_SNo_cases\b", stripped) is not None
+
+
 def source_intro_command_count(command: str, keyword: str) -> int:
     stripped = command.strip()
     if not stripped.startswith(keyword + " "):
@@ -73252,6 +73257,17 @@ def source_intro_command_count(command: str, keyword: str) -> int:
         return 0
     body = body.split(":", 1)[0]
     return len(SOURCE_IDENTIFIER_RE.findall(body))
+
+
+def source_intro_command_names(command: str, keyword: str) -> list[str]:
+    stripped = command.strip()
+    if not stripped.startswith(keyword + " "):
+        return []
+    body = stripped[len(keyword) :].strip()
+    if not body:
+        return []
+    body = body.split(":", 1)[0]
+    return SOURCE_IDENTIFIER_RE.findall(body)
 
 
 def source_goal_after_intro_commands(
@@ -73290,11 +73306,14 @@ def source_goal_after_intro_commands(
     goal = parsed
     for cursor in range(start_line + 1, min(apply_line, len(rows)) + 1):
         for command in command_fragments(rows[cursor - 1], cursor == apply_line):
-            let_count = source_intro_command_count(command, "let")
-            for _ in range(let_count):
+            for intro_name in source_intro_command_names(command, "let"):
                 if goal.kind != "forall":
                     return None
-                goal = goal.args[0]
+                bound_name = goal.value
+                body = goal.args[0]
+                if bound_name is not None and intro_name != "_":
+                    body = substitute_expr(body, {bound_name: Expr("var", value=intro_name)})
+                goal = body
             assume_count = source_intro_command_count(command, "assume")
             for _ in range(assume_count):
                 if goal.kind != "arrow":
@@ -73363,6 +73382,74 @@ def source_local_nat_ind_branch_obligation(
         return (
             "local nat_ind branch",
             f"{base_name}_nat_ind_{index}_{branch_index}",
+            branch_proposition,
+            line,
+        )
+    return None
+
+
+def source_int_sno_cases_branch_proposition(goal: Expr, branch_index: int) -> str | None:
+    binders, body = collect_foralls(goal)
+    if not binders:
+        return None
+    variable, sort = binders[0]
+    premises, conclusion = split_arrows(body)
+    if not premises:
+        return None
+    predicate_body = conclusion
+    branch_variable = Expr("var", value=variable)
+    if branch_index == 1:
+        replacement = branch_variable
+    elif branch_index == 2:
+        replacement = Expr("app", args=(Expr("var", value="minus_SNo"), branch_variable))
+    else:
+        return None
+    branch_conclusion = substitute_expr(predicate_body, {variable: replacement})
+    omega_membership = Expr(
+        "app",
+        args=(Expr("var", value="In"), branch_variable, Expr("var", value="omega")),
+    )
+    branch_body = Expr("arrow", args=(omega_membership, branch_conclusion))
+    return expr_text(Expr("forall", value=variable, sort=sort, args=(branch_body,)))
+
+
+def source_local_int_sno_cases_branch_obligation(
+    source: Path | None,
+    line: int | None,
+    base_obligation: tuple[str, str, str, int] | None,
+) -> tuple[str, str, str, int] | None:
+    if source is None or line is None or not source.exists():
+        return None
+    theorem_line = source_enclosing_theorem_line(source, line)
+    if theorem_line is None:
+        return None
+    rows = source.read_text(encoding="utf-8", errors="replace").splitlines()
+    if line < 1 or line > len(rows):
+        return None
+    theorem_name = source_enclosing_theorem_name(source, line) or "theorem"
+    if base_obligation is None:
+        proposition = source_theorem_proposition_text(source, line)
+        if proposition is None:
+            return None
+        base_name = theorem_name
+        base_line = theorem_line
+    else:
+        _base_kind, base_name, proposition, base_line = base_obligation
+    for index in range(min(line, len(rows)), max(theorem_line, base_line) - 1, -1):
+        if not source_apply_int_sno_cases_at(rows, index):
+            continue
+        branch_index = source_xm_branch_index(rows, index, line)
+        if branch_index not in {1, 2}:
+            continue
+        goal = source_goal_after_intro_commands(source, proposition, base_line, index)
+        if goal is None:
+            continue
+        branch_proposition = source_int_sno_cases_branch_proposition(goal, branch_index)
+        if branch_proposition is None:
+            continue
+        return (
+            "local int_SNo_cases branch",
+            f"{base_name}_int_SNo_cases_{index}_{branch_index}",
             branch_proposition,
             line,
         )
@@ -76232,6 +76319,19 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         )
     if source_set_ext_branch_obligation is not None:
         source_local_obligation = source_set_ext_branch_obligation
+    source_int_sno_cases_branch_obligation = source_local_int_sno_cases_branch_obligation(
+        source,
+        obligation_line,
+        source_local_obligation,
+    )
+    if source_int_sno_cases_branch_obligation is None and source_local_obligation is None:
+        source_int_sno_cases_branch_obligation = source_local_int_sno_cases_branch_obligation(
+            source,
+            obligation_line,
+            None,
+        )
+    if source_int_sno_cases_branch_obligation is not None:
+        source_local_obligation = source_int_sno_cases_branch_obligation
     used_source_annotations = {
         source_name
         for _name, _role, _proposition, _rule, source_name, _parents, _trusted_definition in entries
