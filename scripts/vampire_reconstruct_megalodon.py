@@ -73629,7 +73629,7 @@ def source_surface_expr_text(
         for name in reversed(names):
             scoped_sorts[name] = "set"
             body_text = source_surface_expr_text(body, target_text, scoped_sorts, source_binders)
-            body = f"ex (fun {name} :set => and (In {name} ({set_text})) ({body_text}))"
+            body = f"ex set (fun {name} :set => and (In {name} ({set_text})) ({body_text}))"
         return body
     exists_match = SOURCE_EXISTS_RE.match(stripped)
     if exists_match is not None:
@@ -73640,7 +73640,7 @@ def source_surface_expr_text(
         for name in reversed(names):
             scoped_sorts[name] = sort
             body_text = source_surface_expr_text(body, target_text, scoped_sorts, source_binders)
-            body = f"ex (fun {name} :{sort} => {body_text})"
+            body = f"ex {binder_sort_text(sort)} (fun {name} :{binder_sort_text(sort)} => {body_text})"
         return body
     untyped_exists_match = SOURCE_UNTYPED_EXISTS_RE.match(stripped)
     if untyped_exists_match is not None:
@@ -73650,7 +73650,7 @@ def source_surface_expr_text(
         for name in reversed(names):
             scoped_sorts[name] = "set"
             body_text = source_surface_expr_text(body, target_text, scoped_sorts, source_binders)
-            body = f"ex (fun {name} :set => {body_text})"
+            body = f"ex set (fun {name} :set => {body_text})"
         return body
     lambda_match = SOURCE_LAMBDA_RE.match(stripped)
     if lambda_match is not None:
