@@ -5505,6 +5505,28 @@ def parse_definition_body(body_text: str) -> tuple[tuple[str, ...], Expr] | None
     return tuple(binders), body
 
 
+def eta_expand_definition_metadata(
+    sort: str,
+    binders: tuple[str, ...],
+    body: Expr,
+) -> tuple[tuple[str, ...], Expr]:
+    if binders:
+        return binders, body
+    argument_sorts = sort_argument_sorts(normalize_megalodon_sort(sort))
+    if not argument_sorts:
+        return binders, body
+    used = expr_variables(body) | set(binders)
+    eta_binders: list[str] = []
+    for index, _sort in enumerate(argument_sorts):
+        candidate = f"X{index}"
+        while candidate in used:
+            candidate = f"{candidate}_"
+        used.add(candidate)
+        eta_binders.append(candidate)
+    eta_body = append_application_args(body, [Expr("var", value=name) for name in eta_binders])
+    return tuple(eta_binders), eta_body
+
+
 def unary_application(expr: Expr) -> tuple[str, Expr] | None:
     if expr.kind != "app" or len(expr.args) != 2 or expr.args[0].kind != "var" or expr.args[0].value is None:
         return None
@@ -35135,7 +35157,7 @@ def raw_two_sided_equality_transform_proof(
         return None
     equality_sort = raw_equality_literal_transport_sort(source, source_sides, variable_sorts)
     symmetry = (
-        eq_symmetry_proof(source_proof, source_sides[0], source_sides[1])
+        native_eq_symmetry_proof(source_proof, source_sides[0], source_sides[1], equality_sort)
         if source.kind == "eq"
         else raw_eq_symmetry_proof(source_proof, source_sides[0], equality_sort)
     )
@@ -35149,23 +35171,27 @@ def raw_two_sided_equality_transform_proof(
         if left_equality is None or right_equality is None:
             continue
         if source.kind == "eq" and target.kind == "eq":
-            target_to_left = native_eq_symmetry_proof(left_equality, left, target_sides[0])
-            target_to_right = (
-                f"(vampire_native_eq_trans_set "
-                f"{proof_arg_text(target_sides[0])} "
-                f"{proof_arg_text(left)} "
-                f"{proof_arg_text(right)} "
-                f"{proof_term_text(target_to_left)} "
-                f"{proof_term_text(proof)})"
+            target_to_left = native_eq_symmetry_proof(left_equality, left, target_sides[0], equality_sort)
+            target_to_right = native_eq_transitivity_proof(
+                target_sides[0],
+                left,
+                right,
+                target_to_left,
+                proof,
+                equality_sort,
             )
-            return (
-                f"(vampire_native_eq_trans_set "
-                f"{proof_arg_text(target_sides[0])} "
-                f"{proof_arg_text(right)} "
-                f"{proof_arg_text(target_sides[1])} "
-                f"{proof_term_text(target_to_right)} "
-                f"{proof_term_text(right_equality)})"
+            if target_to_right is None:
+                continue
+            transformed = native_eq_transitivity_proof(
+                target_sides[0],
+                right,
+                target_sides[1],
+                target_to_right,
+                right_equality,
+                equality_sort,
             )
+            if transformed is not None:
+                return transformed
         if equality_sort == "set":
             return (
                 f"(vampire_eq_transport_eq_set "
@@ -35331,7 +35357,8 @@ def raw_deep_formula_transform_proof(
         and expr_same_mod_alpha(source_sides[1], target_sides[0])
     ):
         if source.kind == "eq":
-            return eq_symmetry_proof(source_proof, source_sides[0], source_sides[1])
+            equality_sort = raw_equality_transport_sort(source_sides[0], source_sides[1], variable_sorts)
+            return native_eq_symmetry_proof(source_proof, source_sides[0], source_sides[1], equality_sort)
         sort = "set"
         if source.kind == "app" and source.args[0].kind == "var" and source.args[0].value == "vampire_eq_prop":
             sort = "prop"
@@ -36081,7 +36108,24 @@ def raw_nested_quantified_literal_equality_rewrite_proof(
                 if expr_same_mod_alpha(replaced, target_body):
                     body_proof = transported
                 else:
-                    body_proof = raw_clause_subsumption_transform_proof(replaced, target_body, transported)
+                    replaced_sides = equality_like_sides(replaced)
+                    target_sides = equality_like_sides(target_body)
+                    body_proof = None
+                    if (
+                        replaced_sides is not None
+                        and target_sides is not None
+                        and expr_same_mod_alpha(replaced_sides[0], target_sides[1])
+                        and expr_same_mod_alpha(replaced_sides[1], target_sides[0])
+                    ):
+                        symmetry_sort = raw_equality_transport_sort(replaced_sides[0], replaced_sides[1], local_sorts)
+                        body_proof = native_eq_symmetry_proof(
+                            transported,
+                            replaced_sides[0],
+                            replaced_sides[1],
+                            symmetry_sort,
+                        )
+                    if body_proof is None:
+                        body_proof = raw_clause_subsumption_transform_proof(replaced, target_body, transported)
                     if body_proof is None and raw_clause_replay_budget_ok(
                         replaced,
                         target_body,
@@ -72997,6 +73041,35 @@ def source_line_text(source: Path | None, line: int | None) -> str | None:
     return rows[line - 1].strip()
 
 
+def source_theorem_declaration_text(source: Path | None, line: int | None) -> str | None:
+    theorem_line = source_enclosing_theorem_line(source, line)
+    if source is None or theorem_line is None or not source.exists():
+        return None
+    rows = source.read_text(encoding="utf-8", errors="replace").splitlines()
+    pieces: list[str] = []
+    for row in rows[theorem_line - 1 :]:
+        stripped = row.strip()
+        if not stripped:
+            continue
+        pieces.append(stripped)
+        if stripped.endswith("."):
+            return " ".join(pieces)
+        if stripped in {"{", "Qed."} or stripped.startswith(("exact ", "assume ", "claim ")):
+            break
+    return " ".join(pieces) if pieces else None
+
+
+def source_theorem_proposition_text(source: Path | None, line: int | None) -> str | None:
+    declaration = source_theorem_declaration_text(source, line)
+    if declaration is None:
+        return None
+    for prefix in ("Theorem ", "Lemma ", "Example ", "Fact ", "Remark ", "Corollary ", "Proposition ", "Property "):
+        theorem = proposition_after_colon(declaration, prefix)
+        if theorem is not None:
+            return theorem[1]
+    return None
+
+
 def source_local_set_definitions(source: Path | None, line: int | None) -> dict[str, tuple[str, str]]:
     if source is None or line is None or not source.exists():
         return {}
@@ -74294,8 +74367,9 @@ def source_definition_infos(source: Path | None) -> dict[str, DefinitionInfo]:
         if parsed is None:
             continue
         binders, body = parsed
+        definition_sort = normalize_megalodon_sort(match.group("sort"))
         definitions[match.group("name")] = DefinitionInfo(
-            normalize_megalodon_sort(match.group("sort")),
+            definition_sort,
             body_text,
             match.group("name"),
             binders,
@@ -74321,8 +74395,10 @@ def local_set_definition_infos(
         if parsed is None:
             continue
         binders, parsed_body = parsed
+        definition_sort = normalize_megalodon_sort(sort)
+        binders, parsed_body = eta_expand_definition_metadata(definition_sort, binders, parsed_body)
         infos[name] = DefinitionInfo(
-            normalize_megalodon_sort(sort),
+            definition_sort,
             body_text,
             name,
             binders,
@@ -75603,7 +75679,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     obligation_line = proof_or_problem_obligation_line(proof, problem)
     source_theorem_line = source_enclosing_theorem_line(source, obligation_line)
     source_theorem_name = source_enclosing_theorem_name(source, obligation_line)
-    source_theorem_text = source_line_text(source, source_theorem_line)
+    source_theorem_text = source_theorem_declaration_text(source, obligation_line) or source_line_text(source, source_theorem_line)
     used_source_annotations = {
         source_name
         for _name, _role, _proposition, _rule, source_name, _parents, _trusted_definition in entries
@@ -76915,6 +76991,45 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     f"(fun Hpos => Hpos) (fun Hneg => {positive_from_contradiction}))."
                 )
                 lines.append("Qed.")
+                source_statement = source_theorem_proposition_text(source, obligation_line)
+                source_statement_proposition = None
+                source_bridge_size = len(source_statement or "") + len(positive_conjecture)
+                if source_statement is not None and source_theorem_name is not None and source_bridge_size <= 5000:
+                    translated_source_statement = use_ambient_basic_logic_text(
+                        replace_generated_identifier_tokens(
+                            source_surface_parse_text(
+                                source_statement,
+                                positive_conjecture,
+                                {**variable_sorts, **source_sorts},
+                                source_binders,
+                            ),
+                            local_identifier_renames,
+                        )
+                    )
+                    translated_source_expr = parse_expr(translated_source_statement)
+                    if translated_source_expr is not None:
+                        source_bridge_definitions = local_set_definition_infos(local_set_definitions, source_binders)
+                        normalized_source_expr = beta_normalize_expr(
+                            normalize_defined_expr(translated_source_expr, source_bridge_definitions)
+                        )
+                        normalized_positive_expr = beta_normalize_expr(
+                            normalize_defined_expr(positive_expr, source_bridge_definitions)
+                        )
+                        if expr_same_mod_alpha_eta_after_sort_normalization(
+                            normalized_source_expr,
+                            normalized_positive_expr,
+                        ):
+                            source_statement_proposition = expr_text(translated_source_expr)
+                if source_statement_proposition is not None and source_theorem_name is not None:
+                    source_conjecture_name = re.sub(r"_tptp$", "_source", conjecture_name)
+                    if source_conjecture_name == conjecture_name:
+                        source_conjecture_name = f"{conjecture_name}_source"
+                    lines.append(
+                        "// source-shaped theorem reconstructed from the original Megalodon statement."
+                    )
+                    lines.append(f"Theorem {source_conjecture_name}: {source_statement_proposition}.")
+                    lines.append(f"exact {conjecture_name}.")
+                    lines.append("Qed.")
     if local_identifier_renames:
         lines = [replace_generated_identifier_tokens(line, local_identifier_renames) for line in lines]
     lines = reconcile_megalodon_declarations(use_ambient_basic_logic(add_problem_type_variables(lines, proof, text, problem, source)))
