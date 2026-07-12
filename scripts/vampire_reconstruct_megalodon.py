@@ -73136,6 +73136,51 @@ def source_local_claim_obligation(
     return None
 
 
+def source_local_prove_declaration_at(rows: list[str], index: int) -> tuple[str, str, int] | None:
+    pieces: list[str] = []
+    for cursor in range(index, len(rows) + 1):
+        stripped = rows[cursor - 1].strip()
+        if not pieces:
+            match = re.search(r"\bprove\b\s+(?P<body>.*)$", stripped)
+            if match is None:
+                return None
+            stripped = match.group("body").strip()
+        if not stripped:
+            continue
+        command, separator, _rest = stripped.partition(".")
+        if separator:
+            pieces.append(command.strip())
+            proposition = " ".join(piece for piece in pieces if piece).strip()
+            if not proposition:
+                return None
+            return f"prove_{index}", proposition, index
+        pieces.append(stripped)
+    return None
+
+
+def source_local_prove_obligation(
+    source: Path | None,
+    line: int | None,
+) -> tuple[str, str, int] | None:
+    if source is None or line is None or not source.exists():
+        return None
+    theorem_line = source_enclosing_theorem_line(source, line)
+    if theorem_line is None:
+        return None
+    rows = source.read_text(encoding="utf-8", errors="replace").splitlines()
+    if line < 1 or line > len(rows):
+        return None
+    current_indent = len(rows[line - 1]) - len(rows[line - 1].lstrip())
+    for index in range(min(line, len(rows)), theorem_line - 1, -1):
+        declaration = source_local_prove_declaration_at(rows, index)
+        if declaration is None:
+            continue
+        declaration_indent = len(rows[index - 1]) - len(rows[index - 1].lstrip())
+        if index == line or declaration_indent <= current_indent:
+            return declaration
+    return None
+
+
 def source_local_set_definitions(source: Path | None, line: int | None) -> dict[str, tuple[str, str]]:
     if source is None or line is None or not source.exists():
         return {}
@@ -75838,6 +75883,15 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     source_theorem_name = source_enclosing_theorem_name(source, obligation_line)
     source_theorem_text = source_theorem_declaration_text(source, obligation_line) or source_line_text(source, source_theorem_line)
     source_local_claim = source_local_claim_obligation(source, obligation_line)
+    source_local_prove = source_local_prove_obligation(source, obligation_line)
+    source_local_obligation: tuple[str, str, str, int] | None = None
+    if source_local_claim is not None:
+        claim_name, claim_proposition, claim_line = source_local_claim
+        source_local_obligation = ("local claim", claim_name, claim_proposition, claim_line)
+    if source_local_prove is not None:
+        prove_name, prove_proposition, prove_line = source_local_prove
+        if source_local_obligation is None or prove_line >= source_local_obligation[3]:
+            source_local_obligation = ("local prove", prove_name, prove_proposition, prove_line)
     used_source_annotations = {
         source_name
         for _name, _role, _proposition, _rule, source_name, _parents, _trusted_definition in entries
@@ -75857,12 +75911,12 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         source_map_lines.append(f"// source obligation line: {source}:{obligation_line}")
     if source_theorem_text:
         source_map_lines.append(f"// source theorem text: {source_theorem_text[:400]}")
-    if source_local_claim is not None:
-        claim_name, claim_proposition, claim_line = source_local_claim
+    if source_local_obligation is not None:
+        obligation_kind, obligation_name, obligation_proposition, obligation_line = source_local_obligation
         source_map_lines.append(
-            f"// source local obligation: claim {claim_name}{source_line_suffix(claim_line)}"
+            f"// source local obligation: {obligation_kind} {obligation_name}{source_line_suffix(obligation_line)}"
         )
-        source_map_lines.append(f"// source local obligation text: {claim_proposition[:400]}")
+        source_map_lines.append(f"// source local obligation text: {obligation_proposition[:400]}")
     source_map_lines.extend(
         raw_tptp_source_map_wrapped_lines(
             "source top-level facts used",
@@ -77159,12 +77213,12 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 source_statement_kind = "theorem"
                 source_statement_name = source_theorem_name
                 source_statement_line = source_theorem_line
-                if source_local_claim is not None:
-                    local_claim_name, local_claim_proposition, local_claim_line = source_local_claim
-                    source_statement = local_claim_proposition
-                    source_statement_kind = "local claim"
-                    source_statement_name = local_claim_name
-                    source_statement_line = local_claim_line
+                if source_local_obligation is not None:
+                    local_kind, local_name, local_proposition, local_line = source_local_obligation
+                    source_statement = local_proposition
+                    source_statement_kind = local_kind
+                    source_statement_name = local_name
+                    source_statement_line = local_line
                 source_statement_proposition = None
                 source_statement_proof = None
                 source_bridge_size = len(source_statement or "") + len(positive_conjecture)
