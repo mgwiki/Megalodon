@@ -38,9 +38,11 @@ the small JSON certificate fragment, emits Megalodon, and checks it with
 inputs/derived preprocessing assumptions, Vampire-side `definition_input`
 function-definition records, Vampire-side exact `resolve` records,
 Vampire-side exact `equality_resolution` records, Vampire-side exact `factor`
-records for duplicate-literal contraction, typed proposition equality,
-higher-order application terms, and uniquely determined resolution-like clause
-endings. Resolution/equality-resolution/factoring steps that need explicit
-substitutions and the remaining unsupported CNF/FOOL/demodulation
-transformations are still recorded or bridged outside the final normalized
-Vampire certificate until Vampire exports richer certificate steps for them too.
+records for duplicate-literal contraction, Vampire-side top-level
+empty-substitution `paramodulate` records for simple demodulation, typed
+proposition equality, higher-order application terms, and uniquely determined
+resolution-like clause endings. Resolution/equality-resolution/factoring/
+paramodulation steps that need explicit substitutions or nested rewrite
+positions and the remaining unsupported CNF/FOOL transformations are still
+recorded or bridged outside the final normalized Vampire certificate until
+Vampire exports richer certificate steps for them too.
