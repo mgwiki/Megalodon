@@ -2435,9 +2435,17 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
         equality_sorts.sort()
     lines = [
         "Definition False : prop := forall p:prop, p.",
+        "Definition True : prop := forall p:prop, p -> p.",
+        "Definition not : prop -> prop := fun A:prop => A -> False.",
+        "Definition and : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> B -> p) -> p.",
         "Definition or : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> p) -> (B -> p) -> p.",
         "Infix \\/ 785 left := or.",
         "Axiom xm : forall P:prop, P \\/ (P -> False).",
+        "Definition f__false : prop := False.",
+        "Definition f__true : prop := True.",
+        "Definition vNOT : prop -> prop := not.",
+        "Definition vAND : prop -> prop -> prop := and.",
+        "Definition vOR : prop -> prop -> prop := or.",
     ]
     for sort in equality_sorts:
         lines.append(equality_definition(sort))
@@ -2446,8 +2454,17 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
     for sort in certificate_existential_sorts(clauses):
         lines.append(existential_definition(sort))
     definitions = definition_input_declarations(data)
+    builtin_declarations = {
+        "Variable f__false:prop.",
+        "Variable f__true:prop.",
+        "Variable vAND:prop->prop->prop.",
+        "Variable vNOT:prop->prop.",
+        "Variable vOR:prop->prop->prop.",
+    }
     for declaration in declarations:
         skip = False
+        if declaration in builtin_declarations:
+            skip = True
         for symbol in definitions:
             if declaration == f"Variable {symbol}:{definitions[symbol][0]}.":
                 skip = True
@@ -2457,6 +2474,15 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
     for symbol, (sort, value) in sorted(definitions.items()):
         lines.append(f"Definition {require_megalodon_ident(symbol, 'definition symbol')} : {require_supported_sort(sort, 'definition sort')} := {term_text(value)}.")
     symbol_sorts = declaration_symbol_sorts(declarations)
+    symbol_sorts.update(
+        {
+            "f__false": split_sort("prop"),
+            "f__true": split_sort("prop"),
+            "vAND": split_sort("prop->prop->prop"),
+            "vNOT": split_sort("prop->prop"),
+            "vOR": split_sort("prop->prop->prop"),
+        }
+    )
     for symbol, (sort, _value) in definitions.items():
         symbol_sorts[symbol] = split_sort(sort)
     step_clauses: dict[str, tuple[Literal, ...]] = {}
