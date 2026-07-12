@@ -75775,6 +75775,68 @@ def raw_tptp_source_dependency_proof(
     return None
 
 
+def raw_tptp_source_entry_fact_proof(
+    proposition: str,
+    source_fact_entry_names: list[str],
+    propositions_by_name: dict[str, str],
+) -> str | None:
+    target = parse_expr(proposition)
+    for entry_name in source_fact_entry_names:
+        entry_proposition = propositions_by_name.get(entry_name)
+        if entry_proposition is None:
+            continue
+        if canonical_proposition(entry_proposition) == canonical_proposition(proposition):
+            return raw_tptp_claim_name(entry_name)
+        source_expr = parse_expr(entry_proposition)
+        if source_expr is not None and target is not None and expr_same_mod_alpha(source_expr, target):
+            return raw_tptp_claim_name(entry_name)
+    return None
+
+
+def raw_tptp_source_entry_implication_proof(
+    proposition: str,
+    source_fact_entry_names: list[str],
+    propositions_by_name: dict[str, str],
+) -> str | None:
+    target = parse_expr(proposition)
+    if target is None:
+        return None
+    parsed_entries: list[tuple[str, Expr]] = []
+    for entry_name in source_fact_entry_names:
+        entry_proposition = propositions_by_name.get(entry_name)
+        if entry_proposition is None:
+            continue
+        entry_expr = parse_expr(entry_proposition)
+        if entry_expr is not None:
+            parsed_entries.append((entry_name, entry_expr))
+    for rule_name, rule_expr in parsed_entries:
+        binders, body = collect_foralls(rule_expr)
+        premises, conclusion = split_arrows(body)
+        if len(premises) != 1:
+            continue
+        binder_names = {name for name, _sort in binders}
+        subst: dict[str, Expr] = {}
+        if not match_expr_with_alpha_instantiation(conclusion, target, binder_names, subst):
+            continue
+        if any(name not in subst for name in binder_names):
+            continue
+        instantiated_premise = beta_normalize_expr(substitute_expr(premises[0], subst))
+        premise_proof: str | None = None
+        for fact_name, fact_expr in parsed_entries:
+            if fact_name == rule_name:
+                continue
+            if expr_same_mod_alpha(beta_normalize_expr(fact_expr), instantiated_premise):
+                premise_proof = raw_tptp_claim_name(fact_name)
+                break
+        if premise_proof is None:
+            continue
+        rule_proof = raw_tptp_claim_name(rule_name)
+        for name, _sort in binders:
+            rule_proof = f"({proof_head(rule_proof)} {proof_arg_text(subst[name])})"
+        return f"({proof_head(rule_proof)} {proof_term_text(premise_proof)})"
+    return None
+
+
 def raw_source_fact_equality_context_proof(
     source: Expr,
     target: Expr,
@@ -78148,6 +78210,30 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                         and source_name is not None
                         and source_name in (source_fact_names | set(local_source_fact_propositions))
                     ]
+                    source_fact_entry_proof = raw_tptp_source_entry_fact_proof(
+                        positive_conjecture,
+                        source_fact_entry_names,
+                        propositions_by_name,
+                    )
+                    if source_fact_entry_proof is not None:
+                        source_statement_kind = "source fact"
+                        source_statement_name = source_theorem_name or "source_fact"
+                        source_statement_line = obligation_line
+                        source_statement_proposition = expr_text(positive_expr)
+                        source_statement_proof = source_fact_entry_proof
+                if source_statement_proposition is None:
+                    source_fact_implication_proof = raw_tptp_source_entry_implication_proof(
+                        positive_conjecture,
+                        source_fact_entry_names,
+                        propositions_by_name,
+                    )
+                    if source_fact_implication_proof is not None:
+                        source_statement_kind = "source implication facts"
+                        source_statement_name = source_theorem_name or "source_facts"
+                        source_statement_line = obligation_line
+                        source_statement_proposition = expr_text(positive_expr)
+                        source_statement_proof = source_fact_implication_proof
+                if source_statement_proposition is None:
                     source_fact_chain_proof = raw_tptp_parent_equality_chain_rewrite_proof(
                         positive_conjecture,
                         source_fact_entry_names,
