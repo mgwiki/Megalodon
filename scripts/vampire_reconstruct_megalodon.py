@@ -27155,6 +27155,37 @@ def raw_direct_conclusion_transform_proof(
         return true_equality_intro
     source_sides = equality_like_sides(source)
     target_sides = equality_like_sides(target)
+    source_is_vampire_prop_eq = (
+        source.kind == "app"
+        and source.args
+        and source.args[0].kind == "var"
+        and source.args[0].value == "vampire_eq_prop"
+    )
+    if (
+        source_is_vampire_prop_eq
+        and target.kind == "eq"
+        and source_sides is not None
+        and target_sides is not None
+    ):
+        if expr_same_mod_alpha(source_sides[0], target_sides[0]) and expr_same_mod_alpha(source_sides[1], target_sides[1]):
+            return raw_vampire_eq_prop_to_native_prop_eq_proof(source_sides[0], source_sides[1], source_proof)
+        if expr_same_mod_alpha(source_sides[0], target_sides[1]) and expr_same_mod_alpha(source_sides[1], target_sides[0]):
+            native = raw_vampire_eq_prop_to_native_prop_eq_proof(source_sides[0], source_sides[1], source_proof)
+            return native_eq_symmetry_proof(native, source_sides[0], source_sides[1], "prop")
+    if (
+        source.kind == "eq"
+        and target.kind == "app"
+        and target.args
+        and target.args[0].kind == "var"
+        and target.args[0].value == "vampire_eq_prop"
+        and source_sides is not None
+        and target_sides is not None
+    ):
+        if expr_same_mod_alpha(source_sides[0], target_sides[0]) and expr_same_mod_alpha(source_sides[1], target_sides[1]):
+            return raw_native_prop_eq_to_vampire_eq_prop_proof(source_sides[0], source_sides[1], source_proof)
+        if expr_same_mod_alpha(source_sides[0], target_sides[1]) and expr_same_mod_alpha(source_sides[1], target_sides[0]):
+            native = native_eq_symmetry_proof(source_proof, source_sides[0], source_sides[1], "prop")
+            return raw_native_prop_eq_to_vampire_eq_prop_proof(source_sides[1], source_sides[0], native)
     if (
         source_sides is not None
         and target_sides is not None
@@ -33445,6 +33476,14 @@ def raw_native_prop_eq_to_vampire_eq_prop_proof(left: Expr, right: Expr, proof: 
     )
 
 
+def raw_vampire_eq_prop_to_native_prop_eq_proof(left: Expr, right: Expr, proof: str) -> str:
+    return (
+        f"({proof_head(proof)} "
+        f"(fun zz :prop => {proof_arg_text(left)} = zz) "
+        f"(vampire_native_eq_refl_prop {proof_arg_text(left)}))"
+    )
+
+
 def raw_candidate_terms_for_sort(
     exprs: tuple[Expr, ...],
     sort: str,
@@ -38188,7 +38227,7 @@ def raw_guarded_prop_equality_to_negative_demodulation_proof(
         target_literals = raw_clause_literals(target_body)
         rule_variables = {name for name, _sort in rule_binders}
 
-        def instantiate_rule_for(redex: Expr) -> str | None:
+        def instantiate_rule_for(redex: Expr) -> tuple[str, Expr] | None:
             rule_subst: dict[str, Expr] = {}
             if not match_expr_with_alpha_instantiation(rule_atom, redex, rule_variables, rule_subst):
                 return None
@@ -38200,7 +38239,7 @@ def raw_guarded_prop_equality_to_negative_demodulation_proof(
             proof = "HruleComponent"
             for name, _sort in rule_binders:
                 proof = f"({proof_head(proof)} {proof_arg_text(rule_subst[name])})"
-            return proof
+            return proof, beta_normalize_expr(substitute_expr(rule_atom, rule_subst))
 
         def handler(literal: Expr, literal_proof: str) -> str | None:
             direct = raw_literal_to_clause_proof(literal, target_body, literal_proof, target_literals, (), variable_sorts=variable_sorts)
@@ -38209,13 +38248,35 @@ def raw_guarded_prop_equality_to_negative_demodulation_proof(
             sides = equality_like_sides(literal)
             if sides is None:
                 return None
+            if literal.kind == "eq":
+                native_literal_proof = literal_proof
+            elif literal.kind == "app" and literal.args and literal.args[0].kind == "var" and literal.args[0].value == "vampire_eq_prop":
+                native_literal_proof = raw_vampire_eq_prop_to_native_prop_eq_proof(sides[0], sides[1], literal_proof)
+            else:
+                native_literal_proof = None
+            if native_literal_proof is None:
+                return None
             for redex, target_atom, equality_proof in (
-                (sides[0], sides[1], literal_proof),
-                (sides[1], sides[0], native_eq_symmetry_proof(literal_proof, sides[0], sides[1], "prop")),
+                (sides[0], sides[1], native_literal_proof),
+                (sides[1], sides[0], native_eq_symmetry_proof(native_literal_proof, sides[0], sides[1], "prop")),
             ):
-                rule_instantiated = instantiate_rule_for(redex)
-                if rule_instantiated is None:
+                instantiated_rule = instantiate_rule_for(redex)
+                if instantiated_rule is None:
                     continue
+                rule_instantiated, rule_instantiated_atom = instantiated_rule
+                rule_instantiated_sides = equality_like_sides(rule_instantiated_atom)
+                if (
+                    rule_instantiated_atom.kind == "app"
+                    and rule_instantiated_atom.args
+                    and rule_instantiated_atom.args[0].kind == "var"
+                    and rule_instantiated_atom.args[0].value == "vampire_eq_prop"
+                    and rule_instantiated_sides is not None
+                ):
+                    rule_instantiated = raw_vampire_eq_prop_to_native_prop_eq_proof(
+                        rule_instantiated_sides[0],
+                        rule_instantiated_sides[1],
+                        rule_instantiated,
+                    )
                 negative_index = next(
                     (
                         index
@@ -39248,13 +39309,15 @@ def raw_oriented_equality_proof(
     equality_right: Expr,
     equality_proof: str,
     equality_sort: str,
+    *,
+    native_equality: bool = False,
 ) -> str | None:
     if expr_same_mod_alpha(old, equality_left) and expr_same_mod_alpha(new, equality_right):
         return equality_proof
     if expr_same_mod_alpha(old, equality_right) and expr_same_mod_alpha(new, equality_left):
-        if equality_sort in {"set", "prop"}:
+        if native_equality and native_eq_helper_suffix(equality_sort) is not None:
             return native_eq_symmetry_proof(equality_proof, equality_left, equality_right, equality_sort)
-        if "->" in equality_sort:
+        if equality_sort in {"set", "prop"} or "->" in equality_sort:
             return raw_eq_symmetry_proof(equality_proof, equality_left, equality_sort)
         return (
             f"({proof_head(equality_proof)} "
@@ -39268,13 +39331,13 @@ def raw_formula_context_demodulation_options(
     equality: Expr,
     equality_proof: str,
     variable_sorts: dict[str, str],
-) -> list[tuple[Expr, Expr, str, str]]:
-    options: list[tuple[Expr, Expr, str, str]] = []
+) -> list[tuple[Expr, Expr, str, str, bool]]:
+    options: list[tuple[Expr, Expr, str, str, bool]] = []
     equality_sides = equality_like_sides(equality)
     if equality_sides is not None:
         equality_sort = raw_equality_transport_sort(equality_sides[0], equality_sides[1], variable_sorts)
         if equality_sort is not None:
-            options.append((equality_sides[0], equality_sides[1], equality_proof, equality_sort))
+            options.append((equality_sides[0], equality_sides[1], equality_proof, equality_sort, equality.kind == "eq"))
     pointwise = raw_pointwise_set_function_equality(equality, equality_proof, variable_sorts)
     if pointwise is not None:
         function_equality, function_equality_proof = pointwise
@@ -39282,7 +39345,7 @@ def raw_formula_context_demodulation_options(
         if function_sides is not None:
             function_sort = raw_equality_transport_sort(function_sides[0], function_sides[1], variable_sorts)
             if function_sort is not None:
-                options.append((function_sides[0], function_sides[1], function_equality_proof, function_sort))
+                options.append((function_sides[0], function_sides[1], function_equality_proof, function_sort, function_equality.kind == "eq"))
     return options
 
 
@@ -39292,7 +39355,7 @@ def raw_universal_formula_context_demodulation_options(
     source: Expr,
     target: Expr,
     variable_sorts: dict[str, str],
-) -> list[tuple[Expr, Expr, str, str]]:
+) -> list[tuple[Expr, Expr, str, str, bool]]:
     binders, body = collect_foralls(equality)
     if not binders or len(binders) > 6:
         return []
@@ -39303,7 +39366,7 @@ def raw_universal_formula_context_demodulation_options(
     source_subterms = expr_subterms(source, limit=256)
     target_subterms = expr_subterms(target, limit=256)
     local_sorts = {**variable_sorts, **{name: sort for name, sort in binders}}
-    options: list[tuple[Expr, Expr, str, str]] = []
+    options: list[tuple[Expr, Expr, str, str, bool]] = []
     seen: set[tuple[str, str, str]] = set()
 
     def add_from_match(
@@ -39335,7 +39398,7 @@ def raw_universal_formula_context_demodulation_options(
         if key in seen:
             return
         seen.add(key)
-        options.append((instantiated_left, instantiated_right, proof, equality_sort))
+        options.append((instantiated_left, instantiated_right, proof, equality_sort, body.kind == "eq"))
 
     for source_subterm in source_subterms:
         for target_subterm in target_subterms:
@@ -39423,10 +39486,11 @@ def raw_binary_equality_chain_demodulation_proof(
             source_sides[1],
             source_proof,
             source_sort,
+            native_equality=source.kind == "eq",
         )
         if source_old_to_new is None:
             continue
-        for link_left, link_right, link_equality_proof, link_sort in raw_formula_context_demodulation_options(
+        for link_left, link_right, link_equality_proof, link_sort, link_native_equality in raw_formula_context_demodulation_options(
             link,
             link_proof,
             variable_sorts,
@@ -39441,6 +39505,7 @@ def raw_binary_equality_chain_demodulation_proof(
                     link_right,
                     link_equality_proof,
                     link_sort,
+                    native_equality=link_native_equality,
                 )
                 if target_left_to_old is not None:
                     hole = fresh_identifier(
@@ -39450,10 +39515,7 @@ def raw_binary_equality_chain_demodulation_proof(
                         source_old_to_new,
                         target_left_to_old,
                     )
-                    context = Expr(
-                        "eq",
-                        args=(target_sides[0], Expr("var", value=hole)),
-                    )
+                    context = equality_like_expr(target, target_sides[0], Expr("var", value=hole))
                     if source.kind == "eq":
                         transported = native_equality_transport_proof(
                             source_old_to_new,
@@ -39480,6 +39542,7 @@ def raw_binary_equality_chain_demodulation_proof(
                     link_right,
                     link_equality_proof,
                     link_sort,
+                    native_equality=link_native_equality,
                 )
                 if old_to_target_right is not None:
                     hole = fresh_identifier(
@@ -39489,10 +39552,7 @@ def raw_binary_equality_chain_demodulation_proof(
                         source_old_to_new,
                         old_to_target_right,
                     )
-                    context = Expr(
-                        "eq",
-                        args=(Expr("var", value=hole), target_sides[1]),
-                    )
+                    context = equality_like_expr(target, Expr("var", value=hole), target_sides[1])
                     if source.kind == "eq":
                         transported = native_equality_transport_proof(
                             source_old_to_new,
@@ -39570,7 +39630,7 @@ def raw_formula_context_demodulation_proof(
         variable_sorts,
     )
     options.extend(raw_formula_context_demodulation_options(equality, equality_proof, variable_sorts))
-    for equality_left, equality_right, equality_proof_term, equality_sort in options:
+    for equality_left, equality_right, equality_proof_term, equality_sort, native_equality in options:
         key = (expr_key(equality_left), expr_key(equality_right), equality_proof_term)
         if key in seen:
             continue
@@ -39583,6 +39643,7 @@ def raw_formula_context_demodulation_proof(
                 equality_right,
                 equality_proof_term,
                 equality_sort,
+                native_equality=native_equality,
             )
             if old_to_new is None:
                 continue
@@ -39681,7 +39742,7 @@ def raw_equality_conclusion_demodulation_proof(
         return None
 
     seen: set[tuple[str, str, str]] = set()
-    for equality_left, equality_right, equality_proof_term, equality_sort in raw_formula_context_demodulation_options(
+    for equality_left, equality_right, equality_proof_term, equality_sort, native_equality in raw_formula_context_demodulation_options(
         equality,
         equality_proof,
         variable_sorts,
@@ -39698,6 +39759,7 @@ def raw_equality_conclusion_demodulation_proof(
                 equality_right,
                 equality_proof_term,
                 equality_sort,
+                native_equality=native_equality,
             )
             if old_to_new is None:
                 continue
