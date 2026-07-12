@@ -196,6 +196,21 @@ def replace_term_at_position(term: Term, position: tuple[int, ...], replacement:
     return Term(term.kind, term.name, tuple(args))
 
 
+def position_rewrites_bound_lambda_var(term: Term, position: tuple[int, ...], context: str) -> bool:
+    current = term
+    lambda_depth = 0
+    for depth, index in enumerate(position):
+        if index >= len(current.args):
+            raise CertificateError(f"{context}: position {list(position)} is invalid at depth {depth}")
+        if lambda_hint_for_term(current) is not None and index == 0:
+            lambda_depth += 1
+        current = current.args[index]
+    if current.kind != "const":
+        return False
+    db_match = DB_NAME_RE.match(current.name)
+    return db_match is not None and int(db_match.group(1)) < lambda_depth
+
+
 def term_positions_matching(term: Term, needle: Term, prefix: tuple[int, ...] = ()) -> tuple[tuple[int, ...], ...]:
     if term == needle:
         return (prefix,)
@@ -2487,6 +2502,11 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
             selected_target = parse_literal(step["target"], f"{step_id}.target")
             substitution = parse_substitution(step["substitution"], f"{step_id}.substitution")
             position = parse_position(step["position"], f"{step_id}.position")
+            instantiated_target = substitute_literal(selected_target, substitution)
+            if position_rewrites_bound_lambda_var(instantiated_target.atom, position, f"{step_id}.position"):
+                proof_names[step_id] = step_id
+                assumptions.append((step_id, clause_prop_text(clause, symbol_sorts, explicit_var_sorts)))
+                continue
             proof = wrap_clause_binders(
                 clause,
                 paramodulation_proof_text(
