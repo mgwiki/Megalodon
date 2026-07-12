@@ -1,0 +1,36 @@
+{
+  "format": "vampire-megalodon-certificate",
+  "version": 1,
+  "problem": "invalid-equality-resolution-nonreflexive-smoke",
+  "steps": [
+    {
+      "id": "c1",
+      "rule": "input",
+      "clause": [
+        {
+          "polarity": false,
+          "atom": {
+            "eq": [{"var": "x"}, {"const": "a"}]
+          }
+        }
+      ],
+      "source": {"kind": "axiom", "name": "a1"}
+    },
+    {
+      "id": "c2",
+      "rule": "equality_resolution",
+      "parents": ["c1"],
+      "literal": {
+        "polarity": false,
+        "atom": {
+          "eq": [{"var": "x"}, {"const": "a"}]
+        }
+      },
+      "substitution": {
+        "x": {"const": "b"}
+      },
+      "clause": []
+    }
+  ]
+}
+

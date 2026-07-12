@@ -190,12 +190,15 @@ Required fields:
 
 - `parents`: one parent,
 - `literal`: the equality literal being removed,
+- `substitution`: object from variable names to structured terms,
 - `clause`.
 
 Side condition:
 
 - the selected literal is syntactically negative equality of a term with
   itself after the supplied substitution.
+- the conclusion is the parent clause after applying the substitution and
+  removing that selected literal, modulo clause normalization.
 
 ### `paramodulate`
 

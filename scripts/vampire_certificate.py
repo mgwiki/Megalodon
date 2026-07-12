@@ -23,6 +23,7 @@ MVP_RULES = {
     "substitute",
     "resolve",
     "factor",
+    "equality_resolution",
     "contradiction",
 }
 
@@ -105,6 +106,10 @@ def substitute_term(term: Term, substitution: dict[str, Term]) -> Term:
 
 def substitute_literal(literal: Literal, substitution: dict[str, Term]) -> Literal:
     return Literal(literal.polarity, substitute_term(literal.atom, substitution))
+
+
+def is_reflexive_equality_atom(atom: Term) -> bool:
+    return atom.kind == "eq" and len(atom.args) == 2 and atom.args[0] == atom.args[1]
 
 
 def parse_substitution(value: Any, context: str) -> dict[str, Term]:
@@ -254,6 +259,33 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
             clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
             if clause != expected:
                 raise CertificateError(f"{step_id}: resolve conclusion does not match parents")
+
+        elif rule == "equality_resolution":
+            allowed = {"id", "rule", "parents", "literal", "substitution", "clause"}
+            require_fields(step, allowed)
+            require_no_extra_fields(step, allowed)
+            parents = require_parents(step, 1)
+            parent_clause = clauses.get(parents[0])
+            if parent_clause is None:
+                raise CertificateError(f"{step_id}: unknown parent {parents[0]}")
+            literal = parse_literal(step["literal"], f"{step_id}.literal")
+            if literal not in parent_clause:
+                raise CertificateError(f"{step_id}: equality-resolution literal not present in parent")
+            if literal.polarity:
+                raise CertificateError(f"{step_id}: equality-resolution literal must be negative")
+            substitution = parse_substitution(step["substitution"], f"{step_id}.substitution")
+            selected = substitute_literal(literal, substitution)
+            if not is_reflexive_equality_atom(selected.atom):
+                raise CertificateError(f"{step_id}: selected equality is not reflexive after substitution")
+            expected = normalize_clause(
+                tuple(
+                    substitute_literal(item, substitution)
+                    for item in clause_without_one(parent_clause, literal)
+                )
+            )
+            clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
+            if clause != expected:
+                raise CertificateError(f"{step_id}: equality-resolution conclusion does not match parent")
 
         elif rule == "contradiction":
             allowed = {"id", "rule", "parents", "clause"}

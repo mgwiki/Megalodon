@@ -1,0 +1,51 @@
+{
+  "format": "vampire-megalodon-certificate",
+  "version": 1,
+  "problem": "valid-equality-resolution-smoke",
+  "steps": [
+    {
+      "id": "c1",
+      "rule": "input",
+      "clause": [
+        {
+          "polarity": false,
+          "atom": {
+            "eq": [{"var": "x"}, {"const": "a"}]
+          }
+        },
+        {
+          "polarity": true,
+          "atom": {
+            "pred": "P",
+            "args": [{"var": "x"}]
+          }
+        }
+      ],
+      "source": {"kind": "axiom", "name": "a1"}
+    },
+    {
+      "id": "c2",
+      "rule": "equality_resolution",
+      "parents": ["c1"],
+      "literal": {
+        "polarity": false,
+        "atom": {
+          "eq": [{"var": "x"}, {"const": "a"}]
+        }
+      },
+      "substitution": {
+        "x": {"const": "a"}
+      },
+      "clause": [
+        {
+          "polarity": true,
+          "atom": {
+            "pred": "P",
+            "args": [{"const": "a"}]
+          }
+        }
+      ]
+    }
+  ]
+}
+
