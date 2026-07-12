@@ -38170,6 +38170,15 @@ def raw_tptp_forward_demodulation_proof(
     second_sides = equality_like_sides(second)
     first_name = raw_tptp_claim_name(parents[0])
     second_name = raw_tptp_claim_name(parents[1])
+    proof = raw_tptp_exported_split_conditional_lambda_demodulation_from_step(
+        target,
+        ((first, first_name), (second, second_name)),
+        variable_sorts,
+        replay_step,
+        propositions_by_name,
+    )
+    if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+        return proof
     for source, source_name, equality, equality_name in (
         (first, first_name, second, second_name),
         (second, second_name, first, first_name),
@@ -39580,6 +39589,17 @@ def raw_tptp_exported_demodulation_rewrite_proof(
             continue
         rule_lhs = rule_lhs or redex
         rule_rhs = rule_rhs or replacement
+        if propositions_by_name is not None:
+            split_lambda = raw_tptp_exported_split_conditional_lambda_demodulation_proof(
+                target,
+                parents,
+                local_sorts,
+                fields,
+                lambda_sort_hints,
+                propositions_by_name,
+            )
+            if split_lambda is not None:
+                return split_lambda
         guarded = raw_tptp_exported_guarded_demodulation_rewrite_proof(
             target,
             parents,
@@ -39701,6 +39721,438 @@ def raw_tptp_exported_demodulation_rewrite_proof(
                     )
                     if proof is not None:
                         return proof
+    return None
+
+
+def raw_tptp_split_projection_component(
+    split_atom: Expr,
+    propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str],
+) -> tuple[str, Expr] | None:
+    split_parts = raw_split_application_parts(split_atom)
+    if split_parts is None:
+        return None
+    split_name, split_args = split_parts
+    if split_args:
+        return None
+    for definition_name, definition_proposition in propositions_by_name.items():
+        definition = raw_tptp_avatar_definition_parts(definition_proposition)
+        if definition is None:
+            continue
+        definition_split, component = definition
+        if definition_split == split_name:
+            component = raw_tptp_quantify_free_synthetic_db_expr(component, variable_sorts)
+            return f"{raw_tptp_claim_name(definition_name)}_split_to_component_local", component
+    return None
+
+
+def raw_tptp_exported_split_conditional_lambda_demodulation_from_step(
+    target: Expr,
+    parents: tuple[tuple[Expr, str], tuple[Expr, str]],
+    variable_sorts: dict[str, str],
+    replay_step: MegalodonReplayStep | None,
+    propositions_by_name: dict[str, str] | None,
+) -> str | None:
+    if propositions_by_name is None:
+        return None
+    local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
+    for fields in megalodon_replay_extra_fields(replay_step, "rewrite"):
+        lambda_sort_hints = raw_tptp_extra_lambda_sort_hints(fields, "main_parent", "conclusion", "step")
+        proof = raw_tptp_exported_split_conditional_lambda_demodulation_proof(
+            target,
+            parents,
+            local_sorts,
+            fields,
+            lambda_sort_hints,
+            propositions_by_name,
+        )
+        if proof is not None:
+            return proof
+    return None
+
+
+def raw_tptp_split_component_instance_proof(
+    projection_name: str,
+    split_proof: str,
+    component: Expr,
+    term: Expr,
+) -> tuple[Expr, str] | None:
+    binders, body = collect_foralls(component)
+    if not binders:
+        return component, f"({proof_head(projection_name)} {proof_term_text(split_proof)})"
+    if len(binders) != 1:
+        return None
+    binder, _sort = binders[0]
+    instantiated = substitute_expr(body, {binder: term})
+    proof = f"(({proof_head(projection_name)} {proof_term_text(split_proof)}) {proof_arg_text(term)})"
+    return instantiated, proof
+
+
+def raw_tptp_split_condition_proof(
+    component_instance: Expr,
+    component_proof: str,
+    source_condition: Expr,
+    target_condition: Expr,
+    target_condition_proof: str,
+) -> str | None:
+    component_sides = equality_like_sides(component_instance)
+    if component_sides is None:
+        return None
+    component_left, component_right = component_sides
+    if not expr_same_mod_alpha(component_left, source_condition):
+        return None
+    if not (
+        expr_same_mod_alpha(component_right, target_condition)
+        or (raw_true_expr(component_right) and raw_true_expr(target_condition))
+        or (false_eliminator_expr(component_right) and false_eliminator_expr(target_condition))
+    ):
+        return None
+    if raw_true_expr(target_condition):
+        return raw_true_intro_proof()
+    if false_eliminator_expr(target_condition):
+        return f"({proof_head(component_proof)} (fun zz :prop => zz) {proof_term_text(target_condition_proof)})"
+    return None
+
+
+def raw_tptp_split_condition_source_from_target_proof(
+    component_instance: Expr,
+    component_proof: str,
+    source_condition: Expr,
+    target_condition: Expr,
+    target_condition_proof: str,
+) -> str | None:
+    component_sides = equality_like_sides(component_instance)
+    if component_sides is None:
+        return None
+    component_left, component_right = component_sides
+    if not expr_same_mod_alpha(component_left, source_condition):
+        return None
+    if not (
+        expr_same_mod_alpha(component_right, target_condition)
+        or (raw_true_expr(component_right) and raw_true_expr(target_condition))
+        or (false_eliminator_expr(component_right) and false_eliminator_expr(target_condition))
+    ):
+        return None
+    if false_eliminator_expr(target_condition):
+        return raw_false_to_expr_proof(target_condition_proof, source_condition, target_condition)
+    if raw_true_expr(target_condition):
+        symmetric = raw_eq_symmetry_proof(component_proof, source_condition, "prop")
+        return f"({proof_head(symmetric)} (fun zz :prop => zz) {proof_term_text(target_condition_proof)})"
+    return None
+
+
+def raw_tptp_split_lambda_body_implication_proof(
+    source_body: Expr,
+    target_body: Expr,
+    source_proof: str,
+    projection_name: str,
+    component: Expr,
+    split_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_binders, source_inner = collect_foralls(source_body)
+    target_binders, target_inner = collect_foralls(target_body)
+    if len(source_binders) != len(target_binders) or len(source_binders) != 1:
+        return None
+    (source_binder, source_sort), (target_binder, target_sort) = source_binders[0], target_binders[0]
+    if normalize_megalodon_sort(source_sort) != normalize_megalodon_sort(target_sort):
+        return None
+    if target_binder != source_binder:
+        target_inner = rename_expr_variables(target_inner, {target_binder: source_binder})
+    source_premises, source_conclusion = split_arrows(source_inner)
+    target_premises, target_conclusion = split_arrows(target_inner)
+    if not source_premises or len(source_premises) != len(target_premises):
+        return None
+    if not expr_same_mod_alpha(source_conclusion, target_conclusion):
+        return None
+    if any(
+        not expr_same_mod_alpha(source_premise, target_premise)
+        for source_premise, target_premise in zip(source_premises[1:], target_premises[1:])
+    ):
+        return None
+
+    source_condition = source_premises[0]
+    target_condition = target_premises[0]
+    tail = make_arrow_expr(source_premises[1:], source_conclusion)
+    binder_term = Expr("var", value=source_binder, sort=source_sort)
+    component_instance = raw_tptp_split_component_instance_proof(
+        projection_name,
+        split_proof,
+        component,
+        binder_term,
+    )
+    if component_instance is None:
+        return None
+    component_expr, component_proof = component_instance
+
+    condition_name = fresh_identifier("Hcond", expr_text(source_body), expr_text(target_body), source_binder)
+    source_condition_proof = raw_tptp_split_condition_source_from_target_proof(
+        component_expr,
+        component_proof,
+        source_condition,
+        target_condition,
+        condition_name,
+    )
+    if source_condition_proof is None:
+        return None
+    if false_eliminator_expr(target_condition):
+        tail_proof = raw_false_to_expr_proof(condition_name, tail, target_condition)
+    else:
+        tail_proof = f"(({proof_head(source_proof)} {source_binder}) {proof_term_text(source_condition_proof)})"
+    return f"(fun {source_binder} :{source_sort} => fun {condition_name} :{expr_text(target_condition)} => {tail_proof})"
+
+
+def raw_tptp_split_lambda_body_reverse_implication_proof(
+    source_body: Expr,
+    target_body: Expr,
+    target_proof: str,
+    projection_name: str,
+    component: Expr,
+    split_proof: str,
+    variable_sorts: dict[str, str],
+) -> str | None:
+    source_binders, source_inner = collect_foralls(source_body)
+    target_binders, target_inner = collect_foralls(target_body)
+    if len(source_binders) != len(target_binders) or len(source_binders) != 1:
+        return None
+    (source_binder, source_sort), (target_binder, target_sort) = source_binders[0], target_binders[0]
+    if normalize_megalodon_sort(source_sort) != normalize_megalodon_sort(target_sort):
+        return None
+    if target_binder != source_binder:
+        target_inner = rename_expr_variables(target_inner, {target_binder: source_binder})
+    source_premises, source_conclusion = split_arrows(source_inner)
+    target_premises, target_conclusion = split_arrows(target_inner)
+    if not source_premises or len(source_premises) != len(target_premises):
+        return None
+    if not expr_same_mod_alpha(source_conclusion, target_conclusion):
+        return None
+    if any(
+        not expr_same_mod_alpha(source_premise, target_premise)
+        for source_premise, target_premise in zip(source_premises[1:], target_premises[1:])
+    ):
+        return None
+
+    source_condition = source_premises[0]
+    target_condition = target_premises[0]
+    condition_name = fresh_identifier("Hcond", expr_text(target_body), expr_text(source_body), source_binder)
+    binder_term = Expr("var", value=source_binder, sort=source_sort)
+    component_instance = raw_tptp_split_component_instance_proof(
+        projection_name,
+        split_proof,
+        component,
+        binder_term,
+    )
+    if component_instance is None:
+        return None
+    component_expr, component_proof = component_instance
+    target_condition_proof = raw_tptp_split_condition_proof(
+        component_expr,
+        component_proof,
+        source_condition,
+        target_condition,
+        condition_name,
+    )
+    if target_condition_proof is None:
+        return None
+    return (
+        f"(fun {source_binder} :{source_sort} => fun {condition_name} :{expr_text(source_condition)} => "
+        f"(({proof_head(target_proof)} {source_binder}) {proof_term_text(target_condition_proof)}))"
+    )
+
+
+def raw_tptp_split_conditional_predicate_equality_proof(
+    source_lambda: Expr,
+    target_lambda: Expr,
+    projection_name: str,
+    component: Expr,
+    split_proof: str,
+    variable_sorts: dict[str, str],
+) -> tuple[str, str] | None:
+    source_lambdas, source_body = collect_lambdas(source_lambda)
+    target_lambdas, target_body = collect_lambdas(target_lambda)
+    if len(source_lambdas) != 1 or len(target_lambdas) != 1:
+        return None
+    (source_name, source_sort), (target_name, target_sort) = source_lambdas[0], target_lambdas[0]
+    if normalize_megalodon_sort(source_sort) != "set" or normalize_megalodon_sort(target_sort) != "set":
+        return None
+    if target_name != source_name:
+        target_body = rename_expr_variables(target_body, {target_name: source_name})
+    local_sorts = {**variable_sorts, source_name: source_sort}
+    forward = raw_tptp_split_lambda_body_implication_proof(
+        source_body,
+        target_body,
+        "Hsrc",
+        projection_name,
+        component,
+        split_proof,
+        local_sorts,
+    )
+    if forward is None:
+        return None
+    backward = raw_tptp_split_lambda_body_reverse_implication_proof(
+        source_body,
+        target_body,
+        "Htgt",
+        projection_name,
+        component,
+        split_proof,
+        local_sorts,
+    )
+    if backward is None:
+        return None
+    source_body_text = proof_arg_text(source_body)
+    target_body_text = proof_arg_text(target_body)
+    old_to_new = (
+        f"(vampire_funext_set_prop {proof_arg_text(source_lambda)} {proof_arg_text(target_lambda)} "
+        f"(fun {source_name} :set => "
+        f"(vampire_prop_ext {source_body_text} {target_body_text} "
+        f"(fun Hsrc => {proof_term_text(forward)}) "
+        f"(fun Htgt => {proof_term_text(backward)}))))"
+    )
+    new_to_old = (
+        f"(vampire_funext_set_prop {proof_arg_text(target_lambda)} {proof_arg_text(source_lambda)} "
+        f"(fun {source_name} :set => "
+        f"(vampire_prop_ext {target_body_text} {source_body_text} "
+        f"(fun Htgt => {proof_term_text(backward)}) "
+        f"(fun Hsrc => {proof_term_text(forward)}))))"
+    )
+    return old_to_new, new_to_old
+
+
+def raw_tptp_exported_split_conditional_lambda_demodulation_proof(
+    target: Expr,
+    parents: tuple[tuple[Expr, str], tuple[Expr, str]],
+    variable_sorts: dict[str, str],
+    fields: dict[str, str],
+    lambda_sort_hints: dict[str, str],
+    propositions_by_name: dict[str, str],
+) -> str | None:
+    target_binders, target_body = collect_foralls(target)
+    if target_binders:
+        return None
+    target_parts = raw_or_parts(target_body)
+    if target_parts is None:
+        return None
+    target_left, target_right = target_parts
+    target_right_implication = implication_sides(target_right)
+    if target_right_implication is None or not false_eliminator_expr(target_right_implication[1]):
+        return None
+    split_atom = target_right_implication[0]
+    projection = raw_tptp_split_projection_component(split_atom, propositions_by_name, variable_sorts)
+    if projection is None:
+        return None
+    projection_name, component = projection
+
+    source_lambda = raw_tptp_replay_extra_expr(
+        fields,
+        "main_parent_lambda_0",
+        variable_sorts,
+        lambda_sort_hints,
+        fields.get("main_parent_lambda_0_sort"),
+    )
+    target_lambda = raw_tptp_replay_extra_expr(
+        fields,
+        "conclusion_lambda_0",
+        variable_sorts,
+        lambda_sort_hints,
+        fields.get("conclusion_lambda_0_sort"),
+    )
+    if source_lambda is None or target_lambda is None:
+        return None
+    source_lambda = parse_expr(use_ambient_basic_logic_text(expr_text(source_lambda))) or source_lambda
+    target_lambda = parse_expr(use_ambient_basic_logic_text(expr_text(target_lambda))) or target_lambda
+    ambient_component = parse_expr(use_ambient_basic_logic_text(expr_text(component)))
+    if ambient_component is not None:
+        component = ambient_component
+
+    target_sides = equality_like_sides(target_left)
+    if target_sides is None:
+        return None
+    target_constant, target_rewritten = target_sides
+    if not (raw_true_expr(target_constant) or false_eliminator_expr(target_constant)):
+        return None
+    target_text = proof_arg_text(target_body)
+    right_intro = raw_or_right_intro(target_body, "Hnotsplit")
+    if right_intro is None:
+        return None
+
+    for source, source_proof in parents:
+        source_sides = equality_like_sides(source)
+        if source_sides is None:
+            continue
+        source_rewritten, source_constant = source_sides
+        if not (
+            expr_same_mod_alpha(source_constant, target_constant)
+            or (raw_true_expr(source_constant) and raw_true_expr(target_constant))
+            or (false_eliminator_expr(source_constant) and false_eliminator_expr(target_constant))
+        ):
+            continue
+        if not any(expr_same_mod_alpha(term, source_lambda) for term in expr_subterms(source_rewritten, limit=192)):
+            continue
+        if not any(expr_same_mod_alpha(term, target_lambda) for term in expr_subterms(target_rewritten, limit=192)):
+            continue
+        replaced_context, changed = replace_expr(
+            source_rewritten,
+            source_lambda,
+            Expr("var", value="Qpred", sort="set->prop"),
+        )
+        reverse_context, reverse_changed = replace_expr(
+            target_rewritten,
+            target_lambda,
+            Expr("var", value="Qpred", sort="set->prop"),
+        )
+        if not changed or not reverse_changed:
+            continue
+        predicate_equalities = raw_tptp_split_conditional_predicate_equality_proof(
+            source_lambda,
+            target_lambda,
+            projection_name,
+            component,
+            "Hsplit",
+            variable_sorts,
+        )
+        if predicate_equalities is None:
+            continue
+        old_to_new_predicate, new_to_old_predicate = predicate_equalities
+        source_to_target = native_equality_transport_proof(
+            old_to_new_predicate,
+            source_lambda,
+            target_lambda,
+            "Hsrc",
+            "Qpred",
+            "set->prop",
+            replaced_context,
+        )
+        target_to_source = native_equality_transport_proof(
+            new_to_old_predicate,
+            target_lambda,
+            source_lambda,
+            "Htgt",
+            "Qpred",
+            "set->prop",
+            reverse_context,
+        )
+        if source_to_target is None or target_to_source is None:
+            continue
+        prop_equality = (
+            f"(vampire_prop_ext {proof_arg_text(source_rewritten)} {proof_arg_text(target_rewritten)} "
+            f"(fun Hsrc => {proof_term_text(source_to_target)}) "
+            f"(fun Htgt => {proof_term_text(target_to_source)}))"
+        )
+        symmetric_source = raw_eq_symmetry_proof(source_proof, source_rewritten, "prop")
+        left_proof = (
+            f"({proof_term_text(prop_equality)} "
+            f"(fun zz :prop => vampire_eq_prop {proof_arg_text(target_constant)} zz) "
+            f"{proof_term_text(symmetric_source)})"
+        )
+        left_intro = raw_or_left_intro(target_body, left_proof)
+        if left_intro is None:
+            continue
+        return (
+            f"(xm {proof_arg_text(split_atom)} {target_text} "
+            f"(fun Hsplit => {proof_term_text(left_intro)}) "
+            f"(fun Hnotsplit => {proof_term_text(right_intro)}))"
+        )
     return None
 
 
