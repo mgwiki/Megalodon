@@ -31,11 +31,13 @@ files with `bin/megalodon`. Those generated proofs are required to contain no
 
 The separate `run_vampire_outline_smoke.sh` script runs tiny FOF and THF TPTP
 problems through a Vampire binary that emits `megalodon_certificate_clause(...)`
-records, converts the printed outline to the small JSON certificate fragment,
-emits Megalodon, and checks it with `bin/megalodon`. It currently covers only
-the real-output bridge for clause inputs/derived preprocessing assumptions,
-typed proposition equality, higher-order application terms, and uniquely
-determined resolution-like clause endings. The THF case is a clause-tail bridge
-test; it deliberately records unsupported CNF/FOOL/definition/demodulation
-steps as `vampire_derived_clause` assumptions rather than pretending those
-transformations are reconstructed.
+records and explicit `megalodon_certificate_step(...)` records where Vampire
+already knows the normalized proof object. It converts the printed outline to
+the small JSON certificate fragment, emits Megalodon, and checks it with
+`bin/megalodon`. It currently covers the real-output bridge for clause
+inputs/derived preprocessing assumptions, Vampire-side `definition_input`
+function-definition records, typed proposition equality, higher-order
+application terms, and uniquely determined resolution-like clause endings. The
+remaining unsupported CNF/FOOL/demodulation transformations are still recorded
+as `vampire_derived_clause` assumptions until Vampire exports normalized
+certificate steps for them too.

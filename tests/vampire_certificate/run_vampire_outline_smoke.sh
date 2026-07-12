@@ -34,6 +34,13 @@ run_outline_case() {
     --output_axiom_names on \
     "$problem" >"$outline"
 
+  if [[ "$label" == *"_thf" ]]; then
+    if ! rg -q 'megalodon_certificate_step\([0-9]+,\{"rule":"definition_input"' "$outline"; then
+      echo "THF outline did not contain Vampire-side definition_input certificate step" >&2
+      exit 1
+    fi
+  fi
+
   python3 scripts/vampire_certificate.py \
     "$outline" \
     --from-vampire-outline \

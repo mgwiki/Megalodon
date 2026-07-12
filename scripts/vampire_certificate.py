@@ -55,6 +55,7 @@ class CertificateError(Exception):
 IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_']*")
 STEP_RE = re.compile(r'^megalodon_step\((\d+),("(?:\\.|[^"\\])*"),("(?:\\.|[^"\\])*"),\[([0-9,]*)\],')
 CLAUSE_RE = re.compile(r"^megalodon_certificate_clause\((\d+),(.+)\)\.$")
+CERTIFICATE_STEP_RE = re.compile(r"^megalodon_certificate_step\((\d+),(.+)\)\.$")
 REPLAY_KIND_RE = re.compile(r'^megalodon_step_replay_kind\((\d+),("(?:\\.|[^"\\])*")\)\.$')
 FINAL_STEP_RE = re.compile(r"^megalodon_final_step\((\d+)\)\.$")
 SYMBOL_DECL_RE = re.compile(r'^megalodon_symbol_declaration\(("(?:\\.|[^"\\])*")\)\.$')
@@ -712,6 +713,7 @@ def infer_definition_input_step(
 def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
     step_meta: dict[int, dict[str, Any]] = {}
     clause_json: dict[int, list[Any]] = {}
+    certificate_steps: dict[int, dict[str, Any]] = {}
     replay_kinds: dict[int, str] = {}
     extras: dict[int, dict[str, list[str]]] = {}
     declarations: list[str] = []
@@ -737,6 +739,20 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
             if not isinstance(clause_value, list):
                 raise CertificateError(f"line {lineno}: certificate clause must be a JSON list")
             clause_json[step_no] = clause_value
+            continue
+        match = CERTIFICATE_STEP_RE.match(line)
+        if match:
+            step_no = int(match.group(1))
+            try:
+                step_value = json.loads(match.group(2))
+            except json.JSONDecodeError as exc:
+                raise CertificateError(f"line {lineno}: malformed certificate step JSON: {exc}") from exc
+            if not isinstance(step_value, dict):
+                raise CertificateError(f"line {lineno}: certificate step must be a JSON object")
+            rule = step_value.get("rule")
+            if not isinstance(rule, str) or rule not in MVP_RULES:
+                raise CertificateError(f"line {lineno}: unsupported explicit certificate step rule {rule!r}")
+            certificate_steps[step_no] = step_value
             continue
         match = REPLAY_KIND_RE.match(line)
         if match:
@@ -775,6 +791,15 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
         parent_clause_numbers = [parent for parent in meta["parents"] if parent in clauses]
         replay_kind = replay_kinds.get(step_no, "")
         step_id = f"u{step_no}"
+
+        explicit_step = certificate_steps.get(step_no)
+        if explicit_step is not None:
+            step = dict(explicit_step)
+            step["id"] = step_id
+            step["clause"] = clause_json[step_no]
+            steps.append(step)
+            clauses[step_no] = clause
+            continue
 
         definition_input = infer_definition_input_step(
             step_id,
