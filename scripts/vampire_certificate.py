@@ -63,6 +63,10 @@ DERIVED_ASSUMPTION_REPLAY_KINDS = {
     "generic",
     "generic_clause",
     "normal_form",
+    "avatar_component",
+    "avatar_contradiction",
+    "avatar_refutation",
+    "avatar_split",
 }
 PROOF_NAME_COUNTER = itertools.count()
 
@@ -1619,6 +1623,7 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
                                 "name": step_id,
                                 "vampire_rule": meta["rule"],
                                 "vampire_parents": [f"u{parent}" for parent in meta["parents"]],
+                                **({"replay_kind": replay_kind} if replay_kind else {}),
                             },
                         }
                     )
@@ -1632,6 +1637,8 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
                 "vampire_rule": meta["rule"],
                 "vampire_parents": [f"u{parent}" for parent in meta["parents"]],
             }
+            if replay_kind:
+                source["replay_kind"] = replay_kind
             if replay_kind == "normal_form":
                 normal_form_clause = normal_form_clause_source_metadata(
                     step_id,

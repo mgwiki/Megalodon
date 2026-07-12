@@ -24,6 +24,37 @@ python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_definitio
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_definition_input_function_sort.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_lambda_hint_refutation.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_higher_order_lambda_paramodulation.json --summary
+avatar_outline="$TMPDIR/vampire_certificate_avatar_refutation.out"
+avatar_certificate="$TMPDIR/vampire_certificate_avatar_refutation.json"
+cat >"$avatar_outline" <<'OUTLINE'
+megalodon_step(1,"input","clause",[],false,0,"cnf(u1,plain,$true).\n").
+megalodon_certificate_clause(1,[{"polarity":true,"atom":{"pred":"p","args":[]}}]).
+megalodon_step_replay_kind(1,"").
+megalodon_step(2,"avatar sat refutation","clause",[1],false,0,"cnf(u2,plain,$true).\n").
+megalodon_certificate_clause(2,[]).
+megalodon_step_replay_kind(2,"avatar_refutation").
+megalodon_final_step(2).
+OUTLINE
+python3 scripts/vampire_certificate.py \
+  "$avatar_outline" \
+  --from-vampire-outline \
+  --write-certificate "$avatar_certificate" \
+  --summary
+python3 - "$avatar_certificate" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+certificate = json.loads(Path(sys.argv[1]).read_text())
+avatar_steps = [
+    step for step in certificate["steps"]
+    if (step.get("source") or {}).get("replay_kind") == "avatar_refutation"
+]
+if len(avatar_steps) != 1:
+    raise SystemExit("avatar_refutation outline step was not preserved as an auditable source")
+if avatar_steps[0]["rule"] != "input" or avatar_steps[0]["source"]["kind"] != "vampire_derived_clause":
+    raise SystemExit("avatar_refutation fallback should be an explicit derived skeleton assumption")
+PY
 python3 scripts/vampire_certificate.py \
   tests/vampire_certificate/valid_resolution.json \
   --emit-megalodon "$TMPDIR/vampire_certificate_valid_resolution.mg"

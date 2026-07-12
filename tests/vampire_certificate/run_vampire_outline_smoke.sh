@@ -135,6 +135,12 @@ PY
       exit 1
     fi
   fi
+  if [[ "$label" == *"_superposition_substituted" ]]; then
+    if ! rg -q 'megalodon_certificate_steps\([0-9]+,\[\{"id":"u[0-9]+_subst[0-9]+","rule":"substitute".*"rule":"paramodulate"' "$outline"; then
+      echo "outline did not contain Vampire-side substitute-plus-paramodulate superposition expansion" >&2
+      exit 1
+    fi
+  fi
   if [[ "$label" == *"_bound_lambda_scope" ]]; then
     if ! rg -q '"rewrite_scope":\{"kind":"bound_lambda_var"' "$outline"; then
       echo "outline did not contain Vampire-side bound-lambda rewrite_scope detail" >&2
@@ -215,6 +221,7 @@ equality_resolution_problem="$TMPDIR/vampire_outline_smoke_equality_resolution.p
 factor_problem="$TMPDIR/vampire_outline_smoke_factor.p"
 substituted_resolution_problem="$TMPDIR/vampire_outline_smoke_substituted_resolution.p"
 superposition_problem="$TMPDIR/vampire_outline_smoke_superposition.p"
+superposition_substituted_problem="$TMPDIR/vampire_outline_smoke_superposition_substituted.p"
 bound_lambda_scope_problem="examples/hammer/hammer.321.18.th0.p"
 
 cat >"$fof_problem" <<'PROBLEM'
@@ -251,12 +258,19 @@ fof(pa,axiom,p(f(a))).
 fof(c,conjecture,p(b)).
 PROBLEM
 
+cat >"$superposition_substituted_problem" <<'PROBLEM'
+fof(eq,axiom,![X] : f(X)=g(X)).
+fof(pa,axiom,p(f(a))).
+fof(c,conjecture,p(g(a))).
+PROBLEM
+
 run_outline_case vampire_outline_smoke_fof "$fof_problem"
 run_outline_case vampire_outline_smoke_thf "$thf_problem"
 run_outline_case vampire_outline_smoke_equality_resolution "$equality_resolution_problem"
 run_outline_case vampire_outline_smoke_factor "$factor_problem"
 run_outline_case vampire_outline_smoke_substituted_resolution "$substituted_resolution_problem"
 run_outline_case vampire_outline_smoke_superposition "$superposition_problem"
+run_outline_case vampire_outline_smoke_superposition_substituted "$superposition_substituted_problem"
 if [[ -f "$bound_lambda_scope_problem" ]]; then
   run_outline_case vampire_outline_smoke_bound_lambda_scope "$bound_lambda_scope_problem"
 fi
