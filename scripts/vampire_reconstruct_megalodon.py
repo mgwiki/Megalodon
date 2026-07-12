@@ -1656,7 +1656,7 @@ def reconstruction_prelude_for(propositions: list[str]) -> list[str]:
         "Theorem vampire_native_eq_sym_set: forall x y:set, x = y -> y = x.",
         "let x y.",
         "assume Hxy:x = y.",
-        "let Q.",
+        "let Q:set->set->prop.",
         "assume HQ:Q y x.",
         "exact (Hxy (fun zl zr => Q zr zl) HQ).",
         "Qed.",
@@ -1667,7 +1667,7 @@ def reconstruction_prelude_for(propositions: list[str]) -> list[str]:
         "Theorem vampire_native_eq_transport_set: forall x y:set, x = y -> forall P:set->prop, P x -> P y.",
         "let x y.",
         "assume Hxy:x = y.",
-        "let P.",
+        "let P:set->prop.",
         "assume HP:P x.",
         "exact (Hxy (fun zl zr => P zl) HP).",
         "Qed.",
@@ -1680,14 +1680,14 @@ def reconstruction_prelude_for(propositions: list[str]) -> list[str]:
         "Theorem vampire_native_eq_sym_setprop: forall x y:set->prop, x = y -> y = x.",
         "let x y.",
         "assume Hxy:x = y.",
-        "let Q.",
+        "let Q:(set->prop)->(set->prop)->prop.",
         "assume HQ:Q y x.",
         "exact (Hxy (fun zl zr => Q zr zl) HQ).",
         "Qed.",
         "Theorem vampire_native_eq_transport_setprop: forall x y:set->prop, x = y -> forall P:(set->prop)->prop, P x -> P y.",
         "let x y.",
         "assume Hxy:x = y.",
-        "let P.",
+        "let P:(set->prop)->prop.",
         "assume HP:P x.",
         "exact (Hxy (fun zl zr => P zl) HP).",
         "Qed.",
@@ -1700,7 +1700,7 @@ def reconstruction_prelude_for(propositions: list[str]) -> list[str]:
         "Theorem vampire_native_eq_sym_prop: forall x y:prop, x = y -> y = x.",
         "let x y.",
         "assume Hxy:x = y.",
-        "let Q.",
+        "let Q:prop->prop->prop.",
         "assume HQ:Q y x.",
         "exact (Hxy (fun zl zr => Q zr zl) HQ).",
         "Qed.",
@@ -1711,7 +1711,7 @@ def reconstruction_prelude_for(propositions: list[str]) -> list[str]:
         "Theorem vampire_native_eq_transport_prop: forall x y:prop, x = y -> forall P:prop->prop, P x -> P y.",
         "let x y.",
         "assume Hxy:x = y.",
-        "let P.",
+        "let P:prop->prop.",
         "assume HP:P x.",
         "exact (Hxy (fun zl zr => P zl) HP).",
         "Qed.",
@@ -1774,9 +1774,14 @@ def reconstruction_prelude_for(propositions: list[str]) -> list[str]:
                 "                      (HnotTarget",
                 "                        (fun Q Hexists =>",
                 "                          Hexists X",
-                "                            (fun P K =>",
+                "                            (fun P:prop =>",
+                "                            fun K:(and (X b -> False)",
+                "                                       (forall y:set, or (X (next y)) (X y -> False))) ->",
+                "                                  (X base) -> P =>",
                 "                              K",
-                "                                (fun P K =>",
+                "                                (fun P:prop =>",
+                "                                fun K:(X b -> False) ->",
+                "                                      (forall y:set, or (X (next y)) (X y -> False)) -> P =>",
                 "                                  K HnotB",
                 "                                    (fun y:set =>",
                 "                                      xm",
@@ -17564,7 +17569,7 @@ def _proof_for_expr_impl(
 ) -> str | None:
     key = expr_key(expr)
     if key == "vampire_true":
-        return "(fun P H => H)"
+        return raw_true_intro_proof()
     proof = known.get(key) or known_canonical.get(canonical_proposition(key))
     if proof is not None:
         return proof
@@ -20187,13 +20192,13 @@ def raw_false_literal_elimination_proof(branch: Expr, target: Expr, branch_proof
             false_proof = f"({proof_head(branch_proof)} (fun R:prop => R) {true_proof})"
             return raw_false_to_expr_proof(false_proof, target, right)
         if false_eliminator_expr(left) and raw_true_expr(right):
-            false_proof = f"(({proof_head(branch_proof)} (fun R:prop => R -> False) (fun H => H)) {true_proof})"
+            false_proof = f"(({proof_head(branch_proof)} (fun R:prop => R -> False) (fun H:False => H)) {true_proof})"
             return raw_false_to_expr_proof(false_proof, target, left)
     premises, conclusion = split_arrows(branch)
     if len(premises) != 1 or not false_eliminator_expr(conclusion):
         return None
     if raw_true_expr(premises[0]):
-        premise_proof = "(fun P H => H)"
+        premise_proof = raw_true_intro_proof()
     else:
         premise_proof = direct_proof_expr(premises[0])
     if premise_proof is None:
@@ -20292,21 +20297,21 @@ def raw_or_intro_from_branch(
         return None
     left, right = parts
     if expr_key(branch) == expr_key(left):
-        return f"(fun P Hleft Hright => Hleft {proof_term_text(branch_proof)})"
+        return f"(fun P:prop => fun Hleft Hright => Hleft {proof_term_text(branch_proof)})"
     if expr_key(branch) == expr_key(right):
-        return f"(fun P Hleft Hright => Hright {proof_term_text(branch_proof)})"
+        return f"(fun P:prop => fun Hleft Hright => Hright {proof_term_text(branch_proof)})"
     transformed_left = raw_clause_transform_proof(branch, left, branch_proof, depth + 1, rewrites)
     if transformed_left is not None:
-        return f"(fun P Hleft Hright => Hleft {proof_term_text(transformed_left)})"
+        return f"(fun P:prop => fun Hleft Hright => Hleft {proof_term_text(transformed_left)})"
     transformed_right = raw_clause_transform_proof(branch, right, branch_proof, depth + 1, rewrites)
     if transformed_right is not None:
-        return f"(fun P Hleft Hright => Hright {proof_term_text(transformed_right)})"
+        return f"(fun P:prop => fun Hleft Hright => Hright {proof_term_text(transformed_right)})"
     nested_left = raw_or_intro_from_branch(left, branch, branch_proof, depth + 1, rewrites)
     if nested_left is not None:
-        return f"(fun P Hleft Hright => Hleft {proof_term_text(nested_left)})"
+        return f"(fun P:prop => fun Hleft Hright => Hleft {proof_term_text(nested_left)})"
     nested_right = raw_or_intro_from_branch(right, branch, branch_proof, depth + 1, rewrites)
     if nested_right is not None:
-        return f"(fun P Hleft Hright => Hright {proof_term_text(nested_right)})"
+        return f"(fun P:prop => fun Hleft Hright => Hright {proof_term_text(nested_right)})"
     return None
 
 
@@ -20322,11 +20327,11 @@ def raw_or_intro_literal_at(target: Expr, index: int, literal_proof: str) -> str
         left_proof = raw_or_intro_literal_at(left, index, literal_proof)
         if left_proof is None:
             return None
-        return f"(fun P Hleft Hright => Hleft {proof_term_text(left_proof)})"
+        return f"(fun P:prop => fun Hleft Hright => Hleft {proof_term_text(left_proof)})"
     right_proof = raw_or_intro_literal_at(right, index - left_count, literal_proof)
     if right_proof is None:
         return None
-    return f"(fun P Hleft Hright => Hright {proof_term_text(right_proof)})"
+    return f"(fun P:prop => fun Hleft Hright => Hright {proof_term_text(right_proof)})"
 
 
 def raw_typed_or_intro_literal_at(target: Expr, index: int, literal_proof: str, depth: int = 0) -> str | None:
@@ -20459,7 +20464,7 @@ def raw_literal_direct_transform_proof(
         and target_sides is None
     ):
         true_expr = Expr("var", value="vampire_true")
-        true_proof = "(fun Q H => H)"
+        true_proof = raw_true_intro_proof()
         prop_name = fresh_identifier("Qprop", expr_text(source), expr_text(target), source_proof)
         if expr_key(source_sides[0]) == expr_key(true_expr) and expr_same_mod_alpha(source_sides[1], target):
             return f"({proof_head(source_proof)} (fun {prop_name} :prop => {prop_name}) {true_proof})"
@@ -20472,13 +20477,13 @@ def raw_literal_direct_transform_proof(
             return (
                 f"(({proof_head(source_proof)} "
                 f"(fun {prop_name} :prop => {prop_name} -> {proof_arg_text(target)}) "
-                f"(fun H => H)) {true_proof})"
+                f"(fun H:{proof_arg_text(target)} => H)) {true_proof})"
             )
         if expr_key(source_sides[1]) == expr_key(true_expr):
             proposition_proof = (
                 f"(({proof_head(source_proof)} "
                 f"(fun {prop_name} :prop => {prop_name} -> {proof_arg_text(source_sides[0])}) "
-                f"(fun H => H)) {true_proof})"
+                f"(fun H:{proof_arg_text(source_sides[0])} => H)) {true_proof})"
             )
             rewrite_proof = raw_split_rewrite_proof(source_sides[0], target, proposition_proof, rewrites)
             if rewrite_proof is not None:
@@ -28613,6 +28618,74 @@ def raw_build_conjunction_from_component_proofs(
     )
 
 
+def raw_conjunction_projection_from_proof(
+    source: Expr,
+    source_proof: str,
+    target_component: Expr,
+    depth: int = 0,
+) -> str | None:
+    if depth > 32 or proof_search_timed_out():
+        return None
+    if expr_same_mod_alpha_eta_after_sort_normalization(source, target_component):
+        return source_proof
+    parts = vampire_and_parts(source)
+    if parts is None:
+        return None
+    left_name = fresh_identifier(
+        f"HandL{depth}",
+        expr_text(source),
+        expr_text(target_component),
+        source_proof,
+    )
+    right_name = fresh_identifier(
+        f"HandR{depth}",
+        expr_text(source),
+        expr_text(target_component),
+        source_proof,
+        left_name,
+    )
+    left_projection = raw_conjunction_projection_from_proof(
+        parts[0],
+        left_name,
+        target_component,
+        depth + 1,
+    )
+    if left_projection is not None:
+        return (
+            f"({proof_head(source_proof)} {proof_arg_text(target_component)} "
+            f"(fun {left_name} {right_name} => {left_projection}))"
+        )
+    right_projection = raw_conjunction_projection_from_proof(
+        parts[1],
+        right_name,
+        target_component,
+        depth + 1,
+    )
+    if right_projection is not None:
+        return (
+            f"({proof_head(source_proof)} {proof_arg_text(target_component)} "
+            f"(fun {left_name} {right_name} => {right_projection}))"
+        )
+    return None
+
+
+def raw_conjunction_tree_to_target_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+) -> str | None:
+    if vampire_and_parts(source) is None or vampire_and_parts(target) is None:
+        return None
+    target_components = raw_conjunction_components(target)
+    if len(target_components) < 2 or len(target_components) > 16:
+        return None
+
+    def component_proof(component: Expr) -> str | None:
+        return raw_conjunction_projection_from_proof(source, source_proof, component)
+
+    return raw_build_conjunction_from_component_proofs(target, component_proof)
+
+
 def raw_left_associated_three_conjunction_to_target_proof(target: Expr, source_proof: str) -> str | None:
     components = raw_conjunction_components(target)
     if len(components) != 3:
@@ -33035,7 +33108,7 @@ def raw_true_expr(expr: Expr) -> bool:
 
 
 def raw_true_intro_proof() -> str:
-    return "(fun P H => H)"
+    return "(fun P:prop => fun H:P => H)"
 
 
 def raw_prop_equality_to_true_component(expr: Expr) -> tuple[Expr, bool] | None:
@@ -33529,7 +33602,7 @@ def raw_proof_from_prop_true_equality(source: Expr, target: Expr, source_proof: 
     return (
         f"(({proof_head(source_proof)} "
         f"(fun {prop_name} :prop => {prop_name} -> {proof_arg_text(target)}) "
-        f"(fun H => H)) {true_proof})"
+        f"(fun H:{proof_arg_text(target)} => H)) {true_proof})"
     )
 
 
@@ -47492,7 +47565,7 @@ def raw_prop_true_false_guard_superposition_proof(
     false_expr = Expr("var", value="False")
     parent_eq_false = substitute_expr(parent_eq, {binder_name: false_expr})
     opened_parent_proof = f"({proof_head(parent_proof)} False)"
-    false_proof = "(HL (fun R:prop => R) (fun P H => H))"
+    false_proof = f"(HL (fun R:prop => R) {raw_true_intro_proof()})"
     negative_proof = f"(fun Htt :{proof_arg_text(target_premise)} => {false_proof})"
     negative_intro = raw_or_intro_from_branch(target, target_negative, negative_proof)
     guard_intro = raw_or_intro_from_branch(target, target_guard, "HR")
@@ -47579,7 +47652,7 @@ def raw_negative_predicate_true_from_positive_prop_superposition_proof(
             prop_equality = (
                 f"(prop_ext_2 True {proof_arg_text(source_prop)} "
                 f"(fun _ :True => {proof_term_text(branch_proof)}) "
-                f"(fun _ :{proof_arg_text(source_prop)} => (fun P H => H)))"
+                f"(fun _ :{proof_arg_text(source_prop)} => {raw_true_intro_proof()}))"
             )
             transported = (
                 f"(vampire_native_eq_transport_prop True {proof_arg_text(source_prop)} "
@@ -59994,9 +60067,9 @@ def raw_prop_from_eq_true_proof(equality: Expr, equality_proof: str, proposition
         if equality.kind == "eq":
             return (
                 f"(vampire_native_eq_transport_prop True {proof_arg_text(proposition)} "
-                f"{proof_term_text(equality_proof)} (fun Qprop :prop => Qprop) (fun P H => H))"
+                f"{proof_term_text(equality_proof)} (fun Qprop :prop => Qprop) {raw_true_intro_proof()})"
             )
-        return f"({proof_head(equality_proof)} (fun Qprop :prop => Qprop) (fun P H => H))"
+        return f"({proof_head(equality_proof)} (fun Qprop :prop => Qprop) {raw_true_intro_proof()})"
     if expr_same_mod_alpha(left, proposition) and raw_app_is_true_expr(right):
         symmetric = (
             native_eq_symmetry_proof(equality_proof, left, right, "prop")
@@ -60006,9 +60079,9 @@ def raw_prop_from_eq_true_proof(equality: Expr, equality_proof: str, proposition
         if equality.kind == "eq":
             return (
                 f"(vampire_native_eq_transport_prop True {proof_arg_text(proposition)} "
-                f"{proof_term_text(symmetric)} (fun Qprop :prop => Qprop) (fun P H => H))"
+                f"{proof_term_text(symmetric)} (fun Qprop :prop => Qprop) {raw_true_intro_proof()})"
             )
-        return f"({proof_head(symmetric)} (fun Qprop :prop => Qprop) (fun P H => H))"
+        return f"({proof_head(symmetric)} (fun Qprop :prop => Qprop) {raw_true_intro_proof()})"
     return None
 
 
@@ -60023,14 +60096,14 @@ def raw_eq_true_from_prop_proof(equality: Expr, proposition_proof: str, proposit
             Expr("var", value="True"),
             proposition,
             f"(fun _ :True => {proof_term_text(proposition_proof)})",
-            f"(fun _ :{proof_arg_text(proposition)} => (fun P H => H))",
+            f"(fun _ :{proof_arg_text(proposition)} => {raw_true_intro_proof()})",
         )
     if expr_same_mod_alpha(left, proposition) and raw_app_is_true_expr(right):
         return raw_prop_equality_intro_proof(
             equality,
             proposition,
             Expr("var", value="True"),
-            f"(fun _ :{proof_arg_text(proposition)} => (fun P H => H))",
+            f"(fun _ :{proof_arg_text(proposition)} => {raw_true_intro_proof()})",
             f"(fun _ :True => {proof_term_text(proposition_proof)})",
         )
     return None
@@ -70347,7 +70420,7 @@ def raw_guarded_prop_extensionality_fact_superposition_proof(
                     eq_instance = eq_parent_instance(parsed_parents[eq_index][0], parsed_parents[eq_index][1], Expr("var", value="True"), var)
                     if eq_instance is not None:
                         eq_parent_proof, eq_parent_body = eq_instance
-                        true_proof = "(fun P H => H)"
+                        true_proof = raw_true_intro_proof()
                         def eq_branch(heq: str) -> str | None:
                             hole_name = fresh_identifier("zz", expr_text(source_fact), expr_text(source_at_true), heq)
                             context, context_changed = replace_expr(source_fact, Expr("var", value="True"), Expr("var", value=hole_name))
@@ -70370,7 +70443,7 @@ def raw_guarded_prop_extensionality_fact_superposition_proof(
                             if neg is not None and same(neg, var):
                                 return intro(neg_index, literal_proof)
                             if neg is not None and expr_same_mod_alpha(neg, Expr("var", value="True")):
-                                return intro(false_index, f"({proof_head(literal_proof)} (fun P H => H))")
+                                return intro(false_index, f"({proof_head(literal_proof)} {raw_true_intro_proof()})")
                             return None
 
                         previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
@@ -72981,6 +73054,39 @@ def split_source_top_level_operator(text: str, operator: str) -> tuple[str, str]
     return None
 
 
+def split_source_top_level_operator_rightmost(text: str, operator: str) -> tuple[str, str] | None:
+    text = strip_balanced_parens(text)
+    depth = 0
+    bracket_depth = 0
+    brace_depth = 0
+    result: tuple[str, str] | None = None
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth < 0:
+                return None
+        elif char == "[":
+            bracket_depth += 1
+        elif char == "]":
+            bracket_depth -= 1
+            if bracket_depth < 0:
+                return None
+        elif char == "{":
+            brace_depth += 1
+        elif char == "}":
+            brace_depth -= 1
+            if brace_depth < 0:
+                return None
+        elif depth == 0 and bracket_depth == 0 and brace_depth == 0 and text.startswith(operator, index):
+            result = (text[:index].strip(), text[index + len(operator) :].strip())
+        index += 1
+    return result
+
+
 def split_source_top_level_equality(text: str) -> tuple[str, str] | None:
     text = strip_balanced_parens(text)
     depth = 0
@@ -73013,7 +73119,10 @@ def source_text_is_wrapped_in_parens(text: str) -> bool:
 
 
 def split_source_logical_operator(text: str, operator: str) -> tuple[str, str] | None:
-    split = split_source_top_level_operator(text, operator)
+    if operator == "/\\":
+        split = split_source_top_level_operator_rightmost(text, operator)
+    else:
+        split = split_source_top_level_operator(text, operator)
     if split is None:
         return None
     left, right = split
@@ -73666,7 +73775,12 @@ def raw_tptp_unfolded_source_fact_proof(
     target = parse_expr(proposition)
     if target is None:
         return None
-    target_unfolded = beta_normalize_expr(normalize_defined_expr(target, source_definitions))
+    proof_definitions = {
+        name: definition
+        for name, definition in source_definitions.items()
+        if definition.binders and split_sort_arrows(definition.sort)[-1:] == ("prop",)
+    }
+    target_unfolded = beta_normalize_expr(normalize_defined_expr(target, proof_definitions))
     parse_sorts = {**(source_sorts or {})}
     parse_sorts.update({name: definition.sort for name, definition in source_definitions.items()})
     proof_sorts = {**parse_sorts, **(variable_sorts or {})}
@@ -73713,7 +73827,8 @@ def raw_tptp_unfolded_source_fact_proof(
                 if expr_same_mod_alpha_eta_after_sort_normalization(shallow_source, shallow_target):
                     return source_name
                 if len(expr_text(shallow_source)) + len(expr_text(shallow_target)) <= 60000:
-                    transformed = raw_left_associated_three_conjunction_to_target_proof(
+                    transformed = raw_conjunction_tree_to_target_proof(
+                        shallow_source,
                         shallow_target,
                         source_name,
                     )
@@ -73735,13 +73850,20 @@ def raw_tptp_unfolded_source_fact_proof(
                     )
                     if transformed is not None:
                         return transformed
-        source_unfolded = beta_normalize_expr(normalize_defined_expr(source, source_definitions))
+        source_unfolded = beta_normalize_expr(normalize_defined_expr(source, proof_definitions))
         if expr_same_mod_alpha_eta_after_sort_normalization(source_unfolded, target_unfolded):
             return source_name
         if source_is_top_defined_application:
             continue
         if len(expr_text(source_unfolded)) + len(expr_text(target_unfolded)) > 60000:
             continue
+        transformed = raw_conjunction_tree_to_target_proof(
+            source_unfolded,
+            target_unfolded,
+            source_name,
+        )
+        if transformed is not None:
+            return transformed
         transformed = raw_ennf_positive_consequent_transform_proof(
             source_unfolded,
             target_unfolded,
