@@ -52,6 +52,7 @@ MVP_RULES = {
     "subsumption_resolution",
     "contradiction",
     "avatar_refutation",
+    "definition_rewrite_chain",
 }
 RESOLUTION_LIKE_REPLAY_KINDS = {
     "resolution",
@@ -294,6 +295,85 @@ def replace_all_terms(term: Term, needle: Term, replacement: Term) -> Term:
     if not term.args:
         return term
     return Term(term.kind, term.name, tuple(replace_all_terms(arg, needle, replacement) for arg in term.args))
+
+
+def rewrite_term_once_variants(term: Term, source: Term, target: Term) -> tuple[Term, ...]:
+    variants: set[Term] = set()
+    if term == source:
+        variants.add(target)
+    for index, arg in enumerate(term.args):
+        for rewritten_arg in rewrite_term_once_variants(arg, source, target):
+            args = list(term.args)
+            args[index] = rewritten_arg
+            variants.add(Term(term.kind, term.name, tuple(args)))
+    return tuple(sorted(variants))
+
+
+def rewrite_literal_once_variants(literal: Literal, source: Term, target: Term) -> tuple[Literal, ...]:
+    return tuple(
+        Literal(literal.polarity, rewritten_atom)
+        for rewritten_atom in rewrite_term_once_variants(literal.atom, source, target)
+    )
+
+
+def rewrite_clause_once_variants(
+    clause: tuple[Literal, ...],
+    source: Term,
+    target: Term,
+) -> tuple[tuple[Literal, ...], ...]:
+    variants: set[tuple[Literal, ...]] = set()
+    for index, literal in enumerate(clause):
+        for rewritten_literal in rewrite_literal_once_variants(literal, source, target):
+            new_clause = list(clause)
+            new_clause[index] = rewritten_literal
+            variants.add(normalize_clause(tuple(new_clause)))
+    return tuple(sorted(variants))
+
+
+def clauses_match_modulo_equality_symmetry(
+    left: tuple[Literal, ...],
+    right: tuple[Literal, ...],
+) -> bool:
+    left = normalize_clause(left)
+    right = normalize_clause(right)
+    if len(left) != len(right):
+        return False
+
+    remaining = list(right)
+
+    def search(index: int) -> bool:
+        if index == len(left):
+            return True
+        literal = left[index]
+        for candidate_index, candidate in enumerate(remaining):
+            if equality_symmetric_match(literal, candidate):
+                removed = remaining.pop(candidate_index)
+                if search(index + 1):
+                    return True
+                remaining.insert(candidate_index, removed)
+        return False
+
+    return search(0)
+
+
+def definition_rewrite_chain_reaches(
+    source_clause: tuple[Literal, ...],
+    rewrites: tuple[tuple[Term, Term], ...],
+    target_clause: tuple[Literal, ...],
+    context: str,
+) -> bool:
+    candidates: set[tuple[Literal, ...]] = {normalize_clause(source_clause)}
+    max_candidates = 1024
+    for index, (source, target) in enumerate(rewrites):
+        next_candidates: set[tuple[Literal, ...]] = set()
+        for candidate in candidates:
+            next_candidates.update(rewrite_clause_once_variants(candidate, source, target))
+            if len(next_candidates) > max_candidates:
+                raise CertificateError(f"{context}: definition rewrite chain branches too much at step {index}")
+        if not next_candidates:
+            return False
+        candidates = next_candidates
+    return any(clauses_match_modulo_equality_symmetry(candidate, target_clause) for candidate in candidates)
 
 
 def is_reflexive_equality_atom(atom: Term) -> bool:
@@ -1168,6 +1248,38 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
                 raise CertificateError(f"{step_id}: avatar_refutation conclusion must be empty")
             if not sat_clauses_unsat(sat_clauses):
                 raise CertificateError(f"{step_id}: SAT clauses are satisfiable")
+
+        elif rule == "definition_rewrite_chain":
+            allowed = {"id", "rule", "parents", "source_clause", "rewrites", "clause"}
+            require_fields(step, allowed)
+            require_no_extra_fields(step, allowed)
+            parents = step.get("parents")
+            if not isinstance(parents, list) or not parents:
+                raise CertificateError(f"{step_id}: definition_rewrite_chain needs at least one parent")
+            if not all(isinstance(parent, str) and parent for parent in parents):
+                raise CertificateError(f"{step_id}: parent ids must be non-empty strings")
+            for parent in parents:
+                if parent not in clauses:
+                    raise CertificateError(f"{step_id}: unknown parent {parent}")
+            source_clause = normalize_clause(parse_clause(step["source_clause"], f"{step_id}.source_clause"))
+            if source_clause != clauses[parents[0]]:
+                raise CertificateError(f"{step_id}: source_clause does not match first parent")
+            rewrite_values = step["rewrites"]
+            if not isinstance(rewrite_values, list) or not rewrite_values:
+                raise CertificateError(f"{step_id}: rewrites must be a non-empty list")
+            rewrites: list[tuple[Term, Term]] = []
+            for rewrite_index, rewrite in enumerate(rewrite_values):
+                if not isinstance(rewrite, dict) or set(rewrite) != {"from", "to"}:
+                    raise CertificateError(f"{step_id}.rewrites[{rewrite_index}]: expected from and to terms")
+                rewrites.append(
+                    (
+                        parse_term(rewrite["from"], f"{step_id}.rewrites[{rewrite_index}].from"),
+                        parse_term(rewrite["to"], f"{step_id}.rewrites[{rewrite_index}].to"),
+                    )
+                )
+            clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
+            if not definition_rewrite_chain_reaches(source_clause, tuple(rewrites), clause, step_id):
+                raise CertificateError(f"{step_id}: definition rewrite chain does not reach conclusion")
 
         elif rule == "paramodulate":
             allowed = {
