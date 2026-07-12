@@ -390,10 +390,184 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
     return clauses
 
 
+def literal_text(literal: Literal) -> str:
+    if literal.atom.kind != "opaque":
+        raise CertificateError("Megalodon smoke elaboration currently supports only opaque propositional atoms")
+    if literal.polarity:
+        return literal.atom.name
+    return f"({literal.atom.name} -> False)"
+
+
+def clause_text(clause: tuple[Literal, ...]) -> str:
+    normalized = normalize_clause(clause)
+    if not normalized:
+        return "False"
+    parts = [literal_text(literal) for literal in normalized]
+    result = parts[-1]
+    for part in reversed(parts[:-1]):
+        result = f"({part} \\/ {result})"
+    return result
+
+
+def or_left_intro_proof(proof: str) -> str:
+    return f"(fun P Hleft Hright => Hleft {proof})"
+
+
+def or_right_intro_proof(proof: str) -> str:
+    return f"(fun P Hleft Hright => Hright {proof})"
+
+
+def intro_literal_proof(literal: Literal, target: tuple[Literal, ...], proof: str) -> str:
+    normalized = normalize_clause(target)
+    if not normalized:
+        return f"({proof} False)"
+    head, *tail = normalized
+    if literal == head:
+        if not tail:
+            return proof
+        return or_left_intro_proof(proof)
+    if not tail:
+        raise CertificateError(f"literal {literal_text(literal)} is not in target clause")
+    return or_right_intro_proof(intro_literal_proof(literal, tuple(tail), proof))
+
+
+def false_from_complements(left: Literal, left_proof: str, right: Literal, right_proof: str) -> str:
+    if left.complement != right:
+        raise CertificateError("literals are not complementary")
+    if left.polarity:
+        return f"({right_proof} {left_proof})"
+    return f"({left_proof} {right_proof})"
+
+
+def eliminate_clause_proof(
+    clause: tuple[Literal, ...],
+    proof: str,
+    goal: str,
+    branch_proof,
+) -> str:
+    normalized = normalize_clause(clause)
+    if not normalized:
+        return f"({proof} {goal})"
+    if len(normalized) == 1:
+        return branch_proof(normalized[0], proof)
+    head = normalized[0]
+    tail = tuple(normalized[1:])
+    return (
+        f"({proof} {goal} "
+        f"(fun Hlit => {branch_proof(head, 'Hlit')}) "
+        f"(fun Htail => {eliminate_clause_proof(tail, 'Htail', goal, branch_proof)}))"
+    )
+
+
+def resolve_proof_text(
+    left_clause: tuple[Literal, ...],
+    left_proof: str,
+    right_clause: tuple[Literal, ...],
+    right_proof: str,
+    pivot: Literal,
+    conclusion: tuple[Literal, ...],
+) -> str:
+    goal = clause_text(conclusion)
+    complement = pivot.complement
+
+    def right_branch(literal: Literal, proof: str, pivot_proof: str) -> str:
+        if literal == complement:
+            false_proof = false_from_complements(pivot, pivot_proof, literal, proof)
+            return f"({false_proof} {goal})"
+        return intro_literal_proof(literal, conclusion, proof)
+
+    def left_branch(literal: Literal, proof: str) -> str:
+        if literal == pivot:
+            return eliminate_clause_proof(
+                right_clause,
+                right_proof,
+                goal,
+                lambda right_literal, right_literal_proof: right_branch(right_literal, right_literal_proof, proof),
+            )
+        return intro_literal_proof(literal, conclusion, proof)
+
+    return eliminate_clause_proof(left_clause, left_proof, goal, left_branch)
+
+
+def certificate_opaque_atoms(clauses: dict[str, tuple[Literal, ...]]) -> list[str]:
+    atoms: set[str] = set()
+    for clause in clauses.values():
+        for literal in clause:
+            if literal.atom.kind != "opaque":
+                continue
+            atoms.add(literal.atom.name)
+    return sorted(atoms)
+
+
+def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal, ...]], theorem_name: str) -> str:
+    atoms = certificate_opaque_atoms(clauses)
+    if not atoms:
+        raise CertificateError("Megalodon smoke elaboration needs at least one opaque atom")
+    lines = [
+        "Definition False : prop := forall p:prop, p.",
+        "Definition or : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> p) -> (B -> p) -> p.",
+        "Infix \\/ 785 left := or.",
+        f"Variable {' '.join(atoms)}:prop.",
+    ]
+    step_clauses: dict[str, tuple[Literal, ...]] = {}
+    proof_names: dict[str, str] = {}
+    assumptions: list[tuple[str, str]] = []
+    derived: list[tuple[str, str, str]] = []
+    final_empty: str | None = None
+
+    for step in data["steps"]:
+        step_id = step["id"]
+        rule = step["rule"]
+        clause = clauses[step_id]
+        step_clauses[step_id] = clause
+        if not clause:
+            final_empty = step_id
+        if rule == "input":
+            proof_names[step_id] = step_id
+            assumptions.append((step_id, clause_text(clause)))
+            continue
+        if rule == "resolve":
+            parents = step["parents"]
+            pivot = parse_literal(step["pivot"], f"{step_id}.pivot")
+            proof = resolve_proof_text(
+                step_clauses[parents[0]],
+                proof_names[parents[0]],
+                step_clauses[parents[1]],
+                proof_names[parents[1]],
+                pivot,
+                clause,
+            )
+        elif rule == "factor":
+            parent = step["parents"][0]
+            proof = proof_names[parent]
+        elif rule == "contradiction":
+            parent = step["parents"][0]
+            proof = proof_names[parent]
+        else:
+            raise CertificateError(f"Megalodon smoke elaboration does not yet support {rule}")
+        proof_names[step_id] = step_id
+        derived.append((step_id, clause_text(clause), proof))
+
+    if final_empty is None:
+        raise CertificateError("certificate has no empty-clause step to prove False")
+    theorem_type = " -> ".join([*(prop for _name, prop in assumptions), "False"])
+    lines.append(f"Theorem {theorem_name} : {theorem_type}.")
+    for name, prop in assumptions:
+        lines.append(f"assume {name}: {prop}.")
+    for name, prop, proof in derived:
+        lines.append(f"claim {name}: {prop}.")
+        lines.append(f"{{ exact {proof}. }}")
+    lines.append(f"exact {proof_names[final_empty]}.")
+    lines.append("Qed.")
+    return "\n".join(lines) + "\n"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("certificate", type=Path)
     parser.add_argument("--summary", action="store_true")
+    parser.add_argument("--emit-megalodon", type=Path)
+    parser.add_argument("--theorem-name", default="vampire_certificate_smoke")
     args = parser.parse_args()
 
     try:
@@ -406,6 +580,14 @@ def main() -> int:
     if args.summary:
         empty = sum(1 for clause in clauses.values() if not clause)
         print(json.dumps({"steps": len(clauses), "empty_clauses": empty}, sort_keys=True))
+    if args.emit_megalodon is not None:
+        try:
+            rendered = emit_megalodon_smoke(data, clauses, args.theorem_name)
+        except CertificateError as exc:
+            print(f"certificate check failed: {exc}", file=sys.stderr)
+            return 1
+        args.emit_megalodon.parent.mkdir(parents=True, exist_ok=True)
+        args.emit_megalodon.write_text(rendered, encoding="utf-8")
     return 0
 
 

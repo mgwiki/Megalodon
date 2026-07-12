@@ -296,3 +296,16 @@ Project-level success gates:
 2. 10 real no-admit Megalodon reconstructions in the restricted fragment.
 3. 100 real no-admit Megalodon reconstructions before AVATAR or higher-order
    replay is reintroduced.
+
+## Current Prototype Elaboration
+
+`scripts/vampire_certificate.py --emit-megalodon OUT.mg` currently elaborates
+the opaque propositional subfragment to a Megalodon proof script:
+
+- `input` clauses become theorem assumptions,
+- `resolve`, `factor`, and `contradiction` become local `claim`s,
+- the final empty clause proves `False`.
+
+This first elaborator is intentionally limited to opaque propositional atoms.
+It is a no-admit kernel-checking smoke path, not yet the first-order
+Megalodon importer.
