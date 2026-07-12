@@ -51,6 +51,7 @@ MVP_RULES = {
     "paramodulate_clause_all",
     "subsumption_resolution",
     "contradiction",
+    "avatar_refutation",
 }
 RESOLUTION_LIKE_REPLAY_KINDS = {
     "resolution",
@@ -708,6 +709,90 @@ def require_parents(step: dict[str, Any], count: int) -> list[str]:
     return parents
 
 
+def parse_sat_literal(value: Any, context: str) -> tuple[int, bool]:
+    if not isinstance(value, dict):
+        raise CertificateError(f"{context}: SAT literal must be an object")
+    if set(value) != {"var", "polarity"}:
+        raise CertificateError(f"{context}: SAT literal must have exactly var and polarity")
+    var = value["var"]
+    polarity = value["polarity"]
+    if not isinstance(var, int) or var <= 0:
+        raise CertificateError(f"{context}.var: SAT variable must be a positive integer")
+    if not isinstance(polarity, bool):
+        raise CertificateError(f"{context}.polarity: SAT polarity must be boolean")
+    return var, polarity
+
+
+def parse_sat_clauses(value: Any, context: str) -> tuple[tuple[tuple[int, bool], ...], ...]:
+    if not isinstance(value, list) or not value:
+        raise CertificateError(f"{context}: SAT clauses must be a non-empty list")
+    clauses: list[tuple[tuple[int, bool], ...]] = []
+    for clause_index, clause_value in enumerate(value):
+        if not isinstance(clause_value, list):
+            raise CertificateError(f"{context}[{clause_index}]: SAT clause must be a list")
+        literals = tuple(
+            parse_sat_literal(literal, f"{context}[{clause_index}][{literal_index}]")
+            for literal_index, literal in enumerate(clause_value)
+        )
+        clauses.append(literals)
+    return tuple(clauses)
+
+
+def sat_clauses_unsat(clauses: tuple[tuple[tuple[int, bool], ...], ...]) -> bool:
+    assignment: dict[int, bool] = {}
+
+    def simplify() -> tuple[bool, bool]:
+        changed = True
+        while changed:
+            changed = False
+            for clause in clauses:
+                unassigned: list[tuple[int, bool]] = []
+                satisfied = False
+                for var, polarity in clause:
+                    value = assignment.get(var)
+                    if value is None:
+                        unassigned.append((var, polarity))
+                    elif value == polarity:
+                        satisfied = True
+                        break
+                if satisfied:
+                    continue
+                if not unassigned:
+                    return False, True
+                if len(unassigned) == 1:
+                    var, polarity = unassigned[0]
+                    value = assignment.get(var)
+                    if value is not None and value != polarity:
+                        return False, True
+                    if value is None:
+                        assignment[var] = polarity
+                        changed = True
+        all_satisfied = all(
+            any(assignment.get(var) == polarity for var, polarity in clause)
+            for clause in clauses
+        )
+        return all_satisfied, False
+
+    def search() -> bool:
+        complete, conflict = simplify()
+        if conflict:
+            return False
+        if complete:
+            return True
+        variables = sorted({var for clause in clauses for var, _polarity in clause})
+        branch_var = next(var for var in variables if var not in assignment)
+        snapshot = dict(assignment)
+        for value in (False, True):
+            assignment[branch_var] = value
+            if search():
+                return True
+            assignment.clear()
+            assignment.update(snapshot)
+        return False
+
+    return not search()
+
+
 def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
     global LAMBDA_HINTS
     if not isinstance(data, dict):
@@ -1065,6 +1150,24 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
                     break
             if not covered:
                 raise CertificateError(f"{step_id}: side remainder literals are not covered by conclusion")
+
+        elif rule == "avatar_refutation":
+            allowed = {"id", "rule", "parents", "sat_clauses", "clause"}
+            require_fields(step, allowed)
+            require_no_extra_fields(step, allowed)
+            parents = step.get("parents")
+            if not isinstance(parents, list) or not parents:
+                raise CertificateError(f"{step_id}: avatar_refutation needs at least one parent")
+            if not all(isinstance(parent, str) and parent for parent in parents):
+                raise CertificateError(f"{step_id}: parent ids must be non-empty strings")
+            sat_clauses = parse_sat_clauses(step["sat_clauses"], f"{step_id}.sat_clauses")
+            if len(sat_clauses) != len(parents):
+                raise CertificateError(f"{step_id}: SAT clause count must match parent count")
+            clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
+            if clause:
+                raise CertificateError(f"{step_id}: avatar_refutation conclusion must be empty")
+            if not sat_clauses_unsat(sat_clauses):
+                raise CertificateError(f"{step_id}: SAT clauses are satisfiable")
 
         elif rule == "paramodulate":
             allowed = {
