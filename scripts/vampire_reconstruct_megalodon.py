@@ -35942,6 +35942,224 @@ def raw_quantified_equality_literal_clause_proof(
     return None
 
 
+def raw_nested_quantified_literal_equality_rewrite_proof(
+    source_literal: Expr,
+    target_literal: Expr,
+    source_literal_proof: str,
+    equality: Expr,
+    equality_proof: str,
+    variable_sorts: dict[str, str],
+    *,
+    old_term_hint: Expr | None = None,
+    new_term_hint: Expr | None = None,
+    rule_old_hint: Expr | None = None,
+    rule_new_hint: Expr | None = None,
+) -> str | None:
+    source_binders, source_body = collect_foralls(source_literal)
+    target_binders, target_body = collect_foralls(target_literal)
+    if not source_binders or len(source_binders) != len(target_binders) or len(source_binders) > 8:
+        return None
+    if any(source_sort != target_sort for (_, source_sort), (_, target_sort) in zip(source_binders, target_binders)):
+        return None
+    equality_binders, equality_body = collect_foralls(equality)
+    equality_sides = equality_like_sides(equality_body)
+    if equality_sides is None or len(equality_binders) > 8:
+        return None
+    local_sorts = {
+        **variable_sorts,
+        **{name: sort for name, sort in target_binders},
+        **{name: sort for name, sort in equality_binders},
+    }
+    binder_sort_by_name = {name: sort for name, sort in equality_binders}
+    opened_source = source_body
+    opened_source_proof = source_literal_proof
+    for (source_name, _source_sort), (target_name, target_sort) in zip(source_binders, target_binders):
+        if source_name != target_name:
+            opened_source = rename_expr_variables(opened_source, {source_name: target_name})
+        opened_source_proof = f"({proof_head(opened_source_proof)} {target_name})"
+        local_sorts[target_name] = target_sort
+
+    candidate_pairs: list[tuple[Expr, Expr]] = []
+    if old_term_hint is not None and new_term_hint is not None:
+        candidate_pairs.append((old_term_hint, new_term_hint))
+    if rule_old_hint is not None and rule_new_hint is not None:
+        candidate_pairs.append((rule_old_hint, rule_new_hint))
+    candidate_pairs.extend(
+        [
+            (equality_sides[0], equality_sides[1]),
+            (equality_sides[1], equality_sides[0]),
+        ]
+    )
+
+    seen_pairs: set[tuple[str, str]] = set()
+    for old_pattern, new_pattern in candidate_pairs:
+        pair_key = (expr_key(old_pattern), expr_key(new_pattern))
+        if pair_key in seen_pairs:
+            continue
+        seen_pairs.add(pair_key)
+        for old_subterm in expr_subterms(opened_source, limit=192):
+            subst: dict[str, Expr] = {}
+            if not raw_match_expr_with_unary_function_binder_instantiation(
+                old_pattern,
+                old_subterm,
+                binder_sort_by_name,
+                local_sorts,
+                subst,
+            ):
+                continue
+            flatten_substitution(subst)
+            if any(name not in subst for name, _sort in equality_binders):
+                continue
+            if any(raw_expr_has_synthetic_db_variable(subst[name]) for name, _sort in equality_binders):
+                continue
+            new_subterm = substitute_expr(new_pattern, subst)
+            replaced, changed = replace_expr(opened_source, old_subterm, new_subterm)
+            if not changed:
+                continue
+            if not (
+                expr_same_mod_alpha(replaced, target_body)
+                or raw_clause_replay_budget_ok(replaced, target_body, max_literals=16, max_literal_product=256)
+            ):
+                continue
+            for eq_old, eq_new, reverse in (
+                (equality_sides[0], equality_sides[1], False),
+                (equality_sides[1], equality_sides[0], True),
+            ):
+                eq_subst = raw_match_expr_pair_with_unary_function_binder_instantiation(
+                    eq_old,
+                    old_subterm,
+                    eq_new,
+                    new_subterm,
+                    binder_sort_by_name,
+                    local_sorts,
+                )
+                if eq_subst is None:
+                    continue
+                flatten_substitution(eq_subst)
+                if any(name not in eq_subst for name, _sort in equality_binders):
+                    continue
+                if any(raw_expr_has_synthetic_db_variable(eq_subst[name]) for name, _sort in equality_binders):
+                    continue
+                equality_instance = equality_proof
+                for name, _sort in equality_binders:
+                    equality_instance = f"({proof_head(equality_instance)} {proof_arg_text(eq_subst[name])})"
+                equality_sort = raw_equality_transport_sort(old_subterm, new_subterm, local_sorts)
+                native_equality = raw_native_equality_transport_supported(equality_body, (equality_sides[0], equality_sides[1]), local_sorts)
+                if reverse:
+                    if native_equality:
+                        equality_instance = native_eq_symmetry_proof(
+                            equality_instance,
+                            new_subterm,
+                            old_subterm,
+                            equality_sort,
+                        )
+                    else:
+                        equality_instance = raw_eq_symmetry_proof(equality_instance, new_subterm, equality_sort)
+                hole_name = fresh_identifier("zz", expr_text(opened_source), expr_text(old_subterm), expr_text(new_subterm))
+                context, context_changed = replace_expr(opened_source, old_subterm, Expr("var", value=hole_name))
+                if not context_changed:
+                    continue
+                if native_equality:
+                    transported = native_equality_transport_proof(
+                        equality_instance,
+                        old_subterm,
+                        new_subterm,
+                        opened_source_proof,
+                        hole_name,
+                        equality_sort,
+                        context,
+                    )
+                    if transported is None:
+                        continue
+                else:
+                    transported = (
+                        f"{proof_term_text(equality_instance)} "
+                        f"(fun {hole_name} :{binder_sort_text(equality_sort)} => {expr_text(context)}) "
+                        f"{proof_term_text(opened_source_proof)}"
+                    )
+                body_proof: str | None
+                if expr_same_mod_alpha(replaced, target_body):
+                    body_proof = transported
+                else:
+                    body_proof = raw_clause_subsumption_transform_proof(replaced, target_body, transported)
+                    if body_proof is None and raw_clause_replay_budget_ok(
+                        replaced,
+                        target_body,
+                        max_literals=16,
+                        max_literal_product=256,
+                    ):
+                        body_proof = raw_clause_transform_proof(replaced, target_body, transported)
+                if body_proof is None:
+                    continue
+                for name, sort in reversed(target_binders):
+                    body_proof = f"(fun {name} :{sort} => {body_proof})"
+                return body_proof
+    return None
+
+
+def raw_nested_quantified_clause_equality_rewrite_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    equality: Expr,
+    equality_proof: str,
+    variable_sorts: dict[str, str],
+    *,
+    old_term_hint: Expr | None = None,
+    new_term_hint: Expr | None = None,
+    rule_old_hint: Expr | None = None,
+    rule_new_hint: Expr | None = None,
+) -> str | None:
+    source_literals = raw_clause_literals(source)
+    target_literals = raw_clause_literals(target)
+    if len(source_literals) > 16 or len(target_literals) > 16:
+        return None
+    target_text = proof_arg_text(target)
+    previous_target = getattr(PROOF_SEARCH_STATE, "flat_resolution_target", None)
+    PROOF_SEARCH_STATE.flat_resolution_target = target_text
+
+    def source_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
+        direct = raw_literal_to_clause_proof(
+            source_literal,
+            target,
+            source_literal_proof,
+            target_literals,
+            (),
+            deep_literals=True,
+            variable_sorts=variable_sorts,
+        )
+        if direct is not None:
+            return direct
+        for target_index, target_literal in enumerate(target_literals):
+            literal_proof = raw_nested_quantified_literal_equality_rewrite_proof(
+                source_literal,
+                target_literal,
+                source_literal_proof,
+                equality,
+                equality_proof,
+                variable_sorts,
+                old_term_hint=old_term_hint,
+                new_term_hint=new_term_hint,
+                rule_old_hint=rule_old_hint,
+                rule_new_hint=rule_new_hint,
+            )
+            if literal_proof is None:
+                continue
+            intro = raw_typed_or_intro_literal_at(target, target_index, literal_proof)
+            if intro is not None:
+                return intro
+        return None
+
+    try:
+        return raw_clause_cases_with_handler(source, source_proof, source_handler)
+    finally:
+        if previous_target is None:
+            if hasattr(PROOF_SEARCH_STATE, "flat_resolution_target"):
+                delattr(PROOF_SEARCH_STATE, "flat_resolution_target")
+        else:
+            PROOF_SEARCH_STATE.flat_resolution_target = previous_target
+
+
 def raw_clause_quantified_equality_rewrite_proof(
     source: Expr,
     target: Expr,
@@ -37652,6 +37870,20 @@ def raw_tptp_forward_demodulation_proof(
     second_sides = equality_like_sides(second)
     first_name = raw_tptp_claim_name(parents[0])
     second_name = raw_tptp_claim_name(parents[1])
+    for source, source_name, equality, equality_name in (
+        (first, first_name, second, second_name),
+        (second, second_name, first, first_name),
+    ):
+        proof = raw_nested_quantified_clause_equality_rewrite_proof(
+            source,
+            target,
+            source_name,
+            equality,
+            equality_name,
+            variable_sorts,
+        )
+        if proof is not None and not raw_tptp_replay_proof_is_unsafe("forward_demodulation", proposition, proof):
+            return proof
     proof = raw_binary_equality_chain_demodulation_proof(
         first,
         target,
@@ -39109,6 +39341,20 @@ def raw_tptp_exported_demodulation_rewrite_proof(
                     if key in seen_variants:
                         continue
                     seen_variants.add(key)
+                    proof = raw_nested_quantified_clause_equality_rewrite_proof(
+                        replay_source,
+                        replay_target,
+                        source_proof,
+                        replay_equality,
+                        equality_proof,
+                        local_sorts,
+                        old_term_hint=replay_old_term,
+                        new_term_hint=replay_new_term,
+                        rule_old_hint=replay_rule_old,
+                        rule_new_hint=replay_rule_new,
+                    )
+                    if proof is not None:
+                        return proof
                     proof = raw_exported_quantified_parent_equality_rewrite_clause_proof(
                         replay_source,
                         replay_target,
