@@ -76476,6 +76476,8 @@ def raw_tptp_source_statement_bridge_proof(
     normalized_positive = beta_normalize_expr(normalize_defined_expr(positive_expr, source_definitions))
     if expr_same_mod_alpha_eta_after_sort_normalization(source_expr, positive_expr):
         return positive_proof
+    if expr_same_mod_alpha_eta_after_sort_normalization(normalized_source, normalized_positive):
+        return positive_proof
     if source_names is None or "func_ext" in source_names:
         for function_source, function_positive in (
             (source_expr, positive_expr),
@@ -76767,6 +76769,7 @@ def raw_tptp_adjust_section_parameterized_sorts(
 
 
 def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | None = None) -> list[str]:
+    proof_path = proof
     text = proof.read_text(encoding="utf-8", errors="replace")
     declarations = collect_tptp_declarations(text)
     source_declarations = raw_tptp_exported_source_declarations(text)
@@ -77409,6 +77412,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     axiom_claim_instantiations: dict[str, str] = {}
     local_skolem_axiom_aliases: list[tuple[str, str, str]] = []
     emitted_local_source_facts: set[str] = set()
+    emitted_local_source_fact_propositions: dict[str, str] = {}
     local_source_fact_aliases: dict[str, str] = {}
 
     def remember_raw_proposition(proposition: str, proof_name: str) -> None:
@@ -77513,8 +77517,34 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         lines.append(f"Axiom {proof_name}: {proposition}.")
         declared_names.add(proof_name)
         emitted_local_source_facts.add(source_name)
+        emitted_local_source_fact_propositions[source_name] = proposition
         remember_raw_proposition(proposition, proof_name)
         return True
+
+    def local_source_fact_alias_bridge_proof(proposition: str, source_name: str | None) -> str | None:
+        if source_name is None or source_name not in local_source_fact_propositions:
+            return None
+        if not emit_local_source_fact(source_name, proposition):
+            return None
+        proof_name = local_source_fact_proof_name(source_name)
+        source_proposition = emitted_local_source_fact_propositions.get(source_name)
+        if proof_name is None or source_proposition is None:
+            return None
+        if canonical_proposition(source_proposition) == canonical_proposition(proposition):
+            return proof_name
+        source_expr = parse_expr(source_proposition)
+        target_expr = parse_expr(proposition)
+        if source_expr is None or target_expr is None:
+            return None
+        return raw_tptp_source_statement_bridge_proof(
+            source_expr,
+            target_expr,
+            proof_name,
+            source_and_local_definitions,
+            variable_sorts,
+            source_sorts,
+            source_active_declared_names(source),
+        )
 
     for declaration in early_source_declarations:
         if declaration.startswith("Infix "):
@@ -77836,6 +77866,10 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         ) is not None and emit_local_source_fact(source_name, proposition):
             lines.append(f"Theorem {claim_name}: {proposition}.")
             lines.append(f"exact {proof_argument_text(source_fact_proof)}.")
+            lines.append("Qed.")
+        elif (source_proof := local_source_fact_alias_bridge_proof(proposition, source_name)) is not None:
+            lines.append(f"Theorem {claim_name}: {proposition}.")
+            lines.append(f"exact {proof_argument_text(source_proof)}.")
             lines.append("Qed.")
         else:
             if (
@@ -78822,7 +78856,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     lines.append("Qed.")
     if local_identifier_renames:
         lines = [replace_generated_identifier_tokens(line, local_identifier_renames) for line in lines]
-    lines = reconcile_megalodon_declarations(use_ambient_basic_logic(add_problem_type_variables(lines, proof, text, problem, source)))
+    lines = reconcile_megalodon_declarations(use_ambient_basic_logic(add_problem_type_variables(lines, proof_path, text, problem, source)))
     lines = parenthesize_atomic_axiom_propositions(lines, variable_sorts)
     lines = reconcile_megalodon_declarations(add_used_boolean_extensionality_helpers(lines))
     return reconcile_megalodon_declarations(add_missing_basic_connective_definitions(lines))
