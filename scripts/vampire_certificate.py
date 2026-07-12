@@ -1582,6 +1582,55 @@ def term_text(term: Term) -> str:
     return term_text_with_context(term, ())
 
 
+def term_text_expected(
+    term: Term,
+    expected_sort: str | None,
+    symbol_sorts: dict[str, tuple[str, ...]] | None = None,
+    db_context: tuple[str, ...] = (),
+) -> str:
+    symbol_sorts = symbol_sorts or {}
+    if expected_sort is not None:
+        expected_sort = require_supported_sort(expected_sort, "expected term sort")
+    if term.kind == "app" and term.name == "vLAM" and len(term.args) == 1 and expected_sort is not None:
+        parts = split_sort(expected_sort)
+        if len(parts) >= 2:
+            binder_sort = require_supported_sort(parts[0], "lambda binder sort")
+            body_sort = sort_from_parts(parts[1:])
+            binder = f"db{len(db_context)}"
+            body = term_text_expected(term.args[0], body_sort, symbol_sorts, (*db_context, binder))
+            return (
+                f"(fun {require_megalodon_ident(binder, 'lambda binder')}"
+                f":{sort_type_text(binder_sort)} => {body})"
+            )
+    if term.kind == "apply" and len(term.args) == 2:
+        function = term.args[0]
+        argument = term.args[1]
+        function_sort: str | None = None
+        head, existing_args = term_spine(function)
+        if head.kind == "const":
+            signature = symbol_sorts.get(head.name)
+            if signature is not None and len(signature) > len(existing_args):
+                function_sort = sort_from_parts(signature[len(existing_args):])
+        if function_sort is not None:
+            parts = split_sort(function_sort)
+            if len(parts) >= 2:
+                argument_sort = require_supported_sort(parts[0], "application argument sort")
+                function_text = term_text_expected(function, function_sort, symbol_sorts, db_context)
+                argument_text = term_text_expected(argument, argument_sort, symbol_sorts, db_context)
+                return f"({function_text} {argument_text})"
+        return f"({term_text_expected(function, None, symbol_sorts, db_context)} {term_text_expected(argument, None, symbol_sorts, db_context)})"
+    if term.kind == "app" and term.name != "vLAM":
+        signature = symbol_sorts.get(term.name)
+        if signature is not None and len(signature) >= len(term.args) + 1:
+            args = " ".join(
+                term_text_expected(arg, arg_sort, symbol_sorts, db_context)
+                for arg, arg_sort in zip(term.args, signature)
+            )
+            name = require_megalodon_ident(term.name, "term")
+            return f"({name} {args})" if args else name
+    return term_text_with_context(term, db_context)
+
+
 def term_text_with_context(term: Term, db_context: tuple[str, ...]) -> str:
     v_eq_args = named_binary_application(term, "vEQ")
     if v_eq_args is not None:
@@ -1754,6 +1803,17 @@ def sort_type_text(sort: str) -> str:
     return sort
 
 
+def sort_from_parts(parts: tuple[str, ...]) -> str:
+    if not parts:
+        raise CertificateError("empty sort parts")
+    normalized_parts = [require_supported_sort(part, "sort part") for part in parts]
+    rendered_parts = [
+        f"({part})" if "->" in part else part
+        for part in normalized_parts
+    ]
+    return "->".join(rendered_parts)
+
+
 def existential_definition(sort: str) -> str:
     sort_text = sort_type_text(sort)
     symbol = existential_symbol(sort)
@@ -1771,32 +1831,44 @@ def equality_definition(sort: str) -> str:
     return f"Definition {symbol} : {sort_text}->{sort_text}->prop := fun x y:{sort_text} => forall Q:{sort_text}->prop, Q x -> Q y."
 
 
-def atom_text(atom: Term) -> str:
+def atom_text(atom: Term, symbol_sorts: dict[str, tuple[str, ...]] | None = None) -> str:
+    symbol_sorts = symbol_sorts or {}
     if atom.kind == "opaque":
         return require_megalodon_ident(atom.name, "atom")
     if atom.kind == "pred":
         name = require_megalodon_ident(atom.name, "atom")
-        args = " ".join(term_text(arg) for arg in atom.args)
+        signature = symbol_sorts.get(atom.name)
+        if signature is not None and len(signature) == len(atom.args) + 1:
+            args = " ".join(
+                term_text_expected(arg, arg_sort, symbol_sorts)
+                for arg, arg_sort in zip(atom.args, signature)
+            )
+        else:
+            args = " ".join(term_text_expected(arg, None, symbol_sorts) for arg in atom.args)
         return f"({name} {args})" if args else name
     if atom.kind == "eq" and len(atom.args) == 2:
         if atom.name != "set":
-            return f"({equality_symbol(atom.name)} {term_text(atom.args[0])} {term_text(atom.args[1])})"
-        return f"({term_text(atom.args[0])} = {term_text(atom.args[1])})"
+            return (
+                f"({equality_symbol(atom.name)} "
+                f"{term_text_expected(atom.args[0], atom.name, symbol_sorts)} "
+                f"{term_text_expected(atom.args[1], atom.name, symbol_sorts)})"
+            )
+        return f"({term_text_expected(atom.args[0], 'set', symbol_sorts)} = {term_text_expected(atom.args[1], 'set', symbol_sorts)})"
     raise CertificateError(f"cannot render atom kind {atom.kind!r}")
 
 
-def literal_text(literal: Literal) -> str:
-    atom = atom_text(literal.atom)
+def literal_text(literal: Literal, symbol_sorts: dict[str, tuple[str, ...]] | None = None) -> str:
+    atom = atom_text(literal.atom, symbol_sorts)
     if literal.polarity:
         return atom
     return f"({atom} -> False)"
 
 
-def clause_body_text(clause: tuple[Literal, ...]) -> str:
+def clause_body_text(clause: tuple[Literal, ...], symbol_sorts: dict[str, tuple[str, ...]] | None = None) -> str:
     normalized = normalize_clause(clause)
     if not normalized:
         return "False"
-    parts = [literal_text(literal) for literal in normalized]
+    parts = [literal_text(literal, symbol_sorts) for literal in normalized]
     result = parts[-1]
     for part in reversed(parts[:-1]):
         result = f"({part} \\/ {result})"
@@ -1929,14 +2001,27 @@ def collect_term_var_sorts(
     symbol_sorts: dict[str, tuple[str, ...]],
     var_sorts: dict[str, str],
     locked_vars: set[str] | None = None,
+    db_depth: int = 0,
 ) -> None:
     locked_vars = locked_vars or set()
     v_eq_args = named_binary_application(term, "vEQ")
     if v_eq_args is not None:
         for arg in v_eq_args:
-            collect_term_var_sorts(arg, "set", symbol_sorts, var_sorts, locked_vars)
+            collect_term_var_sorts(arg, "set", symbol_sorts, var_sorts, locked_vars, db_depth)
+        return
+    if term.kind == "app" and term.name == "vLAM" and len(term.args) == 1:
+        parts = split_sort(expected_sort)
+        body_sort = sort_from_parts(parts[1:]) if len(parts) >= 2 else "set"
+        collect_term_var_sorts(term.args[0], body_sort, symbol_sorts, var_sorts, locked_vars, db_depth + 1)
         return
     if term.kind == "var":
+        if term.name not in locked_vars:
+            merge_var_sort(var_sorts, term.name, expected_sort)
+        return
+    if term.kind == "const" and DB_NAME_RE.match(term.name):
+        db_index = int(DB_NAME_RE.match(term.name).group(1))
+        if db_index < db_depth:
+            return
         if term.name not in locked_vars:
             merge_var_sort(var_sorts, term.name, expected_sort)
         return
@@ -1947,10 +2032,10 @@ def collect_term_var_sorts(
         signature = symbol_sorts.get(head.name)
         if signature is not None and len(signature) >= len(args) + 1:
             for arg, arg_sort in zip(args, signature):
-                collect_term_var_sorts(arg, arg_sort, symbol_sorts, var_sorts, locked_vars)
+                collect_term_var_sorts(arg, arg_sort, symbol_sorts, var_sorts, locked_vars, db_depth)
             return
     for arg in term.args:
-        collect_term_var_sorts(arg, "set", symbol_sorts, var_sorts, locked_vars)
+        collect_term_var_sorts(arg, "set", symbol_sorts, var_sorts, locked_vars, db_depth)
 
 
 def collect_atom_var_sorts(
@@ -1987,12 +2072,12 @@ def clause_var_sorts(
         if name in clause_vars
     }
     for name, sort in lambda_binder_sorts().items():
-        if name in clause_vars:
+        if name in clause_vars and not DB_NAME_RE.match(name):
             var_sorts.setdefault(name, sort)
     default_lambda_sort = lambda_default_binder_sort()
     if default_lambda_sort is not None:
         for name in clause_vars:
-            if DB_NAME_RE.match(name):
+            if DB_NAME_RE.match(name) and name not in var_sorts:
                 var_sorts.setdefault(name, default_lambda_sort)
     locked_vars = set(var_sorts)
     for literal in clause:
@@ -2008,7 +2093,7 @@ def clause_prop_text(
     explicit_var_sorts: dict[str, str] | None = None,
 ) -> str:
     symbol_sorts = symbol_sorts or {}
-    result = clause_body_text(clause)
+    result = clause_body_text(clause, symbol_sorts)
     var_sorts = clause_var_sorts(clause, symbol_sorts, explicit_var_sorts)
     for name in reversed(clause_free_vars(clause)):
         result = f"forall {require_megalodon_ident(name, 'binder')}:{sort_type_text(var_sorts[name])}, {result}"
