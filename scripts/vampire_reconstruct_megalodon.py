@@ -72080,7 +72080,7 @@ LOCAL_LET_ALIAS_RE = re.compile(
     r"(?:\s*:\s*(?P<sort>.*?))?\s*:=\s*(?P<body>.*?)\s*\.\s*$"
 )
 LOCAL_SOURCE_FACT_RE = re.compile(
-    r"^\s*(?:(?:[-+*])\s*)?(?:assume|claim)\s+(?P<body>.*?)\s*\.\s*$"
+    r"^\s*(?:(?:[-+*])\s*)?(?:\{\s*)?(?:assume|claim)\s+(?P<body>[^.]*)\s*\.\s*(?:\}.*)?$"
 )
 
 
