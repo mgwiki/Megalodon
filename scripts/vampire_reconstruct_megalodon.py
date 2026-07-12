@@ -39570,6 +39570,12 @@ def raw_binary_equality_chain_demodulation_proof(
     source_sort = raw_equality_transport_sort(source_sides[0], source_sides[1], variable_sorts)
     if source_sort is None:
         return None
+    target_is_vampire_prop_eq = (
+        target.kind == "app"
+        and target.args
+        and target.args[0].kind == "var"
+        and target.args[0].value == "vampire_eq_prop"
+    )
 
     for source_old, source_new in ((source_sides[0], source_sides[1]), (source_sides[1], source_sides[0])):
         source_old_to_new = raw_oriented_equality_proof(
@@ -39621,11 +39627,18 @@ def raw_binary_equality_chain_demodulation_proof(
                         )
                         if transported is not None:
                             return transported
+                    context_argument_proof = target_left_to_old
+                    if target_is_vampire_prop_eq and link_native_equality and link_sort == "prop":
+                        context_argument_proof = raw_native_prop_eq_to_vampire_eq_prop_proof(
+                            target_sides[0],
+                            source_old,
+                            target_left_to_old,
+                        )
                     return (
                         f"({proof_head(source_old_to_new)} "
                         f"(fun {hole} :{binder_sort_text(source_sort)} => "
                         f"{proof_arg_text(context)}) "
-                        f"{proof_term_text(target_left_to_old)})"
+                        f"{proof_term_text(context_argument_proof)})"
                     )
             if expr_same_mod_alpha(target_sides[0], source_new):
                 old_to_target_right = raw_oriented_equality_proof(
@@ -39658,11 +39671,18 @@ def raw_binary_equality_chain_demodulation_proof(
                         )
                         if transported is not None:
                             return transported
+                    context_argument_proof = old_to_target_right
+                    if target_is_vampire_prop_eq and link_native_equality and link_sort == "prop":
+                        context_argument_proof = raw_native_prop_eq_to_vampire_eq_prop_proof(
+                            source_old,
+                            target_sides[1],
+                            old_to_target_right,
+                        )
                     return (
                         f"({proof_head(source_old_to_new)} "
                         f"(fun {hole} :{binder_sort_text(source_sort)} => "
                         f"{proof_arg_text(context)}) "
-                        f"{proof_term_text(old_to_target_right)})"
+                        f"{proof_term_text(context_argument_proof)})"
                     )
     return None
 
