@@ -14280,8 +14280,33 @@ def raw_or_parts(expr: Expr) -> tuple[Expr, Expr] | None:
     return app_args(expr, "vampire_or", 2) or app_args(expr, "or", 2)
 
 
+def raw_church_encoded_and_parts(expr: Expr) -> tuple[Expr, Expr] | None:
+    if expr.kind != "forall" or expr.sort != "prop" or expr.value is None:
+        return None
+    result_name = expr.value
+    premises, conclusion = split_arrows(expr.args[0])
+    if (
+        len(premises) != 1
+        or conclusion.kind != "var"
+        or conclusion.value != result_name
+    ):
+        return None
+    component_premises, component_conclusion = split_arrows(premises[0])
+    if (
+        len(component_premises) != 2
+        or component_conclusion.kind != "var"
+        or component_conclusion.value != result_name
+    ):
+        return None
+    return component_premises[0], component_premises[1]
+
+
 def vampire_and_parts(expr: Expr) -> tuple[Expr, Expr] | None:
-    return app_args(expr, "vampire_and", 2) or app_args(expr, "and", 2)
+    return (
+        app_args(expr, "vampire_and", 2)
+        or app_args(expr, "and", 2)
+        or raw_church_encoded_and_parts(expr)
+    )
 
 
 def known_vampire_and_projection_proof(expr: Expr, known: dict[str, str]) -> str | None:
@@ -28468,7 +28493,11 @@ def raw_build_conjunction_from_component_proofs(
     right = raw_build_conjunction_from_component_proofs(parts[1], component_proof, depth + 1)
     if right is None:
         return None
-    return f"(fun P K => K {proof_term_text(left)} {proof_term_text(right)})"
+    return (
+        f"(fun P :prop => "
+        f"fun K :{proof_arg_text(parts[0])} -> {proof_arg_text(parts[1])} -> P => "
+        f"K {proof_term_text(left)} {proof_term_text(right)})"
+    )
 
 
 def raw_or_components(expr: Expr, depth: int = 0) -> list[Expr]:
@@ -33382,7 +33411,7 @@ def raw_proof_to_prop_true_equality(source: Expr, target: Expr, source_proof: st
 
 
 def raw_church_and_parts(expr: Expr) -> tuple[Expr, Expr] | None:
-    return app_args(expr, "and", 2) or app_args(expr, "vampire_and", 2)
+    return vampire_and_parts(expr)
 
 
 def raw_church_and_projection_from_proof(proof: str, node: Expr, target: Expr, depth: int = 0) -> str | None:
@@ -72072,7 +72101,7 @@ def source_active_declared_sorts(source: Path | None) -> dict[str, str]:
 
 
 LOCAL_SET_DECL_RE = re.compile(
-    r"^\s*set\s+(?P<name>[_A-Za-z][_A-Za-z0-9']*)"
+    r"^\s*(?:\{\s*)?set\s+(?P<name>[_A-Za-z][_A-Za-z0-9']*)"
     r"(?:\s*:\s*(?P<sort>.*?))?\s*:=\s*(?P<body>.*?)\s*\.\s*$"
 )
 LOCAL_LET_ALIAS_RE = re.compile(
@@ -72171,9 +72200,7 @@ def source_local_set_definitions(source: Path | None, line: int | None) -> dict[
         indent = len(row) - len(stripped)
         if indent > definition_indent:
             return False
-        if stripped.startswith("}"):
-            return True
-        return bool(re.match(r"^[-+*](?:\s|$)", stripped))
+        return stripped.startswith("}")
 
     in_scope: dict[str, tuple[str, str]] = {}
     for name, (sort, body, offset, indent, section_alias) in definitions.items():
@@ -72257,9 +72284,7 @@ def source_local_set_definition_locations(source: Path | None, line: int | None)
         indent = len(row) - len(stripped)
         if indent > definition_indent:
             return False
-        if stripped.startswith("}"):
-            return True
-        return bool(re.match(r"^[-+*](?:\s|$)", stripped))
+        return stripped.startswith("}")
 
     in_scope: dict[str, int] = {}
     for name, (source_line, offset, indent, section_alias) in definitions.items():
@@ -73213,6 +73238,7 @@ def raw_tptp_unfolded_source_fact_proof(
     source_proposition: str | None,
     source_definitions: dict[str, DefinitionInfo],
     source_sorts: dict[str, str] | None = None,
+    variable_sorts: dict[str, str] | None = None,
 ) -> str | None:
     if source_proposition is None or not source_definitions:
         return None
@@ -73222,6 +73248,7 @@ def raw_tptp_unfolded_source_fact_proof(
     target_unfolded = beta_normalize_expr(normalize_defined_expr(target, source_definitions))
     parse_sorts = {**(source_sorts or {})}
     parse_sorts.update({name: definition.sort for name, definition in source_definitions.items()})
+    proof_sorts = {**parse_sorts, **(variable_sorts or {})}
 
     for source_text in (
         source_surface_parse_text(source_proposition, local_sorts=parse_sorts),
@@ -73230,9 +73257,34 @@ def raw_tptp_unfolded_source_fact_proof(
         source = parse_expr(source_text)
         if source is None:
             continue
+        source_head_args = raw_expr_application_head_args(source)
+        source_is_top_defined_application = (
+            source_head_args is not None
+            and source_head_args[0] in source_definitions
+        )
         source_unfolded = beta_normalize_expr(normalize_defined_expr(source, source_definitions))
         if expr_same_mod_alpha_after_sort_normalization(source_unfolded, target_unfolded):
             return source_name
+        if source_is_top_defined_application:
+            continue
+        if len(expr_text(source_unfolded)) + len(expr_text(target_unfolded)) > 60000:
+            continue
+        transformed = raw_ennf_positive_consequent_transform_proof(
+            source_unfolded,
+            target_unfolded,
+            source_name,
+            proof_sorts,
+        )
+        if transformed is not None:
+            return transformed
+        transformed = raw_prop_implication_transform_proof(
+            source_unfolded,
+            target_unfolded,
+            source_name,
+            proof_sorts,
+        )
+        if transformed is not None:
+            return transformed
     return None
 
 
@@ -73399,6 +73451,7 @@ def raw_tptp_source_fact_proof(
         source_proposition,
         source_definitions,
         source_sorts,
+        variable_sorts,
     )
     if unfolded_source_fact is not None:
         return unfolded_source_fact
@@ -73466,6 +73519,7 @@ def raw_tptp_local_source_fact_proof(
         source_proposition,
         source_definitions,
         source_sorts,
+        variable_sorts,
     )
     if unfolded_source_fact is not None:
         return unfolded_source_fact
@@ -74069,6 +74123,19 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         )
         for name, proposition in all_local_source_facts.items()
     }
+    local_source_fact_axiom_propositions: dict[str, str] = {}
+    for name, proposition in local_source_fact_propositions.items():
+        if proposition is None:
+            continue
+        normalized = use_ambient_basic_logic_text(
+            source_surface_parse_text(proposition, local_sorts=variable_sorts)
+        )
+        parsed_normalized = parse_expr(normalized)
+        if (
+            parsed_normalized is not None
+            and raw_expr_well_sorted(parsed_normalized, variable_sorts, "prop")
+        ):
+            local_source_fact_axiom_propositions[name] = expr_text(parsed_normalized)
 
     lines = [
         "// Raw Vampire TPTP reconstruction skeleton.",
@@ -74266,11 +74333,13 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if source_name in declared_names:
             return True
         source_proposition = local_source_fact_propositions[source_name]
-        proposition = (
-            source_proposition
-            if local_source_fact_export_is_safe(source_proposition)
-            else fallback_proposition
-        )
+        proposition = local_source_fact_axiom_propositions.get(source_name)
+        if proposition is None:
+            proposition = (
+                source_proposition
+                if local_source_fact_export_is_safe(source_proposition)
+                else fallback_proposition
+            )
         if not proposition:
             return False
         lines.append(
