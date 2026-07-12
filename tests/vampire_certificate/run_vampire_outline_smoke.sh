@@ -90,6 +90,32 @@ run_outline_case() {
     --emit-megalodon "$megalodon" \
     --theorem-name "${label}_certificate_smoke"
 
+  python3 - "$outline" <<'PY'
+import importlib.util
+import sys
+from pathlib import Path
+
+outline = Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location(
+    "vampire_reconstruct_megalodon",
+    Path("scripts/vampire_reconstruct_megalodon.py"),
+)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+text = outline.read_text(errors="replace")
+steps = module.megalodon_replay_steps(text, outline)
+certified = {
+    name: module.megalodon_replay_step_certificate_rules(step)
+    for name, step in steps.items()
+    if step.certificate_steps
+}
+if "megalodon_certificate_step" in text and not certified:
+    raise SystemExit("raw replay parser dropped Vampire certificate steps")
+if '"rule":"paramodulate"' in text and not any("paramodulate" in rules for rules in certified.values()):
+    raise SystemExit("raw replay parser dropped Vampire paramodulate certificate steps")
+PY
+
   if rg -n '\badmit\b|\baby\b|-allowincompleteqed' "$megalodon"; then
     echo "generated Megalodon proof contains an admission marker" >&2
     exit 1

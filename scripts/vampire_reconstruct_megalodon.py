@@ -63,6 +63,9 @@ MEGALODON_STEP_VARIABLE_SORTS_RE = re.compile(
 MEGALODON_STEP_EXTRA_RE = re.compile(
     r'^megalodon_step_extra\((?P<id>[0-9]+),"(?P<kind>(?:\\.|[^"\\])*)",\[(?P<fields>.*)\]\)\.$'
 )
+MEGALODON_CERTIFICATE_CLAUSE_RE = re.compile(r"^megalodon_certificate_clause\((?P<id>[0-9]+),(?P<clause>.+)\)\.$")
+MEGALODON_CERTIFICATE_STEP_RE = re.compile(r"^megalodon_certificate_step\((?P<id>[0-9]+),(?P<step>.+)\)\.$")
+MEGALODON_CERTIFICATE_STEPS_RE = re.compile(r"^megalodon_certificate_steps\((?P<id>[0-9]+),(?P<steps>.+)\)\.$")
 MEGALODON_SYMBOL_DECLARATION_RE = re.compile(r'^megalodon_symbol_declaration\("(?P<declaration>(?:\\.|[^"\\])*)"\)\.$')
 MEGALODON_FINAL_STEP_RE = re.compile(r"^megalodon_final_step\((?P<id>[0-9]+)\)\.$")
 FRESH_SET_RE = re.compile(r"^sF[0-9]+$")
@@ -121,6 +124,8 @@ def raw_tptp_replay_payload_size(
                 size += sum(len(key) + len(value) for key, value in fields.items())
             else:
                 size += sum(len(field) for field in fields)
+        size += len(replay_step.certificate_clause)
+        size += sum(len(raw) for raw in replay_step.certificate_steps)
     return size
 
 
@@ -340,6 +345,35 @@ class MegalodonReplayStep:
     replay_kind: str = ""
     extras: tuple[tuple[str, tuple[str, ...]], ...] = ()
     variable_sorts: tuple[str, ...] = ()
+    certificate_clause: str = ""
+    certificate_steps: tuple[str, ...] = ()
+
+
+def megalodon_replay_certificate_json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def megalodon_replay_step_certificate_values(step: MegalodonReplayStep | None) -> list[dict[str, object]]:
+    if step is None:
+        return []
+    values: list[dict[str, object]] = []
+    for raw in step.certificate_steps:
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            values.append(value)
+    return values
+
+
+def megalodon_replay_step_certificate_rules(step: MegalodonReplayStep | None) -> tuple[str, ...]:
+    rules: list[str] = []
+    for value in megalodon_replay_step_certificate_values(step):
+        rule = value.get("rule")
+        if isinstance(rule, str) and rule and rule not in rules:
+            rules.append(rule)
+    return tuple(rules)
 
 
 def megalodon_replay_extra_fields(
@@ -3064,6 +3098,8 @@ def megalodon_replay_steps(
     substitutions: dict[str, tuple[str, ...]] = {}
     replay_kinds: dict[str, str] = {}
     extras: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
+    certificate_clauses: dict[str, str] = {}
+    certificate_steps: dict[str, tuple[str, ...]] = {}
     direct_propositions: dict[str, str] = {}
     placeholder_steps: set[str] = set()
     step_details: dict[str, tuple[str, tuple[str, ...], dict[str, str]]] = {}
@@ -3170,6 +3206,35 @@ def megalodon_replay_steps(
             step = f"S{extra_match.group('id')}"
             kind = json.loads(f'"{extra_match.group("kind")}"')
             extras.setdefault(step, []).append((kind, tuple(str(field) for field in fields)))
+            continue
+        certificate_clause_match = MEGALODON_CERTIFICATE_CLAUSE_RE.match(line)
+        if certificate_clause_match is not None:
+            try:
+                value = json.loads(certificate_clause_match.group("clause"))
+            except json.JSONDecodeError:
+                continue
+            certificate_clauses[f"S{certificate_clause_match.group('id')}"] = megalodon_replay_certificate_json(value)
+            continue
+        certificate_step_match = MEGALODON_CERTIFICATE_STEP_RE.match(line)
+        if certificate_step_match is not None:
+            try:
+                value = json.loads(certificate_step_match.group("step"))
+            except json.JSONDecodeError:
+                continue
+            certificate_steps[f"S{certificate_step_match.group('id')}"] = (megalodon_replay_certificate_json(value),)
+            continue
+        certificate_steps_match = MEGALODON_CERTIFICATE_STEPS_RE.match(line)
+        if certificate_steps_match is not None:
+            try:
+                values = json.loads(certificate_steps_match.group("steps"))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(values, list):
+                certificate_steps[f"S{certificate_steps_match.group('id')}"] = tuple(
+                    megalodon_replay_certificate_json(value)
+                    for value in values
+                    if isinstance(value, dict)
+                )
             continue
         replay_kind_match = MEGALODON_STEP_REPLAY_KIND_RE.match(line)
         if replay_kind_match is not None:
@@ -3452,6 +3517,8 @@ def megalodon_replay_steps(
             replay_kind=replay_kinds.get(step, ""),
             extras=tuple(extras.get(step, ())),
             variable_sorts=tuple(f"{name}:{sort}" for name, sort in sorted(step_sorts.items())),
+            certificate_clause=certificate_clauses.get(step, ""),
+            certificate_steps=certificate_steps.get(step, ()),
         )
     for step, replay_substitutions in substitutions.items():
         info = steps.get(step)
@@ -3464,6 +3531,8 @@ def megalodon_replay_steps(
                 replay_kind=replay_kinds.get(step, info.replay_kind),
                 extras=tuple(extras.get(step, info.extras)),
                 variable_sorts=info.variable_sorts,
+                certificate_clause=info.certificate_clause,
+                certificate_steps=info.certificate_steps,
             )
     for step, proposition in direct_propositions.items():
         info = steps.get(step)
@@ -3500,6 +3569,8 @@ def megalodon_replay_steps(
                 replay_kind=info.replay_kind,
                 extras=info.extras,
                 variable_sorts=info.variable_sorts,
+                certificate_clause=info.certificate_clause,
+                certificate_steps=info.certificate_steps,
             )
     for step in placeholder_steps - direct_propositions.keys() - derived_propositions.keys():
         info = steps.get(step)
@@ -3519,6 +3590,8 @@ def megalodon_replay_steps(
                 replay_kind=replay_kind,
                 extras=tuple(extras.get(step, info.extras)),
                 variable_sorts=info.variable_sorts,
+                certificate_clause=info.certificate_clause,
+                certificate_steps=info.certificate_steps,
             )
     for step, step_extras in extras.items():
         info = steps.get(step)
@@ -3531,6 +3604,26 @@ def megalodon_replay_steps(
                 replay_kind=info.replay_kind,
                 extras=tuple(step_extras),
                 variable_sorts=info.variable_sorts,
+                certificate_clause=info.certificate_clause,
+                certificate_steps=info.certificate_steps,
+            )
+    for step in sorted(set(certificate_clauses) | set(certificate_steps)):
+        info = steps.get(step)
+        if info is None:
+            continue
+        clause = certificate_clauses.get(step, info.certificate_clause)
+        cert_steps = certificate_steps.get(step, info.certificate_steps)
+        if clause != info.certificate_clause or cert_steps != info.certificate_steps:
+            steps[step] = MegalodonReplayStep(
+                rule=info.rule,
+                parents=info.parents,
+                proposition=info.proposition,
+                substitutions=info.substitutions,
+                replay_kind=info.replay_kind,
+                extras=info.extras,
+                variable_sorts=info.variable_sorts,
+                certificate_clause=clause,
+                certificate_steps=cert_steps,
             )
     return steps
 
@@ -67627,6 +67720,20 @@ def raw_tptp_replay_rule_candidates(step: MegalodonReplayStep) -> list[str]:
     candidates = [rule_key]
     if replay_kind and replay_kind not in candidates:
         candidates.append(replay_kind)
+    for certificate_rule in megalodon_replay_step_certificate_rules(step):
+        for candidate in {
+            "paramodulate": ("superposition", "forward_demodulation"),
+            "paramodulate_all": ("superposition", "forward_demodulation"),
+            "paramodulate_clause_all": ("superposition", "forward_demodulation"),
+            "resolve": ("resolution", "unit_resulting_resolution"),
+            "substitute": ("substitution",),
+            "equality_resolution": ("equality_resolution",),
+            "equality_factoring": ("equality_factoring",),
+            "factor": ("factoring",),
+            "subsumption_resolution": ("subsumption_resolution",),
+        }.get(certificate_rule, ()):
+            if candidate not in candidates:
+                candidates.append(candidate)
     return candidates
 
 
