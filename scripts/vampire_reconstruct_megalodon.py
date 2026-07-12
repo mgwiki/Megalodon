@@ -1719,6 +1719,12 @@ def reconstruction_prelude_for(propositions: list[str]) -> list[str]:
         "assume HP:P x.",
         "exact (Hxy (fun zl zr => P zl) HP).",
         "Qed.",
+        "Theorem vampire_native_eq_trans_prop: forall x y z:prop, x = y -> y = z -> x = z.",
+        "let x y z.",
+        "assume Hxy:x = y.",
+        "assume Hyz:y = z.",
+        "exact (Hyz (fun zl zr => x = zl) Hxy).",
+        "Qed.",
         ]
     )
     if needs_vampire_eq_set:
@@ -33561,6 +33567,28 @@ def raw_basic_boolean_implication_proof(
         return demorgan
 
     source_premises, source_conclusion = split_arrows(source)
+    target_premises, target_conclusion = split_arrows(target)
+    if (
+        len(source_premises) == 1
+        and len(target_premises) == 1
+        and false_eliminator_expr(source_conclusion)
+        and false_eliminator_expr(target_conclusion)
+        and not expr_same_mod_alpha(source_premises[0], target_premises[0])
+    ):
+        premise_name = fresh_identifier("Hnegprem", expr_text(source), expr_text(target), source_proof)
+        premise_proof = raw_prop_implication_transform_proof(
+            target_premises[0],
+            source_premises[0],
+            premise_name,
+            variable_sorts,
+            depth + 1,
+        )
+        if premise_proof is not None:
+            return (
+                f"(fun {premise_name} :{proof_arg_text(target_premises[0])} => "
+                f"({proof_head(source_proof)} {proof_term_text(premise_proof)}))"
+            )
+
     if (
         len(source_premises) == 1
         and raw_true_expr(source_premises[0])
@@ -33579,6 +33607,12 @@ def raw_basic_boolean_implication_proof(
 
     if target.kind == "arrow":
         target_premise, target_conclusion = target.args
+        if false_eliminator_expr(target_premise):
+            premise_name = fresh_identifier("Hfalse", expr_text(source), expr_text(target), source_proof)
+            return (
+                f"(fun {premise_name} :{proof_arg_text(target_premise)} => "
+                f"{raw_false_to_expr_proof(premise_name, target_conclusion)})"
+            )
         if false_eliminator_expr(target_premise) and false_eliminator_expr(target_conclusion):
             premise_name = fresh_identifier("Hfalse", expr_text(source), expr_text(target), source_proof)
             return (
@@ -33999,6 +34033,29 @@ def raw_prop_implication_transform_proof(
     if true_intro is not None:
         return true_intro
 
+    if source.kind == "arrow" and raw_true_expr(source.args[0]):
+        transformed = raw_prop_implication_transform_proof(
+            source.args[1],
+            target,
+            f"({proof_head(source_proof)} {raw_true_intro_proof()})",
+            variable_sorts,
+            depth + 1,
+        )
+        if transformed is not None:
+            return transformed
+
+    if target.kind == "arrow" and raw_true_expr(target.args[0]):
+        transformed = raw_prop_implication_transform_proof(
+            source,
+            target.args[1],
+            source_proof,
+            variable_sorts,
+            depth + 1,
+        )
+        if transformed is not None:
+            premise_name = fresh_identifier("Htrue", expr_text(source), expr_text(target), source_proof)
+            return f"(fun {premise_name} :{proof_arg_text(target.args[0])} => {proof_term_text(transformed)})"
+
     boolean = raw_basic_boolean_implication_proof(
         source,
         target,
@@ -34025,6 +34082,16 @@ def raw_prop_implication_transform_proof(
     )
     if prop_equality_rewrite_symmetry is not None:
         return prop_equality_rewrite_symmetry
+
+    native_prop_equality = raw_native_prop_equality_transform_proof(
+        source,
+        target,
+        source_proof,
+        variable_sorts,
+        depth + 1,
+    )
+    if native_prop_equality is not None:
+        return native_prop_equality
 
     source_sides = equality_like_sides(source)
     target_sides = equality_like_sides(target)
@@ -34787,6 +34854,79 @@ def raw_native_prop_equality_proof(
     )
 
 
+def raw_prop_valued_expr(expr: Expr, variable_sorts: dict[str, str]) -> bool:
+    known_sorts = {
+        **variable_sorts,
+        "true": "prop",
+        "false": "prop",
+        "vampire_true": "prop",
+        "vampire_false": "prop",
+        "True": "prop",
+        "False": "prop",
+    }
+    return (
+        expr_sort(expr, known_sorts) == "prop"
+        or expr_sort(beta_normalize_expr(expr), known_sorts) == "prop"
+    )
+
+
+def raw_native_prop_equality_transform_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    variable_sorts: dict[str, str],
+    depth: int = 0,
+) -> str | None:
+    if depth > 12 or proof_search_timed_out():
+        return None
+    if source.kind != "eq" or target.kind != "eq":
+        return None
+    source_sides = equality_like_sides(source)
+    target_sides = equality_like_sides(target)
+    if source_sides is None or target_sides is None:
+        return None
+    source_left, source_right = source_sides
+    target_left, target_right = target_sides
+    if not all(
+        raw_prop_valued_expr(side, variable_sorts)
+        for side in (source_left, source_right, target_left, target_right)
+    ):
+        return None
+
+    left_bridge = raw_native_prop_equality_proof(
+        target_left,
+        source_left,
+        variable_sorts,
+        depth + 1,
+    )
+    if left_bridge is None:
+        return None
+    right_bridge = raw_native_prop_equality_proof(
+        source_right,
+        target_right,
+        variable_sorts,
+        depth + 1,
+    )
+    if right_bridge is None:
+        return None
+    mid = (
+        f"(vampire_native_eq_trans_prop "
+        f"{proof_arg_text(source_left)} "
+        f"{proof_arg_text(source_right)} "
+        f"{proof_arg_text(target_right)} "
+        f"{proof_term_text(source_proof)} "
+        f"{proof_term_text(right_bridge)})"
+    )
+    return (
+        f"(vampire_native_eq_trans_prop "
+        f"{proof_arg_text(target_left)} "
+        f"{proof_arg_text(source_left)} "
+        f"{proof_arg_text(target_right)} "
+        f"{proof_term_text(left_bridge)} "
+        f"{proof_term_text(mid)})"
+    )
+
+
 def raw_exists_equality_symmetry_equivalence_proof(
     source: Expr,
     target: Expr,
@@ -35050,8 +35190,11 @@ def raw_set_term_equality_transform_proof(
         predicate_text = expr_text(source.args[index]) + expr_text(target.args[index])
         if (
             predicate_equality is None
-            and len(predicate_text) <= 700
-            and raw_same_except_conjunction_permutation(source.args[index], target.args[index])
+            and len(predicate_text) <= 2500
+            and (
+                len(predicate_text) <= 700
+                or raw_same_except_conjunction_permutation(source.args[index], target.args[index])
+            )
         ):
             predicate_equality = raw_set_predicate_extensionality_proof(
                 source.args[index],
@@ -35201,6 +35344,20 @@ def raw_set_application_multi_argument_equality_proof(
                 target_arg,
                 variable_sorts,
             )
+            predicate_text = expr_text(current_arg) + expr_text(target_arg)
+            if (
+                predicate_equality is None
+                and len(predicate_text) <= 2500
+                and (
+                    len(predicate_text) <= 700
+                    or raw_same_except_conjunction_permutation(current_arg, target_arg)
+                )
+            ):
+                predicate_equality = raw_set_predicate_extensionality_proof(
+                    current_arg,
+                    target_arg,
+                    variable_sorts,
+                )
             if predicate_equality is None:
                 return None
             proof = (
@@ -35448,6 +35605,16 @@ def raw_deep_formula_transform_proof(
         if source.kind == "app" and source.args[0].kind == "var" and source.args[0].value == "vampire_eq_prop":
             sort = "prop"
         return raw_eq_symmetry_proof(source_proof, source_sides[0], sort)
+
+    native_prop_equality = raw_native_prop_equality_transform_proof(
+        source,
+        target,
+        source_proof,
+        variable_sorts,
+        depth + 1,
+    )
+    if native_prop_equality is not None:
+        return native_prop_equality
 
     cps_disjunction = raw_cps_disjunction_ennf_transform_proof(
         source,
@@ -76490,6 +76657,7 @@ VAMPIRE_CLOSED_HELPER_THEOREM_PREFIXES = (
     "Theorem vampire_native_eq_sym_prop:",
     "Theorem vampire_native_eq_refl_prop:",
     "Theorem vampire_native_eq_transport_prop:",
+    "Theorem vampire_native_eq_trans_prop:",
     "Theorem vampire_eq_transport_eq_set:",
 )
 
