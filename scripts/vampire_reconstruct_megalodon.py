@@ -882,7 +882,41 @@ def raw_tptp_replay_step_scoped_split_certificates(
     return tuple(certificates)
 
 
+def raw_tptp_replay_step_scoped_rewrite_summary(replay_step: MegalodonReplayStep | None) -> str | None:
+    if replay_step is None:
+        return None
+    for kind, fields in replay_step.extras:
+        if kind != "rewrite":
+            continue
+        values: dict[str, str] = {}
+        for field in fields:
+            if "=" in field:
+                key, value = field.split("=", 1)
+                values[key] = value
+        redex = values.get("redex") or values.get("rule_lhs")
+        replacement = values.get("replacement") or values.get("rule_rhs")
+        lambda_count = 0
+        for key, value in values.items():
+            if key.endswith("_body_has_db") and value == "true":
+                lambda_count += 1
+        if redex is None and replacement is None and lambda_count == 0:
+            continue
+        pieces: list[str] = []
+        if redex is not None and replacement is not None:
+            pieces.append(f"rewrite {redex} to {replacement}")
+        elif redex is not None:
+            pieces.append(f"rewrite redex {redex}")
+        elif replacement is not None:
+            pieces.append(f"rewrite replacement {replacement}")
+        if lambda_count:
+            pieces.append(f"across {lambda_count} exported lambda/de-Bruijn binder bodies")
+        return "; ".join(pieces)
+    return None
+
+
 def raw_tptp_replay_step_scoped_split_dependency_comment(replay_step: MegalodonReplayStep | None) -> str | None:
+    rewrite_summary = raw_tptp_replay_step_scoped_rewrite_summary(replay_step)
+    rewrite_text = f" The same step exports {rewrite_summary}." if rewrite_summary else ""
     certificates = raw_tptp_replay_step_scoped_split_certificates(replay_step)
     if certificates:
         details: list[str] = []
@@ -901,6 +935,7 @@ def raw_tptp_replay_step_scoped_split_dependency_comment(replay_step: MegalodonR
             f"a scoped split certificate for {', '.join(details)}; component "
             f"de-Bruijn variables are ({db_text}). Replay needs to use that "
             "certificate rather than pointwise closure over an unrelated outer binder."
+            + rewrite_text
         )
     db_sorts = raw_tptp_replay_step_split_dependency_db_sorts(replay_step)
     if not db_sorts:
@@ -910,6 +945,7 @@ def raw_tptp_replay_step_scoped_split_dependency_comment(replay_step: MegalodonR
         f"clause contains de-Bruijn variables ({', '.join(db_sorts)}); replay "
         "needs a scoped split certificate, not pointwise closure over an "
         "unrelated outer binder."
+        + rewrite_text
     )
 
 
