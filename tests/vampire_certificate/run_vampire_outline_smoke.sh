@@ -121,6 +121,10 @@ PY
       echo "outline did not contain Vampire-side superposition certificate expansion" >&2
       exit 1
     fi
+    if ! rg -q '"rewritten_target":' "$outline"; then
+      echo "outline did not contain Vampire-side rewritten_target detail" >&2
+      exit 1
+    fi
   fi
 
   python3 scripts/vampire_certificate.py \

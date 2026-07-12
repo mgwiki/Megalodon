@@ -730,8 +730,20 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
                 raise CertificateError(f"{step_id}: side remainder literals are not covered by conclusion")
 
         elif rule == "paramodulate":
-            allowed = {"id", "rule", "parents", "equality", "from", "to", "target", "position", "substitution", "clause"}
-            require_fields(step, allowed)
+            allowed = {
+                "id",
+                "rule",
+                "parents",
+                "equality",
+                "from",
+                "to",
+                "target",
+                "rewritten_target",
+                "position",
+                "substitution",
+                "clause",
+            }
+            require_fields(step, allowed - {"rewritten_target"})
             require_no_extra_fields(step, allowed)
             parents = require_parents(step, 2)
             equality_parent = clauses.get(parents[0])
@@ -765,6 +777,10 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
                 selected_target.polarity,
                 replace_term_at_position(selected_target.atom, position, to_term, f"{step_id}.position"),
             )
+            if "rewritten_target" in step:
+                explicit_rewritten_target = parse_literal(step["rewritten_target"], f"{step_id}.rewritten_target")
+                if explicit_rewritten_target != rewritten_target:
+                    raise CertificateError(f"{step_id}: rewritten_target does not match position rewrite")
             expected = normalize_clause(
                 tuple(
                     substitute_literal(item, substitution)
@@ -781,8 +797,20 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
                 raise CertificateError(f"{step_id}: paramodulation conclusion does not match parents")
 
         elif rule == "paramodulate_all":
-            allowed = {"id", "rule", "parents", "equality", "from", "to", "target", "positions", "substitution", "clause"}
-            require_fields(step, allowed)
+            allowed = {
+                "id",
+                "rule",
+                "parents",
+                "equality",
+                "from",
+                "to",
+                "target",
+                "rewritten_target",
+                "positions",
+                "substitution",
+                "clause",
+            }
+            require_fields(step, allowed - {"rewritten_target"})
             require_no_extra_fields(step, allowed)
             parents = require_parents(step, 2)
             equality_parent = clauses.get(parents[0])
@@ -818,6 +846,10 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
                 selected_target.polarity,
                 replace_all_terms(selected_target.atom, from_term, to_term),
             )
+            if "rewritten_target" in step:
+                explicit_rewritten_target = parse_literal(step["rewritten_target"], f"{step_id}.rewritten_target")
+                if explicit_rewritten_target != rewritten_target:
+                    raise CertificateError(f"{step_id}: rewritten_target does not match simultaneous rewrite")
             expected = normalize_clause(
                 tuple(
                     substitute_literal(item, substitution)
