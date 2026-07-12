@@ -4101,6 +4101,10 @@ def proof_arg_text(expr: Expr) -> str:
     return f"({expr_text(expr)})"
 
 
+def proof_arrow_domain_text(expr: Expr) -> str:
+    return f"({proof_arg_text(expr)})"
+
+
 def proof_term_text(proof: str) -> str:
     return proof if re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", proof) else f"({proof})"
 
@@ -6569,7 +6573,7 @@ def raw_tptp_predicate_definition_intro_proof(
     proof = (
         f"(xm {proof_arg_text(component)} {proof_arg_text(body)} "
         f"(fun Hbody :{proof_arg_text(component)} => {component_intro}) "
-        f"(fun HnotBody :{proof_arg_text(component)} -> False => {negative_intro}))"
+        f"(fun HnotBody :{proof_arrow_domain_text(component)} -> False => {negative_intro}))"
     )
     for binder, sort in reversed(binders):
         proof = f"(fun {binder} :{sort} => {proof})"
@@ -20295,6 +20299,19 @@ def raw_or_intro_from_branch(
     parts = raw_or_parts(target)
     if parts is None:
         return None
+    clause_weaken = raw_or_clause_weaken_to_target_proof(branch, target, branch_proof, depth + 1, rewrites)
+    if clause_weaken is not None:
+        return clause_weaken
+    for index, literal in enumerate(raw_clause_literals(target)):
+        if expr_same_mod_alpha(branch, literal):
+            typed_intro = raw_typed_or_intro_literal_at(target, index, branch_proof)
+            if typed_intro is not None:
+                return typed_intro
+        transformed_literal = raw_clause_transform_proof(branch, literal, branch_proof, depth + 1, rewrites)
+        if transformed_literal is not None:
+            typed_intro = raw_typed_or_intro_literal_at(target, index, transformed_literal)
+            if typed_intro is not None:
+                return typed_intro
     left, right = parts
     if expr_key(branch) == expr_key(left):
         return f"(fun P:prop => fun Hleft Hright => Hleft {proof_term_text(branch_proof)})"
@@ -20313,6 +20330,40 @@ def raw_or_intro_from_branch(
     if nested_right is not None:
         return f"(fun P:prop => fun Hleft Hright => Hright {proof_term_text(nested_right)})"
     return None
+
+
+def raw_or_clause_weaken_to_target_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+    depth: int = 0,
+    rewrites: tuple[RawSplitRewrite, ...] = (),
+) -> str | None:
+    if depth > 16 or proof_search_timed_out() or raw_or_parts(target) is None:
+        return None
+    source_parts = raw_or_parts(source)
+    if source_parts is None:
+        for index, literal in enumerate(raw_clause_literals(target)):
+            if expr_same_mod_alpha(source, literal):
+                return raw_typed_or_intro_literal_at(target, index, source_proof)
+            transformed = raw_clause_transform_proof(source, literal, source_proof, depth + 1, rewrites)
+            if transformed is not None:
+                return raw_typed_or_intro_literal_at(target, index, transformed)
+        return None
+    left, right = source_parts
+    left_name = fresh_identifier("HorL", expr_text(source), expr_text(target), source_proof, str(depth))
+    right_name = fresh_identifier("HorR", expr_text(source), expr_text(target), source_proof, left_name, str(depth))
+    left_proof = raw_or_clause_weaken_to_target_proof(left, target, left_name, depth + 1, rewrites)
+    if left_proof is None:
+        return None
+    right_proof = raw_or_clause_weaken_to_target_proof(right, target, right_name, depth + 1, rewrites)
+    if right_proof is None:
+        return None
+    return (
+        f"({proof_head(source_proof)} {proof_arg_text(target)} "
+        f"(fun {left_name} :{proof_arg_text(left)} => {proof_term_text(left_proof)}) "
+        f"(fun {right_name} :{proof_arg_text(right)} => {proof_term_text(right_proof)}))"
+    )
 
 
 def raw_or_intro_literal_at(target: Expr, index: int, literal_proof: str) -> str | None:
@@ -20351,8 +20402,8 @@ def raw_typed_or_intro_literal_at(target: Expr, index: int, literal_proof: str, 
             return None
         return (
             f"(fun {proof_var} :prop => "
-            f"fun {left_var} :{proof_arg_text(left)} -> {proof_var} => "
-            f"fun {right_var} :{proof_arg_text(right)} -> {proof_var} => "
+            f"fun {left_var} :{proof_arrow_domain_text(left)} -> {proof_var} => "
+            f"fun {right_var} :{proof_arrow_domain_text(right)} -> {proof_var} => "
             f"{left_var} {proof_term_text(left_proof)})"
         )
     right_proof = raw_typed_or_intro_literal_at(right, index - left_count, literal_proof, depth + 1)
@@ -20360,8 +20411,8 @@ def raw_typed_or_intro_literal_at(target: Expr, index: int, literal_proof: str, 
         return None
     return (
         f"(fun {proof_var} :prop => "
-        f"fun {left_var} :{proof_arg_text(left)} -> {proof_var} => "
-        f"fun {right_var} :{proof_arg_text(right)} -> {proof_var} => "
+        f"fun {left_var} :{proof_arrow_domain_text(left)} -> {proof_var} => "
+        f"fun {right_var} :{proof_arrow_domain_text(right)} -> {proof_var} => "
         f"{right_var} {proof_term_text(right_proof)})"
     )
 
@@ -20612,7 +20663,7 @@ def raw_literal_to_clause_proof(
             )
         if target_literal_proof is None:
             continue
-        proof = raw_or_intro_literal_at(target, index, target_literal_proof)
+        proof = raw_typed_or_intro_literal_at(target, index, target_literal_proof)
         if proof is not None:
             return proof
     return None
@@ -20674,7 +20725,7 @@ def raw_same_order_clause_transform_proof(
             )
         if proof is None:
             return None
-        introduced = raw_or_intro_literal_at(target, index, proof)
+        introduced = raw_typed_or_intro_literal_at(target, index, proof)
         if introduced is None:
             return None
         literal_proofs.append(introduced)
@@ -28613,7 +28664,7 @@ def raw_build_conjunction_from_component_proofs(
         return None
     return (
         f"(fun P :prop => "
-        f"fun K :{proof_arg_text(parts[0])} -> {proof_arg_text(parts[1])} -> P => "
+        f"fun K :{proof_arrow_domain_text(parts[0])} -> {proof_arrow_domain_text(parts[1])} -> P => "
         f"K {proof_term_text(left)} {proof_term_text(right)})"
     )
 
@@ -32983,7 +33034,7 @@ def raw_cps_disjunction_ennf_transform_proof(
         return (
             f"(xm {proof_arg_text(source_disjunct)} {proof_arg_text(target_body)} "
             f"(fun {positive_name} :{proof_arg_text(source_disjunct)} => {proof_term_text(positive_branch)}) "
-            f"(fun {negative_name} :{proof_arg_text(source_disjunct)} -> False => {proof_term_text(negative_branch)}))"
+            f"(fun {negative_name} :{proof_arrow_domain_text(source_disjunct)} -> False => {proof_term_text(negative_branch)}))"
         )
 
     proof = (
@@ -44843,7 +44894,7 @@ def raw_guarded_prop_equality_factoring_equal_binders_proof(
             return (
                 f"(xm {proof_arg_text(negative_side)} {proof_arg_text(target_body)} "
                 f"(fun {side_name} :{proof_arg_text(negative_side)} => {proof_term_text(positive_intro)}) "
-                f"(fun HnotFactorSide :{proof_arg_text(negative_side)} -> False => {proof_term_text(negative_intro)}))"
+                f"(fun HnotFactorSide :{proof_arrow_domain_text(negative_side)} -> False => {proof_term_text(negative_intro)}))"
             )
         return None
 
@@ -49367,7 +49418,7 @@ def raw_negated_prop_true_clause_superposition_proof(
                 return f"((fun HnotGuard :{proof_arg_text(literal)} => {equality_cases}) {proof_term_text(literal_proof)})"
             for target_index, target_literal in target_residuals:
                 if expr_same_mod_alpha(literal, target_literal):
-                    return raw_or_intro_literal_at(target_body, target_index, literal_proof)
+                    return raw_typed_or_intro_literal_at(target_body, target_index, literal_proof)
             return None
 
         body_proof = raw_clause_cases_with_handler(
@@ -50341,6 +50392,24 @@ def raw_tptp_superposition_proof(
             if parent_expr is not None:
                 parent_exprs.append((parent_expr, raw_tptp_canonical_parent_proof_name(parent, propositions_by_name)))
         if target_expr is not None and len(parent_exprs) == 2:
+            proof = raw_negated_prop_true_clause_superposition_proof(
+                target_expr,
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+            )
+            if proof is not None:
+                return proof
+            proof = raw_negated_prop_true_clause_superposition_proof(
+                target_expr,
+                parent_exprs[1][0],
+                parent_exprs[1][1],
+                parent_exprs[0][0],
+                parent_exprs[0][1],
+            )
+            if proof is not None:
+                return proof
             proof = raw_tptp_quantified_equality_clause_superposition_proof(
                 proposition,
                 parents,
@@ -61668,7 +61737,7 @@ def raw_implication_chain_with_positive_ennf_proof(
         return (
             f"(xm {proof_arg_text(premise)} {proof_arg_text(target)} "
             f"(fun {premise_name} :{proof_arg_text(premise)} => {proof_term_text(conclusion_intro)}) "
-            f"(fun {not_premise_name} :{proof_arg_text(premise)} -> False => {proof_term_text(negative_intro)}))"
+            f"(fun {not_premise_name} :{proof_arrow_domain_text(premise)} -> False => {proof_term_text(negative_intro)}))"
         )
     return None
 
@@ -61850,7 +61919,7 @@ def raw_implication_chain_to_ennf_or_components_proof(
         return (
             f"(xm {proof_arg_text(premise)} {target_text} "
             f"(fun {premise_name} :{proof_arg_text(premise)} => {proof_term_text(positive_branch)}) "
-            f"(fun {not_premise_name} :{proof_arg_text(premise)} -> False => {proof_term_text(negative_intro)}))"
+            f"(fun {not_premise_name} :{proof_arrow_domain_text(premise)} -> False => {proof_term_text(negative_intro)}))"
         )
 
     return build(0)
@@ -62017,7 +62086,7 @@ def raw_two_premise_implication_chain_ennf_by_contradiction_proof(
         premise_proof = (
             f"(xm {proof_arg_text(premise)} {proof_arg_text(premise)} "
             f"(fun HdirectPremise => HdirectPremise) "
-            f"(fun {not_premise_name} :{proof_arg_text(premise)} -> False => "
+            f"(fun {not_premise_name} :{proof_arrow_domain_text(premise)} -> False => "
             f"{proof_term_text(raw_false_to_expr_proof(contradiction, premise))}))"
         )
         premise_proofs.append(premise_proof)
@@ -62035,7 +62104,7 @@ def raw_two_premise_implication_chain_ennf_by_contradiction_proof(
     return (
         f"(xm {proof_arg_text(target)} {proof_arg_text(target)} "
         f"(fun {target_name} :{proof_arg_text(target)} => {target_name}) "
-        f"(fun {not_target_name} :{proof_arg_text(target)} -> False => {proof_term_text(conclusion_intro)}))"
+        f"(fun {not_target_name} :{proof_arrow_domain_text(target)} -> False => {proof_term_text(conclusion_intro)}))"
     )
 
 
@@ -69540,6 +69609,24 @@ def raw_tptp_replay_proof(
                     if parent_expr is not None:
                         parent_exprs.append((parent_expr, raw_tptp_canonical_parent_proof_name(parent, propositions_by_name)))
                 if len(parent_exprs) == 2:
+                    proof = raw_negated_prop_true_clause_superposition_proof(
+                        target_expr,
+                        parent_exprs[0][0],
+                        parent_exprs[0][1],
+                        parent_exprs[1][0],
+                        parent_exprs[1][1],
+                    )
+                    if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
+                        return proof
+                    proof = raw_negated_prop_true_clause_superposition_proof(
+                        target_expr,
+                        parent_exprs[1][0],
+                        parent_exprs[1][1],
+                        parent_exprs[0][0],
+                        parent_exprs[0][1],
+                    )
+                    if proof is not None and not raw_tptp_replay_proof_is_unsafe(rule, proposition, proof):
+                        return proof
                     if raw_tptp_quantified_clause_resolution_preferred(proposition):
                         proof = raw_quantified_clause_resolution_superposition_proof(
                             target_expr,
@@ -75628,6 +75715,34 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 and rule == "superposition"
                 and raw_tptp_quantified_clause_resolution_preferred(proposition)
             ):
+                target_expr = parse_expr(proposition)
+                parent_exprs: list[tuple[Expr, str]] = []
+                for parent in replay_parents:
+                    parent_proposition = propositions_by_name.get(parent)
+                    parent_expr = parse_expr(parent_proposition) if parent_proposition is not None else None
+                    if parent_expr is not None:
+                        parent_exprs.append((parent_expr, raw_tptp_canonical_parent_proof_name(parent, propositions_by_name)))
+                if target_expr is not None and len(parent_exprs) == 2:
+                    replay_proof = raw_negated_prop_true_clause_superposition_proof(
+                        target_expr,
+                        parent_exprs[0][0],
+                        parent_exprs[0][1],
+                        parent_exprs[1][0],
+                        parent_exprs[1][1],
+                    )
+                    if replay_proof is None:
+                        replay_proof = raw_negated_prop_true_clause_superposition_proof(
+                            target_expr,
+                            parent_exprs[1][0],
+                            parent_exprs[1][1],
+                            parent_exprs[0][0],
+                            parent_exprs[0][1],
+                        )
+            if (
+                replay_proof is None
+                and rule == "superposition"
+                and raw_tptp_quantified_clause_resolution_preferred(proposition)
+            ):
                 replay_proof = raw_tptp_quantified_clause_resolution_superposition_proof(
                     proposition,
                     replay_parents,
@@ -75853,7 +75968,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         if replay_proof is not None:
             replay_proof = instantiate_global_axiom_proofs(replay_proof)
             replay_proof = use_ambient_basic_logic_text(replay_proof)
-            replay_proof = rename_generated_identifier_text(replay_proof, local_identifier_renames)
+            replay_proof = replace_generated_identifier_tokens(replay_proof, local_identifier_renames)
         lines.append(f"claim {claim_name}: {proposition}.")
         if replay_proof is None and rule in {"definition_folding", "definition_unfolding"}:
             previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
@@ -75939,7 +76054,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             if replay_proof is not None:
                 replay_proof = instantiate_global_axiom_proofs(replay_proof)
                 replay_proof = use_ambient_basic_logic_text(replay_proof)
-                replay_proof = rename_generated_identifier_text(replay_proof, local_identifier_renames)
+                replay_proof = replace_generated_identifier_tokens(replay_proof, local_identifier_renames)
         if replay_proof is None:
             bridge_block = None
             if rule in {"definition_folding", "definition_unfolding"}:
