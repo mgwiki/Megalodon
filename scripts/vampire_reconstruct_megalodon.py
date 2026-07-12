@@ -73264,6 +73264,40 @@ def source_surface_head_is_function(head: str, local_sorts: dict[str, str] | Non
     return sort is not None and len(split_sort_arrows(sort)) > 1
 
 
+def source_surface_application_text(
+    stripped: str,
+    target_text: str | None = None,
+    local_sorts: dict[str, str] | None = None,
+    source_binders: dict[str, str] | None = None,
+    expected_sort: str | None = None,
+) -> str | None:
+    pieces = split_top_level_whitespace(stripped)
+    if len(pieces) <= 1:
+        return None
+    head = pieces[0]
+    if not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", head):
+        return None
+    head_sort = local_sorts.get(head) if local_sorts is not None else None
+    if head_sort is None and (expected_sort is None or normalize_megalodon_sort(expected_sort) != "set"):
+        return None
+    args = [
+        source_surface_expr_text(piece, target_text, local_sorts, source_binders)
+        for piece in pieces[1:]
+    ]
+    if head_sort is not None and len(split_sort_arrows(head_sort)) > 1:
+        rendered_args = [
+            f"({arg})" if len(split_top_level_whitespace(arg)) > 1 and not source_text_is_wrapped_in_parens(arg) else arg
+            for arg in args
+        ]
+        return " ".join([head, *rendered_args])
+    if head_sort is not None and normalize_megalodon_sort(head_sort) != "set":
+        return None
+    result = head
+    for arg in args:
+        result = f"ap ({result}) ({arg})"
+    return result
+
+
 def source_surface_binder_expr_text(
     stripped: str,
     target_text: str | None = None,
@@ -73541,13 +73575,20 @@ def source_surface_expr_text(
                     target_text,
                     scoped_sorts,
                     source_binders,
+                    "set",
                 )
-                predicate_text = source_surface_expr_text(predicate, target_text, scoped_sorts, source_binders)
+                predicate_text = source_surface_expr_text(predicate, target_text, scoped_sorts, source_binders, "prop")
                 body_eta = re.fullmatch(r"(?P<fn>[_A-Za-z][_A-Za-z0-9']*)\s+" + re.escape(var), body_text)
                 predicate_eta = re.fullmatch(r"(?P<fn>[_A-Za-z][_A-Za-z0-9']*)\s+" + re.escape(var), predicate_text)
-                function_text = body_eta.group("fn") if body_eta is not None else f"(fun {var} :set => {body_text})"
+                function_text = (
+                    body_eta.group("fn")
+                    if body_eta is not None and source_surface_head_is_function(body_eta.group("fn"), local_sorts)
+                    else f"(fun {var} :set => {body_text})"
+                )
                 predicate_function_text = (
-                    predicate_eta.group("fn") if predicate_eta is not None else f"(fun {var} :set => {predicate_text})"
+                    predicate_eta.group("fn")
+                    if predicate_eta is not None and source_surface_head_is_function(predicate_eta.group("fn"), local_sorts)
+                    else f"(fun {var} :set => {predicate_text})"
                 )
                 return (
                     f"ReplSep ({source_surface_expr_text(domain_match.group('set'), target_text, local_sorts, source_binders)}) "
@@ -73562,7 +73603,11 @@ def source_surface_expr_text(
         scoped_sorts = {**(local_sorts or {}), var: "set"}
         body_text = source_surface_expr_text(sep_match.group("body"), target_text, scoped_sorts, source_binders)
         eta_match = re.fullmatch(rf"(?P<fn>[_A-Za-z][_A-Za-z0-9']*)\s+{re.escape(var)}", body_text)
-        predicate_text = eta_match.group("fn") if eta_match is not None else f"(fun {var} :set => {body_text})"
+        predicate_text = (
+            eta_match.group("fn")
+            if eta_match is not None and source_surface_head_is_function(eta_match.group("fn"), local_sorts)
+            else f"(fun {var} :set => {body_text})"
+        )
         return (
             f"Sep ({source_surface_expr_text(sep_match.group('set'), target_text, local_sorts, source_binders)}) "
             f"{predicate_text}"
@@ -73574,9 +73619,13 @@ def source_surface_expr_text(
     if repl_match is not None:
         var = repl_match.group("var")
         scoped_sorts = {**(local_sorts or {}), var: "set"}
-        body_text = source_surface_expr_text(repl_match.group("body"), target_text, scoped_sorts, source_binders)
+        body_text = source_surface_expr_text(repl_match.group("body"), target_text, scoped_sorts, source_binders, "set")
         eta_match = re.fullmatch(r"(?P<fn>[_A-Za-z][_A-Za-z0-9']*)\s+" + re.escape(var), body_text)
-        function_text = eta_match.group("fn") if eta_match is not None else f"(fun {var} :set => {body_text})"
+        function_text = (
+            eta_match.group("fn")
+            if eta_match is not None and source_surface_head_is_function(eta_match.group("fn"), local_sorts)
+            else f"(fun {var} :set => {body_text})"
+        )
         return (
             f"Repl ({source_surface_expr_text(repl_match.group('set'), target_text, local_sorts, source_binders)}) "
             f"{function_text}"
@@ -73608,6 +73657,9 @@ def source_surface_expr_text(
         left, right = power
         function_name = source_surface_infix_function("^", "exp_SNo_nat", target_text)
         return f"{function_name} ({source_surface_expr_text(left, target_text, local_sorts, source_binders)}) ({source_surface_expr_text(right, target_text, local_sorts, source_binders)})"
+    application_text = source_surface_application_text(stripped, target_text, local_sorts, source_binders, expected_sort)
+    if application_text is not None:
+        return application_text
     return source_surface_rewrite_parenthesized_terms(stripped, target_text, local_sorts, source_binders)
 
 
@@ -74841,7 +74893,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     renamed_all_local_set_definitions = {
         local_identifier_renames.get(name, name): (
             sort,
-            rename_generated_identifier_text(
+            replace_generated_identifier_tokens(
                 source_surface_parse_text(
                     body,
                     local_sorts=local_set_parse_sorts,
