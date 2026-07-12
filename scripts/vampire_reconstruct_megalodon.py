@@ -5346,6 +5346,23 @@ def normalize_defined_expr(
             for arg in expr.args[1:]
         )
         definition = definitions.get(head.value)
+        if (
+            head.value == "ex"
+            and definition is not None
+            and len(definition.binders) == 1
+            and len(args) == 2
+        ):
+            if head.value in active:
+                return Expr("app", args=(head,) + args)
+            sort_text = normalize_megalodon_sort(expr_text(args[0]))
+            body = substitute_expr_sorts(definition.body, {"A": sort_text})
+            subst = {definition.binders[0]: args[1]}
+            return normalize_defined_expr(
+                substitute_expr(body, subst),
+                definitions,
+                active | frozenset((head.value,)),
+                fuel - 1,
+            )
         if definition is not None and len(definition.binders) == len(args):
             if head.value in active:
                 return Expr("app", args=(head,) + args)
@@ -74586,6 +74603,28 @@ def local_set_definition_infos(
     return infos
 
 
+def referenced_definition_closure(
+    definitions: dict[str, DefinitionInfo],
+    expressions: Iterable[Expr],
+) -> dict[str, DefinitionInfo]:
+    roots: set[str] = set()
+    for expression in expressions:
+        roots.update(expr_variables(expression))
+    selected: dict[str, DefinitionInfo] = {}
+    pending = [name for name in roots if name in definitions]
+    while pending:
+        name = pending.pop()
+        if name in selected:
+            continue
+        definition = definitions[name]
+        selected[name] = definition
+        dependencies = expr_variables(definition.body) - set(definition.binders)
+        for dependency in dependencies:
+            if dependency in definitions and dependency not in selected:
+                pending.append(dependency)
+    return selected
+
+
 def expr_same_mod_alpha_after_sort_normalization(left: Expr, right: Expr) -> bool:
     left_normal = parse_expr(expr_text(left))
     right_normal = parse_expr(expr_text(right))
@@ -77315,11 +77354,15 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     )
                     translated_source_expr = parse_expr(translated_source_statement)
                     if translated_source_expr is not None:
-                        source_bridge_definitions = local_set_definition_infos(
+                        source_bridge_definitions = referenced_definition_closure(
+                            source_definitions,
+                            (translated_source_expr, positive_expr),
+                        )
+                        source_bridge_definitions.update(local_set_definition_infos(
                             local_set_definitions,
                             source_binders,
                             {**source_sorts, **variable_sorts},
-                        )
+                        ))
                         source_bridge_proof = raw_tptp_source_statement_bridge_proof(
                             translated_source_expr,
                             positive_expr,
