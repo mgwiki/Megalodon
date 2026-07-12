@@ -44,6 +44,12 @@ run_outline_case() {
     echo "outline did not contain Vampire-side resolve certificate step" >&2
     exit 1
   fi
+  if [[ "$label" == *"_equality_resolution" ]]; then
+    if ! rg -q 'megalodon_certificate_step\([0-9]+,\{"rule":"equality_resolution"' "$outline"; then
+      echo "outline did not contain Vampire-side equality_resolution certificate step" >&2
+      exit 1
+    fi
+  fi
 
   python3 scripts/vampire_certificate.py \
     "$outline" \
@@ -63,6 +69,7 @@ run_outline_case() {
 
 fof_problem="$TMPDIR/vampire_outline_smoke_fof.p"
 thf_problem="$TMPDIR/vampire_outline_smoke_thf.p"
+equality_resolution_problem="$TMPDIR/vampire_outline_smoke_equality_resolution.p"
 
 cat >"$fof_problem" <<'PROBLEM'
 fof(a1, axiom, p(a)).
@@ -76,7 +83,13 @@ thf(a1,axiom,(p @ a)).
 thf(c,conjecture,(p @ a)).
 PROBLEM
 
+cat >"$equality_resolution_problem" <<'PROBLEM'
+fof(a1,axiom,((a != a) | p)).
+fof(c,conjecture,p).
+PROBLEM
+
 run_outline_case vampire_outline_smoke_fof "$fof_problem"
 run_outline_case vampire_outline_smoke_thf "$thf_problem"
+run_outline_case vampire_outline_smoke_equality_resolution "$equality_resolution_problem"
 
 echo "vampire outline smoke test passed"
