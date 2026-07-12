@@ -64,6 +64,7 @@ CERTIFICATE_STEPS_RE = re.compile(r"^megalodon_certificate_steps\((\d+),(.+)\)\.
 REPLAY_KIND_RE = re.compile(r'^megalodon_step_replay_kind\((\d+),("(?:\\.|[^"\\])*")\)\.$')
 FINAL_STEP_RE = re.compile(r"^megalodon_final_step\((\d+)\)\.$")
 SYMBOL_DECL_RE = re.compile(r'^megalodon_symbol_declaration\(("(?:\\.|[^"\\])*")\)\.$')
+VARIABLE_SORTS_RE = re.compile(r"^megalodon_step_variable_sorts\((\d+),(\[.*\])\)\.$")
 EXTRA_RE = re.compile(r'^megalodon_step_extra\((\d+),("(?:\\.|[^"\\])*"),(\[.*\])\)\.$')
 
 
@@ -306,6 +307,25 @@ def require_supported_sort(sort: str, context: str) -> str:
     return normalize_sort(sort, context)
 
 
+def parse_variable_sort_entries(value: Any, context: str) -> dict[str, str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise CertificateError(f"{context}: variable sorts must be a string list")
+    result: dict[str, str] = {}
+    for index, item in enumerate(value):
+        if ":" not in item:
+            raise CertificateError(f"{context}[{index}]: variable sort entry must contain ':'")
+        name, sort = item.split(":", 1)
+        require_megalodon_ident(name, f"{context}[{index}].name")
+        normalized_sort = require_supported_sort(sort, f"{context}[{index}].sort")
+        previous = result.get(name)
+        if previous is not None and previous != normalized_sort:
+            raise CertificateError(
+                f"{context}: variable {name!r} has conflicting explicit sorts {previous!r} and {normalized_sort!r}"
+            )
+        result[name] = normalized_sort
+    return result
+
+
 def parse_substitution(value: Any, context: str) -> dict[str, Term]:
     if not isinstance(value, dict):
         raise CertificateError(f"{context}: substitution must be an object")
@@ -384,7 +404,7 @@ def require_fields(step: dict[str, Any], fields: set[str]) -> None:
 
 
 def require_no_extra_fields(step: dict[str, Any], fields: set[str]) -> None:
-    extra = sorted(set(step) - fields)
+    extra = sorted(set(step) - fields - {"variable_sorts"})
     if extra:
         raise CertificateError(f"{step.get('id', '<unknown>')}: unexpected fields: {', '.join(extra)}")
 
@@ -1050,6 +1070,7 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
     certificate_step_lists: dict[int, list[dict[str, Any]]] = {}
     replay_kinds: dict[int, str] = {}
     extras: dict[int, dict[str, list[str]]] = {}
+    variable_sorts: dict[int, dict[str, str]] = {}
     declarations: list[str] = []
     final_step: int | None = None
 
@@ -1109,6 +1130,15 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
         if match:
             replay_kinds[int(match.group(1))] = json.loads(match.group(2))
             continue
+        match = VARIABLE_SORTS_RE.match(line)
+        if match:
+            step_no = int(match.group(1))
+            try:
+                entries = json.loads(match.group(2))
+            except json.JSONDecodeError as exc:
+                raise CertificateError(f"line {lineno}: malformed variable-sort JSON: {exc}") from exc
+            variable_sorts[step_no] = parse_variable_sort_entries(entries, f"u{step_no}.variable_sorts")
+            continue
         match = EXTRA_RE.match(line)
         if match:
             step_no = int(match.group(1))
@@ -1154,6 +1184,8 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
                     step["clause"] = clause_json[step_no]
                 if "id" not in step or "clause" not in step:
                     raise CertificateError(f"{step_id}: explicit certificate substep {index} needs id and clause")
+                if step_no in variable_sorts:
+                    step.setdefault("variable_sorts", variable_sorts[step_no])
                 steps.append(step)
             clauses[step_no] = clause
             continue
@@ -1161,6 +1193,8 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
             step = dict(explicit_step)
             step["id"] = step_id
             step["clause"] = clause_json[step_no]
+            if step_no in variable_sorts:
+                step.setdefault("variable_sorts", variable_sorts[step_no])
             steps.append(step)
             clauses[step_no] = clause
             continue
@@ -1173,6 +1207,8 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
         )
 
         if definition_input is not None:
+            if step_no in variable_sorts:
+                definition_input.setdefault("variable_sorts", variable_sorts[step_no])
             steps.append(definition_input)
         elif replay_kind in RESOLUTION_LIKE_REPLAY_KINDS:
             if len(parent_clause_numbers) != 2:
@@ -1188,16 +1224,22 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
                     "parents": [f"u{left_no}", f"u{right_no}"],
                     "pivot": literal_to_json(pivot),
                     "clause": clause_json[step_no],
+                    **({"variable_sorts": variable_sorts[step_no]} if step_no in variable_sorts else {}),
                 }
             )
         elif replay_kind in {"forward_demodulation", "backward_demodulation", "definition_rewrite"}:
             paramodulation = infer_paramodulation_step(step_id, parent_clause_numbers, clauses, clause, clause_json[step_no])
             if paramodulation is not None:
+                if step_no in variable_sorts:
+                    paramodulation.setdefault("variable_sorts", variable_sorts[step_no])
                 steps.append(paramodulation)
             else:
                 paramodulation_with_symmetry = infer_paramodulation_then_symmetry_steps(step_id, parent_clause_numbers, clauses, clause)
                 if paramodulation_with_symmetry is not None:
                     inferred_steps, _intermediate_clause = paramodulation_with_symmetry
+                    if step_no in variable_sorts:
+                        for inferred_step in inferred_steps:
+                            inferred_step.setdefault("variable_sorts", variable_sorts[step_no])
                     steps.extend(inferred_steps)
                 else:
                     source_kind = "vampire_input_clause" if not meta["parents"] else "vampire_derived_clause"
@@ -1206,6 +1248,7 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
                             "id": step_id,
                             "rule": "input",
                             "clause": clause_json[step_no],
+                            **({"variable_sorts": variable_sorts[step_no]} if step_no in variable_sorts else {}),
                             "source": {
                                 "kind": source_kind,
                                 "name": step_id,
@@ -1221,6 +1264,7 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
                     "id": step_id,
                     "rule": "input",
                     "clause": clause_json[step_no],
+                    **({"variable_sorts": variable_sorts[step_no]} if step_no in variable_sorts else {}),
                     "source": {
                         "kind": source_kind,
                         "name": step_id,
@@ -1368,51 +1412,80 @@ def term_spine(term: Term) -> tuple[Term, list[Term]]:
     return current, args
 
 
-def collect_term_var_sorts(term: Term, expected_sort: str, symbol_sorts: dict[str, tuple[str, ...]], var_sorts: dict[str, str]) -> None:
+def collect_term_var_sorts(
+    term: Term,
+    expected_sort: str,
+    symbol_sorts: dict[str, tuple[str, ...]],
+    var_sorts: dict[str, str],
+    locked_vars: set[str] | None = None,
+) -> None:
+    locked_vars = locked_vars or set()
     if term.kind == "var":
-        merge_var_sort(var_sorts, term.name, expected_sort)
+        if term.name not in locked_vars:
+            merge_var_sort(var_sorts, term.name, expected_sort)
         return
     head, args = term_spine(term)
-    if head.kind == "var" and args:
+    if head.kind == "var" and args and head.name not in locked_vars:
         merge_var_sort(var_sorts, head.name, "->".join(["set"] * len(args) + [expected_sort]))
     if head.kind == "const" and args:
         signature = symbol_sorts.get(head.name)
         if signature is not None and len(signature) >= len(args) + 1:
             for arg, arg_sort in zip(args, signature):
-                collect_term_var_sorts(arg, arg_sort, symbol_sorts, var_sorts)
+                collect_term_var_sorts(arg, arg_sort, symbol_sorts, var_sorts, locked_vars)
             return
     for arg in term.args:
-        collect_term_var_sorts(arg, "set", symbol_sorts, var_sorts)
+        collect_term_var_sorts(arg, "set", symbol_sorts, var_sorts, locked_vars)
 
 
-def collect_atom_var_sorts(atom: Term, symbol_sorts: dict[str, tuple[str, ...]], var_sorts: dict[str, str]) -> None:
+def collect_atom_var_sorts(
+    atom: Term,
+    symbol_sorts: dict[str, tuple[str, ...]],
+    var_sorts: dict[str, str],
+    locked_vars: set[str] | None = None,
+) -> None:
+    locked_vars = locked_vars or set()
     if atom.kind == "eq" and len(atom.args) == 2:
         for arg in atom.args:
-            collect_term_var_sorts(arg, atom.name, symbol_sorts, var_sorts)
+            collect_term_var_sorts(arg, atom.name, symbol_sorts, var_sorts, locked_vars)
         return
     if atom.kind == "pred":
         signature = symbol_sorts.get(atom.name)
         arg_sorts = signature[:-1] if signature is not None and len(signature) == len(atom.args) + 1 else ("set",) * len(atom.args)
         for arg, arg_sort in zip(atom.args, arg_sorts):
-            collect_term_var_sorts(arg, arg_sort, symbol_sorts, var_sorts)
+            collect_term_var_sorts(arg, arg_sort, symbol_sorts, var_sorts, locked_vars)
         return
     for arg in atom.args:
-        collect_term_var_sorts(arg, "set", symbol_sorts, var_sorts)
+        collect_term_var_sorts(arg, "set", symbol_sorts, var_sorts, locked_vars)
 
 
-def clause_var_sorts(clause: tuple[Literal, ...], symbol_sorts: dict[str, tuple[str, ...]]) -> dict[str, str]:
-    var_sorts: dict[str, str] = {}
+def clause_var_sorts(
+    clause: tuple[Literal, ...],
+    symbol_sorts: dict[str, tuple[str, ...]],
+    explicit_var_sorts: dict[str, str] | None = None,
+) -> dict[str, str]:
+    clause_vars = set(clause_free_vars(clause))
+    explicit_var_sorts = explicit_var_sorts or {}
+    var_sorts: dict[str, str] = {
+        name: require_supported_sort(sort, f"explicit sort for {name}")
+        for name, sort in explicit_var_sorts.items()
+        if name in clause_vars
+    }
+    locked_vars = set(var_sorts)
     for literal in clause:
-        collect_atom_var_sorts(literal.atom, symbol_sorts, var_sorts)
-    for name in clause_free_vars(clause):
+        collect_atom_var_sorts(literal.atom, symbol_sorts, var_sorts, locked_vars)
+    for name in clause_vars:
         var_sorts.setdefault(name, "set")
     return var_sorts
 
 
-def clause_prop_text(clause: tuple[Literal, ...], symbol_sorts: dict[str, tuple[str, ...]] | None = None) -> str:
+def clause_prop_text(
+    clause: tuple[Literal, ...],
+    symbol_sorts: dict[str, tuple[str, ...]] | None = None,
+    explicit_var_sorts: dict[str, str] | None = None,
+) -> str:
     symbol_sorts = symbol_sorts or {}
     result = clause_body_text(clause)
-    var_sorts = clause_var_sorts(clause, symbol_sorts)
+    var_sorts = clause_var_sorts(clause, symbol_sorts, explicit_var_sorts)
     for name in reversed(clause_free_vars(clause)):
         result = f"forall {require_megalodon_ident(name, 'binder')}:{sort_type_text(var_sorts[name])}, {result}"
     return result
@@ -1842,9 +1915,14 @@ def instantiate_proof(proof_name: str, parent_clause: tuple[Literal, ...], subst
     return proof
 
 
-def wrap_clause_binders(clause: tuple[Literal, ...], proof: str, symbol_sorts: dict[str, tuple[str, ...]] | None = None) -> str:
+def wrap_clause_binders(
+    clause: tuple[Literal, ...],
+    proof: str,
+    symbol_sorts: dict[str, tuple[str, ...]] | None = None,
+    explicit_var_sorts: dict[str, str] | None = None,
+) -> str:
     symbol_sorts = symbol_sorts or {}
-    var_sorts = clause_var_sorts(clause, symbol_sorts)
+    var_sorts = clause_var_sorts(clause, symbol_sorts, explicit_var_sorts)
     for name in reversed(clause_free_vars(clause)):
         proof = f"(fun {require_megalodon_ident(name, 'binder')} :{sort_type_text(var_sorts[name])} => {proof})"
     return proof
@@ -1861,6 +1939,21 @@ def definition_input_declarations(data: dict[str, Any]) -> dict[str, tuple[str, 
             continue
         definitions[symbol] = (sort, parse_term(step["value"], f"{step.get('id', '<definition>')}.value"))
     return definitions
+
+
+def step_explicit_var_sorts(step: dict[str, Any], step_id: str) -> dict[str, str]:
+    value = step.get("variable_sorts", {})
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise CertificateError(f"{step_id}.variable_sorts must be an object")
+    result: dict[str, str] = {}
+    for name, sort in value.items():
+        if not isinstance(name, str) or not isinstance(sort, str):
+            raise CertificateError(f"{step_id}.variable_sorts must map variable names to sort strings")
+        require_megalodon_ident(name, f"{step_id}.variable_sorts.name")
+        result[name] = require_supported_sort(sort, f"{step_id}.variable_sorts.{name}")
+    return result
 
 
 def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal, ...]], theorem_name: str) -> str:
@@ -1915,17 +2008,18 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
         step_id = step["id"]
         rule = step["rule"]
         clause = clauses[step_id]
+        explicit_var_sorts = step_explicit_var_sorts(step, step_id)
         step_clauses[step_id] = clause
         if not clause:
             final_empty = step_id
         if rule == "input":
             proof_names[step_id] = step_id
-            assumptions.append((step_id, clause_prop_text(clause, symbol_sorts)))
+            assumptions.append((step_id, clause_prop_text(clause, symbol_sorts, explicit_var_sorts)))
             continue
         if rule == "definition_input":
-            proof = wrap_clause_binders(clause, equality_refl_proof(), symbol_sorts)
+            proof = wrap_clause_binders(clause, equality_refl_proof(), symbol_sorts, explicit_var_sorts)
             proof_names[step_id] = step_id
-            derived.append((step_id, clause_prop_text(clause, symbol_sorts), proof))
+            derived.append((step_id, clause_prop_text(clause, symbol_sorts, explicit_var_sorts), proof))
             continue
         if rule == "resolve":
             parents = step["parents"]
@@ -1941,6 +2035,7 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
                     clause,
                 ),
                 symbol_sorts,
+                explicit_var_sorts,
             )
         elif rule == "substitute":
             parent = step["parents"][0]
@@ -1954,6 +2049,7 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
                     clause,
                 ),
                 symbol_sorts,
+                explicit_var_sorts,
             )
         elif rule == "equality_resolution":
             parent = step["parents"][0]
@@ -1969,6 +2065,7 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
                     clause,
                 ),
                 symbol_sorts,
+                explicit_var_sorts,
             )
         elif rule == "equality_factoring":
             parent = step["parents"][0]
@@ -1990,6 +2087,7 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
                     clause,
                 ),
                 symbol_sorts,
+                explicit_var_sorts,
             )
         elif rule == "equality_symmetry":
             parent = step["parents"][0]
@@ -2003,6 +2101,7 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
                     clause,
                 ),
                 symbol_sorts,
+                explicit_var_sorts,
             )
         elif rule == "paramodulate":
             parents = step["parents"]
@@ -2024,6 +2123,7 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
                     clause,
                 ),
                 symbol_sorts,
+                explicit_var_sorts,
             )
         elif rule == "factor":
             parent = step["parents"][0]
@@ -2034,7 +2134,7 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
         else:
             raise CertificateError(f"Megalodon smoke elaboration does not yet support {rule}")
         proof_names[step_id] = step_id
-        derived.append((step_id, clause_prop_text(clause, symbol_sorts), proof))
+        derived.append((step_id, clause_prop_text(clause, symbol_sorts, explicit_var_sorts), proof))
 
     if final_empty is None:
         raise CertificateError("certificate has no empty-clause step to prove False")
