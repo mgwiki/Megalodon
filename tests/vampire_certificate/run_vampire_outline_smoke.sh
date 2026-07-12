@@ -120,6 +120,14 @@ PY
       echo "outline did not contain Vampire-side substitute-plus-resolution certificate steps" >&2
       exit 1
     fi
+    if rg -q 'source_proposition=.*\bp f a\b|target_proposition=.*\bp f a\b' "$outline"; then
+      echo "outline contains ambiguous unparenthesized predicate application p f a" >&2
+      exit 1
+    fi
+    if ! rg -q 'source_proposition=.*p \(f a\)|target_proposition=.*p \(f a\)' "$outline"; then
+      echo "outline did not parenthesize compound predicate argument p (f a)" >&2
+      exit 1
+    fi
   fi
   if [[ "$label" == *"_superposition" ]]; then
     if ! rg -q 'megalodon_step\([0-9]+,"superposition"' "$outline"; then
