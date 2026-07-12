@@ -55,6 +55,44 @@ if len(avatar_steps) != 1:
 if avatar_steps[0]["rule"] != "input" or avatar_steps[0]["source"]["kind"] != "vampire_derived_clause":
     raise SystemExit("avatar_refutation fallback should be an explicit derived skeleton assumption")
 PY
+cnf_conjunct_outline="$TMPDIR/vampire_certificate_cnf_conjunct.out"
+cnf_conjunct_certificate="$TMPDIR/vampire_certificate_cnf_conjunct.json"
+cnf_conjunct_megalodon="$TMPDIR/vampire_certificate_cnf_conjunct.mg"
+cat >"$cnf_conjunct_outline" <<'OUTLINE'
+megalodon_symbol_declaration("Variable p:prop.").
+megalodon_symbol_declaration("Variable q:prop.").
+megalodon_step(1,"input","formula",[],false,0,"tff(u1,plain,$true).\n").
+megalodon_step(2,"cnf transformation","clause",[1],false,0,"cnf(u2,plain,$true).\n").
+megalodon_certificate_clause(2,[{"polarity":true,"atom":{"pred":"q","args":[]}}]).
+megalodon_step_extra(2,"cnf",["rule=cnf transformation","parent_unit=1","parent_kind=formula","source=vampire_and (p) (q)","source_proposition=vampire_and (p) (q)","target=q","target_proposition=q","target_clause=[{\"polarity\":true,\"atom\":{\"pred\":\"q\",\"args\":[]}}]","target_literal_count=1","target_literal_0=q","parent_clause_count=2","clause_parent_unit=1","clause_index=1","clause_count=2"]).
+megalodon_step_replay_kind(2,"cnf").
+megalodon_step(3,"input","clause",[],false,0,"cnf(u3,plain,$true).\n").
+megalodon_certificate_clause(3,[{"polarity":false,"atom":{"pred":"q","args":[]}}]).
+megalodon_step_replay_kind(3,"").
+megalodon_step(4,"resolution","clause",[2,3],false,0,"cnf(u4,plain,$true).\n").
+megalodon_certificate_clause(4,[]).
+megalodon_certificate_step(4,{"rule":"resolve","parents":["u2","u3"],"pivot":{"polarity":true,"atom":{"pred":"q","args":[]}}}).
+megalodon_step_replay_kind(4,"resolution").
+megalodon_final_step(4).
+OUTLINE
+python3 scripts/vampire_certificate.py \
+  "$cnf_conjunct_outline" \
+  --from-vampire-outline \
+  --write-certificate "$cnf_conjunct_certificate" \
+  --emit-megalodon "$cnf_conjunct_megalodon" \
+  --theorem-name vampire_certificate_cnf_conjunct \
+  --summary
+python3 - "$cnf_conjunct_certificate" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+certificate = json.loads(Path(sys.argv[1]).read_text())
+rules = [step["rule"] for step in certificate["steps"]]
+if "cnf_formula_conjunct" not in rules:
+    raise SystemExit("CNF conjunction projection was not reconstructed explicitly")
+PY
+./bin/megalodon "$cnf_conjunct_megalodon" >"$TMPDIR/vampire_certificate_cnf_conjunct.check.log"
 python3 scripts/vampire_certificate.py \
   tests/vampire_certificate/valid_resolution.json \
   --emit-megalodon "$TMPDIR/vampire_certificate_valid_resolution.mg"
