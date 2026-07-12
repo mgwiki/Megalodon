@@ -20193,10 +20193,14 @@ def raw_false_literal_elimination_proof(branch: Expr, target: Expr, branch_proof
         left, right = sides
         true_proof = raw_true_intro_proof()
         if raw_true_expr(left) and false_eliminator_expr(right):
-            false_proof = f"({proof_head(branch_proof)} (fun R:prop => R) {true_proof})"
+            false_proof = raw_prop_from_eq_true_proof(branch, branch_proof, right)
+            if false_proof is None:
+                false_proof = f"({proof_head(branch_proof)} (fun R:prop => R) {true_proof})"
             return raw_false_to_expr_proof(false_proof, target, right)
         if false_eliminator_expr(left) and raw_true_expr(right):
-            false_proof = f"(({proof_head(branch_proof)} (fun R:prop => R -> False) (fun H:False => H)) {true_proof})"
+            false_proof = raw_prop_from_eq_true_proof(branch, branch_proof, left)
+            if false_proof is None:
+                false_proof = f"(({proof_head(branch_proof)} (fun R:prop => R -> False) (fun H:False => H)) {true_proof})"
             return raw_false_to_expr_proof(false_proof, target, left)
     premises, conclusion = split_arrows(branch)
     if len(premises) != 1 or not false_eliminator_expr(conclusion):
@@ -20550,7 +20554,13 @@ def raw_literal_direct_transform_proof(
             return native_eq_symmetry_proof(source_proof, source_sides[0], source_sides[1], sort)
         sort = "prop" if source.args[0].value == "vampire_eq_prop" else "set"
         return raw_eq_symmetry_proof(source_proof, source_sides[0], sort)
-    factored_forall = raw_factored_forall_literal_transform_proof(source, target, source_proof, rewrites)
+    factored_forall = raw_factored_forall_literal_transform_proof(
+        source,
+        target,
+        source_proof,
+        rewrites,
+        variable_sorts,
+    )
     if factored_forall is not None:
         return factored_forall
     if source.kind == "forall" and target.kind == "forall" and source.sort == target.sort:
@@ -20559,7 +20569,13 @@ def raw_literal_direct_transform_proof(
         if source.value != target.value:
             source_body = rename_expr_variables(source_body, {source.value: target.value})
         inner_source_proof = f"({proof_head(source_proof)} {target.value})"
-        inner = raw_clause_subsumption_transform_proof(source_body, target.args[0], inner_source_proof, rewrites)
+        inner = raw_clause_subsumption_transform_proof(
+            source_body,
+            target.args[0],
+            inner_source_proof,
+            rewrites,
+            variable_sorts={**variable_sorts, target.value: target.sort},
+        )
         if inner is not None:
             return f"(fun {target.value} :{target.sort} => {inner})"
     rewrite_proof = raw_split_rewrite_proof(source, target, source_proof, rewrites)
@@ -20573,7 +20589,9 @@ def raw_factored_forall_literal_transform_proof(
     target: Expr,
     source_proof: str,
     rewrites: tuple[RawSplitRewrite, ...],
+    variable_sorts: dict[str, str] | None = None,
 ) -> str | None:
+    variable_sorts = variable_sorts or {}
     if proof_search_timed_out() or len(expr_text(source)) + len(expr_text(target)) > 3000:
         return None
     source_binders, source_body = collect_foralls(source)
@@ -20611,7 +20629,14 @@ def raw_factored_forall_literal_transform_proof(
             proof = source_proof
             for source_name, _ in source_binders:
                 proof = f"({proof_head(proof)} {proof_arg_text(subst[source_name])})"
-            body_proof = raw_clause_subsumption_transform_proof(instantiated_source_body, target_body, proof, rewrites=rewrites)
+            local_sorts = {**variable_sorts, **dict(source_binders), **dict(target_binders)}
+            body_proof = raw_clause_subsumption_transform_proof(
+                instantiated_source_body,
+                target_body,
+                proof,
+                rewrites=rewrites,
+                variable_sorts=local_sorts,
+            )
             if body_proof is None:
                 body_proof = raw_clause_transform_proof(instantiated_source_body, target_body, proof, rewrites=rewrites)
             if body_proof is None:
@@ -20714,7 +20739,7 @@ def raw_same_order_clause_transform_proof(
     literal_proofs: list[str] = []
     for index, (source_literal, target_literal) in enumerate(zip(source_literals, target_literals)):
         proof_name = f"Hsame{index}"
-        proof = raw_literal_direct_transform_proof(source_literal, target_literal, proof_name, rewrites)
+        proof = raw_literal_direct_transform_proof(source_literal, target_literal, proof_name, rewrites, variable_sorts)
         if proof is None:
             proof = raw_structural_normal_form_transform_proof(
                 source_literal,
@@ -20813,7 +20838,7 @@ def raw_clause_subsumption_transform_proof(
             f"({proof_head(source_proof)} {binder})",
             rewrites,
             deep_literals,
-            variable_sorts,
+            {**variable_sorts, binder: target.sort},
         )
         if inner is None:
             return None
@@ -21602,7 +21627,9 @@ def raw_complement_resolution_proof(
     right: Expr,
     right_proof: str,
     target: Expr,
+    variable_sorts: dict[str, str] | None = None,
 ) -> str | None:
+    variable_sorts = variable_sorts or {}
     def symmetric_equality_complement(
         negative: Expr,
         negative_proof: str,
@@ -21626,14 +21653,7 @@ def raw_complement_resolution_proof(
         )
         if not same_direction and not reversed_direction:
             return None
-        sort = "set"
-        if (
-            negative_premises[0].kind == "app"
-            and negative_premises[0].args
-            and negative_premises[0].args[0].kind == "var"
-            and negative_premises[0].args[0].value == "vampire_eq_prop"
-        ):
-            sort = "prop"
+        sort = raw_equality_literal_transport_sort(positive, positive_sides, variable_sorts)
         positive_as_negative = (
             positive_proof
             if same_direction
@@ -21658,9 +21678,9 @@ def raw_complement_resolution_proof(
         false_proof = f"({proof_head(left_proof)} {proof_term_text(right_proof)})"
         return raw_false_to_expr_proof(false_proof, target, left_conclusion)
     if len(left_premises) == 1 and false_eliminator_expr(left_conclusion):
-        premise_proof = raw_literal_direct_transform_proof(right, left_premises[0], right_proof, ())
+        premise_proof = raw_literal_direct_transform_proof(right, left_premises[0], right_proof, (), variable_sorts)
         if premise_proof is None:
-            premise_proof = raw_deep_formula_transform_proof(right, left_premises[0], right_proof, {})
+            premise_proof = raw_deep_formula_transform_proof(right, left_premises[0], right_proof, variable_sorts)
         if premise_proof is not None:
             false_proof = f"({proof_head(left_proof)} {proof_term_text(premise_proof)})"
             return raw_false_to_expr_proof(false_proof, target, left_conclusion)
@@ -21679,9 +21699,9 @@ def raw_complement_resolution_proof(
         false_proof = f"({proof_head(right_proof)} {proof_term_text(left_proof)})"
         return raw_false_to_expr_proof(false_proof, target, right_conclusion)
     if len(right_premises) == 1 and false_eliminator_expr(right_conclusion):
-        premise_proof = raw_literal_direct_transform_proof(left, right_premises[0], left_proof, ())
+        premise_proof = raw_literal_direct_transform_proof(left, right_premises[0], left_proof, (), variable_sorts)
         if premise_proof is None:
-            premise_proof = raw_deep_formula_transform_proof(left, right_premises[0], left_proof, {})
+            premise_proof = raw_deep_formula_transform_proof(left, right_premises[0], left_proof, variable_sorts)
         if premise_proof is not None:
             false_proof = f"({proof_head(right_proof)} {proof_term_text(premise_proof)})"
             return raw_false_to_expr_proof(false_proof, target, right_conclusion)
@@ -22957,7 +22977,9 @@ def raw_flat_clause_resolution_proof(
     resolver: Expr,
     resolver_proof: str,
     avoid_text: str = "",
+    variable_sorts: dict[str, str] | None = None,
 ) -> str | None:
+    variable_sorts = variable_sorts or {}
     source_literals = raw_clause_literals(source)
     resolver_literals = raw_clause_literals(resolver)
     target_literals = raw_clause_literals(target)
@@ -22970,7 +22992,14 @@ def raw_flat_clause_resolution_proof(
     PROOF_SEARCH_STATE.flat_resolution_target = target_text
 
     def source_handler(source_literal: Expr, source_literal_proof: str) -> str | None:
-        direct = raw_literal_to_clause_proof(source_literal, target, source_literal_proof, target_literals, ())
+        direct = raw_literal_to_clause_proof(
+            source_literal,
+            target,
+            source_literal_proof,
+            target_literals,
+            (),
+            variable_sorts=variable_sorts,
+        )
         if direct is not None:
             return direct
 
@@ -22981,10 +23010,18 @@ def raw_flat_clause_resolution_proof(
                 resolver_literal,
                 resolver_literal_proof,
                 target,
+                variable_sorts,
             )
             if complement is not None:
                 return complement
-            return raw_literal_to_clause_proof(resolver_literal, target, resolver_literal_proof, target_literals, ())
+            return raw_literal_to_clause_proof(
+                resolver_literal,
+                target,
+                resolver_literal_proof,
+                target_literals,
+                (),
+                variable_sorts=variable_sorts,
+            )
 
         return raw_clause_cases_with_handler(
             resolver,
@@ -33646,6 +33683,9 @@ def raw_proof_from_prop_true_equality(source: Expr, target: Expr, source_proof: 
     proposition, true_on_left = component
     if not expr_same_mod_alpha(proposition, target):
         return None
+    transported = raw_prop_from_eq_true_proof(source, source_proof, target)
+    if transported is not None:
+        return transported
     true_proof = raw_true_intro_proof()
     prop_name = fresh_identifier("Qprop", expr_text(source), expr_text(target), source_proof)
     if true_on_left:
@@ -36598,7 +36638,7 @@ def raw_guarded_equality_composition_clause_proof(
         return None
     rule_lhs: Expr | None = None
     redex: Expr | None = None
-    local_sorts = {**variable_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
+    local_sorts = {**variable_sorts, **target_binder_sorts, **megalodon_replay_step_variable_sorts(replay_step)}
     for fields in megalodon_replay_extra_fields(replay_step, "rewrite"):
         rule_lhs = raw_tptp_replay_extra_expr(fields, "rule_lhs", local_sorts)
         redex = raw_tptp_replay_extra_expr(fields, "redex", local_sorts)
@@ -44268,7 +44308,15 @@ def raw_tptp_guarded_prop_equality_factoring_fallback(
                     continue
                 instantiated_source = substitute_expr(source_body, subst)
                 if not all(
-                    raw_literal_to_clause_proof(literal, target_body, "HLit", target_literals, ()) is not None
+                    raw_literal_to_clause_proof(
+                        literal,
+                        target_body,
+                        "HLit",
+                        target_literals,
+                        (),
+                        variable_sorts=local_sorts,
+                    )
+                    is not None
                     for literal in raw_clause_literals(instantiated_source)
                 ):
                     continue
@@ -44281,6 +44329,7 @@ def raw_tptp_guarded_prop_equality_factoring_fallback(
                     target_literals,
                     (),
                     source_component_proof,
+                    variable_sorts=local_sorts,
                 )
                 if body_proof is None:
                     continue
@@ -44392,9 +44441,20 @@ def raw_tptp_sort_polymorphic_equality_factoring_fallback(
                         target_literals,
                         (),
                         deep_literals=True,
+                        variable_sorts=local_sorts,
                     )
                     if direct is not None:
                         return direct
+                    structural = raw_clause_subsumption_transform_proof(
+                        literal,
+                        target_body,
+                        literal_proof,
+                        (),
+                        deep_literals=True,
+                        variable_sorts=local_sorts,
+                    )
+                    if structural is not None:
+                        return structural
                     return raw_clause_transform_proof(literal, target_body, literal_proof)
 
                 proof = raw_clause_cases_with_handler(instantiated_source, instantiated_proof, handler)
@@ -56538,14 +56598,28 @@ def raw_tptp_selected_literal_subsumption_resolution_proof(
                 continue
             if any(
                 not expr_same_mod_alpha(source_literal, selected_literal)
-                and raw_literal_to_clause_proof(source_literal, target_body, "HLit", target_literals, ()) is None
+                and raw_literal_to_clause_proof(
+                    source_literal,
+                    target_body,
+                    "HLit",
+                    target_literals,
+                    (),
+                    variable_sorts=local_sorts,
+                ) is None
                 for source_literal in source_literals
             ):
                 continue
             for complementary_resolver in complementary_resolvers:
                 if any(
                     not expr_same_mod_alpha(resolver_literal, complementary_resolver)
-                    and raw_literal_to_clause_proof(resolver_literal, target_body, "HLit", target_literals, ()) is None
+                    and raw_literal_to_clause_proof(
+                        resolver_literal,
+                        target_body,
+                        "HLit",
+                        target_literals,
+                        (),
+                        variable_sorts=local_sorts,
+                    ) is None
                     for resolver_literal in resolver_literals
                 ):
                     continue
@@ -56561,6 +56635,7 @@ def raw_tptp_selected_literal_subsumption_resolution_proof(
                                         selected_premises[0],
                                         resolver_literal_proof,
                                         (),
+                                        local_sorts,
                                     )
                                     if premise_proof is None:
                                         return None
@@ -56572,6 +56647,7 @@ def raw_tptp_selected_literal_subsumption_resolution_proof(
                                     resolver_literal_proof,
                                     target_literals,
                                     (),
+                                    variable_sorts=local_sorts,
                                 )
 
                             return raw_clause_cases_with_handler(
@@ -56586,6 +56662,7 @@ def raw_tptp_selected_literal_subsumption_resolution_proof(
                             source_literal_proof,
                             target_literals,
                             (),
+                            variable_sorts=local_sorts,
                         )
 
                     return raw_clause_cases_with_handler(source, source_proof, source_handler)
@@ -56604,7 +56681,14 @@ def raw_tptp_selected_literal_subsumption_resolution_proof(
         return direct_proof
     if not raw_clause_replay_budget_ok(source, resolver, target_body, max_literals=16, max_literal_product=512):
         return None
-    proof = raw_flat_clause_resolution_proof(source, target_body, source_proof, resolver, resolver_proof)
+    proof = raw_flat_clause_resolution_proof(
+        source,
+        target_body,
+        source_proof,
+        resolver,
+        resolver_proof,
+        variable_sorts=local_sorts,
+    )
     if proof is None:
         proof = raw_clause_resolution_proof(source, target_body, source_proof, resolver, resolver_proof)
     if proof is None:
@@ -56741,7 +56825,14 @@ def raw_tptp_forward_subsumption_resolver_search_proof(
             ok = True
             for literal in source_literals:
                 if (
-                    raw_literal_to_clause_proof(literal, target_body, "HLit", target_literals, ()) is None
+                    raw_literal_to_clause_proof(
+                        literal,
+                        target_body,
+                        "HLit",
+                        target_literals,
+                        (),
+                        variable_sorts=local_sorts,
+                    ) is None
                     and not any(raw_complementary_literals(literal, resolver_literal) for resolver_literal in resolver_literals)
                 ):
                     ok = False
@@ -56750,7 +56841,14 @@ def raw_tptp_forward_subsumption_resolver_search_proof(
                 continue
             for literal in resolver_literals:
                 if (
-                    raw_literal_to_clause_proof(literal, target_body, "HLit", target_literals, ()) is None
+                    raw_literal_to_clause_proof(
+                        literal,
+                        target_body,
+                        "HLit",
+                        target_literals,
+                        (),
+                        variable_sorts=local_sorts,
+                    ) is None
                     and not any(raw_complementary_literals(source_literal, literal) for source_literal in source_literals)
                 ):
                     ok = False
@@ -56766,6 +56864,7 @@ def raw_tptp_forward_subsumption_resolver_search_proof(
                 source_component_proof,
                 instantiated_resolver,
                 resolver_proof,
+                variable_sorts=local_sorts,
             )
             if body_proof is None:
                 body_proof = raw_clause_resolution_proof(
@@ -57022,6 +57121,7 @@ def raw_tptp_forward_subsumption_resolution_proof(
                 return proof
 
     def replay_pairs(target_expr: Expr, entries: list[tuple[Expr, str]]) -> str | None:
+        target_local_sorts = {**variable_sorts, **dict(target_binders), **dict(collect_foralls(target_expr)[0])}
         for source_index, resolver_index in megalodon_replay_parent_pair_order(parents, replay_step):
             source, source_name = entries[source_index]
             resolver, resolver_name = entries[resolver_index]
@@ -57033,7 +57133,14 @@ def raw_tptp_forward_subsumption_resolution_proof(
                 if proof is not None:
                     return proof
             if raw_clause_replay_budget_ok(source, resolver, target_expr, max_literals=12, max_literal_product=512):
-                proof = raw_flat_clause_resolution_proof(source, target_expr, source_name, resolver, resolver_name)
+                proof = raw_flat_clause_resolution_proof(
+                    source,
+                    target_expr,
+                    source_name,
+                    resolver,
+                    resolver_name,
+                    variable_sorts=target_local_sorts,
+                )
                 if proof is not None:
                     return proof
                 proof = raw_quantified_flat_clause_resolution_proof(source, target_expr, source_name, resolver, resolver_name)
@@ -63503,12 +63610,14 @@ def raw_literal_refutation_from_split_assumption(
     target: Expr,
     rewrite: RawSplitRewrite,
     not_split_name: str,
+    variable_sorts: dict[str, str] | None = None,
 ) -> str | None:
-    split_proof = raw_literal_direct_transform_proof(literal, rewrite.split, literal_proof, ())
+    variable_sorts = variable_sorts or {}
+    split_proof = raw_literal_direct_transform_proof(literal, rewrite.split, literal_proof, (), variable_sorts)
     if split_proof is not None:
         false_proof = f"({not_split_name} {proof_term_text(split_proof)})"
         return f"({proof_head(false_proof)} {proof_arg_text(target)})"
-    component_proof = raw_literal_direct_transform_proof(literal, rewrite.component, literal_proof, ())
+    component_proof = raw_literal_direct_transform_proof(literal, rewrite.component, literal_proof, (), variable_sorts)
     if component_proof is None:
         return None
     split_proof = f"({proof_head(rewrite.component_to_split)} {proof_term_text(component_proof)})"
@@ -63522,7 +63631,9 @@ def raw_literal_refutation_from_split_true_assumption(
     target: Expr,
     rewrite: RawSplitRewrite,
     split_proof_name: str,
+    variable_sorts: dict[str, str] | None = None,
 ) -> str | None:
+    variable_sorts = variable_sorts or {}
     premises, conclusion = split_arrows(literal)
     if len(premises) != 1 or not false_eliminator_expr(conclusion):
         return None
@@ -63531,7 +63642,13 @@ def raw_literal_refutation_from_split_true_assumption(
         premise_proof = split_proof_name
     else:
         component_proof = f"({proof_head(rewrite.split_to_component)} {split_proof_name})"
-        premise_proof = raw_literal_direct_transform_proof(rewrite.component, premises[0], component_proof, ())
+        premise_proof = raw_literal_direct_transform_proof(
+            rewrite.component,
+            premises[0],
+            component_proof,
+            (),
+            variable_sorts,
+        )
     if premise_proof is None:
         return None
     false_proof = f"({proof_head(literal_proof)} {proof_term_text(premise_proof)})"
@@ -63546,17 +63663,40 @@ def raw_literal_to_clause_with_split_refutations(
     rewrites: tuple[RawSplitRewrite, ...],
     refutations: list[tuple[RawSplitRewrite, str]],
     split_true_refutations: list[tuple[RawSplitRewrite, str]] | None = None,
+    variable_sorts: dict[str, str] | None = None,
 ) -> str | None:
     split_true_refutations = split_true_refutations or []
-    proof = raw_literal_to_clause_proof(literal, target, literal_proof, target_literals, rewrites)
+    variable_sorts = variable_sorts or {}
+    proof = raw_literal_to_clause_proof(
+        literal,
+        target,
+        literal_proof,
+        target_literals,
+        rewrites,
+        variable_sorts=variable_sorts,
+    )
     if proof is not None:
         return proof
     for rewrite, not_split_name in refutations:
-        proof = raw_literal_refutation_from_split_assumption(literal, literal_proof, target, rewrite, not_split_name)
+        proof = raw_literal_refutation_from_split_assumption(
+            literal,
+            literal_proof,
+            target,
+            rewrite,
+            not_split_name,
+            variable_sorts,
+        )
         if proof is not None:
             return proof
     for split, split_proof_name in split_true_refutations:
-        proof = raw_literal_refutation_from_split_true_assumption(literal, literal_proof, target, split, split_proof_name)
+        proof = raw_literal_refutation_from_split_true_assumption(
+            literal,
+            literal_proof,
+            target,
+            split,
+            split_proof_name,
+            variable_sorts,
+        )
         if proof is not None:
             return proof
     binders, body = collect_foralls(literal)
@@ -63581,6 +63721,7 @@ def raw_literal_to_clause_with_split_refutations(
             refutations,
             split_true_refutations,
             instantiated_proof,
+            {**variable_sorts, **dict(binders)},
         )
         if proof is not None:
             return proof
@@ -63595,7 +63736,9 @@ def raw_clause_cases_with_split_refutations(
     refutations: list[tuple[RawSplitRewrite, str]],
     split_true_refutations: list[tuple[RawSplitRewrite, str]],
     source_proof: str,
+    variable_sorts: dict[str, str] | None = None,
 ) -> str | None:
+    variable_sorts = variable_sorts or {}
     parts = app_args(source, "vampire_or", 2)
     if parts is None:
         return raw_literal_to_clause_with_split_refutations(
@@ -63606,6 +63749,7 @@ def raw_clause_cases_with_split_refutations(
             rewrites,
             refutations,
             split_true_refutations,
+            variable_sorts,
         )
     left, right = parts
     left_name = fresh_identifier("HL", expr_text(source), expr_text(target), source_proof)
@@ -63618,6 +63762,7 @@ def raw_clause_cases_with_split_refutations(
         refutations,
         split_true_refutations,
         left_name,
+        variable_sorts,
     )
     right_target = raw_clause_cases_with_split_refutations(
         right,
@@ -63627,6 +63772,7 @@ def raw_clause_cases_with_split_refutations(
         refutations,
         split_true_refutations,
         right_name,
+        variable_sorts,
     )
     if left_target is None or right_target is None:
         return None
@@ -63698,6 +63844,7 @@ def raw_avatar_split_component_from_source_proof(
             refutations,
             split_true_refutations,
             applied_source_proof,
+            {**dict(source_binders), **component_sorts},
         )
         if body_proof is None:
             continue
