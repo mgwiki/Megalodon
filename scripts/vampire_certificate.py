@@ -1368,7 +1368,6 @@ def cnf_formula_exact_supported(cnf: dict[str, Any], clause: tuple[Literal, ...]
         "vampire_or",
         "vampire_and",
         "vLAM",
-        "forall ",
         "vampire_exists",
     )
     if any(fragment in source for fragment in blocked_fragments):
@@ -1376,6 +1375,10 @@ def cnf_formula_exact_supported(cnf: dict[str, Any], clause: tuple[Literal, ...]
     for literal in clause:
         if literal.atom.kind == "pred" and any(arg.kind not in {"var", "const"} for arg in literal.atom.args):
             return False
+    if cnf.get("target_clause_checked") is True and cnf.get("target_proposition") == source:
+        return True
+    if "forall " in source:
+        return False
     return True
 
 
