@@ -1889,6 +1889,10 @@ def expr_sort(expr: Expr, variable_sorts: dict[str, str]) -> str | None:
             "False": "prop",
             "Empty": "set",
             "Eps_i": "(set->prop)->set",
+            "In": "set->set->prop",
+            "Subq": "set->set->prop",
+            "SNoLe": "set->set->prop",
+            "SNoLt": "set->set->prop",
             "vampire_eq_set": "set->set->prop",
             "vampire_eq_prop": "prop->prop->prop",
             "vampire_or": "prop->prop->prop",
@@ -21577,7 +21581,9 @@ def raw_clause_transform_proof(
     source_proof: str,
     depth: int = 0,
     rewrites: tuple[RawSplitRewrite, ...] = (),
+    variable_sorts: dict[str, str] | None = None,
 ) -> str | None:
+    variable_sorts = variable_sorts or {}
     if depth > 16 or proof_search_timed_out():
         return None
     if expr_key(source) == expr_key(target):
@@ -21603,7 +21609,14 @@ def raw_clause_transform_proof(
             return None
         assert source.value is not None
         inner_source_proof = f"({proof_head(source_proof)} {source.value})"
-        inner = raw_clause_transform_proof(source.args[0], target.args[0], inner_source_proof, depth + 1, rewrites)
+        inner = raw_clause_transform_proof(
+            source.args[0],
+            target.args[0],
+            inner_source_proof,
+            depth + 1,
+            rewrites,
+            variable_sorts,
+        )
         if inner is None:
             return None
         return f"(fun {source.value} :{source.sort} => {inner})"
@@ -21618,8 +21631,8 @@ def raw_clause_transform_proof(
     left, right = source_parts
     left_name = fresh_identifier("HL", expr_text(source), expr_text(target), source_proof)
     right_name = fresh_identifier("HR", expr_text(source), expr_text(target), source_proof, left_name)
-    left_target = raw_clause_transform_proof(left, target, left_name, depth + 1, rewrites)
-    right_target = raw_clause_transform_proof(right, target, right_name, depth + 1, rewrites)
+    left_target = raw_clause_transform_proof(left, target, left_name, depth + 1, rewrites, variable_sorts)
+    right_target = raw_clause_transform_proof(right, target, right_name, depth + 1, rewrites, variable_sorts)
     if left_target is None or right_target is None:
         return None
     return f"({proof_head(source_proof)} {proof_arg_text(target)} (fun {left_name} => {left_target}) (fun {right_name} => {right_target}))"
@@ -38633,7 +38646,15 @@ def raw_context_hole_sort(
                 return found
         return None
     if context.kind == "forall" and context.args:
-        return raw_context_hole_sort(context.args[0], hole_name, variable_sorts, "prop")
+        scoped_sorts = variable_sorts
+        if context.value is not None and context.sort is not None:
+            scoped_sorts = {**variable_sorts, context.value: context.sort}
+        return raw_context_hole_sort(context.args[0], hole_name, scoped_sorts, "prop")
+    if context.kind == "lambda" and context.args:
+        scoped_sorts = variable_sorts
+        if context.value is not None and context.sort is not None:
+            scoped_sorts = {**variable_sorts, context.value: context.sort}
+        return raw_context_hole_sort(context.args[0], hole_name, scoped_sorts, expected_sort)
     if context.kind == "eq" and len(context.args) == 2:
         left, right = context.args
         if expr_mentions_any(left, {hole_name}):
@@ -45720,9 +45741,20 @@ def raw_clause_unit_equality_superposition_proof(
                             equality_sort,
                             native_equality=equality_inst.kind == "eq",
                         ):
-                            proof = raw_clause_subsumption_transform_proof(replaced, target_body, transported, deep_literals=True)
+                            proof = raw_clause_subsumption_transform_proof(
+                                replaced,
+                                target_body,
+                                transported,
+                                deep_literals=True,
+                                variable_sorts=local_sorts,
+                            )
                             if proof is None:
-                                proof = raw_clause_transform_proof(replaced, target_body, transported)
+                                proof = raw_clause_transform_proof(
+                                    replaced,
+                                    target_body,
+                                    transported,
+                                    variable_sorts=local_sorts,
+                                )
                             if proof is None:
                                 continue
                             if raw_tptp_replay_proof_is_unsafe("superposition", expr_text(target_body), proof):
@@ -47486,9 +47518,20 @@ def raw_guarded_quantified_instantiating_equality_superposition_proof(
                     checked += 1
                     if checked > 128:
                         return None
-                    body_proof = raw_clause_subsumption_transform_proof(rewritten, target_body, rewritten_proof, deep_literals=True)
+                    body_proof = raw_clause_subsumption_transform_proof(
+                        rewritten,
+                        target_body,
+                        rewritten_proof,
+                        deep_literals=True,
+                        variable_sorts=local_sorts,
+                    )
                     if body_proof is None:
-                        body_proof = raw_clause_transform_proof(rewritten, target_body, rewritten_proof)
+                        body_proof = raw_clause_transform_proof(
+                            rewritten,
+                            target_body,
+                            rewritten_proof,
+                            variable_sorts=local_sorts,
+                        )
                     if body_proof is None:
                         body_proof = raw_deep_formula_transform_proof(rewritten, target_body, rewritten_proof, local_sorts)
                     if body_proof is None:
@@ -47627,9 +47670,20 @@ def raw_guarded_quantified_to_clause_equality_superposition_proof(
                     checked += 1
                     if checked > 160:
                         return None
-                    body_proof = raw_clause_subsumption_transform_proof(rewritten, target, rewritten_proof, deep_literals=True)
+                    body_proof = raw_clause_subsumption_transform_proof(
+                        rewritten,
+                        target,
+                        rewritten_proof,
+                        deep_literals=True,
+                        variable_sorts=local_sorts,
+                    )
                     if body_proof is None:
-                        body_proof = raw_clause_transform_proof(rewritten, target, rewritten_proof)
+                        body_proof = raw_clause_transform_proof(
+                            rewritten,
+                            target,
+                            rewritten_proof,
+                            variable_sorts=local_sorts,
+                        )
                     if body_proof is None:
                         body_proof = raw_deep_formula_transform_proof(rewritten, target, rewritten_proof, local_sorts)
                     if body_proof is None:
@@ -49137,7 +49191,12 @@ def raw_ground_quantified_clause_equality_superposition_proof(
                     )
                     if proof is not None:
                         return proof
-                    proof = raw_clause_transform_proof(rewritten, target_body, rewritten_proof)
+                    proof = raw_clause_transform_proof(
+                        rewritten,
+                        target_body,
+                        rewritten_proof,
+                        variable_sorts=variable_sorts,
+                    )
                     if proof is not None:
                         return proof
             return None
@@ -49229,10 +49288,16 @@ def raw_disjunctive_equality_clause_superposition_proof(
                         target_body,
                         rewritten_proof,
                         deep_literals=True,
+                        variable_sorts=variable_sorts,
                     )
                     if proof is not None:
                         return proof
-                    proof = raw_clause_transform_proof(rewritten, target_body, rewritten_proof)
+                    proof = raw_clause_transform_proof(
+                        rewritten,
+                        target_body,
+                        rewritten_proof,
+                        variable_sorts=variable_sorts,
+                    )
                     if proof is not None:
                         return proof
             return None
