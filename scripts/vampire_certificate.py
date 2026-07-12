@@ -40,6 +40,7 @@ MVP_RULES = {
     "factor",
     "equality_factoring",
     "equality_resolution",
+    "equality_resolution_constraints",
     "equality_symmetry",
     "truth_conflict_resolution",
     "cnf_formula_exact",
@@ -61,7 +62,6 @@ DERIVED_ASSUMPTION_REPLAY_KINDS = {
     "backward_demodulation",
     "cnf",
     "definition_rewrite",
-    "equality_resolution",
     "forward_demodulation",
     "generic",
     "generic_clause",
@@ -951,6 +951,32 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
             clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
             if clause != expected:
                 raise CertificateError(f"{step_id}: equality-resolution conclusion does not match parent")
+
+        elif rule == "equality_resolution_constraints":
+            allowed = {"id", "rule", "parents", "literal", "substitution", "constraints", "clause"}
+            require_fields(step, allowed)
+            require_no_extra_fields(step, allowed)
+            parents = require_parents(step, 1)
+            parent_clause = clauses.get(parents[0])
+            if parent_clause is None:
+                raise CertificateError(f"{step_id}: unknown parent {parents[0]}")
+            literal = parse_literal(step["literal"], f"{step_id}.literal")
+            if literal not in parent_clause:
+                raise CertificateError(f"{step_id}: equality-resolution literal not present in parent")
+            if literal.polarity:
+                raise CertificateError(f"{step_id}: equality-resolution literal must be negative")
+            if not isinstance(step["constraints"], list) or not step["constraints"]:
+                raise CertificateError(f"{step_id}: equality-resolution constraints must be a non-empty list")
+            substitution = parse_substitution(step["substitution"], f"{step_id}.substitution")
+            base = tuple(
+                substitute_literal(item, substitution)
+                for item in clause_without_one(parent_clause, literal)
+            )
+            constraints = parse_clause(step["constraints"], f"{step_id}.constraints")
+            expected = normalize_clause(base + constraints)
+            clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
+            if clause != expected:
+                raise CertificateError(f"{step_id}: equality-resolution constrained conclusion does not match parent")
 
         elif rule == "truth_conflict_resolution":
             allowed = {"id", "rule", "parents", "literal", "substitution", "clause"}
