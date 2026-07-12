@@ -74270,11 +74270,47 @@ def raw_tptp_source_fact_unfolded_subq_proof(
     binder_names = [name for name, _sort in binders]
     if element_name not in binder_names:
         return None
-    source_args = [Expr("var", value=name) for name, _sort in binders if name != element_name]
+
+    source_text = source_surface_parse_text(source_proposition, proposition)
+    source = parse_expr(source_text)
+    if source is None:
+        return None
+    source_binders, source_body = collect_foralls(source)
+    source_premises, source_conclusion = split_arrows(source_body)
+    if len(source_premises) != 1:
+        return None
+    source_premise_sides = app_args(source_premises[0], "In", 2)
+    source_conclusion_sides = app_args(source_conclusion, "In", 2)
+    if source_premise_sides is None or source_conclusion_sides is None:
+        return None
+    source_proof_element, source_left = source_premise_sides
+    source_conclusion_element, source_right = source_conclusion_sides
+    if (
+        source_proof_element.kind != "var"
+        or source_proof_element.value is None
+        or not expr_same_mod_alpha(source_proof_element, source_conclusion_element)
+    ):
+        return None
+    source_element_name = source_proof_element.value
+    source_binder_names = [name for name, _sort in source_binders]
+    if source_element_name not in source_binder_names:
+        return None
+    source_variables = {name for name in source_binder_names if name != source_element_name}
+    subst: dict[str, Expr] = {}
+    if not match_expr_with_alpha_instantiation(source_left, _source_set, source_variables, subst):
+        return None
+    if not match_expr_with_alpha_instantiation(source_right, _target_set, source_variables, subst):
+        return None
+    for name in source_variables:
+        if name not in subst:
+            return None
+
     proof = source_name
-    for argument in source_args:
+    for name, _sort in source_binders:
+        argument = source_element if name == source_element_name else subst.get(name)
+        if argument is None:
+            return None
         proof = f"({proof_head(proof)} {proof_arg_text(argument)})"
-    proof = f"({proof_head(proof)} {proof_arg_text(source_element)})"
     premise_name = fresh_identifier("Hsubq", proposition, source_name)
     proof = f"({proof_head(proof)} {premise_name})"
     proof = f"(fun {premise_name} => {proof})"
@@ -74403,6 +74439,20 @@ def parse_source_fact_simple_term(
         if inner is None:
             return None
         return append_application_args(Expr("var", value="Sing"), [inner])
+    for operator, function_name in (
+        (":/\\:", "binintersect"),
+        (":\\/:", "binunion"),
+        (":\\:", "setminus"),
+        (":*:", "setprod"),
+    ):
+        parts = split_top_level_operator(text, operator)
+        if parts is None:
+            continue
+        left = parse_source_fact_simple_term(parts[0], variable_renames, target_text, source_aliases, depth + 1)
+        right = parse_source_fact_simple_term(parts[1], variable_renames, target_text, source_aliases, depth + 1)
+        if left is None or right is None:
+            return None
+        return append_application_args(Expr("var", value=function_name), [left, right])
     for symbol in ("+", "*", "^"):
         parts = split_top_level_operator(text, symbol)
         if parts is None:
@@ -75033,6 +75083,7 @@ def source_surface_expr_text(
         left, right = membership
         return f"In ({source_surface_expr_text(left, target_text, local_sorts, source_binders)}) ({source_surface_expr_text(right, target_text, local_sorts, source_binders)})"
     for operator, function_name in (
+        (":/\\:", "binintersect"),
         (":\\/:", "binunion"),
         (":\\:", "setminus"),
         (":*:", "setprod"),
@@ -76256,7 +76307,7 @@ def raw_tptp_source_statement_bridge_proof(
     }
     normalized_source = beta_normalize_expr(normalize_defined_expr(source_expr, source_definitions))
     normalized_positive = beta_normalize_expr(normalize_defined_expr(positive_expr, source_definitions))
-    if expr_same_mod_alpha_eta_after_sort_normalization(normalized_source, normalized_positive):
+    if expr_same_mod_alpha_eta_after_sort_normalization(source_expr, positive_expr):
         return positive_proof
     if source_names is None or "func_ext" in source_names:
         for function_source, function_positive in (
@@ -76274,7 +76325,6 @@ def raw_tptp_source_statement_bridge_proof(
 
     candidate_pairs = [
         (positive_expr, source_expr),
-        (normalized_positive, normalized_source),
     ]
     seen: set[tuple[str, str]] = set()
     previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
