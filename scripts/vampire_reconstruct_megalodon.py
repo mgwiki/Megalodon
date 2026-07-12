@@ -32340,6 +32340,63 @@ def raw_fool_implication_replay_proof(
     return None
 
 
+def raw_permuted_forall_negated_premise_proof(
+    source: Expr,
+    target: Expr,
+    source_proof: str,
+) -> str | None:
+    source_premises, source_conclusion = split_arrows(source)
+    target_premises, target_conclusion = split_arrows(target)
+    if (
+        len(source_premises) != 1
+        or len(target_premises) != 1
+        or not false_eliminator_expr(source_conclusion)
+        or not false_eliminator_expr(target_conclusion)
+    ):
+        return None
+    source_binders, source_body = collect_foralls(source_premises[0])
+    target_binders, target_body = collect_foralls(target_premises[0])
+    if (
+        not source_binders
+        or len(source_binders) != len(target_binders)
+        or len(source_binders) > 5
+        or sorted(sort for _name, sort in source_binders) != sorted(sort for _name, sort in target_binders)
+    ):
+        return None
+    normalized_source_body = beta_normalize_expr(source_body)
+    source_var_options = [(Expr("var", value=name), sort) for name, sort in source_binders]
+    for source_var_permutation in itertools.permutations(source_var_options):
+        if any(
+            source_sort != target_sort
+            for (_source_var, source_sort), (_target_name, target_sort) in zip(
+                source_var_permutation,
+                target_binders,
+            )
+        ):
+            continue
+        substitution = {
+            target_name: source_var
+            for (target_name, _target_sort), (source_var, _source_sort) in zip(
+                target_binders,
+                source_var_permutation,
+            )
+        }
+        instantiated_target_body = beta_normalize_expr(substitute_expr(target_body, substitution))
+        if not expr_same_mod_alpha(normalized_source_body, instantiated_target_body):
+            continue
+        target_premise_name = fresh_identifier("HfoolTarget", expr_text(source), expr_text(target), source_proof)
+        source_premise_proof = target_premise_name
+        for source_var, _source_sort in source_var_permutation:
+            source_premise_proof = f"({proof_head(source_premise_proof)} {proof_arg_text(source_var)})"
+        for name, sort in reversed(source_binders):
+            source_premise_proof = f"(fun {name} :{sort} => {source_premise_proof})"
+        return (
+            f"(fun {target_premise_name} :{proof_arg_text(target_premises[0])} => "
+            f"{proof_head(source_proof)} {proof_term_text(source_premise_proof)})"
+        )
+    return None
+
+
 def raw_tptp_fool_elimination_proof(
     proposition: str,
     parents: list[str],
@@ -32413,6 +32470,9 @@ def raw_tptp_fool_elimination_proof(
                     proof = f"(fun Htarget => {proof_head(raw_tptp_claim_name(parents[0]))} {proof_term_text(source_premise_proof)})"
                     if not raw_tptp_replay_proof_is_unsafe("fool_elimination", proposition, proof):
                         return proof
+            proof = raw_permuted_forall_negated_premise_proof(source, target, raw_tptp_claim_name(parents[0]))
+            if proof is not None and not raw_tptp_replay_proof_is_unsafe("fool_elimination", proposition, proof):
+                return proof
             proof = raw_fool_implication_replay_proof(source, target, raw_tptp_claim_name(parents[0]), local_sorts)
             if proof is not None and not raw_tptp_replay_proof_is_unsafe("fool_elimination", proposition, proof):
                 return proof
