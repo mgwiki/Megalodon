@@ -5302,10 +5302,11 @@ def definition_reflexivity_script_lines(
         for definition_name in referenced_definitions
         for name in expr_variables(definitions[definition_name].body)
     }
-    if "Repl" in body_identifiers:
-        return None
     binders, _body = collect_foralls(expr)
-    lines = [f"Theorem {claim_name}: {proposition}."]
+    lines: list[str] = []
+    if referenced_definitions and "Repl" in body_identifiers:
+        lines.append(f"Transparent {' '.join(sorted(referenced_definitions))}.")
+    lines.append(f"Theorem {claim_name}: {proposition}.")
     if binders:
         binder_names = " ".join(name for name, _sort in binders)
         lines.append(f"let {binder_names}.")
