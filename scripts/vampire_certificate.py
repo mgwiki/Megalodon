@@ -550,12 +550,14 @@ def require_parents(step: dict[str, Any], count: int) -> list[str]:
 
 
 def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
+    global LAMBDA_HINTS
     if not isinstance(data, dict):
         raise CertificateError("certificate must be a JSON object")
     if data.get("format") != FORMAT:
         raise CertificateError(f"format must be {FORMAT}")
     if data.get("version") != VERSION:
         raise CertificateError(f"version must be {VERSION}")
+    LAMBDA_HINTS = certificate_lambda_hints(data)
     steps = data.get("steps")
     if not isinstance(steps, list) or not steps:
         raise CertificateError("steps must be a non-empty list")
@@ -624,8 +626,6 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
                 raise CertificateError(f"{step_id}: source_proposition must be a non-empty string")
             if not isinstance(proposition, str) or not proposition:
                 raise CertificateError(f"{step_id}: proposition must be a non-empty string")
-            if "vLAM" in source_proposition or "vLAM" in proposition:
-                raise CertificateError(f"{step_id}: conjunction projection with raw vLAM is not supported")
             if not isinstance(path, list) or not path or any(item not in {"left", "right"} for item in path):
                 raise CertificateError(f"{step_id}: path must be a non-empty list of left/right entries")
             inferred_path = cnf_formula_conjunct_path(
@@ -653,8 +653,6 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
                 raise CertificateError(f"{step_id}: source_proposition must be a non-empty string")
             if not isinstance(proposition, str) or not proposition:
                 raise CertificateError(f"{step_id}: proposition must be a non-empty string")
-            if "vLAM" in source_proposition or "vLAM" in proposition:
-                raise CertificateError(f"{step_id}: CNF projection with raw vLAM is not supported")
             if not formula_projection_supported(source_proposition, proposition):
                 raise CertificateError(f"{step_id}: CNF projection is not supported by source and target propositions")
             clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
@@ -1458,6 +1456,7 @@ def strip_outer_prop_parens(value: str) -> str:
 
 
 def prop_key(value: str) -> str:
+    value = normalize_prop_lambdas(value)
     value = strip_outer_prop_parens(value)
     value = re.sub(r"\b(?:f__true|vampire_true)\b", "True", value)
     value = re.sub(r"\b(?:f__false|vampire_false)\b", "False", value)
@@ -1478,6 +1477,52 @@ def parse_parenthesized_prop(value: str, start: int) -> tuple[str, int] | None:
             if depth == 0:
                 return value[start + 1:index].strip(), index + 1
     return None
+
+
+def lambda_hint_for_body_text(body: str) -> LambdaHint | None:
+    body_key = normalize_lambda_hint_body(body)
+    for hint in LAMBDA_HINTS:
+        if normalize_lambda_hint_body(hint.body) == body_key:
+            return hint
+    return None
+
+
+def normalize_prop_lambdas(value: str) -> str:
+    if "vLAM" not in value:
+        return value
+    result: list[str] = []
+    index = 0
+    while index < len(value):
+        if not value.startswith("vLAM", index):
+            result.append(value[index])
+            index += 1
+            continue
+        before_ok = index == 0 or not (value[index - 1].isalnum() or value[index - 1] == "_")
+        after = index + len("vLAM")
+        after_ok = after >= len(value) or value[after].isspace()
+        if not before_ok or not after_ok:
+            result.append(value[index])
+            index += 1
+            continue
+        cursor = after
+        while cursor < len(value) and value[cursor].isspace():
+            cursor += 1
+        parsed = parse_parenthesized_prop(value, cursor)
+        if parsed is None:
+            result.append(value[index])
+            index += 1
+            continue
+        body, cursor = parsed
+        hint = lambda_hint_for_body_text(body)
+        if hint is None:
+            result.append(value[index:cursor])
+            index = cursor
+            continue
+        normalized_body = normalize_prop_lambdas(body)
+        binder = require_megalodon_ident(hint.binder, "lambda binder")
+        result.append(f"(fun {binder}:{sort_type_text(hint.binder_sort)} => {normalized_body})")
+        index = cursor
+    return "".join(result)
 
 
 def parse_vampire_and_prop(value: str) -> tuple[str, str] | None:
@@ -1555,8 +1600,6 @@ def cnf_formula_conjunct_path(cnf: dict[str, Any]) -> tuple[str, ...] | None:
     target = cnf.get("target_proposition")
     if not isinstance(source, str) or not isinstance(target, str) or not source or not target:
         return None
-    if "vLAM" in source or "vLAM" in target:
-        return None
     source_binders, source_body = parse_forall_prefix(source)
     target_binders, target_body = parse_forall_prefix(target)
     if source_binders != target_binders:
@@ -1612,8 +1655,6 @@ def cnf_formula_projection_supported(cnf: dict[str, Any]) -> bool:
     target = cnf.get("target_proposition")
     if not isinstance(source, str) or not isinstance(target, str) or not source or not target:
         return False
-    if "vLAM" in source or "vLAM" in target:
-        return False
     if prop_key(source) == prop_key(target):
         return False
     if parse_vampire_or_prop(source) is None and parse_vampire_and_prop(source) is None and not source.startswith("forall "):
@@ -1657,6 +1698,7 @@ def infer_definition_input_step(
 
 
 def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
+    global LAMBDA_HINTS
     step_meta: dict[int, dict[str, Any]] = {}
     clause_json: dict[int, list[Any]] = {}
     certificate_steps: dict[int, dict[str, Any]] = {}
@@ -1754,6 +1796,16 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
 
     if not clause_json:
         raise CertificateError("Vampire outline contains no megalodon_certificate_clause records")
+
+    lambda_hints = parse_lambda_hints(extras)
+    LAMBDA_HINTS = tuple(
+        LambdaHint(
+            body=item["body"],
+            binder=item["binder"],
+            binder_sort=item["binder_sort"],
+        )
+        for item in lambda_hints
+    )
 
     steps: list[dict[str, Any]] = []
     clauses: dict[int, tuple[Literal, ...]] = {}
@@ -2002,7 +2054,6 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
     if declarations:
         result["declarations"] = sorted(set(declarations))
     result["outline_reconstruction"] = reconstruction_stats
-    lambda_hints = parse_lambda_hints(extras)
     if lambda_hints:
         result["lambda_hints"] = lambda_hints
     return result
@@ -3099,6 +3150,11 @@ def wrap_clause_binders(
 
 
 def conjunction_projection_proof_text(source_proof: str, source_prop: str, target_prop: str) -> str:
+    source_prop = normalize_prop_lambdas(source_prop)
+    target_prop = normalize_prop_lambdas(target_prop)
+    if "vLAM" in source_prop or "vLAM" in target_prop:
+        raise CertificateError("CNF conjunction projection has raw vLAM without lambda hints")
+
     def project_once(proof: str, lhs: str, rhs: str, side: str, result_prop: str) -> str:
         left = fresh_proof_name("Hleft")
         right = fresh_proof_name("Hright")
@@ -3176,6 +3232,11 @@ def inject_into_disjunction_proof(proof: str, source_prop: str, target_prop: str
 
 
 def formula_projection_proof_text(source_proof: str, source_prop: str, target_prop: str) -> str:
+    source_prop = normalize_prop_lambdas(source_prop)
+    target_prop = normalize_prop_lambdas(target_prop)
+    if "vLAM" in source_prop or "vLAM" in target_prop:
+        raise CertificateError("CNF formula projection has raw vLAM without lambda hints")
+
     def binders_prefix(prefix: list[tuple[str, str]], full: list[tuple[str, str]]) -> bool:
         return len(prefix) <= len(full) and full[:len(prefix)] == prefix
 
@@ -3452,7 +3513,10 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
             return name
         name = f"formula_{require_megalodon_ident(formula_parent, 'formula parent')}"
         formula_proof_names[formula_parent] = name
-        assumptions.append((name, proposition))
+        rendered = normalize_prop_lambdas(proposition)
+        if "vLAM" in rendered:
+            raise CertificateError(f"{formula_parent}: formula parent has raw vLAM without lambda hints")
+        assumptions.append((name, rendered))
         return name
 
     for step in data["steps"]:

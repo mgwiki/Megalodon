@@ -174,6 +174,46 @@ if "cnf_formula_projection" not in rules:
     raise SystemExit("quantified CNF formula projection was not reconstructed explicitly")
 PY
 ./bin/megalodon "$cnf_quant_projection_megalodon" >"$TMPDIR/vampire_certificate_cnf_quant_projection.check.log"
+cnf_lambda_projection_outline="$TMPDIR/vampire_certificate_cnf_lambda_projection.out"
+cnf_lambda_projection_certificate="$TMPDIR/vampire_certificate_cnf_lambda_projection.json"
+cnf_lambda_projection_megalodon="$TMPDIR/vampire_certificate_cnf_lambda_projection.mg"
+cat >"$cnf_lambda_projection_outline" <<'OUTLINE'
+megalodon_symbol_declaration("Variable F:(set->prop)->prop.").
+megalodon_symbol_declaration("Variable p:set->prop.").
+megalodon_symbol_declaration("Variable r:prop.").
+megalodon_step(1,"input","formula",[],false,0,"tff(u1,plain,$true).\n").
+megalodon_step(2,"cnf transformation","clause",[1],false,0,"cnf(u2,plain,$true).\n").
+megalodon_certificate_clause(2,[{"polarity":true,"atom":{"eq":[{"const":"f__true"},{"apply":[{"const":"F"},{"app":"vLAM","args":[{"apply":[{"const":"p"},{"const":"db0"}]}]}]}],"sort":"prop"}}]).
+megalodon_step_extra(2,"lambda_sorts",["step_lambda_count=1","step_lambda_0_body=p db0","step_lambda_0_binder_db=db0","step_lambda_0_binder_sort=set"]).
+megalodon_step_extra(2,"cnf",["rule=cnf transformation","parent_unit=1","parent_kind=formula","source=vampire_and (vampire_eq_prop (vampire_true) (F (vLAM (p db0)))) (r)","source_proposition=vampire_and (vampire_eq_prop (vampire_true) (F (vLAM (p db0)))) (r)","target=vampire_eq_prop (vampire_true) (F (vLAM (p db0)))","target_proposition=vampire_eq_prop (vampire_true) (F (vLAM (p db0)))","target_clause=[{\"polarity\":true,\"atom\":{\"eq\":[{\"const\":\"f__true\"},{\"apply\":[{\"const\":\"F\"},{\"app\":\"vLAM\",\"args\":[{\"apply\":[{\"const\":\"p\"},{\"const\":\"db0\"}]}]}]}],\"sort\":\"prop\"}}]","target_literal_count=1","target_literal_0=vampire_eq_prop (vampire_true) (F (vLAM (p db0)))","parent_clause_count=2","clause_parent_unit=1","clause_index=0","clause_count=2"]).
+megalodon_step_replay_kind(2,"cnf").
+megalodon_step(3,"input","clause",[],false,0,"cnf(u3,plain,$true).\n").
+megalodon_certificate_clause(3,[]).
+megalodon_step_replay_kind(3,"").
+megalodon_final_step(3).
+OUTLINE
+python3 scripts/vampire_certificate.py \
+  "$cnf_lambda_projection_outline" \
+  --from-vampire-outline \
+  --write-certificate "$cnf_lambda_projection_certificate" \
+  --emit-megalodon "$cnf_lambda_projection_megalodon" \
+  --theorem-name vampire_certificate_cnf_lambda_projection \
+  --summary
+python3 - "$cnf_lambda_projection_certificate" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+certificate = json.loads(Path(sys.argv[1]).read_text())
+rules = [step["rule"] for step in certificate["steps"]]
+if "cnf_formula_conjunct" not in rules:
+    raise SystemExit("lambda CNF conjunction projection was not reconstructed explicitly")
+PY
+if rg -n '\bvLAM\b|^Variable db[0-9]+:' "$cnf_lambda_projection_megalodon"; then
+  echo "lambda CNF projection leaked raw vLAM or db declaration" >&2
+  exit 1
+fi
+./bin/megalodon "$cnf_lambda_projection_megalodon" >"$TMPDIR/vampire_certificate_cnf_lambda_projection.check.log"
 python3 scripts/vampire_certificate.py \
   tests/vampire_certificate/valid_resolution.json \
   --emit-megalodon "$TMPDIR/vampire_certificate_valid_resolution.mg"
