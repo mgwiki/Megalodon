@@ -73248,6 +73248,11 @@ def source_apply_int_sno_cases_at(rows: list[str], index: int) -> bool:
     return re.search(r"\bapply\s+int_SNo_cases\b", stripped) is not None
 
 
+def source_apply_conjunction_intro_at(rows: list[str], index: int) -> bool:
+    stripped = rows[index - 1].strip()
+    return re.search(r"\bapply\s+and[0-9]*I\b", stripped) is not None
+
+
 def source_intro_command_count(command: str, keyword: str) -> int:
     stripped = command.strip()
     if not stripped.startswith(keyword + " "):
@@ -73268,6 +73273,34 @@ def source_intro_command_names(command: str, keyword: str) -> list[str]:
         return []
     body = body.split(":", 1)[0]
     return SOURCE_IDENTIFIER_RE.findall(body)
+
+
+def source_witness_expr(command: str, source_sorts: dict[str, str], source_binders: dict[str, str]) -> Expr | None:
+    stripped = command.strip()
+    if not stripped.startswith("witness "):
+        return None
+    body = stripped[len("witness ") :].strip()
+    if not body:
+        return None
+    parsed_text = source_surface_parse_text(
+        body,
+        local_sorts=source_sorts,
+        source_binders=source_binders,
+    )
+    return parse_expr(parsed_text)
+
+
+def source_goal_after_witness(goal: Expr, witness: Expr) -> Expr | None:
+    head_args = raw_expr_application_head_args(goal)
+    if head_args is None:
+        return None
+    head, args = head_args
+    if head != "ex" or len(args) != 2:
+        return None
+    predicate = args[1]
+    if predicate.kind != "lambda" or predicate.value is None:
+        return None
+    return substitute_expr(predicate.args[0], {predicate.value: witness})
 
 
 def source_goal_after_intro_commands(
@@ -73304,7 +73337,41 @@ def source_goal_after_intro_commands(
         return fragments
 
     goal = parsed
-    for cursor in range(start_line + 1, min(apply_line, len(rows)) + 1):
+    cursor = start_line + 1
+    stop_line = min(apply_line, len(rows))
+    while cursor <= stop_line:
+        row = rows[cursor - 1]
+        stripped = row.lstrip()
+        branch_match = re.match(r"[-+*]\s+", stripped)
+        if branch_match is not None:
+            indent = len(row) - len(stripped)
+            next_sibling = None
+            for sibling in range(cursor + 1, stop_line + 1):
+                sibling_row = rows[sibling - 1]
+                sibling_stripped = sibling_row.lstrip()
+                if not sibling_stripped:
+                    continue
+                sibling_indent = len(sibling_row) - len(sibling_stripped)
+                if sibling_indent == indent and re.match(r"[-+*]\s+", sibling_stripped):
+                    next_sibling = sibling
+                    break
+                if sibling_indent < indent:
+                    break
+            if next_sibling is not None:
+                cursor = next_sibling
+                continue
+            for parent in range(cursor - 1, max(start_line, 1) - 1, -1):
+                if not source_apply_conjunction_intro_at(rows, parent):
+                    continue
+                branch_index = source_xm_branch_index(rows, parent, cursor)
+                components = source_conjunction_components(goal)
+                if (
+                    branch_index is not None
+                    and len(components) > 1
+                    and 1 <= branch_index <= len(components)
+                ):
+                    goal = components[branch_index - 1]
+                break
         for command in command_fragments(rows[cursor - 1], cursor == apply_line):
             for intro_name in source_intro_command_names(command, "let"):
                 if goal.kind != "forall":
@@ -73319,7 +73386,20 @@ def source_goal_after_intro_commands(
                 if goal.kind != "arrow":
                     return None
                 goal = goal.args[1]
+            witness = source_witness_expr(command, source_sorts, source_binders)
+            if witness is not None:
+                goal = source_goal_after_witness(goal, witness)
+                if goal is None:
+                    return None
+        cursor += 1
     return goal
+
+
+def source_conjunction_components(goal: Expr) -> list[Expr]:
+    parts = vampire_and_parts(goal)
+    if parts is None:
+        return [goal]
+    return [parts[0], *source_conjunction_components(parts[1])]
 
 
 def source_nat_ind_branch_proposition(goal: Expr, branch_index: int) -> str | None:
@@ -73382,6 +73462,56 @@ def source_local_nat_ind_branch_obligation(
         return (
             "local nat_ind branch",
             f"{base_name}_nat_ind_{index}_{branch_index}",
+            branch_proposition,
+            line,
+        )
+    return None
+
+
+def source_conjunction_branch_proposition(goal: Expr, branch_index: int) -> str | None:
+    components = source_conjunction_components(goal)
+    if branch_index < 1 or branch_index > len(components):
+        return None
+    return expr_text(components[branch_index - 1])
+
+
+def source_local_conjunction_branch_obligation(
+    source: Path | None,
+    line: int | None,
+    base_obligation: tuple[str, str, str, int] | None,
+) -> tuple[str, str, str, int] | None:
+    if source is None or line is None or not source.exists():
+        return None
+    theorem_line = source_enclosing_theorem_line(source, line)
+    if theorem_line is None:
+        return None
+    rows = source.read_text(encoding="utf-8", errors="replace").splitlines()
+    if line < 1 or line > len(rows):
+        return None
+    theorem_name = source_enclosing_theorem_name(source, line) or "theorem"
+    if base_obligation is None:
+        proposition = source_theorem_proposition_text(source, line)
+        if proposition is None:
+            return None
+        base_name = theorem_name
+        base_line = theorem_line
+    else:
+        _base_kind, base_name, proposition, base_line = base_obligation
+    for index in range(min(line, len(rows)), max(theorem_line, base_line) - 1, -1):
+        if not source_apply_conjunction_intro_at(rows, index):
+            continue
+        branch_index = source_xm_branch_index(rows, index, line)
+        if branch_index is None:
+            continue
+        goal = source_goal_after_intro_commands(source, proposition, base_line, index)
+        if goal is None:
+            continue
+        branch_proposition = source_conjunction_branch_proposition(goal, branch_index)
+        if branch_proposition is None:
+            continue
+        return (
+            "local conjunction branch",
+            f"{base_name}_and_{index}_{branch_index}",
             branch_proposition,
             line,
         )
@@ -76332,6 +76462,19 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
         )
     if source_int_sno_cases_branch_obligation is not None:
         source_local_obligation = source_int_sno_cases_branch_obligation
+    source_conjunction_branch_obligation = source_local_conjunction_branch_obligation(
+        source,
+        obligation_line,
+        source_local_obligation,
+    )
+    if source_conjunction_branch_obligation is None and source_local_obligation is None:
+        source_conjunction_branch_obligation = source_local_conjunction_branch_obligation(
+            source,
+            obligation_line,
+            None,
+        )
+    if source_conjunction_branch_obligation is not None:
+        source_local_obligation = source_conjunction_branch_obligation
     used_source_annotations = {
         source_name
         for _name, _role, _proposition, _rule, source_name, _parents, _trusted_definition in entries
