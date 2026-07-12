@@ -74492,9 +74492,13 @@ def source_definition_infos(source: Path | None) -> dict[str, DefinitionInfo]:
 def local_set_definition_infos(
     definitions: dict[str, tuple[str, str]],
     source_binders: dict[str, str] | None = None,
+    ambient_sorts: dict[str, str] | None = None,
 ) -> dict[str, DefinitionInfo]:
     infos: dict[str, DefinitionInfo] = {}
-    local_sorts = {name: sort for name, (sort, _body) in definitions.items()}
+    local_sorts = {
+        **(ambient_sorts or {}),
+        **{name: sort for name, (sort, _body) in definitions.items()},
+    }
     for name, (sort, body) in definitions.items():
         body_text = source_surface_parse_text(
             body,
@@ -75811,7 +75815,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     local_set_definition_names = set(local_set_definitions)
     source_and_local_definitions = {
         **source_definitions,
-        **local_set_definition_infos(local_set_definitions, source_binders),
+        **local_set_definition_infos(
+            local_set_definitions,
+            source_binders,
+            {**source_active_declared_sorts(source), **source_definition_sorts(source), **variable_sorts},
+        ),
     }
     source_local_set_names = set(all_local_set_definitions) | set(renamed_all_local_set_definitions)
     local_source_fact_propositions = {
@@ -77236,7 +77244,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     )
                     translated_source_expr = parse_expr(translated_source_statement)
                     if translated_source_expr is not None:
-                        source_bridge_definitions = local_set_definition_infos(local_set_definitions, source_binders)
+                        source_bridge_definitions = local_set_definition_infos(
+                            local_set_definitions,
+                            source_binders,
+                            {**source_sorts, **variable_sorts},
+                        )
                         source_bridge_proof = raw_tptp_source_statement_bridge_proof(
                             translated_source_expr,
                             positive_expr,
