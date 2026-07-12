@@ -182,6 +182,31 @@ Side condition:
 
 - the conclusion is the duplicate-free parent clause, modulo ordering.
 
+### `equality_factoring`
+
+Vampire equality factoring. From two positive equalities in one parent,
+unify the selected side of the selected equality with the opposite side of the
+other equality, delete the selected equality, and add the disequality between
+the two remaining sides.
+
+Required fields:
+
+- `parents`: one parent,
+- `selected`: selected positive equality,
+- `other`: other positive equality,
+- `selected_lhs`: the selected side of `selected`,
+- `other_rhs`: the side of `other` that is not unified with `selected_lhs`,
+- `substitution`: object from variable names to structured terms,
+- `clause`.
+
+Side condition:
+
+- `selected` and `other` occur in the parent and are positive equalities,
+- the other side of `other` and `selected_lhs` match after `substitution`,
+- the conclusion is the substituted parent with `selected` removed plus the
+  negative equality between the other side of `selected` and `other_rhs`, modulo
+  duplicate deletion and clause ordering.
+
 ### `equality_resolution`
 
 Removes a negative reflexive equality literal.

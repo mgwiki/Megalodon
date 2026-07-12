@@ -26,6 +26,7 @@ MVP_RULES = {
     "substitute",
     "resolve",
     "factor",
+    "equality_factoring",
     "equality_resolution",
     "equality_symmetry",
     "paramodulate",
@@ -384,6 +385,61 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
             expected = normalize_clause(parent_clause)
             if clause != expected:
                 raise CertificateError(f"{step_id}: factor conclusion does not match parent")
+
+        elif rule == "equality_factoring":
+            allowed = {"id", "rule", "parents", "selected", "other", "selected_lhs", "other_rhs", "substitution", "clause"}
+            require_fields(step, allowed)
+            require_no_extra_fields(step, allowed)
+            parents = require_parents(step, 1)
+            parent_clause = clauses.get(parents[0])
+            if parent_clause is None:
+                raise CertificateError(f"{step_id}: unknown parent {parents[0]}")
+            selected = parse_literal(step["selected"], f"{step_id}.selected")
+            other = parse_literal(step["other"], f"{step_id}.other")
+            if selected not in parent_clause:
+                raise CertificateError(f"{step_id}: selected equality not present in parent")
+            if other not in parent_clause:
+                raise CertificateError(f"{step_id}: other equality not present in parent")
+            if not selected.polarity or not other.polarity:
+                raise CertificateError(f"{step_id}: equality-factoring literals must be positive")
+            if selected.atom.kind != "eq" or other.atom.kind != "eq":
+                raise CertificateError(f"{step_id}: equality-factoring literals must be equalities")
+            if len(selected.atom.args) != 2 or len(other.atom.args) != 2:
+                raise CertificateError(f"{step_id}: equality-factoring equalities must be binary")
+            selected_lhs = parse_term(step["selected_lhs"], f"{step_id}.selected_lhs")
+            other_rhs = parse_term(step["other_rhs"], f"{step_id}.other_rhs")
+            if selected_lhs == selected.atom.args[0]:
+                selected_rhs = selected.atom.args[1]
+            elif selected_lhs == selected.atom.args[1]:
+                selected_rhs = selected.atom.args[0]
+            else:
+                raise CertificateError(f"{step_id}: selected_lhs is not a side of the selected equality")
+            if other_rhs == other.atom.args[0]:
+                other_lhs = other.atom.args[1]
+            elif other_rhs == other.atom.args[1]:
+                other_lhs = other.atom.args[0]
+            else:
+                raise CertificateError(f"{step_id}: other_rhs is not a side of the other equality")
+            substitution = parse_substitution(step["substitution"], f"{step_id}.substitution")
+            selected_lhs_subst = substitute_term(selected_lhs, substitution)
+            other_lhs_subst = substitute_term(other_lhs, substitution)
+            if selected_lhs_subst != other_lhs_subst:
+                raise CertificateError(f"{step_id}: selected_lhs and other_lhs do not match after substitution")
+            selected_rhs_subst = substitute_term(selected_rhs, substitution)
+            other_rhs_subst = substitute_term(other_rhs, substitution)
+            if selected.atom.name != other.atom.name:
+                raise CertificateError(f"{step_id}: equality-factoring equalities have different sorts")
+            introduced = Literal(False, Term("eq", selected.atom.name, (selected_rhs_subst, other_rhs_subst)))
+            expected = normalize_clause(
+                tuple(
+                    substitute_literal(item, substitution)
+                    for item in clause_without_one(parent_clause, selected)
+                )
+                + (introduced,)
+            )
+            clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
+            if clause != expected:
+                raise CertificateError(f"{step_id}: equality-factoring conclusion does not match parent")
 
         elif rule == "substitute":
             allowed = {"id", "rule", "parents", "substitution", "clause"}
