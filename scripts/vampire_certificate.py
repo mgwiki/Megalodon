@@ -497,6 +497,10 @@ def false_from_complements(left: Literal, left_proof: str, right: Literal, right
     return f"({left_proof} {right_proof})"
 
 
+def equality_refl_proof() -> str:
+    return "(fun Q H => H)"
+
+
 def eliminate_clause_proof(
     clause: tuple[Literal, ...],
     proof: str,
@@ -547,6 +551,32 @@ def resolve_proof_text(
         return intro_literal_proof(literal, conclusion, proof)
 
     return eliminate_clause_proof(left_clause, left_proof, goal, left_branch)
+
+
+def equality_resolution_proof_text(
+    parent_clause: tuple[Literal, ...],
+    parent_proof: str,
+    selected_literal: Literal,
+    substitution: dict[str, Term],
+    conclusion: tuple[Literal, ...],
+) -> str:
+    instantiated_parent = tuple(substitute_literal(literal, substitution) for literal in parent_clause)
+    instantiated_selected = substitute_literal(selected_literal, substitution)
+    if instantiated_selected.polarity or not is_reflexive_equality_atom(instantiated_selected.atom):
+        raise CertificateError("selected equality-resolution literal is not negative reflexive equality")
+    if clause_free_vars(instantiated_parent) or clause_free_vars(conclusion):
+        raise CertificateError("Megalodon smoke equality-resolution elaboration currently requires ground instantiated clauses")
+    instantiated_parent_proof = instantiate_proof(parent_proof, parent_clause, substitution)
+    goal = clause_body_text(conclusion)
+    reflexive_false = lambda proof: f"({proof} {equality_refl_proof()})"
+
+    def branch(literal: Literal, proof: str) -> str:
+        if literal == instantiated_selected:
+            false_proof = reflexive_false(proof)
+            return f"({false_proof} {goal})"
+        return intro_literal_proof(literal, conclusion, proof)
+
+    return eliminate_clause_proof(instantiated_parent, instantiated_parent_proof, goal, branch)
 
 
 def collect_term_symbols(term: Term, constants: set[str], functions: dict[str, int]) -> None:
@@ -616,12 +646,20 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
     declarations = certificate_symbol_declarations(clauses)
     if not declarations:
         raise CertificateError("Megalodon smoke elaboration needs at least one declared atom or symbol")
+    uses_equality = any(literal.atom.kind == "eq" for clause in clauses.values() for literal in clause)
     lines = [
         "Definition False : prop := forall p:prop, p.",
         "Definition or : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> p) -> (B -> p) -> p.",
         "Infix \\/ 785 left := or.",
-        *declarations,
     ]
+    if uses_equality:
+        lines.extend(
+            [
+                "Definition eq : set->set->prop := fun x y:set => forall Q:set->set->prop, Q x y -> Q y x.",
+                "Infix = 502 := eq.",
+            ]
+        )
+    lines.extend(declarations)
     step_clauses: dict[str, tuple[Literal, ...]] = {}
     proof_names: dict[str, str] = {}
     assumptions: list[tuple[str, str]] = []
@@ -654,6 +692,20 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
             parent = step["parents"][0]
             substitution = parse_substitution(step["substitution"], f"{step_id}.substitution")
             proof = wrap_clause_binders(clause, instantiate_proof(proof_names[parent], step_clauses[parent], substitution))
+        elif rule == "equality_resolution":
+            parent = step["parents"][0]
+            selected_literal = parse_literal(step["literal"], f"{step_id}.literal")
+            substitution = parse_substitution(step["substitution"], f"{step_id}.substitution")
+            proof = wrap_clause_binders(
+                clause,
+                equality_resolution_proof_text(
+                    step_clauses[parent],
+                    proof_names[parent],
+                    selected_literal,
+                    substitution,
+                    clause,
+                ),
+            )
         elif rule == "factor":
             parent = step["parents"][0]
             proof = proof_names[parent]

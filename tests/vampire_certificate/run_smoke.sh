@@ -9,6 +9,7 @@ mkdir -p "$TMPDIR"
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_resolution.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_substituted_resolution.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_equality_resolution.json --summary
+python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_equality_resolution_refutation.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_paramodulation.json --summary
 python3 scripts/vampire_certificate.py \
   tests/vampire_certificate/valid_resolution.json \
@@ -16,14 +17,19 @@ python3 scripts/vampire_certificate.py \
 python3 scripts/vampire_certificate.py \
   tests/vampire_certificate/valid_substituted_resolution.json \
   --emit-megalodon "$TMPDIR/vampire_certificate_valid_substituted_resolution.mg"
+python3 scripts/vampire_certificate.py \
+  tests/vampire_certificate/valid_equality_resolution_refutation.json \
+  --emit-megalodon "$TMPDIR/vampire_certificate_valid_equality_resolution_refutation.mg"
 if rg -n '\badmit\b|\baby\b|-allowincompleteqed' \
   "$TMPDIR/vampire_certificate_valid_resolution.mg" \
-  "$TMPDIR/vampire_certificate_valid_substituted_resolution.mg"; then
+  "$TMPDIR/vampire_certificate_valid_substituted_resolution.mg" \
+  "$TMPDIR/vampire_certificate_valid_equality_resolution_refutation.mg"; then
   echo "generated Megalodon certificate proof contains an admission marker" >&2
   exit 1
 fi
 ./bin/megalodon "$TMPDIR/vampire_certificate_valid_resolution.mg" >"$TMPDIR/vampire_certificate_valid_resolution.check.log"
 ./bin/megalodon "$TMPDIR/vampire_certificate_valid_substituted_resolution.mg" >"$TMPDIR/vampire_certificate_valid_substituted_resolution.check.log"
+./bin/megalodon "$TMPDIR/vampire_certificate_valid_equality_resolution_refutation.mg" >"$TMPDIR/vampire_certificate_valid_equality_resolution_refutation.check.log"
 
 if python3 scripts/vampire_certificate.py tests/vampire_certificate/invalid_pivot.json >"$TMPDIR/vampire_certificate_invalid_pivot.out" 2>"$TMPDIR/vampire_certificate_invalid_pivot.err"; then
   echo "invalid pivot certificate unexpectedly passed" >&2

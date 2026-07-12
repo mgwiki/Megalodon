@@ -307,6 +307,9 @@ a small checked subfragment to a Megalodon proof script:
   local `claim`s,
 - structured first-order `substitute` steps are elaborated by universal
   instantiation of their parent clause,
+- structured first-order `equality_resolution` steps are elaborated by
+  instantiating the parent clause and closing the negative reflexive equality
+  branch with the local Leibniz reflexivity proof,
 - the final empty clause proves `False`.
 
 This first elaborator is intentionally limited to set-sorted first-order terms
