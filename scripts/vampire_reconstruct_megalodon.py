@@ -75036,6 +75036,97 @@ def raw_tptp_reconstructed_conjecture_name(source: Path | None, problem: Path | 
     return f"vampire_reconstructed_{sanitized}_tptp"
 
 
+def raw_tptp_source_statement_bridge_proof(
+    source_expr: Expr,
+    positive_expr: Expr,
+    positive_proof: str,
+    source_definitions: dict[str, DefinitionInfo],
+    variable_sorts: dict[str, str],
+    source_sorts: dict[str, str],
+) -> str | None:
+    proof_sorts = {
+        **source_sorts,
+        **variable_sorts,
+        **{name: definition.sort for name, definition in source_definitions.items()},
+    }
+    normalized_source = beta_normalize_expr(normalize_defined_expr(source_expr, source_definitions))
+    normalized_positive = beta_normalize_expr(normalize_defined_expr(positive_expr, source_definitions))
+    if expr_same_mod_alpha_eta_after_sort_normalization(normalized_source, normalized_positive):
+        return positive_proof
+
+    candidate_pairs = [
+        (positive_expr, source_expr),
+        (normalized_positive, normalized_source),
+    ]
+    seen: set[tuple[str, str]] = set()
+    previous_deadline = getattr(PROOF_SEARCH_STATE, "deadline", None)
+    PROOF_SEARCH_STATE.deadline = proof_search_now() + 3.0
+    try:
+        for source_candidate, target_candidate in candidate_pairs:
+            key = (expr_text(source_candidate), expr_text(target_candidate))
+            if key in seen:
+                continue
+            seen.add(key)
+            if len(key[0]) + len(key[1]) > 60000:
+                continue
+            for transform in (
+                lambda: raw_deep_formula_transform_proof(
+                    source_candidate,
+                    target_candidate,
+                    positive_proof,
+                    proof_sorts,
+                ),
+                lambda: raw_structural_normal_form_transform_proof(
+                    source_candidate,
+                    target_candidate,
+                    positive_proof,
+                    proof_sorts,
+                ),
+                lambda: raw_clause_transform_proof(
+                    source_candidate,
+                    target_candidate,
+                    positive_proof,
+                ),
+                lambda: raw_ennf_positive_consequent_transform_proof(
+                    source_candidate,
+                    target_candidate,
+                    positive_proof,
+                    proof_sorts,
+                ),
+                lambda: raw_prop_implication_transform_proof(
+                    source_candidate,
+                    target_candidate,
+                    positive_proof,
+                    proof_sorts,
+                ),
+                lambda: raw_implication_to_ennf_or_proof(
+                    source_candidate,
+                    target_candidate,
+                    positive_proof,
+                    proof_sorts,
+                ),
+                lambda: raw_tptp_peirce_implication_ennf_proof(
+                    expr_text(target_candidate),
+                    ["source"],
+                    {"source": expr_text(source_candidate)},
+                    proof_sorts,
+                    source_proof_override=positive_proof,
+                ),
+            ):
+                if proof_search_timed_out():
+                    return None
+                proof = transform()
+                if proof is not None:
+                    return proof
+    finally:
+        if previous_deadline is None:
+            if hasattr(PROOF_SEARCH_STATE, "deadline"):
+                delattr(PROOF_SEARCH_STATE, "deadline")
+        else:
+            PROOF_SEARCH_STATE.deadline = previous_deadline
+    return None
+
+
 def raw_tptp_source_map_wrapped_lines(label: str, names: Iterable[str], limit: int = 80) -> list[str]:
     ordered = sorted({name for name in names if name})
     if not ordered:
@@ -76993,8 +77084,9 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 lines.append("Qed.")
                 source_statement = source_theorem_proposition_text(source, obligation_line)
                 source_statement_proposition = None
+                source_statement_proof = None
                 source_bridge_size = len(source_statement or "") + len(positive_conjecture)
-                if source_statement is not None and source_theorem_name is not None and source_bridge_size <= 5000:
+                if source_statement is not None and source_theorem_name is not None and source_bridge_size <= 12000:
                     translated_source_statement = use_ambient_basic_logic_text(
                         replace_generated_identifier_tokens(
                             source_surface_parse_text(
@@ -77009,17 +77101,17 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     translated_source_expr = parse_expr(translated_source_statement)
                     if translated_source_expr is not None:
                         source_bridge_definitions = local_set_definition_infos(local_set_definitions, source_binders)
-                        normalized_source_expr = beta_normalize_expr(
-                            normalize_defined_expr(translated_source_expr, source_bridge_definitions)
+                        source_bridge_proof = raw_tptp_source_statement_bridge_proof(
+                            translated_source_expr,
+                            positive_expr,
+                            conjecture_name,
+                            source_bridge_definitions,
+                            variable_sorts,
+                            source_sorts,
                         )
-                        normalized_positive_expr = beta_normalize_expr(
-                            normalize_defined_expr(positive_expr, source_bridge_definitions)
-                        )
-                        if expr_same_mod_alpha_eta_after_sort_normalization(
-                            normalized_source_expr,
-                            normalized_positive_expr,
-                        ):
+                        if source_bridge_proof is not None:
                             source_statement_proposition = expr_text(translated_source_expr)
+                            source_statement_proof = source_bridge_proof
                 if source_statement_proposition is not None and source_theorem_name is not None:
                     source_conjecture_name = re.sub(r"_tptp$", "_source", conjecture_name)
                     if source_conjecture_name == conjecture_name:
@@ -77028,7 +77120,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                         "// source-shaped theorem reconstructed from the original Megalodon statement."
                     )
                     lines.append(f"Theorem {source_conjecture_name}: {source_statement_proposition}.")
-                    lines.append(f"exact {conjecture_name}.")
+                    lines.append(f"exact {proof_argument_text(source_statement_proof or conjecture_name)}.")
                     lines.append("Qed.")
     if local_identifier_renames:
         lines = [replace_generated_identifier_tokens(line, local_identifier_renames) for line in lines]
