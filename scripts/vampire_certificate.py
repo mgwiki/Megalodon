@@ -1578,6 +1578,14 @@ def disjunction_contains_projection(target: str, source: str) -> bool:
 
 
 def formula_projection_supported(source: str, target: str) -> bool:
+    try:
+        formula_projection_proof_text("Hprojection", source, target)
+    except CertificateError:
+        return False
+    return True
+
+
+def formula_projection_structurally_supported(source: str, target: str) -> bool:
     if prop_key(source) == prop_key(target):
         return True
     if disjunction_contains_projection(target, source):
@@ -3168,6 +3176,9 @@ def inject_into_disjunction_proof(proof: str, source_prop: str, target_prop: str
 
 
 def formula_projection_proof_text(source_proof: str, source_prop: str, target_prop: str) -> str:
+    def binders_prefix(prefix: list[tuple[str, str]], full: list[tuple[str, str]]) -> bool:
+        return len(prefix) <= len(full) and full[:len(prefix)] == prefix
+
     def project_conjunct_once(proof: str, lhs: str, rhs: str, side: str, result_prop: str) -> str:
         left = fresh_proof_name("Hand_left")
         right = fresh_proof_name("Hand_right")
@@ -3178,7 +3189,7 @@ def formula_projection_proof_text(source_proof: str, source_prop: str, target_pr
             f"fun {right}:({strip_outer_prop_parens(rhs)}) => {selected}))"
         )
 
-    def project_body(proof: str, source_body: str, target_body: str) -> str | None:
+    def project_body(proof: str, source_body: str, target_body: str, bound_vars: set[str]) -> str | None:
         if prop_key(source_body) == prop_key(target_body):
             return proof
         injected = inject_into_disjunction_proof(proof, source_body, target_body)
@@ -3186,32 +3197,40 @@ def formula_projection_proof_text(source_proof: str, source_prop: str, target_pr
             return injected
         source_binders, stripped_source = parse_forall_prefix(source_body)
         target_binders, stripped_target = parse_forall_prefix(target_body)
-        if source_binders == target_binders and source_binders:
+        if source_binders and source_binders == target_binders:
             instantiated = proof
             for name, _sort in source_binders:
                 instantiated = f"({instantiated} {require_megalodon_ident(name, 'CNF projection binder')})"
-            result = project_body(instantiated, stripped_source, stripped_target)
+            extended_bound = bound_vars | {name for name, _sort in source_binders}
+            result = project_body(instantiated, stripped_source, stripped_target, extended_bound)
             if result is None:
                 return None
             for name, sort in reversed(source_binders):
                 result = f"(fun {require_megalodon_ident(name, 'CNF projection binder')}:{sort_type_text(sort)} => {result})"
             return result
+        if source_binders and all(name in bound_vars for name, _sort in source_binders):
+            instantiated = proof
+            for name, _sort in source_binders:
+                instantiated = f"({instantiated} {require_megalodon_ident(name, 'CNF projection binder')})"
+            result = project_body(instantiated, stripped_source, target_body, bound_vars)
+            if result is not None:
+                return result
         and_parts = parse_vampire_and_prop(source_body)
         if and_parts is not None:
             lhs, rhs = and_parts
             left_projection = project_conjunct_once(proof, lhs, rhs, "left", lhs)
-            left_result = project_body(left_projection, lhs, target_body)
+            left_result = project_body(left_projection, lhs, target_body, bound_vars)
             if left_result is not None:
                 return left_result
             right_projection = project_conjunct_once(proof, lhs, rhs, "right", rhs)
-            return project_body(right_projection, rhs, target_body)
+            return project_body(right_projection, rhs, target_body, bound_vars)
         or_parts = parse_vampire_or_prop(source_body)
         if or_parts is not None:
             lhs, rhs = or_parts
             left_proof = fresh_proof_name("Hor_source_left")
             right_proof = fresh_proof_name("Hor_source_right")
-            left_result = project_body(left_proof, lhs, target_body)
-            right_result = project_body(right_proof, rhs, target_body)
+            left_result = project_body(left_proof, lhs, target_body, bound_vars)
+            right_result = project_body(right_proof, rhs, target_body, bound_vars)
             if left_result is None or right_result is None:
                 return None
             return (
@@ -3227,14 +3246,25 @@ def formula_projection_proof_text(source_proof: str, source_prop: str, target_pr
         proof = source_proof
         for name, _sort in source_binders:
             proof = f"({proof} {require_megalodon_ident(name, 'CNF projection binder')})"
-        result = project_body(proof, source_body, target_body)
+        result = project_body(proof, source_body, target_body, {name for name, _sort in source_binders})
         if result is None:
             raise CertificateError("CNF formula projection could not be replayed")
         for name, sort in reversed(source_binders):
             result = f"(fun {require_megalodon_ident(name, 'CNF projection binder')}:{sort_type_text(sort)} => {result})"
         return result
+    if source_binders and target_binders and binders_prefix(source_binders, target_binders):
+        proof = source_proof
+        for name, _sort in source_binders:
+            proof = f"({proof} {require_megalodon_ident(name, 'CNF projection binder')})"
+        bound_vars = {name for name, _sort in target_binders}
+        result = project_body(proof, source_body, target_body, bound_vars)
+        if result is None:
+            raise CertificateError("CNF formula projection could not be replayed")
+        for name, sort in reversed(target_binders):
+            result = f"(fun {require_megalodon_ident(name, 'CNF projection binder')}:{sort_type_text(sort)} => {result})"
+        return result
 
-    result = project_body(source_proof, source_prop, target_prop)
+    result = project_body(source_proof, source_prop, target_prop, set())
     if result is None:
         raise CertificateError("CNF formula projection could not be replayed")
     return result

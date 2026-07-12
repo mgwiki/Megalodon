@@ -139,6 +139,41 @@ if "cnf_formula_projection" not in rules:
     raise SystemExit("CNF formula projection was not reconstructed explicitly")
 PY
 ./bin/megalodon "$cnf_projection_megalodon" >"$TMPDIR/vampire_certificate_cnf_projection.check.log"
+cnf_quant_projection_outline="$TMPDIR/vampire_certificate_cnf_quant_projection.out"
+cnf_quant_projection_certificate="$TMPDIR/vampire_certificate_cnf_quant_projection.json"
+cnf_quant_projection_megalodon="$TMPDIR/vampire_certificate_cnf_quant_projection.mg"
+cat >"$cnf_quant_projection_outline" <<'OUTLINE'
+megalodon_symbol_declaration("Variable p:set->prop.").
+megalodon_symbol_declaration("Variable q:set->set->prop.").
+megalodon_step(1,"input","formula",[],false,0,"tff(u1,plain,$true).\n").
+megalodon_step(2,"cnf transformation","clause",[1],false,0,"cnf(u2,plain,$true).\n").
+megalodon_certificate_clause(2,[{"polarity":true,"atom":{"pred":"p","args":[{"var":"X0"}]}},{"polarity":true,"atom":{"pred":"q","args":[{"var":"X0"},{"var":"X1"}]}}]).
+megalodon_step_variable_sorts(2,["X0:set","X1:set"]).
+megalodon_step_extra(2,"cnf",["rule=cnf transformation","parent_unit=1","parent_kind=formula","source=forall X0:set, vampire_or (p X0) (forall X1:set, q X0 X1)","source_proposition=forall X0:set, vampire_or (p X0) (forall X1:set, q X0 X1)","target=forall X0:set, forall X1:set, vampire_or (p X0) (q X0 X1)","target_proposition=forall X0:set, forall X1:set, vampire_or (p X0) (q X0 X1)","target_clause=[{\"polarity\":true,\"atom\":{\"pred\":\"p\",\"args\":[{\"var\":\"X0\"}]}},{\"polarity\":true,\"atom\":{\"pred\":\"q\",\"args\":[{\"var\":\"X0\"},{\"var\":\"X1\"}]}}]","target_literal_count=2","target_literal_0=p X0","target_literal_1=q X0 X1","parent_clause_count=1","clause_parent_unit=1","clause_index=0","clause_count=1"]).
+megalodon_step_replay_kind(2,"cnf").
+megalodon_step(3,"input","clause",[],false,0,"cnf(u3,plain,$true).\n").
+megalodon_certificate_clause(3,[]).
+megalodon_step_replay_kind(3,"").
+megalodon_final_step(3).
+OUTLINE
+python3 scripts/vampire_certificate.py \
+  "$cnf_quant_projection_outline" \
+  --from-vampire-outline \
+  --write-certificate "$cnf_quant_projection_certificate" \
+  --emit-megalodon "$cnf_quant_projection_megalodon" \
+  --theorem-name vampire_certificate_cnf_quant_projection \
+  --summary
+python3 - "$cnf_quant_projection_certificate" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+certificate = json.loads(Path(sys.argv[1]).read_text())
+rules = [step["rule"] for step in certificate["steps"]]
+if "cnf_formula_projection" not in rules:
+    raise SystemExit("quantified CNF formula projection was not reconstructed explicitly")
+PY
+./bin/megalodon "$cnf_quant_projection_megalodon" >"$TMPDIR/vampire_certificate_cnf_quant_projection.check.log"
 python3 scripts/vampire_certificate.py \
   tests/vampire_certificate/valid_resolution.json \
   --emit-megalodon "$TMPDIR/vampire_certificate_valid_resolution.mg"
