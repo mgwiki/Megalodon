@@ -28500,6 +28500,41 @@ def raw_build_conjunction_from_component_proofs(
     )
 
 
+def raw_left_associated_three_conjunction_to_target_proof(target: Expr, source_proof: str) -> str | None:
+    components = raw_conjunction_components(target)
+    if len(components) != 3:
+        return None
+    first, second, third = components
+    first_second = Expr("app", args=(Expr("var", value="and"), first, second))
+    first_second_text = proof_arg_text(first_second)
+    first_text = proof_arg_text(first)
+    second_text = proof_arg_text(second)
+    third_text = proof_arg_text(third)
+    first_second_proof = (
+        f"({proof_head(source_proof)} {first_second_text} "
+        f"(fun HAB HC => HAB))"
+    )
+    first_proof = (
+        f"({proof_head(first_second_proof)} {first_text} "
+        f"(fun HA HB => HA))"
+    )
+    second_proof = (
+        f"({proof_head(first_second_proof)} {second_text} "
+        f"(fun HA HB => HB))"
+    )
+    third_proof = (
+        f"({proof_head(source_proof)} {third_text} "
+        f"(fun HAB HC => HC))"
+    )
+    return (
+        f"(fun P :prop => "
+        f"fun K :{first_second_text} -> {third_text} -> P => "
+        f"K (fun Pab :prop => fun Kab :{first_text} -> {second_text} -> Pab => "
+        f"Kab {proof_term_text(first_proof)} {proof_term_text(second_proof)}) "
+        f"{proof_term_text(third_proof)})"
+    )
+
+
 def raw_or_components(expr: Expr, depth: int = 0) -> list[Expr]:
     if depth > 32:
         return [expr]
@@ -73239,6 +73274,7 @@ def raw_tptp_unfolded_source_fact_proof(
     source_definitions: dict[str, DefinitionInfo],
     source_sorts: dict[str, str] | None = None,
     variable_sorts: dict[str, str] | None = None,
+    alias_definition_names: set[str] | None = None,
 ) -> str | None:
     if source_proposition is None or not source_definitions:
         return None
@@ -73249,6 +73285,11 @@ def raw_tptp_unfolded_source_fact_proof(
     parse_sorts = {**(source_sorts or {})}
     parse_sorts.update({name: definition.sort for name, definition in source_definitions.items()})
     proof_sorts = {**parse_sorts, **(variable_sorts or {})}
+    alias_definitions = {
+        name: definition
+        for name, definition in source_definitions.items()
+        if alias_definition_names is not None and name in alias_definition_names
+    }
 
     for source_text in (
         source_surface_parse_text(source_proposition, local_sorts=parse_sorts),
@@ -73262,6 +73303,44 @@ def raw_tptp_unfolded_source_fact_proof(
             source_head_args is not None
             and source_head_args[0] in source_definitions
         )
+        if source_is_top_defined_application and source_head_args is not None:
+            definition = source_definitions[source_head_args[0]]
+            if len(source_head_args[1]) >= len(definition.binders):
+                subst = {
+                    binder_name: argument
+                    for binder_name, argument in zip(definition.binders, source_head_args[1])
+                }
+                shallow_source = beta_normalize_expr(substitute_expr(definition.body, subst))
+                if alias_definitions:
+                    shallow_source = beta_normalize_expr(normalize_defined_expr(shallow_source, alias_definitions))
+                    shallow_target = beta_normalize_expr(normalize_defined_expr(target, alias_definitions))
+                else:
+                    shallow_target = target
+                if expr_same_mod_alpha_after_sort_normalization(shallow_source, shallow_target):
+                    return source_name
+                if len(expr_text(shallow_source)) + len(expr_text(shallow_target)) <= 60000:
+                    transformed = raw_left_associated_three_conjunction_to_target_proof(
+                        shallow_target,
+                        source_name,
+                    )
+                    if transformed is not None:
+                        return transformed
+                    transformed = raw_ennf_positive_consequent_transform_proof(
+                        shallow_source,
+                        shallow_target,
+                        source_name,
+                        proof_sorts,
+                    )
+                    if transformed is not None:
+                        return transformed
+                    transformed = raw_prop_implication_transform_proof(
+                        shallow_source,
+                        shallow_target,
+                        source_name,
+                        proof_sorts,
+                    )
+                    if transformed is not None:
+                        return transformed
         source_unfolded = beta_normalize_expr(normalize_defined_expr(source, source_definitions))
         if expr_same_mod_alpha_after_sort_normalization(source_unfolded, target_unfolded):
             return source_name
@@ -73416,6 +73495,7 @@ def raw_tptp_source_fact_proof(
     source_definitions: dict[str, DefinitionInfo],
     source_aliases: dict[str, tuple[str, str]] | None = None,
     source_sorts: dict[str, str] | None = None,
+    alias_definition_names: set[str] | None = None,
 ) -> str | None:
     if source_name is None or source_name not in source_fact_names:
         return None
@@ -73452,6 +73532,7 @@ def raw_tptp_source_fact_proof(
         source_definitions,
         source_sorts,
         variable_sorts,
+        alias_definition_names,
     )
     if unfolded_source_fact is not None:
         return unfolded_source_fact
@@ -73490,6 +73571,7 @@ def raw_tptp_local_source_fact_proof(
     variable_sorts: dict[str, str],
     source_definitions: dict[str, DefinitionInfo],
     source_sorts: dict[str, str] | None = None,
+    alias_definition_names: set[str] | None = None,
 ) -> str | None:
     if source_name is None or source_name not in local_source_fact_propositions:
         return None
@@ -73520,6 +73602,7 @@ def raw_tptp_local_source_fact_proof(
         source_definitions,
         source_sorts,
         variable_sorts,
+        alias_definition_names,
     )
     if unfolded_source_fact is not None:
         return unfolded_source_fact
@@ -74609,6 +74692,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 variable_sorts,
                 source_and_local_definitions,
                 source_sorts,
+                local_set_definition_names,
             )
         ) is not None and emit_local_source_fact(source_name, proposition):
             lines.append(f"Theorem {claim_name}: {proposition}.")
@@ -74624,6 +74708,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 source_and_local_definitions,
                 local_set_definitions,
                 source_sorts,
+                local_set_definition_names,
             )
         ) is not None:
             lines.append(f"Theorem {claim_name}: {proposition}.")
