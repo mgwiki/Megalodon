@@ -71182,7 +71182,7 @@ def raw_tptp_replay_proof(
             return proof
         return raw_tptp_one_parent_transform_proof(proposition, parents, propositions_by_name, variable_sorts)
     if rule == "avatar_sat_refutation":
-        proof = raw_tptp_avatar_sat_refutation_proof(proposition, parents, propositions_by_name)
+        proof = raw_tptp_avatar_sat_refutation_proof(proposition, parents, propositions_by_name, variable_sorts)
         if proof is not None:
             return proof
         return raw_tptp_one_parent_transform_proof(proposition, parents, propositions_by_name, variable_sorts)
@@ -73121,11 +73121,34 @@ def raw_tptp_avatar_sat_refutation_proof(
     proposition: str,
     parents: list[str],
     propositions_by_name: dict[str, str],
+    variable_sorts: dict[str, str] | None = None,
 ) -> str | None:
     target = parse_expr(proposition)
     if target is None or not false_eliminator_expr(target):
         return None
-    parsed: list[tuple[str, Expr, str]] = []
+    variable_sorts = variable_sorts or {}
+
+    def set_witness(parent_exprs: list[Expr]) -> Expr | None:
+        candidates = [
+            name
+            for name, sort in sorted(variable_sorts.items())
+            if normalized_sort_key(sort) == "set"
+            and not RAW_TPTP_SYNTHETIC_DB_RE.fullmatch(name)
+            and not RAW_TPTP_SURFACE_VAR_RE.fullmatch(name)
+        ]
+        for preferred in ("A", "Empty", "Y"):
+            if preferred in candidates:
+                return Expr("var", value=preferred)
+        if candidates:
+            return Expr("var", value=candidates[0])
+        for expr in parent_exprs:
+            for subterm in expr_subterms(expr, limit=256):
+                if expr_sort(subterm, variable_sorts) == "set" and not expr_variables(subterm):
+                    return subterm
+        return None
+
+    raw_parents: list[tuple[str, Expr, str]] = []
+    quantified_parent = False
     for parent in parents:
         parent_proposition = propositions_by_name.get(parent)
         if parent_proposition is None:
@@ -73133,11 +73156,25 @@ def raw_tptp_avatar_sat_refutation_proof(
         parent_expr = parse_expr(parent_proposition)
         if parent_expr is None:
             continue
-        parent_proof = raw_tptp_claim_name(parent)
+        raw_parents.append((parent, parent_expr, raw_tptp_claim_name(parent)))
+        if collect_foralls(parent_expr)[0]:
+            quantified_parent = True
+    witness = set_witness([expr for _name, expr, _proof in raw_parents]) if quantified_parent else None
+    parsed: list[tuple[str, Expr, str]] = []
+    for parent, parent_expr, parent_proof in raw_parents:
         if false_eliminator_expr(parent_expr):
             return parent_proof
-        if collect_foralls(parent_expr)[0]:
-            return None
+        binders, body = collect_foralls(parent_expr)
+        if binders:
+            if witness is None or any(normalized_sort_key(sort) != "set" for _name, sort in binders):
+                return None
+            instantiated = body
+            instantiated_proof = parent_proof
+            for name, _sort in binders:
+                instantiated = rename_expr_variables(instantiated, {name: expr_text(witness)})
+                instantiated_proof = f"({proof_head(instantiated_proof)} {proof_arg_text(witness)})"
+            parent_expr = instantiated
+            parent_proof = instantiated_proof
         parsed.append((parent, parent_expr, parent_proof))
     if len(parsed) < 2:
         return None
@@ -73215,18 +73252,34 @@ def raw_tptp_avatar_sat_refutation_proof(
 
 def raw_avatar_split_literal(expr: Expr) -> tuple[str, bool] | None:
     if expr.kind == "var" and isinstance(expr.value, str) and expr.value.startswith("split_"):
-        return expr.value, True
+        return expr_text(expr), True
+    if (
+        expr.kind == "app"
+        and expr.args
+        and expr.args[0].kind == "var"
+        and isinstance(expr.args[0].value, str)
+        and expr.args[0].value.startswith("split_")
+    ):
+        return expr_text(expr), True
     premises, conclusion = split_arrows(expr)
     if len(premises) == 1 and false_eliminator_expr(conclusion):
         premise = premises[0]
         if premise.kind == "var" and isinstance(premise.value, str) and premise.value.startswith("split_"):
-            return premise.value, False
+            return expr_text(premise), False
+        if (
+            premise.kind == "app"
+            and premise.args
+            and premise.args[0].kind == "var"
+            and isinstance(premise.args[0].value, str)
+            and premise.args[0].value.startswith("split_")
+        ):
+            return expr_text(premise), False
     return None
 
 
 def raw_avatar_literal_expr(literal: tuple[str, bool]) -> Expr:
     name, polarity = literal
-    atom = Expr("var", value=name)
+    atom = parse_expr(name) or Expr("var", value=name)
     if polarity:
         return atom
     return Expr("arrow", args=(atom, Expr("var", value="vampire_false")))
@@ -73429,8 +73482,9 @@ def raw_avatar_sat_dpll_refutation_proof(
         false_proof = search(false_assignment, depth + 1)
         if false_proof is None:
             return None
+        variable_expr = raw_avatar_literal_expr((variable, True))
         return (
-            f"(xm {variable} {proof_arg_text(target)} "
+            f"(xm {proof_arg_text(variable_expr)} {proof_arg_text(target)} "
             f"(fun {true_name} => {true_proof}) "
             f"(fun {false_name} => {false_proof}))"
         )
