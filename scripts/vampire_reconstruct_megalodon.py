@@ -2444,6 +2444,10 @@ def raw_tptp_negated_conjecture_proposition(proposition: str, force: bool = Fals
     premises, conclusion = split_arrows(parsed)
     if not force and len(premises) == 1 and false_eliminator_expr(conclusion):
         return proposition
+    _binders, quantified_body = collect_foralls(parsed)
+    quantified_premises, quantified_conclusion = split_arrows(quantified_body)
+    if not force and quantified_premises and false_eliminator_expr(quantified_conclusion):
+        return proposition
     return expr_text(Expr("arrow", args=(parsed, Expr("var", value="vampire_false"))))
 
 
@@ -77302,6 +77306,23 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     }
     proposition_names = raw_tptp_proposition_names(propositions)
     source_definition_names = set(source_definition_sorts(source))
+    smolka_rule_labels = {
+        "rectify": "rectify",
+        "fool_elimination": "FOOL",
+        "flattening": "flatten",
+        "ennf_transformation": "ENNF",
+        "nnf_transformation": "NNF",
+        "cnf_transformation": "CNF",
+        "boolean_simplification": "bool-simp",
+        "true_and_false_elimination": "true/false",
+        "skolemisation": "skolemise",
+        "skolem_symbol_introduction": "skolem-symbol",
+    }
+    smolka_rule_counts: dict[str, int] = {}
+    for _name, _role, _proposition, rule, _source_name, _parents, _trusted_definition in entries:
+        if rule in smolka_rule_labels:
+            label = smolka_rule_labels[rule]
+            smolka_rule_counts[label] = smolka_rule_counts.get(label, 0) + 1
     source_map_lines: list[str] = ["// Source reconstruction map."]
     if source_theorem_name is not None:
         source_map_lines.append(f"// source theorem: {source_theorem_name}{source_line_suffix(source_theorem_line)}")
@@ -77315,6 +77336,16 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             f"// source local obligation: {obligation_kind} {obligation_name}{source_line_suffix(local_obligation_line)}"
         )
         source_map_lines.append(f"// source local obligation text: {obligation_proposition[:400]}")
+    if smolka_rule_counts:
+        ordered_smolka_counts = [
+            f"{label}={smolka_rule_counts[label]}"
+            for label in smolka_rule_labels.values()
+            if label in smolka_rule_counts
+        ]
+        source_map_lines.append(
+            "// Smolka-style transformations present: "
+            + ", ".join(ordered_smolka_counts)
+        )
     source_map_lines.extend(
         raw_tptp_source_map_wrapped_lines(
             "source top-level facts used",
@@ -78206,7 +78237,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                     replay_parents,
                     propositions_by_name,
                     variable_sorts,
-                    None,
+                    step_info,
                 ) if replay_proof is None else replay_proof
             if replay_proof is None and rule in {"forward_subsumption_resolution", "backward_subsumption_resolution"}:
                 replay_proof = raw_tptp_guarded_component_contradiction_resolution_proof(
