@@ -29,6 +29,11 @@ MVP_RULES = {
     "paramodulate",
     "contradiction",
 }
+RESOLUTION_LIKE_REPLAY_KINDS = {
+    "resolution",
+    "subsumption_resolution",
+    "unit_resulting_resolution",
+}
 PROOF_NAME_COUNTER = itertools.count()
 
 
@@ -508,9 +513,11 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
         replay_kind = replay_kinds.get(step_no, "")
         step_id = f"u{step_no}"
 
-        if replay_kind == "resolution":
+        if replay_kind in RESOLUTION_LIKE_REPLAY_KINDS:
             if len(parent_clause_numbers) != 2:
-                raise CertificateError(f"{step_id}: resolution bridge requires exactly two printed clause parents")
+                raise CertificateError(
+                    f"{step_id}: {replay_kind} bridge requires exactly two printed clause parents"
+                )
             left_no, right_no = parent_clause_numbers
             pivot = infer_resolution_pivot(step_id, clauses[left_no], clauses[right_no], clause)
             steps.append(
@@ -523,15 +530,17 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
                 }
             )
         elif not parent_clause_numbers:
+            source_kind = "vampire_input_clause" if not meta["parents"] else "vampire_derived_clause"
             steps.append(
                 {
                     "id": step_id,
                     "rule": "input",
                     "clause": clause_json[step_no],
                     "source": {
-                        "kind": "vampire_clause",
+                        "kind": source_kind,
                         "name": step_id,
                         "vampire_rule": meta["rule"],
+                        "vampire_parents": [f"u{parent}" for parent in meta["parents"]],
                     },
                 }
             )

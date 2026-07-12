@@ -19,36 +19,53 @@ if [[ -z "$VAMPIRE_BIN" || ! -x "$VAMPIRE_BIN" ]]; then
   exit 1
 fi
 
-problem="$TMPDIR/vampire_outline_smoke.p"
-outline="$TMPDIR/vampire_outline_smoke.out"
-certificate="$TMPDIR/vampire_outline_smoke.json"
-megalodon="$TMPDIR/vampire_outline_smoke.mg"
+run_outline_case() {
+  local label="$1"
+  local problem="$2"
+  local outline="$TMPDIR/${label}.out"
+  local certificate="$TMPDIR/${label}.json"
+  local megalodon="$TMPDIR/${label}.mg"
 
-cat >"$problem" <<'PROBLEM'
+  "$VAMPIRE_BIN" \
+    --input_syntax tptp \
+    --mode casc \
+    -t 10 \
+    --proof megalodon \
+    --output_axiom_names on \
+    "$problem" >"$outline"
+
+  python3 scripts/vampire_certificate.py \
+    "$outline" \
+    --from-vampire-outline \
+    --summary \
+    --write-certificate "$certificate" \
+    --emit-megalodon "$megalodon" \
+    --theorem-name "${label}_certificate_smoke"
+
+  if rg -n '\badmit\b|\baby\b|-allowincompleteqed' "$megalodon"; then
+    echo "generated Megalodon proof contains an admission marker" >&2
+    exit 1
+  fi
+
+  ./bin/megalodon "$megalodon" >"$TMPDIR/${label}.check.log"
+}
+
+fof_problem="$TMPDIR/vampire_outline_smoke_fof.p"
+thf_problem="$TMPDIR/vampire_outline_smoke_thf.p"
+
+cat >"$fof_problem" <<'PROBLEM'
 fof(a1, axiom, p(a)).
 fof(c, conjecture, p(a)).
 PROBLEM
 
-"$VAMPIRE_BIN" \
-  --input_syntax tptp \
-  --mode casc \
-  -t 10 \
-  --proof megalodon \
-  --output_axiom_names on \
-  "$problem" >"$outline"
+cat >"$thf_problem" <<'PROBLEM'
+thf(a_type,type,(a: $i)).
+thf(p_type,type,(p: $i > $o)).
+thf(a1,axiom,(p @ a)).
+thf(c,conjecture,(p @ a)).
+PROBLEM
 
-python3 scripts/vampire_certificate.py \
-  "$outline" \
-  --from-vampire-outline \
-  --summary \
-  --write-certificate "$certificate" \
-  --emit-megalodon "$megalodon"
-
-if rg -n '\badmit\b|\baby\b|-allowincompleteqed' "$megalodon"; then
-  echo "generated Megalodon proof contains an admission marker" >&2
-  exit 1
-fi
-
-./bin/megalodon "$megalodon" >"$TMPDIR/vampire_outline_smoke.check.log"
+run_outline_case vampire_outline_smoke_fof "$fof_problem"
+run_outline_case vampire_outline_smoke_thf "$thf_problem"
 
 echo "vampire outline smoke test passed"

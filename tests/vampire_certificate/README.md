@@ -26,9 +26,11 @@ The smoke script also uses `--emit-megalodon` on the propositional
 the generated files with `bin/megalodon`. Those generated proofs are required
 to contain no `admit`, no `aby`, and no `-allowincompleteqed`.
 
-The separate `run_vampire_outline_smoke.sh` script runs a tiny TPTP problem
-through a Vampire binary that emits `megalodon_certificate_clause(...)`
+The separate `run_vampire_outline_smoke.sh` script runs tiny FOF and THF TPTP
+problems through a Vampire binary that emits `megalodon_certificate_clause(...)`
 records, converts the printed outline to the small JSON certificate fragment,
 emits Megalodon, and checks it with `bin/megalodon`. It currently covers only
-the strict real-output bridge for clause inputs and uniquely determined binary
-resolution.
+the real-output bridge for clause inputs/derived clause assumptions and
+uniquely determined resolution-like clause endings. The THF case is a
+clause-tail bridge test; it does not yet prove Vampire's THF preprocessing,
+FOOL elimination, definition folding, or source-level conjecture connection.
