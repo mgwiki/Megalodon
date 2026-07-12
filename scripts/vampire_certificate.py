@@ -44,6 +44,7 @@ MVP_RULES = {
     "truth_conflict_resolution",
     "cnf_formula_exact",
     "cnf_formula_conjunct",
+    "cnf_formula_projection",
     "paramodulate",
     "paramodulate_all",
     "paramodulate_clause_all",
@@ -623,6 +624,8 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
                 raise CertificateError(f"{step_id}: source_proposition must be a non-empty string")
             if not isinstance(proposition, str) or not proposition:
                 raise CertificateError(f"{step_id}: proposition must be a non-empty string")
+            if "vLAM" in source_proposition or "vLAM" in proposition:
+                raise CertificateError(f"{step_id}: conjunction projection with raw vLAM is not supported")
             if not isinstance(path, list) or not path or any(item not in {"left", "right"} for item in path):
                 raise CertificateError(f"{step_id}: path must be a non-empty list of left/right entries")
             inferred_path = cnf_formula_conjunct_path(
@@ -636,6 +639,28 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
             if inferred_path != tuple(path):
                 raise CertificateError(f"{step_id}: conjunction projection path does not match source and target propositions")
             clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
+
+        elif rule == "cnf_formula_projection":
+            allowed = {"id", "rule", "formula_parent", "source_proposition", "proposition", "clause", "source", "variable_sorts"}
+            require_fields(step, {"id", "rule", "formula_parent", "source_proposition", "proposition", "clause"})
+            require_no_extra_fields(step, allowed)
+            formula_parent = step["formula_parent"]
+            source_proposition = step["source_proposition"]
+            proposition = step["proposition"]
+            if not isinstance(formula_parent, str) or not re.fullmatch(r"u[0-9]+", formula_parent):
+                raise CertificateError(f"{step_id}: formula_parent must be a Vampire unit id")
+            if not isinstance(source_proposition, str) or not source_proposition:
+                raise CertificateError(f"{step_id}: source_proposition must be a non-empty string")
+            if not isinstance(proposition, str) or not proposition:
+                raise CertificateError(f"{step_id}: proposition must be a non-empty string")
+            if "vLAM" in source_proposition or "vLAM" in proposition:
+                raise CertificateError(f"{step_id}: CNF projection with raw vLAM is not supported")
+            if not formula_projection_supported(source_proposition, proposition):
+                raise CertificateError(f"{step_id}: CNF projection is not supported by source and target propositions")
+            clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
+            normalized_target = clause_formula_prop_text(clause, None, step_explicit_var_sorts(step, step_id))
+            if not formula_projection_supported(source_proposition, normalized_target):
+                raise CertificateError(f"{step_id}: CNF projection is not supported by source and normalized clause")
 
         elif rule == "factor":
             allowed = {"id", "rule", "parents", "clause"}
@@ -1433,7 +1458,11 @@ def strip_outer_prop_parens(value: str) -> str:
 
 
 def prop_key(value: str) -> str:
-    return " ".join(strip_outer_prop_parens(value).split())
+    value = strip_outer_prop_parens(value)
+    value = re.sub(r"\b(?:f__true|vampire_true)\b", "True", value)
+    value = re.sub(r"\b(?:f__false|vampire_false)\b", "False", value)
+    value = value.replace("(", " ").replace(")", " ")
+    return " ".join(value.split())
 
 
 def parse_parenthesized_prop(value: str, start: int) -> tuple[str, int] | None:
@@ -1452,8 +1481,15 @@ def parse_parenthesized_prop(value: str, start: int) -> tuple[str, int] | None:
 
 
 def parse_vampire_and_prop(value: str) -> tuple[str, str] | None:
+    return parse_binary_prop(value, "vampire_and")
+
+
+def parse_vampire_or_prop(value: str) -> tuple[str, str] | None:
+    return parse_binary_prop(value, "vampire_or")
+
+
+def parse_binary_prop(value: str, prefix: str) -> tuple[str, str] | None:
     value = strip_outer_prop_parens(value)
-    prefix = "vampire_and"
     if not value.startswith(prefix):
         return None
     index = len(prefix)
@@ -1519,6 +1555,8 @@ def cnf_formula_conjunct_path(cnf: dict[str, Any]) -> tuple[str, ...] | None:
     target = cnf.get("target_proposition")
     if not isinstance(source, str) or not isinstance(target, str) or not source or not target:
         return None
+    if "vLAM" in source or "vLAM" in target:
+        return None
     source_binders, source_body = parse_forall_prefix(source)
     target_binders, target_body = parse_forall_prefix(target)
     if source_binders != target_binders:
@@ -1527,6 +1565,52 @@ def cnf_formula_conjunct_path(cnf: dict[str, Any]) -> tuple[str, ...] | None:
     if path:
         return path
     return None
+
+
+def disjunction_contains_projection(target: str, source: str) -> bool:
+    if prop_key(target) == prop_key(source):
+        return True
+    parsed = parse_vampire_or_prop(target)
+    if parsed is None:
+        return False
+    left, right = parsed
+    return disjunction_contains_projection(left, source) or disjunction_contains_projection(right, source)
+
+
+def formula_projection_supported(source: str, target: str) -> bool:
+    if prop_key(source) == prop_key(target):
+        return True
+    if disjunction_contains_projection(target, source):
+        return True
+    and_parts = parse_vampire_and_prop(source)
+    if and_parts is not None:
+        left, right = and_parts
+        return formula_projection_supported(left, target) or formula_projection_supported(right, target)
+    or_parts = parse_vampire_or_prop(source)
+    if or_parts is not None:
+        left, right = or_parts
+        return formula_projection_supported(left, target) and formula_projection_supported(right, target)
+    source_binders, source_body = parse_forall_prefix(source)
+    target_binders, target_body = parse_forall_prefix(target)
+    if source_binders and source_binders == target_binders:
+        return formula_projection_supported(source_body, target_body)
+    return False
+
+
+def cnf_formula_projection_supported(cnf: dict[str, Any]) -> bool:
+    if cnf.get("parent_kind") != "formula" or cnf.get("target_clause_checked") is not True:
+        return False
+    source = cnf.get("source_proposition")
+    target = cnf.get("target_proposition")
+    if not isinstance(source, str) or not isinstance(target, str) or not source or not target:
+        return False
+    if "vLAM" in source or "vLAM" in target:
+        return False
+    if prop_key(source) == prop_key(target):
+        return False
+    if parse_vampire_or_prop(source) is None and parse_vampire_and_prop(source) is None and not source.startswith("forall "):
+        return False
+    return formula_projection_supported(source, target)
 
 
 def infer_definition_input_step(
@@ -1850,6 +1934,33 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
                                 "source_proposition": source_proposition,
                                 "proposition": target_proposition,
                                 "path": list(conjunct_path),
+                                "clause": clause_json[step_no],
+                                **({"variable_sorts": variable_sorts[step_no]} if step_no in variable_sorts else {}),
+                                "source": source,
+                            }
+                        )
+                        clauses[step_no] = clause
+                        continue
+                    if (
+                        isinstance(source_proposition, str)
+                        and isinstance(target_proposition, str)
+                        and isinstance(parent, str)
+                        and cnf_formula_projection_supported(cnf)
+                        and formula_projection_supported(
+                            source_proposition,
+                            clause_formula_prop_text(clause, None, variable_sorts.get(step_no, {})),
+                        )
+                    ):
+                        reconstruction_stats["cnf_formula_projection_units"] = reconstruction_stats.get("cnf_formula_projection_units", 0) + 1
+                        if source_kind == "vampire_derived_clause":
+                            reconstruction_stats["derived_assumption_units"] -= 1
+                        steps.append(
+                            {
+                                "id": step_id,
+                                "rule": "cnf_formula_projection",
+                                "formula_parent": parent,
+                                "source_proposition": source_proposition,
+                                "proposition": target_proposition,
                                 "clause": clause_json[step_no],
                                 **({"variable_sorts": variable_sorts[step_no]} if step_no in variable_sorts else {}),
                                 "source": source,
@@ -2183,6 +2294,37 @@ def clause_body_text(clause: tuple[Literal, ...], symbol_sorts: dict[str, tuple[
     result = parts[-1]
     for part in reversed(parts[:-1]):
         result = f"({part} \\/ {result})"
+    return result
+
+
+def clause_formula_prop_text(
+    clause: tuple[Literal, ...],
+    symbol_sorts: dict[str, tuple[str, ...]] | None = None,
+    explicit_var_sorts: dict[str, str] | None = None,
+) -> str:
+    symbol_sorts = symbol_sorts or {}
+    normalized = normalize_clause(clause)
+    if not normalized:
+        result = "False"
+    else:
+        parts = [literal_text(literal, symbol_sorts) for literal in normalized]
+        result = parts[-1]
+        for part in reversed(parts[:-1]):
+            result = f"vampire_or ({part}) ({result})"
+    var_sorts = clause_var_sorts(clause, symbol_sorts, explicit_var_sorts)
+    for name in reversed(clause_free_vars(clause)):
+        result = f"forall {require_megalodon_ident(name, 'binder')}:{sort_type_text(var_sorts[name])}, {result}"
+    return result
+
+
+def clause_formula_body_text(clause: tuple[Literal, ...], symbol_sorts: dict[str, tuple[str, ...]] | None = None) -> str:
+    normalized = normalize_clause(clause)
+    if not normalized:
+        return "False"
+    parts = [literal_text(literal, symbol_sorts) for literal in normalized]
+    result = parts[-1]
+    for part in reversed(parts[:-1]):
+        result = f"vampire_or ({part}) ({result})"
     return result
 
 
@@ -2996,6 +3138,108 @@ def conjunction_projection_proof_text(source_proof: str, source_prop: str, targe
     return result
 
 
+def disjunction_intro_proof(lhs: str, rhs: str, side: str, proof: str) -> str:
+    left_case = fresh_proof_name("Hor_left")
+    right_case = fresh_proof_name("Hor_right")
+    result = fresh_proof_name("Hor_goal")
+    selected = left_case if side == "left" else right_case
+    return (
+        f"(fun {result}:prop => "
+        f"fun {left_case}:(({strip_outer_prop_parens(lhs)}) -> {result}) => "
+        f"fun {right_case}:(({strip_outer_prop_parens(rhs)}) -> {result}) => "
+        f"({selected} {proof}))"
+    )
+
+
+def inject_into_disjunction_proof(proof: str, source_prop: str, target_prop: str) -> str | None:
+    if prop_key(source_prop) == prop_key(target_prop):
+        return proof
+    parsed = parse_vampire_or_prop(target_prop)
+    if parsed is None:
+        return None
+    lhs, rhs = parsed
+    left = inject_into_disjunction_proof(proof, source_prop, lhs)
+    if left is not None:
+        return disjunction_intro_proof(lhs, rhs, "left", left)
+    right = inject_into_disjunction_proof(proof, source_prop, rhs)
+    if right is not None:
+        return disjunction_intro_proof(lhs, rhs, "right", right)
+    return None
+
+
+def formula_projection_proof_text(source_proof: str, source_prop: str, target_prop: str) -> str:
+    def project_conjunct_once(proof: str, lhs: str, rhs: str, side: str, result_prop: str) -> str:
+        left = fresh_proof_name("Hand_left")
+        right = fresh_proof_name("Hand_right")
+        selected = left if side == "left" else right
+        return (
+            f"({proof} ({strip_outer_prop_parens(result_prop)}) "
+            f"(fun {left}:({strip_outer_prop_parens(lhs)}) => "
+            f"fun {right}:({strip_outer_prop_parens(rhs)}) => {selected}))"
+        )
+
+    def project_body(proof: str, source_body: str, target_body: str) -> str | None:
+        if prop_key(source_body) == prop_key(target_body):
+            return proof
+        injected = inject_into_disjunction_proof(proof, source_body, target_body)
+        if injected is not None:
+            return injected
+        source_binders, stripped_source = parse_forall_prefix(source_body)
+        target_binders, stripped_target = parse_forall_prefix(target_body)
+        if source_binders == target_binders and source_binders:
+            instantiated = proof
+            for name, _sort in source_binders:
+                instantiated = f"({instantiated} {require_megalodon_ident(name, 'CNF projection binder')})"
+            result = project_body(instantiated, stripped_source, stripped_target)
+            if result is None:
+                return None
+            for name, sort in reversed(source_binders):
+                result = f"(fun {require_megalodon_ident(name, 'CNF projection binder')}:{sort_type_text(sort)} => {result})"
+            return result
+        and_parts = parse_vampire_and_prop(source_body)
+        if and_parts is not None:
+            lhs, rhs = and_parts
+            left_projection = project_conjunct_once(proof, lhs, rhs, "left", lhs)
+            left_result = project_body(left_projection, lhs, target_body)
+            if left_result is not None:
+                return left_result
+            right_projection = project_conjunct_once(proof, lhs, rhs, "right", rhs)
+            return project_body(right_projection, rhs, target_body)
+        or_parts = parse_vampire_or_prop(source_body)
+        if or_parts is not None:
+            lhs, rhs = or_parts
+            left_proof = fresh_proof_name("Hor_source_left")
+            right_proof = fresh_proof_name("Hor_source_right")
+            left_result = project_body(left_proof, lhs, target_body)
+            right_result = project_body(right_proof, rhs, target_body)
+            if left_result is None or right_result is None:
+                return None
+            return (
+                f"({proof} ({strip_outer_prop_parens(target_body)}) "
+                f"(fun {left_proof}:({strip_outer_prop_parens(lhs)}) => {left_result}) "
+                f"(fun {right_proof}:({strip_outer_prop_parens(rhs)}) => {right_result}))"
+            )
+        return None
+
+    source_binders, source_body = parse_forall_prefix(source_prop)
+    target_binders, target_body = parse_forall_prefix(target_prop)
+    if source_binders == target_binders and source_binders:
+        proof = source_proof
+        for name, _sort in source_binders:
+            proof = f"({proof} {require_megalodon_ident(name, 'CNF projection binder')})"
+        result = project_body(proof, source_body, target_body)
+        if result is None:
+            raise CertificateError("CNF formula projection could not be replayed")
+        for name, sort in reversed(source_binders):
+            result = f"(fun {require_megalodon_ident(name, 'CNF projection binder')}:{sort_type_text(sort)} => {result})"
+        return result
+
+    result = project_body(source_proof, source_prop, target_prop)
+    if result is None:
+        raise CertificateError("CNF formula projection could not be replayed")
+    return result
+
+
 def definition_input_declarations(data: dict[str, Any]) -> dict[str, tuple[str, Term]]:
     definitions: dict[str, tuple[str, Term]] = {}
     for step in data.get("steps", []):
@@ -3210,6 +3454,13 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
         if rule == "cnf_formula_conjunct":
             source_proof = formula_parent_proof(step["formula_parent"], step["source_proposition"])
             proof = conjunction_projection_proof_text(source_proof, step["source_proposition"], step["proposition"])
+            proof_names[step_id] = step_id
+            derived.append((step_id, clause_prop_text(clause, symbol_sorts, explicit_var_sorts), proof))
+            continue
+        if rule == "cnf_formula_projection":
+            source_proof = formula_parent_proof(step["formula_parent"], step["source_proposition"])
+            proof_target = clause_formula_prop_text(clause, None, explicit_var_sorts)
+            proof = formula_projection_proof_text(source_proof, step["source_proposition"], proof_target)
             proof_names[step_id] = step_id
             derived.append((step_id, clause_prop_text(clause, symbol_sorts, explicit_var_sorts), proof))
             continue
