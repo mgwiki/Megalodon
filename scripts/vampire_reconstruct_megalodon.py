@@ -74277,6 +74277,9 @@ def raw_tptp_unfolded_source_fact_proof(
         source = parse_expr(source_text)
         if source is None:
             continue
+        source_unfolded = beta_normalize_expr(normalize_defined_expr(source, proof_definitions))
+        if expr_same_mod_alpha_eta_after_sort_normalization(source_unfolded, target_unfolded):
+            return source_name
         if expr_same_mod_alpha_eta_after_sort_normalization(source, target):
             return source_name
         transformed_continuation = raw_curried_continuation_to_conjunction_proof(
@@ -74339,7 +74342,6 @@ def raw_tptp_unfolded_source_fact_proof(
                     )
                     if transformed is not None:
                         return transformed
-        source_unfolded = beta_normalize_expr(normalize_defined_expr(source, proof_definitions))
         if expr_same_mod_alpha_eta_after_sort_normalization(source_unfolded, target_unfolded):
             return source_name
         if source_is_top_defined_application:
@@ -74596,17 +74598,19 @@ def raw_tptp_local_source_fact_proof(
     source_sorts: dict[str, str] | None = None,
     alias_definition_names: set[str] | None = None,
     source_binders: dict[str, str] | None = None,
+    proof_name: str | None = None,
 ) -> str | None:
     if source_name is None or source_name not in local_source_fact_propositions:
         return None
+    proof_ref = proof_name or source_name
     source_proposition = local_source_fact_propositions[source_name]
     if source_proposition is None:
-        return source_name
+        return proof_ref
     if canonical_proposition(source_proposition) == canonical_proposition(proposition):
-        return source_name
+        return proof_ref
     desugared_source_fact = raw_tptp_desugared_source_fact_proof(
         proposition,
-        source_name,
+        proof_ref,
         source_proposition,
         variable_sorts,
     )
@@ -74614,14 +74618,14 @@ def raw_tptp_local_source_fact_proof(
         return desugared_source_fact
     membership_source_fact = raw_tptp_source_membership_fact_proof(
         proposition,
-        source_name,
+        proof_ref,
         source_proposition,
     )
     if membership_source_fact is not None:
         return membership_source_fact
     unfolded_source_fact = raw_tptp_unfolded_source_fact_proof(
         proposition,
-        source_name,
+        proof_ref,
         source_proposition,
         source_definitions,
         source_sorts,
@@ -74636,20 +74640,20 @@ def raw_tptp_local_source_fact_proof(
     if source is None or target is None:
         return None
     if expr_same_mod_alpha(source, target):
-        return source_name
+        return proof_ref
     proof = raw_structural_normal_form_transform_proof(
         source,
         target,
-        source_name,
+        proof_ref,
         variable_sorts,
     )
     if proof is not None:
         return proof
     if raw_clause_replay_budget_ok(source, target, max_literals=16, max_literal_product=256):
-        proof = raw_clause_subsumption_transform_proof(source, target, source_name, deep_literals=True)
+        proof = raw_clause_subsumption_transform_proof(source, target, proof_ref, deep_literals=True)
         if proof is not None:
             return proof
-        proof = raw_clause_transform_proof(source, target, source_name)
+        proof = raw_clause_transform_proof(source, target, proof_ref)
         if proof is not None:
             return proof
     return None
@@ -75396,6 +75400,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     axiom_claim_instantiations: dict[str, str] = {}
     local_skolem_axiom_aliases: list[tuple[str, str, str]] = []
     emitted_local_source_facts: set[str] = set()
+    local_source_fact_aliases: dict[str, str] = {}
 
     def remember_raw_proposition(proposition: str, proof_name: str) -> None:
         canonical = canonical_proposition(proposition)
@@ -75430,6 +75435,25 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             )
         return proof
 
+    def local_source_fact_proof_name(source_name: str | None) -> str | None:
+        if source_name is None:
+            return None
+        cached = local_source_fact_aliases.get(source_name)
+        if cached is not None:
+            return cached
+        sanitized = re.sub(r"[^_A-Za-z0-9']", "_", source_name)
+        if not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", sanitized):
+            sanitized = f"source_{sanitized}"
+        candidate = f"R_src_{sanitized}"
+        used = set(declared_names) | set(local_source_fact_aliases.values())
+        if candidate in used:
+            index = 1
+            while f"{candidate}_{index}" in used:
+                index += 1
+            candidate = f"{candidate}_{index}"
+        local_source_fact_aliases[source_name] = candidate
+        return candidate
+
     def emitted_reflexive_source_axiom(declaration: str) -> bool:
         axiom = proposition_after_colon(declaration, "Axiom ")
         if axiom is None:
@@ -75455,7 +75479,11 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             return True
         if not re.fullmatch(r"[_A-Za-z][_A-Za-z0-9']*", source_name):
             return False
-        if source_name in declared_names:
+        proof_name = local_source_fact_proof_name(source_name)
+        if proof_name is None:
+            return False
+        if proof_name in declared_names:
+            emitted_local_source_facts.add(source_name)
             return True
         source_proposition = local_source_fact_propositions[source_name]
         proposition = translated_local_source_fact_proposition(source_proposition, fallback_proposition)
@@ -75473,10 +75501,10 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
             f"// source-local fact from original Megalodon proof context: "
             f"{source_name}{source_line_suffix(all_local_source_fact_locations.get(source_name))}"
         )
-        lines.append(f"Axiom {source_name}: {proposition}.")
-        declared_names.add(source_name)
+        lines.append(f"Axiom {proof_name}: {proposition}.")
+        declared_names.add(proof_name)
         emitted_local_source_facts.add(source_name)
-        remember_raw_proposition(proposition, source_name)
+        remember_raw_proposition(proposition, proof_name)
         return True
 
     for declaration in early_source_declarations:
@@ -75760,6 +75788,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 source_sorts,
                 local_set_definition_names,
                 source_binders,
+                local_source_fact_proof_name(source_name),
             )
         ) is not None and emit_local_source_fact(source_name, proposition):
             lines.append(f"Theorem {claim_name}: {proposition}.")
