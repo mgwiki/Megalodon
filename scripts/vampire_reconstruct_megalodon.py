@@ -73233,6 +73233,34 @@ def source_xm_branch_index(rows: list[str], apply_line: int, line: int) -> int |
     return active_branch
 
 
+def source_nested_command_branch_index(rows: list[str], command_line: int, line: int) -> int | None:
+    if line <= command_line:
+        return None
+    command_indent = len(rows[command_line - 1]) - len(rows[command_line - 1].lstrip())
+    branch_indent: int | None = None
+    branch_index = 0
+    active_branch: int | None = None
+    for cursor in range(command_line + 1, min(line, len(rows)) + 1):
+        row = rows[cursor - 1]
+        stripped = row.lstrip()
+        if not stripped:
+            continue
+        indent = len(row) - len(stripped)
+        if branch_indent is None:
+            if indent > command_indent and re.match(r"[-+*]\s+", stripped):
+                branch_indent = indent
+            else:
+                continue
+        if indent < branch_indent:
+            return None
+        if indent == branch_indent and re.match(r"[-+*]\s+", stripped):
+            branch_index += 1
+            active_branch = branch_index
+        if cursor == line:
+            return active_branch
+    return active_branch
+
+
 def source_apply_nat_ind_at(rows: list[str], index: int) -> bool:
     stripped = rows[index - 1].strip()
     return re.search(r"\bapply\s+nat_ind\b", stripped) is not None
@@ -73251,6 +73279,31 @@ def source_apply_int_sno_cases_at(rows: list[str], index: int) -> bool:
 def source_apply_conjunction_intro_at(rows: list[str], index: int) -> bool:
     stripped = rows[index - 1].strip()
     return re.search(r"\bapply\s+and[0-9]*I\b", stripped) is not None
+
+
+def source_transitivity_terms_at(rows: list[str], index: int) -> list[str] | None:
+    pieces: list[str] = []
+    for cursor in range(index, len(rows) + 1):
+        stripped = rows[cursor - 1].strip()
+        if not pieces:
+            stripped = re.sub(r"^(?:[-+*]\s*)?(?:\{\s*)?", "", stripped)
+            if not stripped.startswith("transitivity "):
+                return None
+            stripped = stripped[len("transitivity ") :].strip()
+        if not stripped:
+            continue
+        command, separator, _rest = stripped.partition(".")
+        if command.strip():
+            pieces.append(command.strip())
+        if separator:
+            body = " ".join(pieces).strip()
+            if not body:
+                return None
+            terms = split_top_level_commas(body)
+            if terms is None:
+                return None
+            return [term for term in terms if term]
+    return None
 
 
 def source_intro_command_count(command: str, keyword: str) -> int:
@@ -73473,6 +73526,78 @@ def source_conjunction_branch_proposition(goal: Expr, branch_index: int) -> str 
     if branch_index < 1 or branch_index > len(components):
         return None
     return expr_text(components[branch_index - 1])
+
+
+def source_transitivity_branch_proposition(
+    source: Path,
+    goal: Expr,
+    term_texts: list[str],
+    branch_index: int,
+) -> str | None:
+    sides = equality_like_sides(goal)
+    if sides is None:
+        return None
+    source_binders = source_binder_functions(source)
+    source_sorts = {**source_active_declared_sorts(source), **source_definition_sorts(source)}
+    target_text = expr_text(goal)
+    terms: list[Expr] = []
+    for term_text in term_texts:
+        parsed_text = source_surface_parse_text(
+            term_text,
+            target_text=target_text,
+            local_sorts=source_sorts,
+            source_binders=source_binders,
+            expected_sort="set",
+        )
+        parsed = parse_expr(parsed_text)
+        if parsed is None:
+            return None
+        terms.append(parsed)
+    chain = [sides[0], *terms, sides[1]]
+    if branch_index < 1 or branch_index >= len(chain):
+        return None
+    return expr_text(Expr("eq", args=(chain[branch_index - 1], chain[branch_index])))
+
+
+def source_local_transitivity_branch_obligation(
+    source: Path | None,
+    line: int | None,
+    base_obligation: tuple[str, str, str, int] | None,
+) -> tuple[str, str, str, int] | None:
+    if source is None or line is None or base_obligation is None or not source.exists():
+        return None
+    theorem_line = source_enclosing_theorem_line(source, line)
+    if theorem_line is None:
+        return None
+    rows = source.read_text(encoding="utf-8", errors="replace").splitlines()
+    if line < 1 or line > len(rows):
+        return None
+    _base_kind, base_name, proposition, base_line = base_obligation
+    for index in range(min(line, len(rows)), max(theorem_line, base_line) - 1, -1):
+        term_texts = source_transitivity_terms_at(rows, index)
+        if term_texts is None:
+            continue
+        branch_index = source_nested_command_branch_index(rows, index, line)
+        if branch_index is None:
+            continue
+        goal = source_goal_after_intro_commands(source, proposition, base_line, index)
+        if goal is None:
+            continue
+        branch_proposition = source_transitivity_branch_proposition(
+            source,
+            goal,
+            term_texts,
+            branch_index,
+        )
+        if branch_proposition is None:
+            continue
+        return (
+            "local transitivity branch",
+            f"{base_name}_transitivity_{index}_{branch_index}",
+            branch_proposition,
+            line,
+        )
+    return None
 
 
 def source_local_conjunction_branch_obligation(
@@ -76423,6 +76548,13 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
     )
     if source_xm_branch_obligation is not None:
         source_local_obligation = source_xm_branch_obligation
+    source_transitivity_branch_obligation = source_local_transitivity_branch_obligation(
+        source,
+        obligation_line,
+        source_local_obligation,
+    )
+    if source_transitivity_branch_obligation is not None:
+        source_local_obligation = source_transitivity_branch_obligation
     source_nat_ind_branch_obligation = source_local_nat_ind_branch_obligation(
         source,
         obligation_line,
