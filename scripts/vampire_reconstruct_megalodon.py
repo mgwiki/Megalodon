@@ -75895,7 +75895,7 @@ def source_fact_membership_premise_matches(
     return expr_same_mod_alpha(source_element, target_sides[0]) and expr_same_mod_alpha(source_set, target_sides[1])
 
 
-BOUNDED_SOURCE_FORALL_RE = re.compile(r"\bforall\s+([^,:]+?)\s*:e\s*([^,]+),")
+BOUNDED_SOURCE_FORALL_RE = re.compile(r"\bforall\s+([^,:]+?)\s*(?P<op>:e|c=)\s*([^,]+),")
 
 
 def source_surface_term_argument(text: str) -> str:
@@ -75928,7 +75928,9 @@ def desugar_source_bounded_foralls(proposition: str) -> str:
         ]
         if not names:
             return match.group(0)
-        set_text = source_surface_term_argument(match.group(2))
+        set_text = source_surface_term_argument(match.group(3))
+        if match.group("op") == "c=":
+            return "".join(f"forall {name}:set, Subq {name} {set_text} -> " for name in names)
         return "".join(f"forall {name}:set, In {name} {set_text} -> " for name in names)
 
     previous = proposition
@@ -76066,9 +76068,9 @@ def source_text_is_wrapped_in_parens(text: str) -> bool:
 
 def split_source_logical_operator(text: str, operator: str) -> tuple[str, str] | None:
     if operator == "/\\":
-        split = split_source_top_level_operator_rightmost(text, operator)
+        split = split_source_top_level_logical_operator_rightmost(text, operator)
     else:
-        split = split_source_top_level_operator(text, operator)
+        split = split_source_top_level_logical_operator(text, operator)
     if split is None:
         return None
     left, right = split
@@ -76079,6 +76081,87 @@ def split_source_logical_operator(text: str, operator: str) -> tuple[str, str] |
     if not source_text_is_wrapped_in_parens(left) and split_top_level_operator(left, "->") is not None:
         return None
     return split
+
+
+def source_segment_opens_top_level_binder_scope(text: str) -> bool:
+    stripped = text.strip()
+    if not (stripped.startswith("forall ") or stripped.startswith("exists ")):
+        return False
+    depth = 0
+    bracket_depth = 0
+    brace_depth = 0
+    for char in stripped:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth < 0:
+                return False
+        elif char == "[":
+            bracket_depth += 1
+        elif char == "]":
+            bracket_depth -= 1
+            if bracket_depth < 0:
+                return False
+        elif char == "{":
+            brace_depth += 1
+        elif char == "}":
+            brace_depth -= 1
+            if brace_depth < 0:
+                return False
+        elif char == "," and depth == 0 and bracket_depth == 0 and brace_depth == 0:
+            return True
+    return False
+
+
+def split_source_top_level_logical_operator(text: str, operator: str) -> tuple[str, str] | None:
+    return split_source_top_level_logical_operator_at(text, operator, rightmost=False)
+
+
+def split_source_top_level_logical_operator_rightmost(text: str, operator: str) -> tuple[str, str] | None:
+    return split_source_top_level_logical_operator_at(text, operator, rightmost=True)
+
+
+def split_source_top_level_logical_operator_at(text: str, operator: str, rightmost: bool) -> tuple[str, str] | None:
+    text = strip_balanced_parens(text)
+    depth = 0
+    bracket_depth = 0
+    brace_depth = 0
+    result: tuple[str, str] | None = None
+    segment_start = 0
+    binder_scope_open = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth < 0:
+                return None
+        elif char == "[":
+            bracket_depth += 1
+        elif char == "]":
+            bracket_depth -= 1
+            if bracket_depth < 0:
+                return None
+        elif char == "{":
+            brace_depth += 1
+        elif char == "}":
+            brace_depth -= 1
+            if brace_depth < 0:
+                return None
+        elif depth == 0 and bracket_depth == 0 and brace_depth == 0 and text.startswith(operator, index):
+            segment = text[segment_start:index]
+            if binder_scope_open or source_segment_opens_top_level_binder_scope(segment):
+                binder_scope_open = True
+            else:
+                result = (text[:index].strip(), text[index + len(operator) :].strip())
+                if not rightmost:
+                    return result
+            segment_start = index + len(operator)
+        index += 1
+    return result
 
 
 def source_surface_rewrite_parenthesized_terms(
