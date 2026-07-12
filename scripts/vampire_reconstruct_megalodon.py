@@ -73066,8 +73066,12 @@ def source_surface_expr_text(
     return source_surface_rewrite_parenthesized_terms(stripped, target_text, local_sorts)
 
 
-def source_surface_parse_text(proposition: str, target_text: str | None = None) -> str:
-    return source_surface_expr_text(desugar_source_bounded_foralls(proposition), target_text)
+def source_surface_parse_text(
+    proposition: str,
+    target_text: str | None = None,
+    local_sorts: dict[str, str] | None = None,
+) -> str:
+    return source_surface_expr_text(desugar_source_bounded_foralls(proposition), target_text, local_sorts)
 
 
 SOURCE_DEFINITION_RE = re.compile(
@@ -73203,6 +73207,7 @@ def raw_tptp_unfolded_source_fact_proof(
     source_name: str,
     source_proposition: str | None,
     source_definitions: dict[str, DefinitionInfo],
+    source_sorts: dict[str, str] | None = None,
 ) -> str | None:
     if source_proposition is None or not source_definitions:
         return None
@@ -73210,10 +73215,12 @@ def raw_tptp_unfolded_source_fact_proof(
     if target is None:
         return None
     target_unfolded = beta_normalize_expr(normalize_defined_expr(target, source_definitions))
+    parse_sorts = {**(source_sorts or {})}
+    parse_sorts.update({name: definition.sort for name, definition in source_definitions.items()})
 
     for source_text in (
-        source_surface_parse_text(source_proposition),
-        source_surface_parse_text(source_proposition, proposition),
+        source_surface_parse_text(source_proposition, local_sorts=parse_sorts),
+        source_surface_parse_text(source_proposition, proposition, parse_sorts),
     ):
         source = parse_expr(source_text)
         if source is None:
@@ -73351,6 +73358,7 @@ def raw_tptp_source_fact_proof(
     variable_sorts: dict[str, str],
     source_definitions: dict[str, DefinitionInfo],
     source_aliases: dict[str, tuple[str, str]] | None = None,
+    source_sorts: dict[str, str] | None = None,
 ) -> str | None:
     if source_name is None or source_name not in source_fact_names:
         return None
@@ -73385,6 +73393,7 @@ def raw_tptp_source_fact_proof(
         source_name,
         source_proposition,
         source_definitions,
+        source_sorts,
     )
     if unfolded_source_fact is not None:
         return unfolded_source_fact
@@ -73422,6 +73431,7 @@ def raw_tptp_local_source_fact_proof(
     local_source_fact_propositions: dict[str, str | None],
     variable_sorts: dict[str, str],
     source_definitions: dict[str, DefinitionInfo],
+    source_sorts: dict[str, str] | None = None,
 ) -> str | None:
     if source_name is None or source_name not in local_source_fact_propositions:
         return None
@@ -73450,6 +73460,7 @@ def raw_tptp_local_source_fact_proof(
         source_name,
         source_proposition,
         source_definitions,
+        source_sorts,
     )
     if unfolded_source_fact is not None:
         return unfolded_source_fact
@@ -74523,6 +74534,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 local_source_fact_propositions,
                 variable_sorts,
                 source_and_local_definitions,
+                source_sorts,
             )
         ) is not None and emit_local_source_fact(source_name, proposition):
             lines.append(f"Theorem {claim_name}: {proposition}.")
@@ -74537,6 +74549,7 @@ def raw_tptp_skeleton_lines(proof: Path, problem: Path | None, source: Path | No
                 variable_sorts,
                 source_and_local_definitions,
                 local_set_definitions,
+                source_sorts,
             )
         ) is not None:
             lines.append(f"Theorem {claim_name}: {proposition}.")
