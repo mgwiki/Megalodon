@@ -26,6 +26,7 @@ type step =
   | FoolBool of string * string * literal
   | CnfLiteral of string * string * clause
   | DefinitionInput of string * clause
+  | FoolExhaustiveness of string * clause
   | Substitute of string * string * (string * Syntax.tm) list * clause
   | Resolve of string * string * string * int * int * clause
   | Factor of string * string * int * int * clause

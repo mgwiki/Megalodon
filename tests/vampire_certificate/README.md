@@ -13,10 +13,18 @@ Megalodon elaborator are built.
 Run:
 
 ```sh
-tests/vampire_certificate/run_smoke.sh
+tests/vampire_certificate/run_native_cert_v1_smoke.sh
 ```
 
-The smoke script also uses `--emit-megalodon` on the propositional
+This is the primary certificate smoke test. It checks the OCaml
+`-vampirecertv1` importer against native S-expression fixtures and should be the
+first test used for counted reconstruction work.
+
+The older `run_smoke.sh` script exercises the Python/JSON prototype. It remains
+useful for diagnostics and regression comparison, but its successes do not count
+as accepted Vampire-to-Megalodon reconstruction.
+
+The legacy smoke script also uses `--emit-megalodon` on the propositional
 `valid_resolution.json` certificate and the first-order
 `valid_substituted_resolution.json` and
 `valid_equality_resolution_refutation.json` and

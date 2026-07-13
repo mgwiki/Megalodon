@@ -28,6 +28,7 @@ type step =
   | FoolBool of string * string * literal
   | CnfLiteral of string * string * clause
   | DefinitionInput of string * clause
+  | FoolExhaustiveness of string * clause
   | Substitute of string * string * (string * tm) list * clause
   | Resolve of string * string * string * int * int * clause
   | Factor of string * string * int * int * clause
@@ -204,6 +205,8 @@ let parse_step = function
       CnfLiteral (atom id, parse_parent parent, parse_result result)
   | List [Atom "definition_input"; id; result] ->
       DefinitionInput (atom id, parse_result result)
+  | List [Atom "fool_exhaustiveness"; id; result] ->
+      FoolExhaustiveness (atom id, parse_result result)
   | List [Atom "substitute"; id; parent; subst; result] ->
       Substitute (atom id, parse_parent parent, parse_substitution subst, parse_result result)
   | List [Atom "resolve"; id; parents; pivot; result] ->
@@ -243,6 +246,7 @@ let step_id = function
   | FoolBool (id, _, _) -> id
   | CnfLiteral (id, _, _) -> id
   | DefinitionInput (id, _) -> id
+  | FoolExhaustiveness (id, _) -> id
   | Substitute (id, _, _, _) -> id
   | Resolve (id, _, _, _, _, _) -> id
   | Factor (id, _, _, _, _) -> id
@@ -473,6 +477,25 @@ let check_definition_input id clause =
   | [_] -> error (id ^ ": definition_input literal must be positive")
   | _ -> error (id ^ ": definition_input must be a singleton equality clause")
 
+let true_false_equality_var = function
+  | Pos atom ->
+      begin match equality_sides atom with
+      | Some (TmH h, other) when h = "f__true" || h = "f__false" -> Some (h, other)
+      | Some (other, TmH h) when h = "f__true" || h = "f__false" -> Some (h, other)
+      | _ -> None
+      end
+  | Neg _ -> None
+
+let check_fool_exhaustiveness id clause =
+  match clause with
+  | [left; right] ->
+      begin match true_false_equality_var left, true_false_equality_var right with
+      | Some ("f__true", x), Some ("f__false", y)
+      | Some ("f__false", x), Some ("f__true", y) when x = y -> ()
+      | _ -> error (id ^ ": fool_exhaustiveness is not true/false exhaustiveness for one Boolean term")
+      end
+  | _ -> error (id ^ ": fool_exhaustiveness must have exactly two literals")
+
 let check_equality_resolution checked id parent_id literal_index result =
   let parent_clause = lookup_clause checked parent_id in
   let literal = nth literal_index parent_clause (id ^ " equality-resolution literal") in
@@ -556,6 +579,9 @@ let check_step checked = function
       (id, result) :: checked
   | DefinitionInput (id, clause) ->
       check_definition_input id clause;
+      (id, clause) :: checked
+  | FoolExhaustiveness (id, clause) ->
+      check_fool_exhaustiveness id clause;
       (id, clause) :: checked
   | Substitute (id, parent_id, subst, result) ->
       check_substitute checked id parent_id subst result;
