@@ -39,6 +39,14 @@ type definition_rewrite = {
   rewrite_to : Syntax.tm;
 }
 
+type urr_trace = {
+  urr_unit_parent : string;
+  urr_selected : literal;
+  urr_selected_substituted : literal;
+  urr_unit_substituted : literal;
+  urr_remaining : clause;
+}
+
 type rectify_renaming = {
   rectify_source : Syntax.tm;
   rectify_subst : (string * Syntax.tm) list;
@@ -76,6 +84,7 @@ type step =
   | InequalitySplit of string * string * inequality_split list * clause
   | Substitute of string * string * (string * Syntax.tm) list * clause
   | Condensation of string * string * (string * Syntax.tm) list * clause
+  | UnitResultingResolution of string * string * urr_trace list * clause
   | Resolve of string * string * string * int * int * clause
   | SubsumptionResolution of string * string * string * literal * literal * (string * Syntax.tm) list * clause
   | Factor of string * string * int * int * clause

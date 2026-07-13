@@ -41,6 +41,14 @@ type definition_rewrite = {
   rewrite_to : tm;
 }
 
+type urr_trace = {
+  urr_unit_parent : string;
+  urr_selected : literal;
+  urr_selected_substituted : literal;
+  urr_unit_substituted : literal;
+  urr_remaining : clause;
+}
+
 type rectify_renaming = {
   rectify_source : tm;
   rectify_subst : (string * tm) list;
@@ -78,6 +86,7 @@ type step =
   | InequalitySplit of string * string * inequality_split list * clause
   | Substitute of string * string * (string * tm) list * clause
   | Condensation of string * string * (string * tm) list * clause
+  | UnitResultingResolution of string * string * urr_trace list * clause
   | Resolve of string * string * string * int * int * clause
   | SubsumptionResolution of string * string * string * literal * literal * (string * tm) list * clause
   | Factor of string * string * int * int * clause
@@ -382,6 +391,33 @@ let parse_selected = function
   | List [Atom "selected"; literal] -> parse_literal literal
   | _ -> error "expected selected literal"
 
+let parse_selected_substituted = function
+  | List [Atom "selected_substituted"; literal] -> parse_literal literal
+  | _ -> error "expected selected_substituted literal"
+
+let parse_unit_substituted = function
+  | List [Atom "unit_substituted"; literal] -> parse_literal literal
+  | _ -> error "expected unit_substituted literal"
+
+let parse_remaining = function
+  | List [Atom "remaining"; clause] -> parse_clause clause
+  | _ -> error "expected remaining clause"
+
+let parse_urr_trace_step = function
+  | List [Atom "step"; unit; selected; selected_substituted; unit_substituted; remaining] ->
+      {
+        urr_unit_parent = parse_named_parent "unit" unit;
+        urr_selected = parse_selected selected;
+        urr_selected_substituted = parse_selected_substituted selected_substituted;
+        urr_unit_substituted = parse_unit_substituted unit_substituted;
+        urr_remaining = parse_remaining remaining;
+      }
+  | _ -> error "expected unit_resulting_resolution trace step"
+
+let parse_urr_trace = function
+  | List (Atom "trace" :: steps) -> List.map parse_urr_trace_step steps
+  | _ -> error "expected unit_resulting_resolution trace"
+
 let parse_step = function
   | List [Atom "input"; id; source; clause] ->
       Input (atom id, parse_source source, parse_clause clause)
@@ -440,6 +476,8 @@ let parse_step = function
       Substitute (atom id, parse_parent parent, parse_substitution subst, parse_result result)
   | List [Atom "condensation"; id; parent; subst; result] ->
       Condensation (atom id, parse_parent parent, parse_substitution subst, parse_result result)
+  | List [Atom "unit_resulting_resolution"; id; main; trace; result] ->
+      UnitResultingResolution (atom id, parse_named_parent "main" main, parse_urr_trace trace, parse_result result)
   | List [Atom "resolve"; id; parents; pivot; result] ->
       let a, b = parse_parents parents in
       let i, j = parse_pivot pivot in
@@ -540,6 +578,7 @@ let step_id = function
   | InequalitySplit (id, _, _, _) -> id
   | Substitute (id, _, _, _) -> id
   | Condensation (id, _, _, _) -> id
+  | UnitResultingResolution (id, _, _, _) -> id
   | Resolve (id, _, _, _, _, _) -> id
   | SubsumptionResolution (id, _, _, _, _, _, _) -> id
   | Factor (id, _, _, _, _) -> id
@@ -1968,6 +2007,38 @@ let check_subsumption_resolution checked id main_parent_id side_parent_id select
   in
   check_side false side_clause
 
+let clause_matches_native_trace left right =
+  same_clause_multiset left right
+  || same_clause_set_mod_equality left right
+  || same_clause_mod_vampire_var_renaming left right
+
+let check_unit_resulting_resolution checked id main_parent_id traces result =
+  if traces = [] then error (id ^ ": unit_resulting_resolution trace is empty");
+  let main_clause = lookup_clause checked main_parent_id in
+  let rec check_trace current = function
+    | [] -> current
+    | trace :: rest ->
+        let unit_clause = lookup_clause checked trace.urr_unit_parent in
+        begin match unit_clause with
+        | [_] -> ()
+        | _ -> error (id ^ ": URR unit parent " ^ trace.urr_unit_parent ^ " is not a unit clause")
+        end;
+        if not (complementary_mod_equality trace.urr_selected_substituted trace.urr_unit_substituted) then
+          error (id ^ ": URR substituted selected and unit literals are not complementary");
+        if List.length trace.urr_remaining >= List.length current then
+          error (id ^ ": URR trace did not remove a literal");
+        let selected_is_linked =
+          clause_contains_literal_mod trace.urr_selected current
+          || clause_contains_literal_mod trace.urr_selected_substituted current
+        in
+        if not selected_is_linked && List.length current = List.length trace.urr_remaining + 1 then
+          error (id ^ ": URR selected literal is not linked to the current clause");
+        check_trace trace.urr_remaining rest
+  in
+  let final_remaining = check_trace main_clause traces in
+  if not (clause_matches_native_trace final_remaining result) then
+    error (id ^ ": URR result does not match final trace remaining clause")
+
 let check_equality_resolution_constraints checked id parent_id literal_index selected constraints result =
   if constraints = [] then error (id ^ ": equality-resolution constraints must be non-empty");
   let parent_clause = lookup_clause checked parent_id in
@@ -2285,6 +2356,9 @@ let check_step checked = function
       (id, CheckedClause result) :: checked
   | Condensation (id, parent_id, subst, result) ->
       check_condensation checked id parent_id subst result;
+      (id, CheckedClause result) :: checked
+  | UnitResultingResolution (id, main_parent_id, traces, result) ->
+      check_unit_resulting_resolution checked id main_parent_id traces result;
       (id, CheckedClause result) :: checked
   | Resolve (id, left_id, right_id, left_index, right_index, result) ->
       check_resolution checked id left_id right_id left_index right_index result;
