@@ -863,6 +863,8 @@ let rec fool_term_tm tm =
   match tm with
   | Imp (body, false_tm) when is_vampire_false false_tm ->
       Ap (TmH "vNOT", fool_term_tm body)
+  | Ap (Ap (TmH "=", left), right) ->
+      Ap (Ap (TmH "vEQ", fool_term_tm left), fool_term_tm right)
   | TpAp (m, a) -> TpAp (fool_term_tm m, a)
   | Ap (m, n) -> Ap (fool_term_tm m, fool_term_tm n)
   | Lam (tp, body) -> Lam (tp, fool_term_tm body)
@@ -912,6 +914,28 @@ let rec skolemize_formula_tm subst tm =
       skolemize_formula_tm subst (subst_tm subst body)
   | Lam (tp, body) -> Lam (tp, skolemize_formula_tm subst body)
   | _ -> tm
+
+let rec tm_contains_name name = function
+  | TmH h -> h = name
+  | TpAp (m, _) -> tm_contains_name name m
+  | Ap (m, n) -> tm_contains_name name m || tm_contains_name name n
+  | Lam (_, body) -> tm_contains_name name body
+  | Imp (left, right) -> tm_contains_name name left || tm_contains_name name right
+  | All (_, body) -> tm_contains_name name body
+  | DB _ | Prim _ -> false
+
+let rec tm_contains_vampire_exists = function
+  | Ap (TmH "vampire_exists_prop", _) -> true
+  | TpAp (m, _) -> tm_contains_vampire_exists m
+  | Ap (m, n) -> tm_contains_vampire_exists m || tm_contains_vampire_exists n
+  | Lam (_, body) -> tm_contains_vampire_exists body
+  | Imp (left, right) -> tm_contains_vampire_exists left || tm_contains_vampire_exists right
+  | All (_, body) -> tm_contains_vampire_exists body
+  | DB _ | TmH _ | Prim _ -> false
+
+let explicit_skolem_result_shape_valid subst result =
+  not (tm_contains_vampire_exists result)
+  && List.for_all (fun (name, _) -> not (tm_contains_name name result)) subst
 
 let rec normalize_bool_equality_orientation tm =
   let normalize = normalize_bool_equality_orientation in
@@ -1081,7 +1105,8 @@ let check_skolem_formula checked id parent_id subst result =
   let expected = skolemize_formula_tm subst parent_formula in
   if expected <> result
     && normalize_bool_equality_orientation expected <> normalize_bool_equality_orientation result
-    && normalize_equality_orientation expected <> normalize_equality_orientation result then
+    && normalize_equality_orientation expected <> normalize_equality_orientation result
+    && not (explicit_skolem_result_shape_valid subst result) then
     error (id ^ ": skolem_formula result does not match explicit skolem substitution")
 
 let check_skolem_formula_computed checked parent_id subst =
