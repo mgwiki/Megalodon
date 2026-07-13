@@ -791,8 +791,8 @@ let equality_to_true atom =
 let paramodulation_position_candidates target_atom position =
   let base = [position] in
   match equality_sides target_atom, position with
+  | Some _, 0 :: 1 :: rest -> base @ [[1] @ rest]
   | Some _, 1 :: rest -> base @ [[0; 1] @ rest]
-  | Some _, [0; 1] -> base @ [[1]]
   | Some _, 0 :: rest -> base @ [[0; 1] @ rest]
   | _ -> base
 
@@ -1102,6 +1102,8 @@ let is_equality_atom tm =
 
 let rec fool_term_tm tm =
   match tm with
+  | TmH "vampire_true" -> TmH "f__true"
+  | TmH "vampire_false" -> TmH "f__false"
   | Imp (body, false_tm) when is_vampire_false false_tm ->
       Ap (TmH "vNOT", fool_term_tm body)
   | Imp (left, right) ->
