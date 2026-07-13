@@ -21,6 +21,8 @@ type clause = literal list
 
 type step =
   | Input of string * source * clause
+  | FormulaInput of string * source * literal
+  | CnfLiteral of string * string * clause
   | Substitute of string * string * (string * Syntax.tm) list * clause
   | Resolve of string * string * string * int * int * clause
   | Factor of string * string * int * int * clause

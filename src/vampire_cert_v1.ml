@@ -23,6 +23,8 @@ type clause = literal list
 
 type step =
   | Input of string * source * clause
+  | FormulaInput of string * source * literal
+  | CnfLiteral of string * string * clause
   | Substitute of string * string * (string * tm) list * clause
   | Resolve of string * string * string * int * int * clause
   | Factor of string * string * int * int * clause
@@ -184,6 +186,10 @@ let parse_result = function
 let parse_step = function
   | List [Atom "input"; id; source; clause] ->
       Input (atom id, parse_source source, parse_clause clause)
+  | List [Atom "formula_input"; id; source; literal] ->
+      FormulaInput (atom id, parse_source source, parse_literal literal)
+  | List [Atom "cnf_literal"; id; parent; result] ->
+      CnfLiteral (atom id, parse_parent parent, parse_result result)
   | List [Atom "substitute"; id; parent; subst; result] ->
       Substitute (atom id, parse_parent parent, parse_substitution subst, parse_result result)
   | List [Atom "resolve"; id; parents; pivot; result] ->
@@ -216,6 +222,8 @@ let parse_step = function
 
 let step_id = function
   | Input (id, _, _) -> id
+  | FormulaInput (id, _, _) -> id
+  | CnfLiteral (id, _, _) -> id
   | Substitute (id, _, _, _) -> id
   | Resolve (id, _, _, _, _, _) -> id
   | Factor (id, _, _, _, _) -> id
@@ -360,6 +368,15 @@ let check_input_source = function
   | SourceSetReflexivity name ->
       if name = "" then error "input source name must be non-empty"
 
+let check_cnf_literal checked id parent_id result =
+  let parent_clause = lookup_clause checked parent_id in
+  begin match parent_clause with
+  | [_] -> ()
+  | _ -> error (id ^ ": cnf_literal parent is not a literal formula")
+  end;
+  if not (same_clause_multiset parent_clause result) then
+    error (id ^ ": cnf_literal result does not match source literal")
+
 let check_resolution checked id left_id right_id left_index right_index result =
   let left_clause = lookup_clause checked left_id in
   let right_clause = lookup_clause checked right_id in
@@ -445,6 +462,12 @@ let check_step checked = function
   | Input (id, source, clause) ->
       check_input_source source;
       (id, clause) :: checked
+  | FormulaInput (id, source, literal) ->
+      check_input_source source;
+      (id, [literal]) :: checked
+  | CnfLiteral (id, parent_id, result) ->
+      check_cnf_literal checked id parent_id result;
+      (id, result) :: checked
   | Substitute (id, parent_id, subst, result) ->
       check_substitute checked id parent_id subst result;
       (id, result) :: checked
