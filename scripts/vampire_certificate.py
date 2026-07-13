@@ -31,7 +31,11 @@ CERTIFICATE_BUILTIN_SYMBOLS = {
     "vAND",
     "vNOT",
     "vOR",
+    "vLAM",
+    "vPI",
+    "vSIGMA",
 }
+CERTIFICATE_SYNTAX_SYMBOLS = {"vLAM", "vPI", "vSIGMA"}
 MVP_RULES = {
     "input",
     "definition_input",
@@ -82,6 +86,7 @@ class CertificateError(Exception):
 
 
 IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_']*")
+MEGALODON_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 STEP_RE = re.compile(r'^megalodon_step\((\d+),("(?:\\.|[^"\\])*"),("(?:\\.|[^"\\])*"),\[([0-9,]*)\],')
 CLAUSE_RE = re.compile(r"^megalodon_certificate_clause\((\d+),(.+)\)\.$")
 CERTIFICATE_STEP_RE = re.compile(r"^megalodon_certificate_step\((\d+),(.+)\)\.$")
@@ -133,6 +138,7 @@ class DefinitionRewriteStep:
     parent: str | None = None
     literal: int | None = None
     position: tuple[int, ...] | None = None
+    clause: tuple[Literal, ...] | None = None
 
 
 LAMBDA_HINTS: tuple[LambdaHint, ...] = ()
@@ -428,7 +434,13 @@ def definition_rewrite_chain_reaches(
     if all(rewrite.literal is not None and rewrite.position is not None for rewrite in rewrites):
         candidate = tuple(source_clause)
         for index, rewrite in enumerate(rewrites):
-            candidate = rewrite_clause_at_definition_step(candidate, rewrite, f"{context}.rewrites[{index}]")
+            computed = rewrite_clause_at_definition_step(candidate, rewrite, f"{context}.rewrites[{index}]")
+            if rewrite.clause is not None:
+                if not clauses_match_modulo_equality_symmetry(computed, rewrite.clause):
+                    return False
+                candidate = rewrite.clause
+            else:
+                candidate = computed
         return clauses_match_modulo_equality_symmetry(candidate, target_clause)
 
     candidates: set[tuple[Literal, ...]] = {normalize_clause(source_clause)}
@@ -494,9 +506,27 @@ def equality_symmetric_match(left: Literal, right: Literal) -> bool:
 
 
 def require_megalodon_ident(name: str, context: str) -> str:
-    if not IDENT_RE.fullmatch(name):
-        raise CertificateError(f"{context}: {name!r} is not a supported Megalodon identifier")
-    return name
+    if MEGALODON_IDENT_RE.fullmatch(name):
+        return name
+    if not name:
+        raise CertificateError(f"{context}: empty identifier")
+    escaped = "".join(
+        char if (char.isalnum() or char == "_") else f"_u{ord(char):x}_"
+        for char in name
+    )
+    if not escaped[0].isalpha() and escaped[0] != "_":
+        escaped = f"cert_{escaped}"
+    escaped = re.sub(r"_+", "_", escaped)
+    if not MEGALODON_IDENT_RE.fullmatch(escaped):
+        raise CertificateError(f"{context}: {name!r} cannot be rendered as a Megalodon identifier")
+    return escaped
+
+
+def render_variable_declaration(declaration: str) -> str:
+    match = re.fullmatch(r"Variable ([A-Za-z_][A-Za-z0-9_']*):(.+)\.", declaration)
+    if match is None:
+        return declaration
+    return f"Variable {require_megalodon_ident(match.group(1), 'declaration symbol')}:{match.group(2)}."
 
 
 def strip_enclosing_sort_parens(sort: str) -> str:
@@ -1460,7 +1490,7 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
                 raise CertificateError(f"{step_id}: rewrites must be a non-empty list")
             rewrites: list[DefinitionRewriteStep] = []
             for rewrite_index, rewrite in enumerate(rewrite_values):
-                if not isinstance(rewrite, dict) or not {"from", "to"} <= set(rewrite) or not set(rewrite) <= {"from", "to", "parent", "literal", "position"}:
+                if not isinstance(rewrite, dict) or not {"from", "to"} <= set(rewrite) or not set(rewrite) <= {"from", "to", "parent", "literal", "position", "clause"}:
                     raise CertificateError(f"{step_id}.rewrites[{rewrite_index}]: expected from/to terms and optional parent/literal/position")
                 rewrite_parent = rewrite.get("parent")
                 if rewrite_parent is not None and (not isinstance(rewrite_parent, str) or rewrite_parent not in parents[1:]):
@@ -1481,6 +1511,7 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
                         rewrite_parent,
                         rewrite_literal,
                         tuple(rewrite_position) if rewrite_position is not None else None,
+                        normalize_clause(parse_clause(rewrite["clause"], f"{step_id}.rewrites[{rewrite_index}].clause")) if "clause" in rewrite else None,
                     )
                 )
             clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
@@ -2967,6 +2998,10 @@ def term_text(term: Term) -> str:
     return term_text_with_context(term, ())
 
 
+def term_contains_symbol(term: Term, name: str) -> bool:
+    return term.name == name or any(term_contains_symbol(arg, name) for arg in term.args)
+
+
 def term_text_expected(
     term: Term,
     expected_sort: str | None,
@@ -2976,6 +3011,20 @@ def term_text_expected(
     symbol_sorts = symbol_sorts or {}
     if expected_sort is not None:
         expected_sort = require_supported_sort(expected_sort, "expected term sort")
+    if term.kind == "const" and term.name in {"vPI", "vSIGMA"} and expected_sort is not None:
+        parts = split_sort(expected_sort)
+        if len(parts) == 2 and require_supported_sort(parts[1], "quantifier result sort") == "prop":
+            predicate_sort = require_supported_sort(parts[0], "quantifier predicate sort")
+            predicate_parts = split_sort(predicate_sort)
+            if len(predicate_parts) == 2 and require_supported_sort(predicate_parts[1], "quantifier body sort") == "prop":
+                binder_sort = require_supported_sort(predicate_parts[0], "quantifier binder sort")
+                predicate_name = "cert_Q"
+                binder_name = "cert_x"
+                if term.name == "vPI":
+                    body = f"forall {binder_name}:{sort_type_text(binder_sort)}, ({predicate_name} {binder_name})"
+                else:
+                    body = f"{existential_symbol(binder_sort)} (fun {binder_name}:{sort_type_text(binder_sort)} => ({predicate_name} {binder_name}))"
+                return f"(fun {predicate_name}:{sort_type_text(predicate_sort)} => {body})"
     if named_binary_application(term, "vEQ") is not None or quantifier_application(term) is not None:
         return term_text_with_context(term, db_context)
     if term.kind == "app" and term.name == "vLAM" and len(term.args) == 1 and expected_sort is not None:
@@ -2996,6 +3045,17 @@ def term_text_expected(
     if term.kind == "apply" and len(term.args) == 2:
         function = term.args[0]
         argument = term.args[1]
+        if (
+            expected_sort is not None
+            and function.kind == "app"
+            and function.name == "vLAM"
+            and len(function.args) == 1
+        ):
+            argument_sort = term_sort_guess(argument, symbol_sorts, db_context) or "set"
+            function_sort = sort_from_parts((argument_sort, expected_sort))
+            function_text = term_text_expected(function, function_sort, symbol_sorts, db_context)
+            argument_text = term_text_expected(argument, argument_sort, symbol_sorts, db_context)
+            return f"({function_text} {argument_text})"
         function_sort: str | None = None
         head, existing_args = term_spine(function)
         if head.kind == "const":
@@ -3006,9 +3066,31 @@ def term_text_expected(
             parts = split_sort(function_sort)
             if len(parts) >= 2:
                 argument_sort = require_supported_sort(parts[0], "application argument sort")
+                if (
+                    head.kind == "const"
+                    and head.name in {"vPI", "vSIGMA"}
+                    and argument.kind == "app"
+                    and argument.name == "vLAM"
+                    and len(argument.args) == 1
+                ):
+                    lambda_parts = split_sort(argument_sort)
+                    if len(lambda_parts) >= 2 and require_supported_sort(lambda_parts[-1], "quantifier body sort") == "prop":
+                        binder_sort = require_supported_sort(lambda_parts[0], "quantifier binder sort")
+                        binder = f"db{len(db_context)}"
+                        body = term_text_expected(argument.args[0], "prop", symbol_sorts, (*db_context, binder))
+                        binder_text = require_megalodon_ident(binder, "quantifier binder")
+                        if head.name == "vPI":
+                            return f"(forall {binder_text}:{sort_type_text(binder_sort)}, {body})"
+                        return f"({existential_symbol(binder_sort)} (fun {binder_text}:{sort_type_text(binder_sort)} => {body}))"
                 function_text = term_text_expected(function, None, symbol_sorts, db_context)
                 argument_text = term_text_expected(argument, argument_sort, symbol_sorts, db_context)
                 return f"({function_text} {argument_text})"
+        if expected_sort is not None and term_contains_symbol(function, "vLAM"):
+            argument_sort = term_sort_guess(argument, symbol_sorts, db_context) or "set"
+            function_sort = sort_from_parts((argument_sort, expected_sort))
+            function_text = term_text_expected(function, function_sort, symbol_sorts, db_context)
+            argument_text = term_text_expected(argument, argument_sort, symbol_sorts, db_context)
+            return f"({function_text} {argument_text})"
         return f"({term_text_expected(function, None, symbol_sorts, db_context)} {term_text_expected(argument, None, symbol_sorts, db_context)})"
     if term.kind == "app" and term.name != "vLAM":
         signature = symbol_sorts.get(term.name)
@@ -3020,6 +3102,29 @@ def term_text_expected(
             name = require_megalodon_ident(term.name, "term")
             return f"({name} {args})" if args else name
     return term_text_with_context(term, db_context)
+
+
+def term_sort_guess(
+    term: Term,
+    symbol_sorts: dict[str, tuple[str, ...]],
+    db_context: tuple[str, ...] = (),
+) -> str | None:
+    if term.kind == "const":
+        db_match = DB_NAME_RE.match(term.name)
+        if db_match is not None:
+            return "set"
+        parts = symbol_sorts.get(term.name)
+        if parts is not None and len(parts) == 1:
+            return parts[0]
+        return None
+    if term.kind == "app" and term.name == "vLAM" and len(term.args) == 1:
+        return None
+    head, args = term_spine(term)
+    if head.kind == "const" and args:
+        signature = symbol_sorts.get(head.name)
+        if signature is not None and len(signature) >= len(args) + 1:
+            return sort_from_parts(signature[len(args):])
+    return None
 
 
 def eta_expand_partial_application(
@@ -3319,7 +3424,7 @@ def clause_formula_prop_text(
         for part in reversed(parts[:-1]):
             result = f"vampire_or ({part}) ({result})"
     var_sorts = clause_var_sorts(clause, symbol_sorts, explicit_var_sorts)
-    for name in reversed(clause_free_vars(clause)):
+    for name in reversed(clause_free_vars_sorted(clause, symbol_sorts)):
         result = f"forall {require_megalodon_ident(name, 'binder')}:{sort_type_text(var_sorts[name])}, {result}"
     return result
 
@@ -3374,6 +3479,93 @@ def clause_free_vars(clause: tuple[Literal, ...]) -> tuple[str, ...]:
     variables: set[str] = set()
     for literal in clause:
         variables.update(literal_free_vars(literal))
+    return tuple(sorted(variables))
+
+
+def term_free_vars_sorted(
+    term: Term,
+    expected_sort: str | None,
+    symbol_sorts: dict[str, tuple[str, ...]],
+    db_context: tuple[str, ...] = (),
+) -> set[str]:
+    if expected_sort is not None:
+        expected_sort = require_supported_sort(expected_sort, "free variable expected sort")
+    v_eq_args = named_binary_application(term, "vEQ")
+    if v_eq_args is not None:
+        result: set[str] = set()
+        for arg in v_eq_args:
+            result.update(term_free_vars_sorted(arg, "set", symbol_sorts, db_context))
+        return result
+    if term.kind == "app" and term.name == "vLAM" and len(term.args) == 1 and expected_sort is not None:
+        parts = split_sort(expected_sort)
+        if len(parts) >= 2:
+            binder = f"db{len(db_context)}"
+            body_sort = sort_from_parts(parts[1:])
+            return term_free_vars_sorted(term.args[0], body_sort, symbol_sorts, (*db_context, binder))
+    if term.kind == "var":
+        return {term.name}
+    if term.kind == "const":
+        db_match = DB_NAME_RE.match(term.name)
+        if db_match is not None:
+            index = int(db_match.group(1))
+            if index < len(db_context):
+                return set()
+            return {term.name}
+        return set()
+    head, args = term_spine(term)
+    if args:
+        if term.kind == "apply" and len(term.args) == 2 and expected_sort is not None:
+            function, argument = term.args
+            if function.kind == "app" and function.name == "vLAM" and len(function.args) == 1:
+                argument_sort = term_sort_guess(argument, symbol_sorts, db_context) or "set"
+                function_sort = sort_from_parts((argument_sort, expected_sort))
+                result = term_free_vars_sorted(function, function_sort, symbol_sorts, db_context)
+                result.update(term_free_vars_sorted(argument, argument_sort, symbol_sorts, db_context))
+                return result
+        signature = symbol_sorts.get(head.name) if head.kind == "const" else None
+        if signature is not None and len(signature) >= len(args) + 1:
+            result: set[str] = set()
+            for arg, arg_sort in zip(args, signature):
+                result.update(term_free_vars_sorted(arg, arg_sort, symbol_sorts, db_context))
+            return result
+        result = {head.name} if head.kind == "var" else set()
+        for arg in args:
+            result.update(term_free_vars_sorted(arg, None, symbol_sorts, db_context))
+        return result
+    result: set[str] = set()
+    for arg in term.args:
+        result.update(term_free_vars_sorted(arg, None, symbol_sorts, db_context))
+    return result
+
+
+def atom_free_vars_sorted(atom: Term, symbol_sorts: dict[str, tuple[str, ...]]) -> set[str]:
+    if atom.kind == "eq" and len(atom.args) == 2:
+        result: set[str] = set()
+        for arg in atom.args:
+            result.update(term_free_vars_sorted(arg, atom.name, symbol_sorts))
+        return result
+    if atom.kind == "pred":
+        signature = symbol_sorts.get(atom.name)
+        arg_sorts = signature[:-1] if signature is not None and len(signature) == len(atom.args) + 1 else (None,) * len(atom.args)
+        result: set[str] = set()
+        for arg, arg_sort in zip(atom.args, arg_sorts):
+            result.update(term_free_vars_sorted(arg, arg_sort, symbol_sorts))
+        return result
+    result: set[str] = set()
+    for arg in atom.args:
+        result.update(term_free_vars_sorted(arg, None, symbol_sorts))
+    return result
+
+
+def clause_free_vars_sorted(
+    clause: tuple[Literal, ...],
+    symbol_sorts: dict[str, tuple[str, ...]] | None,
+) -> tuple[str, ...]:
+    if not symbol_sorts:
+        return clause_free_vars(clause)
+    variables: set[str] = set()
+    for literal in clause:
+        variables.update(atom_free_vars_sorted(literal.atom, symbol_sorts))
     return tuple(sorted(variables))
 
 
@@ -3619,7 +3811,7 @@ def clause_var_sorts(
     symbol_sorts: dict[str, tuple[str, ...]],
     explicit_var_sorts: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    clause_vars = set(clause_free_vars(clause))
+    clause_vars = set(clause_free_vars_sorted(clause, symbol_sorts))
     explicit_var_sorts = explicit_var_sorts or {}
     var_sorts: dict[str, str] = {
         name: require_supported_sort(sort, f"explicit sort for {name}")
@@ -3650,7 +3842,7 @@ def clause_prop_text(
     symbol_sorts = symbol_sorts or {}
     result = clause_body_text(clause, symbol_sorts)
     var_sorts = clause_var_sorts(clause, symbol_sorts, explicit_var_sorts)
-    for name in reversed(clause_free_vars(clause)):
+    for name in reversed(clause_free_vars_sorted(clause, symbol_sorts)):
         result = f"forall {require_megalodon_ident(name, 'binder')}:{sort_type_text(var_sorts[name])}, {result}"
     return result
 
@@ -3709,13 +3901,17 @@ def positive_equality_symmetry_proof(literal: Literal, proof: str) -> str:
     )
 
 
-def equality_symmetry_literal_proof(literal: Literal, proof: str) -> str:
+def equality_symmetry_literal_proof(
+    literal: Literal,
+    proof: str,
+    symbol_sorts: dict[str, tuple[str, ...]] | None = None,
+) -> str:
     if literal.polarity:
         return positive_equality_symmetry_proof(literal, proof)
     positive_swapped = Literal(True, swap_equality_literal(literal).atom)
     swapped_proof = fresh_proof_name("Hsym")
     positive_original = positive_equality_symmetry_proof(positive_swapped, swapped_proof)
-    return f"(fun {swapped_proof} => ({proof} {positive_original}))"
+    return f"(fun {swapped_proof}:{atom_text(positive_swapped.atom, symbol_sorts)} => ({proof} {positive_original}))"
 
 
 def fresh_proof_name(prefix: str) -> str:
@@ -3761,6 +3957,8 @@ def witness_term_for_sort(sort: str) -> Term:
         return Term("const", "f__false")
     if normalized == "set":
         return Term("const", "vampire_witness_set")
+    if normalized == "set->prop":
+        return Term("const", "vampire_witness_set_to_prop")
     raise CertificateError(f"no smoke witness available for sort {normalized!r}")
 
 
@@ -3770,12 +3968,12 @@ def uncovered_witness_substitution(
     symbol_sorts: dict[str, tuple[str, ...]] | None,
     explicit_var_sorts: dict[str, str] | None,
 ) -> dict[str, Term]:
-    conclusion_vars = set(clause_free_vars(conclusion))
-    parent_vars = set(clause_free_vars(parent_clause))
+    conclusion_vars = set(clause_free_vars_sorted(conclusion, symbol_sorts))
+    parent_vars = set(clause_free_vars_sorted(parent_clause, symbol_sorts))
     uncovered_vars = sorted(parent_vars - conclusion_vars)
     if not uncovered_vars:
         return {}
-    var_sorts = clause_var_sorts(parent_clause + conclusion, symbol_sorts, explicit_var_sorts)
+    var_sorts = clause_var_sorts(parent_clause + conclusion, symbol_sorts or {}, explicit_var_sorts)
     return {
         var: witness_term_for_sort(var_sorts.get(var, "set"))
         for var in uncovered_vars
@@ -3812,8 +4010,8 @@ def resolve_proof_text(
         left_clause = tuple(substitute_literal(literal, substitution) for literal in left_clause)
         right_clause = tuple(substitute_literal(literal, substitution) for literal in right_clause)
         pivot = substitute_literal(pivot, substitution)
-    left_proof = instantiate_proof(left_proof, original_left_clause, substitution)
-    right_proof = instantiate_proof(right_proof, original_right_clause, substitution)
+    left_proof = instantiate_proof(left_proof, original_left_clause, substitution, symbol_sorts)
+    right_proof = instantiate_proof(right_proof, original_right_clause, substitution, symbol_sorts)
     goal = clause_body_text(conclusion)
     complement = pivot.complement
 
@@ -3842,6 +4040,7 @@ def equality_resolution_proof_text(
     selected_literal: Literal,
     substitution: dict[str, Term],
     conclusion: tuple[Literal, ...],
+    symbol_sorts: dict[str, tuple[str, ...]] | None = None,
 ) -> str:
     instantiated_parent = tuple(substitute_literal(literal, substitution) for literal in parent_clause)
     instantiated_selected = substitute_literal(selected_literal, substitution)
@@ -3855,7 +4054,7 @@ def equality_resolution_proof_text(
             "Megalodon smoke equality-resolution elaboration has parent variables not bound by conclusion: "
             + ", ".join(uncovered_vars)
         )
-    instantiated_parent_proof = instantiate_proof(parent_proof, parent_clause, substitution)
+    instantiated_parent_proof = instantiate_proof(parent_proof, parent_clause, substitution, symbol_sorts)
     goal = clause_body_text(conclusion)
     reflexive_false = lambda proof: f"({proof} {equality_refl_proof()})"
 
@@ -3896,6 +4095,7 @@ def truth_conflict_resolution_proof_text(
     selected_literal: Literal,
     substitution: dict[str, Term],
     conclusion: tuple[Literal, ...],
+    symbol_sorts: dict[str, tuple[str, ...]] | None = None,
 ) -> str:
     instantiated_parent = tuple(substitute_literal(literal, substitution) for literal in parent_clause)
     instantiated_selected = substitute_literal(selected_literal, substitution)
@@ -3909,7 +4109,7 @@ def truth_conflict_resolution_proof_text(
             "Megalodon smoke truth-conflict elaboration has parent variables not bound by conclusion: "
             + ", ".join(uncovered_vars)
         )
-    instantiated_parent_proof = instantiate_proof(parent_proof, parent_clause, substitution)
+    instantiated_parent_proof = instantiate_proof(parent_proof, parent_clause, substitution, symbol_sorts)
     goal = clause_body_text(conclusion)
 
     def branch(literal: Literal, proof: str) -> str:
@@ -4074,6 +4274,7 @@ def equality_factoring_proof_text(
     other_rhs: Term,
     substitution: dict[str, Term],
     conclusion: tuple[Literal, ...],
+    symbol_sorts: dict[str, tuple[str, ...]] | None = None,
 ) -> str:
     instantiated_parent = tuple(substitute_literal(literal, substitution) for literal in parent_clause)
     instantiated_selected = substitute_literal(selected, substitution)
@@ -4109,7 +4310,7 @@ def equality_factoring_proof_text(
         else:
             raise CertificateError("equality-factoring conclusion does not contain introduced disequality")
     goal = clause_body_text(conclusion)
-    instantiated_parent_proof = instantiate_proof(parent_proof, parent_clause, substitution)
+    instantiated_parent_proof = instantiate_proof(parent_proof, parent_clause, substitution, symbol_sorts)
 
     def prove_other_from_diff(selected_proof: str, diff_proof: str) -> str:
         forward_other = Literal(True, Term("eq", selected.atom.name, (other_lhs_subst, other_rhs_subst)))
@@ -4145,6 +4346,8 @@ def equality_symmetry_proof_text(
     parent_proof: str,
     selected_literal: Literal,
     conclusion: tuple[Literal, ...],
+    symbol_sorts: dict[str, tuple[str, ...]] | None = None,
+    instantiate_parent_proof: bool = True,
 ) -> str:
     if selected_literal not in normalize_clause(parent_clause):
         raise CertificateError("Megalodon smoke equality-symmetry literal is not present in parent")
@@ -4152,11 +4355,12 @@ def equality_symmetry_proof_text(
     if swapped not in normalize_clause(conclusion):
         raise CertificateError("Megalodon smoke equality-symmetry conclusion does not contain swapped literal")
     goal = clause_body_text(conclusion)
-    parent_proof = instantiate_proof(parent_proof, parent_clause, {})
+    if instantiate_parent_proof:
+        parent_proof = instantiate_proof(parent_proof, parent_clause, {}, symbol_sorts)
 
     def branch(literal: Literal, proof: str) -> str:
         if literal == selected_literal:
-            return intro_literal_proof(swapped, conclusion, equality_symmetry_literal_proof(literal, proof))
+            return intro_literal_proof(swapped, conclusion, equality_symmetry_literal_proof(literal, proof, symbol_sorts))
         return intro_literal_proof(literal, conclusion, proof)
 
     return eliminate_clause_proof(parent_clause, parent_proof, goal, branch)
@@ -4188,6 +4392,8 @@ def definition_rewrite_chain_proof_text(
     conclusion: tuple[Literal, ...],
     step_clauses: dict[str, tuple[Literal, ...]] | None = None,
     proof_names: dict[str, str] | None = None,
+    symbol_sorts: dict[str, tuple[str, ...]] | None = None,
+    explicit_var_sorts: dict[str, str] | None = None,
 ) -> str:
     if (
         step_clauses is not None
@@ -4224,6 +4430,7 @@ def definition_rewrite_chain_proof_text(
                 f"definition rewrite step {index}.position",
             )
             next_clause = rewrite_clause_at_definition_step(current_clause, rewrite, f"definition rewrite step {index}")
+            raw_next_clause = normalize_clause(next_clause)
             current_proof = paramodulation_proof_text(
                 equality_parent_clause,
                 equality_parent_proof,
@@ -4233,9 +4440,42 @@ def definition_rewrite_chain_proof_text(
                 selected_target,
                 proof_position,
                 {},
-                normalize_clause(next_clause),
+                raw_next_clause,
+                symbol_sorts,
+                explicit_var_sorts,
+                instantiate_target_proof=(index == 0),
             )
-            current_clause = normalize_clause(next_clause)
+            current_clause = raw_next_clause
+            if rewrite.clause is not None and current_clause != rewrite.clause:
+                if not clauses_match_modulo_equality_symmetry(current_clause, rewrite.clause):
+                    raise CertificateError(f"definition rewrite step {index}: explicit intermediate clause does not match modulo equality symmetry")
+                target_clause = rewrite.clause
+                for _guard in range(len(current_clause)):
+                    if current_clause == target_clause:
+                        break
+                    changed = False
+                    for literal in current_clause:
+                        if literal.atom.kind != "eq":
+                            continue
+                        swapped = swap_equality_literal(literal)
+                        if literal in target_clause or swapped not in target_clause:
+                            continue
+                        next_sym_clause = normalize_clause(swapped if item == literal else item for item in current_clause)
+                        current_proof = equality_symmetry_proof_text(
+                            current_clause,
+                            current_proof,
+                            literal,
+                            next_sym_clause,
+                            symbol_sorts,
+                            instantiate_parent_proof=False,
+                        )
+                        current_clause = next_sym_clause
+                        changed = True
+                        break
+                    if not changed:
+                        break
+                if current_clause != target_clause:
+                    raise CertificateError(f"definition rewrite step {index}: could not normalize explicit intermediate clause")
         if not clauses_match_modulo_equality_symmetry(current_clause, conclusion):
             raise CertificateError("definition rewrite positioned chain does not reach conclusion")
         if normalize_clause(current_clause) == normalize_clause(conclusion):
@@ -4253,7 +4493,14 @@ def definition_rewrite_chain_proof_text(
                 if literal in target_clause or swapped not in target_clause:
                     continue
                 next_clause = normalize_clause(swapped if item == literal else item for item in current_clause)
-                current_proof = equality_symmetry_proof_text(current_clause, current_proof, literal, next_clause)
+                current_proof = equality_symmetry_proof_text(
+                    current_clause,
+                    current_proof,
+                    literal,
+                    next_clause,
+                    symbol_sorts,
+                    instantiate_parent_proof=False,
+                )
                 current_clause = next_clause
                 changed = True
                 break
@@ -4276,6 +4523,132 @@ def definition_rewrite_chain_proof_text(
         raise CertificateError(f"definition rewrite cannot map literal {literal_text(literal)} into conclusion")
 
     return eliminate_clause_proof(source_clause, source_proof, goal, branch)
+
+
+def append_definition_rewrite_chain_claims(
+    step_id: str,
+    source_clause: tuple[Literal, ...],
+    source_proof: str,
+    rewrites: tuple[DefinitionRewriteStep, ...],
+    conclusion: tuple[Literal, ...],
+    step_clauses: dict[str, tuple[Literal, ...]],
+    proof_names: dict[str, str],
+    derived: list[tuple[str, str, str]],
+    symbol_sorts: dict[str, tuple[str, ...]],
+    explicit_var_sorts: dict[str, str] | None = None,
+) -> bool:
+    if not all(rewrite.parent is not None and rewrite.literal is not None and rewrite.position is not None for rewrite in rewrites):
+        return False
+    current_clause = tuple(source_clause)
+    current_proof = source_proof
+
+    def append_claim(name: str, claim_clause: tuple[Literal, ...], proof_text: str) -> None:
+        step_clauses[name] = claim_clause
+        proof_names[name] = name
+        derived.append(
+            (
+                name,
+                clause_prop_text(claim_clause, symbol_sorts, explicit_var_sorts),
+                wrap_clause_binders(claim_clause, proof_text, symbol_sorts, explicit_var_sorts),
+            )
+        )
+
+    def append_symmetry_claims(prefix: str, target_clause: tuple[Literal, ...]) -> tuple[tuple[Literal, ...], str]:
+        nonlocal current_clause, current_proof
+        target_clause = normalize_clause(target_clause)
+        current_clause = normalize_clause(current_clause)
+        for sym_index in range(len(current_clause)):
+            if current_clause == target_clause:
+                return current_clause, current_proof
+            changed = False
+            for literal in current_clause:
+                if literal.atom.kind != "eq":
+                    continue
+                swapped = swap_equality_literal(literal)
+                if literal in target_clause or swapped not in target_clause:
+                    continue
+                next_clause = normalize_clause(swapped if item == literal else item for item in current_clause)
+                claim_name = f"{prefix}_sym_{sym_index}"
+                proof_text = equality_symmetry_proof_text(
+                    current_clause,
+                    current_proof,
+                    literal,
+                    next_clause,
+                    symbol_sorts,
+                )
+                append_claim(claim_name, next_clause, proof_text)
+                current_clause = next_clause
+                current_proof = claim_name
+                changed = True
+                break
+            if not changed:
+                break
+        return current_clause, current_proof
+
+    for index, rewrite in enumerate(rewrites):
+        if rewrite.parent is None or rewrite.literal is None or rewrite.position is None:
+            return False
+        equality_parent_clause = step_clauses.get(rewrite.parent)
+        equality_parent_proof = proof_names.get(rewrite.parent)
+        if equality_parent_clause is None or equality_parent_proof is None:
+            raise CertificateError(f"definition rewrite step {index}: missing proof for parent {rewrite.parent}")
+        if len(equality_parent_clause) != 1:
+            raise CertificateError(f"definition rewrite step {index}: definition parent is not a unit clause")
+        if rewrite.literal >= len(current_clause):
+            raise CertificateError(f"definition rewrite step {index}: literal index is outside the current clause")
+        selected_equality = equality_parent_clause[0]
+        if (
+            not selected_equality.polarity
+            or selected_equality.atom.kind != "eq"
+            or len(selected_equality.atom.args) != 2
+            or selected_equality.atom.args[0] != rewrite.source
+            or selected_equality.atom.args[1] != rewrite.target
+        ):
+            raise CertificateError(f"definition rewrite step {index}: definition parent does not match rewrite orientation")
+        selected_target = current_clause[rewrite.literal]
+        proof_position = certificate_position_for_source(
+            selected_target.atom,
+            rewrite.position,
+            rewrite.source,
+            f"definition rewrite step {index}.position",
+        )
+        next_clause = normalize_clause(rewrite_clause_at_definition_step(current_clause, rewrite, f"definition rewrite step {index}"))
+        claim_name = f"{step_id}_defrw_{index}"
+        proof_text = paramodulation_proof_text(
+            equality_parent_clause,
+            equality_parent_proof,
+            current_clause,
+            current_proof,
+            selected_equality,
+            selected_target,
+            proof_position,
+            {},
+            next_clause,
+            symbol_sorts,
+            explicit_var_sorts,
+        )
+        append_claim(claim_name, next_clause, proof_text)
+        current_clause = next_clause
+        current_proof = claim_name
+        if rewrite.clause is not None and current_clause != rewrite.clause:
+            if not clauses_match_modulo_equality_symmetry(current_clause, rewrite.clause):
+                raise CertificateError(f"definition rewrite step {index}: explicit intermediate clause does not match modulo equality symmetry")
+            append_symmetry_claims(f"{step_id}_defrw_{index}", rewrite.clause)
+            if current_clause != rewrite.clause:
+                raise CertificateError(f"definition rewrite step {index}: could not normalize explicit intermediate clause")
+
+    if not clauses_match_modulo_equality_symmetry(current_clause, conclusion):
+        raise CertificateError("definition rewrite positioned chain does not reach conclusion")
+    append_symmetry_claims(f"{step_id}_defrw_final", conclusion)
+    if normalize_clause(current_clause) != normalize_clause(conclusion):
+        raise CertificateError("definition rewrite positioned proof needs final equality-symmetry normalization")
+    proof_text = reorder_clause_proof_text(
+        current_clause,
+        instantiate_proof(current_proof, current_clause, {}, symbol_sorts),
+        conclusion,
+    )
+    append_claim(step_id, conclusion, proof_text)
+    return True
 
 
 def equality_proof_in_orientation(source: Literal, source_proof: str, target: Literal) -> str | None:
@@ -4439,6 +4812,7 @@ def paramodulation_proof_text(
     conclusion: tuple[Literal, ...],
     symbol_sorts: dict[str, tuple[str, ...]] | None = None,
     explicit_var_sorts: dict[str, str] | None = None,
+    instantiate_target_proof: bool = True,
 ) -> str:
     instantiated_equality_parent = tuple(substitute_literal(literal, substitution) for literal in equality_parent_clause)
     instantiated_target_parent = tuple(substitute_literal(literal, substitution) for literal in target_parent_clause)
@@ -4471,28 +4845,32 @@ def paramodulation_proof_text(
     if rewritten_target not in normalize_clause(conclusion):
         raise CertificateError("Megalodon smoke paramodulation conclusion does not contain the rewritten target")
 
-    equality_proof = instantiate_proof(equality_parent_proof, equality_parent_clause, substitution)
-    target_proof = instantiate_proof(target_parent_proof, target_parent_clause, substitution)
+    equality_proof = instantiate_proof(equality_parent_proof, equality_parent_clause, substitution, symbol_sorts)
+    target_proof = (
+        instantiate_proof(target_parent_proof, target_parent_clause, substitution, symbol_sorts)
+        if instantiate_target_proof
+        else target_parent_proof
+    )
     forward_context_atom = replace_term_at_position(
         instantiated_target.atom,
         position,
         Term("var", "cert_x"),
         "paramodulation.position",
     )
-    forward_context = f"(fun cert_x:{sort_type_text(equality_sort)} => {atom_text(forward_context_atom)})"
+    forward_context = f"(fun cert_x:{sort_type_text(equality_sort)} => {atom_text(forward_context_atom, symbol_sorts)})"
     backward_context_atom = replace_term_at_position(
         instantiated_target.atom,
         position,
         Term("var", "cert_y"),
         "paramodulation.position",
     )
-    backward_context = f"(fun cert_y:{sort_type_text(equality_sort)} => {atom_text(backward_context_atom)})"
+    backward_context = f"(fun cert_y:{sort_type_text(equality_sort)} => {atom_text(backward_context_atom, symbol_sorts)})"
     prop_equality = instantiated_equality.atom.name == "prop"
     if equality_sort == "set":
-        forward_context = f"(fun cert_x cert_y:set => {atom_text(forward_context_atom)})"
-        backward_context = f"(fun cert_x cert_y:set => {atom_text(backward_context_atom)})"
+        forward_context = f"(fun cert_x cert_y:set => {atom_text(forward_context_atom, symbol_sorts)})"
+        backward_context = f"(fun cert_x cert_y:set => {atom_text(backward_context_atom, symbol_sorts)})"
     elif prop_equality:
-        forward_context = f"(fun cert_x:prop => {atom_text(forward_context_atom)})"
+        forward_context = f"(fun cert_x:prop => {atom_text(forward_context_atom, symbol_sorts)})"
     goal = clause_body_text(conclusion)
 
     def target_branch(literal: Literal, proof: str, equality_literal_proof: str) -> str:
@@ -4501,7 +4879,7 @@ def paramodulation_proof_text(
                 transported = f"({equality_literal_proof} {forward_context} {proof})"
             else:
                 rewritten_proof = fresh_proof_name("Hrewrite")
-                rewritten_proof_type = atom_text(rewritten_target.atom)
+                rewritten_proof_type = atom_text(rewritten_target.atom, symbol_sorts)
                 if equality_sort != "set":
                     symmetric_equality = positive_equality_symmetry_proof(instantiated_equality, equality_literal_proof)
                     transported = f"(fun {rewritten_proof}:{rewritten_proof_type} => ({proof} ({symmetric_equality} {forward_context} {rewritten_proof})))"
@@ -4595,6 +4973,10 @@ def collect_term_symbols_with_context(
             return
         record_term_constant(constants, term.name, expected_sort)
     elif term.kind == "app":
+        if term.name in CERTIFICATE_SYNTAX_SYMBOLS:
+            for arg in term.args:
+                collect_term_symbols_with_context(arg, constants, functions, bound_constants, db_context, expected_sort)
+            return
         record_term_function(functions, term.name, len(term.args), expected_sort)
         constants.pop(term.name, None)
     elif term.kind == "apply":
@@ -4680,9 +5062,14 @@ def merge_outline_declarations(outline: list[str], inferred: list[str]) -> list[
     return sorted(by_symbol.values())
 
 
-def instantiate_proof(proof_name: str, parent_clause: tuple[Literal, ...], substitution: dict[str, Term]) -> str:
+def instantiate_proof(
+    proof_name: str,
+    parent_clause: tuple[Literal, ...],
+    substitution: dict[str, Term],
+    symbol_sorts: dict[str, tuple[str, ...]] | None = None,
+) -> str:
     proof = proof_name
-    for name in clause_free_vars(parent_clause):
+    for name in clause_free_vars_sorted(parent_clause, symbol_sorts):
         term = substitution.get(name, Term("var", name))
         proof = f"({proof} {term_text(term)})"
     return proof
@@ -4696,7 +5083,7 @@ def wrap_clause_binders(
 ) -> str:
     symbol_sorts = symbol_sorts or {}
     var_sorts = clause_var_sorts(clause, symbol_sorts, explicit_var_sorts)
-    for name in reversed(clause_free_vars(clause)):
+    for name in reversed(clause_free_vars_sorted(clause, symbol_sorts)):
         proof = f"(fun {require_megalodon_ident(name, 'binder')} :{sort_type_text(var_sorts[name])} => {proof})"
     return proof
 
@@ -5072,15 +5459,15 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
         skip = False
         if declaration in builtin_declarations:
             skip = True
-        for symbol in definable_symbols:
-            if declaration == f"Variable {symbol}:{definitions[symbol][0]}.":
-                skip = True
-                break
         declaration_symbol = declaration_symbol_name(declaration)
+        if declaration_symbol in definable_symbols:
+            skip = True
         if declaration_symbol in inequality_definition_symbols:
             skip = True
+        if declaration_symbol in CERTIFICATE_SYNTAX_SYMBOLS:
+            skip = True
         if not skip:
-            lines.append(declaration)
+            lines.append(render_variable_declaration(declaration))
     for var in sorted(avatar_sat_vars):
         declaration = f"Variable {sat_split_name(var)}:prop."
         if declaration not in declarations:
@@ -5088,8 +5475,16 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
     witness_declaration = "Variable vampire_witness_set:set."
     if witness_declaration not in declarations:
         lines.append(witness_declaration)
+    function_witness_declaration = "Variable vampire_witness_set_to_prop:set->prop."
+    if function_witness_declaration not in declarations:
+        lines.append(function_witness_declaration)
     symbol_sorts = declaration_symbol_sorts(declarations)
+    for syntax_symbol in CERTIFICATE_SYNTAX_SYMBOLS:
+        symbol_sorts.pop(syntax_symbol, None)
+    for symbol in definable_symbols:
+        symbol_sorts[symbol] = split_sort(definitions[symbol][0])
     symbol_sorts["vampire_witness_set"] = split_sort("set")
+    symbol_sorts["vampire_witness_set_to_prop"] = split_sort("set->prop")
     symbol_sorts.update(
         {
             "f__false": split_sort("prop"),
@@ -5104,6 +5499,23 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
             "vampire_or": split_sort("prop->prop->prop"),
         }
     )
+
+    symbol_renames = {
+        symbol: require_megalodon_ident(symbol, "source symbol")
+        for symbol in symbol_sorts
+        if require_megalodon_ident(symbol, "source symbol") != symbol
+    }
+
+    def render_source_proposition(proposition: str) -> str:
+        rendered = proposition
+        for symbol, replacement in sorted(symbol_renames.items(), key=lambda item: len(item[0]), reverse=True):
+            rendered = re.sub(
+                rf"(?<![A-Za-z0-9_']){re.escape(symbol)}(?![A-Za-z0-9_'])",
+                replacement,
+                rendered,
+            )
+        return rendered
+
     for symbol, (sort, _value) in definitions.items():
         symbol_sorts[symbol] = split_sort(sort)
     for symbol, definition in inequality_definitions.items():
@@ -5131,7 +5543,7 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
             return name
         name = f"formula_{require_megalodon_ident(formula_parent, 'formula parent')}"
         formula_proof_names[formula_parent] = name
-        rendered = normalize_prop_lambdas(proposition)
+        rendered = normalize_prop_lambdas(render_source_proposition(proposition))
         if "vLAM" in rendered:
             raise CertificateError(f"{formula_parent}: formula parent has raw vLAM without lambda hints")
         assumptions.append((name, rendered))
@@ -5163,25 +5575,29 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
             derived.append((step_id, clause_prop_text(clause, symbol_sorts, explicit_var_sorts), proof))
             continue
         if rule == "cnf_formula_exact":
-            source_proof = formula_parent_proof(step["formula_parent"], step["proposition"])
+            source_proposition = render_source_proposition(step["proposition"])
+            source_proof = formula_parent_proof(step["formula_parent"], source_proposition)
             target_prop = clause_formula_prop_text(clause, None, explicit_var_sorts)
-            if prop_key(step["proposition"]) == prop_key(target_prop):
+            if prop_key(source_proposition) == prop_key(target_prop):
                 proof = source_proof
             else:
-                proof = formula_projection_proof_text(source_proof, step["proposition"], target_prop)
+                proof = formula_projection_proof_text(source_proof, source_proposition, target_prop)
             proof_names[step_id] = step_id
             derived.append((step_id, clause_prop_text(clause, symbol_sorts, explicit_var_sorts), proof))
             continue
         if rule == "cnf_formula_conjunct":
-            source_proof = formula_parent_proof(step["formula_parent"], step["source_proposition"])
-            proof = conjunction_projection_proof_text(source_proof, step["source_proposition"], step["proposition"])
+            source_proposition = render_source_proposition(step["source_proposition"])
+            target_proposition = render_source_proposition(step["proposition"])
+            source_proof = formula_parent_proof(step["formula_parent"], source_proposition)
+            proof = conjunction_projection_proof_text(source_proof, source_proposition, target_proposition)
             proof_names[step_id] = step_id
             derived.append((step_id, clause_prop_text(clause, symbol_sorts, explicit_var_sorts), proof))
             continue
         if rule == "cnf_formula_projection":
-            source_proof = formula_parent_proof(step["formula_parent"], step["source_proposition"])
+            source_proposition = render_source_proposition(step["source_proposition"])
+            source_proof = formula_parent_proof(step["formula_parent"], source_proposition)
             proof_target = clause_formula_prop_text(clause, None, explicit_var_sorts)
-            proof = formula_projection_proof_text(source_proof, step["source_proposition"], proof_target)
+            proof = formula_projection_proof_text(source_proof, source_proposition, proof_target)
             proof_names[step_id] = step_id
             derived.append((step_id, clause_prop_text(clause, symbol_sorts, explicit_var_sorts), proof))
             continue
@@ -5209,11 +5625,11 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
             instantiated_parent = tuple(substitute_literal(literal, substitution) for literal in step_clauses[parent])
             proof = wrap_clause_binders(
                 clause,
-                reorder_clause_proof_text(
-                    instantiated_parent,
-                    instantiate_proof(proof_names[parent], step_clauses[parent], substitution),
-                    clause,
-                ),
+                    reorder_clause_proof_text(
+                        instantiated_parent,
+                        instantiate_proof(proof_names[parent], step_clauses[parent], substitution, symbol_sorts),
+                        clause,
+                    ),
                 symbol_sorts,
                 explicit_var_sorts,
             )
@@ -5229,6 +5645,7 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
                     selected_literal,
                     substitution,
                     clause,
+                    symbol_sorts,
                 ),
                 symbol_sorts,
                 explicit_var_sorts,
@@ -5245,6 +5662,7 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
                     selected_literal,
                     substitution,
                     clause,
+                    symbol_sorts,
                 ),
                 symbol_sorts,
                 explicit_var_sorts,
@@ -5267,6 +5685,7 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
                     other_rhs,
                     substitution,
                     clause,
+                    symbol_sorts,
                 ),
                 symbol_sorts,
                 explicit_var_sorts,
@@ -5281,6 +5700,7 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
                     proof_names[parent],
                     selected_literal,
                     clause,
+                    symbol_sorts,
                 ),
                 symbol_sorts,
                 explicit_var_sorts,
@@ -5342,9 +5762,23 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
                     rewrite.get("parent"),
                     rewrite.get("literal"),
                     parse_position(rewrite["position"], f"{step_id}.rewrites[{index}].position") if "position" in rewrite else None,
+                    normalize_clause(parse_clause(rewrite["clause"], f"{step_id}.rewrites[{index}].clause")) if "clause" in rewrite else None,
                 )
                 for index, rewrite in enumerate(step["rewrites"])
             )
+            if append_definition_rewrite_chain_claims(
+                step_id,
+                step_clauses[parent],
+                proof_names[parent],
+                rewrites,
+                clause,
+                step_clauses,
+                proof_names,
+                derived,
+                symbol_sorts,
+                explicit_var_sorts,
+            ):
+                continue
             proof = wrap_clause_binders(
                 clause,
                 definition_rewrite_chain_proof_text(
@@ -5354,6 +5788,8 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
                     clause,
                     step_clauses,
                     proof_names,
+                    symbol_sorts,
+                    explicit_var_sorts,
                 ),
                 symbol_sorts,
                 explicit_var_sorts,
