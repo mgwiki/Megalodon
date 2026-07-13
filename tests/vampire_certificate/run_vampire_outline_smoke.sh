@@ -85,6 +85,7 @@ substituted_resolution_problem="$TMPDIR/vampire_outline_smoke_substituted_resolu
 superposition_problem="$TMPDIR/vampire_outline_smoke_superposition.p"
 source_names_problem="$TMPDIR/vampire_outline_smoke_source_names.p"
 fof_source_names_problem="$TMPDIR/vampire_outline_smoke_fof_source_names.p"
+thf_bool_problem="$TMPDIR/vampire_outline_smoke_thf_bool.p"
 
 cat >"$resolution_problem" <<'PROBLEM'
 cnf(a1, axiom, p(a)).
@@ -121,6 +122,13 @@ fof(lemma_formula, axiom, p(a)).
 fof(goal_formula, negated_conjecture, ~p(a)).
 PROBLEM
 
+cat >"$thf_bool_problem" <<'PROBLEM'
+thf(a_type,type,(a: $i)).
+thf(p_type,type,(p: $i > $o)).
+thf(lemma_formula, axiom, (p @ a)).
+thf(goal_formula, negated_conjecture, ~(p @ a)).
+PROBLEM
+
 run_outline_case vampire_outline_smoke_resolution "$resolution_problem" "" "" resolve
 run_outline_case vampire_outline_smoke_equality_resolution "$equality_resolution_problem" "" "" equality_resolution
 run_outline_case vampire_outline_smoke_factor "$factor_problem" "" "" factor
@@ -128,5 +136,6 @@ run_outline_case vampire_outline_smoke_substituted_resolution "$substituted_reso
 run_outline_case vampire_outline_smoke_superposition "$superposition_problem" "" "" paramodulate
 run_outline_case vampire_outline_smoke_source_names "$source_names_problem" lemma_source goal_source resolve
 run_outline_case vampire_outline_smoke_fof_source_names "$fof_source_names_problem" lemma_formula goal_formula cnf_literal
+run_outline_case vampire_outline_smoke_thf_bool "$thf_bool_problem" lemma_formula goal_formula fool_bool
 
 echo "vampire native certificate live smoke test passed"

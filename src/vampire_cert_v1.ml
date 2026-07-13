@@ -24,6 +24,8 @@ type clause = literal list
 type step =
   | Input of string * source * clause
   | FormulaInput of string * source * literal
+  | FormulaCopy of string * string * literal
+  | FoolBool of string * string * literal
   | CnfLiteral of string * string * clause
   | Substitute of string * string * (string * tm) list * clause
   | Resolve of string * string * string * int * int * clause
@@ -183,11 +185,19 @@ let parse_result = function
   | List [Atom "result"; clause] -> parse_clause clause
   | _ -> error "expected result clause"
 
+let parse_literal_result = function
+  | List [Atom "result"; literal] -> parse_literal literal
+  | _ -> error "expected result literal"
+
 let parse_step = function
   | List [Atom "input"; id; source; clause] ->
       Input (atom id, parse_source source, parse_clause clause)
   | List [Atom "formula_input"; id; source; literal] ->
       FormulaInput (atom id, parse_source source, parse_literal literal)
+  | List [Atom "formula_copy"; id; parent; result] ->
+      FormulaCopy (atom id, parse_parent parent, parse_literal_result result)
+  | List [Atom "fool_bool"; id; parent; result] ->
+      FoolBool (atom id, parse_parent parent, parse_literal_result result)
   | List [Atom "cnf_literal"; id; parent; result] ->
       CnfLiteral (atom id, parse_parent parent, parse_result result)
   | List [Atom "substitute"; id; parent; subst; result] ->
@@ -223,6 +233,8 @@ let parse_step = function
 let step_id = function
   | Input (id, _, _) -> id
   | FormulaInput (id, _, _) -> id
+  | FormulaCopy (id, _, _) -> id
+  | FoolBool (id, _, _) -> id
   | CnfLiteral (id, _, _) -> id
   | Substitute (id, _, _, _) -> id
   | Resolve (id, _, _, _, _, _) -> id
@@ -377,6 +389,25 @@ let check_cnf_literal checked id parent_id result =
   if not (same_clause_multiset parent_clause result) then
     error (id ^ ": cnf_literal result does not match source literal")
 
+let equality_to_true atom =
+  Ap (Ap (TmH "=", atom), TmH "f__true")
+
+let check_formula_copy checked id parent_id result =
+  let parent_clause = lookup_clause checked parent_id in
+  if not (same_clause_multiset parent_clause [result]) then
+    error (id ^ ": formula_copy result does not match parent")
+
+let check_fool_bool checked id parent_id result =
+  let parent_clause = lookup_clause checked parent_id in
+  let expected =
+    match parent_clause with
+    | [Pos atom] -> Pos (equality_to_true atom)
+    | [Neg atom] -> Neg (equality_to_true atom)
+    | _ -> error (id ^ ": fool_bool parent is not a singleton formula")
+  in
+  if not (same_clause_multiset [expected] [result]) then
+    error (id ^ ": fool_bool result is not the Boolean-term equality to true")
+
 let check_resolution checked id left_id right_id left_index right_index result =
   let left_clause = lookup_clause checked left_id in
   let right_clause = lookup_clause checked right_id in
@@ -411,6 +442,18 @@ let check_factor checked id parent_id left_index right_index result =
 let equality_sides = function
   | Ap (Ap (TmH h, left), right) when h = "=" || h = "eq" -> Some (left, right)
   | _ -> None
+
+let swap_literal_equality = function
+  | Pos atom ->
+      begin match equality_sides atom with
+      | Some (left, right) -> Some (Pos (Ap (Ap (TmH "=", right), left)))
+      | None -> None
+      end
+  | Neg atom ->
+      begin match equality_sides atom with
+      | Some (left, right) -> Some (Neg (Ap (Ap (TmH "=", right), left)))
+      | None -> None
+      end
 
 let check_equality_resolution checked id parent_id literal_index result =
   let parent_clause = lookup_clause checked parent_id in
@@ -456,7 +499,13 @@ let check_paramodulate checked id equality_parent_id target_parent_id equality_i
   let target_rest = remove_at target_index target_clause (id ^ " target literal") in
   let expected = equality_rest @ target_rest @ [rewritten_literal] in
   if not (same_clause_multiset expected result) then
-    error (id ^ ": paramodulation result does not match explicit rewrite")
+    begin match swap_literal_equality rewritten_literal with
+    | Some swapped_literal ->
+        let swapped_expected = equality_rest @ target_rest @ [swapped_literal] in
+        if not (same_clause_multiset swapped_expected result) then
+          error (id ^ ": paramodulation result does not match explicit rewrite")
+    | None -> error (id ^ ": paramodulation result does not match explicit rewrite")
+    end
 
 let check_step checked = function
   | Input (id, source, clause) ->
@@ -465,6 +514,12 @@ let check_step checked = function
   | FormulaInput (id, source, literal) ->
       check_input_source source;
       (id, [literal]) :: checked
+  | FormulaCopy (id, parent_id, result) ->
+      check_formula_copy checked id parent_id result;
+      (id, [result]) :: checked
+  | FoolBool (id, parent_id, result) ->
+      check_fool_bool checked id parent_id result;
+      (id, [result]) :: checked
   | CnfLiteral (id, parent_id, result) ->
       check_cnf_literal checked id parent_id result;
       (id, result) :: checked

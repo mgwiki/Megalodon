@@ -49,6 +49,15 @@ if ! rg -q 'Vampire certificate v1 checked 6 steps' "$TMPDIR/native_cert_v1_cnf_
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_bool_valid.sexp \
+  "$dummy" >"$TMPDIR/native_cert_v1_fool_bool_valid.log"
+
+if ! rg -q 'Vampire certificate v1 checked 9 steps' "$TMPDIR/native_cert_v1_fool_bool_valid.log"; then
+  echo "native certificate v1 checker did not accept the valid FOOL Boolean fixture" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_invalid_pivot.sexp \
   "$dummy" >"$TMPDIR/native_cert_v1_invalid_pivot.out" \
