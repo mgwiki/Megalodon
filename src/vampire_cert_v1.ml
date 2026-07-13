@@ -1008,7 +1008,8 @@ let check_fool_formula checked id parent_id result =
   let parent_formula = lookup_formula checked parent_id in
   let expected = fool_formula_tm parent_formula in
   if expected <> result
-    && normalize_bool_equality_orientation expected <> normalize_bool_equality_orientation result then
+    && normalize_bool_equality_orientation expected <> normalize_bool_equality_orientation result
+    && normalize_equality_orientation expected <> normalize_equality_orientation result then
     error (id ^ ": fool_formula result does not match recursive FOOL Boolean lifting")
 
 let check_ennf_formula checked id parent_id result =

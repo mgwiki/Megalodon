@@ -106,6 +106,15 @@ if ! rg -q 'Vampire certificate v1 checked 6 steps' "$WORK_DIR/native_cert_v1_fo
 fi
 
 bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_formula_equality_orientation_valid.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_fool_formula_equality_orientation_valid.log"
+
+if ! rg -q 'Vampire certificate v1 checked 6 steps' "$WORK_DIR/native_cert_v1_fool_formula_equality_orientation_valid.log"; then
+  echo "native certificate v1 checker did not accept the valid FOOL equality-orientation fixture" >&2
+  exit 1
+fi
+
+bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_definition_input_valid.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_definition_input_valid.log"
 
