@@ -94,6 +94,7 @@ type step =
   | EqualityFactoringConstraints of string * string * int * int * (string * Syntax.tm) list * clause * clause
   | TruthConflict of string * string * int * clause
   | EqualitySymmetry of string * string * int * clause
+  | BoolSimplify of string * string * int * int list * Syntax.tm * Syntax.tm * clause
   | Paramodulate of string * string * string * int * int * int list * Syntax.tm * Syntax.tm * clause
   | Superposition of string * string * string * int * int * (string * Syntax.tm) list * (string * Syntax.tm) list * int list * Syntax.tm * Syntax.tm * clause
   | Contradiction of string * string

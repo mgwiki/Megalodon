@@ -96,6 +96,7 @@ type step =
   | EqualityFactoringConstraints of string * string * int * int * (string * tm) list * clause * clause
   | TruthConflict of string * string * int * clause
   | EqualitySymmetry of string * string * int * clause
+  | BoolSimplify of string * string * int * int list * tm * tm * clause
   | Paramodulate of string * string * string * int * int * int list * tm * tm * clause
   | Superposition of string * string * string * int * int * (string * tm) list * (string * tm) list * int list * tm * tm * clause
   | Contradiction of string * string
@@ -527,6 +528,15 @@ let parse_step = function
       TruthConflict (atom id, parse_parent parent, parse_literal_index literal, parse_result result)
   | List [Atom "equality_symmetry"; id; parent; literal; result] ->
       EqualitySymmetry (atom id, parse_parent parent, parse_literal_index literal, parse_result result)
+  | List [Atom "bool_simplify"; id; parent; literal; position; from_tm; to_tm; result] ->
+      BoolSimplify (
+        atom id,
+        parse_parent parent,
+        parse_literal_index literal,
+        parse_position position,
+        parse_tm_field "from" from_tm,
+        parse_tm_field "to" to_tm,
+        parse_result result)
   | List [Atom "paramodulate"; id; equality; target; position; from_tm; to_tm; result] ->
       let equality_parent, equality_index = parse_indexed_parent "equality" equality in
       let target_parent, target_index = parse_indexed_parent "target" target in
@@ -598,6 +608,7 @@ let step_id = function
   | EqualityFactoringConstraints (id, _, _, _, _, _, _) -> id
   | TruthConflict (id, _, _, _) -> id
   | EqualitySymmetry (id, _, _, _) -> id
+  | BoolSimplify (id, _, _, _, _, _, _) -> id
   | Paramodulate (id, _, _, _, _, _, _, _, _) -> id
   | Superposition (id, _, _, _, _, _, _, _, _, _, _) -> id
   | Contradiction (id, _) -> id
@@ -782,6 +793,7 @@ let paramodulation_position_candidates target_atom position =
   match equality_sides target_atom, position with
   | Some _, 1 :: rest -> base @ [[0; 1] @ rest]
   | Some _, [0; 1] -> base @ [[1]]
+  | Some _, 0 :: rest -> base @ [[0; 1] @ rest]
   | _ -> base
 
 let vampire_false = TmH "vampire_false"
@@ -2276,6 +2288,41 @@ let check_paramodulate checked id equality_parent_id target_parent_id equality_i
     | None -> error (id ^ ": paramodulation result does not match explicit rewrite")
     end
 
+let check_bool_simplify checked id parent_id literal_index position from_tm to_tm result =
+  let parent_clause = lookup_clause checked parent_id in
+  let target_literal = nth literal_index parent_clause (id ^ " Boolean simplification literal") in
+  let target_atom = literal_atom target_literal in
+  let position =
+    let rec select = function
+      | [] -> error (id ^ ": Boolean simplification position does not contain from term")
+      | candidate :: rest ->
+          begin
+            match try_tm_at_position target_atom candidate with
+            | Some found when found = from_tm -> candidate
+            | _ -> select rest
+          end
+    in
+    select (paramodulation_position_candidates target_atom position)
+  in
+  let rewritten_atom = replace_tm_at_position target_atom position to_tm (id ^ " Boolean simplification target") in
+  let rewritten_literal = replace_literal_atom target_literal rewritten_atom in
+  let parent_rest = remove_at literal_index parent_clause (id ^ " Boolean simplification literal") in
+  let result_matches rewritten_literal =
+    let expected = parent_rest @ [rewritten_literal] in
+    same_clause_multiset expected result
+    || same_clause_set_mod_equality expected result
+    || same_clause_mod_vampire_var_renaming expected result
+    || same_clause_mod_vampire_var_renaming_and_equality expected result
+  in
+  if not (
+    result_matches rewritten_literal
+    ||
+    match swap_literal_equality rewritten_literal with
+    | Some swapped_literal -> result_matches swapped_literal
+    | None -> false)
+  then
+    error (id ^ ": Boolean simplification result does not match explicit rewrite")
+
 let check_superposition checked id target_parent_id equality_parent_id target_index equality_index target_subst equality_subst position from_tm to_tm result =
   let target_clause = subst_clause target_subst (lookup_clause checked target_parent_id) in
   let raw_equality_clause = lookup_clause checked equality_parent_id in
@@ -2479,6 +2526,9 @@ let check_step checked = function
       (id, CheckedClause result) :: checked
   | EqualitySymmetry (id, parent_id, literal_index, result) ->
       check_equality_symmetry checked id parent_id literal_index result;
+      (id, CheckedClause result) :: checked
+  | BoolSimplify (id, parent_id, literal_index, position, from_tm, to_tm, result) ->
+      check_bool_simplify checked id parent_id literal_index position from_tm to_tm result;
       (id, CheckedClause result) :: checked
   | Paramodulate (id, equality_parent_id, target_parent_id, equality_index, target_index, position, from_tm, to_tm, result) ->
       check_paramodulate checked id equality_parent_id target_parent_id equality_index target_index position from_tm to_tm result;
