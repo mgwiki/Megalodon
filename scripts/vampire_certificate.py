@@ -52,6 +52,7 @@ MVP_RULES = {
     "subsumption_resolution",
     "contradiction",
     "avatar_refutation",
+    "avatar_component",
     "definition_rewrite_chain",
     "inequality_split",
 }
@@ -69,7 +70,6 @@ DERIVED_ASSUMPTION_REPLAY_KINDS = {
     "generic",
     "generic_clause",
     "normal_form",
-    "avatar_component",
     "avatar_contradiction",
     "avatar_refutation",
     "avatar_split",
@@ -899,6 +899,50 @@ def parse_sat_literal(value: Any, context: str) -> tuple[int, bool]:
     return var, polarity
 
 
+def parse_bool_flag(value: str | None, context: str) -> bool:
+    if value == "1":
+        return True
+    if value == "0":
+        return False
+    raise CertificateError(f"{context}: expected 0 or 1")
+
+
+def split_literal_var(literal: Literal) -> int | None:
+    if literal.atom.kind != "pred" or literal.atom.args:
+        return None
+    match = re.fullmatch(r"split_([1-9][0-9]*)", literal.atom.name)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def avatar_component_metadata(step_id: str, fields: list[str]) -> dict[str, Any] | None:
+    values = parse_key_value_fields(fields)
+    if values.get("dependency_count") != "1":
+        return None
+    split_var_text = values.get("dependency_0_split_var")
+    split_positive_text = values.get("dependency_0_split_positive")
+    split_level_text = values.get("dependency_0_split_level")
+    if split_var_text is None or split_positive_text is None:
+        return None
+    try:
+        split_var = int(split_var_text)
+    except ValueError as exc:
+        raise CertificateError(f"{step_id}: avatar component split var is not an integer") from exc
+    if split_var <= 0:
+        raise CertificateError(f"{step_id}: avatar component split var must be positive")
+    metadata: dict[str, Any] = {
+        "split_var": split_var,
+        "split_positive": parse_bool_flag(split_positive_text, f"{step_id}: avatar component split polarity"),
+    }
+    if split_level_text is not None:
+        try:
+            metadata["split_level"] = int(split_level_text)
+        except ValueError as exc:
+            raise CertificateError(f"{step_id}: avatar component split level is not an integer") from exc
+    return metadata
+
+
 def parse_sat_clauses(value: Any, context: str) -> tuple[tuple[tuple[int, bool], ...], ...]:
     if not isinstance(value, list) or not value:
         raise CertificateError(f"{context}: SAT clauses must be a non-empty list")
@@ -1372,6 +1416,28 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
                 raise CertificateError(f"{step_id}: avatar_refutation conclusion must be empty")
             if not sat_clauses_unsat(sat_clauses):
                 raise CertificateError(f"{step_id}: SAT clauses are satisfiable")
+
+        elif rule == "avatar_component":
+            allowed = {"id", "rule", "parents", "split_var", "split_positive", "clause", "source"}
+            require_fields(step, allowed)
+            require_no_extra_fields(step, allowed)
+            parents = step.get("parents")
+            if not isinstance(parents, list) or len(parents) != 1:
+                raise CertificateError(f"{step_id}: avatar_component expects exactly one definition parent")
+            if not isinstance(parents[0], str) or not parents[0]:
+                raise CertificateError(f"{step_id}: avatar_component parent id must be a non-empty string")
+            split_var = step["split_var"]
+            split_positive = step["split_positive"]
+            if not isinstance(split_var, int) or split_var <= 0:
+                raise CertificateError(f"{step_id}: split_var must be a positive integer")
+            if not isinstance(split_positive, bool):
+                raise CertificateError(f"{step_id}: split_positive must be boolean")
+            clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
+            split_literals = [literal for literal in clause if split_literal_var(literal) == split_var]
+            if len(split_literals) != 1:
+                raise CertificateError(f"{step_id}: avatar_component must contain exactly one split_{split_var} literal")
+            if split_literals[0].polarity == split_positive:
+                raise CertificateError(f"{step_id}: avatar_component split literal must complement the SAT split polarity")
 
         elif rule == "definition_rewrite_chain":
             allowed = {"id", "rule", "parents", "source_clause", "rewrites", "clause"}
@@ -2730,6 +2796,33 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
                             },
                         }
                     )
+        elif replay_kind == "avatar_component":
+            avatar_component = avatar_component_metadata(
+                step_id,
+                extras.get(step_no, {}).get("split_dependency", []),
+            )
+            if avatar_component is None:
+                raise CertificateError(f"{step_id}: avatar_component is missing checked split dependency metadata")
+            reconstruction_stats["avatar_component_units"] = reconstruction_stats.get("avatar_component_units", 0) + 1
+            source: dict[str, Any] = {
+                "kind": "vampire_avatar_component_clause",
+                "name": step_id,
+                "vampire_rule": meta["rule"],
+                "vampire_parents": [f"u{parent}" for parent in meta["parents"]],
+                "replay_kind": replay_kind,
+            }
+            steps.append(
+                {
+                    "id": step_id,
+                    "rule": "avatar_component",
+                    "parents": [f"u{parent}" for parent in meta["parents"]],
+                    "split_var": avatar_component["split_var"],
+                    "split_positive": avatar_component["split_positive"],
+                    "clause": clause_json[step_no],
+                    **({"variable_sorts": variable_sorts[step_no]} if step_no in variable_sorts else {}),
+                    "source": source,
+                }
+            )
         elif not parent_clause_numbers or replay_kind in DERIVED_ASSUMPTION_REPLAY_KINDS:
             source_kind = "vampire_input_clause" if not meta["parents"] else "vampire_derived_clause"
             if source_kind == "vampire_derived_clause":
@@ -4747,7 +4840,14 @@ def certificate_avatar_sat_vars(data: dict[str, Any]) -> set[int]:
     if not isinstance(steps, list):
         return result
     for step in steps:
-        if not isinstance(step, dict) or step.get("rule") != "avatar_refutation":
+        if not isinstance(step, dict):
+            continue
+        if step.get("rule") == "avatar_component":
+            split_var = step.get("split_var")
+            if isinstance(split_var, int) and split_var > 0:
+                result.add(split_var)
+            continue
+        if step.get("rule") != "avatar_refutation":
             continue
         try:
             sat_clauses = parse_sat_clauses(step.get("sat_clauses"), f"{step.get('id', 'avatar_refutation')}.sat_clauses")
@@ -4910,6 +5010,10 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
         if not clause:
             final_empty = step_id
         if rule == "input":
+            proof_names[step_id] = step_id
+            assumptions.append((step_id, clause_prop_text(clause, symbol_sorts, explicit_var_sorts)))
+            continue
+        if rule == "avatar_component":
             proof_names[step_id] = step_id
             assumptions.append((step_id, clause_prop_text(clause, symbol_sorts, explicit_var_sorts)))
             continue
@@ -5155,9 +5259,12 @@ def certificate_summary(data: dict[str, Any], clauses: dict[str, tuple[Literal, 
     derived_assumptions = 0
     checked_normal_form_clauses = 0
     checked_cnf_clauses = 0
+    checked_avatar_components = 0
     for step in data["steps"]:
         rule = step["rule"]
         rules[rule] = rules.get(rule, 0) + 1
+        if rule == "avatar_component":
+            checked_avatar_components += 1
         if rule == "input":
             source = step.get("source", {})
             source_kind = source.get("kind", "unknown") if isinstance(source, dict) else "unknown"
@@ -5176,6 +5283,7 @@ def certificate_summary(data: dict[str, Any], clauses: dict[str, tuple[Literal, 
         "derived_assumptions": derived_assumptions,
         "checked_normal_form_clauses": checked_normal_form_clauses,
         "checked_cnf_clauses": checked_cnf_clauses,
+        "checked_avatar_components": checked_avatar_components,
     }
     reconstruction = data.get("outline_reconstruction")
     if isinstance(reconstruction, dict):
