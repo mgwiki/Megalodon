@@ -1251,6 +1251,11 @@ let same_clause_mod_vampire_var_renaming left right =
   in
   List.length left = List.length right && consume ([], []) left right
 
+let same_clause_mod_vampire_var_renaming_and_equality left right =
+  same_clause_mod_vampire_var_renaming
+    (List.map normalize_literal_equality_orientation left)
+    (List.map normalize_literal_equality_orientation right)
+
 let rebuild_binary head = function
   | [] -> TmH head
   | item :: rest ->
@@ -2324,7 +2329,8 @@ let check_superposition checked id target_parent_id equality_parent_id target_in
         let expected = equality_rest @ target_rest @ [rewritten_literal] in
         same_clause_multiset expected result
         || same_clause_set_mod_equality expected result
-        || same_clause_mod_vampire_var_renaming expected result)
+        || same_clause_mod_vampire_var_renaming expected result
+        || same_clause_mod_vampire_var_renaming_and_equality expected result)
       target_rest_variants
   in
   let result_matches equality_rest =

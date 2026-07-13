@@ -9,6 +9,10 @@ native_dummy="$TMPDIR/vampire_outline_native_dummy.mg"
 : >"$native_dummy"
 
 if [[ -z "${VAMPIRE_BIN:-}" ]]; then
+  VAMPIRE_BIN="${VAMPIRE:-}"
+fi
+
+if [[ -z "${VAMPIRE_BIN:-}" ]]; then
   VAMPIRE_BIN="$(find /project/vampire-leancheck/vampire_rel_vampire -maxdepth 1 -type f -perm -111 -name 'megalodon1_*' 2>/dev/null | sort | tail -n 1 || true)"
 fi
 
