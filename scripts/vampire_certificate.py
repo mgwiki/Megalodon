@@ -1343,7 +1343,11 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
                     if index != pivot_index
                 ]
                 if all(
-                    any(equality_symmetric_match(literal, conclusion_literal) for conclusion_literal in clause)
+                    (
+                        literal.polarity
+                        and is_reflexive_equality_atom(literal.atom)
+                    )
+                    or any(equality_symmetric_match(literal, conclusion_literal) for conclusion_literal in clause)
                     for literal in side_remainder
                 ):
                     covered = True
