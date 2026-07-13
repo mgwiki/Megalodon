@@ -39,6 +39,8 @@ type step =
   | FormulaCopy of string * string * literal
   | FoolBool of string * string * literal
   | CnfLiteral of string * string * clause
+  | PredicateDefinition of string * string * tm
+  | PredicateDefinitionFold of string * string * string * tm
   | DefinitionInput of string * clause
   | FoolExhaustiveness of string * clause
   | Substitute of string * string * (string * tm) list * clause
@@ -169,6 +171,14 @@ let parse_parent = function
   | List [Atom "parent"; parent] -> atom parent
   | _ -> error "expected parent"
 
+let parse_symbol = function
+  | List [Atom "symbol"; symbol] -> atom symbol
+  | _ -> error "expected symbol"
+
+let parse_named_parent name = function
+  | List [Atom label; parent] when label = name -> atom parent
+  | _ -> error ("expected " ^ name ^ " parent")
+
 let parse_indexed_parent name = function
   | List [Atom label; parent; index] when label = name -> (atom parent, int_atom index)
   | _ -> error ("expected " ^ name ^ " parent and literal index")
@@ -249,6 +259,11 @@ let parse_step = function
       FoolBool (atom id, parse_parent parent, parse_literal_result result)
   | List [Atom "cnf_literal"; id; parent; result] ->
       CnfLiteral (atom id, parse_parent parent, parse_result result)
+  | List [Atom "predicate_definition"; id; symbol; result] ->
+      PredicateDefinition (atom id, parse_symbol symbol, parse_formula_result result)
+  | List [Atom "predicate_definition_fold"; id; source; definition; result] ->
+      PredicateDefinitionFold
+        (atom id, parse_named_parent "source" source, parse_named_parent "definition" definition, parse_formula_result result)
   | List [Atom "definition_input"; id; result] ->
       DefinitionInput (atom id, parse_result result)
   | List [Atom "fool_exhaustiveness"; id; result] ->
@@ -309,6 +324,8 @@ let step_id = function
   | FormulaCopy (id, _, _) -> id
   | FoolBool (id, _, _) -> id
   | CnfLiteral (id, _, _) -> id
+  | PredicateDefinition (id, _, _) -> id
+  | PredicateDefinitionFold (id, _, _, _) -> id
   | DefinitionInput (id, _) -> id
   | FoolExhaustiveness (id, _) -> id
   | Substitute (id, _, _, _) -> id
@@ -675,6 +692,10 @@ let literal_of_formula_tm tm =
   | Imp (atom, false_tm) when is_vampire_false false_tm -> Neg atom
   | _ -> Pos tm
 
+let formula_tm_of_literal = function
+  | Pos tm -> tm
+  | Neg tm -> Imp (tm, vampire_false)
+
 let rec cnf_clauses tm =
   match strip_forall tm with
   | Ap (Ap (TmH "vampire_and", left), right) ->
@@ -697,11 +718,15 @@ let check_input_source = function
       if name = "" then error "input source name must be non-empty"
 
 let check_cnf_literal checked id parent_id result =
-  let parent_clause = lookup_clause checked parent_id in
-  begin match parent_clause with
-  | [_] -> ()
-  | _ -> error (id ^ ": cnf_literal parent is not a literal formula")
-  end;
+  let parent_clause =
+    match (try List.assoc parent_id checked with Not_found -> error ("unknown certificate parent " ^ parent_id)) with
+    | CheckedFormula parent_formula -> [literal_of_formula_tm parent_formula]
+    | CheckedClause parent_clause ->
+        begin match parent_clause with
+        | [_] -> parent_clause
+        | _ -> error (id ^ ": cnf_literal parent is not a literal formula")
+        end
+  in
   if not (same_clause_multiset parent_clause result) then
     error (id ^ ": cnf_literal result does not match source literal")
 
@@ -763,7 +788,11 @@ let check_formula_copy checked id parent_id result =
         error (id ^ ": formula_copy result does not match formula parent")
 
 let check_fool_bool checked id parent_id result =
-  let parent_clause = lookup_clause checked parent_id in
+  let parent_clause =
+    match (try List.assoc parent_id checked with Not_found -> error ("unknown certificate parent " ^ parent_id)) with
+    | CheckedClause clause -> clause
+    | CheckedFormula formula -> [literal_of_formula_tm formula]
+  in
   let expected =
     match parent_clause with
     | [Pos atom] -> Pos (equality_to_true atom)
@@ -825,6 +854,91 @@ let check_definition_input id clause =
       end
   | [_] -> error (id ^ ": definition_input literal must be positive")
   | _ -> error (id ^ ": definition_input must be a singleton equality clause")
+
+let rec head_symbol = function
+  | TmH h -> Some h
+  | Ap (fn, _) -> head_symbol fn
+  | TpAp (fn, _) -> head_symbol fn
+  | _ -> None
+
+let rec tm_contains_symbol symbol = function
+  | TmH h -> h = symbol
+  | Prim _ | DB _ -> false
+  | TpAp (tm, _) -> tm_contains_symbol symbol tm
+  | Ap (left, right)
+  | Imp (left, right) ->
+      tm_contains_symbol symbol left || tm_contains_symbol symbol right
+  | Lam (_, body)
+  | All (_, body) ->
+      tm_contains_symbol symbol body
+
+let definiendum_head atom =
+  match equality_sides atom with
+  | Some (TmH h, other) when h = "f__true" || h = "f__false" -> head_symbol other
+  | Some (other, TmH h) when h = "f__true" || h = "f__false" -> head_symbol other
+  | _ -> head_symbol atom
+
+let rec strip_universal_binders = function
+  | All (_, body) -> strip_universal_binders body
+  | tm -> tm
+
+let predicate_definition_parts id formula =
+  let body = strip_universal_binders formula in
+  let is_negated_definiendum = function
+    | Imp (atom, false_tm) when is_vampire_false false_tm ->
+        begin match definiendum_head atom with
+        | Some defined -> Some (defined, atom)
+        | None -> None
+        end
+    | _ -> None
+  in
+  match body with
+  | Ap (Ap (TmH "vampire_or", left), right) ->
+      begin match is_negated_definiendum left with
+      | Some (defined, atom) when not (tm_contains_symbol defined right) -> (atom, right)
+      | _ ->
+          begin match is_negated_definiendum right with
+          | Some (defined, atom) when not (tm_contains_symbol defined left) -> (atom, left)
+          | _ -> error (id ^ ": predicate_definition is not a non-recursive definitional disjunction")
+          end
+      end
+  | _ -> error (id ^ ": predicate_definition must be a definitional disjunction")
+
+let check_predicate_definition id symbol formula =
+  if symbol = "" then error (id ^ ": predicate_definition symbol must be non-empty");
+  ignore (predicate_definition_parts id formula)
+
+let combine_replacement left right =
+  match left, right with
+  | None, _ | _, None -> None
+  | Some left_replaced, Some right_replaced ->
+      if left_replaced && right_replaced then None
+      else Some (left_replaced || right_replaced)
+
+let rec tm_matches_one_replacement source target needle replacement =
+  if source = needle && target = replacement then Some true
+  else if source = target then Some false
+  else
+    match source, target with
+    | TpAp (source_tm, source_tp), TpAp (target_tm, target_tp) when source_tp = target_tp ->
+        tm_matches_one_replacement source_tm target_tm needle replacement
+    | Ap (source_left, source_right), Ap (target_left, target_right)
+    | Imp (source_left, source_right), Imp (target_left, target_right) ->
+        combine_replacement
+          (tm_matches_one_replacement source_left target_left needle replacement)
+          (tm_matches_one_replacement source_right target_right needle replacement)
+    | Lam (source_tp, source_body), Lam (target_tp, target_body)
+    | All (source_tp, source_body), All (target_tp, target_body) when source_tp = target_tp ->
+        tm_matches_one_replacement source_body target_body needle replacement
+    | _ -> None
+
+let check_predicate_definition_fold checked id source_id definition_id result =
+  let source = lookup_formula checked source_id in
+  let definition = lookup_formula checked definition_id in
+  let definiendum, body = predicate_definition_parts definition_id definition in
+  match tm_matches_one_replacement source result body definiendum with
+  | Some true -> ()
+  | _ -> error (id ^ ": predicate_definition_fold result is not one definition-body replacement")
 
 let true_false_equality_var = function
   | Pos atom ->
@@ -987,7 +1101,7 @@ let check_step checked = function
       (id, CheckedClause clause) :: checked
   | FormulaInput (id, source, literal) ->
       check_input_source source;
-      (id, CheckedClause [literal]) :: checked
+      (id, CheckedFormula (formula_tm_of_literal literal)) :: checked
   | FormulaTermInput (id, source, formula) ->
       check_input_source source;
       (id, CheckedFormula formula) :: checked
@@ -1021,6 +1135,12 @@ let check_step checked = function
   | CnfLiteral (id, parent_id, result) ->
       check_cnf_literal checked id parent_id result;
       (id, CheckedClause result) :: checked
+  | PredicateDefinition (id, symbol, result) ->
+      check_predicate_definition id symbol result;
+      (id, CheckedFormula result) :: checked
+  | PredicateDefinitionFold (id, source_id, definition_id, result) ->
+      check_predicate_definition_fold checked id source_id definition_id result;
+      (id, CheckedFormula result) :: checked
   | DefinitionInput (id, clause) ->
       check_definition_input id clause;
       (id, CheckedClause clause) :: checked

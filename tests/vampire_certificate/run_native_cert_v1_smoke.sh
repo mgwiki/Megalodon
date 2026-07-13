@@ -121,6 +121,24 @@ if ! rg -q 'Vampire certificate v1 checked 6 steps' "$TMPDIR/native_cert_v1_rect
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_predicate_definition_valid.sexp \
+  "$dummy" >"$TMPDIR/native_cert_v1_predicate_definition_valid.log"
+
+if ! rg -q 'Vampire certificate v1 checked 5 steps' "$TMPDIR/native_cert_v1_predicate_definition_valid.log"; then
+  echo "native certificate v1 checker did not accept the valid predicate-definition fixture" >&2
+  exit 1
+fi
+
+bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_predicate_definition_fold_valid.sexp \
+  "$dummy" >"$TMPDIR/native_cert_v1_predicate_definition_fold_valid.log"
+
+if ! rg -q 'Vampire certificate v1 checked 7 steps' "$TMPDIR/native_cert_v1_predicate_definition_fold_valid.log"; then
+  echo "native certificate v1 checker did not accept the valid predicate-definition-fold fixture" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_invalid_pivot.sexp \
   "$dummy" >"$TMPDIR/native_cert_v1_invalid_pivot.out" \
@@ -183,6 +201,32 @@ fi
 
 if ! rg -q 'rectify_formula result is not a bijective Vampire-variable renaming of parent' "$TMPDIR/native_cert_v1_invalid_rectify_formula.err"; then
   echo "native certificate v1 invalid-rectify failure did not explain the rejected side condition" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_invalid_predicate_definition_recursive.sexp \
+  "$dummy" >"$TMPDIR/native_cert_v1_invalid_predicate_definition_recursive.out" \
+  2>"$TMPDIR/native_cert_v1_invalid_predicate_definition_recursive.err"; then
+  echo "native certificate v1 checker accepted a recursive predicate definition" >&2
+  exit 1
+fi
+
+if ! rg -q 'predicate_definition is not a non-recursive definitional disjunction' "$TMPDIR/native_cert_v1_invalid_predicate_definition_recursive.err"; then
+  echo "native certificate v1 invalid-predicate-definition failure did not explain the rejected side condition" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_invalid_predicate_definition_fold.sexp \
+  "$dummy" >"$TMPDIR/native_cert_v1_invalid_predicate_definition_fold.out" \
+  2>"$TMPDIR/native_cert_v1_invalid_predicate_definition_fold.err"; then
+  echo "native certificate v1 checker accepted an invalid predicate definition fold" >&2
+  exit 1
+fi
+
+if ! rg -q 'predicate_definition_fold result is not one definition-body replacement' "$TMPDIR/native_cert_v1_invalid_predicate_definition_fold.err"; then
+  echo "native certificate v1 invalid-predicate-definition-fold failure did not explain the rejected side condition" >&2
   exit 1
 fi
 

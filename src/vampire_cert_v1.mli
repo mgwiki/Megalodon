@@ -37,6 +37,8 @@ type step =
   | FormulaCopy of string * string * literal
   | FoolBool of string * string * literal
   | CnfLiteral of string * string * clause
+  | PredicateDefinition of string * string * Syntax.tm
+  | PredicateDefinitionFold of string * string * string * Syntax.tm
   | DefinitionInput of string * clause
   | FoolExhaustiveness of string * clause
   | Substitute of string * string * (string * Syntax.tm) list * clause
