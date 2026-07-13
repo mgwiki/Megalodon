@@ -86,6 +86,8 @@ STEP_RE = re.compile(r'^megalodon_step\((\d+),("(?:\\.|[^"\\])*"),("(?:\\.|[^"\\
 CLAUSE_RE = re.compile(r"^megalodon_certificate_clause\((\d+),(.+)\)\.$")
 CERTIFICATE_STEP_RE = re.compile(r"^megalodon_certificate_step\((\d+),(.+)\)\.$")
 CERTIFICATE_STEPS_RE = re.compile(r"^megalodon_certificate_steps\((\d+),(.+)\)\.$")
+CERTIFICATE_JSON_START = "megalodon_certificate_json_start."
+CERTIFICATE_JSON_END = "megalodon_certificate_json_end."
 REPLAY_KIND_RE = re.compile(r'^megalodon_step_replay_kind\((\d+),("(?:\\.|[^"\\])*")\)\.$')
 FINAL_STEP_RE = re.compile(r"^megalodon_final_step\((\d+)\)\.$")
 SYMBOL_DECL_RE = re.compile(r'^megalodon_symbol_declaration\(("(?:\\.|[^"\\])*")\)\.$')
@@ -2428,8 +2430,56 @@ def infer_definition_input_step(
     }
 
 
+def embedded_certificate_json_summary(text: str) -> dict[str, Any] | None:
+    start = text.find(CERTIFICATE_JSON_START)
+    if start < 0:
+        return None
+    start += len(CERTIFICATE_JSON_START)
+    end = text.find(CERTIFICATE_JSON_END, start)
+    if end < 0:
+        raise CertificateError("embedded certificate JSON start has no matching end marker")
+    blob = text[start:end].strip()
+    try:
+        data = json.loads(blob)
+    except json.JSONDecodeError as exc:
+        raise CertificateError(f"embedded certificate JSON is malformed: {exc}") from exc
+    if not isinstance(data, dict):
+        raise CertificateError("embedded certificate JSON must be an object")
+    if data.get("format") != FORMAT:
+        raise CertificateError(f"embedded certificate JSON has unsupported format {data.get('format')!r}")
+    if data.get("version") != VERSION:
+        raise CertificateError(f"embedded certificate JSON has unsupported version {data.get('version')!r}")
+    steps = data.get("steps")
+    if not isinstance(steps, list) or not all(isinstance(step, dict) for step in steps):
+        raise CertificateError("embedded certificate JSON steps must be an object list")
+    rules: dict[str, int] = {}
+    missing_ids = 0
+    missing_clauses = 0
+    derived_fallbacks = 0
+    for index, step in enumerate(steps):
+        rule = step.get("rule")
+        if not isinstance(rule, str) or rule not in MVP_RULES:
+            raise CertificateError(f"embedded certificate JSON step {index} has unsupported rule {rule!r}")
+        rules[rule] = rules.get(rule, 0) + 1
+        if "id" not in step:
+            missing_ids += 1
+        if "clause" not in step and rule not in {"equality_symmetry"}:
+            missing_clauses += 1
+        source = step.get("source")
+        if isinstance(source, dict) and source.get("kind") == "vampire_unexpanded_derived_clause":
+            derived_fallbacks += 1
+    return {
+        "steps": len(steps),
+        "rules": dict(sorted(rules.items())),
+        "missing_ids": missing_ids,
+        "missing_clauses": missing_clauses,
+        "derived_fallbacks": derived_fallbacks,
+    }
+
+
 def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
     global LAMBDA_HINTS
+    embedded_summary = embedded_certificate_json_summary(text)
     step_meta: dict[int, dict[str, Any]] = {}
     clause_json: dict[int, list[Any]] = {}
     certificate_steps: dict[int, dict[str, Any]] = {}
@@ -2795,6 +2845,8 @@ def certificate_from_vampire_outline(text: str, problem: str) -> dict[str, Any]:
     if declarations:
         result["declarations"] = sorted(set(declarations))
     result["outline_reconstruction"] = reconstruction_stats
+    if embedded_summary is not None:
+        result["embedded_certificate_json"] = embedded_summary
     if lambda_hints:
         result["lambda_hints"] = lambda_hints
     return result
@@ -5104,6 +5156,13 @@ def certificate_summary(data: dict[str, Any], clauses: dict[str, tuple[Literal, 
             key: value
             for key, value in sorted(reconstruction.items())
             if isinstance(key, str) and isinstance(value, int)
+        }
+    embedded = data.get("embedded_certificate_json")
+    if isinstance(embedded, dict):
+        summary["embedded_certificate_json"] = {
+            key: value
+            for key, value in sorted(embedded.items())
+            if isinstance(key, str) and isinstance(value, (int, dict))
         }
     return summary
 
