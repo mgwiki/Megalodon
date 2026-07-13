@@ -47,6 +47,7 @@ MVP_RULES = {
     "equality_resolution_constraints",
     "equality_symmetry",
     "truth_conflict_resolution",
+    "bool_simplify",
     "cnf_formula_exact",
     "cnf_formula_conjunct",
     "cnf_formula_projection",
@@ -59,6 +60,33 @@ MVP_RULES = {
     "avatar_component",
     "definition_rewrite_chain",
     "inequality_split",
+}
+STRICT_CERTIFICATE_V1_RULES = {
+    "input",
+    "definition_input",
+    "substitute",
+    "resolve",
+    "factor",
+    "equality_resolution",
+    "equality_symmetry",
+    "truth_conflict_resolution",
+    "paramodulate",
+    "contradiction",
+}
+STRICT_CERTIFICATE_V1_FORBIDDEN_INPUT_SOURCES = {
+    "vampire_derived_clause",
+    "vampire_unexpanded_derived_clause",
+    "vampire_avatar_component_clause",
+}
+STRICT_CERTIFICATE_V1_FORBIDDEN_STATS = {
+    "inferred_definition_input_units",
+    "inferred_resolution_units",
+    "inferred_paramodulation_units",
+    "derived_assumption_units",
+    "avatar_component_units",
+    "cnf_formula_exact_units",
+    "cnf_formula_conjunct_units",
+    "cnf_formula_projection_units",
 }
 RESOLUTION_LIKE_REPLAY_KINDS = {
     "resolution",
@@ -511,6 +539,96 @@ def applied_symbol_and_args(term: Term) -> tuple[str, tuple[Term, ...]] | None:
     if head.kind != "const" or not args:
         return None
     return head.name, tuple(args)
+
+
+def is_true_term(term: Term) -> bool:
+    return term == Term("const", "f__true") or term == Term("const", "vampire_true")
+
+
+def is_false_term(term: Term) -> bool:
+    return term == Term("const", "f__false") or term == Term("const", "vampire_false")
+
+
+def unary_bool_application(term: Term, name: str) -> Term | None:
+    applied = applied_symbol_and_args(term)
+    if applied is None:
+        return None
+    head, args = applied
+    if head == name and len(args) == 1:
+        return args[0]
+    return None
+
+
+def binary_bool_application(term: Term, name: str) -> tuple[Term, Term] | None:
+    applied = applied_symbol_and_args(term)
+    if applied is None:
+        return None
+    head, args = applied
+    if head == name and len(args) == 2:
+        return args[0], args[1]
+    return None
+
+
+def bool_complements(left: Term, right: Term) -> bool:
+    left_not = unary_bool_application(left, "vNOT") or unary_bool_application(left, "vampire_not")
+    if left_not == right:
+        return True
+    right_not = unary_bool_application(right, "vNOT") or unary_bool_application(right, "vampire_not")
+    return right_not == left
+
+
+def bool_simplify_term(term: Term) -> Term:
+    for name in ("vAND", "vampire_and"):
+        args = binary_bool_application(term, name)
+        if args is None:
+            continue
+        left, right = args
+        if is_false_term(left) or is_false_term(right):
+            return Term("const", "f__false")
+        if is_true_term(right):
+            return left
+        if is_true_term(left):
+            return right
+        if left == right:
+            return left
+        if bool_complements(left, right):
+            return Term("const", "f__false")
+        return term
+
+    for name in ("vOR", "vampire_or"):
+        args = binary_bool_application(term, name)
+        if args is None:
+            continue
+        left, right = args
+        if is_true_term(left) or is_true_term(right):
+            return Term("const", "f__true")
+        if is_false_term(left):
+            return right
+        if is_false_term(right):
+            return left
+        if left == right:
+            return left
+        if bool_complements(left, right):
+            return Term("const", "f__true")
+        return term
+
+    for name in ("vNOT", "vampire_not"):
+        arg = unary_bool_application(term, name)
+        if arg is None:
+            continue
+        if is_true_term(arg):
+            return Term("const", "f__false")
+        if is_false_term(arg):
+            return Term("const", "f__true")
+        nested = unary_bool_application(arg, name)
+        if nested is not None:
+            return nested
+        return term
+
+    if term.kind == "eq" and len(term.args) == 2 and term.name == "prop" and term.args[0] == term.args[1]:
+        return Term("const", "f__true")
+
+    return term
 
 
 def is_reflexive_equality_atom(atom: Term) -> bool:
@@ -1390,6 +1508,38 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
             clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
             if clause != expected:
                 raise CertificateError(f"{step_id}: truth-conflict conclusion does not match parent")
+
+        elif rule == "bool_simplify":
+            allowed = {"id", "rule", "parents", "from", "to", "target", "rewritten_target", "literal", "position", "clause", "source", "variable_sorts"}
+            require_fields(step, {"id", "rule", "parents", "from", "to", "target", "rewritten_target", "literal", "position", "clause"})
+            require_no_extra_fields(step, allowed)
+            parents = require_parents(step, 1)
+            parent_clause = clauses.get(parents[0])
+            if parent_clause is None:
+                raise CertificateError(f"{step_id}: unknown bool_simplify parent {parents[0]}")
+            target = parse_literal(step["target"], f"{step_id}.target")
+            if target not in parent_clause:
+                raise CertificateError(f"{step_id}: bool_simplify target literal is not present in parent")
+            if not isinstance(step["literal"], int) or step["literal"] < 0:
+                raise CertificateError(f"{step_id}: bool_simplify literal must be a non-negative integer")
+            from_term = parse_term(step["from"], f"{step_id}.from")
+            to_term = parse_term(step["to"], f"{step_id}.to")
+            if bool_simplify_term(from_term) != to_term:
+                raise CertificateError(f"{step_id}: bool_simplify from/to is not a supported Boolean simplification")
+            position = parse_position(step["position"], f"{step_id}.position")
+            if term_at_position(target.atom, position, f"{step_id}.position") != from_term:
+                raise CertificateError(f"{step_id}: bool_simplify position does not contain from term")
+            rewritten_target = Literal(
+                target.polarity,
+                replace_term_at_position(target.atom, position, to_term, f"{step_id}.position"),
+            )
+            explicit_rewritten = parse_literal(step["rewritten_target"], f"{step_id}.rewritten_target")
+            if explicit_rewritten != rewritten_target:
+                raise CertificateError(f"{step_id}: bool_simplify rewritten_target does not match position rewrite")
+            expected = normalize_clause(clause_without_one(parent_clause, target) + (rewritten_target,))
+            clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
+            if expected != clause:
+                raise CertificateError(f"{step_id}: bool_simplify conclusion does not match parent")
 
         elif rule == "equality_symmetry":
             allowed = {"id", "rule", "parents", "literal", "clause"}
@@ -3231,6 +3381,14 @@ def term_text_with_context(term: Term, db_context: tuple[str, ...]) -> str:
         return f"({name} {args})" if args else name
     if term.kind == "apply":
         return f"({term_text_with_context(term.args[0], db_context)} {term_text_with_context(term.args[1], db_context)})"
+    if term.kind == "eq" and len(term.args) == 2:
+        if term.name == "set":
+            return f"({term_text_with_context(term.args[0], db_context)} = {term_text_with_context(term.args[1], db_context)})"
+        return (
+            f"({equality_symbol(term.name)} "
+            f"{term_text_with_context(term.args[0], db_context)} "
+            f"{term_text_with_context(term.args[1], db_context)})"
+        )
     raise CertificateError(f"cannot render term kind {term.kind!r}")
 
 
@@ -4148,6 +4306,386 @@ def truth_conflict_resolution_proof_text(
         return intro_literal_proof(literal, conclusion, proof)
 
     return eliminate_clause_proof(instantiated_parent, instantiated_parent_proof, goal, branch)
+
+
+def bool_not_arg(term: Term) -> Term | None:
+    return unary_bool_application(term, "vNOT") or unary_bool_application(term, "vampire_not")
+
+
+def bool_and_args(term: Term) -> tuple[Term, Term] | None:
+    return binary_bool_application(term, "vAND") or binary_bool_application(term, "vampire_and")
+
+
+def bool_or_args(term: Term) -> tuple[Term, Term] | None:
+    return binary_bool_application(term, "vOR") or binary_bool_application(term, "vampire_or")
+
+
+def true_intro_proof() -> str:
+    return "(fun p:prop => fun h:p => h)"
+
+
+def false_elim_proof(false_proof: str, goal: str) -> str:
+    return f"({false_proof} {goal})"
+
+
+def or_intro_left_text(left: str, right: str, proof: str) -> str:
+    return f"(fun P:prop => fun Hleft:({left} -> P) => fun Hright:({right} -> P) => Hleft {proof})"
+
+
+def or_intro_right_text(left: str, right: str, proof: str) -> str:
+    return f"(fun P:prop => fun Hleft:({left} -> P) => fun Hright:({right} -> P) => Hright {proof})"
+
+
+def bool_simplification_equivalence_proofs(
+    source: Term,
+    target: Term,
+    symbol_sorts: dict[str, tuple[str, ...]] | None = None,
+    db_context: tuple[str, ...] = (),
+) -> tuple[str, str]:
+    symbol_sorts = symbol_sorts or {}
+    source_text = term_text_expected(source, "prop", symbol_sorts, db_context)
+    target_text = term_text_expected(target, "prop", symbol_sorts, db_context)
+    true_proof = true_intro_proof()
+
+    and_args = bool_and_args(source)
+    if and_args is not None:
+        left, right = and_args
+        left_text = term_text_expected(left, "prop", symbol_sorts, db_context)
+        right_text = term_text_expected(right, "prop", symbol_sorts, db_context)
+        if is_false_term(left) or is_false_term(right):
+            forward = (
+                f"(fun H:({source_text}) => "
+                f"H False (fun Hleft:({left_text}) => fun Hright:({right_text}) => "
+                f"{'Hleft' if is_false_term(left) else 'Hright'}))"
+            )
+            backward = f"(fun Hfalse:False => fun P:prop => fun Hand:({left_text} -> {right_text} -> P) => Hfalse P)"
+            return forward, backward
+        if is_true_term(left):
+            forward = f"(fun H:({source_text}) => H {target_text} (fun Htrue:({left_text}) => fun Hright:({right_text}) => Hright))"
+            backward = f"(fun Htarget:({target_text}) => fun P:prop => fun Hand:({left_text} -> {right_text} -> P) => Hand {true_proof} Htarget)"
+            return forward, backward
+        if is_true_term(right):
+            forward = f"(fun H:({source_text}) => H {target_text} (fun Hleft:({left_text}) => fun Htrue:({right_text}) => Hleft))"
+            backward = f"(fun Htarget:({target_text}) => fun P:prop => fun Hand:({left_text} -> {right_text} -> P) => Hand Htarget {true_proof})"
+            return forward, backward
+        if left == right:
+            forward = f"(fun H:({source_text}) => H {target_text} (fun Hleft:({left_text}) => fun Hright:({right_text}) => Hleft))"
+            backward = f"(fun Htarget:({target_text}) => fun P:prop => fun Hand:({left_text} -> {right_text} -> P) => Hand Htarget Htarget)"
+            return forward, backward
+        left_not = bool_not_arg(left)
+        right_not = bool_not_arg(right)
+        if left_not == right:
+            forward = f"(fun H:({source_text}) => H False (fun Hn:({left_text}) => fun Ha:({right_text}) => Hn Ha))"
+            backward = f"(fun Hfalse:False => fun P:prop => fun Hand:({left_text} -> {right_text} -> P) => Hfalse P)"
+            return forward, backward
+        if right_not == left:
+            forward = f"(fun H:({source_text}) => H False (fun Ha:({left_text}) => fun Hn:({right_text}) => Hn Ha))"
+            backward = f"(fun Hfalse:False => fun P:prop => fun Hand:({left_text} -> {right_text} -> P) => Hfalse P)"
+            return forward, backward
+
+    or_args = bool_or_args(source)
+    if or_args is not None:
+        left, right = or_args
+        left_text = term_text_expected(left, "prop", symbol_sorts, db_context)
+        right_text = term_text_expected(right, "prop", symbol_sorts, db_context)
+        if is_true_term(left) or is_true_term(right):
+            forward = f"(fun H:({source_text}) => {true_proof})"
+            if is_true_term(left):
+                backward = f"(fun Htrue:({target_text}) => {or_intro_left_text(left_text, right_text, 'Htrue')})"
+            else:
+                backward = f"(fun Htrue:({target_text}) => {or_intro_right_text(left_text, right_text, 'Htrue')})"
+            return forward, backward
+        if is_false_term(left):
+            forward = f"(fun H:({source_text}) => H {target_text} (fun Hfalse:({left_text}) => Hfalse {target_text}) (fun Hright:({right_text}) => Hright))"
+            backward = f"(fun Htarget:({target_text}) => {or_intro_right_text(left_text, right_text, 'Htarget')})"
+            return forward, backward
+        if is_false_term(right):
+            forward = f"(fun H:({source_text}) => H {target_text} (fun Hleft:({left_text}) => Hleft) (fun Hfalse:({right_text}) => Hfalse {target_text}))"
+            backward = f"(fun Htarget:({target_text}) => {or_intro_left_text(left_text, right_text, 'Htarget')})"
+            return forward, backward
+        if left == right:
+            forward = f"(fun H:({source_text}) => H {target_text} (fun Hleft:({left_text}) => Hleft) (fun Hright:({right_text}) => Hright))"
+            backward = f"(fun Htarget:({target_text}) => {or_intro_left_text(left_text, right_text, 'Htarget')})"
+            return forward, backward
+        left_not = bool_not_arg(left)
+        right_not = bool_not_arg(right)
+        if right_not == left:
+            forward = f"(fun H:({source_text}) => {true_proof})"
+            backward = f"(fun Htrue:({target_text}) => (xm {left_text}))"
+            return forward, backward
+        if left_not == right:
+            forward = f"(fun H:({source_text}) => {true_proof})"
+            backward = (
+                f"(fun Htrue:({target_text}) => "
+                f"(xm {right_text}) {source_text} "
+                f"(fun Ha:({right_text}) => {or_intro_right_text(left_text, right_text, 'Ha')}) "
+                f"(fun Hn:({left_text}) => {or_intro_left_text(left_text, right_text, 'Hn')}))"
+            )
+            return forward, backward
+
+    not_arg = bool_not_arg(source)
+    if not_arg is not None:
+        arg_text = term_text_expected(not_arg, "prop", symbol_sorts, db_context)
+        if is_true_term(not_arg):
+            forward = f"(fun H:({source_text}) => H {true_proof})"
+            backward = f"(fun Hfalse:({target_text}) => fun Htrue:({arg_text}) => Hfalse)"
+            return forward, backward
+        if is_false_term(not_arg):
+            forward = f"(fun H:({source_text}) => {true_proof})"
+            backward = f"(fun Htrue:({target_text}) => fun Hfalse:({arg_text}) => Hfalse)"
+            return forward, backward
+        nested = bool_not_arg(not_arg)
+        if nested is not None:
+            nested_text = term_text_expected(nested, "prop", symbol_sorts, db_context)
+            forward = f"(fun H:({source_text}) => vampire_dne {nested_text} H)"
+            backward = f"(fun Ha:({target_text}) => fun Hn:({arg_text}) => Hn Ha)"
+            return forward, backward
+
+    if source.kind == "eq" and source.name == "prop" and len(source.args) == 2 and source.args[0] == source.args[1] and is_true_term(target):
+        forward = f"(fun H:({source_text}) => {true_proof})"
+        backward = f"(fun Htrue:({target_text}) => {equality_refl_proof()})"
+        return forward, backward
+
+    raise CertificateError("Megalodon smoke bool_simplify proof does not support this Boolean simplification")
+
+
+def contextual_bool_equivalence_proofs(
+    source: Term,
+    target: Term,
+    symbol_sorts: dict[str, tuple[str, ...]] | None = None,
+    db_context: tuple[str, ...] = (),
+) -> tuple[str, str]:
+    symbol_sorts = symbol_sorts or {}
+    if bool_simplify_term(source) == target:
+        return bool_simplification_equivalence_proofs(source, target, symbol_sorts, db_context)
+
+    source_text = term_text_expected(source, "prop", symbol_sorts, db_context)
+    target_text = term_text_expected(target, "prop", symbol_sorts, db_context)
+
+    source_not = bool_not_arg(source)
+    target_not = bool_not_arg(target)
+    if source_not is not None and target_not is not None:
+        child_forward, child_backward = contextual_bool_equivalence_proofs(source_not, target_not, symbol_sorts, db_context)
+        source_arg_text = term_text_expected(source_not, "prop", symbol_sorts, db_context)
+        target_arg_text = term_text_expected(target_not, "prop", symbol_sorts, db_context)
+        forward = f"(fun H:({source_text}) => fun Htarget:({target_arg_text}) => H ({child_backward} Htarget))"
+        backward = f"(fun H:({target_text}) => fun Hsource:({source_arg_text}) => H ({child_forward} Hsource))"
+        return forward, backward
+
+    source_and = bool_and_args(source)
+    target_and = bool_and_args(target)
+    if source_and is not None and target_and is not None:
+        source_left, source_right = source_and
+        target_left, target_right = target_and
+        source_left_text = term_text_expected(source_left, "prop", symbol_sorts, db_context)
+        source_right_text = term_text_expected(source_right, "prop", symbol_sorts, db_context)
+        target_left_text = term_text_expected(target_left, "prop", symbol_sorts, db_context)
+        target_right_text = term_text_expected(target_right, "prop", symbol_sorts, db_context)
+        if source_right == target_right:
+            child_forward, child_backward = contextual_bool_equivalence_proofs(source_left, target_left, symbol_sorts, db_context)
+            forward = (
+                f"(fun H:({source_text}) => fun P:prop => fun Hand:({target_left_text} -> {target_right_text} -> P) => "
+                f"H P (fun Hleft:({source_left_text}) => fun Hright:({source_right_text}) => Hand ({child_forward} Hleft) Hright))"
+            )
+            backward = (
+                f"(fun H:({target_text}) => fun P:prop => fun Hand:({source_left_text} -> {source_right_text} -> P) => "
+                f"H P (fun Hleft:({target_left_text}) => fun Hright:({target_right_text}) => Hand ({child_backward} Hleft) Hright))"
+            )
+            return forward, backward
+        if source_left == target_left:
+            child_forward, child_backward = contextual_bool_equivalence_proofs(source_right, target_right, symbol_sorts, db_context)
+            forward = (
+                f"(fun H:({source_text}) => fun P:prop => fun Hand:({target_left_text} -> {target_right_text} -> P) => "
+                f"H P (fun Hleft:({source_left_text}) => fun Hright:({source_right_text}) => Hand Hleft ({child_forward} Hright)))"
+            )
+            backward = (
+                f"(fun H:({target_text}) => fun P:prop => fun Hand:({source_left_text} -> {source_right_text} -> P) => "
+                f"H P (fun Hleft:({target_left_text}) => fun Hright:({target_right_text}) => Hand Hleft ({child_backward} Hright)))"
+            )
+            return forward, backward
+
+    source_or = bool_or_args(source)
+    target_or = bool_or_args(target)
+    if source_or is not None and target_or is not None:
+        source_left, source_right = source_or
+        target_left, target_right = target_or
+        source_left_text = term_text_expected(source_left, "prop", symbol_sorts, db_context)
+        source_right_text = term_text_expected(source_right, "prop", symbol_sorts, db_context)
+        target_left_text = term_text_expected(target_left, "prop", symbol_sorts, db_context)
+        target_right_text = term_text_expected(target_right, "prop", symbol_sorts, db_context)
+        if source_right == target_right:
+            child_forward, child_backward = contextual_bool_equivalence_proofs(source_left, target_left, symbol_sorts, db_context)
+            forward = (
+                f"(fun H:({source_text}) => fun P:prop => fun Hleft:({target_left_text} -> P) => fun Hright:({target_right_text} -> P) => "
+                f"H P (fun Hsource:({source_left_text}) => Hleft ({child_forward} Hsource)) Hright)"
+            )
+            backward = (
+                f"(fun H:({target_text}) => fun P:prop => fun Hleft:({source_left_text} -> P) => fun Hright:({source_right_text} -> P) => "
+                f"H P (fun Htarget:({target_left_text}) => Hleft ({child_backward} Htarget)) Hright)"
+            )
+            return forward, backward
+        if source_left == target_left:
+            child_forward, child_backward = contextual_bool_equivalence_proofs(source_right, target_right, symbol_sorts, db_context)
+            forward = (
+                f"(fun H:({source_text}) => fun P:prop => fun Hleft:({target_left_text} -> P) => fun Hright:({target_right_text} -> P) => "
+                f"H P Hleft (fun Hsource:({source_right_text}) => Hright ({child_forward} Hsource)))"
+            )
+            backward = (
+                f"(fun H:({target_text}) => fun P:prop => fun Hleft:({source_left_text} -> P) => fun Hright:({source_right_text} -> P) => "
+                f"H P Hleft (fun Htarget:({target_right_text}) => Hright ({child_backward} Htarget)))"
+            )
+            return forward, backward
+
+    raise CertificateError("Megalodon smoke bool_simplify proof cannot lift this Boolean context")
+
+
+def bool_simplification_equality_proof(
+    source: Term,
+    target: Term,
+    symbol_sorts: dict[str, tuple[str, ...]] | None = None,
+    db_context: tuple[str, ...] = (),
+) -> str:
+    symbol_sorts = symbol_sorts or {}
+    source_text = term_text_expected(source, "prop", symbol_sorts, db_context)
+    target_text = term_text_expected(target, "prop", symbol_sorts, db_context)
+    forward, backward = contextual_bool_equivalence_proofs(source, target, symbol_sorts, db_context)
+    return f"(vampire_prop_ext {source_text} {target_text} {forward} {backward})"
+
+
+def function_extensionality_name(sort: str) -> str:
+    return "vampire_funext_" + sort_symbol_suffix(sort)
+
+
+def function_extensionality_type(sort: str) -> str:
+    parts = split_sort(sort)
+    if len(parts) < 2 or parts[-1] != "prop":
+        raise CertificateError(f"function extensionality is only available for proposition-valued functions, got {sort!r}")
+    args = [f"x{index}" for index in range(len(parts) - 1)]
+    applied_f = " ".join(["f", *args])
+    applied_g = " ".join(["g", *args])
+    pointwise = f"vampire_eq_prop ({applied_f}) ({applied_g})"
+    for name, arg_sort in reversed(list(zip(args, parts[:-1]))):
+        pointwise = f"forall {name}:{sort_type_text(arg_sort)}, {pointwise}"
+    return (
+        f"forall f g:{sort_type_text(sort)}, "
+        f"({pointwise}) -> {equality_symbol(sort)} f g"
+    )
+
+
+def lambda_body_for_function_sort(term: Term, sort: str) -> tuple[Term, tuple[str, ...]]:
+    parts = split_sort(sort)
+    if len(parts) < 2 or parts[-1] != "prop":
+        raise CertificateError(f"expected proposition-valued function sort, got {sort!r}")
+    current = term
+    binders: list[str] = []
+    for index, _arg_sort in enumerate(parts[:-1]):
+        if not is_vlam_term(current):
+            raise CertificateError("BoolSimp lambda lift currently expects explicit vLAM function terms")
+        binders.append(f"db{index}")
+        current = current.args[0]
+    return current, tuple(binders)
+
+
+def function_bool_simplification_equality_proof(
+    source_function: Term,
+    target_function: Term,
+    sort: str,
+    symbol_sorts: dict[str, tuple[str, ...]] | None = None,
+) -> str:
+    symbol_sorts = symbol_sorts or {}
+    parts = split_sort(sort)
+    source_body, db_context = lambda_body_for_function_sort(source_function, sort)
+    target_body, target_context = lambda_body_for_function_sort(target_function, sort)
+    if db_context != target_context:
+        raise CertificateError("BoolSimp lambda lift found incompatible lambda contexts")
+    pointwise = bool_simplification_equality_proof(source_body, target_body, symbol_sorts, db_context)
+    for binder, arg_sort in reversed(list(zip(db_context, parts[:-1]))):
+        pointwise = f"(fun {binder}:{sort_type_text(arg_sort)} => {pointwise})"
+    source_text = term_text_expected(source_function, sort, symbol_sorts)
+    target_text = term_text_expected(target_function, sort, symbol_sorts)
+    return f"({function_extensionality_name(sort)} {source_text} {target_text} {pointwise})"
+
+
+def bool_simplify_lifted_function_proof_text(
+    parent_clause: tuple[Literal, ...],
+    parent_proof: str,
+    target_literal: Literal,
+    position: tuple[int, ...],
+    target: Term,
+    conclusion: tuple[Literal, ...],
+    symbol_sorts: dict[str, tuple[str, ...]] | None = None,
+    explicit_var_sorts: dict[str, str] | None = None,
+) -> str:
+    if target_literal.atom.kind != "eq" or len(target_literal.atom.args) != 2 or not position:
+        raise CertificateError("BoolSimp lambda lift needs an equality target literal")
+    side = position[0]
+    if side not in (0, 1):
+        raise CertificateError("BoolSimp lambda lift position must enter one side of an equality")
+    function_sort = target_literal.atom.name
+    if "->" not in function_sort:
+        raise CertificateError("BoolSimp lambda lift needs a function equality sort")
+    source_function = target_literal.atom.args[side]
+    rewritten_atom = replace_term_at_position(target_literal.atom, position, target, "bool_simplify.position")
+    target_function = rewritten_atom.args[side]
+    equality_clause = (Literal(True, Term("eq", function_sort, (source_function, target_function))),)
+    equality_proof = function_bool_simplification_equality_proof(source_function, target_function, function_sort, symbol_sorts)
+    return paramodulation_proof_text(
+        equality_clause,
+        equality_proof,
+        parent_clause,
+        parent_proof,
+        equality_clause[0],
+        target_literal,
+        (side,),
+        {},
+        conclusion,
+        symbol_sorts,
+        explicit_var_sorts,
+    )
+
+
+def bool_simplify_proof_text(
+    parent_clause: tuple[Literal, ...],
+    parent_proof: str,
+    target_literal: Literal,
+    position: tuple[int, ...],
+    source: Term,
+    target: Term,
+    conclusion: tuple[Literal, ...],
+    symbol_sorts: dict[str, tuple[str, ...]] | None = None,
+    explicit_var_sorts: dict[str, str] | None = None,
+) -> str:
+    if position_enters_lambda_body(target_literal.atom, position, "bool_simplify.position"):
+        return bool_simplify_lifted_function_proof_text(
+            parent_clause,
+            parent_proof,
+            target_literal,
+            position,
+            target,
+            conclusion,
+            symbol_sorts,
+            explicit_var_sorts,
+        )
+    equality_clause = (Literal(True, Term("eq", "prop", (source, target))),)
+    equality_proof = wrap_clause_binders(
+        equality_clause,
+        bool_simplification_equality_proof(source, target, symbol_sorts),
+        symbol_sorts,
+        explicit_var_sorts,
+    )
+    return paramodulation_proof_text(
+        equality_clause,
+        equality_proof,
+        parent_clause,
+        parent_proof,
+        equality_clause[0],
+        target_literal,
+        position,
+        {},
+        conclusion,
+        symbol_sorts,
+        explicit_var_sorts,
+    )
 
 
 def eliminate_sat_clause_proof(
@@ -5407,6 +5945,22 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
 
 
 def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, tuple[Literal, ...]], theorem_name: str) -> str:
+    uses_bool_simplify = any(step.get("rule") == "bool_simplify" for step in data.get("steps", []))
+    bool_funext_sorts: set[str] = set()
+    for step in data.get("steps", []):
+        if step.get("rule") != "bool_simplify":
+            continue
+        try:
+            target_literal = parse_literal(step["target"], f"{step.get('id', 'bool_simplify')}.target")
+            position = parse_position(step["position"], f"{step.get('id', 'bool_simplify')}.position")
+        except (KeyError, CertificateError):
+            continue
+        if (
+            target_literal.atom.kind == "eq"
+            and "->" in target_literal.atom.name
+            and position_enters_lambda_body(target_literal.atom, position, f"{step.get('id', 'bool_simplify')}.position")
+        ):
+            bool_funext_sorts.add(target_literal.atom.name)
     inferred_declarations = certificate_symbol_declarations(clauses)
     outline_declarations = data.get("declarations")
     if outline_declarations is not None:
@@ -5428,6 +5982,9 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
         equality_sorts.sort()
     if certificate_metadata_uses_infix_equality(data) and "set" not in equality_sorts:
         equality_sorts.append("set")
+        equality_sorts.sort()
+    if uses_bool_simplify and "prop" not in equality_sorts:
+        equality_sorts.append("prop")
         equality_sorts.sort()
     avatar_sat_vars = certificate_avatar_sat_vars(data)
     lines = [
@@ -5686,6 +6243,28 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
                 symbol_sorts,
                 explicit_var_sorts,
             )
+        elif rule == "bool_simplify":
+            parent = step["parents"][0]
+            selected_target = parse_literal(step["target"], f"{step_id}.target")
+            position = parse_position(step["position"], f"{step_id}.position")
+            from_term = parse_term(step["from"], f"{step_id}.from")
+            to_term = parse_term(step["to"], f"{step_id}.to")
+            proof = wrap_clause_binders(
+                clause,
+                bool_simplify_proof_text(
+                    step_clauses[parent],
+                    proof_names[parent],
+                    selected_target,
+                    position,
+                    from_term,
+                    to_term,
+                    clause,
+                    symbol_sorts,
+                    explicit_var_sorts,
+                ),
+                symbol_sorts,
+                explicit_var_sorts,
+            )
         elif rule == "equality_factoring":
             parent = step["parents"][0]
             selected_literal = parse_literal(step["selected"], f"{step_id}.selected")
@@ -5835,7 +6414,13 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
 
     if final_empty is None:
         raise CertificateError("certificate has no empty-clause step to prove False")
-    theorem_assumptions = [("xm", "forall P:prop, P \\/ (P -> False)"), *assumptions]
+    theorem_assumptions = [("xm", "forall P:prop, P \\/ (P -> False)")]
+    if uses_bool_simplify:
+        theorem_assumptions.append(("vampire_prop_ext", "forall p q:prop, (p -> q) -> (q -> p) -> vampire_eq_prop p q"))
+        theorem_assumptions.append(("vampire_dne", "forall p:prop, ((p -> False) -> False) -> p"))
+    for sort in sorted(bool_funext_sorts):
+        theorem_assumptions.append((function_extensionality_name(sort), function_extensionality_type(sort)))
+    theorem_assumptions.extend(assumptions)
     theorem_type = " -> ".join([*(f"({prop})" for _name, prop in theorem_assumptions), "False"])
     lines.append(f"Theorem {theorem_name} : {theorem_type}.")
     for name, prop in theorem_assumptions:
@@ -5900,10 +6485,47 @@ def certificate_summary(data: dict[str, Any], clauses: dict[str, tuple[Literal, 
     return summary
 
 
+def enforce_strict_certificate_v1(data: dict[str, Any]) -> None:
+    """Reject certificates that should not count as certificate-v1 reconstructions."""
+    for index, step in enumerate(data["steps"]):
+        step_id = step.get("id", f"steps[{index}]")
+        rule = step.get("rule")
+        if rule not in STRICT_CERTIFICATE_V1_RULES:
+            raise CertificateError(f"{step_id}: strict certificate v1 rejects rule {rule!r}")
+        source = step.get("source")
+        if isinstance(source, dict):
+            source_kind = source.get("kind")
+            if source_kind in STRICT_CERTIFICATE_V1_FORBIDDEN_INPUT_SOURCES:
+                raise CertificateError(
+                    f"{step_id}: strict certificate v1 rejects {source_kind} as an assumption"
+                )
+            parents = source.get("vampire_parents")
+            if rule == "input" and isinstance(parents, list) and parents:
+                raise CertificateError(f"{step_id}: strict certificate v1 rejects input with Vampire parents")
+            if source_kind == "vampire_input_clause" and not source.get("name"):
+                raise CertificateError(f"{step_id}: strict certificate v1 requires a named input source")
+        elif rule == "input":
+            raise CertificateError(f"{step_id}: strict certificate v1 requires an input source")
+
+    reconstruction = data.get("outline_reconstruction")
+    if isinstance(reconstruction, dict):
+        for key in sorted(STRICT_CERTIFICATE_V1_FORBIDDEN_STATS):
+            value = reconstruction.get(key, 0)
+            if isinstance(value, int) and value:
+                raise CertificateError(f"strict certificate v1 rejects outline fallback {key}={value}")
+
+    embedded = data.get("embedded_certificate_json")
+    if isinstance(embedded, dict):
+        value = embedded.get("derived_fallbacks", 0)
+        if isinstance(value, int) and value:
+            raise CertificateError(f"strict certificate v1 rejects embedded derived fallbacks={value}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("certificate", type=Path)
     parser.add_argument("--from-vampire-outline", action="store_true")
+    parser.add_argument("--strict-certificate-v1", action="store_true")
     parser.add_argument("--summary", action="store_true")
     parser.add_argument("--write-certificate", type=Path)
     parser.add_argument("--emit-megalodon", type=Path)
@@ -5934,6 +6556,13 @@ def main() -> int:
             clauses = check_certificate(data)
         except CertificateError as embedded_exc:
             print(f"certificate check failed: {embedded_exc}", file=sys.stderr)
+            return 1
+
+    if args.strict_certificate_v1:
+        try:
+            enforce_strict_certificate_v1(data)
+        except CertificateError as exc:
+            print(f"certificate check failed: {exc}", file=sys.stderr)
             return 1
 
     if args.write_certificate is not None:

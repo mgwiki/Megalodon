@@ -7,8 +7,11 @@ TMPDIR="${TMPDIR:-/project/tmp}"
 mkdir -p "$TMPDIR"
 
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_resolution.json --summary
+python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_resolution.json --strict-certificate-v1 --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_substituted_resolution.json --summary
+python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_substituted_resolution.json --strict-certificate-v1 --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_equality_resolution.json --summary
+python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_equality_resolution.json --strict-certificate-v1 --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_equality_resolution_refutation.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_truth_conflict_resolution_refutation.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_subsumption_resolution.json --summary
@@ -40,6 +43,15 @@ python3 scripts/vampire_certificate.py \
   --from-vampire-outline \
   --write-certificate "$avatar_certificate" \
   --summary
+if python3 scripts/vampire_certificate.py \
+  "$avatar_outline" \
+  --from-vampire-outline \
+  --strict-certificate-v1 \
+  >"$TMPDIR/vampire_certificate_avatar_refutation.strict.out" \
+  2>"$TMPDIR/vampire_certificate_avatar_refutation.strict.err"; then
+  echo "strict certificate v1 accepted an AVATAR-derived fallback assumption" >&2
+  exit 1
+fi
 python3 - "$avatar_certificate" <<'PY'
 import json
 import sys

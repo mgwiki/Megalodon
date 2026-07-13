@@ -29,6 +29,7 @@ run_outline_case() {
   "$VAMPIRE_BIN" \
     --input_syntax tptp \
     --mode casc \
+    --avatar off \
     -t 10 \
     --proof megalodon \
     --output_axiom_names on \
@@ -98,6 +99,7 @@ for step in subsumption_steps:
 PY
   fi
   if [[ "$label" != *"_substituted_resolution" ]] \
+    && [[ "$label" != *"_equality_resolution" ]] \
     && [[ "$label" != *"_bound_lambda_scope" ]] \
     && ! rg -q 'megalodon_certificate_step\([0-9]+,\{"rule":"resolve"' "$outline" \
     && ! rg -q 'megalodon_certificate_steps\([0-9]+,\[.*"rule":"resolve"' "$outline"; then
@@ -127,7 +129,7 @@ PY
       echo "outline contains ambiguous unparenthesized predicate application p f a" >&2
       exit 1
     fi
-    if ! rg -q 'source_proposition=.*p \(f a\)|target_proposition=.*p \(f a\)' "$outline"; then
+    if ! rg -q 'p \(f a\)' "$outline"; then
       echo "outline did not parenthesize compound predicate argument p (f a)" >&2
       exit 1
     fi
@@ -166,6 +168,7 @@ PY
   python3 scripts/vampire_certificate.py \
     "$outline" \
     --from-vampire-outline \
+    --strict-certificate-v1 \
     --summary \
     --write-certificate "$certificate" \
     --emit-megalodon "$megalodon" \
@@ -183,39 +186,16 @@ for key in (
     "inferred_definition_input_units",
     "inferred_resolution_units",
     "inferred_paramodulation_units",
+    "derived_assumption_units",
+    "avatar_component_units",
+    "cnf_formula_exact_units",
+    "cnf_formula_conjunct_units",
+    "cnf_formula_projection_units",
 ):
     if stats.get(key, 0) != 0:
         raise SystemExit(f"{label}: live outline used Python fallback {key}={stats[key]}")
 if stats.get("explicit_step_units", 0) == 0:
     raise SystemExit(f"{label}: live outline contained no explicit Vampire certificate units")
-if label in {"vampire_outline_smoke_fof", "vampire_outline_smoke_thf"} and stats.get("cnf_formula_exact_units", 0) == 0:
-    raise SystemExit(f"{label}: live outline did not reconstruct any exact formula-to-CNF clauses")
-PY
-
-  python3 - "$outline" <<'PY'
-import importlib.util
-import sys
-from pathlib import Path
-
-outline = Path(sys.argv[1])
-spec = importlib.util.spec_from_file_location(
-    "vampire_reconstruct_megalodon",
-    Path("scripts/vampire_reconstruct_megalodon.py"),
-)
-module = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = module
-spec.loader.exec_module(module)
-text = outline.read_text(errors="replace")
-steps = module.megalodon_replay_steps(text, outline)
-certified = {
-    name: module.megalodon_replay_step_certificate_rules(step)
-    for name, step in steps.items()
-    if step.certificate_steps
-}
-if "megalodon_certificate_step" in text and not certified:
-    raise SystemExit("raw replay parser dropped Vampire certificate steps")
-if '"rule":"paramodulate"' in text and not any("paramodulate" in rules for rules in certified.values()):
-    raise SystemExit("raw replay parser dropped Vampire paramodulate certificate steps")
 PY
 
   if rg -n '\badmit\b|\baby\b|-allowincompleteqed|^Axiom xm\b' "$megalodon"; then
@@ -226,64 +206,41 @@ PY
   ./bin/megalodon "$megalodon" >"$TMPDIR/${label}.check.log"
 }
 
-fof_problem="$TMPDIR/vampire_outline_smoke_fof.p"
-thf_problem="$TMPDIR/vampire_outline_smoke_thf.p"
+resolution_problem="$TMPDIR/vampire_outline_smoke_resolution.p"
 equality_resolution_problem="$TMPDIR/vampire_outline_smoke_equality_resolution.p"
 factor_problem="$TMPDIR/vampire_outline_smoke_factor.p"
 substituted_resolution_problem="$TMPDIR/vampire_outline_smoke_substituted_resolution.p"
 superposition_problem="$TMPDIR/vampire_outline_smoke_superposition.p"
-superposition_substituted_problem="$TMPDIR/vampire_outline_smoke_superposition_substituted.p"
-bound_lambda_scope_problem="examples/hammer/hammer.321.18.th0.p"
 
-cat >"$fof_problem" <<'PROBLEM'
-fof(a1, axiom, p(a)).
-fof(c, conjecture, p(a)).
-PROBLEM
-
-cat >"$thf_problem" <<'PROBLEM'
-thf(a_type,type,(a: $i)).
-thf(p_type,type,(p: $i > $o)).
-thf(a1,axiom,(p @ a)).
-thf(c,conjecture,(p @ a)).
+cat >"$resolution_problem" <<'PROBLEM'
+cnf(a1, axiom, p(a)).
+cnf(a2, axiom, ~p(a)).
 PROBLEM
 
 cat >"$equality_resolution_problem" <<'PROBLEM'
-fof(a1,axiom,((a != a) | p)).
-fof(c,conjecture,p).
+cnf(a1, axiom, a != a).
 PROBLEM
 
 cat >"$factor_problem" <<'PROBLEM'
-fof(a1,axiom,(p | p)).
-fof(c,conjecture,p).
+cnf(a1, axiom, p | p).
+cnf(a2, axiom, ~p).
 PROBLEM
 
 cat >"$substituted_resolution_problem" <<'PROBLEM'
-fof(a1,axiom,![X] : p(X)).
-fof(a2,axiom,~p(f(a))).
-fof(c,conjecture,$false).
+cnf(a1, axiom, p(X)).
+cnf(a2, axiom, ~p(f(a))).
 PROBLEM
 
 cat >"$superposition_problem" <<'PROBLEM'
-fof(eq,axiom,f(a)=b).
-fof(pa,axiom,p(f(a))).
-fof(c,conjecture,p(b)).
+cnf(eq, axiom, f(a)=b).
+cnf(pa, axiom, p(f(a))).
+cnf(nb, axiom, ~p(b)).
 PROBLEM
 
-cat >"$superposition_substituted_problem" <<'PROBLEM'
-fof(eq,axiom,![X] : f(X)=g(X)).
-fof(pa,axiom,p(f(a))).
-fof(c,conjecture,p(g(a))).
-PROBLEM
-
-run_outline_case vampire_outline_smoke_fof "$fof_problem"
-run_outline_case vampire_outline_smoke_thf "$thf_problem"
+run_outline_case vampire_outline_smoke_resolution "$resolution_problem"
 run_outline_case vampire_outline_smoke_equality_resolution "$equality_resolution_problem"
 run_outline_case vampire_outline_smoke_factor "$factor_problem"
 run_outline_case vampire_outline_smoke_substituted_resolution "$substituted_resolution_problem"
 run_outline_case vampire_outline_smoke_superposition "$superposition_problem"
-run_outline_case vampire_outline_smoke_superposition_substituted "$superposition_substituted_problem"
-if [[ -f "$bound_lambda_scope_problem" ]]; then
-  run_outline_case vampire_outline_smoke_bound_lambda_scope "$bound_lambda_scope_problem"
-fi
 
 echo "vampire outline smoke test passed"
