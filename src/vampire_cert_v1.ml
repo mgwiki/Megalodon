@@ -1126,6 +1126,33 @@ let same_clause_set_mod_equality left right =
   in
   same_clause_multiset (unique left) (unique right)
 
+let same_clause_mod_vampire_var_renaming left right =
+  let literal_equal state left right =
+    match left, right with
+    | Pos m, Pos n
+    | Neg m, Neg n ->
+        let left_to_right, right_to_left = state in
+        tm_equal_mod_vampire_var_renaming m n left_to_right right_to_left
+    | _ -> None
+  in
+  let rec pick state literal prefix = function
+    | [] -> None
+    | candidate :: rest ->
+        begin match literal_equal state candidate literal with
+        | Some state -> Some (state, List.rev_append prefix rest)
+        | None -> pick state literal (candidate :: prefix) rest
+        end
+  in
+  let rec consume state remaining = function
+    | [] -> remaining = []
+    | literal :: rest ->
+        begin match pick state literal [] remaining with
+        | Some (state, remaining) -> consume state remaining rest
+        | None -> false
+        end
+  in
+  List.length left = List.length right && consume ([], []) left right
+
 let rebuild_binary head = function
   | [] -> TmH head
   | item :: rest ->
@@ -2089,7 +2116,9 @@ let check_superposition checked id target_parent_id equality_parent_id target_in
     List.exists
       (fun target_rest ->
         let expected = equality_rest @ target_rest @ [rewritten_literal] in
-        same_clause_multiset expected result || same_clause_set_mod_equality expected result)
+        same_clause_multiset expected result
+        || same_clause_set_mod_equality expected result
+        || same_clause_mod_vampire_var_renaming expected result)
       target_rest_variants
   in
   let result_matches equality_rest =
