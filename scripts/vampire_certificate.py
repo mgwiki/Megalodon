@@ -4261,11 +4261,12 @@ def paramodulation_proof_text(
                 transported = f"({equality_literal_proof} {forward_context} {proof})"
             else:
                 rewritten_proof = fresh_proof_name("Hrewrite")
+                rewritten_proof_type = atom_text(rewritten_target.atom)
                 if equality_sort != "set":
                     symmetric_equality = positive_equality_symmetry_proof(instantiated_equality, equality_literal_proof)
-                    transported = f"(fun {rewritten_proof} => ({proof} ({symmetric_equality} {forward_context} {rewritten_proof})))"
+                    transported = f"(fun {rewritten_proof}:{rewritten_proof_type} => ({proof} ({symmetric_equality} {forward_context} {rewritten_proof})))"
                 else:
-                    transported = f"(fun {rewritten_proof} => ({proof} ({equality_literal_proof} {backward_context} {rewritten_proof})))"
+                    transported = f"(fun {rewritten_proof}:{rewritten_proof_type} => ({proof} ({equality_literal_proof} {backward_context} {rewritten_proof})))"
             return intro_literal_proof(rewritten_target, conclusion, transported)
         return intro_literal_proof(literal, conclusion, proof)
 
