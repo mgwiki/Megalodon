@@ -41,6 +41,12 @@ type definition_rewrite = {
   rewrite_to : tm;
 }
 
+type rectify_renaming = {
+  rectify_source : tm;
+  rectify_subst : (string * tm) list;
+  rectify_target : tm;
+}
+
 type checked_item =
   | CheckedClause of clause
   | CheckedFormula of tm
@@ -50,7 +56,7 @@ type step =
   | FormulaInput of string * source * literal
   | FormulaTermInput of string * source * tm
   | FormulaTermCopy of string * string * tm
-  | RectifyFormula of string * string * tm
+  | RectifyFormula of string * string * rectify_renaming list * tm
   | FoolFormula of string * string * tm
   | EnnfFormula of string * string * tm
   | SkolemFormula of string * string * (string * tm) list * tm
@@ -326,6 +332,24 @@ let parse_formula_result = function
   | List [Atom "result"; List [Atom "formula"; tm]] -> parse_tm tm
   | _ -> error "expected result formula"
 
+let parse_formula_field name = function
+  | List [Atom label; List [Atom "formula"; tm]] when label = name -> parse_tm tm
+  | _ -> error ("expected " ^ name ^ " formula")
+
+let parse_rectify_renaming = function
+  | List [Atom "renaming"; source; subst; target] ->
+      {
+        rectify_source = parse_formula_field "source" source;
+        rectify_subst = parse_substitution subst;
+        rectify_target = parse_formula_field "target" target;
+      }
+  | _ -> error "expected rectify renaming"
+
+let parse_rectify_renamings = function
+  | List (Atom "renamings" :: renamings) ->
+      List.map parse_rectify_renaming renamings
+  | _ -> error "expected rectify renamings"
+
 let parse_formula = function
   | List [Atom "formula"; tm] -> parse_tm tm
   | _ -> error "expected formula"
@@ -348,7 +372,10 @@ let parse_step = function
   | List [Atom "formula_term_copy"; id; parent; result] ->
       FormulaTermCopy (atom id, parse_parent parent, parse_formula_result result)
   | List [Atom "rectify_formula"; id; parent; result] ->
-      RectifyFormula (atom id, parse_parent parent, parse_formula_result result)
+      RectifyFormula (atom id, parse_parent parent, [], parse_formula_result result)
+  | List [Atom "rectify_formula"; id; parent; renamings; result] ->
+      RectifyFormula
+        (atom id, parse_parent parent, parse_rectify_renamings renamings, parse_formula_result result)
   | List [Atom "fool_formula"; id; parent; result] ->
       FoolFormula (atom id, parse_parent parent, parse_formula_result result)
   | List [Atom "ennf_formula"; id; parent; result] ->
@@ -438,7 +465,7 @@ let step_id = function
   | FormulaInput (id, _, _) -> id
   | FormulaTermInput (id, _, _) -> id
   | FormulaTermCopy (id, _, _) -> id
-  | RectifyFormula (id, _, _) -> id
+  | RectifyFormula (id, _, _, _) -> id
   | FoolFormula (id, _, _) -> id
   | EnnfFormula (id, _, _) -> id
   | SkolemFormula (id, _, _, _) -> id
@@ -913,15 +940,69 @@ let check_formula_term_copy checked id parent_id result =
   if parent_formula <> result then
     error (id ^ ": formula_term_copy result does not match parent")
 
-let check_rectify_formula checked id parent_id result =
+let validate_rectify_renaming id index renaming =
+  let substituted = subst_tm renaming.rectify_subst renaming.rectify_source in
+  let substituted_matches =
+    substituted = renaming.rectify_target
+    || normalize_bool_equality_orientation substituted
+       = normalize_bool_equality_orientation renaming.rectify_target
+    || normalize_equality_orientation substituted
+       = normalize_equality_orientation renaming.rectify_target
+  in
+  let explicit_renaming_matches =
+    same_mod_scoped_vampire_var_renaming renaming.rectify_source renaming.rectify_target
+    || same_mod_scoped_vampire_var_renaming
+         (normalize_bool_equality_orientation renaming.rectify_source)
+         (normalize_bool_equality_orientation renaming.rectify_target)
+    || same_mod_scoped_vampire_var_renaming
+         (normalize_equality_orientation renaming.rectify_source)
+         (normalize_equality_orientation renaming.rectify_target)
+  in
+  if not (substituted_matches || explicit_renaming_matches) then
+    error
+      (id ^ ": rectify_formula renaming " ^ string_of_int index
+       ^ " target is not produced by its substitution or by scoped variable renaming")
+
+let rectification_has_renaming renamings left right =
+  List.exists
+    (fun renaming ->
+      renaming.rectify_source = left && renaming.rectify_target = right)
+    renamings
+
+let rec tm_matches_rectify_renamings renamings left right =
+  left = right
+  || rectification_has_renaming renamings left right
+  ||
+  match left, right with
+  | TpAp (m, a), TpAp (n, b) when a = b ->
+      tm_matches_rectify_renamings renamings m n
+  | Ap (m1, m2), Ap (n1, n2) ->
+      tm_matches_rectify_renamings renamings m1 n1
+      && tm_matches_rectify_renamings renamings m2 n2
+  | Lam (a, m), Lam (b, n) when a = b ->
+      tm_matches_rectify_renamings renamings m n
+  | Imp (m1, m2), Imp (n1, n2) ->
+      tm_matches_rectify_renamings renamings m1 n1
+      && tm_matches_rectify_renamings renamings m2 n2
+  | All (a, m), All (b, n) when a = b ->
+      tm_matches_rectify_renamings renamings m n
+  | _ -> false
+
+let check_rectify_formula checked id parent_id renamings result =
   let parent_formula = lookup_formula checked parent_id in
-  let normalized_parent = normalize_bool_equality_orientation parent_formula in
-  let normalized_result = normalize_bool_equality_orientation result in
-  if not (same_mod_vampire_var_renaming parent_formula result
-          || same_mod_scoped_vampire_var_renaming parent_formula result
-          || same_mod_vampire_var_renaming normalized_parent normalized_result
-          || same_mod_scoped_vampire_var_renaming normalized_parent normalized_result) then
-    error (id ^ ": rectify_formula result is not a bijective Vampire-variable renaming of parent")
+  match renamings with
+  | _ :: _ ->
+      List.iteri (validate_rectify_renaming id) renamings;
+      if not (tm_matches_rectify_renamings renamings parent_formula result) then
+        error (id ^ ": rectify_formula result is not explained by explicit Vampire renamings")
+  | [] ->
+      let normalized_parent = normalize_bool_equality_orientation parent_formula in
+      let normalized_result = normalize_bool_equality_orientation result in
+      if not (same_mod_vampire_var_renaming parent_formula result
+              || same_mod_scoped_vampire_var_renaming parent_formula result
+              || same_mod_vampire_var_renaming normalized_parent normalized_result
+              || same_mod_scoped_vampire_var_renaming normalized_parent normalized_result) then
+        error (id ^ ": rectify_formula result is not a bijective Vampire-variable renaming of parent")
 
 let check_fool_formula checked id parent_id result =
   let parent_formula = lookup_formula checked parent_id in
@@ -1563,8 +1644,8 @@ let check_step checked = function
   | FormulaTermCopy (id, parent_id, result) ->
       check_formula_term_copy checked id parent_id result;
       (id, CheckedFormula result) :: checked
-  | RectifyFormula (id, parent_id, result) ->
-      check_rectify_formula checked id parent_id result;
+  | RectifyFormula (id, parent_id, renamings, result) ->
+      check_rectify_formula checked id parent_id renamings result;
       (id, CheckedFormula result) :: checked
   | FoolFormula (id, parent_id, result) ->
       check_fool_formula checked id parent_id result;

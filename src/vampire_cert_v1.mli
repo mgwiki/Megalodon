@@ -39,6 +39,12 @@ type definition_rewrite = {
   rewrite_to : Syntax.tm;
 }
 
+type rectify_renaming = {
+  rectify_source : Syntax.tm;
+  rectify_subst : (string * Syntax.tm) list;
+  rectify_target : Syntax.tm;
+}
+
 type checked_item =
   | CheckedClause of clause
   | CheckedFormula of Syntax.tm
@@ -48,7 +54,7 @@ type step =
   | FormulaInput of string * source * literal
   | FormulaTermInput of string * source * Syntax.tm
   | FormulaTermCopy of string * string * Syntax.tm
-  | RectifyFormula of string * string * Syntax.tm
+  | RectifyFormula of string * string * rectify_renaming list * Syntax.tm
   | FoolFormula of string * string * Syntax.tm
   | EnnfFormula of string * string * Syntax.tm
   | SkolemFormula of string * string * (string * Syntax.tm) list * Syntax.tm
