@@ -25,6 +25,7 @@ type step =
   | FormulaCopy of string * string * literal
   | FoolBool of string * string * literal
   | CnfLiteral of string * string * clause
+  | DefinitionInput of string * clause
   | Substitute of string * string * (string * Syntax.tm) list * clause
   | Resolve of string * string * string * int * int * clause
   | Factor of string * string * int * int * clause

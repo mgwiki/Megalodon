@@ -76,6 +76,16 @@ run_outline_case() {
       exit 1
     fi
   fi
+  if [[ "$label" == *"_thf_bool" ]]; then
+    if ! rg -q '\(definition_input "u[0-9]+" \(result \(clause' "$native_sexpr"; then
+      echo "$label: native certificate did not include checked definition input" >&2
+      exit 1
+    fi
+    if rg -q '\(source axiom "u[0-9]+"\)' "$native_sexpr"; then
+      echo "$label: native certificate treated a generated unit as a source axiom" >&2
+      exit 1
+    fi
+  fi
 }
 
 resolution_problem="$TMPDIR/vampire_outline_smoke_resolution.p"
