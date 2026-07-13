@@ -605,9 +605,14 @@ let check_cnf_formula_clause checked id parent_id index result =
     error (id ^ ": cnf_formula_clause result does not match deterministic CNF projection")
 
 let check_formula_copy checked id parent_id result =
-  let parent_clause = lookup_clause checked parent_id in
-  if not (same_clause_multiset parent_clause [result]) then
-    error (id ^ ": formula_copy result does not match parent")
+  match (try List.assoc parent_id checked with Not_found -> error ("unknown certificate parent " ^ parent_id)) with
+  | CheckedClause parent_clause ->
+      if not (same_clause_multiset parent_clause [result]) then
+        error (id ^ ": formula_copy result does not match parent")
+  | CheckedFormula parent_formula ->
+      let expected = literal_of_formula_tm parent_formula in
+      if expected <> result then
+        error (id ^ ": formula_copy result does not match formula parent")
 
 let check_fool_bool checked id parent_id result =
   let parent_clause = lookup_clause checked parent_id in

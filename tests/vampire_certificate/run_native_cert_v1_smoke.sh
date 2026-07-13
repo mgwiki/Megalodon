@@ -32,6 +32,15 @@ if ! rg -q 'Vampire certificate v1 checked 6 steps' "$TMPDIR/native_cert_v1_fact
 fi
 
 bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_formula_copy_valid.sexp \
+  "$dummy" >"$TMPDIR/native_cert_v1_formula_copy_valid.log"
+
+if ! rg -q 'Vampire certificate v1 checked 5 steps' "$TMPDIR/native_cert_v1_formula_copy_valid.log"; then
+  echo "native certificate v1 checker did not accept the valid formula-copy fixture" >&2
+  exit 1
+fi
+
+bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_truth_conflict_valid.sexp \
   "$dummy" >"$TMPDIR/native_cert_v1_truth_conflict_valid.log"
 
