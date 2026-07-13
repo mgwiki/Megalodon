@@ -3791,6 +3791,40 @@ def equality_symmetry_proof_text(
     return eliminate_clause_proof(parent_clause, parent_proof, goal, branch)
 
 
+def definition_rewrite_literal_variants(
+    literal: Literal,
+    rewrites: tuple[tuple[Term, Term], ...],
+) -> tuple[Literal, ...]:
+    candidates: set[Literal] = {literal}
+    for source, target in rewrites:
+        next_candidates: set[Literal] = set(candidates)
+        for candidate in candidates:
+            next_candidates.update(rewrite_literal_once_variants(candidate, source, target))
+        candidates = next_candidates
+    return tuple(sorted(candidates))
+
+
+def definition_rewrite_chain_proof_text(
+    source_clause: tuple[Literal, ...],
+    source_proof: str,
+    rewrites: tuple[tuple[Term, Term], ...],
+    conclusion: tuple[Literal, ...],
+) -> str:
+    goal = clause_body_text(conclusion)
+
+    def branch(literal: Literal, proof: str) -> str:
+        for variant in definition_rewrite_literal_variants(literal, rewrites):
+            if variant in conclusion:
+                return intro_literal_proof(variant, conclusion, proof)
+            if variant.atom.kind == "eq":
+                swapped = swap_equality_literal(variant)
+                if swapped in conclusion:
+                    return intro_literal_proof(swapped, conclusion, equality_symmetry_literal_proof(literal, proof))
+        raise CertificateError(f"definition rewrite cannot map literal {literal_text(literal)} into conclusion")
+
+    return eliminate_clause_proof(source_clause, source_proof, goal, branch)
+
+
 def paramodulation_proof_text(
     equality_parent_clause: tuple[Literal, ...],
     equality_parent_proof: str,
@@ -4598,6 +4632,26 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
                 sat_proof_names.append(assumption_name)
                 assumptions.append((assumption_name, sat_clause_prop_text(sat_clause)))
             proof = avatar_refutation_proof_text(sat_clauses, tuple(sat_proof_names))
+        elif rule == "definition_rewrite_chain":
+            parent = step["parents"][0]
+            rewrites = tuple(
+                (
+                    parse_term(rewrite["from"], f"{step_id}.rewrites[{index}].from"),
+                    parse_term(rewrite["to"], f"{step_id}.rewrites[{index}].to"),
+                )
+                for index, rewrite in enumerate(step["rewrites"])
+            )
+            proof = wrap_clause_binders(
+                clause,
+                definition_rewrite_chain_proof_text(
+                    step_clauses[parent],
+                    proof_names[parent],
+                    rewrites,
+                    clause,
+                ),
+                symbol_sorts,
+                explicit_var_sorts,
+            )
         else:
             raise CertificateError(f"Megalodon smoke elaboration does not yet support {rule}")
         proof_names[step_id] = step_id
