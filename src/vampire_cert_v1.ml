@@ -827,6 +827,54 @@ let bind_anonymous_lambda_body body =
   | Some name -> subst_named_tm name body
   | None -> body
 
+let first_vampire_var_name tm =
+  let rec loop = function
+    | TmH h when is_vampire_var_name h -> Some h
+    | TpAp (m, _) -> loop m
+    | Ap (m, n) ->
+        begin match loop m with
+        | Some _ as found -> found
+        | None -> loop n
+        end
+    | Lam (_, body) -> loop body
+    | Imp (left, right) ->
+        begin match loop left with
+        | Some _ as found -> found
+        | None -> loop right
+        end
+    | All (_, body) -> loop body
+    | DB _ | TmH _ | Prim _ -> None
+  in
+  loop tm
+
+let application_spine tm =
+  let rec loop args = function
+    | Ap (m, n) -> loop (n :: args) m
+    | head -> (head, args)
+  in
+  loop [] tm
+
+let rec principal_antecedent_var tm =
+  match application_spine tm with
+  | TmH "=", atom :: _ -> principal_antecedent_var atom
+  | TmH h, arg :: _ when is_vampire_var_name h ->
+      begin match first_vampire_var_name arg with
+      | Some _ as found -> found
+      | None -> Some h
+      end
+  | TmH _, arg :: _ -> first_vampire_var_name arg
+  | _ -> first_vampire_var_name tm
+
+let bind_anonymous_forall_body body =
+  let preferred =
+    match body with
+    | Imp (left, _) -> principal_antecedent_var left
+    | _ -> first_vampire_var_name body
+  in
+  match preferred with
+  | Some name -> subst_named_tm name body
+  | None -> bind_anonymous_lambda_body body
+
 let add_vampire_var_renaming left right left_to_right right_to_left =
   if left = right then Some (left_to_right, right_to_left)
   else if is_vampire_var_name left && is_vampire_var_name right then
@@ -997,7 +1045,7 @@ let rec fool_term_tm tm =
   | Imp (left, right) ->
       Ap (Ap (TmH "vIMP", fool_term_tm left), fool_term_tm right)
   | All (_, body) ->
-      Ap (TmH "vPI", Ap (TmH "vLAM", fool_term_tm (bind_anonymous_lambda_body body)))
+      Ap (TmH "vPI", Ap (TmH "vLAM", fool_term_tm (bind_anonymous_forall_body body)))
   | Ap (TmH "vampire_exists_prop", Lam (_, body)) ->
       Ap (TmH "vSIGMA", Ap (TmH "vLAM", fool_term_tm (bind_anonymous_lambda_body body)))
   | Ap (TmH "vampire_exists_prop", Ap (TmH "vLAM", body)) ->
