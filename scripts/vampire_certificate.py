@@ -3880,10 +3880,16 @@ def definition_rewrite_literal_variants(
     rewrites: tuple[tuple[Term, Term], ...],
 ) -> tuple[Literal, ...]:
     candidates: set[Literal] = {literal}
+    max_candidates = 256
     for source, target in rewrites:
         next_candidates: set[Literal] = set(candidates)
         for candidate in candidates:
             next_candidates.update(rewrite_literal_once_variants(candidate, source, target))
+            if len(next_candidates) > max_candidates:
+                raise CertificateError(
+                    "definition rewrite chain branches too much; "
+                    "this likely needs primitive prover-side rewrite positions"
+                )
         candidates = next_candidates
     return tuple(sorted(candidates))
 
