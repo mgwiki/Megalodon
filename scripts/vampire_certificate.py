@@ -1916,9 +1916,7 @@ def cnf_formula_exact_supported(cnf: dict[str, Any], clause: tuple[Literal, ...]
     if not isinstance(source, str) or not source:
         return False
     if cnf.get("target_clause_checked") is True and cnf.get("target_proposition") == source:
-        if "vLAM" not in source or "vampire_eq_" in source:
-            return True
-        return False
+        return True
     blocked_fragments = (
         "vampire_or",
         "vampire_and",
