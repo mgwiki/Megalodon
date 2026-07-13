@@ -20,6 +20,18 @@ This is the primary certificate smoke test. It checks the OCaml
 `-vampirecertv1` importer against native S-expression fixtures and should be the
 first test used for counted reconstruction work.
 
+For live corpora, use:
+
+```sh
+tests/vampire_certificate/run_native_live_parallel.sh
+```
+
+This script runs Vampire in parallel, extracts only the native S-expression
+certificate block emitted by Vampire, and checks it with Megalodon's OCaml
+`-vampirecertv1` importer. It rejects certificates that contain
+Vampire-derived source assumptions; a counted success must be traced through
+certificate steps rather than imported as a fresh input.
+
 The older `run_smoke.sh` script exercises the Python/JSON prototype. It remains
 useful for diagnostics and regression comparison, but its successes do not count
 as accepted Vampire-to-Megalodon reconstruction.
