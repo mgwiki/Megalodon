@@ -156,7 +156,9 @@ The current Vampire/Megalodon work already moved in this direction for demodulat
    - expand factoring/condensation into instantiate plus propositional/duplicate-literal steps,
    - keep clausification/skolemization as explicit transformation certificates rather than Python-side guesses.
 3. Print exact parents, substitutions, positions, directions, and resulting formulas for every primitive step.
-4. Keep Python as a parser/emitter into Megalodon syntax, not as the source of proof search.
+4. Keep Python outside the qualifying path. It may remain a diagnostic log
+   analyzer, but accepted reconstruction should be Vampire S-expression export
+   plus OCaml import/checking in Megalodon.
 
 ## Direct Lessons for Current Blockers
 
@@ -191,7 +193,8 @@ Prover9's Ivy export renames symbols only for Ivy syntax compatibility. It does 
 
 Use Prover9 as the concrete template for a Vampire-side expansion module:
 
-- add a small internal `MegalodonKernelJustification` or equivalent JSON schema,
+- add a small internal `MegalodonKernelJustification` record layer that prints
+  as the native S-expression certificate,
 - implement an `expandProofForMegalodon` pass before `MegalodonChecker` prints,
 - first target the frequent hard cases:
   `definition_rewrite_chain`, `superposition`, `subsumption_resolution`, `condensation`, `avatar`, and clausification/skolemization transformations,
