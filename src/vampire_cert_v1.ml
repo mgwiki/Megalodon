@@ -32,6 +32,7 @@ type step =
   | FormulaTermCopy of string * string * tm
   | FoolFormula of string * string * tm
   | EnnfFormula of string * string * tm
+  | SkolemFormula of string * string * (string * tm) list * tm
   | CnfFormulaClause of string * string * int * clause
   | FormulaCopy of string * string * literal
   | FoolBool of string * string * literal
@@ -42,6 +43,7 @@ type step =
   | Resolve of string * string * string * int * int * clause
   | Factor of string * string * int * int * clause
   | EqualityResolution of string * string * int * clause
+  | TruthConflict of string * string * int * clause
   | EqualitySymmetry of string * string * int * clause
   | Paramodulate of string * string * string * int * int * int list * tm * tm * clause
   | Contradiction of string * string
@@ -226,6 +228,8 @@ let parse_step = function
       FoolFormula (atom id, parse_parent parent, parse_formula_result result)
   | List [Atom "ennf_formula"; id; parent; result] ->
       EnnfFormula (atom id, parse_parent parent, parse_formula_result result)
+  | List [Atom "skolem_formula"; id; parent; subst; result] ->
+      SkolemFormula (atom id, parse_parent parent, parse_substitution subst, parse_formula_result result)
   | List [Atom "cnf_formula_clause"; id; parent; index; result] ->
       CnfFormulaClause (atom id, parse_parent parent, parse_index index, parse_result result)
   | List [Atom "formula_copy"; id; parent; result] ->
@@ -249,6 +253,8 @@ let parse_step = function
       Factor (atom id, parse_parent parent, i, j, parse_result result)
   | List [Atom "equality_resolution"; id; parent; literal; result] ->
       EqualityResolution (atom id, parse_parent parent, parse_literal_index literal, parse_result result)
+  | List [Atom "truth_conflict"; id; parent; literal; result] ->
+      TruthConflict (atom id, parse_parent parent, parse_literal_index literal, parse_result result)
   | List [Atom "equality_symmetry"; id; parent; literal; result] ->
       EqualitySymmetry (atom id, parse_parent parent, parse_literal_index literal, parse_result result)
   | List [Atom "paramodulate"; id; equality; target; position; from_tm; to_tm; result] ->
@@ -277,6 +283,7 @@ let step_id = function
   | FormulaTermCopy (id, _, _) -> id
   | FoolFormula (id, _, _) -> id
   | EnnfFormula (id, _, _) -> id
+  | SkolemFormula (id, _, _, _) -> id
   | CnfFormulaClause (id, _, _, _) -> id
   | FormulaCopy (id, _, _) -> id
   | FoolBool (id, _, _) -> id
@@ -287,6 +294,7 @@ let step_id = function
   | Resolve (id, _, _, _, _, _) -> id
   | Factor (id, _, _, _, _) -> id
   | EqualityResolution (id, _, _, _) -> id
+  | TruthConflict (id, _, _, _) -> id
   | EqualitySymmetry (id, _, _, _) -> id
   | Paramodulate (id, _, _, _, _, _, _, _, _) -> id
   | Contradiction (id, _) -> id
@@ -443,6 +451,9 @@ let vampire_or left right =
 let vampire_and left right =
   Ap (Ap (TmH "vampire_and", left), right)
 
+let vampire_exists tp body =
+  Ap (TmH "vampire_exists_prop", Lam (tp, body))
+
 let rec app2_name = function
   | Ap (Ap (TmH h, left), right) -> Some (h, left, right)
   | _ -> None
@@ -473,6 +484,7 @@ let rec fool_formula_tm tm =
   | All (tp, body) -> All (tp, fool_formula_tm body)
   | Ap (Ap (TmH "vampire_or", left), right) -> vampire_or (fool_formula_tm left) (fool_formula_tm right)
   | Ap (Ap (TmH "vampire_and", left), right) -> vampire_and (fool_formula_tm left) (fool_formula_tm right)
+  | Ap (TmH "vampire_exists_prop", Lam (tp, body)) -> vampire_exists tp (fool_formula_tm body)
   | Lam (tp, body) -> Lam (tp, fool_formula_tm body)
   | TmH "vampire_true"
   | TmH "vampire_false" -> tm
@@ -491,10 +503,21 @@ let rec ennf_pos tm =
 and ennf_neg tm =
   match tm with
   | Imp (left, right) -> vampire_and (ennf_pos left) (ennf_neg right)
-  | All _ -> error "negative universal ENNF is not supported by certificate v1"
+  | All (tp, body) -> vampire_exists tp (ennf_neg body)
   | Ap (Ap (TmH "vampire_or", left), right) -> vampire_and (ennf_neg left) (ennf_neg right)
   | Ap (Ap (TmH "vampire_and", left), right) -> vampire_or (ennf_neg left) (ennf_neg right)
   | _ -> neg_formula tm
+
+let rec skolemize_formula_tm subst tm =
+  match tm with
+  | Imp (left, right) -> Imp (skolemize_formula_tm subst left, skolemize_formula_tm subst right)
+  | All (tp, body) -> All (tp, skolemize_formula_tm subst body)
+  | Ap (Ap (TmH "vampire_or", left), right) -> vampire_or (skolemize_formula_tm subst left) (skolemize_formula_tm subst right)
+  | Ap (Ap (TmH "vampire_and", left), right) -> vampire_and (skolemize_formula_tm subst left) (skolemize_formula_tm subst right)
+  | Ap (TmH "vampire_exists_prop", Lam (_, body)) ->
+      skolemize_formula_tm subst (subst_tm subst body)
+  | Lam (tp, body) -> Lam (tp, skolemize_formula_tm subst body)
+  | _ -> tm
 
 let rec strip_forall = function
   | All (_, body) -> strip_forall body
@@ -551,6 +574,12 @@ let check_ennf_formula checked id parent_id result =
   let expected = ennf_pos parent_formula in
   if expected <> result then
     error (id ^ ": ennf_formula result does not match deterministic ENNF transformation")
+
+let check_skolem_formula checked id parent_id subst result =
+  let parent_formula = lookup_formula checked parent_id in
+  let expected = skolemize_formula_tm subst parent_formula in
+  if expected <> result then
+    error (id ^ ": skolem_formula result does not match explicit skolem substitution")
 
 let check_cnf_formula_clause checked id parent_id index result =
   if index < 0 then error (id ^ ": cnf_formula_clause index must be non-negative");
@@ -666,6 +695,25 @@ let check_equality_resolution checked id parent_id literal_index result =
   if not (same_clause_multiset expected result) then
     error (id ^ ": equality-resolution result does not match parent after literal removal")
 
+let check_truth_conflict checked id parent_id literal_index result =
+  let parent_clause = lookup_clause checked parent_id in
+  let literal = nth literal_index parent_clause (id ^ " truth-conflict literal") in
+  begin
+    match literal with
+    | Pos atom ->
+        begin
+          match equality_sides atom with
+          | Some (TmH "f__true", TmH "f__false")
+          | Some (TmH "f__false", TmH "f__true") -> ()
+          | Some _ -> error (id ^ ": truth-conflict equality is not true = false")
+          | None -> error (id ^ ": truth-conflict literal is not an equality atom")
+        end
+    | Neg _ -> error (id ^ ": truth-conflict literal must be positive")
+  end;
+  let expected = remove_at literal_index parent_clause (id ^ " truth-conflict literal") in
+  if not (same_clause_multiset expected result) then
+    error (id ^ ": truth-conflict result does not match parent after literal removal")
+
 let check_equality_symmetry checked id parent_id literal_index result =
   let parent_clause = lookup_clause checked parent_id in
   let literal = nth literal_index parent_clause (id ^ " equality-symmetry literal") in
@@ -732,6 +780,9 @@ let check_step checked = function
   | EnnfFormula (id, parent_id, result) ->
       check_ennf_formula checked id parent_id result;
       (id, CheckedFormula result) :: checked
+  | SkolemFormula (id, parent_id, subst, result) ->
+      check_skolem_formula checked id parent_id subst result;
+      (id, CheckedFormula result) :: checked
   | CnfFormulaClause (id, parent_id, index, result) ->
       check_cnf_formula_clause checked id parent_id index result;
       (id, CheckedClause result) :: checked
@@ -761,6 +812,9 @@ let check_step checked = function
       (id, CheckedClause result) :: checked
   | EqualityResolution (id, parent_id, literal_index, result) ->
       check_equality_resolution checked id parent_id literal_index result;
+      (id, CheckedClause result) :: checked
+  | TruthConflict (id, parent_id, literal_index, result) ->
+      check_truth_conflict checked id parent_id literal_index result;
       (id, CheckedClause result) :: checked
   | EqualitySymmetry (id, parent_id, literal_index, result) ->
       check_equality_symmetry checked id parent_id literal_index result;

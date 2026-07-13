@@ -32,6 +32,15 @@ if ! rg -q 'Vampire certificate v1 checked 6 steps' "$TMPDIR/native_cert_v1_fact
 fi
 
 bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_truth_conflict_valid.sexp \
+  "$dummy" >"$TMPDIR/native_cert_v1_truth_conflict_valid.log"
+
+if ! rg -q 'Vampire certificate v1 checked 5 steps' "$TMPDIR/native_cert_v1_truth_conflict_valid.log"; then
+  echo "native certificate v1 checker did not accept the valid truth-conflict fixture" >&2
+  exit 1
+fi
+
+bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_subst_paramod_valid.sexp \
   "$dummy" >"$TMPDIR/native_cert_v1_subst_paramod_valid.log"
 
@@ -117,6 +126,19 @@ fi
 
 if ! rg -q 'equality-resolution equality is not reflexive' "$TMPDIR/native_cert_v1_invalid_equality_resolution.err"; then
   echo "native certificate v1 invalid-equality failure did not explain the rejected side condition" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_invalid_truth_conflict.sexp \
+  "$dummy" >"$TMPDIR/native_cert_v1_invalid_truth_conflict.out" \
+  2>"$TMPDIR/native_cert_v1_invalid_truth_conflict.err"; then
+  echo "native certificate v1 checker accepted a non-conflicting truth equality" >&2
+  exit 1
+fi
+
+if ! rg -q 'truth-conflict equality is not true = false' "$TMPDIR/native_cert_v1_invalid_truth_conflict.err"; then
+  echo "native certificate v1 invalid-truth-conflict failure did not explain the rejected side condition" >&2
   exit 1
 fi
 

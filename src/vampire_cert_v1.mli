@@ -30,6 +30,7 @@ type step =
   | FormulaTermCopy of string * string * Syntax.tm
   | FoolFormula of string * string * Syntax.tm
   | EnnfFormula of string * string * Syntax.tm
+  | SkolemFormula of string * string * (string * Syntax.tm) list * Syntax.tm
   | CnfFormulaClause of string * string * int * clause
   | FormulaCopy of string * string * literal
   | FoolBool of string * string * literal
@@ -40,6 +41,7 @@ type step =
   | Resolve of string * string * string * int * int * clause
   | Factor of string * string * int * int * clause
   | EqualityResolution of string * string * int * clause
+  | TruthConflict of string * string * int * clause
   | EqualitySymmetry of string * string * int * clause
   | Paramodulate of string * string * string * int * int * int list * Syntax.tm * Syntax.tm * clause
   | Contradiction of string * string
