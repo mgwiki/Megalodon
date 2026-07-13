@@ -124,6 +124,15 @@ class InequalitySplitDefinition:
     split_arg: Term
 
 
+@dataclass(frozen=True)
+class DefinitionRewriteStep:
+    source: Term
+    target: Term
+    parent: str | None = None
+    literal: int | None = None
+    position: tuple[int, ...] | None = None
+
+
 LAMBDA_HINTS: tuple[LambdaHint, ...] = ()
 DB_NAME_RE = re.compile(r"^db([0-9]+)$")
 DB_TOKEN_RE = re.compile(r"\bdb([0-9]+)\b")
@@ -226,6 +235,33 @@ def replace_term_at_position(term: Term, position: tuple[int, ...], replacement:
     args = list(term.args)
     args[index] = replace_term_at_position(args[index], position[1:], replacement, context)
     return Term(term.kind, term.name, tuple(args))
+
+
+def translate_vampire_position(term: Term, position: tuple[int, ...], context: str) -> tuple[int, ...]:
+    translated: list[int] = []
+    current = term
+    for depth, index in enumerate(position):
+        mapped = index - 2 if index >= 2 and index - 2 < len(current.args) else index
+        if mapped >= len(current.args):
+            raise CertificateError(f"{context}: position {list(position)} is invalid at depth {depth}")
+        translated.append(mapped)
+        current = current.args[mapped]
+    return tuple(translated)
+
+
+def certificate_position_for_source(term: Term, position: tuple[int, ...], source: Term, context: str) -> tuple[int, ...]:
+    try:
+        if term_at_position(term, position, context) == source:
+            return position
+    except CertificateError:
+        pass
+    translated = translate_vampire_position(term, position, context)
+    selected = term_at_position(term, translated, context)
+    if selected != source:
+        raise CertificateError(
+            f"{context}: rewrite position contains {term_text(selected)}, expected {term_text(source)}"
+        )
+    return translated
 
 
 def position_rewrites_bound_lambda_var(term: Term, position: tuple[int, ...], context: str) -> bool:
@@ -338,6 +374,23 @@ def rewrite_clause_once_variants(
     return tuple(sorted(variants))
 
 
+def rewrite_clause_at_definition_step(
+    clause: tuple[Literal, ...],
+    step: DefinitionRewriteStep,
+    context: str,
+) -> tuple[Literal, ...]:
+    if step.literal is None or step.position is None:
+        raise CertificateError(f"{context}: positioned definition rewrite is missing literal or position")
+    if step.literal >= len(clause):
+        raise CertificateError(f"{context}: literal index {step.literal} is outside the current clause")
+    literal = clause[step.literal]
+    position = certificate_position_for_source(literal.atom, step.position, step.source, f"{context}.position")
+    rewritten_atom = replace_term_at_position(literal.atom, position, step.target, f"{context}.position")
+    rewritten_clause = list(clause)
+    rewritten_clause[step.literal] = Literal(literal.polarity, rewritten_atom)
+    return tuple(rewritten_clause)
+
+
 def clauses_match_modulo_equality_symmetry(
     left: tuple[Literal, ...],
     right: tuple[Literal, ...],
@@ -366,16 +419,22 @@ def clauses_match_modulo_equality_symmetry(
 
 def definition_rewrite_chain_reaches(
     source_clause: tuple[Literal, ...],
-    rewrites: tuple[tuple[Term, Term], ...],
+    rewrites: tuple[DefinitionRewriteStep, ...],
     target_clause: tuple[Literal, ...],
     context: str,
 ) -> bool:
+    if all(rewrite.literal is not None and rewrite.position is not None for rewrite in rewrites):
+        candidate = tuple(source_clause)
+        for index, rewrite in enumerate(rewrites):
+            candidate = rewrite_clause_at_definition_step(candidate, rewrite, f"{context}.rewrites[{index}]")
+        return clauses_match_modulo_equality_symmetry(candidate, target_clause)
+
     candidates: set[tuple[Literal, ...]] = {normalize_clause(source_clause)}
     max_candidates = 1024
-    for index, (source, target) in enumerate(rewrites):
+    for index, rewrite in enumerate(rewrites):
         next_candidates: set[tuple[Literal, ...]] = set()
         for candidate in candidates:
-            next_candidates.update(rewrite_clause_once_variants(candidate, source, target))
+            next_candidates.update(rewrite_clause_once_variants(candidate, rewrite.source, rewrite.target))
             if len(next_candidates) > max_candidates:
                 raise CertificateError(f"{context}: definition rewrite chain branches too much at step {index}")
         if not next_candidates:
@@ -1326,7 +1385,7 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
             rewrite_values = step["rewrites"]
             if not isinstance(rewrite_values, list) or not rewrite_values:
                 raise CertificateError(f"{step_id}: rewrites must be a non-empty list")
-            rewrites: list[tuple[Term, Term]] = []
+            rewrites: list[DefinitionRewriteStep] = []
             for rewrite_index, rewrite in enumerate(rewrite_values):
                 if not isinstance(rewrite, dict) or not {"from", "to"} <= set(rewrite) or not set(rewrite) <= {"from", "to", "parent", "literal", "position"}:
                     raise CertificateError(f"{step_id}.rewrites[{rewrite_index}]: expected from/to terms and optional parent/literal/position")
@@ -1343,9 +1402,12 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
                 ):
                     raise CertificateError(f"{step_id}.rewrites[{rewrite_index}].position: expected a list of non-negative integers")
                 rewrites.append(
-                    (
+                    DefinitionRewriteStep(
                         parse_term(rewrite["from"], f"{step_id}.rewrites[{rewrite_index}].from"),
                         parse_term(rewrite["to"], f"{step_id}.rewrites[{rewrite_index}].to"),
+                        rewrite_parent,
+                        rewrite_literal,
+                        tuple(rewrite_position) if rewrite_position is not None else None,
                     )
                 )
             clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
@@ -3889,14 +3951,14 @@ def equality_symmetry_proof_text(
 
 def definition_rewrite_literal_variants(
     literal: Literal,
-    rewrites: tuple[tuple[Term, Term], ...],
+    rewrites: tuple[DefinitionRewriteStep, ...],
 ) -> tuple[Literal, ...]:
     candidates: set[Literal] = {literal}
     max_candidates = 256
-    for source, target in rewrites:
+    for rewrite in rewrites:
         next_candidates: set[Literal] = set(candidates)
         for candidate in candidates:
-            next_candidates.update(rewrite_literal_once_variants(candidate, source, target))
+            next_candidates.update(rewrite_literal_once_variants(candidate, rewrite.source, rewrite.target))
             if len(next_candidates) > max_candidates:
                 raise CertificateError(
                     "definition rewrite chain branches too much; "
@@ -3909,9 +3971,64 @@ def definition_rewrite_literal_variants(
 def definition_rewrite_chain_proof_text(
     source_clause: tuple[Literal, ...],
     source_proof: str,
-    rewrites: tuple[tuple[Term, Term], ...],
+    rewrites: tuple[DefinitionRewriteStep, ...],
     conclusion: tuple[Literal, ...],
+    step_clauses: dict[str, tuple[Literal, ...]] | None = None,
+    proof_names: dict[str, str] | None = None,
 ) -> str:
+    if (
+        step_clauses is not None
+        and proof_names is not None
+        and all(rewrite.parent is not None and rewrite.literal is not None and rewrite.position is not None for rewrite in rewrites)
+    ):
+        current_clause = tuple(source_clause)
+        current_proof = source_proof
+        for index, rewrite in enumerate(rewrites):
+            if rewrite.parent is None or rewrite.literal is None or rewrite.position is None:
+                raise CertificateError("positioned definition rewrite unexpectedly lost metadata")
+            equality_parent_clause = step_clauses.get(rewrite.parent)
+            equality_parent_proof = proof_names.get(rewrite.parent)
+            if equality_parent_clause is None or equality_parent_proof is None:
+                raise CertificateError(f"definition rewrite step {index}: missing proof for parent {rewrite.parent}")
+            if len(equality_parent_clause) != 1:
+                raise CertificateError(f"definition rewrite step {index}: definition parent is not a unit clause")
+            if rewrite.literal >= len(current_clause):
+                raise CertificateError(f"definition rewrite step {index}: literal index is outside the current clause")
+            selected_equality = equality_parent_clause[0]
+            if (
+                not selected_equality.polarity
+                or selected_equality.atom.kind != "eq"
+                or len(selected_equality.atom.args) != 2
+                or selected_equality.atom.args[0] != rewrite.source
+                or selected_equality.atom.args[1] != rewrite.target
+            ):
+                raise CertificateError(f"definition rewrite step {index}: definition parent does not match rewrite orientation")
+            selected_target = current_clause[rewrite.literal]
+            proof_position = certificate_position_for_source(
+                selected_target.atom,
+                rewrite.position,
+                rewrite.source,
+                f"definition rewrite step {index}.position",
+            )
+            next_clause = rewrite_clause_at_definition_step(current_clause, rewrite, f"definition rewrite step {index}")
+            current_proof = paramodulation_proof_text(
+                equality_parent_clause,
+                equality_parent_proof,
+                current_clause,
+                current_proof,
+                selected_equality,
+                selected_target,
+                proof_position,
+                {},
+                normalize_clause(next_clause),
+            )
+            current_clause = normalize_clause(next_clause)
+        if not clauses_match_modulo_equality_symmetry(current_clause, conclusion):
+            raise CertificateError("definition rewrite positioned chain does not reach conclusion")
+        if normalize_clause(current_clause) == normalize_clause(conclusion):
+            return reorder_clause_proof_text(current_clause, current_proof, conclusion)
+        raise CertificateError("definition rewrite positioned proof needs final equality-symmetry normalization")
+
     goal = clause_body_text(conclusion)
 
     def branch(literal: Literal, proof: str) -> str:
@@ -4895,9 +5012,12 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
         elif rule == "definition_rewrite_chain":
             parent = step["parents"][0]
             rewrites = tuple(
-                (
+                DefinitionRewriteStep(
                     parse_term(rewrite["from"], f"{step_id}.rewrites[{index}].from"),
                     parse_term(rewrite["to"], f"{step_id}.rewrites[{index}].to"),
+                    rewrite.get("parent"),
+                    rewrite.get("literal"),
+                    parse_position(rewrite["position"], f"{step_id}.rewrites[{index}].position") if "position" in rewrite else None,
                 )
                 for index, rewrite in enumerate(step["rewrites"])
             )
@@ -4908,6 +5028,8 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
                     proof_names[parent],
                     rewrites,
                     clause,
+                    step_clauses,
+                    proof_names,
                 ),
                 symbol_sorts,
                 explicit_var_sorts,
