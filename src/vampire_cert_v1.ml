@@ -2648,8 +2648,7 @@ let certificate_source_count cert =
 
 let source_map_kind_compatible source entry =
   match source, entry.source_map_kind with
-  | SourceAxiom _, ("known" | "axiom" | "local_fact" | "def" | "definition" | "local_definition"
-                   | "set_reflexivity" | "local_set_reflexivity") -> true
+  | SourceAxiom _, ("known" | "axiom" | "local_fact" | "set_reflexivity" | "local_set_reflexivity") -> true
   | SourceConjecture _, "conjecture" -> true
   | SourceDefinition _, ("def" | "definition" | "local_definition") -> true
   | SourceNegatedConjecture _, ("conjecture" | "negated_conjecture" | "known" | "local_fact" | "local_definition") -> true

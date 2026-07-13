@@ -80,6 +80,16 @@ if ! rg -q 'Vampire certificate v1 source map checked 2 sources' "$WORK_DIR/nati
 fi
 
 bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_definition_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_definition_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_definition_valid.log"
+
+if ! rg -q 'Vampire certificate v1 source map checked 2 sources' "$WORK_DIR/native_cert_v1_source_map_definition_valid.log"; then
+  echo "native certificate v1 source-map checker did not accept mapped definition inputs" >&2
+  exit 1
+fi
+
+bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_conjecture_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_conjecture_valid.th0.p \
   "$dummy" >"$WORK_DIR/native_cert_v1_source_map_conjecture_valid.log"
@@ -100,6 +110,20 @@ fi
 
 if ! rg -q 'source goal maps to incompatible source-map kind conjecture' "$WORK_DIR/native_cert_v1_source_map_axiom_conjecture_bad.err"; then
   echo "native certificate v1 source-map incompatibility failure did not explain the bad conjecture mapping" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_axiom_definition_bad.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_axiom_definition_bad.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_axiom_definition_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_source_map_axiom_definition_bad.err"; then
+  echo "native certificate v1 source-map checker accepted an axiom source mapped to definition" >&2
+  exit 1
+fi
+
+if ! rg -q 'source d1 maps to incompatible source-map kind definition' "$WORK_DIR/native_cert_v1_source_map_axiom_definition_bad.err"; then
+  echo "native certificate v1 source-map incompatibility failure did not explain the bad definition mapping" >&2
   exit 1
 fi
 
