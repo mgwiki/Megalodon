@@ -29,6 +29,7 @@ let vampireabynative : bool ref = ref false;;
 let vampireabynativestrict : bool ref = ref false;;
 let vampirecertv1 : string option ref = ref None;;
 let vampirecertv1source : string option ref = ref None;;
+let vampirecertv1strict : bool ref = ref false;;
 let bushy = ref false;;
 let bushykdeps : (string,unit) Hashtbl.t = Hashtbl.create 10;;
 let bushyhdeps : (int,unit) Hashtbl.t = Hashtbl.create 10;;
@@ -6894,8 +6895,12 @@ let check_vampire_cert_v1_file fn =
           source_count
           (if source_count = 1 then "" else "s")
     end;
-    let checked = Vampire_cert_v1.check_certificate cert in
-    Printf.printf "Vampire certificate v1 checked %d step%s.\n"
+    let checked =
+      if !vampirecertv1strict then Vampire_cert_v1.check_certificate_strict cert
+      else Vampire_cert_v1.check_certificate cert
+    in
+    Printf.printf "Vampire certificate v1%s checked %d step%s.\n"
+      (if !vampirecertv1strict then " strict" else "")
       (List.length checked)
       (if List.length checked = 1 then "" else "s")
   with Vampire_cert_v1.Error msg ->
@@ -7129,6 +7134,8 @@ let _ =
 	    else
 	      raise (Failure("Expected -vampirecertv1 <certificate.sexp>"))
           end
+        else if Sys.argv.(!j) = "-vampirecertv1strict" then
+          vampirecertv1strict := true
         else if Sys.argv.(!j) = "-vampirecertv1source" then
           begin
 	    if !j < i-2 then

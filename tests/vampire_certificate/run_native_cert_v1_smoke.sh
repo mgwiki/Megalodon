@@ -176,12 +176,40 @@ if ! rg -q 'Vampire certificate v1 checked 6 steps' "$WORK_DIR/native_cert_v1_av
   exit 1
 fi
 
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_avatar_component_valid.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_avatar_component_strict.log" 2>&1; then
+  echo "strict native certificate v1 checker accepted an AVATAR component macro" >&2
+  exit 1
+fi
+
+if ! rg -q 'strict certificate v1 rejects AVATAR component macro clauses' \
+  "$WORK_DIR/native_cert_v1_avatar_component_strict.log"; then
+  echo "strict native certificate v1 checker rejected AVATAR component with the wrong error" >&2
+  exit 1
+fi
+
 bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_avatar_refutation_valid.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_avatar_refutation_valid.log"
 
 if ! rg -q 'Vampire certificate v1 checked 2 steps' "$WORK_DIR/native_cert_v1_avatar_refutation_valid.log"; then
   echo "native certificate v1 checker did not accept the valid AVATAR refutation fixture" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_avatar_refutation_valid.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_avatar_refutation_strict.log" 2>&1; then
+  echo "strict native certificate v1 checker accepted an AVATAR refutation macro" >&2
+  exit 1
+fi
+
+if ! rg -q 'strict certificate v1 rejects AVATAR refutation macros' \
+  "$WORK_DIR/native_cert_v1_avatar_refutation_strict.log"; then
+  echo "strict native certificate v1 checker rejected AVATAR refutation with the wrong error" >&2
   exit 1
 fi
 

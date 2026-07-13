@@ -1986,8 +1986,15 @@ let check_step checked = function
       if clause <> [] then error (id ^ ": contradiction parent is not the empty clause");
       (id, CheckedClause []) :: checked
 
-let check_certificate cert =
-  let checked = List.fold_left check_step [] cert.steps in
+let check_step_strict checked = function
+  | AvatarComponent (id, _) ->
+      error (id ^ ": strict certificate v1 rejects AVATAR component macro clauses")
+  | AvatarRefutation (id, _, _) ->
+      error (id ^ ": strict certificate v1 rejects AVATAR refutation macros")
+  | step -> check_step checked step
+
+let check_certificate_with step_checker cert =
+  let checked = List.fold_left step_checker [] cert.steps in
   begin match checked with
   | (_, CheckedClause []) :: _ -> ()
   | (id, CheckedClause _) :: _ -> error (id ^ ": final certificate step is not the empty clause")
@@ -1995,6 +2002,12 @@ let check_certificate cert =
   | [] -> error "certificate contains no steps"
   end;
   List.rev checked
+
+let check_certificate cert =
+  check_certificate_with check_step cert
+
+let check_certificate_strict cert =
+  check_certificate_with check_step_strict cert
 
 let source_map_prefix = "% megalodon_source_map "
 

@@ -26,6 +26,7 @@ VAMPIRE_SECONDS=${VAMPIRE_SECONDS:-10}
 WALL_SECONDS=${WALL_SECONDS:-15}
 MIN_PASS=${MIN_PASS:-100}
 CHECK_SOURCE_MAP=${CHECK_SOURCE_MAP:-0}
+STRICT_CERT_V1=${STRICT_CERT_V1:-0}
 WORK_DIR=${WORK_DIR:-"$TMPDIR/megalodon_native_live_${LIMIT}"}
 
 if [[ -z "$VAMPIRE" || ! -x "$VAMPIRE" ]]; then
@@ -120,6 +121,9 @@ run_one() {
   fi
 
   local check_args=(-vampirecertv1 "$case_dir/native.sexp")
+  if [[ "$STRICT_CERT_V1" == "1" ]]; then
+    check_args=(-vampirecertv1strict "${check_args[@]}")
+  fi
   if [[ "$CHECK_SOURCE_MAP" == "1" ]]; then
     check_args+=(-vampirecertv1source "$problem")
   fi
@@ -134,7 +138,7 @@ run_one() {
   fi
 }
 
-export ROOT TMPDIR MEGALODON VAMPIRE PROBLEM_DIR WORK_DIR VAMPIRE_SECONDS WALL_SECONDS CHECK_SOURCE_MAP
+export ROOT TMPDIR MEGALODON VAMPIRE PROBLEM_DIR WORK_DIR VAMPIRE_SECONDS WALL_SECONDS CHECK_SOURCE_MAP STRICT_CERT_V1
 export -f run_with_wall_timeout run_one
 
 xargs -a "$WORK_DIR/problems.txt" -n1 -P "$JOBS" bash -c 'run_one "$0"'

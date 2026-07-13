@@ -19,6 +19,9 @@ tests/vampire_certificate/run_native_cert_v1_smoke.sh
 This is the primary certificate smoke test. It checks the OCaml
 `-vampirecertv1` importer against native S-expression fixtures and should be the
 first test used for counted reconstruction work.
+Use `-vampirecertv1strict` with `-vampirecertv1` for the stricter counted gate;
+that mode rejects AVATAR macro clauses until they are expanded into primitive
+certificate steps.
 
 The default smoke command is native-only:
 
@@ -44,6 +47,9 @@ accepted native certificate. Use `PROBLEM_DIR` or `PROBLEMS_FILE` to select the
 fresh source-mapped corpus. The script also writes `rule_counts.txt` under the
 work directory so broad runs show which native certificate constructors were
 actually exercised.
+Set `STRICT_CERT_V1=1` to run the live certificates through
+`-vampirecertv1strict`; these stricter runs currently reject AVATAR macro steps
+and should be reported separately from compatibility coverage.
 
 To export a Megalodon development once and then check the resulting source-mapped
 TH0 corpus in parallel, use:
