@@ -59,6 +59,15 @@ if ! rg -q 'Vampire certificate v1 checked 7 steps' "$TMPDIR/native_cert_v1_subs
 fi
 
 bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_paramod_equality_shape_position_valid.sexp \
+  "$dummy" >"$TMPDIR/native_cert_v1_paramod_equality_shape_position_valid.log"
+
+if ! rg -q 'Vampire certificate v1 checked 6 steps' "$TMPDIR/native_cert_v1_paramod_equality_shape_position_valid.log"; then
+  echo "native certificate v1 checker did not accept the equality-shaped paramodulation position fixture" >&2
+  exit 1
+fi
+
+bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_cnf_literal_valid.sexp \
   "$dummy" >"$TMPDIR/native_cert_v1_cnf_literal_valid.log"
 

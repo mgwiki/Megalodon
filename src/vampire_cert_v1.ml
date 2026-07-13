@@ -486,6 +486,9 @@ let rec replace_tm_at_position tm position replacement what =
       | All (a, m), 0 -> All (a, replace_tm_at_position m rest replacement what)
       | _ -> error (what ^ " position is out of bounds")
 
+let try_tm_at_position tm position =
+  try Some (tm_at_position tm position "term") with Error _ -> None
+
 let replace_literal_atom literal atom =
   match literal with
   | Pos _ -> Pos atom
@@ -497,6 +500,13 @@ let equality_sides = function
 
 let equality_to_true atom =
   Ap (Ap (TmH "=", atom), TmH "f__true")
+
+let paramodulation_position_candidates target_atom position =
+  let base = [position] in
+  match equality_sides target_atom, position with
+  | Some _, 1 :: rest -> base @ [[0; 1] @ rest]
+  | Some _, [0; 1] -> base @ [[1]]
+  | _ -> base
 
 let vampire_false = TmH "vampire_false"
 
@@ -1101,13 +1111,16 @@ let check_paramodulate checked id equality_parent_id target_parent_id equality_i
   end;
   let target_atom = literal_atom target_literal in
   let position =
-    let found = tm_at_position target_atom position (id ^ " target") in
-    if found = from_tm then position
-    else
-      match equality_sides target_atom, position with
-      | Some (left, _), [1] when left = from_tm -> [0; 1]
-      | Some (_, right), [0; 1] when right = from_tm -> [1]
-      | _ -> error (id ^ ": paramodulation position does not contain from term")
+    let rec select = function
+      | [] -> error (id ^ ": paramodulation position does not contain from term")
+      | candidate :: rest ->
+          begin
+            match try_tm_at_position target_atom candidate with
+            | Some found when found = from_tm -> candidate
+            | _ -> select rest
+          end
+    in
+    select (paramodulation_position_candidates target_atom position)
   in
   let rewritten_atom = replace_tm_at_position target_atom position to_tm (id ^ " target") in
   let rewritten_literal = replace_literal_atom target_literal rewritten_atom in
