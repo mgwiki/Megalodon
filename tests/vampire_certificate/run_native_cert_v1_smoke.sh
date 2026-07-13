@@ -67,6 +67,15 @@ if ! rg -q 'Vampire certificate v1 checked 4 steps' "$TMPDIR/native_cert_v1_defi
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_equality_symmetry_valid.sexp \
+  "$dummy" >"$TMPDIR/native_cert_v1_equality_symmetry_valid.log"
+
+if ! rg -q 'Vampire certificate v1 checked 5 steps' "$TMPDIR/native_cert_v1_equality_symmetry_valid.log"; then
+  echo "native certificate v1 checker did not accept the valid equality-symmetry fixture" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_invalid_pivot.sexp \
   "$dummy" >"$TMPDIR/native_cert_v1_invalid_pivot.out" \

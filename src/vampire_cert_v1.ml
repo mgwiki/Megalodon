@@ -32,6 +32,7 @@ type step =
   | Resolve of string * string * string * int * int * clause
   | Factor of string * string * int * int * clause
   | EqualityResolution of string * string * int * clause
+  | EqualitySymmetry of string * string * int * clause
   | Paramodulate of string * string * string * int * int * int list * tm * tm * clause
   | Contradiction of string * string
 
@@ -214,6 +215,8 @@ let parse_step = function
       Factor (atom id, parse_parent parent, i, j, parse_result result)
   | List [Atom "equality_resolution"; id; parent; literal; result] ->
       EqualityResolution (atom id, parse_parent parent, parse_literal_index literal, parse_result result)
+  | List [Atom "equality_symmetry"; id; parent; literal; result] ->
+      EqualitySymmetry (atom id, parse_parent parent, parse_literal_index literal, parse_result result)
   | List [Atom "paramodulate"; id; equality; target; position; from_tm; to_tm; result] ->
       let equality_parent, equality_index = parse_indexed_parent "equality" equality in
       let target_parent, target_index = parse_indexed_parent "target" target in
@@ -244,6 +247,7 @@ let step_id = function
   | Resolve (id, _, _, _, _, _) -> id
   | Factor (id, _, _, _, _) -> id
   | EqualityResolution (id, _, _, _) -> id
+  | EqualitySymmetry (id, _, _, _) -> id
   | Paramodulate (id, _, _, _, _, _, _, _, _) -> id
   | Contradiction (id, _) -> id
 
@@ -487,6 +491,19 @@ let check_equality_resolution checked id parent_id literal_index result =
   if not (same_clause_multiset expected result) then
     error (id ^ ": equality-resolution result does not match parent after literal removal")
 
+let check_equality_symmetry checked id parent_id literal_index result =
+  let parent_clause = lookup_clause checked parent_id in
+  let literal = nth literal_index parent_clause (id ^ " equality-symmetry literal") in
+  let swapped_literal =
+    match swap_literal_equality literal with
+    | Some swapped -> swapped
+    | None -> error (id ^ ": equality-symmetry literal is not an equality")
+  in
+  let without_literal = remove_at literal_index parent_clause (id ^ " equality-symmetry literal") in
+  let expected = without_literal @ [swapped_literal] in
+  if not (same_clause_multiset expected result) then
+    error (id ^ ": equality-symmetry result does not match parent clause")
+
 let check_paramodulate checked id equality_parent_id target_parent_id equality_index target_index position from_tm to_tm result =
   let equality_clause = lookup_clause checked equality_parent_id in
   let target_clause = lookup_clause checked target_parent_id in
@@ -551,6 +568,9 @@ let check_step checked = function
       (id, result) :: checked
   | EqualityResolution (id, parent_id, literal_index, result) ->
       check_equality_resolution checked id parent_id literal_index result;
+      (id, result) :: checked
+  | EqualitySymmetry (id, parent_id, literal_index, result) ->
+      check_equality_symmetry checked id parent_id literal_index result;
       (id, result) :: checked
   | Paramodulate (id, equality_parent_id, target_parent_id, equality_index, target_index, position, from_tm, to_tm, result) ->
       check_paramodulate checked id equality_parent_id target_parent_id equality_index target_index position from_tm to_tm result;
