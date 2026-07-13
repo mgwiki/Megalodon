@@ -1328,8 +1328,11 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
                 raise CertificateError(f"{step_id}: rewrites must be a non-empty list")
             rewrites: list[tuple[Term, Term]] = []
             for rewrite_index, rewrite in enumerate(rewrite_values):
-                if not isinstance(rewrite, dict) or set(rewrite) != {"from", "to"}:
-                    raise CertificateError(f"{step_id}.rewrites[{rewrite_index}]: expected from and to terms")
+                if not isinstance(rewrite, dict) or not {"from", "to"} <= set(rewrite) or not set(rewrite) <= {"from", "to", "parent"}:
+                    raise CertificateError(f"{step_id}.rewrites[{rewrite_index}]: expected from/to terms and optional parent")
+                rewrite_parent = rewrite.get("parent")
+                if rewrite_parent is not None and (not isinstance(rewrite_parent, str) or rewrite_parent not in parents[1:]):
+                    raise CertificateError(f"{step_id}.rewrites[{rewrite_index}].parent: expected one of the definition parents")
                 rewrites.append(
                     (
                         parse_term(rewrite["from"], f"{step_id}.rewrites[{rewrite_index}].from"),
