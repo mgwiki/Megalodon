@@ -25,6 +25,13 @@ type sat_lit = int * bool
 
 type sat_clause = sat_lit list
 
+type inequality_split = {
+  split_name_parent : string;
+  split_source : literal;
+  split_name_literal : literal;
+  split_replacement : literal;
+}
+
 type checked_item =
   | CheckedClause of clause
   | CheckedFormula of tm
@@ -51,6 +58,8 @@ type step =
   | AvatarRefutation of string * sat_clause list * clause
   | FoolExhaustiveness of string * clause
   | FoolDistinctness of string * clause
+  | InequalityNameIntro of string * clause
+  | InequalitySplit of string * string * inequality_split list * clause
   | Substitute of string * string * (string * tm) list * clause
   | Condensation of string * string * (string * tm) list * clause
   | Resolve of string * string * string * int * int * clause
@@ -222,6 +231,10 @@ let parse_named_parent name = function
   | List [Atom label; parent] when label = name -> atom parent
   | _ -> error ("expected " ^ name ^ " parent")
 
+let parse_named_literal name = function
+  | List [Atom label; literal] when label = name -> parse_literal literal
+  | _ -> error ("expected " ^ name ^ " literal")
+
 let parse_named_parents name = function
   | List (Atom label :: parents) when label = name -> List.map atom parents
   | _ -> error ("expected " ^ name ^ " parent list")
@@ -258,6 +271,20 @@ let parse_substitution = function
 let parse_result = function
   | List [Atom "result"; clause] -> parse_clause clause
   | _ -> error "expected result clause"
+
+let parse_inequality_split = function
+  | List [Atom "split"; name_parent; source; name_literal; replacement] ->
+      {
+        split_name_parent = parse_named_parent "name_parent" name_parent;
+        split_source = parse_named_literal "source" source;
+        split_name_literal = parse_named_literal "name_literal" name_literal;
+        split_replacement = parse_named_literal "replacement" replacement;
+      }
+  | _ -> error "expected inequality split item"
+
+let parse_inequality_splits = function
+  | List (Atom "splits" :: splits) -> List.map parse_inequality_split splits
+  | _ -> error "expected inequality split list"
 
 let parse_literal_result = function
   | List [Atom "result"; literal] -> parse_literal literal
@@ -324,6 +351,10 @@ let parse_step = function
       FoolExhaustiveness (atom id, parse_result result)
   | List [Atom "fool_distinctness"; id; result] ->
       FoolDistinctness (atom id, parse_result result)
+  | List [Atom "inequality_name_intro"; id; result] ->
+      InequalityNameIntro (atom id, parse_result result)
+  | List [Atom "inequality_split"; id; source; splits; result] ->
+      InequalitySplit (atom id, parse_named_parent "source" source, parse_inequality_splits splits, parse_result result)
   | List [Atom "substitute"; id; parent; subst; result] ->
       Substitute (atom id, parse_parent parent, parse_substitution subst, parse_result result)
   | List [Atom "condensation"; id; parent; subst; result] ->
@@ -390,6 +421,8 @@ let step_id = function
   | AvatarRefutation (id, _, _) -> id
   | FoolExhaustiveness (id, _) -> id
   | FoolDistinctness (id, _) -> id
+  | InequalityNameIntro (id, _) -> id
+  | InequalitySplit (id, _, _, _) -> id
   | Substitute (id, _, _, _) -> id
   | Condensation (id, _, _, _) -> id
   | Resolve (id, _, _, _, _, _) -> id
@@ -1204,6 +1237,93 @@ let check_fool_distinctness id clause =
   | [_] -> error (id ^ ": fool_distinctness literal must be negative")
   | _ -> error (id ^ ": fool_distinctness must be a singleton clause")
 
+let bool_constant_name value = if value then "f__true" else "f__false"
+
+let bool_name_literal value = function
+  | Pos atom ->
+      let expected = bool_constant_name value in
+      begin match equality_sides atom with
+      | Some (TmH h, named) when h = expected -> Some named
+      | Some (named, TmH h) when h = expected -> Some named
+      | _ -> None
+      end
+  | Neg _ -> None
+
+let name_application = function
+  | Ap (head, arg) -> Some (head, arg)
+  | _ -> None
+
+let check_vampire_inequality_name_head id head =
+  match head_symbol head with
+  | Some name when string_starts_with "sP" name -> ()
+  | Some name -> error (id ^ ": inequality splitting name head " ^ name ^ " is not a Vampire split-name symbol")
+  | None -> error (id ^ ": inequality splitting name has no head symbol")
+
+let check_inequality_name_intro id clause =
+  match clause with
+  | [literal] ->
+      begin match bool_name_literal false literal with
+      | Some named ->
+          begin match name_application named with
+          | Some (head, _) -> check_vampire_inequality_name_head id head
+          | None -> error (id ^ ": inequality_name_intro literal is not a name application")
+          end
+      | None -> error (id ^ ": inequality_name_intro must be a positive equality to f__false")
+      end
+  | _ -> error (id ^ ": inequality_name_intro must be a singleton clause")
+
+let check_inequality_split checked id source_id splits result =
+  if splits = [] then error (id ^ ": inequality_split has no split items");
+  let source_clause = lookup_clause checked source_id in
+  let rec consume remaining replacements = function
+    | [] -> remaining @ List.rev replacements
+    | split :: rest ->
+        let name_clause = lookup_clause checked split.split_name_parent in
+        if not (same_clause_multiset name_clause [split.split_name_literal]) then
+          error (id ^ ": inequality_split name literal does not match name parent " ^ split.split_name_parent);
+        let remaining =
+          match remove_one split.split_source remaining with
+          | Some remaining -> remaining
+          | None -> error (id ^ ": inequality_split source literal is not available in source parent")
+        in
+        let name_head, split_term =
+          match bool_name_literal false split.split_name_literal with
+          | Some named ->
+              begin match name_application named with
+              | Some (head, arg) ->
+                  check_vampire_inequality_name_head id head;
+                  (head, arg)
+              | None -> error (id ^ ": inequality_split name literal is not a name application")
+              end
+          | None -> error (id ^ ": inequality_split name literal must be a positive equality to f__false")
+        in
+        let other_side =
+          match split.split_source with
+          | Neg atom ->
+              begin match equality_sides atom with
+              | Some (left, right) when left = split_term -> right
+              | Some (left, right) when right = split_term -> left
+              | Some _ -> error (id ^ ": inequality_split source equality does not contain the named split term")
+              | None -> error (id ^ ": inequality_split source literal is not an equality")
+              end
+          | Pos _ -> error (id ^ ": inequality_split source literal must be negative")
+        in
+        begin match bool_name_literal true split.split_replacement with
+        | Some named ->
+            begin match name_application named with
+            | Some (replacement_head, replacement_arg)
+                when replacement_head = name_head && replacement_arg = other_side -> ()
+            | Some _ -> error (id ^ ": inequality_split replacement does not apply the same name to the other equality side")
+            | None -> error (id ^ ": inequality_split replacement is not a name application")
+            end
+        | None -> error (id ^ ": inequality_split replacement must be a positive equality to f__true")
+        end;
+        consume remaining (split.split_replacement :: replacements) rest
+  in
+  let expected = consume source_clause [] splits in
+  if not (same_clause_multiset expected result) then
+    error (id ^ ": inequality_split result does not match source with split replacements")
+
 let check_equality_resolution checked id parent_id literal_index result =
   let parent_clause = lookup_clause checked parent_id in
   let literal = nth literal_index parent_clause (id ^ " equality-resolution literal") in
@@ -1407,6 +1527,12 @@ let check_step checked = function
   | FoolDistinctness (id, clause) ->
       check_fool_distinctness id clause;
       (id, CheckedClause clause) :: checked
+  | InequalityNameIntro (id, clause) ->
+      check_inequality_name_intro id clause;
+      (id, CheckedClause clause) :: checked
+  | InequalitySplit (id, source_id, splits, result) ->
+      check_inequality_split checked id source_id splits result;
+      (id, CheckedClause result) :: checked
   | Substitute (id, parent_id, subst, result) ->
       check_substitute checked id parent_id subst result;
       (id, CheckedClause result) :: checked

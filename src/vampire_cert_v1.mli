@@ -23,6 +23,13 @@ type sat_lit = int * bool
 
 type sat_clause = sat_lit list
 
+type inequality_split = {
+  split_name_parent : string;
+  split_source : literal;
+  split_name_literal : literal;
+  split_replacement : literal;
+}
+
 type checked_item =
   | CheckedClause of clause
   | CheckedFormula of Syntax.tm
@@ -49,6 +56,8 @@ type step =
   | AvatarRefutation of string * sat_clause list * clause
   | FoolExhaustiveness of string * clause
   | FoolDistinctness of string * clause
+  | InequalityNameIntro of string * clause
+  | InequalitySplit of string * string * inequality_split list * clause
   | Substitute of string * string * (string * Syntax.tm) list * clause
   | Condensation of string * string * (string * Syntax.tm) list * clause
   | Resolve of string * string * string * int * int * clause
