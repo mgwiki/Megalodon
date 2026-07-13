@@ -51,6 +51,7 @@ type step =
   | FoolExhaustiveness of string * clause
   | FoolDistinctness of string * clause
   | Substitute of string * string * (string * tm) list * clause
+  | Condensation of string * string * (string * tm) list * clause
   | Resolve of string * string * string * int * int * clause
   | Factor of string * string * int * int * clause
   | EqualityResolution of string * string * int * clause
@@ -312,6 +313,8 @@ let parse_step = function
       FoolDistinctness (atom id, parse_result result)
   | List [Atom "substitute"; id; parent; subst; result] ->
       Substitute (atom id, parse_parent parent, parse_substitution subst, parse_result result)
+  | List [Atom "condensation"; id; parent; subst; result] ->
+      Condensation (atom id, parse_parent parent, parse_substitution subst, parse_result result)
   | List [Atom "resolve"; id; parents; pivot; result] ->
       let a, b = parse_parents parents in
       let i, j = parse_pivot pivot in
@@ -374,6 +377,7 @@ let step_id = function
   | FoolExhaustiveness (id, _) -> id
   | FoolDistinctness (id, _) -> id
   | Substitute (id, _, _, _) -> id
+  | Condensation (id, _, _, _) -> id
   | Resolve (id, _, _, _, _, _) -> id
   | Factor (id, _, _, _, _) -> id
   | EqualityResolution (id, _, _, _) -> id
@@ -889,6 +893,23 @@ let check_substitute checked id parent_id subst result =
   if not (same_clause_multiset expected result) then
     error (id ^ ": substitution result does not match parent under explicit substitution")
 
+let unique_clause clause =
+  let rec add_unique acc = function
+    | [] -> List.rev acc
+    | literal :: rest ->
+        if List.exists ((=) literal) acc then add_unique acc rest
+        else add_unique (literal :: acc) rest
+  in
+  add_unique [] clause
+
+let check_condensation checked id parent_id subst result =
+  let parent_clause = lookup_clause checked parent_id in
+  let expected = unique_clause (subst_clause subst parent_clause) in
+  if List.length expected >= List.length parent_clause then
+    error (id ^ ": condensation did not remove a duplicate literal");
+  if not (same_clause_multiset expected result) then
+    error (id ^ ": condensation result does not match duplicate-collapsed substituted parent")
+
 let check_factor checked id parent_id left_index right_index result =
   if left_index = right_index then error (id ^ ": factor literal indices must be distinct");
   let parent_clause = lookup_clause checked parent_id in
@@ -1302,6 +1323,9 @@ let check_step checked = function
       (id, CheckedClause clause) :: checked
   | Substitute (id, parent_id, subst, result) ->
       check_substitute checked id parent_id subst result;
+      (id, CheckedClause result) :: checked
+  | Condensation (id, parent_id, subst, result) ->
+      check_condensation checked id parent_id subst result;
       (id, CheckedClause result) :: checked
   | Resolve (id, left_id, right_id, left_index, right_index, result) ->
       check_resolution checked id left_id right_id left_index right_index result;

@@ -49,6 +49,7 @@ type step =
   | FoolExhaustiveness of string * clause
   | FoolDistinctness of string * clause
   | Substitute of string * string * (string * Syntax.tm) list * clause
+  | Condensation of string * string * (string * Syntax.tm) list * clause
   | Resolve of string * string * string * int * int * clause
   | Factor of string * string * int * int * clause
   | EqualityResolution of string * string * int * clause
