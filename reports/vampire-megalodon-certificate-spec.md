@@ -52,51 +52,42 @@ It must not:
 
 ## File Format
 
-The initial interchange format is JSON. It is deliberately boring and
-versioned.
+The qualifying interchange format is a small Lisp-style S-expression language
+emitted by Vampire and parsed directly by Megalodon's OCaml importer. JSON was
+used by an earlier diagnostic prototype, but it is not the accepted
+certificate path for this branch.
 
-```json
-{
-  "format": "vampire-megalodon-certificate",
-  "version": 1,
-  "problem": "optional-problem-id",
-  "steps": [
-    {
-      "id": "c1",
-      "rule": "input",
-      "clause": [
-        {"polarity": true, "atom": "P(a)"}
-      ],
-      "source": {"kind": "axiom", "name": "H1"}
-    }
-  ]
-}
+```lisp
+(vampire_certificate_v1
+  (problem "optional-problem-id")
+  (steps
+    (formula_input "u1"
+      (source axiom "H1")
+      (result (formula (atom "P" (const "a")))))
+    (clause_input "u2"
+      (source axiom "H1")
+      (result (clause (pos (atom "P" (const "a"))))))))
 ```
 
-Literals have:
+Literals are S-expressions:
 
-- `polarity`: `true` for positive, `false` for negative,
-- `atom`: either an opaque string for propositional smoke tests or a structured
-  atom object.
+- `(pos <atom>)` for a positive literal,
+- `(neg <atom>)` for a negative literal.
 
-Structured terms are:
+Terms and atoms use the same S-expression discipline:
 
-```json
-{"var": "x"}
-{"const": "a"}
-{"app": "f", "args": [{"var": "x"}]}
+```lisp
+(var "x")
+(const "a")
+(app (const "f") (var "x"))
+(atom "P" (const "a"))
+(eq (const "a") (const "a"))
 ```
 
-Structured atoms are:
-
-```json
-{"pred": "P", "args": [{"const": "a"}]}
-{"eq": [{"var": "x"}, {"var": "x"}]}
-```
-
-The prototype checker still accepts opaque atom strings for the first
-propositional smoke certificates, but first-order certificates should use the
-structured form.
+The OCaml importer may accept a narrow opaque atom form for propositional smoke
+tests, but counted Vampire-to-Megalodon reconstruction must use the native
+S-expression certificate and Megalodon's checker, not the old Python/JSON
+prototype.
 
 ## MVP Constructors
 

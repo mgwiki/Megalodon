@@ -615,7 +615,11 @@ let th0_aby_problem_content claimtm cxtm cxpf xl conjn =
     (fun (cl,h,x,a) ->
       if cl = "type" || cl = "def" && not (Hashtbl.mem sigdelta_opaque h) then
         begin
-          Buffer.add_string sb (tptp_source_map_comment cl (tptpize_name x) x h);
+          let tptp_name =
+            if cl = "def" then tptpize_name x ^ "_def"
+            else tptpize_name x
+          in
+          Buffer.add_string sb (tptp_source_map_comment cl tptp_name x h);
           Printf.bprintf sb "%s\n" a
         end
       else if cl = "known" && (List.mem x xl || xl = ["-"]) then

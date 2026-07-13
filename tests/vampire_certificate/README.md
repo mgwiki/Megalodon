@@ -38,6 +38,11 @@ certificate block emitted by Vampire, and checks it with Megalodon's OCaml
 Vampire-derived source assumptions; a counted success must be traced through
 certificate steps rather than imported as a fresh input.
 
+For freshly exported TH0 files containing `% megalodon_source_map` comments,
+set `CHECK_SOURCE_MAP=1` to additionally run `-vampirecertv1source` for every
+accepted native certificate. Use `PROBLEM_DIR` or `PROBLEMS_FILE` to select the
+fresh source-mapped corpus.
+
 The older Python/JSON prototype smoke script is now named
 `run_legacy_python_smoke.sh`. It remains useful for diagnostics and regression
 comparison, but its successes do not count as accepted Vampire-to-Megalodon

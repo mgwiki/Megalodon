@@ -19,11 +19,13 @@ DEFAULT_VAMPIRE=$(
 VAMPIRE=${VAMPIRE:-"$DEFAULT_VAMPIRE"}
 PROBLEM_DIR=${PROBLEM_DIR:-"$ROOT/examples/hammer"}
 SOLVED_DIR=${SOLVED_DIR:-"$PROBLEM_DIR/out1"}
+PROBLEMS_FILE=${PROBLEMS_FILE:-}
 LIMIT=${LIMIT:-200}
 JOBS=${JOBS:-20}
 VAMPIRE_SECONDS=${VAMPIRE_SECONDS:-10}
 WALL_SECONDS=${WALL_SECONDS:-15}
 MIN_PASS=${MIN_PASS:-100}
+CHECK_SOURCE_MAP=${CHECK_SOURCE_MAP:-0}
 WORK_DIR=${WORK_DIR:-"$TMPDIR/megalodon_native_live_${LIMIT}"}
 
 if [[ -z "$VAMPIRE" || ! -x "$VAMPIRE" ]]; then
@@ -38,11 +40,21 @@ fi
 rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR/cases"
 
-find "$SOLVED_DIR" -maxdepth 1 -type f -name '*.th0.p' \
-  | sed 's#.*/##' \
-  | sort \
-  | sed -n "1,${LIMIT}p" \
-  > "$WORK_DIR/problems.txt"
+if [[ -n "$PROBLEMS_FILE" ]]; then
+  sed -n "1,${LIMIT}p" "$PROBLEMS_FILE" > "$WORK_DIR/problems.txt"
+elif [[ -d "$SOLVED_DIR" ]]; then
+  find "$SOLVED_DIR" -maxdepth 1 -type f -name '*.th0.p' \
+    | sed 's#.*/##' \
+    | sort \
+    | sed -n "1,${LIMIT}p" \
+    > "$WORK_DIR/problems.txt"
+else
+  find "$PROBLEM_DIR" -maxdepth 1 -type f -name '*.th0.p' \
+    | sed 's#.*/##' \
+    | sort \
+    | sed -n "1,${LIMIT}p" \
+    > "$WORK_DIR/problems.txt"
+fi
 
 run_with_wall_timeout() {
   local case_dir=$1
@@ -107,7 +119,12 @@ run_one() {
     return 0
   fi
 
-  if "$MEGALODON" -vampirecertv1 "$case_dir/native.sexp" "$case_dir/dummy.mg" \
+  local check_args=(-vampirecertv1 "$case_dir/native.sexp")
+  if [[ "$CHECK_SOURCE_MAP" == "1" ]]; then
+    check_args+=(-vampirecertv1source "$problem")
+  fi
+
+  if "$MEGALODON" "${check_args[@]}" "$case_dir/dummy.mg" \
       > "$case_dir/check.out" 2> "$case_dir/check.err"; then
     printf '%s\tPASS\n' "$name" > "$case_dir/result.tsv"
   else
@@ -117,7 +134,7 @@ run_one() {
   fi
 }
 
-export ROOT TMPDIR MEGALODON VAMPIRE PROBLEM_DIR WORK_DIR VAMPIRE_SECONDS WALL_SECONDS
+export ROOT TMPDIR MEGALODON VAMPIRE PROBLEM_DIR WORK_DIR VAMPIRE_SECONDS WALL_SECONDS CHECK_SOURCE_MAP
 export -f run_with_wall_timeout run_one
 
 xargs -a "$WORK_DIR/problems.txt" -n1 -P "$JOBS" bash -c 'run_one "$0"'

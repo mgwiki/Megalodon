@@ -34,6 +34,12 @@ if ! rg -q '^% megalodon_source_map ' "$problem"; then
   exit 1
 fi
 
+if rg '^% megalodon_source_map \(def "' "$problem" \
+    | rg -vq '^% megalodon_source_map \(def "[^"]+_def"'; then
+  echo "TH0 source-map definition entry does not point to the *_def formula name" >&2
+  exit 1
+fi
+
 if rg -q '^thf\(conj_[^,/]*/' "$problem"; then
   echo "TH0 conjecture name contains an unsanitized slash" >&2
   exit 1
