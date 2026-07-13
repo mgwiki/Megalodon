@@ -6,6 +6,8 @@ cd "$(dirname "$0")/../.."
 TMPDIR="${TMPDIR:-/project/tmp}"
 mkdir -p "$TMPDIR"
 
+tests/vampire_certificate/run_native_cert_v1_smoke.sh
+
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_resolution.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_resolution.json --strict-certificate-v1 --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_substituted_resolution.json --summary

@@ -32,3 +32,4 @@ type certificate = {
 val parse_sexpr : string -> sexpr
 val parse_certificate : string -> certificate
 val step_id : step -> string
+val check_certificate : certificate -> (string * clause) list

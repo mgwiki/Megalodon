@@ -27,6 +27,7 @@ let vampireabyschedule : string ref = ref "casc";;
 let vampireabyproof : string ref = ref "tptp";;
 let vampireabynative : bool ref = ref false;;
 let vampireabynativestrict : bool ref = ref false;;
+let vampirecertv1 : string option ref = ref None;;
 let bushy = ref false;;
 let bushykdeps : (string,unit) Hashtbl.t = Hashtbl.create 10;;
 let bushyhdeps : (int,unit) Hashtbl.t = Hashtbl.create 10;;
@@ -6845,6 +6846,27 @@ let preset_hoas_index () =
   Hashtbl.add indextms "d58762d200971dcc7f1850726d9f2328403127deeba124fc3ba2d2d9f7c3cb8c" (Ar(Set,Ar(Set,Set)));
   Hashtbl.add indextms "73c9efe869770ab42f7cde0b33fe26bbc3e2bd157dad141c0c27d1e7348d60f5" (Ar(Ar(Set,Set),Set))
 
+let read_all fn =
+  let c = open_in fn in
+  try
+    let n = in_channel_length c in
+    let s = really_input_string c n in
+    close_in c;
+    s
+  with e ->
+    close_in_noerr c;
+    raise e
+
+let check_vampire_cert_v1_file fn =
+  try
+    let cert = Vampire_cert_v1.parse_certificate (read_all fn) in
+    let checked = Vampire_cert_v1.check_certificate cert in
+    Printf.printf "Vampire certificate v1 checked %d step%s.\n"
+      (List.length checked)
+      (if List.length checked = 1 then "" else "s")
+  with Vampire_cert_v1.Error msg ->
+    raise (Failure ("Vampire certificate v1 check failed: " ^ msg))
+
 (*** "main" ***)
 let _ =
   (*** There are some global names I need before getting started to make the proof tactics work, so they are precomputed here. ***)
@@ -7062,6 +7084,16 @@ let _ =
           begin
             vampireabynative := true;
             vampireabynativestrict := true
+          end
+        else if Sys.argv.(!j) = "-vampirecertv1" then
+          begin
+	    if !j < i-2 then
+	      begin
+		incr j;
+                vampirecertv1 := Some(Sys.argv.(!j))
+	      end
+	    else
+	      raise (Failure("Expected -vampirecertv1 <certificate.sexp>"))
           end
         else if Sys.argv.(!j) = "-fofallsubgoals" then
           begin
@@ -7614,6 +7646,11 @@ let _ =
 	  | None -> ()
 	end;
       in
+      begin
+        match !vampirecertv1 with
+        | None -> ()
+        | Some fn -> check_vampire_cert_v1_file fn
+      end;
       begin
 	match !solvesproblemfile with
 	| None -> checkfile ()

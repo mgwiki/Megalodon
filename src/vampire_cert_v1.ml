@@ -191,3 +191,83 @@ let parse_certificate text =
       check_duplicate_ids steps;
       { problem; steps }
   | _ -> error "expected (certificate vampire-megalodon 1 ...)"
+
+let literal_atom = function
+  | Pos tm -> tm
+  | Neg tm -> tm
+
+let complementary left right =
+  match left, right with
+  | Pos a, Neg b -> a = b
+  | Neg a, Pos b -> a = b
+  | _ -> false
+
+let remove_at index items what =
+  if index < 0 then error (what ^ " index must be non-negative");
+  let rec aux i = function
+    | [] -> error (what ^ " index is out of bounds")
+    | _ :: rest when i = index -> rest
+    | item :: rest -> item :: aux (i + 1) rest
+  in
+  aux 0 items
+
+let nth index items what =
+  if index < 0 then error (what ^ " index must be non-negative");
+  try List.nth items index with Failure _ -> error (what ^ " index is out of bounds")
+
+let rec remove_one item = function
+  | [] -> None
+  | x :: xs when x = item -> Some xs
+  | x :: xs ->
+      match remove_one item xs with
+      | None -> None
+      | Some ys -> Some (x :: ys)
+
+let same_clause_multiset left right =
+  let rec consume remaining = function
+    | [] -> remaining = []
+    | item :: rest ->
+        match remove_one item remaining with
+        | None -> false
+        | Some remaining -> consume remaining rest
+  in
+  List.length left = List.length right && consume left right
+
+let lookup_clause checked id =
+  try List.assoc id checked with Not_found -> error ("unknown certificate parent " ^ id)
+
+let check_input_source = function
+  | SourceAxiom name
+  | SourceNegatedConjecture name
+  | SourceDefinition name
+  | SourceSetReflexivity name ->
+      if name = "" then error "input source name must be non-empty"
+
+let check_resolution checked id left_id right_id left_index right_index result =
+  let left_clause = lookup_clause checked left_id in
+  let right_clause = lookup_clause checked right_id in
+  let left_pivot = nth left_index left_clause (id ^ " left pivot") in
+  let right_pivot = nth right_index right_clause (id ^ " right pivot") in
+  if not (complementary left_pivot right_pivot) then
+    error (id ^ ": resolution pivots are not complementary");
+  let left_rest = remove_at left_index left_clause (id ^ " left pivot") in
+  let right_rest = remove_at right_index right_clause (id ^ " right pivot") in
+  let expected = left_rest @ right_rest in
+  if not (same_clause_multiset expected result) then
+    error (id ^ ": resolution result does not match parent clauses after pivot removal")
+
+let check_step checked = function
+  | Input (id, source, clause) ->
+      check_input_source source;
+      (id, clause) :: checked
+  | Resolve (id, left_id, right_id, left_index, right_index, result) ->
+      check_resolution checked id left_id right_id left_index right_index result;
+      (id, result) :: checked
+  | Contradiction (id, parent_id) ->
+      let clause = lookup_clause checked parent_id in
+      if clause <> [] then error (id ^ ": contradiction parent is not the empty clause");
+      (id, []) :: checked
+
+let check_certificate cert =
+  let checked = List.fold_left check_step [] cert.steps in
+  List.rev checked
