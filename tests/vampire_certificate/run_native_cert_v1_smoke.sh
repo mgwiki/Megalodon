@@ -95,6 +95,24 @@ if ! rg -q 'Vampire certificate v1 checked 4 steps' "$TMPDIR/native_cert_v1_defi
 fi
 
 bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_avatar_component_valid.sexp \
+  "$dummy" >"$TMPDIR/native_cert_v1_avatar_component_valid.log"
+
+if ! rg -q 'Vampire certificate v1 checked 6 steps' "$TMPDIR/native_cert_v1_avatar_component_valid.log"; then
+  echo "native certificate v1 checker did not accept the valid AVATAR component fixture" >&2
+  exit 1
+fi
+
+bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_avatar_refutation_valid.sexp \
+  "$dummy" >"$TMPDIR/native_cert_v1_avatar_refutation_valid.log"
+
+if ! rg -q 'Vampire certificate v1 checked 2 steps' "$TMPDIR/native_cert_v1_avatar_refutation_valid.log"; then
+  echo "native certificate v1 checker did not accept the valid AVATAR refutation fixture" >&2
+  exit 1
+fi
+
+bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_equality_symmetry_valid.sexp \
   "$dummy" >"$TMPDIR/native_cert_v1_equality_symmetry_valid.log"
 

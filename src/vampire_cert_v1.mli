@@ -19,6 +19,10 @@ type literal =
 
 type clause = literal list
 
+type sat_lit = int * bool
+
+type sat_clause = sat_lit list
+
 type checked_item =
   | CheckedClause of clause
   | CheckedFormula of Syntax.tm
@@ -40,6 +44,8 @@ type step =
   | PredicateDefinition of string * string * Syntax.tm
   | PredicateDefinitionFold of string * string * string * Syntax.tm
   | DefinitionInput of string * clause
+  | AvatarComponent of string * clause
+  | AvatarRefutation of string * sat_clause list * clause
   | FoolExhaustiveness of string * clause
   | FoolDistinctness of string * clause
   | Substitute of string * string * (string * Syntax.tm) list * clause

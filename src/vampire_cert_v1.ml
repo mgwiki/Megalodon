@@ -21,6 +21,10 @@ type literal =
 
 type clause = literal list
 
+type sat_lit = int * bool
+
+type sat_clause = sat_lit list
+
 type checked_item =
   | CheckedClause of clause
   | CheckedFormula of tm
@@ -42,6 +46,8 @@ type step =
   | PredicateDefinition of string * string * tm
   | PredicateDefinitionFold of string * string * string * tm
   | DefinitionInput of string * clause
+  | AvatarComponent of string * clause
+  | AvatarRefutation of string * sat_clause list * clause
   | FoolExhaustiveness of string * clause
   | FoolDistinctness of string * clause
   | Substitute of string * string * (string * tm) list * clause
@@ -176,6 +182,23 @@ let parse_parents = function
   | List [Atom "parents"; a; b] -> (atom a, atom b)
   | _ -> error "expected two parents"
 
+let bool_atom = function
+  | Atom "true" -> true
+  | Atom "false" -> false
+  | _ -> error "expected Boolean atom"
+
+let parse_sat_lit = function
+  | List [Atom "lit"; var; polarity] -> (int_atom var, bool_atom polarity)
+  | _ -> error "expected SAT literal"
+
+let parse_sat_clause = function
+  | List (Atom "sat_clause" :: literals) -> List.map parse_sat_lit literals
+  | _ -> error "expected SAT clause"
+
+let parse_sat_clauses = function
+  | List (Atom "sat_clauses" :: clauses) -> List.map parse_sat_clause clauses
+  | _ -> error "expected SAT clause list"
+
 let parse_pivot = function
   | List [Atom "pivot"; a; b] -> (int_atom a, int_atom b)
   | _ -> error "expected pivot"
@@ -279,6 +302,10 @@ let parse_step = function
         (atom id, parse_named_parent "source" source, parse_named_parent "definition" definition, parse_formula_result result)
   | List [Atom "definition_input"; id; result] ->
       DefinitionInput (atom id, parse_result result)
+  | List [Atom "avatar_component"; id; result] ->
+      AvatarComponent (atom id, parse_result result)
+  | List [Atom "avatar_refutation"; id; sat_clauses; result] ->
+      AvatarRefutation (atom id, parse_sat_clauses sat_clauses, parse_result result)
   | List [Atom "fool_exhaustiveness"; id; result] ->
       FoolExhaustiveness (atom id, parse_result result)
   | List [Atom "fool_distinctness"; id; result] ->
@@ -342,6 +369,8 @@ let step_id = function
   | PredicateDefinition (id, _, _) -> id
   | PredicateDefinitionFold (id, _, _, _) -> id
   | DefinitionInput (id, _) -> id
+  | AvatarComponent (id, _) -> id
+  | AvatarRefutation (id, _, _) -> id
   | FoolExhaustiveness (id, _) -> id
   | FoolDistinctness (id, _) -> id
   | Substitute (id, _, _, _) -> id
@@ -881,6 +910,67 @@ let check_definition_input id clause =
   | [_] -> error (id ^ ": definition_input literal must be positive")
   | _ -> error (id ^ ": definition_input must be a singleton equality clause")
 
+let string_starts_with prefix value =
+  let prefix_len = String.length prefix in
+  String.length value >= prefix_len && String.sub value 0 prefix_len = prefix
+
+let is_split_literal = function
+  | Pos (TmH name)
+  | Neg (TmH name) -> string_starts_with "split_" name
+  | _ -> false
+
+let check_avatar_component id clause =
+  let has_split = List.exists is_split_literal clause in
+  let has_component_literal = List.exists (fun lit -> not (is_split_literal lit)) clause in
+  if not has_split then
+    error (id ^ ": avatar_component must contain a split literal");
+  if not has_component_literal then
+    error (id ^ ": avatar_component must contain a component literal")
+
+let validate_sat_clauses id clauses =
+  if clauses = [] then error (id ^ ": avatar_refutation must contain SAT clauses");
+  List.iter
+    (List.iter
+       (fun (var, _) ->
+         if var <= 0 then error (id ^ ": SAT variable indices must be positive")))
+    clauses
+
+let rec sat_satisfiable clauses =
+  if clauses = [] then true
+  else if List.exists (function [] -> true | _ -> false) clauses then false
+  else
+    let var =
+      match clauses with
+      | ((var, _) :: _) :: _ -> var
+      | [] :: _ -> assert false
+      | [] -> assert false
+    in
+    let simplify value clauses =
+      let simplify_clause clause =
+        let rec loop acc = function
+          | [] -> Some (List.rev acc)
+          | (lit_var, lit_polarity) :: rest when lit_var = var ->
+              if lit_polarity = value then None else loop acc rest
+          | lit :: rest -> loop (lit :: acc) rest
+        in
+        loop [] clause
+      in
+      List.fold_right
+        (fun clause acc ->
+          match simplify_clause clause with
+          | Some simplified -> simplified :: acc
+          | None -> acc)
+        clauses
+        []
+    in
+    sat_satisfiable (simplify true clauses) || sat_satisfiable (simplify false clauses)
+
+let check_avatar_refutation id sat_clauses result =
+  validate_sat_clauses id sat_clauses;
+  if result <> [] then error (id ^ ": avatar_refutation result must be the empty clause");
+  if sat_satisfiable sat_clauses then
+    error (id ^ ": avatar_refutation SAT clauses are satisfiable")
+
 let rec head_symbol = function
   | TmH h -> Some h
   | Ap (fn, _) -> head_symbol fn
@@ -1185,6 +1275,12 @@ let check_step checked = function
   | DefinitionInput (id, clause) ->
       check_definition_input id clause;
       (id, CheckedClause clause) :: checked
+  | AvatarComponent (id, clause) ->
+      check_avatar_component id clause;
+      (id, CheckedClause clause) :: checked
+  | AvatarRefutation (id, sat_clauses, result) ->
+      check_avatar_refutation id sat_clauses result;
+      (id, CheckedClause result) :: checked
   | FoolExhaustiveness (id, clause) ->
       check_fool_exhaustiveness id clause;
       (id, CheckedClause clause) :: checked
