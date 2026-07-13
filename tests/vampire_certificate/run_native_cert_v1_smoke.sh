@@ -34,6 +34,16 @@ if ! rg -q 'Vampire certificate v1 source map checked 3 sources' "$WORK_DIR/nati
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_local_fact_negated.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_local_fact_negated.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_local_fact_negated.log"
+
+if ! rg -q 'Vampire certificate v1 source map checked 2 sources' "$WORK_DIR/native_cert_v1_source_map_local_fact_negated.log"; then
+  echo "native certificate v1 source-map checker did not accept negated local_fact preprocessing" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_missing.th0.p \

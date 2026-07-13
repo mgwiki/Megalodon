@@ -149,6 +149,25 @@ awk -F '\t' '{count[$2]++} END {for (status in count) print status, count[status
   | sort > "$WORK_DIR/counts.txt"
 cat "$WORK_DIR/counts.txt"
 
+find "$WORK_DIR/cases" -name native.sexp -type f -size +0 -print0 \
+  | xargs -0 -r cat \
+  | awk '
+      /^[[:space:]]+\([[:alpha:]_][[:alnum:]_]*/ {
+        line = $0
+        sub(/^[[:space:]]+\(/, "", line)
+        split(line, parts, /[[:space:])]/)
+        if (parts[1] != "problem") {
+          count[parts[1]]++
+        }
+      }
+      END {
+        for (rule in count) {
+          print rule, count[rule]
+        }
+      }' \
+  | sort > "$WORK_DIR/rule_counts.txt"
+cat "$WORK_DIR/rule_counts.txt"
+
 passes=$(awk -F '\t' '$2 == "PASS" {n++} END {print n + 0}' "$WORK_DIR/summary.tsv")
 failures=$(awk -F '\t' '$2 == "FAIL" {n++} END {print n + 0}' "$WORK_DIR/summary.tsv")
 

@@ -1813,7 +1813,7 @@ let source_of_step = function
 let source_map_kind_compatible source entry =
   match source, entry.source_map_kind with
   | SourceDefinition _, ("def" | "definition" | "local_definition") -> true
-  | SourceNegatedConjecture _, ("conjecture" | "negated_conjecture") -> true
+  | SourceNegatedConjecture _, ("conjecture" | "negated_conjecture" | "local_fact") -> true
   | SourceSetReflexivity _, ("set_reflexivity" | "local_set_reflexivity") -> true
   | SourceAxiom _, ("type" | "local_type") -> false
   | SourceAxiom _, _ -> true

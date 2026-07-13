@@ -41,7 +41,20 @@ certificate steps rather than imported as a fresh input.
 For freshly exported TH0 files containing `% megalodon_source_map` comments,
 set `CHECK_SOURCE_MAP=1` to additionally run `-vampirecertv1source` for every
 accepted native certificate. Use `PROBLEM_DIR` or `PROBLEMS_FILE` to select the
-fresh source-mapped corpus.
+fresh source-mapped corpus. The script also writes `rule_counts.txt` under the
+work directory so broad runs show which native certificate constructors were
+actually exercised.
+
+To export a Megalodon development once and then check the resulting source-mapped
+TH0 corpus in parallel, use:
+
+```sh
+tests/vampire_certificate/run_source_linked_corpus_parallel.sh
+```
+
+Set `MEGALODON_FILE`, `LIMIT`, `JOBS`, `VAMPIRE_SECONDS`, `WALL_SECONDS`, and
+`WORK_DIR` to control the corpus and runtime. Temporary corpora and outputs
+default to `/project/tmp`.
 
 The older Python/JSON prototype smoke script is now named
 `run_legacy_python_smoke.sh`. It remains useful for diagnostics and regression
