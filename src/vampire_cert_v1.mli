@@ -43,6 +43,7 @@ type step =
   | CnfLiteral of string * string * clause
   | PredicateDefinition of string * string * Syntax.tm
   | PredicateDefinitionFold of string * string * string * Syntax.tm
+  | PredicateDefinitionFoldChain of string * string * string list * Syntax.tm
   | DefinitionInput of string * clause
   | AvatarComponent of string * clause
   | AvatarRefutation of string * sat_clause list * clause

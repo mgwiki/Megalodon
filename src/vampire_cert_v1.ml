@@ -45,6 +45,7 @@ type step =
   | CnfLiteral of string * string * clause
   | PredicateDefinition of string * string * tm
   | PredicateDefinitionFold of string * string * string * tm
+  | PredicateDefinitionFoldChain of string * string * string list * tm
   | DefinitionInput of string * clause
   | AvatarComponent of string * clause
   | AvatarRefutation of string * sat_clause list * clause
@@ -216,6 +217,10 @@ let parse_named_parent name = function
   | List [Atom label; parent] when label = name -> atom parent
   | _ -> error ("expected " ^ name ^ " parent")
 
+let parse_named_parents name = function
+  | List (Atom label :: parents) when label = name -> List.map atom parents
+  | _ -> error ("expected " ^ name ^ " parent list")
+
 let parse_indexed_parent name = function
   | List [Atom label; parent; index] when label = name -> (atom parent, int_atom index)
   | _ -> error ("expected " ^ name ^ " parent and literal index")
@@ -301,6 +306,9 @@ let parse_step = function
   | List [Atom "predicate_definition_fold"; id; source; definition; result] ->
       PredicateDefinitionFold
         (atom id, parse_named_parent "source" source, parse_named_parent "definition" definition, parse_formula_result result)
+  | List [Atom "predicate_definition_fold_chain"; id; source; definitions; result] ->
+      PredicateDefinitionFoldChain
+        (atom id, parse_named_parent "source" source, parse_named_parents "definitions" definitions, parse_formula_result result)
   | List [Atom "definition_input"; id; result] ->
       DefinitionInput (atom id, parse_result result)
   | List [Atom "avatar_component"; id; result] ->
@@ -371,6 +379,7 @@ let step_id = function
   | CnfLiteral (id, _, _) -> id
   | PredicateDefinition (id, _, _) -> id
   | PredicateDefinitionFold (id, _, _, _) -> id
+  | PredicateDefinitionFoldChain (id, _, _, _) -> id
   | DefinitionInput (id, _) -> id
   | AvatarComponent (id, _) -> id
   | AvatarRefutation (id, _, _) -> id
@@ -755,6 +764,21 @@ let rec normalize_bool_equality_orientation tm =
   | All (tp, body) -> All (tp, normalize body)
   | _ -> tm
 
+let rec normalize_equality_orientation tm =
+  let normalize = normalize_equality_orientation in
+  match tm with
+  | Ap (Ap (TmH "=", left), right) ->
+      let left = normalize left in
+      let right = normalize right in
+      if compare left right <= 0 then Ap (Ap (TmH "=", left), right)
+      else Ap (Ap (TmH "=", right), left)
+  | TpAp (m, a) -> TpAp (normalize m, a)
+  | Ap (m, n) -> Ap (normalize m, normalize n)
+  | Lam (tp, body) -> Lam (tp, normalize body)
+  | Imp (left, right) -> Imp (normalize left, normalize right)
+  | All (tp, body) -> All (tp, normalize body)
+  | _ -> tm
+
 let rec strip_forall = function
   | All (_, body) -> strip_forall body
   | tm -> tm
@@ -834,7 +858,8 @@ let check_skolem_formula checked id parent_id subst result =
   let parent_formula = lookup_formula checked parent_id in
   let expected = skolemize_formula_tm subst parent_formula in
   if expected <> result
-    && normalize_bool_equality_orientation expected <> normalize_bool_equality_orientation result then
+    && normalize_bool_equality_orientation expected <> normalize_bool_equality_orientation result
+    && normalize_equality_orientation expected <> normalize_equality_orientation result then
     error (id ^ ": skolem_formula result does not match explicit skolem substitution")
 
 let check_skolem_formula_computed checked parent_id subst =
@@ -1090,6 +1115,59 @@ let check_predicate_definition_fold checked id source_id definition_id result =
   | Some true -> ()
   | _ -> error (id ^ ": predicate_definition_fold result is not one definition-body replacement")
 
+let rec tm_one_replacement_results source needle replacement =
+  let here = if source = needle then [replacement] else [] in
+  let below =
+    match source with
+    | TpAp (m, a) ->
+        List.map (fun m' -> TpAp (m', a)) (tm_one_replacement_results m needle replacement)
+    | Ap (m, n) ->
+        List.map (fun m' -> Ap (m', n)) (tm_one_replacement_results m needle replacement)
+        @ List.map (fun n' -> Ap (m, n')) (tm_one_replacement_results n needle replacement)
+    | Lam (tp, body) ->
+        List.map (fun body' -> Lam (tp, body')) (tm_one_replacement_results body needle replacement)
+    | Imp (left, right) ->
+        List.map (fun left' -> Imp (left', right)) (tm_one_replacement_results left needle replacement)
+        @ List.map (fun right' -> Imp (left, right')) (tm_one_replacement_results right needle replacement)
+    | All (tp, body) ->
+        List.map (fun body' -> All (tp, body')) (tm_one_replacement_results body needle replacement)
+    | _ -> []
+  in
+  here @ below
+
+let unique_terms terms =
+  let rec loop seen = function
+    | [] -> List.rev seen
+    | term :: rest ->
+        if List.exists ((=) term) seen then loop seen rest
+        else loop (term :: seen) rest
+  in
+  loop [] terms
+
+let check_predicate_definition_fold_chain checked id source_id definition_ids result =
+  if definition_ids = [] then error (id ^ ": predicate_definition_fold_chain needs at least one definition");
+  let source = lookup_formula checked source_id in
+  let candidates =
+    List.fold_left
+      (fun candidates definition_id ->
+         let definition = lookup_formula checked definition_id in
+         let definiendum, body = predicate_definition_parts definition_id definition in
+         let next =
+           unique_terms
+             (List.fold_left
+                (fun acc candidate ->
+                   tm_one_replacement_results candidate body definiendum @ acc)
+                [] candidates)
+         in
+         if next = [] then
+           error (id ^ ": predicate_definition_fold_chain could not apply definition " ^ definition_id);
+         next)
+      [source]
+      definition_ids
+  in
+  if not (List.exists ((=) result) candidates) then
+    error (id ^ ": predicate_definition_fold_chain result is not a sequence of definition-body replacements")
+
 let true_false_equality_var = function
   | Pos atom ->
       begin match equality_sides atom with
@@ -1305,6 +1383,9 @@ let check_step checked = function
       (id, CheckedFormula result) :: checked
   | PredicateDefinitionFold (id, source_id, definition_id, result) ->
       check_predicate_definition_fold checked id source_id definition_id result;
+      (id, CheckedFormula result) :: checked
+  | PredicateDefinitionFoldChain (id, source_id, definition_ids, result) ->
+      check_predicate_definition_fold_chain checked id source_id definition_ids result;
       (id, CheckedFormula result) :: checked
   | DefinitionInput (id, clause) ->
       check_definition_input id clause;

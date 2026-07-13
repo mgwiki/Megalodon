@@ -176,6 +176,15 @@ if ! rg -q 'Vampire certificate v1 checked 6 steps' "$TMPDIR/native_cert_v1_rect
 fi
 
 bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_skolem_equality_orientation_valid.sexp \
+  "$dummy" >"$TMPDIR/native_cert_v1_skolem_equality_orientation_valid.log"
+
+if ! rg -q 'Vampire certificate v1 checked 6 steps' "$TMPDIR/native_cert_v1_skolem_equality_orientation_valid.log"; then
+  echo "native certificate v1 checker did not accept the valid skolem equality-orientation fixture" >&2
+  exit 1
+fi
+
+bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_predicate_definition_valid.sexp \
   "$dummy" >"$TMPDIR/native_cert_v1_predicate_definition_valid.log"
 
@@ -190,6 +199,15 @@ bin/megalodon \
 
 if ! rg -q 'Vampire certificate v1 checked 7 steps' "$TMPDIR/native_cert_v1_predicate_definition_fold_valid.log"; then
   echo "native certificate v1 checker did not accept the valid predicate-definition-fold fixture" >&2
+  exit 1
+fi
+
+bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_predicate_definition_fold_chain_valid.sexp \
+  "$dummy" >"$TMPDIR/native_cert_v1_predicate_definition_fold_chain_valid.log"
+
+if ! rg -q 'Vampire certificate v1 checked 8 steps' "$TMPDIR/native_cert_v1_predicate_definition_fold_chain_valid.log"; then
+  echo "native certificate v1 checker did not accept the valid predicate-definition-fold-chain fixture" >&2
   exit 1
 fi
 
