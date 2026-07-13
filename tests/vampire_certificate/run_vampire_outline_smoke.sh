@@ -24,6 +24,8 @@ fi
 run_outline_case() {
   local label="$1"
   local problem="$2"
+  local expected_axiom_name="${3:-}"
+  local expected_negated_conjecture_name="${4:-}"
   local outline="$TMPDIR/${label}.out"
   local native_sexpr="$TMPDIR/${label}.sexp"
 
@@ -178,6 +180,16 @@ PY
     echo "$label: native certificate contains a Vampire-derived source assumption" >&2
     exit 1
   fi
+  if [[ -n "$expected_axiom_name" ]] \
+    && ! rg -q "\\(source axiom \"$expected_axiom_name\"\\)" "$native_sexpr"; then
+    echo "$label: native certificate did not preserve source axiom name $expected_axiom_name" >&2
+    exit 1
+  fi
+  if [[ -n "$expected_negated_conjecture_name" ]] \
+    && ! rg -q "\\(source negated_conjecture \"$expected_negated_conjecture_name\"\\)" "$native_sexpr"; then
+    echo "$label: native certificate did not preserve negated conjecture name $expected_negated_conjecture_name" >&2
+    exit 1
+  fi
 }
 
 resolution_problem="$TMPDIR/vampire_outline_smoke_resolution.p"
@@ -185,6 +197,7 @@ equality_resolution_problem="$TMPDIR/vampire_outline_smoke_equality_resolution.p
 factor_problem="$TMPDIR/vampire_outline_smoke_factor.p"
 substituted_resolution_problem="$TMPDIR/vampire_outline_smoke_substituted_resolution.p"
 superposition_problem="$TMPDIR/vampire_outline_smoke_superposition.p"
+source_names_problem="$TMPDIR/vampire_outline_smoke_source_names.p"
 
 cat >"$resolution_problem" <<'PROBLEM'
 cnf(a1, axiom, p(a)).
@@ -211,10 +224,16 @@ cnf(pa, axiom, p(f(a))).
 cnf(nb, axiom, ~p(b)).
 PROBLEM
 
+cat >"$source_names_problem" <<'PROBLEM'
+cnf(lemma_source, axiom, p(a)).
+cnf(goal_source, negated_conjecture, ~p(a)).
+PROBLEM
+
 run_outline_case vampire_outline_smoke_resolution "$resolution_problem"
 run_outline_case vampire_outline_smoke_equality_resolution "$equality_resolution_problem"
 run_outline_case vampire_outline_smoke_factor "$factor_problem"
 run_outline_case vampire_outline_smoke_substituted_resolution "$substituted_resolution_problem"
 run_outline_case vampire_outline_smoke_superposition "$superposition_problem"
+run_outline_case vampire_outline_smoke_source_names "$source_names_problem" lemma_source goal_source
 
 echo "vampire outline smoke test passed"
