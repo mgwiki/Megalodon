@@ -138,14 +138,19 @@ let rec parse_tp = function
   | List [Atom "AR"; a; b] -> Ar (parse_tp a, parse_tp b)
   | _ -> error "expected Megalodon type S-expression"
 
-let rec subst_named_tm name replacement = function
-  | TmH h when h = name -> replacement
-  | TpAp (m, a) -> TpAp (subst_named_tm name replacement m, a)
-  | Ap (m, n) -> Ap (subst_named_tm name replacement m, subst_named_tm name replacement n)
-  | Lam (tp, body) -> Lam (tp, subst_named_tm name replacement body)
-  | Imp (m, n) -> Imp (subst_named_tm name replacement m, subst_named_tm name replacement n)
-  | All (tp, body) -> All (tp, subst_named_tm name replacement body)
-  | tm -> tm
+let subst_named_tm name tm =
+  let db_name depth = TmH ("db" ^ string_of_int depth) in
+  let rec subst depth = function
+    | TmH h when h = name -> db_name depth
+    | TpAp (m, a) -> TpAp (subst depth m, a)
+    | Ap (TmH "vLAM", body) -> Ap (TmH "vLAM", subst (depth + 1) body)
+    | Ap (m, n) -> Ap (subst depth m, subst depth n)
+    | Lam (tp, body) -> Lam (tp, subst (depth + 1) body)
+    | Imp (m, n) -> Imp (subst depth m, subst depth n)
+    | All (tp, body) -> All (tp, subst (depth + 1) body)
+    | tm -> tm
+  in
+  subst 0 tm
 
 let rec parse_tm = function
   | List [Atom "DB"; n] -> DB (int_atom n)
@@ -156,7 +161,7 @@ let rec parse_tm = function
   | List [Atom "LAM"; a; m] -> Lam (parse_tp a, parse_tm m)
   | List [Atom "LAMV"; name; a; m] ->
       ignore (parse_tp a);
-      Ap (TmH "vLAM", subst_named_tm (atom name) (TmH "db0") (parse_tm m))
+      Ap (TmH "vLAM", subst_named_tm (atom name) (parse_tm m))
   | List [Atom "IMP"; m; n] -> Imp (parse_tm m, parse_tm n)
   | List [Atom "ALL"; a; m] -> All (parse_tp a, parse_tm m)
   | _ -> error "expected Megalodon term S-expression"
