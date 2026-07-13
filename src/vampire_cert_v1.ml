@@ -731,9 +731,9 @@ let rec cnf_clauses tm =
       let right_clauses = cnf_clauses right in
       List.concat
         (List.map
-           (fun left_clause ->
-             List.map (fun right_clause -> left_clause @ right_clause) right_clauses)
-           left_clauses)
+           (fun right_clause ->
+             List.map (fun left_clause -> left_clause @ right_clause) left_clauses)
+           right_clauses)
   | atom -> [[literal_of_formula_tm atom]]
 
 let check_input_source = function

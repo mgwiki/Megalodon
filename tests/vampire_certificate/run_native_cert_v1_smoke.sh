@@ -122,6 +122,15 @@ if ! rg -q 'Vampire certificate v1 checked 9 steps' "$TMPDIR/native_cert_v1_form
 fi
 
 bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_formula_cnf_vampire_order_valid.sexp \
+  "$dummy" >"$TMPDIR/native_cert_v1_formula_cnf_vampire_order_valid.log"
+
+if ! rg -q 'Vampire certificate v1 checked 7 steps' "$TMPDIR/native_cert_v1_formula_cnf_vampire_order_valid.log"; then
+  echo "native certificate v1 checker did not accept the valid Vampire-order formula CNF fixture" >&2
+  exit 1
+fi
+
+bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_rectify_formula_valid.sexp \
   "$dummy" >"$TMPDIR/native_cert_v1_rectify_formula_valid.log"
 
