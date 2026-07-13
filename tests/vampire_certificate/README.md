@@ -20,6 +20,12 @@ This is the primary certificate smoke test. It checks the OCaml
 `-vampirecertv1` importer against native S-expression fixtures and should be the
 first test used for counted reconstruction work.
 
+The default smoke command is native-only:
+
+```sh
+tests/vampire_certificate/run_smoke.sh
+```
+
 For live corpora, use:
 
 ```sh
@@ -32,9 +38,10 @@ certificate block emitted by Vampire, and checks it with Megalodon's OCaml
 Vampire-derived source assumptions; a counted success must be traced through
 certificate steps rather than imported as a fresh input.
 
-The older `run_smoke.sh` script exercises the Python/JSON prototype. It remains
-useful for diagnostics and regression comparison, but its successes do not count
-as accepted Vampire-to-Megalodon reconstruction.
+The older Python/JSON prototype smoke script is now named
+`run_legacy_python_smoke.sh`. It remains useful for diagnostics and regression
+comparison, but its successes do not count as accepted Vampire-to-Megalodon
+reconstruction.
 
 The legacy smoke script also uses `--emit-megalodon` on the propositional
 `valid_resolution.json` certificate and the first-order
