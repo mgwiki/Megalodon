@@ -51,6 +51,19 @@ Set `STRICT_CERT_V1=1` to run the live certificates through
 `-vampirecertv1strict`; these stricter runs currently reject AVATAR macro steps
 and should be reported separately from compatibility coverage.
 
+For repeatable non-overlapping corpus slices, use:
+
+```sh
+tests/vampire_certificate/run_native_corpus_slice.sh
+```
+
+Set `PROBLEM_DIR`, `SLICE_START`, `SLICE_SIZE` or `SLICE_END`, `WORK_DIR`,
+`JOBS`, `VAMPIRE_SECONDS`, `WALL_SECONDS`, and `MIN_PASS` to control the run.
+The defaults use `/project/tmp`, `JOBS=20`, `VAMPIRE_SECONDS=10`,
+`CHECK_SOURCE_MAP=1`, `STRICT_CERT_V1=1`, and `--avatar off`. The wrapper writes
+the selected filename list to `/project/tmp/native_slice_START_END.list` and
+then delegates to `run_native_live_parallel.sh`.
+
 To export a Megalodon development once and then check the resulting source-mapped
 TH0 corpus in parallel, use:
 
