@@ -93,6 +93,7 @@ type step =
   | EqualityResolution of string * string * int * clause
   | EqualityResolutionConstraints of string * string * int * literal * clause * clause
   | EqualityFactoring of string * string * int * int * (string * tm) list * clause
+  | EqualityFactoringConstraints of string * string * int * int * (string * tm) list * clause * clause
   | TruthConflict of string * string * int * clause
   | EqualitySymmetry of string * string * int * clause
   | Paramodulate of string * string * string * int * int * int list * tm * tm * clause
@@ -513,6 +514,15 @@ let parse_step = function
         parse_named_index "other" other,
         parse_substitution subst,
         parse_result result)
+  | List [Atom "equality_factoring_constraints"; id; parent; selected; other; subst; constraints; result] ->
+      EqualityFactoringConstraints (
+        atom id,
+        parse_parent parent,
+        parse_named_index "selected" selected,
+        parse_named_index "other" other,
+        parse_substitution subst,
+        parse_constraints constraints,
+        parse_result result)
   | List [Atom "truth_conflict"; id; parent; literal; result] ->
       TruthConflict (atom id, parse_parent parent, parse_literal_index literal, parse_result result)
   | List [Atom "equality_symmetry"; id; parent; literal; result] ->
@@ -585,6 +595,7 @@ let step_id = function
   | EqualityResolution (id, _, _, _) -> id
   | EqualityResolutionConstraints (id, _, _, _, _, _) -> id
   | EqualityFactoring (id, _, _, _, _, _) -> id
+  | EqualityFactoringConstraints (id, _, _, _, _, _, _) -> id
   | TruthConflict (id, _, _, _) -> id
   | EqualitySymmetry (id, _, _, _) -> id
   | Paramodulate (id, _, _, _, _, _, _, _, _) -> id
@@ -2058,7 +2069,73 @@ let check_equality_resolution_constraints checked id parent_id literal_index sel
   if not (same_clause_multiset expected result) then
     error (id ^ ": equality-resolution constraints do not explain result")
 
-let check_equality_factoring checked id parent_id selected_index other_index subst result =
+let diseq_literal left right = Neg (Ap (Ap (TmH "=", left), right))
+
+let rec term_disagreement_constraints left right =
+  if left = right then []
+  else
+    let left_head, left_args = application_spine left in
+    let right_head, right_args = application_spine right in
+    if left_head = right_head && List.length left_args = List.length right_args then
+      let rec collect acc = function
+        | [], [] -> List.rev acc
+        | l :: ls, r :: rs ->
+            let constraints =
+              if l = r then []
+              else
+                let nested = term_disagreement_constraints l r in
+                if nested = [] then [diseq_literal l r] else nested
+            in
+            collect (List.rev_append constraints acc) (ls, rs)
+        | _ -> [diseq_literal left right]
+      in
+      collect [] (left_args, right_args)
+    else
+      [diseq_literal left right]
+
+let equality_factoring_constraint_candidates selected_sides other_sides =
+  let selected_left, selected_right = selected_sides in
+  let other_left, other_right = other_sides in
+  let candidates = ref [] in
+  let add_simple shared selected_other other_other =
+    if shared then begin
+      candidates := [diseq_literal selected_other other_other] :: !candidates;
+      candidates := [diseq_literal other_other selected_other] :: !candidates
+    end
+  in
+  let add_decomposed selected_shared selected_other other_shared other_other =
+    let constraints =
+      diseq_literal selected_shared other_shared
+      :: term_disagreement_constraints selected_other other_other
+    in
+    let reversed =
+      diseq_literal other_shared selected_shared
+      :: term_disagreement_constraints other_other selected_other
+    in
+    candidates := constraints :: reversed :: !candidates
+  in
+  add_simple (selected_right = other_right) selected_left other_left;
+  add_simple (selected_right = other_left) selected_left other_right;
+  add_simple (selected_left = other_right) selected_right other_left;
+  add_simple (selected_left = other_left) selected_right other_right;
+  add_decomposed selected_right selected_left other_right other_left;
+  add_decomposed selected_right selected_left other_left other_right;
+  add_decomposed selected_left selected_right other_right other_left;
+  add_decomposed selected_left selected_right other_left other_right;
+  List.filter (fun constraints -> constraints <> []) !candidates
+
+let check_negative_equality_constraints id constraints =
+  List.iter
+    (function
+      | Neg atom ->
+          begin match equality_sides atom with
+          | Some _ -> ()
+          | None -> error (id ^ ": equality-factoring constraint is not an equality atom")
+          end
+      | Pos _ -> error (id ^ ": equality-factoring constraint must be negative"))
+    constraints
+
+let equality_factoring_context checked id parent_id selected_index other_index subst =
   if selected_index = other_index then error (id ^ ": equality-factoring literal indices must be distinct");
   let parent_clause = lookup_clause checked parent_id in
   let selected_literal = nth selected_index parent_clause (id ^ " selected equality") in
@@ -2083,30 +2160,40 @@ let check_equality_factoring checked id parent_id selected_index other_index sub
         end
     | Neg _ -> error (id ^ ": other literal must be positive")
   in
-  let selected_left, selected_right = selected_sides in
-  let other_left, other_right = other_sides in
-  let diseq left right = Neg (Ap (Ap (TmH "=", left), right)) in
-  let candidates = ref [] in
-  let add shared selected_other other_other =
-    if shared then begin
-      candidates := diseq selected_other other_other :: !candidates;
-      candidates := diseq other_other selected_other :: !candidates
-    end
-  in
-  add (selected_right = other_right) selected_left other_left;
-  add (selected_right = other_left) selected_left other_right;
-  add (selected_left = other_right) selected_right other_left;
-  add (selected_left = other_left) selected_right other_right;
-  if !candidates = [] then error (id ^ ": selected and other equalities do not share a side after substitution");
   let substituted_parent = subst_clause subst parent_clause in
   let without_selected = remove_at selected_index substituted_parent (id ^ " selected equality") in
+  selected_sides, other_sides, without_selected
+
+let check_equality_factoring checked id parent_id selected_index other_index subst result =
+  let selected_sides, other_sides, without_selected =
+    equality_factoring_context checked id parent_id selected_index other_index subst
+  in
+  let candidates = equality_factoring_constraint_candidates selected_sides other_sides in
+  if candidates = [] then error (id ^ ": selected and other equalities do not yield factoring constraints");
   if not (List.exists
-      (fun candidate ->
-        let expected = without_selected @ [candidate] in
+      (fun candidate_constraints ->
+        let expected = without_selected @ candidate_constraints in
         same_clause_multiset expected result
         || same_clause_set_mod_equality expected result)
-      !candidates) then
+      candidates) then
     error (id ^ ": equality-factoring result does not match explicit factoring")
+
+let check_equality_factoring_constraints checked id parent_id selected_index other_index subst constraints result =
+  if constraints = [] then error (id ^ ": equality-factoring constraints must be non-empty");
+  check_negative_equality_constraints id constraints;
+  let selected_sides, other_sides, without_selected =
+    equality_factoring_context checked id parent_id selected_index other_index subst
+  in
+  let expected = without_selected @ constraints in
+  if not (same_clause_multiset expected result || same_clause_set_mod_equality expected result) then
+    error (id ^ ": equality-factoring constraints do not explain result");
+  let candidates = equality_factoring_constraint_candidates selected_sides other_sides in
+  if not (List.exists
+      (fun candidate ->
+        same_clause_multiset candidate constraints
+        || same_clause_set_mod_equality candidate constraints)
+      candidates) then
+    error (id ^ ": equality-factoring constraints are not explained by selected and other equalities")
 
 let check_truth_conflict checked id parent_id literal_index result =
   let parent_clause = lookup_clause checked parent_id in
@@ -2377,6 +2464,9 @@ let check_step checked = function
       (id, CheckedClause result) :: checked
   | EqualityFactoring (id, parent_id, selected_index, other_index, subst, result) ->
       check_equality_factoring checked id parent_id selected_index other_index subst result;
+      (id, CheckedClause result) :: checked
+  | EqualityFactoringConstraints (id, parent_id, selected_index, other_index, subst, constraints, result) ->
+      check_equality_factoring_constraints checked id parent_id selected_index other_index subst constraints result;
       (id, CheckedClause result) :: checked
   | TruthConflict (id, parent_id, literal_index, result) ->
       check_truth_conflict checked id parent_id literal_index result;

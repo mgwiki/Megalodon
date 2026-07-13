@@ -91,6 +91,7 @@ type step =
   | EqualityResolution of string * string * int * clause
   | EqualityResolutionConstraints of string * string * int * literal * clause * clause
   | EqualityFactoring of string * string * int * int * (string * Syntax.tm) list * clause
+  | EqualityFactoringConstraints of string * string * int * int * (string * Syntax.tm) list * clause * clause
   | TruthConflict of string * string * int * clause
   | EqualitySymmetry of string * string * int * clause
   | Paramodulate of string * string * string * int * int * int list * Syntax.tm * Syntax.tm * clause
