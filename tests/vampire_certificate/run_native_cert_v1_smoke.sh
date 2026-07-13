@@ -31,6 +31,15 @@ if ! rg -q 'Vampire certificate v1 checked 3 steps' "$TMPDIR/native_cert_v1_fact
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_subst_paramod_valid.sexp \
+  "$dummy" >"$TMPDIR/native_cert_v1_subst_paramod_valid.log"
+
+if ! rg -q 'Vampire certificate v1 checked 7 steps' "$TMPDIR/native_cert_v1_subst_paramod_valid.log"; then
+  echo "native certificate v1 checker did not accept the valid substitution/paramodulation fixture" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_invalid_pivot.sexp \
   "$dummy" >"$TMPDIR/native_cert_v1_invalid_pivot.out" \
@@ -54,6 +63,19 @@ fi
 
 if ! rg -q 'equality-resolution equality is not reflexive' "$TMPDIR/native_cert_v1_invalid_equality_resolution.err"; then
   echo "native certificate v1 invalid-equality failure did not explain the rejected side condition" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_invalid_paramod_position.sexp \
+  "$dummy" >"$TMPDIR/native_cert_v1_invalid_paramod_position.out" \
+  2>"$TMPDIR/native_cert_v1_invalid_paramod_position.err"; then
+  echo "native certificate v1 checker accepted a paramodulation with a bad target position" >&2
+  exit 1
+fi
+
+if ! rg -q 'paramodulation position does not contain from term' "$TMPDIR/native_cert_v1_invalid_paramod_position.err"; then
+  echo "native certificate v1 invalid-paramodulation failure did not explain the rejected side condition" >&2
   exit 1
 fi
 
