@@ -519,6 +519,20 @@ let rec skolemize_formula_tm subst tm =
   | Lam (tp, body) -> Lam (tp, skolemize_formula_tm subst body)
   | _ -> tm
 
+let rec normalize_bool_equality_orientation tm =
+  let normalize = normalize_bool_equality_orientation in
+  match tm with
+  | Ap (Ap (TmH "=", left), TmH h) when h = "f__true" || h = "f__false" ->
+      Ap (Ap (TmH "=", TmH h), normalize left)
+  | Ap (Ap (TmH "=", left), right) ->
+      Ap (Ap (TmH "=", normalize left), normalize right)
+  | TpAp (m, a) -> TpAp (normalize m, a)
+  | Ap (m, n) -> Ap (normalize m, normalize n)
+  | Lam (tp, body) -> Lam (tp, normalize body)
+  | Imp (left, right) -> Imp (normalize left, normalize right)
+  | All (tp, body) -> All (tp, normalize body)
+  | _ -> tm
+
 let rec strip_forall = function
   | All (_, body) -> strip_forall body
   | tm -> tm
@@ -578,7 +592,8 @@ let check_ennf_formula checked id parent_id result =
 let check_skolem_formula checked id parent_id subst result =
   let parent_formula = lookup_formula checked parent_id in
   let expected = skolemize_formula_tm subst parent_formula in
-  if expected <> result then
+  if expected <> result
+    && normalize_bool_equality_orientation expected <> normalize_bool_equality_orientation result then
     error (id ^ ": skolem_formula result does not match explicit skolem substitution")
 
 let check_cnf_formula_clause checked id parent_id index result =
