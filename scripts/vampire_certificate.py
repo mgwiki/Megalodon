@@ -1169,7 +1169,7 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
                 + (introduced,)
             )
             clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
-            if clause != expected:
+            if clause != expected and not clauses_match_modulo_equality_symmetry(expected, clause):
                 raise CertificateError(f"{step_id}: equality-factoring conclusion does not match parent")
 
         elif rule == "substitute":
@@ -3962,8 +3962,14 @@ def equality_factoring_proof_text(
         raise CertificateError("equality-factoring literals must be equalities")
     diff = Literal(True, Term("eq", selected.atom.name, (selected_rhs_subst, other_rhs_subst)))
     introduced = diff.complement
-    if introduced not in normalize_clause(conclusion):
-        raise CertificateError("equality-factoring conclusion does not contain introduced disequality")
+    normalized_conclusion = normalize_clause(conclusion)
+    introduced_for_conclusion = introduced
+    if introduced not in normalized_conclusion:
+        swapped_introduced = swap_equality_literal(introduced)
+        if swapped_introduced in normalized_conclusion:
+            introduced_for_conclusion = swapped_introduced
+        else:
+            raise CertificateError("equality-factoring conclusion does not contain introduced disequality")
     goal = clause_body_text(conclusion)
     instantiated_parent_proof = instantiate_proof(parent_proof, parent_clause, substitution)
 
@@ -3983,10 +3989,13 @@ def equality_factoring_proof_text(
         if literal == instantiated_selected:
             diff_proof = fresh_proof_name("Heqfact")
             diseq_proof = fresh_proof_name("Hneqfact")
+            introduced_proof = diseq_proof
+            if introduced_for_conclusion != introduced:
+                introduced_proof = equality_symmetry_literal_proof(introduced, diseq_proof)
             return (
                 f"((xm {literal_text(diff)}) {goal} "
                 f"(fun {diff_proof} => {intro_literal_proof(instantiated_other, conclusion, prove_other_from_diff(proof, diff_proof))}) "
-                f"(fun {diseq_proof} => {intro_literal_proof(introduced, conclusion, diseq_proof)}))"
+                f"(fun {diseq_proof} => {intro_literal_proof(introduced_for_conclusion, conclusion, introduced_proof)}))"
             )
         return intro_literal_proof(literal, conclusion, proof)
 
