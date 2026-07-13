@@ -43,6 +43,7 @@ type step =
   | PredicateDefinitionFold of string * string * string * tm
   | DefinitionInput of string * clause
   | FoolExhaustiveness of string * clause
+  | FoolDistinctness of string * clause
   | Substitute of string * string * (string * tm) list * clause
   | Resolve of string * string * string * int * int * clause
   | Factor of string * string * int * int * clause
@@ -280,6 +281,8 @@ let parse_step = function
       DefinitionInput (atom id, parse_result result)
   | List [Atom "fool_exhaustiveness"; id; result] ->
       FoolExhaustiveness (atom id, parse_result result)
+  | List [Atom "fool_distinctness"; id; result] ->
+      FoolDistinctness (atom id, parse_result result)
   | List [Atom "substitute"; id; parent; subst; result] ->
       Substitute (atom id, parse_parent parent, parse_substitution subst, parse_result result)
   | List [Atom "resolve"; id; parents; pivot; result] ->
@@ -340,6 +343,7 @@ let step_id = function
   | PredicateDefinitionFold (id, _, _, _) -> id
   | DefinitionInput (id, _) -> id
   | FoolExhaustiveness (id, _) -> id
+  | FoolDistinctness (id, _) -> id
   | Substitute (id, _, _, _) -> id
   | Resolve (id, _, _, _, _, _) -> id
   | Factor (id, _, _, _, _) -> id
@@ -971,6 +975,18 @@ let check_fool_exhaustiveness id clause =
       end
   | _ -> error (id ^ ": fool_exhaustiveness must have exactly two literals")
 
+let check_fool_distinctness id clause =
+  match clause with
+  | [Neg atom] ->
+      begin match equality_sides atom with
+      | Some (TmH "f__true", TmH "f__false")
+      | Some (TmH "f__false", TmH "f__true") -> ()
+      | Some _ -> error (id ^ ": fool_distinctness is not true != false")
+      | None -> error (id ^ ": fool_distinctness literal is not an equality")
+      end
+  | [_] -> error (id ^ ": fool_distinctness literal must be negative")
+  | _ -> error (id ^ ": fool_distinctness must be a singleton clause")
+
 let check_equality_resolution checked id parent_id literal_index result =
   let parent_clause = lookup_clause checked parent_id in
   let literal = nth literal_index parent_clause (id ^ " equality-resolution literal") in
@@ -1158,6 +1174,9 @@ let check_step checked = function
       (id, CheckedClause clause) :: checked
   | FoolExhaustiveness (id, clause) ->
       check_fool_exhaustiveness id clause;
+      (id, CheckedClause clause) :: checked
+  | FoolDistinctness (id, clause) ->
+      check_fool_distinctness id clause;
       (id, CheckedClause clause) :: checked
   | Substitute (id, parent_id, subst, result) ->
       check_substitute checked id parent_id subst result;

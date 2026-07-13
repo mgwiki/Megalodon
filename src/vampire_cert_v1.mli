@@ -41,6 +41,7 @@ type step =
   | PredicateDefinitionFold of string * string * string * Syntax.tm
   | DefinitionInput of string * clause
   | FoolExhaustiveness of string * clause
+  | FoolDistinctness of string * clause
   | Substitute of string * string * (string * Syntax.tm) list * clause
   | Resolve of string * string * string * int * int * clause
   | Factor of string * string * int * int * clause
