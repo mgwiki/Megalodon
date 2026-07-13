@@ -30,6 +30,15 @@ type inequality_split = {
   split_replacement : literal;
 }
 
+type definition_rewrite = {
+  definition_parent : string;
+  definition_literal : int;
+  target_literal : int;
+  rewrite_position : int list;
+  rewrite_from : Syntax.tm;
+  rewrite_to : Syntax.tm;
+}
+
 type checked_item =
   | CheckedClause of clause
   | CheckedFormula of Syntax.tm
@@ -52,6 +61,7 @@ type step =
   | PredicateDefinitionFold of string * string * string * Syntax.tm
   | PredicateDefinitionFoldChain of string * string * string list * Syntax.tm
   | DefinitionInput of string * clause
+  | DefinitionRewriteChain of string * string * definition_rewrite list * clause
   | AvatarComponent of string * clause
   | AvatarRefutation of string * sat_clause list * clause
   | FoolExhaustiveness of string * clause

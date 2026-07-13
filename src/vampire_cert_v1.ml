@@ -32,6 +32,15 @@ type inequality_split = {
   split_replacement : literal;
 }
 
+type definition_rewrite = {
+  definition_parent : string;
+  definition_literal : int;
+  target_literal : int;
+  rewrite_position : int list;
+  rewrite_from : tm;
+  rewrite_to : tm;
+}
+
 type checked_item =
   | CheckedClause of clause
   | CheckedFormula of tm
@@ -54,6 +63,7 @@ type step =
   | PredicateDefinitionFold of string * string * string * tm
   | PredicateDefinitionFoldChain of string * string * string list * tm
   | DefinitionInput of string * clause
+  | DefinitionRewriteChain of string * string * definition_rewrite list * clause
   | AvatarComponent of string * clause
   | AvatarRefutation of string * sat_clause list * clause
   | FoolExhaustiveness of string * clause
@@ -286,6 +296,28 @@ let parse_inequality_splits = function
   | List (Atom "splits" :: splits) -> List.map parse_inequality_split splits
   | _ -> error "expected inequality split list"
 
+let parse_definition_rewrite = function
+  | List [Atom "rewrite"; definition; target_literal; position; from_tm; to_tm] ->
+      let definition_parent, definition_literal = parse_indexed_parent "definition" definition in
+      let target_literal =
+        match target_literal with
+        | List [Atom "target_literal"; index] -> int_atom index
+        | _ -> error "expected target literal index"
+      in
+      {
+        definition_parent;
+        definition_literal;
+        target_literal;
+        rewrite_position = parse_position position;
+        rewrite_from = parse_tm_field "from" from_tm;
+        rewrite_to = parse_tm_field "to" to_tm;
+      }
+  | _ -> error "expected definition rewrite"
+
+let parse_definition_rewrites = function
+  | List (Atom "rewrites" :: rewrites) -> List.map parse_definition_rewrite rewrites
+  | _ -> error "expected definition rewrite list"
+
 let parse_literal_result = function
   | List [Atom "result"; literal] -> parse_literal literal
   | _ -> error "expected result literal"
@@ -343,6 +375,8 @@ let parse_step = function
         (atom id, parse_named_parent "source" source, parse_named_parents "definitions" definitions, parse_formula_result result)
   | List [Atom "definition_input"; id; result] ->
       DefinitionInput (atom id, parse_result result)
+  | List [Atom "definition_rewrite_chain"; id; parent; rewrites; result] ->
+      DefinitionRewriteChain (atom id, parse_parent parent, parse_definition_rewrites rewrites, parse_result result)
   | List [Atom "avatar_component"; id; result] ->
       AvatarComponent (atom id, parse_result result)
   | List [Atom "avatar_refutation"; id; sat_clauses; result] ->
@@ -417,6 +451,7 @@ let step_id = function
   | PredicateDefinitionFold (id, _, _, _) -> id
   | PredicateDefinitionFoldChain (id, _, _, _) -> id
   | DefinitionInput (id, _) -> id
+  | DefinitionRewriteChain (id, _, _, _) -> id
   | AvatarComponent (id, _) -> id
   | AvatarRefutation (id, _, _) -> id
   | FoolExhaustiveness (id, _) -> id
@@ -479,6 +514,15 @@ let remove_at index items what =
   let rec aux i = function
     | [] -> error (what ^ " index is out of bounds")
     | _ :: rest when i = index -> rest
+    | item :: rest -> item :: aux (i + 1) rest
+  in
+  aux 0 items
+
+let replace_at index replacement items what =
+  if index < 0 then error (what ^ " index must be non-negative");
+  let rec aux i = function
+    | [] -> error (what ^ " index is out of bounds")
+    | _ :: rest when i = index -> replacement :: rest
     | item :: rest -> item :: aux (i + 1) rest
   in
   aux 0 items
@@ -1007,6 +1051,49 @@ let check_definition_input id clause =
   | [_] -> error (id ^ ": definition_input literal must be positive")
   | _ -> error (id ^ ": definition_input must be a singleton equality clause")
 
+let check_definition_rewrite_chain checked id source_id rewrites result =
+  if rewrites = [] then error (id ^ ": definition_rewrite_chain needs at least one rewrite");
+  let source_clause = lookup_clause checked source_id in
+  let check_definition rewrite =
+    let definition_clause = lookup_clause checked rewrite.definition_parent in
+    let definition_literal =
+      nth rewrite.definition_literal definition_clause (id ^ " definition literal")
+    in
+    match definition_literal with
+    | Pos atom ->
+        begin match equality_sides atom with
+        | Some (left, right)
+            when (left = rewrite.rewrite_from && right = rewrite.rewrite_to)
+              || (right = rewrite.rewrite_from && left = rewrite.rewrite_to) -> ()
+        | Some _ -> error (id ^ ": definition rewrite from/to terms do not match definition parent")
+        | None -> error (id ^ ": definition rewrite parent literal is not an equality")
+        end
+    | Neg _ -> error (id ^ ": definition rewrite parent literal must be positive")
+  in
+  let current =
+    List.fold_left
+      (fun current rewrite ->
+         check_definition rewrite;
+         let target_literal =
+           nth rewrite.target_literal current (id ^ " definition rewrite target literal")
+         in
+         let target_atom = literal_atom target_literal in
+         begin match try_tm_at_position target_atom rewrite.rewrite_position with
+         | Some found when found = rewrite.rewrite_from -> ()
+         | Some _ -> error (id ^ ": definition rewrite position does not contain from term")
+         | None -> error (id ^ ": definition rewrite position is invalid")
+         end;
+         let rewritten_atom =
+           replace_tm_at_position target_atom rewrite.rewrite_position rewrite.rewrite_to id
+         in
+         let rewritten_literal = replace_literal_atom target_literal rewritten_atom in
+         replace_at rewrite.target_literal rewritten_literal current (id ^ " definition rewrite target literal"))
+      source_clause
+      rewrites
+  in
+  if not (same_clause_multiset current result) then
+    error (id ^ ": definition_rewrite_chain result does not match explicit rewrite sequence")
+
 let string_starts_with prefix value =
   let prefix_len = String.length prefix in
   String.length value >= prefix_len && String.sub value 0 prefix_len = prefix
@@ -1515,6 +1602,9 @@ let check_step checked = function
   | DefinitionInput (id, clause) ->
       check_definition_input id clause;
       (id, CheckedClause clause) :: checked
+  | DefinitionRewriteChain (id, source_id, rewrites, result) ->
+      check_definition_rewrite_chain checked id source_id rewrites result;
+      (id, CheckedClause result) :: checked
   | AvatarComponent (id, clause) ->
       check_avatar_component id clause;
       (id, CheckedClause clause) :: checked
