@@ -894,6 +894,30 @@ def sat_clauses_unsat(clauses: tuple[tuple[tuple[int, bool], ...], ...]) -> bool
     return not search()
 
 
+def sat_split_name(var: int) -> str:
+    if var <= 0:
+        raise CertificateError(f"SAT variable must be positive, got {var}")
+    return f"split_{var}"
+
+
+def sat_literal_prop_text(literal: tuple[int, bool]) -> str:
+    var, polarity = literal
+    atom = sat_split_name(var)
+    if polarity:
+        return atom
+    return f"({atom} -> False)"
+
+
+def sat_clause_prop_text(clause: tuple[tuple[int, bool], ...]) -> str:
+    if not clause:
+        return "False"
+    parts = [sat_literal_prop_text(literal) for literal in clause]
+    result = parts[-1]
+    for part in reversed(parts[:-1]):
+        result = f"({part} \\/ {result})"
+    return result
+
+
 def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
     global LAMBDA_HINTS
     if not isinstance(data, dict):
@@ -3535,6 +3559,130 @@ def truth_conflict_resolution_proof_text(
     return eliminate_clause_proof(instantiated_parent, instantiated_parent_proof, goal, branch)
 
 
+def eliminate_sat_clause_proof(
+    clause: tuple[tuple[int, bool], ...],
+    proof: str,
+    goal: str,
+    branch_proof,
+) -> str:
+    if not clause:
+        return f"({proof} {goal})"
+    if len(clause) == 1:
+        return branch_proof(clause[0], proof)
+    head = clause[0]
+    tail = tuple(clause[1:])
+    head_proof = fresh_proof_name("Hsat")
+    tail_proof = fresh_proof_name("Hsat_tail")
+    return (
+        f"({proof} {goal} "
+        f"(fun {head_proof} => {branch_proof(head, head_proof)}) "
+        f"(fun {tail_proof} => {eliminate_sat_clause_proof(tail, tail_proof, goal, branch_proof)}))"
+    )
+
+
+def false_from_sat_assignment(
+    literal: tuple[int, bool],
+    literal_proof: str,
+    assignment: dict[int, tuple[bool, str]],
+) -> str:
+    var, polarity = literal
+    assigned = assignment.get(var)
+    if assigned is None:
+        raise CertificateError(f"SAT literal split_{var} is not assigned")
+    value, value_proof = assigned
+    if value == polarity:
+        raise CertificateError(f"SAT literal split_{var} is satisfied, not contradictory")
+    if polarity:
+        return f"({value_proof} {literal_proof})"
+    return f"({literal_proof} {value_proof})"
+
+
+def derive_sat_unit_proof(
+    clause: tuple[tuple[int, bool], ...],
+    clause_proof: str,
+    unit_literal: tuple[int, bool],
+    assignment: dict[int, tuple[bool, str]],
+) -> str:
+    goal = sat_literal_prop_text(unit_literal)
+
+    def branch(literal: tuple[int, bool], proof: str) -> str:
+        if literal == unit_literal:
+            return proof
+        false_proof = false_from_sat_assignment(literal, proof, assignment)
+        return f"({false_proof} {goal})"
+
+    return eliminate_sat_clause_proof(clause, clause_proof, goal, branch)
+
+
+def avatar_refutation_proof_text(
+    sat_clauses: tuple[tuple[tuple[int, bool], ...], ...],
+    sat_clause_proofs: tuple[str, ...],
+) -> str:
+    if len(sat_clauses) != len(sat_clause_proofs):
+        raise CertificateError("avatar refutation proof needs one proof per SAT clause")
+    if not sat_clauses_unsat(sat_clauses):
+        raise CertificateError("avatar refutation SAT clauses are satisfiable")
+    clauses = tuple(tuple(dict.fromkeys(clause)) for clause in sat_clauses)
+    all_vars = sorted({var for clause in clauses for var, _polarity in clause})
+
+    def search(assignment: dict[int, tuple[bool, str]]) -> str:
+        while True:
+            propagated = False
+            for clause, clause_proof in zip(clauses, sat_clause_proofs):
+                unassigned: list[tuple[int, bool]] = []
+                satisfied = False
+                for literal in clause:
+                    var, polarity = literal
+                    assigned = assignment.get(var)
+                    if assigned is None:
+                        unassigned.append(literal)
+                    elif assigned[0] == polarity:
+                        satisfied = True
+                        break
+                if satisfied:
+                    continue
+                if not unassigned:
+                    return eliminate_sat_clause_proof(
+                        clause,
+                        clause_proof,
+                        "False",
+                        lambda literal, proof: false_from_sat_assignment(literal, proof, assignment),
+                    )
+                if len(unassigned) == 1:
+                    unit = unassigned[0]
+                    var, polarity = unit
+                    unit_proof = derive_sat_unit_proof(clause, clause_proof, unit, assignment)
+                    existing = assignment.get(var)
+                    if existing is not None:
+                        if existing[0] != polarity:
+                            false_proof = false_from_sat_assignment(unit, unit_proof, assignment)
+                            return false_proof
+                        continue
+                    assignment[var] = (polarity, unit_proof)
+                    propagated = True
+                    break
+            if not propagated:
+                break
+
+        branch_var = next((var for var in all_vars if var not in assignment), None)
+        if branch_var is None:
+            raise CertificateError("avatar refutation proof search reached a satisfying assignment")
+        positive_proof = fresh_proof_name("Hsat_pos")
+        negative_proof = fresh_proof_name("Hsat_neg")
+        positive_assignment = dict(assignment)
+        positive_assignment[branch_var] = (True, positive_proof)
+        negative_assignment = dict(assignment)
+        negative_assignment[branch_var] = (False, negative_proof)
+        atom = sat_split_name(branch_var)
+        return (
+            f"((xm {atom}) False "
+            f"(fun {positive_proof} => {search(positive_assignment)}) "
+            f"(fun {negative_proof} => {search(negative_assignment)}))"
+        )
+
+    return search({})
+
+
 def positive_equality_trans_proof(left_eq: Literal, left_proof: str, right_eq: Literal, right_proof: str) -> str:
     if (
         not left_eq.polarity
@@ -4111,6 +4259,24 @@ def certificate_lambda_hints(data: dict[str, Any]) -> tuple[LambdaHint, ...]:
     return tuple(hints)
 
 
+def certificate_avatar_sat_vars(data: dict[str, Any]) -> set[int]:
+    result: set[int] = set()
+    steps = data.get("steps", [])
+    if not isinstance(steps, list):
+        return result
+    for step in steps:
+        if not isinstance(step, dict) or step.get("rule") != "avatar_refutation":
+            continue
+        try:
+            sat_clauses = parse_sat_clauses(step.get("sat_clauses"), f"{step.get('id', 'avatar_refutation')}.sat_clauses")
+        except CertificateError:
+            continue
+        for clause in sat_clauses:
+            for var, _polarity in clause:
+                result.add(var)
+    return result
+
+
 def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal, ...]], theorem_name: str) -> str:
     global LAMBDA_HINTS
     previous_lambda_hints = LAMBDA_HINTS
@@ -4143,6 +4309,7 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
     if certificate_metadata_uses_infix_equality(data) and "set" not in equality_sorts:
         equality_sorts.append("set")
         equality_sorts.sort()
+    avatar_sat_vars = certificate_avatar_sat_vars(data)
     lines = [
         "Definition False : prop := forall p:prop, p.",
         "Definition True : prop := forall p:prop, p -> p.",
@@ -4194,6 +4361,10 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
                 skip = True
                 break
         if not skip:
+            lines.append(declaration)
+    for var in sorted(avatar_sat_vars):
+        declaration = f"Variable {sat_split_name(var)}:prop."
+        if declaration not in declarations:
             lines.append(declaration)
     symbol_sorts = declaration_symbol_sorts(declarations)
     symbol_sorts.update(
@@ -4419,6 +4590,14 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
         elif rule == "contradiction":
             parent = step["parents"][0]
             proof = proof_names[parent]
+        elif rule == "avatar_refutation":
+            sat_clauses = parse_sat_clauses(step["sat_clauses"], f"{step_id}.sat_clauses")
+            sat_proof_names: list[str] = []
+            for index, sat_clause in enumerate(sat_clauses):
+                assumption_name = f"{step_id}_sat_{index}"
+                sat_proof_names.append(assumption_name)
+                assumptions.append((assumption_name, sat_clause_prop_text(sat_clause)))
+            proof = avatar_refutation_proof_text(sat_clauses, tuple(sat_proof_names))
         else:
             raise CertificateError(f"Megalodon smoke elaboration does not yet support {rule}")
         proof_names[step_id] = step_id
