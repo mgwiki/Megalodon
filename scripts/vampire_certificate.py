@@ -3706,7 +3706,7 @@ def avatar_refutation_proof_text(
         raise CertificateError("avatar refutation proof needs one proof per SAT clause")
     if not sat_clauses_unsat(sat_clauses):
         raise CertificateError("avatar refutation SAT clauses are satisfiable")
-    clauses = tuple(tuple(dict.fromkeys(clause)) for clause in sat_clauses)
+    clauses = sat_clauses
     all_vars = sorted({var for clause in clauses for var, _polarity in clause})
 
     def search(assignment: dict[int, tuple[bool, str]]) -> str:
