@@ -81,6 +81,7 @@ type step =
   | Resolve of string * string * string * int * int * clause
   | Factor of string * string * int * int * clause
   | EqualityResolution of string * string * int * clause
+  | EqualityResolutionConstraints of string * string * int * literal * clause * clause
   | EqualityFactoring of string * string * int * int * (string * tm) list * clause
   | TruthConflict of string * string * int * clause
   | EqualitySymmetry of string * string * int * clause
@@ -196,6 +197,8 @@ let rec parse_tm = function
       Ap (TmH "vLAM", subst_named_tm (atom name) (parse_tm m))
   | List [Atom "IMP"; m; n] -> Imp (parse_tm m, parse_tm n)
   | List [Atom "ALL"; a; m] -> All (parse_tp a, parse_tm m)
+  | List [Atom "ALLV"; name; a; m] ->
+      All (parse_tp a, subst_named_tm (atom name) (parse_tm m))
   | _ -> error "expected Megalodon term S-expression"
 
 let parse_source = function
@@ -369,6 +372,14 @@ let parse_named_index name = function
   | List [Atom label; index] when label = name -> int_atom index
   | _ -> error ("expected " ^ name ^ " index")
 
+let parse_constraints = function
+  | List (Atom "constraints" :: constraints) -> List.map parse_literal constraints
+  | _ -> error "expected constraints"
+
+let parse_selected = function
+  | List [Atom "selected"; literal] -> parse_literal literal
+  | _ -> error "expected selected literal"
+
 let parse_step = function
   | List [Atom "input"; id; source; clause] ->
       Input (atom id, parse_source source, parse_clause clause)
@@ -436,6 +447,14 @@ let parse_step = function
       Factor (atom id, parse_parent parent, i, j, parse_result result)
   | List [Atom "equality_resolution"; id; parent; literal; result] ->
       EqualityResolution (atom id, parse_parent parent, parse_literal_index literal, parse_result result)
+  | List [Atom "equality_resolution_constraints"; id; parent; literal; selected; constraints; result] ->
+      EqualityResolutionConstraints (
+        atom id,
+        parse_parent parent,
+        parse_literal_index literal,
+        parse_selected selected,
+        parse_constraints constraints,
+        parse_result result)
   | List [Atom "equality_factoring"; id; parent; selected; other; subst; result] ->
       EqualityFactoring (
         atom id,
@@ -497,6 +516,7 @@ let step_id = function
   | Resolve (id, _, _, _, _, _) -> id
   | Factor (id, _, _, _, _) -> id
   | EqualityResolution (id, _, _, _) -> id
+  | EqualityResolutionConstraints (id, _, _, _, _, _) -> id
   | EqualityFactoring (id, _, _, _, _, _) -> id
   | TruthConflict (id, _, _, _) -> id
   | EqualitySymmetry (id, _, _, _) -> id
@@ -696,6 +716,39 @@ let is_vampire_var_name name =
   in
   digits 1
 
+let vampire_var_index name =
+  if is_vampire_var_name name then
+    Some (int_of_string (String.sub name 1 (String.length name - 1)))
+  else
+    None
+
+let max_vampire_var_name tm =
+  let better current candidate =
+    match current, vampire_var_index candidate with
+    | None, Some _ -> Some candidate
+    | Some old, Some candidate_index ->
+        begin match vampire_var_index old with
+        | Some old_index when candidate_index > old_index -> Some candidate
+        | _ -> current
+        end
+    | _ -> current
+  in
+  let rec loop current = function
+    | TmH h -> better current h
+    | TpAp (m, _) -> loop current m
+    | Ap (m, n) -> loop (loop current m) n
+    | Lam (_, body) -> loop current body
+    | Imp (left, right) -> loop (loop current left) right
+    | All (_, body) -> loop current body
+    | DB _ | Prim _ -> current
+  in
+  loop None tm
+
+let bind_anonymous_lambda_body body =
+  match max_vampire_var_name body with
+  | Some name -> subst_named_tm name body
+  | None -> body
+
 let add_vampire_var_renaming left right left_to_right right_to_left =
   if left = right then Some (left_to_right, right_to_left)
   else if is_vampire_var_name left && is_vampire_var_name right then
@@ -863,13 +916,23 @@ let rec fool_term_tm tm =
   match tm with
   | Imp (body, false_tm) when is_vampire_false false_tm ->
       Ap (TmH "vNOT", fool_term_tm body)
+  | Imp (left, right) ->
+      Ap (Ap (TmH "vIMP", fool_term_tm left), fool_term_tm right)
+  | All (_, body) ->
+      Ap (TmH "vPI", Ap (TmH "vLAM", fool_term_tm body))
+  | Ap (TmH "vampire_exists_prop", Lam (_, body)) ->
+      Ap (TmH "vSIGMA", Ap (TmH "vLAM", fool_term_tm (bind_anonymous_lambda_body body)))
+  | Ap (TmH "vampire_exists_prop", Ap (TmH "vLAM", body)) ->
+      Ap (TmH "vSIGMA", Ap (TmH "vLAM", fool_term_tm body))
+  | Ap (Ap (TmH "vampire_or", left), right) ->
+      Ap (Ap (TmH "vOR", fool_term_tm left), fool_term_tm right)
+  | Ap (Ap (TmH "vampire_and", left), right) ->
+      Ap (Ap (TmH "vAND", fool_term_tm left), fool_term_tm right)
   | Ap (Ap (TmH "=", left), right) ->
       Ap (Ap (TmH "vEQ", fool_term_tm left), fool_term_tm right)
   | TpAp (m, a) -> TpAp (fool_term_tm m, a)
   | Ap (m, n) -> Ap (fool_term_tm m, fool_term_tm n)
   | Lam (tp, body) -> Lam (tp, fool_term_tm body)
-  | Imp (left, right) -> Imp (fool_term_tm left, fool_term_tm right)
-  | All (tp, body) -> All (tp, fool_term_tm body)
   | _ -> tm
 
 let rec fool_formula_tm tm =
@@ -879,6 +942,7 @@ let rec fool_formula_tm tm =
   | Ap (Ap (TmH "vampire_or", left), right) -> vampire_or (fool_formula_tm left) (fool_formula_tm right)
   | Ap (Ap (TmH "vampire_and", left), right) -> vampire_and (fool_formula_tm left) (fool_formula_tm right)
   | Ap (TmH "vampire_exists_prop", Lam (tp, body)) -> vampire_exists tp (fool_formula_tm body)
+  | Ap (TmH "vampire_exists_prop", Ap (TmH "vLAM", body)) -> vampire_exists Set (fool_formula_tm body)
   | Lam (tp, body) -> Lam (tp, fool_formula_tm body)
   | TmH "vampire_true"
   | TmH "vampire_false" -> tm
@@ -886,7 +950,7 @@ let rec fool_formula_tm tm =
       Ap (Ap (TmH "=", fool_term_tm left), fool_term_tm right)
   | _ when is_equality_atom tm -> tm
   | TmH h when is_vampire_var_name h -> Ap (Ap (TmH "=", TmH "f__true"), tm)
-  | _ -> equality_to_true tm
+  | _ -> equality_to_true (fool_term_tm tm)
 
 let rec ennf_pos tm =
   match tm with
@@ -911,6 +975,8 @@ let rec skolemize_formula_tm subst tm =
   | Ap (Ap (TmH "vampire_or", left), right) -> vampire_or (skolemize_formula_tm subst left) (skolemize_formula_tm subst right)
   | Ap (Ap (TmH "vampire_and", left), right) -> vampire_and (skolemize_formula_tm subst left) (skolemize_formula_tm subst right)
   | Ap (TmH "vampire_exists_prop", Lam (_, body)) ->
+      skolemize_formula_tm subst (subst_tm subst body)
+  | Ap (TmH "vampire_exists_prop", Ap (TmH "vLAM", body)) ->
       skolemize_formula_tm subst (subst_tm subst body)
   | Lam (tp, body) -> Lam (tp, skolemize_formula_tm subst body)
   | _ -> tm
@@ -965,6 +1031,63 @@ let rec normalize_equality_orientation tm =
   | Imp (left, right) -> Imp (normalize left, normalize right)
   | All (tp, body) -> All (tp, normalize body)
   | _ -> tm
+
+let rebuild_binary head = function
+  | [] -> TmH head
+  | item :: rest ->
+      List.fold_left
+        (fun acc item -> Ap (Ap (TmH head, acc), item))
+        item rest
+
+let rec collect_binary head tm =
+  match tm with
+  | Ap (Ap (TmH h, left), right) when h = head ->
+      collect_binary head left @ collect_binary head right
+  | _ -> [tm]
+
+let rec normalize_fool_bool_association tm =
+  let normalize = normalize_fool_bool_association in
+  match tm with
+  | Ap (Ap (TmH h, left), right) when h = "vAND" || h = "vOR" ->
+      let items = collect_binary h (normalize left) @ collect_binary h (normalize right) in
+      rebuild_binary h items
+  | Ap (Ap (TmH h, left), right) when h = "vampire_and" || h = "vampire_or" ->
+      let items = collect_binary h (normalize left) @ collect_binary h (normalize right) in
+      rebuild_binary h items
+  | TpAp (m, a) -> TpAp (normalize m, a)
+  | Ap (m, n) -> Ap (normalize m, normalize n)
+  | Lam (tp, body) -> Lam (tp, normalize body)
+  | Imp (left, right) -> Imp (normalize left, normalize right)
+  | All (tp, body) -> All (tp, normalize body)
+  | _ -> tm
+
+let normalize_fool_formula_shape tm =
+  tm
+  |> normalize_bool_equality_orientation
+  |> normalize_fool_bool_association
+  |> normalize_equality_orientation
+  |> normalize_fool_bool_association
+
+let rec debug_tm tm =
+  match tm with
+  | DB i -> "(DB " ^ string_of_int i ^ ")"
+  | TmH h -> "(TMH \"" ^ String.escaped h ^ "\")"
+  | Prim i -> "(PRIM " ^ string_of_int i ^ ")"
+  | TpAp (m, _) -> "(TPAP " ^ debug_tm m ^ " _)"
+  | Ap (m, n) -> "(AP " ^ debug_tm m ^ " " ^ debug_tm n ^ ")"
+  | Lam (_, body) -> "(LAM _ " ^ debug_tm body ^ ")"
+  | Imp (left, right) -> "(IMP " ^ debug_tm left ^ " " ^ debug_tm right ^ ")"
+  | All (_, body) -> "(ALL _ " ^ debug_tm body ^ ")"
+
+let debug_certificate_mismatch id expected result =
+  if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+    prerr_endline (id ^ " expected: " ^ debug_tm expected);
+    prerr_endline (id ^ " result: " ^ debug_tm result);
+    prerr_endline (id ^ " expected_bool_norm: " ^ debug_tm (normalize_bool_equality_orientation expected));
+    prerr_endline (id ^ " result_bool_norm: " ^ debug_tm (normalize_bool_equality_orientation result));
+    prerr_endline (id ^ " expected_fool_norm: " ^ debug_tm (normalize_fool_formula_shape expected));
+    prerr_endline (id ^ " result_fool_norm: " ^ debug_tm (normalize_fool_formula_shape result))
+  end
 
 let rec strip_forall = function
   | All (_, body) -> strip_forall body
@@ -1091,8 +1214,13 @@ let check_fool_formula checked id parent_id result =
   let expected = fool_formula_tm parent_formula in
   if expected <> result
     && normalize_bool_equality_orientation expected <> normalize_bool_equality_orientation result
-    && normalize_equality_orientation expected <> normalize_equality_orientation result then
+    && normalize_equality_orientation expected <> normalize_equality_orientation result then begin
+    if normalize_fool_formula_shape expected = normalize_fool_formula_shape result then ()
+    else begin
+    debug_certificate_mismatch id expected result;
     error (id ^ ": fool_formula result does not match recursive FOOL Boolean lifting")
+    end
+  end
 
 let check_ennf_formula checked id parent_id result =
   let parent_formula = lookup_formula checked parent_id in
@@ -1594,6 +1722,41 @@ let check_equality_resolution checked id parent_id literal_index result =
   if not (same_clause_multiset expected result) then
     error (id ^ ": equality-resolution result does not match parent after literal removal")
 
+let same_literal_mod_vampire_vars left right =
+  match left, right with
+  | Pos left_atom, Pos right_atom
+  | Neg left_atom, Neg right_atom ->
+      left_atom = right_atom
+      || same_mod_scoped_vampire_var_renaming left_atom right_atom
+      || same_mod_scoped_vampire_var_renaming_and_equality left_atom right_atom
+      || normalize_equality_orientation left_atom = normalize_equality_orientation right_atom
+      || same_mod_scoped_vampire_var_renaming
+           (normalize_equality_orientation left_atom)
+           (normalize_equality_orientation right_atom)
+      || same_mod_scoped_vampire_var_renaming_and_equality
+           (normalize_equality_orientation left_atom)
+           (normalize_equality_orientation right_atom)
+  | _ -> false
+
+let check_equality_resolution_constraints checked id parent_id literal_index selected constraints result =
+  if constraints = [] then error (id ^ ": equality-resolution constraints must be non-empty");
+  let parent_clause = lookup_clause checked parent_id in
+  let literal = nth literal_index parent_clause (id ^ " equality-resolution-constraints literal") in
+  if not (same_literal_mod_vampire_vars literal selected) then
+    error (id ^ ": selected literal does not match parent literal modulo Vampire variable renaming");
+  begin
+    match literal with
+    | Neg atom ->
+        begin match equality_sides atom with
+        | Some _ -> ()
+        | None -> error (id ^ ": selected literal is not an equality atom")
+        end
+    | Pos _ -> error (id ^ ": selected literal must be negative")
+  end;
+  let expected = remove_at literal_index parent_clause (id ^ " equality-resolution-constraints literal") @ constraints in
+  if not (same_clause_multiset expected result) then
+    error (id ^ ": equality-resolution constraints do not explain result")
+
 let check_equality_factoring checked id parent_id selected_index other_index subst result =
   if selected_index = other_index then error (id ^ ": equality-factoring literal indices must be distinct");
   let parent_clause = lookup_clause checked parent_id in
@@ -1803,6 +1966,9 @@ let check_step checked = function
   | EqualityResolution (id, parent_id, literal_index, result) ->
       check_equality_resolution checked id parent_id literal_index result;
       (id, CheckedClause result) :: checked
+  | EqualityResolutionConstraints (id, parent_id, literal_index, selected, constraints, result) ->
+      check_equality_resolution_constraints checked id parent_id literal_index selected constraints result;
+      (id, CheckedClause result) :: checked
   | EqualityFactoring (id, parent_id, selected_index, other_index, subst, result) ->
       check_equality_factoring checked id parent_id selected_index other_index subst result;
       (id, CheckedClause result) :: checked
@@ -1889,7 +2055,7 @@ let source_of_step = function
 let source_map_kind_compatible source entry =
   match source, entry.source_map_kind with
   | SourceDefinition _, ("def" | "definition" | "local_definition") -> true
-  | SourceNegatedConjecture _, ("conjecture" | "negated_conjecture" | "local_fact" | "local_definition") -> true
+  | SourceNegatedConjecture _, ("conjecture" | "negated_conjecture" | "known" | "local_fact" | "local_definition") -> true
   | SourceSetReflexivity _, ("set_reflexivity" | "local_set_reflexivity") -> true
   | SourceAxiom _, ("type" | "local_type") -> false
   | SourceAxiom _, _ -> true

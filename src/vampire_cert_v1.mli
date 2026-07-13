@@ -79,6 +79,7 @@ type step =
   | Resolve of string * string * string * int * int * clause
   | Factor of string * string * int * int * clause
   | EqualityResolution of string * string * int * clause
+  | EqualityResolutionConstraints of string * string * int * literal * clause * clause
   | EqualityFactoring of string * string * int * int * (string * Syntax.tm) list * clause
   | TruthConflict of string * string * int * clause
   | EqualitySymmetry of string * string * int * clause
