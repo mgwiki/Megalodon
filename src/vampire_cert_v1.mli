@@ -115,6 +115,7 @@ type source_map_entry = {
 val parse_sexpr : string -> sexpr
 val parse_certificate : string -> certificate
 val step_id : step -> string
+val certificate_source_count : certificate -> int
 val parse_source_map : string -> source_map_entry list
 val validate_certificate_sources : source_map_entry list -> certificate -> int
 val check_certificate : certificate -> (string * checked_item) list

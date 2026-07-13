@@ -24,6 +24,20 @@ if ! rg -q 'Vampire certificate v1 checked 6 steps' "$WORK_DIR/native_cert_v1_va
   exit 1
 fi
 
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_strict_missing_source.out" \
+  2>"$WORK_DIR/native_cert_v1_strict_missing_source.err"; then
+  echo "strict native certificate v1 checker accepted source-backed inputs without a source map" >&2
+  exit 1
+fi
+
+if ! rg -q 'strict certificate v1 requires -vampirecertv1source' "$WORK_DIR/native_cert_v1_strict_missing_source.err"; then
+  echo "strict native certificate v1 missing-source failure did not explain the source-map requirement" >&2
+  exit 1
+fi
+
 bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_valid.th0.p \
@@ -31,6 +45,17 @@ bin/megalodon \
 
 if ! rg -q 'Vampire certificate v1 source map checked 3 sources' "$WORK_DIR/native_cert_v1_source_map_valid.log"; then
   echo "native certificate v1 source-map checker did not accept mapped inputs" >&2
+  exit 1
+fi
+
+bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_strict_source_map_valid.log"
+
+if ! rg -q 'Vampire certificate v1 strict checked 6 steps' "$WORK_DIR/native_cert_v1_strict_source_map_valid.log"; then
+  echo "strict native certificate v1 checker did not accept mapped inputs" >&2
   exit 1
 fi
 

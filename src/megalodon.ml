@@ -6911,8 +6911,14 @@ let read_all fn =
 let check_vampire_cert_v1_file fn =
   try
     let cert = Vampire_cert_v1.parse_certificate (read_all fn) in
+    let checked =
+      if !vampirecertv1strict then Vampire_cert_v1.check_certificate_strict cert
+      else Vampire_cert_v1.check_certificate cert
+    in
     begin match !vampirecertv1source with
-    | None -> ()
+    | None ->
+        if !vampirecertv1strict && Vampire_cert_v1.certificate_source_count cert > 0 then
+          raise (Vampire_cert_v1.Error "strict certificate v1 requires -vampirecertv1source for source-backed inputs")
     | Some source_fn ->
         let source_map = Vampire_cert_v1.parse_source_map (read_all source_fn) in
         let source_count = Vampire_cert_v1.validate_certificate_sources source_map cert in
@@ -6920,10 +6926,6 @@ let check_vampire_cert_v1_file fn =
           source_count
           (if source_count = 1 then "" else "s")
     end;
-    let checked =
-      if !vampirecertv1strict then Vampire_cert_v1.check_certificate_strict cert
-      else Vampire_cert_v1.check_certificate cert
-    in
     Printf.printf "Vampire certificate v1%s checked %d step%s.\n"
       (if !vampirecertv1strict then " strict" else "")
       (List.length checked)

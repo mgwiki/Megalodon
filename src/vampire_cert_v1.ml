@@ -2637,6 +2637,15 @@ let source_of_step = function
   | FormulaTermInput (id, source, _) -> Some (id, source)
   | _ -> None
 
+let certificate_source_count cert =
+  List.fold_left
+    (fun count step ->
+      match source_of_step step with
+      | Some _ -> count + 1
+      | None -> count)
+    0
+    cert.steps
+
 let source_map_kind_compatible source entry =
   match source, entry.source_map_kind with
   | SourceAxiom _, ("known" | "axiom" | "local_fact" | "def" | "definition" | "local_definition"
