@@ -1381,7 +1381,8 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
             for parent in parents:
                 if parent not in clauses:
                     raise CertificateError(f"{step_id}: unknown parent {parent}")
-            source_clause = normalize_clause(parse_clause(step["source_clause"], f"{step_id}.source_clause"))
+            source_clause_ordered = parse_clause(step["source_clause"], f"{step_id}.source_clause")
+            source_clause = normalize_clause(source_clause_ordered)
             if source_clause != clauses[parents[0]]:
                 raise CertificateError(f"{step_id}: source_clause does not match first parent")
             rewrite_values = step["rewrites"]
@@ -1413,7 +1414,12 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
                     )
                 )
             clause = normalize_clause(parse_clause(step["clause"], f"{step_id}.clause"))
-            if not definition_rewrite_chain_reaches(source_clause, tuple(rewrites), clause, step_id):
+            replay_source_clause = (
+                source_clause_ordered
+                if all(rewrite.literal is not None and rewrite.position is not None for rewrite in rewrites)
+                else source_clause
+            )
+            if not definition_rewrite_chain_reaches(replay_source_clause, tuple(rewrites), clause, step_id):
                 raise CertificateError(f"{step_id}: definition rewrite chain does not reach conclusion")
 
         elif rule == "inequality_split":
