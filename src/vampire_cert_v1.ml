@@ -11,6 +11,7 @@ exception Error of string
 
 type source =
   | SourceAxiom of string
+  | SourceConjecture of string
   | SourceNegatedConjecture of string
   | SourceDefinition of string
   | SourceSetReflexivity of string
@@ -216,6 +217,7 @@ let rec parse_tm = function
 
 let parse_source = function
   | List [Atom "source"; Atom "axiom"; name] -> SourceAxiom (atom name)
+  | List [Atom "source"; Atom "conjecture"; name] -> SourceConjecture (atom name)
   | List [Atom "source"; Atom "negated_conjecture"; name] -> SourceNegatedConjecture (atom name)
   | List [Atom "source"; Atom "definition"; name] -> SourceDefinition (atom name)
   | List [Atom "source"; Atom "set_reflexivity"; name] -> SourceSetReflexivity (atom name)
@@ -1356,6 +1358,7 @@ let rec cnf_clauses tm =
 
 let check_input_source = function
   | SourceAxiom name
+  | SourceConjecture name
   | SourceNegatedConjecture name
   | SourceDefinition name
   | SourceSetReflexivity name ->
@@ -2616,12 +2619,14 @@ let parse_source_map text =
 
 let source_name = function
   | SourceAxiom name
+  | SourceConjecture name
   | SourceNegatedConjecture name
   | SourceDefinition name
   | SourceSetReflexivity name -> name
 
 let source_kind_name = function
   | SourceAxiom _ -> "axiom"
+  | SourceConjecture _ -> "conjecture"
   | SourceNegatedConjecture _ -> "negated_conjecture"
   | SourceDefinition _ -> "definition"
   | SourceSetReflexivity _ -> "set_reflexivity"
@@ -2634,11 +2639,14 @@ let source_of_step = function
 
 let source_map_kind_compatible source entry =
   match source, entry.source_map_kind with
+  | SourceAxiom _, ("known" | "axiom" | "local_fact" | "def" | "definition" | "local_definition"
+                   | "set_reflexivity" | "local_set_reflexivity") -> true
+  | SourceConjecture _, "conjecture" -> true
   | SourceDefinition _, ("def" | "definition" | "local_definition") -> true
   | SourceNegatedConjecture _, ("conjecture" | "negated_conjecture" | "known" | "local_fact" | "local_definition") -> true
   | SourceSetReflexivity _, ("set_reflexivity" | "local_set_reflexivity") -> true
-  | SourceAxiom _, ("type" | "local_type") -> false
-  | SourceAxiom _, _ -> true
+  | SourceAxiom _, _ -> false
+  | SourceConjecture _, _ -> false
   | SourceDefinition _, _ -> false
   | SourceNegatedConjecture _, _ -> false
   | SourceSetReflexivity _, _ -> false
@@ -2646,7 +2654,12 @@ let source_map_kind_compatible source entry =
 let validate_certificate_sources source_map cert =
   let table = Hashtbl.create 101 in
   List.iter
-    (fun entry -> Hashtbl.replace table entry.source_map_tptp_name entry)
+    (fun entry ->
+      if entry.source_map_tptp_name = "" then
+        error "Megalodon source-map entry has an empty TPTP name";
+      if Hashtbl.mem table entry.source_map_tptp_name then
+        error ("duplicate Megalodon source-map entry for " ^ entry.source_map_tptp_name);
+      Hashtbl.add table entry.source_map_tptp_name entry)
     source_map;
   let checked = ref 0 in
   List.iter

@@ -612,6 +612,22 @@ let tptp_source_map_comment kind tptp_name source_name source_hash =
 
 let th0_aby_problem_content claimtm cxtm cxpf xl conjn =
   Buffer.clear sb;
+  let used_source_formula_names = Hashtbl.create 101 in
+  let fresh_source_formula_name base =
+    let rec try_index i =
+      let candidate =
+        if i = 0 then base
+        else base ^ "_src" ^ string_of_int (i + 1)
+      in
+      if Hashtbl.mem used_source_formula_names candidate then try_index (i + 1)
+      else
+        begin
+          Hashtbl.add used_source_formula_names candidate ();
+          candidate
+        end
+    in
+    try_index 0
+  in
   List.iter
     (fun (cl,h,x,a) ->
       if cl = "type" || cl = "def" && not (Hashtbl.mem sigdelta_opaque h) then
@@ -620,6 +636,7 @@ let th0_aby_problem_content claimtm cxtm cxpf xl conjn =
             if cl = "def" then tptpize_name x ^ "_def"
             else tptpize_name x
           in
+          Hashtbl.replace used_source_formula_names tptp_name ();
           Buffer.add_string sb (tptp_source_map_comment cl tptp_name x h);
           Printf.bprintf sb "%s\n" a
         end
@@ -627,10 +644,14 @@ let th0_aby_problem_content claimtm cxtm cxpf xl conjn =
         begin
           try
             let (_,p) = Hashtbl.find sigdelta h in
-            Buffer.add_string sb (tptp_source_map_comment "known" (tptpize_name x) x h);
-            Printf.bprintf sb "thf(%s,axiom,%s). %% %s\n" (tptpize_name x) (th0_str (th0_aby_head_expand p) []) h
+            let tptp_name = tptpize_name x in
+            Hashtbl.replace used_source_formula_names tptp_name ();
+            Buffer.add_string sb (tptp_source_map_comment "known" tptp_name x h);
+            Printf.bprintf sb "thf(%s,axiom,%s). %% %s\n" tptp_name (th0_str (th0_aby_head_expand p) []) h
           with Not_found ->
-            Buffer.add_string sb (tptp_source_map_comment "known" (tptpize_name x) x h);
+            let tptp_name = tptpize_name x in
+            Hashtbl.replace used_source_formula_names tptp_name ();
+            Buffer.add_string sb (tptp_source_map_comment "known" tptp_name x h);
             Printf.bprintf sb "%s\n" a
         end)
     (List.rev !th0sg);
@@ -639,12 +660,15 @@ let th0_aby_problem_content claimtm cxtm cxpf xl conjn =
     | [] -> ()
     | (x,(a,d))::cxtmr ->
        th0_cx cxtmr;
-       Buffer.add_string sb (tptp_source_map_comment "local_type" (tptpize_name x ^ "_tp") x "");
-       Printf.bprintf sb "thf(%s_tp,type,(%s : %s)).\n" (tptpize_name x) (tptpize_name x) (th0_stp_str a);
+       let x_tptp = tptpize_name x in
+       let type_tptp_name = fresh_source_formula_name (x_tptp ^ "_tp") in
+       Buffer.add_string sb (tptp_source_map_comment "local_type" type_tptp_name x "");
+       Printf.bprintf sb "thf(%s,type,(%s : %s)).\n" type_tptp_name x_tptp (th0_stp_str a);
        match d with
        | Some(d) ->
-          Buffer.add_string sb (tptp_source_map_comment "local_definition" (tptpize_name x ^ "_def") x "");
-          Printf.bprintf sb "thf(%s_def,definition,(%s = %s)).\n" (tptpize_name x) (tptpize_name x) (th0_str d (tptpizecxtm cxtmr))
+          let def_tptp_name = fresh_source_formula_name (x_tptp ^ "_def") in
+          Buffer.add_string sb (tptp_source_map_comment "local_definition" def_tptp_name x "");
+          Printf.bprintf sb "thf(%s,definition,(%s = %s)).\n" def_tptp_name x_tptp (th0_str d (tptpizecxtm cxtmr))
        | None -> ()
   in
   th0_cx cxtm;
@@ -652,10 +676,11 @@ let th0_aby_problem_content claimtm cxtm cxpf xl conjn =
     (fun (x,p) ->
       if List.mem x xl then
         let a = th0_str (th0_aby_head_expand p) (tptpizecxtm cxtm) in
-        Buffer.add_string sb (tptp_source_map_comment "local_fact" (tptpize_name x) x "");
-        Printf.bprintf sb "thf(%s,axiom,%s).\n" (tptpize_name x) a)
+        let fact_tptp_name = fresh_source_formula_name (tptpize_name x) in
+        Buffer.add_string sb (tptp_source_map_comment "local_fact" fact_tptp_name x "");
+        Printf.bprintf sb "thf(%s,axiom,%s).\n" fact_tptp_name a)
     cxpf;
-  let conjecture_tptp_name = "conj_" ^ tptpize_name conjn in
+  let conjecture_tptp_name = fresh_source_formula_name ("conj_" ^ tptpize_name conjn) in
   Buffer.add_string sb (tptp_source_map_comment "conjecture" conjecture_tptp_name conjn "");
   Printf.bprintf sb "thf(%s,conjecture,%s).\n" conjecture_tptp_name (th0_str (th0_aby_head_expand claimtm) (tptpizecxtm cxtm));
   Buffer.contents sb

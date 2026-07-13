@@ -9,6 +9,7 @@ exception Error of string
 
 type source =
   | SourceAxiom of string
+  | SourceConjecture of string
   | SourceNegatedConjecture of string
   | SourceDefinition of string
   | SourceSetReflexivity of string

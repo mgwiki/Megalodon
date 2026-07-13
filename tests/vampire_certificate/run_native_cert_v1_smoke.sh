@@ -54,6 +54,30 @@ if ! rg -q 'Vampire certificate v1 source map checked 2 sources' "$WORK_DIR/nati
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_conjecture_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_conjecture_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_conjecture_valid.log"
+
+if ! rg -q 'Vampire certificate v1 source map checked 2 sources' "$WORK_DIR/native_cert_v1_source_map_conjecture_valid.log"; then
+  echo "native certificate v1 source-map checker did not accept mapped conjecture inputs" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_axiom_conjecture_bad.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_axiom_conjecture_bad.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_axiom_conjecture_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_source_map_axiom_conjecture_bad.err"; then
+  echo "native certificate v1 source-map checker accepted an axiom source mapped to conjecture" >&2
+  exit 1
+fi
+
+if ! rg -q 'source goal maps to incompatible source-map kind conjecture' "$WORK_DIR/native_cert_v1_source_map_axiom_conjecture_bad.err"; then
+  echo "native certificate v1 source-map incompatibility failure did not explain the bad conjecture mapping" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_missing.th0.p \
@@ -65,6 +89,20 @@ fi
 
 if ! rg -q 'source a3 is not present in the Megalodon source map' "$WORK_DIR/native_cert_v1_source_map_missing.err"; then
   echo "native certificate v1 source-map failure did not explain the unmapped input" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_duplicate.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_duplicate.out" \
+  2>"$WORK_DIR/native_cert_v1_source_map_duplicate.err"; then
+  echo "native certificate v1 source-map checker accepted a duplicate source-map key" >&2
+  exit 1
+fi
+
+if ! rg -q 'duplicate Megalodon source-map entry for a1' "$WORK_DIR/native_cert_v1_source_map_duplicate.err"; then
+  echo "native certificate v1 duplicate source-map failure did not explain the duplicate key" >&2
   exit 1
 fi
 

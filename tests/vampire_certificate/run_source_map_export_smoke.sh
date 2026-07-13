@@ -34,6 +34,28 @@ if ! rg -q '^% megalodon_source_map ' "$problem"; then
   exit 1
 fi
 
+if awk '/^% megalodon_source_map / {
+    if (match($0, /"[^"]+"/)) {
+      name = substr($0, RSTART + 1, RLENGTH - 2)
+      seen[name]++
+    }
+  }
+  END {
+    for (name in seen) {
+      if (seen[name] > 1) {
+        print name
+        bad = 1
+      }
+    }
+    exit bad
+  }' "$problem" >"$WORK_DIR/duplicate_source_map_names.txt"; then
+  :
+else
+  echo "TH0 source-map contains duplicate TPTP names:" >&2
+  cat "$WORK_DIR/duplicate_source_map_names.txt" >&2
+  exit 1
+fi
+
 if rg '^% megalodon_source_map \(def "' "$problem" \
     | rg -vq '^% megalodon_source_map \(def "[^"]+_def"'; then
   echo "TH0 source-map definition entry does not point to the *_def formula name" >&2
