@@ -112,6 +112,15 @@ if ! rg -q 'Vampire certificate v1 checked 9 steps' "$TMPDIR/native_cert_v1_form
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_rectify_formula_valid.sexp \
+  "$dummy" >"$TMPDIR/native_cert_v1_rectify_formula_valid.log"
+
+if ! rg -q 'Vampire certificate v1 checked 6 steps' "$TMPDIR/native_cert_v1_rectify_formula_valid.log"; then
+  echo "native certificate v1 checker did not accept the valid rectify-formula fixture" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_invalid_pivot.sexp \
   "$dummy" >"$TMPDIR/native_cert_v1_invalid_pivot.out" \
@@ -161,6 +170,19 @@ fi
 
 if ! rg -q 'paramodulation position does not contain from term' "$TMPDIR/native_cert_v1_invalid_paramod_position.err"; then
   echo "native certificate v1 invalid-paramodulation failure did not explain the rejected side condition" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_invalid_rectify_formula.sexp \
+  "$dummy" >"$TMPDIR/native_cert_v1_invalid_rectify_formula.out" \
+  2>"$TMPDIR/native_cert_v1_invalid_rectify_formula.err"; then
+  echo "native certificate v1 checker accepted an invalid formula rectification" >&2
+  exit 1
+fi
+
+if ! rg -q 'rectify_formula result is not a bijective Vampire-variable renaming of parent' "$TMPDIR/native_cert_v1_invalid_rectify_formula.err"; then
+  echo "native certificate v1 invalid-rectify failure did not explain the rejected side condition" >&2
   exit 1
 fi
 

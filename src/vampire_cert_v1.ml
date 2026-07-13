@@ -30,9 +30,11 @@ type step =
   | FormulaInput of string * source * literal
   | FormulaTermInput of string * source * tm
   | FormulaTermCopy of string * string * tm
+  | RectifyFormula of string * string * tm
   | FoolFormula of string * string * tm
   | EnnfFormula of string * string * tm
   | SkolemFormula of string * string * (string * tm) list * tm
+  | SkolemFormulaComputed of string * string * (string * tm) list
   | CnfFormulaClause of string * string * int * clause
   | FormulaCopy of string * string * literal
   | FoolBool of string * string * literal
@@ -229,12 +231,16 @@ let parse_step = function
       FormulaTermInput (atom id, parse_source source, parse_formula formula)
   | List [Atom "formula_term_copy"; id; parent; result] ->
       FormulaTermCopy (atom id, parse_parent parent, parse_formula_result result)
+  | List [Atom "rectify_formula"; id; parent; result] ->
+      RectifyFormula (atom id, parse_parent parent, parse_formula_result result)
   | List [Atom "fool_formula"; id; parent; result] ->
       FoolFormula (atom id, parse_parent parent, parse_formula_result result)
   | List [Atom "ennf_formula"; id; parent; result] ->
       EnnfFormula (atom id, parse_parent parent, parse_formula_result result)
   | List [Atom "skolem_formula"; id; parent; subst; result] ->
       SkolemFormula (atom id, parse_parent parent, parse_substitution subst, parse_formula_result result)
+  | List [Atom "skolem_formula_computed"; id; parent; subst] ->
+      SkolemFormulaComputed (atom id, parse_parent parent, parse_substitution subst)
   | List [Atom "cnf_formula_clause"; id; parent; index; result] ->
       CnfFormulaClause (atom id, parse_parent parent, parse_index index, parse_result result)
   | List [Atom "formula_copy"; id; parent; result] ->
@@ -294,9 +300,11 @@ let step_id = function
   | FormulaInput (id, _, _) -> id
   | FormulaTermInput (id, _, _) -> id
   | FormulaTermCopy (id, _, _) -> id
+  | RectifyFormula (id, _, _) -> id
   | FoolFormula (id, _, _) -> id
   | EnnfFormula (id, _, _) -> id
   | SkolemFormula (id, _, _, _) -> id
+  | SkolemFormulaComputed (id, _, _) -> id
   | CnfFormulaClause (id, _, _, _) -> id
   | FormulaCopy (id, _, _) -> id
   | FoolBool (id, _, _) -> id
@@ -487,6 +495,117 @@ let is_vampire_var_name name =
   in
   digits 1
 
+let add_vampire_var_renaming left right left_to_right right_to_left =
+  if left = right then Some (left_to_right, right_to_left)
+  else if is_vampire_var_name left && is_vampire_var_name right then
+    let left_ok =
+      try List.assoc left left_to_right = right with Not_found -> true
+    in
+    let right_ok =
+      try List.assoc right right_to_left = left with Not_found -> true
+    in
+    if left_ok && right_ok then
+      let left_to_right =
+        if List.mem_assoc left left_to_right then left_to_right
+        else (left, right) :: left_to_right
+      in
+      let right_to_left =
+        if List.mem_assoc right right_to_left then right_to_left
+        else (right, left) :: right_to_left
+      in
+      Some (left_to_right, right_to_left)
+    else None
+  else None
+
+let rec tm_equal_mod_vampire_var_renaming left right left_to_right right_to_left =
+  match left, right with
+  | DB i, DB j when i = j -> Some (left_to_right, right_to_left)
+  | TmH h, TmH k -> add_vampire_var_renaming h k left_to_right right_to_left
+  | Prim i, Prim j when i = j -> Some (left_to_right, right_to_left)
+  | TpAp (m, a), TpAp (n, b) when a = b ->
+      tm_equal_mod_vampire_var_renaming m n left_to_right right_to_left
+  | Ap (m1, m2), Ap (n1, n2) ->
+      begin match tm_equal_mod_vampire_var_renaming m1 n1 left_to_right right_to_left with
+      | None -> None
+      | Some (left_to_right, right_to_left) ->
+          tm_equal_mod_vampire_var_renaming m2 n2 left_to_right right_to_left
+      end
+  | Lam (a, m), Lam (b, n) when a = b ->
+      tm_equal_mod_vampire_var_renaming m n left_to_right right_to_left
+  | Imp (m1, m2), Imp (n1, n2) ->
+      begin match tm_equal_mod_vampire_var_renaming m1 n1 left_to_right right_to_left with
+      | None -> None
+      | Some (left_to_right, right_to_left) ->
+          tm_equal_mod_vampire_var_renaming m2 n2 left_to_right right_to_left
+      end
+  | All (a, m), All (b, n) when a = b ->
+      tm_equal_mod_vampire_var_renaming m n left_to_right right_to_left
+  | _ -> None
+
+let same_mod_vampire_var_renaming left right =
+  match tm_equal_mod_vampire_var_renaming left right [] [] with
+  | Some _ -> true
+  | None -> false
+
+let add_scoped_vampire_var_renaming left right frames =
+  if left = right then Some frames
+  else if is_vampire_var_name left && is_vampire_var_name right then
+    match frames with
+    | [] -> None
+    | (left_to_right, right_to_left) :: outer ->
+        let left_ok =
+          try List.assoc left left_to_right = right with Not_found -> true
+        in
+        let right_ok =
+          try List.assoc right right_to_left = left with Not_found -> true
+        in
+        if left_ok && right_ok then
+          let left_to_right =
+            if List.mem_assoc left left_to_right then left_to_right
+            else (left, right) :: left_to_right
+          in
+          let right_to_left =
+            if List.mem_assoc right right_to_left then right_to_left
+            else (right, left) :: right_to_left
+          in
+          Some ((left_to_right, right_to_left) :: outer)
+        else None
+  else None
+
+let rec tm_equal_mod_scoped_vampire_var_renaming left right frames =
+  match left, right with
+  | DB i, DB j when i = j -> Some frames
+  | TmH h, TmH k -> add_scoped_vampire_var_renaming h k frames
+  | Prim i, Prim j when i = j -> Some frames
+  | TpAp (m, a), TpAp (n, b) when a = b ->
+      tm_equal_mod_scoped_vampire_var_renaming m n frames
+  | Ap (m1, m2), Ap (n1, n2) ->
+      begin match tm_equal_mod_scoped_vampire_var_renaming m1 n1 frames with
+      | None -> None
+      | Some frames -> tm_equal_mod_scoped_vampire_var_renaming m2 n2 frames
+      end
+  | Lam (a, m), Lam (b, n) when a = b ->
+      begin match tm_equal_mod_scoped_vampire_var_renaming m n (([], []) :: frames) with
+      | None -> None
+      | Some _ -> Some frames
+      end
+  | Imp (m1, m2), Imp (n1, n2) ->
+      begin match tm_equal_mod_scoped_vampire_var_renaming m1 n1 frames with
+      | None -> None
+      | Some frames -> tm_equal_mod_scoped_vampire_var_renaming m2 n2 frames
+      end
+  | All (a, m), All (b, n) when a = b ->
+      begin match tm_equal_mod_scoped_vampire_var_renaming m n (([], []) :: frames) with
+      | None -> None
+      | Some _ -> Some frames
+      end
+  | _ -> None
+
+let same_mod_scoped_vampire_var_renaming left right =
+  match tm_equal_mod_scoped_vampire_var_renaming left right [([], [])] with
+  | Some _ -> true
+  | None -> false
+
 let is_equality_atom tm =
   match equality_sides tm with
   | Some _ -> true
@@ -591,10 +710,21 @@ let check_formula_term_copy checked id parent_id result =
   if parent_formula <> result then
     error (id ^ ": formula_term_copy result does not match parent")
 
+let check_rectify_formula checked id parent_id result =
+  let parent_formula = lookup_formula checked parent_id in
+  let normalized_parent = normalize_bool_equality_orientation parent_formula in
+  let normalized_result = normalize_bool_equality_orientation result in
+  if not (same_mod_vampire_var_renaming parent_formula result
+          || same_mod_scoped_vampire_var_renaming parent_formula result
+          || same_mod_vampire_var_renaming normalized_parent normalized_result
+          || same_mod_scoped_vampire_var_renaming normalized_parent normalized_result) then
+    error (id ^ ": rectify_formula result is not a bijective Vampire-variable renaming of parent")
+
 let check_fool_formula checked id parent_id result =
   let parent_formula = lookup_formula checked parent_id in
   let expected = fool_formula_tm parent_formula in
-  if expected <> result then
+  if expected <> result
+    && normalize_bool_equality_orientation expected <> normalize_bool_equality_orientation result then
     error (id ^ ": fool_formula result does not match recursive FOOL Boolean lifting")
 
 let check_ennf_formula checked id parent_id result =
@@ -609,6 +739,10 @@ let check_skolem_formula checked id parent_id subst result =
   if expected <> result
     && normalize_bool_equality_orientation expected <> normalize_bool_equality_orientation result then
     error (id ^ ": skolem_formula result does not match explicit skolem substitution")
+
+let check_skolem_formula_computed checked parent_id subst =
+  let parent_formula = lookup_formula checked parent_id in
+  skolemize_formula_tm subst parent_formula
 
 let check_cnf_formula_clause checked id parent_id index result =
   if index < 0 then error (id ^ ": cnf_formula_clause index must be non-negative");
@@ -824,8 +958,15 @@ let check_paramodulate checked id equality_parent_id target_parent_id equality_i
     | Neg _ -> error (id ^ ": paramodulation equality literal must be positive")
   end;
   let target_atom = literal_atom target_literal in
-  let found = tm_at_position target_atom position (id ^ " target") in
-  if found <> from_tm then error (id ^ ": paramodulation position does not contain from term");
+  let position =
+    let found = tm_at_position target_atom position (id ^ " target") in
+    if found = from_tm then position
+    else
+      match equality_sides target_atom, position with
+      | Some (left, _), [1] when left = from_tm -> [0; 1]
+      | Some (_, right), [0; 1] when right = from_tm -> [1]
+      | _ -> error (id ^ ": paramodulation position does not contain from term")
+  in
   let rewritten_atom = replace_tm_at_position target_atom position to_tm (id ^ " target") in
   let rewritten_literal = replace_literal_atom target_literal rewritten_atom in
   let equality_rest = remove_at equality_index equality_clause (id ^ " equality literal") in
@@ -853,6 +994,9 @@ let check_step checked = function
   | FormulaTermCopy (id, parent_id, result) ->
       check_formula_term_copy checked id parent_id result;
       (id, CheckedFormula result) :: checked
+  | RectifyFormula (id, parent_id, result) ->
+      check_rectify_formula checked id parent_id result;
+      (id, CheckedFormula result) :: checked
   | FoolFormula (id, parent_id, result) ->
       check_fool_formula checked id parent_id result;
       (id, CheckedFormula result) :: checked
@@ -861,6 +1005,9 @@ let check_step checked = function
       (id, CheckedFormula result) :: checked
   | SkolemFormula (id, parent_id, subst, result) ->
       check_skolem_formula checked id parent_id subst result;
+      (id, CheckedFormula result) :: checked
+  | SkolemFormulaComputed (id, parent_id, subst) ->
+      let result = check_skolem_formula_computed checked parent_id subst in
       (id, CheckedFormula result) :: checked
   | CnfFormulaClause (id, parent_id, index, result) ->
       check_cnf_formula_clause checked id parent_id index result;

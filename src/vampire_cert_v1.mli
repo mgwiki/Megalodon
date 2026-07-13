@@ -28,9 +28,11 @@ type step =
   | FormulaInput of string * source * literal
   | FormulaTermInput of string * source * Syntax.tm
   | FormulaTermCopy of string * string * Syntax.tm
+  | RectifyFormula of string * string * Syntax.tm
   | FoolFormula of string * string * Syntax.tm
   | EnnfFormula of string * string * Syntax.tm
   | SkolemFormula of string * string * (string * Syntax.tm) list * Syntax.tm
+  | SkolemFormulaComputed of string * string * (string * Syntax.tm) list
   | CnfFormulaClause of string * string * int * clause
   | FormulaCopy of string * string * literal
   | FoolBool of string * string * literal
