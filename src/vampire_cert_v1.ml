@@ -997,7 +997,7 @@ let rec fool_term_tm tm =
   | Imp (left, right) ->
       Ap (Ap (TmH "vIMP", fool_term_tm left), fool_term_tm right)
   | All (_, body) ->
-      Ap (TmH "vPI", Ap (TmH "vLAM", fool_term_tm body))
+      Ap (TmH "vPI", Ap (TmH "vLAM", fool_term_tm (bind_anonymous_lambda_body body)))
   | Ap (TmH "vampire_exists_prop", Lam (_, body)) ->
       Ap (TmH "vSIGMA", Ap (TmH "vLAM", fool_term_tm (bind_anonymous_lambda_body body)))
   | Ap (TmH "vampire_exists_prop", Ap (TmH "vLAM", body)) ->
