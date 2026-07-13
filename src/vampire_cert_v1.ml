@@ -24,6 +24,8 @@ type clause = literal list
 type step =
   | Input of string * source * clause
   | Resolve of string * string * string * int * int * clause
+  | Factor of string * string * int * int * clause
+  | EqualityResolution of string * string * int * clause
   | Contradiction of string * string
 
 type certificate = {
@@ -140,6 +142,18 @@ let parse_pivot = function
   | List [Atom "pivot"; a; b] -> (int_atom a, int_atom b)
   | _ -> error "expected pivot"
 
+let parse_parent = function
+  | List [Atom "parent"; parent] -> atom parent
+  | _ -> error "expected parent"
+
+let parse_literal_index = function
+  | List [Atom "literal"; index] -> int_atom index
+  | _ -> error "expected literal index"
+
+let parse_literal_pair = function
+  | List [Atom "literals"; left; right] -> (int_atom left, int_atom right)
+  | _ -> error "expected literal-index pair"
+
 let parse_result = function
   | List [Atom "result"; clause] -> parse_clause clause
   | _ -> error "expected result clause"
@@ -151,6 +165,11 @@ let parse_step = function
       let a, b = parse_parents parents in
       let i, j = parse_pivot pivot in
       Resolve (atom id, a, b, i, j, parse_result result)
+  | List [Atom "factor"; id; parent; literals; result] ->
+      let i, j = parse_literal_pair literals in
+      Factor (atom id, parse_parent parent, i, j, parse_result result)
+  | List [Atom "equality_resolution"; id; parent; literal; result] ->
+      EqualityResolution (atom id, parse_parent parent, parse_literal_index literal, parse_result result)
   | List [Atom "contradiction"; id; parent] ->
       Contradiction (atom id, atom parent)
   | List (Atom rule :: _) ->
@@ -160,6 +179,8 @@ let parse_step = function
 let step_id = function
   | Input (id, _, _) -> id
   | Resolve (id, _, _, _, _, _) -> id
+  | Factor (id, _, _, _, _) -> id
+  | EqualityResolution (id, _, _, _) -> id
   | Contradiction (id, _) -> id
 
 let check_duplicate_ids steps =
@@ -256,12 +277,52 @@ let check_resolution checked id left_id right_id left_index right_index result =
   if not (same_clause_multiset expected result) then
     error (id ^ ": resolution result does not match parent clauses after pivot removal")
 
+let check_factor checked id parent_id left_index right_index result =
+  if left_index = right_index then error (id ^ ": factor literal indices must be distinct");
+  let parent_clause = lookup_clause checked parent_id in
+  let left_literal = nth left_index parent_clause (id ^ " first factor literal") in
+  let right_literal = nth right_index parent_clause (id ^ " second factor literal") in
+  if left_literal <> right_literal then
+    error (id ^ ": native certificate v1 currently factors only identical literals");
+  let remove_index = if left_index > right_index then left_index else right_index in
+  let expected = remove_at remove_index parent_clause (id ^ " removed factor literal") in
+  if not (same_clause_multiset expected result) then
+    error (id ^ ": factor result does not match parent clause after duplicate removal")
+
+let equality_sides = function
+  | Ap (Ap (TmH h, left), right) when h = "=" || h = "eq" -> Some (left, right)
+  | _ -> None
+
+let check_equality_resolution checked id parent_id literal_index result =
+  let parent_clause = lookup_clause checked parent_id in
+  let literal = nth literal_index parent_clause (id ^ " equality-resolution literal") in
+  begin
+    match literal with
+    | Neg atom ->
+        begin
+          match equality_sides atom with
+          | Some (left, right) when left = right -> ()
+          | Some _ -> error (id ^ ": equality-resolution equality is not reflexive")
+          | None -> error (id ^ ": equality-resolution literal is not an equality atom")
+        end
+    | Pos _ -> error (id ^ ": equality-resolution literal must be negative")
+  end;
+  let expected = remove_at literal_index parent_clause (id ^ " equality-resolution literal") in
+  if not (same_clause_multiset expected result) then
+    error (id ^ ": equality-resolution result does not match parent after literal removal")
+
 let check_step checked = function
   | Input (id, source, clause) ->
       check_input_source source;
       (id, clause) :: checked
   | Resolve (id, left_id, right_id, left_index, right_index, result) ->
       check_resolution checked id left_id right_id left_index right_index result;
+      (id, result) :: checked
+  | Factor (id, parent_id, left_index, right_index, result) ->
+      check_factor checked id parent_id left_index right_index result;
+      (id, result) :: checked
+  | EqualityResolution (id, parent_id, literal_index, result) ->
+      check_equality_resolution checked id parent_id literal_index result;
       (id, result) :: checked
   | Contradiction (id, parent_id) ->
       let clause = lookup_clause checked parent_id in

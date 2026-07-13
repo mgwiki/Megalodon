@@ -22,6 +22,15 @@ if ! rg -q 'Vampire certificate v1 checked 6 steps' "$TMPDIR/native_cert_v1_vali
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_factor_equality_valid.sexp \
+  "$dummy" >"$TMPDIR/native_cert_v1_factor_equality_valid.log"
+
+if ! rg -q 'Vampire certificate v1 checked 3 steps' "$TMPDIR/native_cert_v1_factor_equality_valid.log"; then
+  echo "native certificate v1 checker did not accept the valid factor/equality-resolution fixture" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_invalid_pivot.sexp \
   "$dummy" >"$TMPDIR/native_cert_v1_invalid_pivot.out" \
@@ -32,6 +41,19 @@ fi
 
 if ! rg -q 'resolution pivots are not complementary' "$TMPDIR/native_cert_v1_invalid_pivot.err"; then
   echo "native certificate v1 invalid-pivot failure did not explain the rejected side condition" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_invalid_equality_resolution.sexp \
+  "$dummy" >"$TMPDIR/native_cert_v1_invalid_equality_resolution.out" \
+  2>"$TMPDIR/native_cert_v1_invalid_equality_resolution.err"; then
+  echo "native certificate v1 checker accepted non-reflexive equality resolution" >&2
+  exit 1
+fi
+
+if ! rg -q 'equality-resolution equality is not reflexive' "$TMPDIR/native_cert_v1_invalid_equality_resolution.err"; then
+  echo "native certificate v1 invalid-equality failure did not explain the rejected side condition" >&2
   exit 1
 fi
 

@@ -22,6 +22,8 @@ type clause = literal list
 type step =
   | Input of string * source * clause
   | Resolve of string * string * string * int * int * clause
+  | Factor of string * string * int * int * clause
+  | EqualityResolution of string * string * int * clause
   | Contradiction of string * string
 
 type certificate = {
