@@ -17,4 +17,13 @@
     (literal 1)
     (result
       (clause
-        (pos (TMH "p"))))))
+        (pos (TMH "p")))))
+  (input c4 (source axiom "not-p")
+    (clause
+      (neg (TMH "p"))))
+  (resolve c5
+    (parents c3 c4)
+    (pivot 0 0)
+    (result
+      (clause)))
+  (contradiction c6 c5))

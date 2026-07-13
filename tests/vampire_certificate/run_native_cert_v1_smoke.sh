@@ -26,7 +26,7 @@ bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_factor_equality_valid.sexp \
   "$dummy" >"$TMPDIR/native_cert_v1_factor_equality_valid.log"
 
-if ! rg -q 'Vampire certificate v1 checked 3 steps' "$TMPDIR/native_cert_v1_factor_equality_valid.log"; then
+if ! rg -q 'Vampire certificate v1 checked 6 steps' "$TMPDIR/native_cert_v1_factor_equality_valid.log"; then
   echo "native certificate v1 checker did not accept the valid factor/equality-resolution fixture" >&2
   exit 1
 fi
@@ -76,6 +76,19 @@ fi
 
 if ! rg -q 'paramodulation position does not contain from term' "$TMPDIR/native_cert_v1_invalid_paramod_position.err"; then
   echo "native certificate v1 invalid-paramodulation failure did not explain the rejected side condition" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_invalid_partial.sexp \
+  "$dummy" >"$TMPDIR/native_cert_v1_invalid_partial.out" \
+  2>"$TMPDIR/native_cert_v1_invalid_partial.err"; then
+  echo "native certificate v1 checker accepted a partial non-refutation certificate" >&2
+  exit 1
+fi
+
+if ! rg -q 'final certificate step is not the empty clause' "$TMPDIR/native_cert_v1_invalid_partial.err"; then
+  echo "native certificate v1 invalid-partial failure did not explain the rejected final clause" >&2
   exit 1
 fi
 

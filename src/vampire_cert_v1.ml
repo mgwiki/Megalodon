@@ -467,4 +467,9 @@ let check_step checked = function
 
 let check_certificate cert =
   let checked = List.fold_left check_step [] cert.steps in
+  begin match checked with
+  | (_, []) :: _ -> ()
+  | (id, _) :: _ -> error (id ^ ": final certificate step is not the empty clause")
+  | [] -> error "certificate contains no steps"
+  end;
   List.rev checked

@@ -25,9 +25,7 @@ run_outline_case() {
   local label="$1"
   local problem="$2"
   local outline="$TMPDIR/${label}.out"
-  local certificate="$TMPDIR/${label}.json"
   local native_sexpr="$TMPDIR/${label}.sexp"
-  local megalodon="$TMPDIR/${label}.mg"
 
   "$VAMPIRE_BIN" \
     --input_syntax tptp \
@@ -37,6 +35,14 @@ run_outline_case() {
     --proof megalodon \
     --output_axiom_names on \
     "$problem" >"$outline"
+
+  awk '/megalodon_certificate_native_sexpr_start\./{flag=1;next}/megalodon_certificate_native_sexpr_end\./{flag=0}flag' \
+    "$outline" >"$native_sexpr"
+  if [[ ! -s "$native_sexpr" ]]; then
+    echo "$label: Vampire did not emit a native S-expression certificate block" >&2
+    exit 1
+  fi
+  ./bin/megalodon -vampirecertv1 "$native_sexpr" "$native_dummy" >"$TMPDIR/${label}.native.log"
 
   if rg -q '"rule":"paramodulate_clause_all"' "$outline"; then
     echo "outline contains an unlowered clause-wide paramodulation macro" >&2
@@ -168,48 +174,10 @@ PY
     fi
   fi
 
-  python3 scripts/vampire_certificate.py \
-    "$outline" \
-    --from-vampire-outline \
-    --strict-certificate-v1 \
-    --summary \
-    --write-certificate "$certificate" \
-    --emit-native-sexpr "$native_sexpr" \
-    --emit-megalodon "$megalodon" \
-    --theorem-name "${label}_certificate_smoke"
-
-  ./bin/megalodon -vampirecertv1 "$native_sexpr" "$native_dummy" >"$TMPDIR/${label}.native.log"
-
-  python3 - "$certificate" "$label" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-certificate = json.loads(Path(sys.argv[1]).read_text())
-label = sys.argv[2]
-stats = certificate.get("outline_reconstruction", {})
-for key in (
-    "inferred_definition_input_units",
-    "inferred_resolution_units",
-    "inferred_paramodulation_units",
-    "derived_assumption_units",
-    "avatar_component_units",
-    "cnf_formula_exact_units",
-    "cnf_formula_conjunct_units",
-    "cnf_formula_projection_units",
-):
-    if stats.get(key, 0) != 0:
-        raise SystemExit(f"{label}: live outline used Python fallback {key}={stats[key]}")
-if stats.get("explicit_step_units", 0) == 0:
-    raise SystemExit(f"{label}: live outline contained no explicit Vampire certificate units")
-PY
-
-  if rg -n '\badmit\b|\baby\b|-allowincompleteqed|^Axiom xm\b' "$megalodon"; then
-    echo "generated Megalodon proof contains an admission marker" >&2
+  if rg -q 'source vampire_' "$native_sexpr"; then
+    echo "$label: native certificate contains a Vampire-derived source assumption" >&2
     exit 1
   fi
-
-  ./bin/megalodon "$megalodon" >"$TMPDIR/${label}.check.log"
 }
 
 resolution_problem="$TMPDIR/vampire_outline_smoke_resolution.p"
