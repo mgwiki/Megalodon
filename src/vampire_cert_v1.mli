@@ -90,7 +90,16 @@ type certificate = {
   steps : step list;
 }
 
+type source_map_entry = {
+  source_map_kind : string;
+  source_map_tptp_name : string;
+  source_map_source_name : string;
+  source_map_hash : string;
+}
+
 val parse_sexpr : string -> sexpr
 val parse_certificate : string -> certificate
 val step_id : step -> string
+val parse_source_map : string -> source_map_entry list
+val validate_certificate_sources : source_map_entry list -> certificate -> int
 val check_certificate : certificate -> (string * checked_item) list

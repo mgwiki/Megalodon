@@ -92,6 +92,13 @@ type certificate = {
   steps : step list;
 }
 
+type source_map_entry = {
+  source_map_kind : string;
+  source_map_tptp_name : string;
+  source_map_source_name : string;
+  source_map_hash : string;
+}
+
 let error msg = raise (Error msg)
 
 let is_space = function
@@ -1746,3 +1753,98 @@ let check_certificate cert =
   | [] -> error "certificate contains no steps"
   end;
   List.rev checked
+
+let source_map_prefix = "% megalodon_source_map "
+
+let source_map_entry_of_sexpr = function
+  | List [Atom kind; tptp_name; source_name; source_hash] ->
+      {
+        source_map_kind = kind;
+        source_map_tptp_name = atom tptp_name;
+        source_map_source_name = atom source_name;
+        source_map_hash = atom source_hash;
+      }
+  | _ -> error "malformed Megalodon source-map comment"
+
+let lines_of_text text =
+  let len = String.length text in
+  let rec next_line start i acc =
+    if i = len then
+      if start = len then List.rev acc
+      else List.rev (String.sub text start (len - start) :: acc)
+    else if text.[i] = '\n' then
+      next_line (i + 1) (i + 1) (String.sub text start (i - start) :: acc)
+    else
+      next_line start (i + 1) acc
+  in
+  next_line 0 0 []
+
+let parse_source_map text =
+  let prefix_len = String.length source_map_prefix in
+  List.fold_left
+    (fun entries line ->
+      if string_starts_with source_map_prefix line then
+        let body = String.sub line prefix_len (String.length line - prefix_len) in
+        source_map_entry_of_sexpr (parse_sexpr body) :: entries
+      else
+        entries)
+    []
+    (lines_of_text text)
+  |> List.rev
+
+let source_name = function
+  | SourceAxiom name
+  | SourceNegatedConjecture name
+  | SourceDefinition name
+  | SourceSetReflexivity name -> name
+
+let source_kind_name = function
+  | SourceAxiom _ -> "axiom"
+  | SourceNegatedConjecture _ -> "negated_conjecture"
+  | SourceDefinition _ -> "definition"
+  | SourceSetReflexivity _ -> "set_reflexivity"
+
+let source_of_step = function
+  | Input (id, source, _)
+  | FormulaInput (id, source, _)
+  | FormulaTermInput (id, source, _) -> Some (id, source)
+  | _ -> None
+
+let source_map_kind_compatible source entry =
+  match source, entry.source_map_kind with
+  | SourceDefinition _, ("def" | "definition" | "local_definition") -> true
+  | SourceNegatedConjecture _, ("conjecture" | "negated_conjecture") -> true
+  | SourceSetReflexivity _, ("set_reflexivity" | "local_set_reflexivity") -> true
+  | SourceAxiom _, ("type" | "local_type") -> false
+  | SourceAxiom _, _ -> true
+  | SourceDefinition _, _ -> false
+  | SourceNegatedConjecture _, _ -> false
+  | SourceSetReflexivity _, _ -> false
+
+let validate_certificate_sources source_map cert =
+  let table = Hashtbl.create 101 in
+  List.iter
+    (fun entry -> Hashtbl.replace table entry.source_map_tptp_name entry)
+    source_map;
+  let checked = ref 0 in
+  List.iter
+    (fun step ->
+      match source_of_step step with
+      | None -> ()
+      | Some (id, source) ->
+          let name = source_name source in
+          let entry =
+            try Hashtbl.find table name
+            with Not_found ->
+              error
+                (id ^ ": certificate " ^ source_kind_name source
+                 ^ " source " ^ name ^ " is not present in the Megalodon source map")
+          in
+          if not (source_map_kind_compatible source entry) then
+            error
+              (id ^ ": certificate " ^ source_kind_name source
+               ^ " source " ^ name ^ " maps to incompatible source-map kind "
+               ^ entry.source_map_kind);
+          incr checked)
+    cert.steps;
+  !checked

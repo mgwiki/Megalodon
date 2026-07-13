@@ -25,6 +25,30 @@ if ! rg -q 'Vampire certificate v1 checked 6 steps' "$WORK_DIR/native_cert_v1_va
 fi
 
 bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_valid.log"
+
+if ! rg -q 'Vampire certificate v1 source map checked 3 sources' "$WORK_DIR/native_cert_v1_source_map_valid.log"; then
+  echo "native certificate v1 source-map checker did not accept mapped inputs" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_missing.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_missing.out" \
+  2>"$WORK_DIR/native_cert_v1_source_map_missing.err"; then
+  echo "native certificate v1 source-map checker accepted an unmapped input" >&2
+  exit 1
+fi
+
+if ! rg -q 'source a3 is not present in the Megalodon source map' "$WORK_DIR/native_cert_v1_source_map_missing.err"; then
+  echo "native certificate v1 source-map failure did not explain the unmapped input" >&2
+  exit 1
+fi
+
+bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_factor_equality_valid.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_factor_equality_valid.log"
 

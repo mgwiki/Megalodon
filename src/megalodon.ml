@@ -28,6 +28,7 @@ let vampireabyproof : string ref = ref "tptp";;
 let vampireabynative : bool ref = ref false;;
 let vampireabynativestrict : bool ref = ref false;;
 let vampirecertv1 : string option ref = ref None;;
+let vampirecertv1source : string option ref = ref None;;
 let bushy = ref false;;
 let bushykdeps : (string,unit) Hashtbl.t = Hashtbl.create 10;;
 let bushyhdeps : (int,unit) Hashtbl.t = Hashtbl.create 10;;
@@ -6880,6 +6881,15 @@ let read_all fn =
 let check_vampire_cert_v1_file fn =
   try
     let cert = Vampire_cert_v1.parse_certificate (read_all fn) in
+    begin match !vampirecertv1source with
+    | None -> ()
+    | Some source_fn ->
+        let source_map = Vampire_cert_v1.parse_source_map (read_all source_fn) in
+        let source_count = Vampire_cert_v1.validate_certificate_sources source_map cert in
+        Printf.printf "Vampire certificate v1 source map checked %d source%s.\n"
+          source_count
+          (if source_count = 1 then "" else "s")
+    end;
     let checked = Vampire_cert_v1.check_certificate cert in
     Printf.printf "Vampire certificate v1 checked %d step%s.\n"
       (List.length checked)
@@ -7114,6 +7124,16 @@ let _ =
 	      end
 	    else
 	      raise (Failure("Expected -vampirecertv1 <certificate.sexp>"))
+          end
+        else if Sys.argv.(!j) = "-vampirecertv1source" then
+          begin
+	    if !j < i-2 then
+	      begin
+		incr j;
+                vampirecertv1source := Some(Sys.argv.(!j))
+	      end
+	    else
+	      raise (Failure("Expected -vampirecertv1source <problem.th0.p>"))
           end
         else if Sys.argv.(!j) = "-fofallsubgoals" then
           begin
