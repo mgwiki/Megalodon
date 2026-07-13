@@ -77,6 +77,7 @@ type step =
   | Substitute of string * string * (string * Syntax.tm) list * clause
   | Condensation of string * string * (string * Syntax.tm) list * clause
   | Resolve of string * string * string * int * int * clause
+  | SubsumptionResolution of string * string * string * literal * literal * (string * Syntax.tm) list * clause
   | Factor of string * string * int * int * clause
   | EqualityResolution of string * string * int * clause
   | EqualityResolutionConstraints of string * string * int * literal * clause * clause
@@ -84,6 +85,7 @@ type step =
   | TruthConflict of string * string * int * clause
   | EqualitySymmetry of string * string * int * clause
   | Paramodulate of string * string * string * int * int * int list * Syntax.tm * Syntax.tm * clause
+  | Superposition of string * string * string * int * int * (string * Syntax.tm) list * (string * Syntax.tm) list * int list * Syntax.tm * Syntax.tm * clause
   | Contradiction of string * string
 
 type certificate = {

@@ -79,6 +79,7 @@ type step =
   | Substitute of string * string * (string * tm) list * clause
   | Condensation of string * string * (string * tm) list * clause
   | Resolve of string * string * string * int * int * clause
+  | SubsumptionResolution of string * string * string * literal * literal * (string * tm) list * clause
   | Factor of string * string * int * int * clause
   | EqualityResolution of string * string * int * clause
   | EqualityResolutionConstraints of string * string * int * literal * clause * clause
@@ -86,6 +87,7 @@ type step =
   | TruthConflict of string * string * int * clause
   | EqualitySymmetry of string * string * int * clause
   | Paramodulate of string * string * string * int * int * int list * tm * tm * clause
+  | Superposition of string * string * string * int * int * (string * tm) list * (string * tm) list * int list * tm * tm * clause
   | Contradiction of string * string
 
 type certificate = {
@@ -442,6 +444,16 @@ let parse_step = function
       let a, b = parse_parents parents in
       let i, j = parse_pivot pivot in
       Resolve (atom id, a, b, i, j, parse_result result)
+  | List [Atom "subsumption_resolution"; id; parents; selected; side_pivot; side_subst; result] ->
+      let a, b = parse_parents parents in
+      SubsumptionResolution (
+        atom id,
+        a,
+        b,
+        parse_named_literal "selected" selected,
+        parse_named_literal "side_pivot" side_pivot,
+        parse_substitution side_subst,
+        parse_result result)
   | List [Atom "factor"; id; parent; literals; result] ->
       let i, j = parse_literal_pair literals in
       Factor (atom id, parse_parent parent, i, j, parse_result result)
@@ -480,6 +492,21 @@ let parse_step = function
         parse_tm_field "from" from_tm,
         parse_tm_field "to" to_tm,
         parse_result result)
+  | List [Atom "superposition"; id; target; equality; target_subst; equality_subst; position; from_tm; to_tm; result] ->
+      let target_parent, target_index = parse_indexed_parent "target" target in
+      let equality_parent, equality_index = parse_indexed_parent "equality" equality in
+      Superposition (
+        atom id,
+        target_parent,
+        equality_parent,
+        target_index,
+        equality_index,
+        parse_substitution target_subst,
+        parse_substitution equality_subst,
+        parse_position position,
+        parse_tm_field "from" from_tm,
+        parse_tm_field "to" to_tm,
+        parse_result result)
   | List [Atom "contradiction"; id; parent] ->
       Contradiction (atom id, atom parent)
   | List (Atom rule :: _) ->
@@ -514,6 +541,7 @@ let step_id = function
   | Substitute (id, _, _, _) -> id
   | Condensation (id, _, _, _) -> id
   | Resolve (id, _, _, _, _, _) -> id
+  | SubsumptionResolution (id, _, _, _, _, _, _) -> id
   | Factor (id, _, _, _, _) -> id
   | EqualityResolution (id, _, _, _) -> id
   | EqualityResolutionConstraints (id, _, _, _, _, _) -> id
@@ -521,6 +549,7 @@ let step_id = function
   | TruthConflict (id, _, _, _) -> id
   | EqualitySymmetry (id, _, _, _) -> id
   | Paramodulate (id, _, _, _, _, _, _, _, _) -> id
+  | Superposition (id, _, _, _, _, _, _, _, _, _, _) -> id
   | Contradiction (id, _) -> id
 
 let check_duplicate_ids steps =
@@ -1031,6 +1060,22 @@ let rec normalize_equality_orientation tm =
   | Imp (left, right) -> Imp (normalize left, normalize right)
   | All (tp, body) -> All (tp, normalize body)
   | _ -> tm
+
+let normalize_literal_equality_orientation = function
+  | Pos atom -> Pos (normalize_equality_orientation atom)
+  | Neg atom -> Neg (normalize_equality_orientation atom)
+
+let same_clause_set_mod_equality left right =
+  let unique literals =
+    let rec add_unique acc = function
+      | [] -> List.rev acc
+      | literal :: rest ->
+          if List.exists ((=) literal) acc then add_unique acc rest
+          else add_unique (literal :: acc) rest
+    in
+    add_unique [] (List.map normalize_literal_equality_orientation literals)
+  in
+  same_clause_multiset (unique left) (unique right)
 
 let rebuild_binary head = function
   | [] -> TmH head
@@ -1738,6 +1783,57 @@ let same_literal_mod_vampire_vars left right =
            (normalize_equality_orientation right_atom)
   | _ -> false
 
+let complementary_mod_equality left right =
+  match left, right with
+  | Pos left_atom, Neg right_atom
+  | Neg left_atom, Pos right_atom ->
+      same_literal_mod_vampire_vars (Pos left_atom) (Pos right_atom)
+  | _ -> false
+
+let remove_one_literal_mod item items what =
+  let rec aux prefix = function
+    | [] -> error what
+    | literal :: rest when same_literal_mod_vampire_vars literal item ->
+        List.rev_append prefix rest
+    | literal :: rest -> aux (literal :: prefix) rest
+  in
+  aux [] items
+
+let clause_contains_literal_mod item clause =
+  List.exists (fun literal -> same_literal_mod_vampire_vars literal item) clause
+
+let check_subsumption_resolution checked id main_parent_id side_parent_id selected side_pivot side_subst result =
+  let main_clause = lookup_clause checked main_parent_id in
+  let side_clause = lookup_clause checked side_parent_id in
+  let main_rest =
+    remove_one_literal_mod selected main_clause (id ^ ": selected literal is not present in main parent")
+  in
+  let expected_result_ok =
+    same_clause_multiset main_rest result
+    || same_clause_set_mod_equality main_rest result
+  in
+  if not expected_result_ok then
+    error (id ^ ": subsumption-resolution result does not match main parent after selected literal removal");
+  let side_pivot_sub = subst_literal side_subst side_pivot in
+  if not (complementary_mod_equality selected side_pivot_sub) then
+    error (id ^ ": side pivot does not complement selected literal under side substitution");
+  let rec check_side skipped_pivot = function
+    | [] ->
+        if not skipped_pivot then
+          error (id ^ ": side pivot is not present in side parent")
+    | literal :: rest ->
+        if not skipped_pivot && same_literal_mod_vampire_vars literal side_pivot then
+          check_side true rest
+        else
+          let substituted = subst_literal side_subst literal in
+          if complementary_mod_equality selected substituted
+             || clause_contains_literal_mod substituted result then
+            check_side skipped_pivot rest
+          else
+            error (id ^ ": side parent contains a literal not discharged by the selected literal or preserved in the result")
+  in
+  check_side false side_clause
+
 let check_equality_resolution_constraints checked id parent_id literal_index selected constraints result =
   if constraints = [] then error (id ^ ": equality-resolution constraints must be non-empty");
   let parent_clause = lookup_clause checked parent_id in
@@ -1799,7 +1895,12 @@ let check_equality_factoring checked id parent_id selected_index other_index sub
   if !candidates = [] then error (id ^ ": selected and other equalities do not share a side after substitution");
   let substituted_parent = subst_clause subst parent_clause in
   let without_selected = remove_at selected_index substituted_parent (id ^ " selected equality") in
-  if not (List.exists (fun candidate -> same_clause_multiset (without_selected @ [candidate]) result) !candidates) then
+  if not (List.exists
+      (fun candidate ->
+        let expected = without_selected @ [candidate] in
+        same_clause_multiset expected result
+        || same_clause_set_mod_equality expected result)
+      !candidates) then
     error (id ^ ": equality-factoring result does not match explicit factoring")
 
 let check_truth_conflict checked id parent_id literal_index result =
@@ -1876,6 +1977,56 @@ let check_paramodulate checked id equality_parent_id target_parent_id equality_i
         if not (same_clause_multiset swapped_expected result) then
           error (id ^ ": paramodulation result does not match explicit rewrite")
     | None -> error (id ^ ": paramodulation result does not match explicit rewrite")
+    end
+
+let check_superposition checked id target_parent_id equality_parent_id target_index equality_index target_subst equality_subst position from_tm to_tm result =
+  let target_clause = subst_clause target_subst (lookup_clause checked target_parent_id) in
+  let equality_clause = subst_clause equality_subst (lookup_clause checked equality_parent_id) in
+  let equality_literal = nth equality_index equality_clause (id ^ " equality literal") in
+  let target_literal = nth target_index target_clause (id ^ " target literal") in
+  let side_matches left right =
+    left = right
+    || same_mod_vampire_var_renaming left right
+    || same_mod_scoped_vampire_var_renaming left right
+    || same_mod_scoped_vampire_var_renaming_and_equality left right
+  in
+  begin
+    match equality_literal with
+    | Pos atom ->
+        begin
+          match equality_sides atom with
+          | Some (left, right) when side_matches left from_tm && side_matches right to_tm -> ()
+          | Some (left, right) when side_matches right from_tm && side_matches left to_tm -> ()
+          | Some _ -> error (id ^ ": superposition from/to terms do not match equality literal")
+          | None -> error (id ^ ": superposition equality literal is not an equality atom")
+        end
+    | Neg _ -> error (id ^ ": superposition equality literal must be positive")
+  end;
+  let target_atom = literal_atom target_literal in
+  let position =
+    let rec select = function
+      | [] -> error (id ^ ": superposition position does not contain from term")
+      | candidate :: rest ->
+          begin
+            match try_tm_at_position target_atom candidate with
+            | Some found when found = from_tm -> candidate
+            | _ -> select rest
+          end
+    in
+    select (paramodulation_position_candidates target_atom position)
+  in
+  let rewritten_atom = replace_tm_at_position target_atom position to_tm (id ^ " target") in
+  let rewritten_literal = replace_literal_atom target_literal rewritten_atom in
+  let equality_rest = remove_at equality_index equality_clause (id ^ " equality literal") in
+  let target_rest = remove_at target_index target_clause (id ^ " target literal") in
+  let expected = equality_rest @ target_rest @ [rewritten_literal] in
+  if not (same_clause_multiset expected result || same_clause_set_mod_equality expected result) then
+    begin match swap_literal_equality rewritten_literal with
+    | Some swapped_literal ->
+        let swapped_expected = equality_rest @ target_rest @ [swapped_literal] in
+        if not (same_clause_multiset swapped_expected result || same_clause_set_mod_equality swapped_expected result) then
+          error (id ^ ": superposition result does not match explicit rewrite")
+    | None -> error (id ^ ": superposition result does not match explicit rewrite")
     end
 
 let check_step checked = function
@@ -1960,6 +2111,9 @@ let check_step checked = function
   | Resolve (id, left_id, right_id, left_index, right_index, result) ->
       check_resolution checked id left_id right_id left_index right_index result;
       (id, CheckedClause result) :: checked
+  | SubsumptionResolution (id, main_parent_id, side_parent_id, selected, side_pivot, side_subst, result) ->
+      check_subsumption_resolution checked id main_parent_id side_parent_id selected side_pivot side_subst result;
+      (id, CheckedClause result) :: checked
   | Factor (id, parent_id, left_index, right_index, result) ->
       check_factor checked id parent_id left_index right_index result;
       (id, CheckedClause result) :: checked
@@ -1980,6 +2134,9 @@ let check_step checked = function
       (id, CheckedClause result) :: checked
   | Paramodulate (id, equality_parent_id, target_parent_id, equality_index, target_index, position, from_tm, to_tm, result) ->
       check_paramodulate checked id equality_parent_id target_parent_id equality_index target_index position from_tm to_tm result;
+      (id, CheckedClause result) :: checked
+  | Superposition (id, target_parent_id, equality_parent_id, target_index, equality_index, target_subst, equality_subst, position, from_tm, to_tm, result) ->
+      check_superposition checked id target_parent_id equality_parent_id target_index equality_index target_subst equality_subst position from_tm to_tm result;
       (id, CheckedClause result) :: checked
   | Contradiction (id, parent_id) ->
       let clause = lookup_clause checked parent_id in
