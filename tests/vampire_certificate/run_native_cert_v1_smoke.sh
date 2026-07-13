@@ -408,6 +408,19 @@ if ! rg -q 'Vampire certificate v1 checked 6 steps' "$WORK_DIR/native_cert_v1_sk
   exit 1
 fi
 
+if bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_skolem_bogus_shape_bad.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_skolem_bogus_shape_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_skolem_bogus_shape_bad.err"; then
+  echo "native certificate v1 checker accepted a bogus skolem result" >&2
+  exit 1
+fi
+
+if ! rg -q 'skolem_formula result does not match explicit skolem substitution' "$WORK_DIR/native_cert_v1_skolem_bogus_shape_bad.err"; then
+  echo "native certificate v1 checker did not explain bogus skolem rejection" >&2
+  exit 1
+fi
+
 bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_predicate_definition_valid.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_predicate_definition_valid.log"
