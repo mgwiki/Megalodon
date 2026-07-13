@@ -21,9 +21,18 @@ type literal =
 
 type clause = literal list
 
+type checked_item =
+  | CheckedClause of clause
+  | CheckedFormula of tm
+
 type step =
   | Input of string * source * clause
   | FormulaInput of string * source * literal
+  | FormulaTermInput of string * source * tm
+  | FormulaTermCopy of string * string * tm
+  | FoolFormula of string * string * tm
+  | EnnfFormula of string * string * tm
+  | CnfFormulaClause of string * string * int * clause
   | FormulaCopy of string * string * literal
   | FoolBool of string * string * literal
   | CnfLiteral of string * string * clause
@@ -192,11 +201,33 @@ let parse_literal_result = function
   | List [Atom "result"; literal] -> parse_literal literal
   | _ -> error "expected result literal"
 
+let parse_formula_result = function
+  | List [Atom "result"; List [Atom "formula"; tm]] -> parse_tm tm
+  | _ -> error "expected result formula"
+
+let parse_formula = function
+  | List [Atom "formula"; tm] -> parse_tm tm
+  | _ -> error "expected formula"
+
+let parse_index = function
+  | List [Atom "index"; index] -> int_atom index
+  | _ -> error "expected index"
+
 let parse_step = function
   | List [Atom "input"; id; source; clause] ->
       Input (atom id, parse_source source, parse_clause clause)
   | List [Atom "formula_input"; id; source; literal] ->
       FormulaInput (atom id, parse_source source, parse_literal literal)
+  | List [Atom "formula_term_input"; id; source; formula] ->
+      FormulaTermInput (atom id, parse_source source, parse_formula formula)
+  | List [Atom "formula_term_copy"; id; parent; result] ->
+      FormulaTermCopy (atom id, parse_parent parent, parse_formula_result result)
+  | List [Atom "fool_formula"; id; parent; result] ->
+      FoolFormula (atom id, parse_parent parent, parse_formula_result result)
+  | List [Atom "ennf_formula"; id; parent; result] ->
+      EnnfFormula (atom id, parse_parent parent, parse_formula_result result)
+  | List [Atom "cnf_formula_clause"; id; parent; index; result] ->
+      CnfFormulaClause (atom id, parse_parent parent, parse_index index, parse_result result)
   | List [Atom "formula_copy"; id; parent; result] ->
       FormulaCopy (atom id, parse_parent parent, parse_literal_result result)
   | List [Atom "fool_bool"; id; parent; result] ->
@@ -242,6 +273,11 @@ let parse_step = function
 let step_id = function
   | Input (id, _, _) -> id
   | FormulaInput (id, _, _) -> id
+  | FormulaTermInput (id, _, _) -> id
+  | FormulaTermCopy (id, _, _) -> id
+  | FoolFormula (id, _, _) -> id
+  | EnnfFormula (id, _, _) -> id
+  | CnfFormulaClause (id, _, _, _) -> id
   | FormulaCopy (id, _, _) -> id
   | FoolBool (id, _, _) -> id
   | CnfLiteral (id, _, _) -> id
@@ -327,7 +363,14 @@ let same_clause_multiset left right =
   List.length left = List.length right && consume left right
 
 let lookup_clause checked id =
-  try List.assoc id checked with Not_found -> error ("unknown certificate parent " ^ id)
+  match (try List.assoc id checked with Not_found -> error ("unknown certificate parent " ^ id)) with
+  | CheckedClause clause -> clause
+  | CheckedFormula _ -> error (id ^ " is a formula parent, but a clause parent was expected")
+
+let lookup_formula checked id =
+  match (try List.assoc id checked with Not_found -> error ("unknown certificate parent " ^ id)) with
+  | CheckedFormula formula -> formula
+  | CheckedClause _ -> error (id ^ " is a clause parent, but a formula parent was expected")
 
 let rec subst_tm subst tm =
   match tm with
@@ -385,6 +428,97 @@ let replace_literal_atom literal atom =
   | Pos _ -> Pos atom
   | Neg _ -> Neg atom
 
+let equality_sides = function
+  | Ap (Ap (TmH h, left), right) when h = "=" || h = "eq" -> Some (left, right)
+  | _ -> None
+
+let equality_to_true atom =
+  Ap (Ap (TmH "=", atom), TmH "f__true")
+
+let vampire_false = TmH "vampire_false"
+
+let vampire_or left right =
+  Ap (Ap (TmH "vampire_or", left), right)
+
+let vampire_and left right =
+  Ap (Ap (TmH "vampire_and", left), right)
+
+let rec app2_name = function
+  | Ap (Ap (TmH h, left), right) -> Some (h, left, right)
+  | _ -> None
+
+let is_vampire_false = function
+  | TmH "vampire_false" -> true
+  | _ -> false
+
+let neg_formula tm =
+  Imp (tm, vampire_false)
+
+let is_vampire_var_name name =
+  let len = String.length name in
+  len >= 2 && name.[0] = 'X' &&
+  let rec digits i =
+    i = len || (name.[i] >= '0' && name.[i] <= '9' && digits (i + 1))
+  in
+  digits 1
+
+let is_equality_atom tm =
+  match equality_sides tm with
+  | Some _ -> true
+  | None -> false
+
+let rec fool_formula_tm tm =
+  match tm with
+  | Imp (left, right) -> Imp (fool_formula_tm left, fool_formula_tm right)
+  | All (tp, body) -> All (tp, fool_formula_tm body)
+  | Ap (Ap (TmH "vampire_or", left), right) -> vampire_or (fool_formula_tm left) (fool_formula_tm right)
+  | Ap (Ap (TmH "vampire_and", left), right) -> vampire_and (fool_formula_tm left) (fool_formula_tm right)
+  | Lam (tp, body) -> Lam (tp, fool_formula_tm body)
+  | TmH "vampire_true"
+  | TmH "vampire_false" -> tm
+  | _ when is_equality_atom tm -> tm
+  | TmH h when is_vampire_var_name h -> Ap (Ap (TmH "=", TmH "f__true"), tm)
+  | _ -> equality_to_true tm
+
+let rec ennf_pos tm =
+  match tm with
+  | Imp (left, false_tm) when is_vampire_false false_tm -> ennf_neg left
+  | Imp (left, right) -> vampire_or (ennf_neg left) (ennf_pos right)
+  | All (tp, body) -> All (tp, ennf_pos body)
+  | Ap (Ap (TmH "vampire_or", left), right) -> vampire_or (ennf_pos left) (ennf_pos right)
+  | Ap (Ap (TmH "vampire_and", left), right) -> vampire_and (ennf_pos left) (ennf_pos right)
+  | _ -> tm
+and ennf_neg tm =
+  match tm with
+  | Imp (left, right) -> vampire_and (ennf_pos left) (ennf_neg right)
+  | All _ -> error "negative universal ENNF is not supported by certificate v1"
+  | Ap (Ap (TmH "vampire_or", left), right) -> vampire_and (ennf_neg left) (ennf_neg right)
+  | Ap (Ap (TmH "vampire_and", left), right) -> vampire_or (ennf_neg left) (ennf_neg right)
+  | _ -> neg_formula tm
+
+let rec strip_forall = function
+  | All (_, body) -> strip_forall body
+  | tm -> tm
+
+let literal_of_formula_tm tm =
+  match tm with
+  | Imp (atom, false_tm) when is_vampire_false false_tm -> Neg atom
+  | _ -> Pos tm
+
+let rec cnf_clauses tm =
+  match strip_forall tm with
+  | Ap (Ap (TmH "vampire_and", left), right) ->
+      cnf_clauses left @ cnf_clauses right
+  | Ap (Ap (TmH "vampire_or", left), right) ->
+      let left_clauses = cnf_clauses left in
+      let right_clauses = cnf_clauses right in
+      List.concat
+        (List.map
+           (fun left_clause ->
+             List.map (fun right_clause -> left_clause @ right_clause) right_clauses)
+           left_clauses)
+  | atom -> [[literal_of_formula_tm atom]]
+
 let check_input_source = function
   | SourceAxiom name
   | SourceNegatedConjecture name
@@ -401,8 +535,30 @@ let check_cnf_literal checked id parent_id result =
   if not (same_clause_multiset parent_clause result) then
     error (id ^ ": cnf_literal result does not match source literal")
 
-let equality_to_true atom =
-  Ap (Ap (TmH "=", atom), TmH "f__true")
+let check_formula_term_copy checked id parent_id result =
+  let parent_formula = lookup_formula checked parent_id in
+  if parent_formula <> result then
+    error (id ^ ": formula_term_copy result does not match parent")
+
+let check_fool_formula checked id parent_id result =
+  let parent_formula = lookup_formula checked parent_id in
+  let expected = fool_formula_tm parent_formula in
+  if expected <> result then
+    error (id ^ ": fool_formula result does not match recursive FOOL Boolean lifting")
+
+let check_ennf_formula checked id parent_id result =
+  let parent_formula = lookup_formula checked parent_id in
+  let expected = ennf_pos parent_formula in
+  if expected <> result then
+    error (id ^ ": ennf_formula result does not match deterministic ENNF transformation")
+
+let check_cnf_formula_clause checked id parent_id index result =
+  if index < 0 then error (id ^ ": cnf_formula_clause index must be non-negative");
+  let parent_formula = lookup_formula checked parent_id in
+  let clauses = cnf_clauses parent_formula in
+  let expected = nth index clauses (id ^ " CNF clause") in
+  if not (same_clause_multiset expected result) then
+    error (id ^ ": cnf_formula_clause result does not match deterministic CNF projection")
 
 let check_formula_copy checked id parent_id result =
   let parent_clause = lookup_clause checked parent_id in
@@ -450,10 +606,6 @@ let check_factor checked id parent_id left_index right_index result =
   let expected = remove_at remove_index parent_clause (id ^ " removed factor literal") in
   if not (same_clause_multiset expected result) then
     error (id ^ ": factor result does not match parent clause after duplicate removal")
-
-let equality_sides = function
-  | Ap (Ap (TmH h, left), right) when h = "=" || h = "eq" -> Some (left, right)
-  | _ -> None
 
 let swap_literal_equality = function
   | Pos atom ->
@@ -564,53 +716,69 @@ let check_paramodulate checked id equality_parent_id target_parent_id equality_i
 let check_step checked = function
   | Input (id, source, clause) ->
       check_input_source source;
-      (id, clause) :: checked
+      (id, CheckedClause clause) :: checked
   | FormulaInput (id, source, literal) ->
       check_input_source source;
-      (id, [literal]) :: checked
+      (id, CheckedClause [literal]) :: checked
+  | FormulaTermInput (id, source, formula) ->
+      check_input_source source;
+      (id, CheckedFormula formula) :: checked
+  | FormulaTermCopy (id, parent_id, result) ->
+      check_formula_term_copy checked id parent_id result;
+      (id, CheckedFormula result) :: checked
+  | FoolFormula (id, parent_id, result) ->
+      check_fool_formula checked id parent_id result;
+      (id, CheckedFormula result) :: checked
+  | EnnfFormula (id, parent_id, result) ->
+      check_ennf_formula checked id parent_id result;
+      (id, CheckedFormula result) :: checked
+  | CnfFormulaClause (id, parent_id, index, result) ->
+      check_cnf_formula_clause checked id parent_id index result;
+      (id, CheckedClause result) :: checked
   | FormulaCopy (id, parent_id, result) ->
       check_formula_copy checked id parent_id result;
-      (id, [result]) :: checked
+      (id, CheckedClause [result]) :: checked
   | FoolBool (id, parent_id, result) ->
       check_fool_bool checked id parent_id result;
-      (id, [result]) :: checked
+      (id, CheckedClause [result]) :: checked
   | CnfLiteral (id, parent_id, result) ->
       check_cnf_literal checked id parent_id result;
-      (id, result) :: checked
+      (id, CheckedClause result) :: checked
   | DefinitionInput (id, clause) ->
       check_definition_input id clause;
-      (id, clause) :: checked
+      (id, CheckedClause clause) :: checked
   | FoolExhaustiveness (id, clause) ->
       check_fool_exhaustiveness id clause;
-      (id, clause) :: checked
+      (id, CheckedClause clause) :: checked
   | Substitute (id, parent_id, subst, result) ->
       check_substitute checked id parent_id subst result;
-      (id, result) :: checked
+      (id, CheckedClause result) :: checked
   | Resolve (id, left_id, right_id, left_index, right_index, result) ->
       check_resolution checked id left_id right_id left_index right_index result;
-      (id, result) :: checked
+      (id, CheckedClause result) :: checked
   | Factor (id, parent_id, left_index, right_index, result) ->
       check_factor checked id parent_id left_index right_index result;
-      (id, result) :: checked
+      (id, CheckedClause result) :: checked
   | EqualityResolution (id, parent_id, literal_index, result) ->
       check_equality_resolution checked id parent_id literal_index result;
-      (id, result) :: checked
+      (id, CheckedClause result) :: checked
   | EqualitySymmetry (id, parent_id, literal_index, result) ->
       check_equality_symmetry checked id parent_id literal_index result;
-      (id, result) :: checked
+      (id, CheckedClause result) :: checked
   | Paramodulate (id, equality_parent_id, target_parent_id, equality_index, target_index, position, from_tm, to_tm, result) ->
       check_paramodulate checked id equality_parent_id target_parent_id equality_index target_index position from_tm to_tm result;
-      (id, result) :: checked
+      (id, CheckedClause result) :: checked
   | Contradiction (id, parent_id) ->
       let clause = lookup_clause checked parent_id in
       if clause <> [] then error (id ^ ": contradiction parent is not the empty clause");
-      (id, []) :: checked
+      (id, CheckedClause []) :: checked
 
 let check_certificate cert =
   let checked = List.fold_left check_step [] cert.steps in
   begin match checked with
-  | (_, []) :: _ -> ()
-  | (id, _) :: _ -> error (id ^ ": final certificate step is not the empty clause")
+  | (_, CheckedClause []) :: _ -> ()
+  | (id, CheckedClause _) :: _ -> error (id ^ ": final certificate step is not the empty clause")
+  | (id, CheckedFormula _) :: _ -> error (id ^ ": final certificate step is a formula, not the empty clause")
   | [] -> error "certificate contains no steps"
   end;
   List.rev checked

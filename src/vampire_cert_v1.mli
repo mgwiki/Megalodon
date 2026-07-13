@@ -19,9 +19,18 @@ type literal =
 
 type clause = literal list
 
+type checked_item =
+  | CheckedClause of clause
+  | CheckedFormula of Syntax.tm
+
 type step =
   | Input of string * source * clause
   | FormulaInput of string * source * literal
+  | FormulaTermInput of string * source * Syntax.tm
+  | FormulaTermCopy of string * string * Syntax.tm
+  | FoolFormula of string * string * Syntax.tm
+  | EnnfFormula of string * string * Syntax.tm
+  | CnfFormulaClause of string * string * int * clause
   | FormulaCopy of string * string * literal
   | FoolBool of string * string * literal
   | CnfLiteral of string * string * clause
@@ -43,4 +52,4 @@ type certificate = {
 val parse_sexpr : string -> sexpr
 val parse_certificate : string -> certificate
 val step_id : step -> string
-val check_certificate : certificate -> (string * clause) list
+val check_certificate : certificate -> (string * checked_item) list
