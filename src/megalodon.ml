@@ -598,18 +598,33 @@ let rec th0_aby_head_expand m =
      | Imp(p,q) -> Imp(th0_aby_head_expand p,th0_aby_head_expand q)
      | _ -> m0
 
+let tptp_source_map_quote s =
+  "\"" ^ String.escaped s ^ "\""
+
+let tptp_source_map_comment kind tptp_name source_name source_hash =
+  Printf.sprintf "%% megalodon_source_map (%s %s %s %s)\n"
+    kind
+    (tptp_source_map_quote tptp_name)
+    (tptp_source_map_quote source_name)
+    (tptp_source_map_quote source_hash)
+
 let th0_aby_problem_content claimtm cxtm cxpf xl conjn =
   Buffer.clear sb;
   List.iter
     (fun (cl,h,x,a) ->
       if cl = "type" || cl = "def" && not (Hashtbl.mem sigdelta_opaque h) then
-        Printf.bprintf sb "%s\n" a
+        begin
+          Buffer.add_string sb (tptp_source_map_comment cl (tptpize_name x) x h);
+          Printf.bprintf sb "%s\n" a
+        end
       else if cl = "known" && (List.mem x xl || xl = ["-"]) then
         begin
           try
             let (_,p) = Hashtbl.find sigdelta h in
+            Buffer.add_string sb (tptp_source_map_comment "known" (tptpize_name x) x h);
             Printf.bprintf sb "thf(%s,axiom,%s). %% %s\n" (tptpize_name x) (th0_str (th0_aby_head_expand p) []) h
           with Not_found ->
+            Buffer.add_string sb (tptp_source_map_comment "known" (tptpize_name x) x h);
             Printf.bprintf sb "%s\n" a
         end)
     (List.rev !th0sg);
@@ -618,9 +633,11 @@ let th0_aby_problem_content claimtm cxtm cxpf xl conjn =
     | [] -> ()
     | (x,(a,d))::cxtmr ->
        th0_cx cxtmr;
+       Buffer.add_string sb (tptp_source_map_comment "local_type" (tptpize_name x ^ "_tp") x "");
        Printf.bprintf sb "thf(%s_tp,type,(%s : %s)).\n" (tptpize_name x) (tptpize_name x) (th0_stp_str a);
        match d with
        | Some(d) ->
+          Buffer.add_string sb (tptp_source_map_comment "local_definition" (tptpize_name x ^ "_def") x "");
           Printf.bprintf sb "thf(%s_def,definition,(%s = %s)).\n" (tptpize_name x) (tptpize_name x) (th0_str d (tptpizecxtm cxtmr))
        | None -> ()
   in
@@ -629,9 +646,12 @@ let th0_aby_problem_content claimtm cxtm cxpf xl conjn =
     (fun (x,p) ->
       if List.mem x xl then
         let a = th0_str (th0_aby_head_expand p) (tptpizecxtm cxtm) in
+        Buffer.add_string sb (tptp_source_map_comment "local_fact" (tptpize_name x) x "");
         Printf.bprintf sb "thf(%s,axiom,%s).\n" (tptpize_name x) a)
     cxpf;
-  Printf.bprintf sb "thf(conj_%s,conjecture,%s).\n" conjn (th0_str (th0_aby_head_expand claimtm) (tptpizecxtm cxtm));
+  let conjecture_tptp_name = "conj_" ^ tptpize_name conjn in
+  Buffer.add_string sb (tptp_source_map_comment "conjecture" conjecture_tptp_name conjn "");
+  Printf.bprintf sb "thf(%s,conjecture,%s).\n" conjecture_tptp_name (th0_str (th0_aby_head_expand claimtm) (tptpizecxtm cxtm));
   Buffer.contents sb
 
 let rec find_hyp_proving sgdelta hyps goal i =
