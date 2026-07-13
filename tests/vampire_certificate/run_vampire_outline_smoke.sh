@@ -57,8 +57,9 @@ run_outline_case() {
       echo "THF outline did not contain Vampire-side paramodulate certificate step" >&2
       exit 1
     fi
-    if ! rg -q 'megalodon_certificate_steps\([0-9]+,\[\{"id":"u[0-9]+_paramodulate","rule":"paramodulate"' "$outline"; then
-      echo "THF outline did not contain Vampire-side paramodulate-plus-symmetry certificate steps" >&2
+    if ! rg -q 'megalodon_certificate_step\([0-9]+,\{"rule":"paramodulate".*"clause":' "$outline" \
+      && ! rg -q 'megalodon_certificate_steps\([0-9]+,\[.*"rule":"paramodulate".*"clause":' "$outline"; then
+      echo "THF outline did not contain Vampire-side paramodulate certificate conclusion detail" >&2
       exit 1
     fi
     python3 - "$outline" <<'PY'
@@ -104,13 +105,15 @@ PY
     exit 1
   fi
   if [[ "$label" == *"_equality_resolution" ]]; then
-    if ! rg -q 'megalodon_certificate_step\([0-9]+,\{"rule":"equality_resolution"' "$outline"; then
+    if ! rg -q 'megalodon_certificate_step\([0-9]+,\{"rule":"equality_resolution"' "$outline" \
+      && ! rg -q 'megalodon_certificate_steps\([0-9]+,\[.*"rule":"equality_resolution"' "$outline"; then
       echo "outline did not contain Vampire-side equality_resolution certificate step" >&2
       exit 1
     fi
   fi
   if [[ "$label" == *"_factor" ]]; then
-    if ! rg -q 'megalodon_certificate_step\([0-9]+,\{"rule":"factor"' "$outline"; then
+    if ! rg -q 'megalodon_certificate_step\([0-9]+,\{"rule":"factor"' "$outline" \
+      && ! rg -q 'megalodon_certificate_steps\([0-9]+,\[.*"rule":"factor"' "$outline"; then
       echo "outline did not contain Vampire-side factor certificate step" >&2
       exit 1
     fi

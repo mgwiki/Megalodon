@@ -214,6 +214,35 @@ def substitute_literal(literal: Literal, substitution: dict[str, Term]) -> Liter
     return Literal(literal.polarity, substitute_term(literal.atom, substitution))
 
 
+def match_term_pattern(pattern: Term, target: Term, substitution: dict[str, Term] | None = None) -> dict[str, Term] | None:
+    result: dict[str, Term] = dict(substitution or {})
+    if pattern.kind == "var":
+        previous = result.get(pattern.name)
+        if previous is None:
+            result[pattern.name] = target
+            return result
+        return result if previous == target else None
+    if pattern.kind != target.kind or pattern.name != target.name or len(pattern.args) != len(target.args):
+        return None
+    for pattern_arg, target_arg in zip(pattern.args, target.args):
+        result = match_term_pattern(pattern_arg, target_arg, result)
+        if result is None:
+            return None
+    return result
+
+
+def definition_rewrite_substitution(selected_equality: Literal, rewrite: DefinitionRewriteStep) -> dict[str, Term] | None:
+    if not selected_equality.polarity or selected_equality.atom.kind != "eq" or len(selected_equality.atom.args) != 2:
+        return None
+    source_pattern, target_pattern = selected_equality.atom.args
+    substitution = match_term_pattern(source_pattern, rewrite.source)
+    if substitution is None:
+        return None
+    if substitute_term(target_pattern, substitution) != rewrite.target:
+        return None
+    return substitution
+
+
 def parse_position(value: Any, context: str) -> tuple[int, ...]:
     if not isinstance(value, list):
         raise CertificateError(f"{context}: position must be a list")
@@ -4414,13 +4443,8 @@ def definition_rewrite_chain_proof_text(
             if rewrite.literal >= len(current_clause):
                 raise CertificateError(f"definition rewrite step {index}: literal index is outside the current clause")
             selected_equality = equality_parent_clause[0]
-            if (
-                not selected_equality.polarity
-                or selected_equality.atom.kind != "eq"
-                or len(selected_equality.atom.args) != 2
-                or selected_equality.atom.args[0] != rewrite.source
-                or selected_equality.atom.args[1] != rewrite.target
-            ):
+            substitution = definition_rewrite_substitution(selected_equality, rewrite)
+            if substitution is None:
                 raise CertificateError(f"definition rewrite step {index}: definition parent does not match rewrite orientation")
             selected_target = current_clause[rewrite.literal]
             proof_position = certificate_position_for_source(
@@ -4439,7 +4463,7 @@ def definition_rewrite_chain_proof_text(
                 selected_equality,
                 selected_target,
                 proof_position,
-                {},
+                substitution,
                 raw_next_clause,
                 symbol_sorts,
                 explicit_var_sorts,
@@ -4597,13 +4621,8 @@ def append_definition_rewrite_chain_claims(
         if rewrite.literal >= len(current_clause):
             raise CertificateError(f"definition rewrite step {index}: literal index is outside the current clause")
         selected_equality = equality_parent_clause[0]
-        if (
-            not selected_equality.polarity
-            or selected_equality.atom.kind != "eq"
-            or len(selected_equality.atom.args) != 2
-            or selected_equality.atom.args[0] != rewrite.source
-            or selected_equality.atom.args[1] != rewrite.target
-        ):
+        substitution = definition_rewrite_substitution(selected_equality, rewrite)
+        if substitution is None:
             raise CertificateError(f"definition rewrite step {index}: definition parent does not match rewrite orientation")
         selected_target = current_clause[rewrite.literal]
         proof_position = certificate_position_for_source(
@@ -4622,7 +4641,7 @@ def append_definition_rewrite_chain_claims(
             selected_equality,
             selected_target,
             proof_position,
-            {},
+            substitution,
             next_clause,
             symbol_sorts,
             explicit_var_sorts,
