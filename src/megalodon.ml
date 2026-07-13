@@ -5165,6 +5165,19 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
 		      (etp,ltm,rtm)
 		    with NegDB -> raise Not_found
 		  end
+	      | MAll(Ar(etp,Ar(etp2,Prop)),
+		     MImp(MAp(MAp(MDB(0),shltm1),shrtm1),
+			  MAp(MAp(MDB(0),shrtm2),shltm2))) when etp = etp2 -> (*** Megalodon library equality: forall Q:a->a->prop, Q l r -> Q r l ***)
+		  begin
+		    try
+		      if shltm1 = shltm2 && shrtm1 = shrtm2 then
+			let ltm = mtm_shift 0 (-1) shltm1 in
+			let rtm = mtm_shift 0 (-1) shrtm1 in
+			(etp,ltm,rtm)
+		      else
+			raise Not_found
+		    with NegDB -> raise Not_found
+		  end
 	      | _ ->
 		  raise Not_found
 	    in
