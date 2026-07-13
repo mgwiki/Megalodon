@@ -1328,11 +1328,20 @@ def check_certificate(data: Any) -> dict[str, tuple[Literal, ...]]:
                 raise CertificateError(f"{step_id}: rewrites must be a non-empty list")
             rewrites: list[tuple[Term, Term]] = []
             for rewrite_index, rewrite in enumerate(rewrite_values):
-                if not isinstance(rewrite, dict) or not {"from", "to"} <= set(rewrite) or not set(rewrite) <= {"from", "to", "parent"}:
-                    raise CertificateError(f"{step_id}.rewrites[{rewrite_index}]: expected from/to terms and optional parent")
+                if not isinstance(rewrite, dict) or not {"from", "to"} <= set(rewrite) or not set(rewrite) <= {"from", "to", "parent", "literal", "position"}:
+                    raise CertificateError(f"{step_id}.rewrites[{rewrite_index}]: expected from/to terms and optional parent/literal/position")
                 rewrite_parent = rewrite.get("parent")
                 if rewrite_parent is not None and (not isinstance(rewrite_parent, str) or rewrite_parent not in parents[1:]):
                     raise CertificateError(f"{step_id}.rewrites[{rewrite_index}].parent: expected one of the definition parents")
+                rewrite_literal = rewrite.get("literal")
+                if rewrite_literal is not None and (not isinstance(rewrite_literal, int) or rewrite_literal < 0):
+                    raise CertificateError(f"{step_id}.rewrites[{rewrite_index}].literal: expected a non-negative integer")
+                rewrite_position = rewrite.get("position")
+                if rewrite_position is not None and (
+                    not isinstance(rewrite_position, list)
+                    or any(not isinstance(item, int) or item < 0 for item in rewrite_position)
+                ):
+                    raise CertificateError(f"{step_id}.rewrites[{rewrite_index}].position: expected a list of non-negative integers")
                 rewrites.append(
                     (
                         parse_term(rewrite["from"], f"{step_id}.rewrites[{rewrite_index}].from"),
