@@ -43,6 +43,7 @@ type step =
   | Resolve of string * string * string * int * int * clause
   | Factor of string * string * int * int * clause
   | EqualityResolution of string * string * int * clause
+  | EqualityFactoring of string * string * int * int * (string * tm) list * clause
   | TruthConflict of string * string * int * clause
   | EqualitySymmetry of string * string * int * clause
   | Paramodulate of string * string * string * int * int * int list * tm * tm * clause
@@ -215,6 +216,10 @@ let parse_index = function
   | List [Atom "index"; index] -> int_atom index
   | _ -> error "expected index"
 
+let parse_named_index name = function
+  | List [Atom label; index] when label = name -> int_atom index
+  | _ -> error ("expected " ^ name ^ " index")
+
 let parse_step = function
   | List [Atom "input"; id; source; clause] ->
       Input (atom id, parse_source source, parse_clause clause)
@@ -253,6 +258,14 @@ let parse_step = function
       Factor (atom id, parse_parent parent, i, j, parse_result result)
   | List [Atom "equality_resolution"; id; parent; literal; result] ->
       EqualityResolution (atom id, parse_parent parent, parse_literal_index literal, parse_result result)
+  | List [Atom "equality_factoring"; id; parent; selected; other; subst; result] ->
+      EqualityFactoring (
+        atom id,
+        parse_parent parent,
+        parse_named_index "selected" selected,
+        parse_named_index "other" other,
+        parse_substitution subst,
+        parse_result result)
   | List [Atom "truth_conflict"; id; parent; literal; result] ->
       TruthConflict (atom id, parse_parent parent, parse_literal_index literal, parse_result result)
   | List [Atom "equality_symmetry"; id; parent; literal; result] ->
@@ -294,6 +307,7 @@ let step_id = function
   | Resolve (id, _, _, _, _, _) -> id
   | Factor (id, _, _, _, _) -> id
   | EqualityResolution (id, _, _, _) -> id
+  | EqualityFactoring (id, _, _, _, _, _) -> id
   | TruthConflict (id, _, _, _) -> id
   | EqualitySymmetry (id, _, _, _) -> id
   | Paramodulate (id, _, _, _, _, _, _, _, _) -> id
@@ -715,6 +729,51 @@ let check_equality_resolution checked id parent_id literal_index result =
   if not (same_clause_multiset expected result) then
     error (id ^ ": equality-resolution result does not match parent after literal removal")
 
+let check_equality_factoring checked id parent_id selected_index other_index subst result =
+  if selected_index = other_index then error (id ^ ": equality-factoring literal indices must be distinct");
+  let parent_clause = lookup_clause checked parent_id in
+  let selected_literal = nth selected_index parent_clause (id ^ " selected equality") in
+  let other_literal = nth other_index parent_clause (id ^ " other equality") in
+  let selected_sub = subst_literal subst selected_literal in
+  let other_sub = subst_literal subst other_literal in
+  let selected_sides =
+    match selected_sub with
+    | Pos atom ->
+        begin match equality_sides atom with
+        | Some sides -> sides
+        | None -> error (id ^ ": selected literal is not an equality")
+        end
+    | Neg _ -> error (id ^ ": selected literal must be positive")
+  in
+  let other_sides =
+    match other_sub with
+    | Pos atom ->
+        begin match equality_sides atom with
+        | Some sides -> sides
+        | None -> error (id ^ ": other literal is not an equality")
+        end
+    | Neg _ -> error (id ^ ": other literal must be positive")
+  in
+  let selected_left, selected_right = selected_sides in
+  let other_left, other_right = other_sides in
+  let diseq left right = Neg (Ap (Ap (TmH "=", left), right)) in
+  let candidates = ref [] in
+  let add shared selected_other other_other =
+    if shared then begin
+      candidates := diseq selected_other other_other :: !candidates;
+      candidates := diseq other_other selected_other :: !candidates
+    end
+  in
+  add (selected_right = other_right) selected_left other_left;
+  add (selected_right = other_left) selected_left other_right;
+  add (selected_left = other_right) selected_right other_left;
+  add (selected_left = other_left) selected_right other_right;
+  if !candidates = [] then error (id ^ ": selected and other equalities do not share a side after substitution");
+  let substituted_parent = subst_clause subst parent_clause in
+  let without_selected = remove_at selected_index substituted_parent (id ^ " selected equality") in
+  if not (List.exists (fun candidate -> same_clause_multiset (without_selected @ [candidate]) result) !candidates) then
+    error (id ^ ": equality-factoring result does not match explicit factoring")
+
 let check_truth_conflict checked id parent_id literal_index result =
   let parent_clause = lookup_clause checked parent_id in
   let literal = nth literal_index parent_clause (id ^ " truth-conflict literal") in
@@ -832,6 +891,9 @@ let check_step checked = function
       (id, CheckedClause result) :: checked
   | EqualityResolution (id, parent_id, literal_index, result) ->
       check_equality_resolution checked id parent_id literal_index result;
+      (id, CheckedClause result) :: checked
+  | EqualityFactoring (id, parent_id, selected_index, other_index, subst, result) ->
+      check_equality_factoring checked id parent_id selected_index other_index subst result;
       (id, CheckedClause result) :: checked
   | TruthConflict (id, parent_id, literal_index, result) ->
       check_truth_conflict checked id parent_id literal_index result;
