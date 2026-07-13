@@ -4199,6 +4199,27 @@ def definition_rewrite_chain_proof_text(
             raise CertificateError("definition rewrite positioned chain does not reach conclusion")
         if normalize_clause(current_clause) == normalize_clause(conclusion):
             return reorder_clause_proof_text(current_clause, current_proof, conclusion)
+        target_clause = normalize_clause(conclusion)
+        current_clause = normalize_clause(current_clause)
+        for guard in range(len(current_clause)):
+            if current_clause == target_clause:
+                return reorder_clause_proof_text(current_clause, current_proof, conclusion)
+            changed = False
+            for literal in current_clause:
+                if literal.atom.kind != "eq":
+                    continue
+                swapped = swap_equality_literal(literal)
+                if literal in target_clause or swapped not in target_clause:
+                    continue
+                next_clause = normalize_clause(swapped if item == literal else item for item in current_clause)
+                current_proof = equality_symmetry_proof_text(current_clause, current_proof, literal, next_clause)
+                current_clause = next_clause
+                changed = True
+                break
+            if not changed:
+                break
+        if current_clause == target_clause:
+            return reorder_clause_proof_text(current_clause, current_proof, conclusion)
         raise CertificateError("definition rewrite positioned proof needs final equality-symmetry normalization")
 
     goal = clause_body_text(conclusion)
