@@ -129,6 +129,15 @@ let rec parse_tp = function
   | List [Atom "AR"; a; b] -> Ar (parse_tp a, parse_tp b)
   | _ -> error "expected Megalodon type S-expression"
 
+let rec subst_named_tm name replacement = function
+  | TmH h when h = name -> replacement
+  | TpAp (m, a) -> TpAp (subst_named_tm name replacement m, a)
+  | Ap (m, n) -> Ap (subst_named_tm name replacement m, subst_named_tm name replacement n)
+  | Lam (tp, body) -> Lam (tp, subst_named_tm name replacement body)
+  | Imp (m, n) -> Imp (subst_named_tm name replacement m, subst_named_tm name replacement n)
+  | All (tp, body) -> All (tp, subst_named_tm name replacement body)
+  | tm -> tm
+
 let rec parse_tm = function
   | List [Atom "DB"; n] -> DB (int_atom n)
   | List [Atom "TMH"; h] -> TmH (atom h)
@@ -136,6 +145,9 @@ let rec parse_tm = function
   | List [Atom "TPAP"; m; a] -> TpAp (parse_tm m, parse_tp a)
   | List [Atom "AP"; m; n] -> Ap (parse_tm m, parse_tm n)
   | List [Atom "LAM"; a; m] -> Lam (parse_tp a, parse_tm m)
+  | List [Atom "LAMV"; name; a; m] ->
+      ignore (parse_tp a);
+      Ap (TmH "vLAM", subst_named_tm (atom name) (TmH "db0") (parse_tm m))
   | List [Atom "IMP"; m; n] -> Imp (parse_tm m, parse_tm n)
   | List [Atom "ALL"; a; m] -> All (parse_tp a, parse_tm m)
   | _ -> error "expected Megalodon term S-expression"
