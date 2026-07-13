@@ -44,6 +44,16 @@ if ! rg -q 'Vampire certificate v1 source map checked 2 sources' "$WORK_DIR/nati
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_local_definition_negated.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_local_definition_negated.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_local_definition_negated.log"
+
+if ! rg -q 'Vampire certificate v1 source map checked 2 sources' "$WORK_DIR/native_cert_v1_source_map_local_definition_negated.log"; then
+  echo "native certificate v1 source-map checker did not accept negated local_definition preprocessing" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_missing.th0.p \
@@ -217,6 +227,15 @@ bin/megalodon \
 
 if ! rg -q 'Vampire certificate v1 checked 6 steps' "$WORK_DIR/native_cert_v1_rectify_formula_valid.log"; then
   echo "native certificate v1 checker did not accept the valid rectify-formula fixture" >&2
+  exit 1
+fi
+
+bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_rectify_scoped_equality_symmetry_valid.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_rectify_scoped_equality_symmetry_valid.log"
+
+if ! rg -q 'Vampire certificate v1 checked 6 steps' "$WORK_DIR/native_cert_v1_rectify_scoped_equality_symmetry_valid.log"; then
+  echo "native certificate v1 checker did not accept scoped equality-symmetry rectification" >&2
   exit 1
 fi
 

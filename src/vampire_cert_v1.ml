@@ -807,6 +807,53 @@ let same_mod_scoped_vampire_var_renaming left right =
   | Some _ -> true
   | None -> false
 
+let rec tm_equal_mod_scoped_vampire_var_renaming_and_equality left right frames =
+  let try_pair left_a right_a left_b right_b frames =
+    match tm_equal_mod_scoped_vampire_var_renaming_and_equality left_a right_a frames with
+    | None -> None
+    | Some frames ->
+        tm_equal_mod_scoped_vampire_var_renaming_and_equality left_b right_b frames
+  in
+  match equality_sides left, equality_sides right with
+  | Some (left_lhs, left_rhs), Some (right_lhs, right_rhs) ->
+      begin match try_pair left_lhs right_lhs left_rhs right_rhs frames with
+      | Some _ as result -> result
+      | None -> try_pair left_lhs right_rhs left_rhs right_lhs frames
+      end
+  | _ ->
+      match left, right with
+      | DB i, DB j when i = j -> Some frames
+      | TmH h, TmH k -> add_scoped_vampire_var_renaming h k frames
+      | Prim i, Prim j when i = j -> Some frames
+      | TpAp (m, a), TpAp (n, b) when a = b ->
+          tm_equal_mod_scoped_vampire_var_renaming_and_equality m n frames
+      | Ap (m1, m2), Ap (n1, n2) ->
+          begin match tm_equal_mod_scoped_vampire_var_renaming_and_equality m1 n1 frames with
+          | None -> None
+          | Some frames -> tm_equal_mod_scoped_vampire_var_renaming_and_equality m2 n2 frames
+          end
+      | Lam (a, m), Lam (b, n) when a = b ->
+          begin match tm_equal_mod_scoped_vampire_var_renaming_and_equality m n (([], []) :: frames) with
+          | None -> None
+          | Some _ -> Some frames
+          end
+      | Imp (m1, m2), Imp (n1, n2) ->
+          begin match tm_equal_mod_scoped_vampire_var_renaming_and_equality m1 n1 frames with
+          | None -> None
+          | Some frames -> tm_equal_mod_scoped_vampire_var_renaming_and_equality m2 n2 frames
+          end
+      | All (a, m), All (b, n) when a = b ->
+          begin match tm_equal_mod_scoped_vampire_var_renaming_and_equality m n (([], []) :: frames) with
+          | None -> None
+          | Some _ -> Some frames
+          end
+      | _ -> None
+
+let same_mod_scoped_vampire_var_renaming_and_equality left right =
+  match tm_equal_mod_scoped_vampire_var_renaming_and_equality left right [([], [])] with
+  | Some _ -> true
+  | None -> false
+
 let is_equality_atom tm =
   match equality_sides tm with
   | Some _ -> true
@@ -958,7 +1005,11 @@ let validate_rectify_renaming id index renaming =
   in
   let explicit_renaming_matches =
     same_mod_scoped_vampire_var_renaming renaming.rectify_source renaming.rectify_target
+    || same_mod_scoped_vampire_var_renaming_and_equality renaming.rectify_source renaming.rectify_target
     || same_mod_scoped_vampire_var_renaming
+         (normalize_bool_equality_orientation renaming.rectify_source)
+         (normalize_bool_equality_orientation renaming.rectify_target)
+    || same_mod_scoped_vampire_var_renaming_and_equality
          (normalize_bool_equality_orientation renaming.rectify_source)
          (normalize_bool_equality_orientation renaming.rectify_target)
     || same_mod_scoped_vampire_var_renaming
@@ -1813,7 +1864,7 @@ let source_of_step = function
 let source_map_kind_compatible source entry =
   match source, entry.source_map_kind with
   | SourceDefinition _, ("def" | "definition" | "local_definition") -> true
-  | SourceNegatedConjecture _, ("conjecture" | "negated_conjecture" | "local_fact") -> true
+  | SourceNegatedConjecture _, ("conjecture" | "negated_conjecture" | "local_fact" | "local_definition") -> true
   | SourceSetReflexivity _, ("set_reflexivity" | "local_set_reflexivity") -> true
   | SourceAxiom _, ("type" | "local_type") -> false
   | SourceAxiom _, _ -> true
