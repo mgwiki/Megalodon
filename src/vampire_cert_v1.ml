@@ -2365,6 +2365,9 @@ let check_superposition checked id target_parent_id equality_parent_id target_in
   in
   let rewritten_atom = replace_tm_at_position target_atom position to_tm (id ^ " target") in
   let rewritten_literal = replace_literal_atom target_literal rewritten_atom in
+  let simultaneous_rewritten_literal =
+    rewrite_literal_all_once from_tm to_tm target_literal
+  in
   let equality_rest = remove_at equality_index equality_clause (id ^ " equality literal") in
   let target_rest = remove_at target_index target_clause (id ^ " target literal") in
   let target_rest_variants =
@@ -2383,11 +2386,18 @@ let check_superposition checked id target_parent_id equality_parent_id target_in
       target_rest_variants
   in
   let result_matches equality_rest =
-    result_matches_with_equality_rest equality_rest rewritten_literal
-    ||
-    match swap_literal_equality rewritten_literal with
-    | Some swapped_literal -> result_matches_with_equality_rest equality_rest swapped_literal
-    | None -> false
+    let rewritten_literals =
+      if simultaneous_rewritten_literal = rewritten_literal then [rewritten_literal]
+      else [rewritten_literal; simultaneous_rewritten_literal]
+    in
+    List.exists
+      (fun rewritten_literal ->
+        result_matches_with_equality_rest equality_rest rewritten_literal
+        ||
+        match swap_literal_equality rewritten_literal with
+        | Some swapped_literal -> result_matches_with_equality_rest equality_rest swapped_literal
+        | None -> false)
+      rewritten_literals
   in
   let raw_variable_name = function
     | TmH name when is_vampire_var_name name -> Some name
