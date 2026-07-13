@@ -6521,6 +6521,239 @@ def enforce_strict_certificate_v1(data: dict[str, Any]) -> None:
             raise CertificateError(f"strict certificate v1 rejects embedded derived fallbacks={value}")
 
 
+def sexpr_quote(text: str) -> str:
+    escaped = (
+        text
+        .replace("\\", "\\\\")
+        .replace("\"", "\\\"")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+    return f"\"{escaped}\""
+
+
+def native_term_sexpr(term: Term) -> str:
+    if term.kind in {"const", "var", "opaque"}:
+        return f"(TMH {sexpr_quote(term.name)})"
+    if term.kind in {"app", "pred"}:
+        result = f"(TMH {sexpr_quote(term.name)})"
+        for arg in term.args:
+            result = f"(AP {result} {native_term_sexpr(arg)})"
+        return result
+    if term.kind == "apply":
+        return f"(AP {native_term_sexpr(term.args[0])} {native_term_sexpr(term.args[1])})"
+    if term.kind == "eq" and len(term.args) == 2:
+        return f"(AP (AP (TMH {sexpr_quote('=')}) {native_term_sexpr(term.args[0])}) {native_term_sexpr(term.args[1])})"
+    raise CertificateError(f"cannot emit native S-expression for term kind {term.kind!r}")
+
+
+def native_position_for_json_term(term: Term, position: tuple[int, ...], context: str) -> tuple[int, ...]:
+    if not position:
+        return ()
+    index = position[0]
+    rest = position[1:]
+    if index < 0:
+        raise CertificateError(f"{context}: position entries must be non-negative")
+    if term.kind in {"app", "pred"}:
+        if index >= len(term.args):
+            raise CertificateError(f"{context}: position is out of bounds")
+        # JSON positions address the argument list directly. The native term
+        # representation is nested left-associated AP nodes, so argument i in
+        # h a0 ... aN lives under N-i left edges and one right edge.
+        prefix = tuple(0 for _ in range(len(term.args) - 1 - index)) + (1,)
+        return prefix + native_position_for_json_term(term.args[index], rest, context)
+    if term.kind == "apply":
+        if index >= 2:
+            raise CertificateError(f"{context}: position is out of bounds")
+        return (index,) + native_position_for_json_term(term.args[index], rest, context)
+    if term.kind == "eq" and len(term.args) == 2:
+        if index == 0:
+            return (0, 1) + native_position_for_json_term(term.args[0], rest, context)
+        if index == 1:
+            return (1,) + native_position_for_json_term(term.args[1], rest, context)
+        raise CertificateError(f"{context}: position is out of bounds")
+    raise CertificateError(f"{context}: non-empty position enters non-compound term")
+
+
+def native_literal_sexpr(literal: Literal) -> str:
+    return f"({'pos' if literal.polarity else 'neg'} {native_term_sexpr(literal.atom)})"
+
+
+def native_clause_sexpr(clause: tuple[Literal, ...], indent: str = "      ") -> str:
+    if not clause:
+        return "(clause)"
+    lines = ["(clause"]
+    for literal in clause:
+        lines.append(f"{indent}{native_literal_sexpr(literal)}")
+    lines.append(f"{indent[:-2]})" if len(indent) >= 2 else ")")
+    return "\n".join(lines)
+
+
+def native_source_sexpr(step: dict[str, Any], step_id: str) -> str:
+    source = step.get("source")
+    name = step_id
+    kind = "axiom"
+    if isinstance(source, dict):
+        source_name = source.get("name")
+        if isinstance(source_name, str) and source_name:
+            name = source_name
+        source_kind = source.get("kind")
+        if source_kind == "negated_conjecture":
+            kind = "negated_conjecture"
+        elif source_kind == "vampire_function_definition":
+            kind = "definition"
+        elif source_kind == "set_reflexivity":
+            kind = "set_reflexivity"
+    return f"(source {kind} {sexpr_quote(name)})"
+
+
+def literal_index(clause: tuple[Literal, ...], literal: Literal, context: str) -> int:
+    for index, item in enumerate(clause):
+        if item == literal:
+            return index
+    raise CertificateError(f"{context}: literal is not present in clause")
+
+
+def complementary_literal_index(clause: tuple[Literal, ...], literal: Literal, context: str) -> int:
+    complement = Literal(not literal.polarity, literal.atom)
+    return literal_index(clause, complement, context)
+
+
+def native_factor_indices(parent_clause: tuple[Literal, ...], result_clause: tuple[Literal, ...], context: str) -> tuple[int, int]:
+    for left_index, literal in enumerate(parent_clause):
+        for right_index in range(left_index + 1, len(parent_clause)):
+            if parent_clause[right_index] != literal:
+                continue
+            candidate = tuple(item for index, item in enumerate(parent_clause) if index != right_index)
+            if tuple(sorted(candidate, key=repr)) == tuple(sorted(result_clause, key=repr)):
+                return left_index, right_index
+    raise CertificateError(f"{context}: could not identify duplicated factor literal")
+
+
+def native_substitution_sexpr(substitution: dict[str, Any], context: str) -> str:
+    if not isinstance(substitution, dict):
+        raise CertificateError(f"{context}: substitution must be an object")
+    if not substitution:
+        return "(subst)"
+    parts = []
+    for name in sorted(substitution):
+        if not isinstance(name, str):
+            raise CertificateError(f"{context}: substitution keys must be strings")
+        term = parse_term(substitution[name], f"{context}.{name}")
+        parts.append(f"({sexpr_quote(name)} {native_term_sexpr(term)})")
+    return "(subst " + " ".join(parts) + ")"
+
+
+def native_certificate_sexpr(data: dict[str, Any], clauses: dict[str, tuple[Literal, ...]]) -> str:
+    enforce_strict_certificate_v1(data)
+    checked: dict[str, tuple[Literal, ...]] = {}
+    lines = [
+        "(certificate vampire-megalodon 1",
+        f"  (problem {sexpr_quote(str(data.get('problem', 'vampire-certificate')))} )",
+    ]
+    for step in data["steps"]:
+        step_id = step["id"]
+        rule = step["rule"]
+        clause = parse_clause(step["clause"], f"{step_id}.clause") if "clause" in step else clauses[step_id]
+        if rule == "input":
+            lines.append(f"  (input {step_id} {native_source_sexpr(step, step_id)}")
+            lines.append("    " + native_clause_sexpr(clause, "      ").replace("\n", "\n    "))
+            lines.append("  )")
+        elif rule == "substitute":
+            parents = step.get("parents")
+            if not isinstance(parents, list) or len(parents) != 1 or not isinstance(parents[0], str):
+                raise CertificateError(f"{step_id}: substitute needs exactly one parent")
+            lines.append(f"  (substitute {step_id}")
+            lines.append(f"    (parent {parents[0]})")
+            lines.append(f"    {native_substitution_sexpr(step.get('substitution', {}), step_id)}")
+            lines.append("    (result")
+            lines.append("      " + native_clause_sexpr(clause, "        ").replace("\n", "\n      "))
+            lines.append("    )")
+            lines.append("  )")
+        elif rule == "resolve":
+            parents = step.get("parents")
+            if not isinstance(parents, list) or len(parents) != 2 or not all(isinstance(parent, str) for parent in parents):
+                raise CertificateError(f"{step_id}: resolve needs exactly two parents")
+            pivot = parse_literal(step["pivot"], f"{step_id}.pivot")
+            left_clause = checked[parents[0]]
+            right_clause = checked[parents[1]]
+            left_index = literal_index(left_clause, pivot, f"{step_id}.pivot")
+            right_index = complementary_literal_index(right_clause, pivot, f"{step_id}.pivot")
+            lines.append(f"  (resolve {step_id}")
+            lines.append(f"    (parents {parents[0]} {parents[1]})")
+            lines.append(f"    (pivot {left_index} {right_index})")
+            lines.append("    (result")
+            lines.append("      " + native_clause_sexpr(clause, "        ").replace("\n", "\n      "))
+            lines.append("    )")
+            lines.append("  )")
+        elif rule == "factor":
+            parents = step.get("parents")
+            if not isinstance(parents, list) or len(parents) != 1 or not isinstance(parents[0], str):
+                raise CertificateError(f"{step_id}: factor needs exactly one parent")
+            parent_clause = checked[parents[0]]
+            if "literal" in step:
+                literal = parse_literal(step["literal"], f"{step_id}.literal")
+                indices = [index for index, item in enumerate(parent_clause) if item == literal]
+                if len(indices) < 2:
+                    raise CertificateError(f"{step_id}: factor literal is not duplicated in parent")
+                left_index, right_index = indices[0], indices[1]
+            else:
+                left_index, right_index = native_factor_indices(parent_clause, clause, step_id)
+            lines.append(f"  (factor {step_id}")
+            lines.append(f"    (parent {parents[0]})")
+            lines.append(f"    (literals {left_index} {right_index})")
+            lines.append("    (result")
+            lines.append("      " + native_clause_sexpr(clause, "        ").replace("\n", "\n      "))
+            lines.append("    )")
+            lines.append("  )")
+        elif rule == "equality_resolution":
+            parents = step.get("parents")
+            if not isinstance(parents, list) or len(parents) != 1 or not isinstance(parents[0], str):
+                raise CertificateError(f"{step_id}: equality_resolution needs exactly one parent")
+            literal = parse_literal(step["literal"], f"{step_id}.literal")
+            index = literal_index(checked[parents[0]], literal, f"{step_id}.literal")
+            lines.append(f"  (equality_resolution {step_id}")
+            lines.append(f"    (parent {parents[0]})")
+            lines.append(f"    (literal {index})")
+            lines.append("    (result")
+            lines.append("      " + native_clause_sexpr(clause, "        ").replace("\n", "\n      "))
+            lines.append("    )")
+            lines.append("  )")
+        elif rule == "paramodulate":
+            parents = step.get("parents")
+            if not isinstance(parents, list) or len(parents) != 2 or not all(isinstance(parent, str) for parent in parents):
+                raise CertificateError(f"{step_id}: paramodulate needs exactly two parents")
+            equality = parse_literal(step["equality"], f"{step_id}.equality")
+            target = parse_literal(step["target"], f"{step_id}.target")
+            equality_index = literal_index(checked[parents[0]], equality, f"{step_id}.equality")
+            target_index = literal_index(checked[parents[1]], target, f"{step_id}.target")
+            position = parse_position(step["position"], f"{step_id}.position")
+            from_term = parse_term(step["from"], f"{step_id}.from")
+            to_term = parse_term(step["to"], f"{step_id}.to")
+            native_position = native_position_for_json_term(target.atom, position, f"{step_id}.position")
+            lines.append(f"  (paramodulate {step_id}")
+            lines.append(f"    (equality {parents[0]} {equality_index})")
+            lines.append(f"    (target {parents[1]} {target_index})")
+            lines.append("    (position " + " ".join(str(item) for item in native_position) + ")")
+            lines.append(f"    (from {native_term_sexpr(from_term)})")
+            lines.append(f"    (to {native_term_sexpr(to_term)})")
+            lines.append("    (result")
+            lines.append("      " + native_clause_sexpr(clause, "        ").replace("\n", "\n      "))
+            lines.append("    )")
+            lines.append("  )")
+        elif rule == "contradiction":
+            parents = step.get("parents")
+            if not isinstance(parents, list) or len(parents) != 1 or not isinstance(parents[0], str):
+                raise CertificateError(f"{step_id}: contradiction needs exactly one parent")
+            lines.append(f"  (contradiction {step_id} {parents[0]})")
+        else:
+            raise CertificateError(f"{step_id}: cannot emit native S-expression for rule {rule!r}")
+        checked[step_id] = clause
+    lines.append(")")
+    return "\n".join(lines) + "\n"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("certificate", type=Path)
@@ -6528,6 +6761,7 @@ def main() -> int:
     parser.add_argument("--strict-certificate-v1", action="store_true")
     parser.add_argument("--summary", action="store_true")
     parser.add_argument("--write-certificate", type=Path)
+    parser.add_argument("--emit-native-sexpr", type=Path)
     parser.add_argument("--emit-megalodon", type=Path)
     parser.add_argument("--theorem-name", default="vampire_certificate_smoke")
     args = parser.parse_args()
@@ -6568,6 +6802,14 @@ def main() -> int:
     if args.write_certificate is not None:
         args.write_certificate.parent.mkdir(parents=True, exist_ok=True)
         args.write_certificate.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if args.emit_native_sexpr is not None:
+        try:
+            rendered = native_certificate_sexpr(data, clauses)
+        except CertificateError as exc:
+            print(f"certificate check failed: {exc}", file=sys.stderr)
+            return 1
+        args.emit_native_sexpr.parent.mkdir(parents=True, exist_ok=True)
+        args.emit_native_sexpr.write_text(rendered, encoding="utf-8")
     if args.summary:
         print(json.dumps(certificate_summary(data, clauses), sort_keys=True))
     if args.emit_megalodon is not None:

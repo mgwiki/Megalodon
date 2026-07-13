@@ -10,6 +10,13 @@ tests/vampire_certificate/run_native_cert_v1_smoke.sh
 
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_resolution.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_resolution.json --strict-certificate-v1 --summary
+python3 scripts/vampire_certificate.py \
+  tests/vampire_certificate/valid_resolution.json \
+  --strict-certificate-v1 \
+  --emit-native-sexpr "$TMPDIR/vampire_certificate_valid_resolution.sexp"
+./bin/megalodon \
+  -vampirecertv1 "$TMPDIR/vampire_certificate_valid_resolution.sexp" \
+  "$TMPDIR/native_cert_v1_dummy.mg" >"$TMPDIR/vampire_certificate_valid_resolution.native.log"
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_substituted_resolution.json --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_substituted_resolution.json --strict-certificate-v1 --summary
 python3 scripts/vampire_certificate.py tests/vampire_certificate/valid_equality_resolution.json --summary

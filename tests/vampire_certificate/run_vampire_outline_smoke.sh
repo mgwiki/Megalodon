@@ -5,6 +5,8 @@ cd "$(dirname "$0")/../.."
 
 TMPDIR="${TMPDIR:-/project/tmp}"
 mkdir -p "$TMPDIR"
+native_dummy="$TMPDIR/vampire_outline_native_dummy.mg"
+: >"$native_dummy"
 
 if [[ -z "${VAMPIRE_BIN:-}" ]]; then
   VAMPIRE_BIN="$(find /project/vampire-leancheck/vampire_rel_vampire -maxdepth 1 -type f -perm -111 -name 'megalodon1_*' 2>/dev/null | sort | tail -n 1 || true)"
@@ -24,6 +26,7 @@ run_outline_case() {
   local problem="$2"
   local outline="$TMPDIR/${label}.out"
   local certificate="$TMPDIR/${label}.json"
+  local native_sexpr="$TMPDIR/${label}.sexp"
   local megalodon="$TMPDIR/${label}.mg"
 
   "$VAMPIRE_BIN" \
@@ -171,8 +174,11 @@ PY
     --strict-certificate-v1 \
     --summary \
     --write-certificate "$certificate" \
+    --emit-native-sexpr "$native_sexpr" \
     --emit-megalodon "$megalodon" \
     --theorem-name "${label}_certificate_smoke"
+
+  ./bin/megalodon -vampirecertv1 "$native_sexpr" "$native_dummy" >"$TMPDIR/${label}.native.log"
 
   python3 - "$certificate" "$label" <<'PY'
 import json
