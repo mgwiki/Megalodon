@@ -669,6 +669,7 @@ let rec tm_at_position tm position what =
       let child =
         match tm, index with
         | TpAp (m, _), 0 -> m
+        | Ap (TmH "vLAM", body), 0 -> body
         | Ap (m, _), 0 -> m
         | Ap (_, n), 1 -> n
         | Lam (_, m), 0 -> m
@@ -685,6 +686,8 @@ let rec replace_tm_at_position tm position replacement what =
   | index :: rest ->
       match tm, index with
       | TpAp (m, a), 0 -> TpAp (replace_tm_at_position m rest replacement what, a)
+      | Ap (TmH "vLAM", body), 0 ->
+          Ap (TmH "vLAM", replace_tm_at_position body rest replacement what)
       | Ap (m, n), 0 -> Ap (replace_tm_at_position m rest replacement what, n)
       | Ap (m, n), 1 -> Ap (m, replace_tm_at_position n rest replacement what)
       | Lam (a, m), 0 -> Lam (a, replace_tm_at_position m rest replacement what)
@@ -700,6 +703,22 @@ let replace_literal_atom literal atom =
   match literal with
   | Pos _ -> Pos atom
   | Neg _ -> Neg atom
+
+let rec rewrite_tm_all_once from_tm to_tm tm =
+  if tm = from_tm then to_tm
+  else
+    match tm with
+    | TpAp (m, a) -> TpAp (rewrite_tm_all_once from_tm to_tm m, a)
+    | Ap (m, n) ->
+        Ap (rewrite_tm_all_once from_tm to_tm m, rewrite_tm_all_once from_tm to_tm n)
+    | Lam (a, m) -> Lam (a, rewrite_tm_all_once from_tm to_tm m)
+    | Imp (m, n) ->
+        Imp (rewrite_tm_all_once from_tm to_tm m, rewrite_tm_all_once from_tm to_tm n)
+    | All (a, m) -> All (a, rewrite_tm_all_once from_tm to_tm m)
+    | DB _ | TmH _ | Prim _ -> tm
+
+let rewrite_literal_all_once from_tm to_tm literal =
+  replace_literal_atom literal (rewrite_tm_all_once from_tm to_tm (literal_atom literal))
 
 let equality_sides = function
   | Ap (Ap (TmH h, left), right) when h = "=" || h = "eq" -> Some (left, right)
@@ -773,7 +792,37 @@ let max_vampire_var_name tm =
   in
   loop None tm
 
+let guarded_lambda_vampire_var_name tm =
+  let rec loop = function
+    | Ap (Ap (TmH "In", TmH h), _) when is_vampire_var_name h -> Some h
+    | Ap (Ap (TmH "vampire_and", left), right)
+    | Ap (Ap (TmH "vampire_or", left), right) ->
+        begin match loop left with
+        | Some _ as found -> found
+        | None -> loop right
+        end
+    | Ap (TmH "vampire_exists_prop", _)
+    | Lam _ -> None
+    | TpAp (m, _) -> loop m
+    | Ap (m, n) ->
+        begin match loop m with
+        | Some _ as found -> found
+        | None -> loop n
+        end
+    | Imp (left, right) ->
+        begin match loop left with
+        | Some _ as found -> found
+        | None -> loop right
+        end
+    | All (_, body) -> loop body
+    | DB _ | TmH _ | Prim _ -> None
+  in
+  loop tm
+
 let bind_anonymous_lambda_body body =
+  match guarded_lambda_vampire_var_name body with
+  | Some name -> subst_named_tm name body
+  | None ->
   match max_vampire_var_name body with
   | Some name -> subst_named_tm name body
   | None -> body
@@ -1243,7 +1292,17 @@ let check_rectify_formula checked id parent_id renamings result =
   match renamings with
   | _ :: _ ->
       List.iteri (validate_rectify_renaming id) renamings;
-      if not (tm_matches_rectify_renamings renamings parent_formula result) then
+      let normalized_parent = normalize_bool_equality_orientation parent_formula in
+      let normalized_result = normalize_bool_equality_orientation result in
+      let equality_normalized_parent = normalize_equality_orientation normalized_parent in
+      let equality_normalized_result = normalize_equality_orientation normalized_result in
+      if not (tm_matches_rectify_renamings renamings parent_formula result
+              || same_mod_scoped_vampire_var_renaming parent_formula result
+              || same_mod_scoped_vampire_var_renaming_and_equality parent_formula result
+              || same_mod_scoped_vampire_var_renaming normalized_parent normalized_result
+              || same_mod_scoped_vampire_var_renaming_and_equality normalized_parent normalized_result
+              || same_mod_scoped_vampire_var_renaming equality_normalized_parent equality_normalized_result
+              || same_mod_scoped_vampire_var_renaming_and_equality equality_normalized_parent equality_normalized_result) then
         error (id ^ ": rectify_formula result is not explained by explicit Vampire renamings")
   | [] ->
       let normalized_parent = normalize_bool_equality_orientation parent_formula in
@@ -1981,7 +2040,9 @@ let check_paramodulate checked id equality_parent_id target_parent_id equality_i
 
 let check_superposition checked id target_parent_id equality_parent_id target_index equality_index target_subst equality_subst position from_tm to_tm result =
   let target_clause = subst_clause target_subst (lookup_clause checked target_parent_id) in
-  let equality_clause = subst_clause equality_subst (lookup_clause checked equality_parent_id) in
+  let raw_equality_clause = lookup_clause checked equality_parent_id in
+  let equality_clause = subst_clause equality_subst raw_equality_clause in
+  let raw_equality_literal = nth equality_index raw_equality_clause (id ^ " raw equality literal") in
   let equality_literal = nth equality_index equality_clause (id ^ " equality literal") in
   let target_literal = nth target_index target_clause (id ^ " target literal") in
   let side_matches left right =
@@ -2019,15 +2080,55 @@ let check_superposition checked id target_parent_id equality_parent_id target_in
   let rewritten_literal = replace_literal_atom target_literal rewritten_atom in
   let equality_rest = remove_at equality_index equality_clause (id ^ " equality literal") in
   let target_rest = remove_at target_index target_clause (id ^ " target literal") in
-  let expected = equality_rest @ target_rest @ [rewritten_literal] in
-  if not (same_clause_multiset expected result || same_clause_set_mod_equality expected result) then
-    begin match swap_literal_equality rewritten_literal with
-    | Some swapped_literal ->
-        let swapped_expected = equality_rest @ target_rest @ [swapped_literal] in
-        if not (same_clause_multiset swapped_expected result || same_clause_set_mod_equality swapped_expected result) then
-          error (id ^ ": superposition result does not match explicit rewrite")
-    | None -> error (id ^ ": superposition result does not match explicit rewrite")
-    end
+  let target_rest_variants =
+    let clause_wide_target_rest = List.map (rewrite_literal_all_once from_tm to_tm) target_rest in
+    if clause_wide_target_rest = target_rest then [target_rest]
+    else [target_rest; clause_wide_target_rest]
+  in
+  let result_matches_with_equality_rest equality_rest rewritten_literal =
+    List.exists
+      (fun target_rest ->
+        let expected = equality_rest @ target_rest @ [rewritten_literal] in
+        same_clause_multiset expected result || same_clause_set_mod_equality expected result)
+      target_rest_variants
+  in
+  let result_matches equality_rest =
+    result_matches_with_equality_rest equality_rest rewritten_literal
+    ||
+    match swap_literal_equality rewritten_literal with
+    | Some swapped_literal -> result_matches_with_equality_rest equality_rest swapped_literal
+    | None -> false
+  in
+  let raw_variable_name = function
+    | TmH name when is_vampire_var_name name -> Some name
+    | _ -> None
+  in
+  let result_matches_raw_variable_orientation () =
+    match raw_equality_literal with
+    | Pos raw_atom ->
+        begin match equality_sides raw_atom with
+        | Some (raw_left, raw_right) ->
+            let variants =
+              match raw_variable_name raw_left, raw_variable_name raw_right with
+              | Some left_name, Some right_name ->
+                  [[left_name, from_tm; right_name, to_tm];
+                   [right_name, from_tm; left_name, to_tm]]
+              | Some left_name, None -> [[left_name, from_tm]]
+              | None, Some right_name -> [[right_name, from_tm]]
+              | None, None -> []
+            in
+            List.exists
+              (fun subst ->
+                let raw_rest = remove_at equality_index raw_equality_clause (id ^ " raw equality literal") in
+                let equality_rest = subst_clause subst raw_rest in
+                result_matches equality_rest)
+              variants
+        | None -> false
+        end
+    | Neg _ -> false
+  in
+  if not (result_matches equality_rest || result_matches_raw_variable_orientation ()) then
+    error (id ^ ": superposition result does not match explicit rewrite")
 
 let check_step checked = function
   | Input (id, source, clause) ->
