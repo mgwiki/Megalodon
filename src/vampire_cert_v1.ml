@@ -683,6 +683,17 @@ let is_equality_atom tm =
   | Some _ -> true
   | None -> false
 
+let rec fool_term_tm tm =
+  match tm with
+  | Imp (body, false_tm) when is_vampire_false false_tm ->
+      Ap (TmH "vNOT", fool_term_tm body)
+  | TpAp (m, a) -> TpAp (fool_term_tm m, a)
+  | Ap (m, n) -> Ap (fool_term_tm m, fool_term_tm n)
+  | Lam (tp, body) -> Lam (tp, fool_term_tm body)
+  | Imp (left, right) -> Imp (fool_term_tm left, fool_term_tm right)
+  | All (tp, body) -> All (tp, fool_term_tm body)
+  | _ -> tm
+
 let rec fool_formula_tm tm =
   match tm with
   | Imp (left, right) -> Imp (fool_formula_tm left, fool_formula_tm right)
@@ -693,6 +704,8 @@ let rec fool_formula_tm tm =
   | Lam (tp, body) -> Lam (tp, fool_formula_tm body)
   | TmH "vampire_true"
   | TmH "vampire_false" -> tm
+  | Ap (Ap (TmH "=", left), right) ->
+      Ap (Ap (TmH "=", fool_term_tm left), fool_term_tm right)
   | _ when is_equality_atom tm -> tm
   | TmH h when is_vampire_var_name h -> Ap (Ap (TmH "=", TmH "f__true"), tm)
   | _ -> equality_to_true tm
