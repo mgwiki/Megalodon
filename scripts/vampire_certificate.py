@@ -117,6 +117,13 @@ class LambdaHint:
     binder_sort: str
 
 
+@dataclass(frozen=True)
+class InequalitySplitDefinition:
+    symbol: str
+    sort_parts: tuple[str, ...]
+    split_arg: Term
+
+
 LAMBDA_HINTS: tuple[LambdaHint, ...] = ()
 DB_NAME_RE = re.compile(r"^db([0-9]+)$")
 DB_TOKEN_RE = re.compile(r"\bdb([0-9]+)\b")
@@ -395,6 +402,13 @@ def application_head_and_arg(term: Term) -> tuple[Term, Term] | None:
     if term.kind != "apply" or len(term.args) != 2:
         return None
     return term.args[0], term.args[1]
+
+
+def applied_symbol_and_args(term: Term) -> tuple[str, tuple[Term, ...]] | None:
+    head, args = term_spine(term)
+    if head.kind != "const" or not args:
+        return None
+    return head.name, tuple(args)
 
 
 def is_reflexive_equality_atom(atom: Term) -> bool:
@@ -3126,6 +3140,71 @@ def clause_free_vars(clause: tuple[Literal, ...]) -> tuple[str, ...]:
     return tuple(sorted(variables))
 
 
+def inequality_split_definitions(
+    data: dict[str, Any],
+    declarations: list[str],
+) -> dict[str, InequalitySplitDefinition]:
+    symbol_sorts = declaration_symbol_sorts(declarations)
+    definitions: dict[str, InequalitySplitDefinition] = {}
+    for step in data.get("steps", []):
+        if not isinstance(step, dict) or step.get("rule") != "inequality_split":
+            continue
+        splits = step.get("splits")
+        if not isinstance(splits, list):
+            continue
+        for split_index, split in enumerate(splits):
+            if not isinstance(split, dict):
+                continue
+            step_id = str(step.get("id", "step"))
+            name_literal = parse_literal(split.get("name_literal"), f"{step_id}.splits[{split_index}].name_literal")
+            name_term = bool_name_literal_term(name_literal, False)
+            if name_term is None:
+                continue
+            app = applied_symbol_and_args(name_term)
+            if app is None:
+                continue
+            symbol, args = app
+            sort_parts = symbol_sorts.get(symbol)
+            if sort_parts is None or len(sort_parts) != len(args) + 1 or sort_parts[-1] != "prop":
+                continue
+            binder_substitution = {
+                arg.name: Term("var", f"cert_split{index}")
+                for index, arg in enumerate(args)
+                if arg.kind == "var"
+            }
+            split_arg = substitute_term(args[-1], binder_substitution)
+            binder_names = {f"cert_split{index}" for index in range(len(args))}
+            if term_free_vars(split_arg) - binder_names:
+                continue
+            definition = InequalitySplitDefinition(symbol, sort_parts, split_arg)
+            existing = definitions.get(symbol)
+            if existing is not None and existing != definition:
+                raise CertificateError(f"{step_id}: conflicting inequality split definitions for {symbol}")
+            definitions[symbol] = definition
+    return definitions
+
+
+def inequality_split_definition_text(
+    definition: InequalitySplitDefinition,
+    symbol_sorts: dict[str, tuple[str, ...]],
+) -> str:
+    args_count = len(definition.sort_parts) - 1
+    if args_count < 1:
+        raise CertificateError(f"{definition.symbol}: inequality split predicate must take at least one argument")
+    last_binder = Term("var", f"cert_split{args_count - 1}")
+    argument_sort = require_supported_sort(definition.sort_parts[-2], f"{definition.symbol} split argument sort")
+    equality = Term("eq", argument_sort, (last_binder, definition.split_arg))
+    result = f"{atom_text(equality, symbol_sorts)} -> False"
+    for index in reversed(range(args_count)):
+        binder = f"cert_split{index}"
+        sort = require_supported_sort(definition.sort_parts[index], f"{definition.symbol} argument sort")
+        result = f"fun {binder}:{sort_type_text(sort)} => {result}"
+    return (
+        f"Definition {require_megalodon_ident(definition.symbol, 'inequality split symbol')} "
+        f": {sort_from_parts(definition.sort_parts)} := {result}."
+    )
+
+
 def collect_existential_sorts_in_term(term: Term, result: set[str], db_context: tuple[str, ...] = ()) -> None:
     v_eq_args = named_binary_application(term, "vEQ")
     if v_eq_args is not None:
@@ -3205,6 +3284,11 @@ def declaration_symbol_sorts(declarations: list[str]) -> dict[str, tuple[str, ..
             continue
         result[match.group(1)] = split_sort(require_supported_sort(match.group(2), f"declaration sort for {match.group(1)}"))
     return result
+
+
+def declaration_symbol_name(declaration: str) -> str | None:
+    match = re.fullmatch(r"Variable ([A-Za-z_][A-Za-z0-9_']*):.+\.", declaration)
+    return match.group(1) if match is not None else None
 
 
 def merge_var_sort(var_sorts: dict[str, str], name: str, sort: str) -> None:
@@ -3825,6 +3909,155 @@ def definition_rewrite_chain_proof_text(
     return eliminate_clause_proof(source_clause, source_proof, goal, branch)
 
 
+def equality_proof_in_orientation(source: Literal, source_proof: str, target: Literal) -> str | None:
+    if not source.polarity or not target.polarity or source.atom.kind != "eq" or target.atom.kind != "eq":
+        return None
+    if source.atom.name != target.atom.name or len(source.atom.args) != 2 or len(target.atom.args) != 2:
+        return None
+    if source == target:
+        return source_proof
+    if swap_equality_literal(source) == target:
+        return positive_equality_symmetry_proof(source, source_proof)
+    return None
+
+
+def find_prop_exhaustiveness_clause(
+    step_clauses: dict[str, tuple[Literal, ...]],
+    proof_names: dict[str, str],
+) -> tuple[tuple[Literal, ...], str, str] | None:
+    for step_id, clause in step_clauses.items():
+        if step_id not in proof_names or len(clause) != 2:
+            continue
+        true_var: Term | None = None
+        false_var: Term | None = None
+        for literal in clause:
+            if not literal.polarity:
+                continue
+            true_term = bool_name_literal_term(literal, True)
+            false_term = bool_name_literal_term(literal, False)
+            if true_term is not None:
+                true_var = true_term
+            if false_term is not None:
+                false_var = false_term
+        if true_var is not None and false_var is not None and true_var == false_var and true_var.kind == "var":
+            return clause, proof_names[step_id], true_var.name
+    return None
+
+
+def split_value_proof_from_disequality(
+    source_literal: Literal,
+    source_proof: str,
+    split_arg: Term,
+    other_arg: Term,
+) -> str:
+    if source_literal.polarity or source_literal.atom.kind != "eq" or len(source_literal.atom.args) != 2:
+        raise CertificateError("inequality split source must be a negative equality")
+    left, right = source_literal.atom.args
+    if left == other_arg and right == split_arg:
+        return source_proof
+    if left == split_arg and right == other_arg:
+        equality_assumption = fresh_proof_name("Hsplit_eq")
+        equality = Literal(True, Term("eq", source_literal.atom.name, (other_arg, split_arg)))
+        symmetric = positive_equality_symmetry_proof(equality, equality_assumption)
+        return f"(fun {equality_assumption} => ({source_proof} {symmetric}))"
+    raise CertificateError("inequality split source sides do not match split arguments")
+
+
+def inequality_split_replacement_proof(
+    replacement: Literal,
+    split_value_proof: str,
+    exhaustiveness_clause: tuple[Literal, ...],
+    exhaustiveness_proof: str,
+    exhaustiveness_var: str,
+    replacement_term: Term,
+) -> str:
+    target_prop = literal_text(replacement)
+    instantiated_exhaustiveness = tuple(
+        substitute_literal(literal, {exhaustiveness_var: replacement_term})
+        for literal in exhaustiveness_clause
+    )
+    instantiated_exhaustiveness_proof = instantiate_proof(
+        exhaustiveness_proof,
+        exhaustiveness_clause,
+        {exhaustiveness_var: replacement_term},
+    )
+
+    def branch(literal: Literal, proof: str) -> str:
+        oriented = equality_proof_in_orientation(literal, proof, replacement)
+        if oriented is not None:
+            return oriented
+        false_term = bool_name_literal_term(literal, False)
+        if false_term == replacement_term:
+            symmetric = positive_equality_symmetry_proof(literal, proof)
+            false_proof = f"({symmetric} (fun cert_prop:prop => cert_prop) {split_value_proof})"
+            return f"({false_proof} {target_prop})"
+        raise CertificateError("FOOL exhaustiveness branch does not match inequality split replacement")
+
+    return eliminate_clause_proof(
+        instantiated_exhaustiveness,
+        instantiated_exhaustiveness_proof,
+        target_prop,
+        branch,
+    )
+
+
+def inequality_split_proof_text(
+    source_clause: tuple[Literal, ...],
+    source_proof: str,
+    splits: list[Any],
+    conclusion: tuple[Literal, ...],
+    step_clauses: dict[str, tuple[Literal, ...]],
+    proof_names: dict[str, str],
+) -> str:
+    exhaustiveness = find_prop_exhaustiveness_clause(step_clauses, proof_names)
+    if exhaustiveness is None:
+        raise CertificateError("Megalodon smoke inequality_split elaboration needs a FOOL exhaustiveness clause")
+    exhaustiveness_clause, exhaustiveness_proof, exhaustiveness_var = exhaustiveness
+    source_proof = instantiate_proof(source_proof, source_clause, {})
+    goal = clause_body_text(conclusion)
+    split_by_source: dict[Literal, tuple[Literal, Term, Term]] = {}
+    for split_index, split in enumerate(splits):
+        if not isinstance(split, dict):
+            raise CertificateError(f"inequality split {split_index}: expected object")
+        name_literal = parse_literal(split["name_literal"], f"inequality_split.splits[{split_index}].name_literal")
+        name_term = bool_name_literal_term(name_literal, False)
+        name_app = application_head_and_arg(name_term) if name_term is not None else None
+        if name_app is None:
+            raise CertificateError(f"inequality_split.splits[{split_index}]: name literal must be false = P(term)")
+        name_head, split_arg = name_app
+        source_literal = parse_literal(split["source"], f"inequality_split.splits[{split_index}].source")
+        replacement = parse_literal(split["replacement"], f"inequality_split.splits[{split_index}].replacement")
+        replacement_term = bool_name_literal_term(replacement, True)
+        replacement_app = application_head_and_arg(replacement_term) if replacement_term is not None else None
+        if replacement_app is None:
+            raise CertificateError(f"inequality_split.splits[{split_index}]: replacement must be true = P(term)")
+        replacement_head, other_arg = replacement_app
+        if replacement_head != name_head:
+            raise CertificateError(f"inequality_split.splits[{split_index}]: replacement uses a different split predicate")
+        split_by_source[source_literal] = (replacement, split_arg, other_arg)
+
+    def branch(literal: Literal, proof: str) -> str:
+        split = split_by_source.get(literal)
+        if split is None:
+            return intro_literal_proof(literal, conclusion, proof)
+        replacement, split_arg, other_arg = split
+        replacement_term = bool_name_literal_term(replacement, True)
+        if replacement_term is None:
+            raise CertificateError("inequality split replacement is not a true-name literal")
+        value_proof = split_value_proof_from_disequality(literal, proof, split_arg, other_arg)
+        replacement_proof = inequality_split_replacement_proof(
+            replacement,
+            value_proof,
+            exhaustiveness_clause,
+            exhaustiveness_proof,
+            exhaustiveness_var,
+            replacement_term,
+        )
+        return intro_literal_proof(replacement, conclusion, replacement_proof)
+
+    return eliminate_clause_proof(source_clause, source_proof, goal, branch)
+
+
 def paramodulation_proof_text(
     equality_parent_clause: tuple[Literal, ...],
     equality_parent_proof: str,
@@ -4369,6 +4602,8 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
     for sort in certificate_existential_sorts(clauses):
         lines.append(existential_definition(sort))
     definitions = definition_input_declarations(data)
+    inequality_definitions = inequality_split_definitions(data, declarations)
+    inequality_definition_symbols = set(inequality_definitions)
     definable_symbols = {
         symbol
         for symbol, (_sort, value) in definitions.items()
@@ -4394,6 +4629,9 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
             if declaration == f"Variable {symbol}:{definitions[symbol][0]}.":
                 skip = True
                 break
+        declaration_symbol = declaration_symbol_name(declaration)
+        if declaration_symbol in inequality_definition_symbols:
+            skip = True
         if not skip:
             lines.append(declaration)
     for var in sorted(avatar_sat_vars):
@@ -4417,6 +4655,8 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
     )
     for symbol, (sort, _value) in definitions.items():
         symbol_sorts[symbol] = split_sort(sort)
+    for symbol, definition in inequality_definitions.items():
+        symbol_sorts[symbol] = definition.sort_parts
     for symbol, (sort, value) in definitions.items():
         if symbol not in definable_symbols:
             continue
@@ -4425,6 +4665,8 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
             f": {require_supported_sort(sort, 'definition sort')} := "
             f"{term_text_expected(value, sort, symbol_sorts)}."
         )
+    for definition in sorted(inequality_definitions.values(), key=lambda item: item.symbol):
+        lines.append(inequality_split_definition_text(definition, symbol_sorts))
     step_clauses: dict[str, tuple[Literal, ...]] = {}
     proof_names: dict[str, str] = {}
     formula_proof_names: dict[str, str] = {}
@@ -4648,6 +4890,21 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
                     proof_names[parent],
                     rewrites,
                     clause,
+                ),
+                symbol_sorts,
+                explicit_var_sorts,
+            )
+        elif rule == "inequality_split":
+            parent = step["parents"][0]
+            proof = wrap_clause_binders(
+                clause,
+                inequality_split_proof_text(
+                    step_clauses[parent],
+                    proof_names[parent],
+                    step["splits"],
+                    clause,
+                    step_clauses,
+                    proof_names,
                 ),
                 symbol_sorts,
                 explicit_var_sorts,
