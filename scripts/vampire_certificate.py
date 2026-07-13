@@ -3755,6 +3755,45 @@ def reorder_clause_proof_text(source_clause: tuple[Literal, ...], source_proof: 
     )
 
 
+def witness_term_for_sort(sort: str) -> Term:
+    normalized = require_supported_sort(sort, "witness sort")
+    if normalized == "prop":
+        return Term("const", "f__false")
+    if normalized == "set":
+        return Term("const", "vampire_witness_set")
+    raise CertificateError(f"no smoke witness available for sort {normalized!r}")
+
+
+def uncovered_witness_substitution(
+    parent_clause: tuple[Literal, ...],
+    conclusion: tuple[Literal, ...],
+    symbol_sorts: dict[str, tuple[str, ...]] | None,
+    explicit_var_sorts: dict[str, str] | None,
+) -> dict[str, Term]:
+    conclusion_vars = set(clause_free_vars(conclusion))
+    parent_vars = set(clause_free_vars(parent_clause))
+    uncovered_vars = sorted(parent_vars - conclusion_vars)
+    if not uncovered_vars:
+        return {}
+    var_sorts = clause_var_sorts(parent_clause + conclusion, symbol_sorts, explicit_var_sorts)
+    return {
+        var: witness_term_for_sort(var_sorts.get(var, "set"))
+        for var in uncovered_vars
+    }
+
+
+def compose_substitution(substitution: dict[str, Term], extra: dict[str, Term]) -> dict[str, Term]:
+    if not extra:
+        return substitution
+    composed = {
+        name: substitute_term(term, extra)
+        for name, term in substitution.items()
+    }
+    for name, term in extra.items():
+        composed.setdefault(name, term)
+    return composed
+
+
 def resolve_proof_text(
     left_clause: tuple[Literal, ...],
     left_proof: str,
@@ -3762,17 +3801,19 @@ def resolve_proof_text(
     right_proof: str,
     pivot: Literal,
     conclusion: tuple[Literal, ...],
+    symbol_sorts: dict[str, tuple[str, ...]] | None = None,
+    explicit_var_sorts: dict[str, str] | None = None,
 ) -> str:
-    conclusion_vars = set(clause_free_vars(conclusion))
-    parent_vars = set(clause_free_vars(left_clause)) | set(clause_free_vars(right_clause))
-    uncovered_vars = sorted(parent_vars - conclusion_vars)
-    if uncovered_vars:
-        raise CertificateError(
-            "Megalodon smoke resolution elaboration has parent variables not bound by conclusion: "
-            + ", ".join(uncovered_vars)
-        )
-    left_proof = instantiate_proof(left_proof, left_clause, {})
-    right_proof = instantiate_proof(right_proof, right_clause, {})
+    parent_clause = normalize_clause(left_clause + right_clause)
+    substitution = uncovered_witness_substitution(parent_clause, conclusion, symbol_sorts, explicit_var_sorts)
+    original_left_clause = left_clause
+    original_right_clause = right_clause
+    if substitution:
+        left_clause = tuple(substitute_literal(literal, substitution) for literal in left_clause)
+        right_clause = tuple(substitute_literal(literal, substitution) for literal in right_clause)
+        pivot = substitute_literal(pivot, substitution)
+    left_proof = instantiate_proof(left_proof, original_left_clause, substitution)
+    right_proof = instantiate_proof(right_proof, original_right_clause, substitution)
     goal = clause_body_text(conclusion)
     complement = pivot.complement
 
@@ -4396,19 +4437,25 @@ def paramodulation_proof_text(
     position: tuple[int, ...],
     substitution: dict[str, Term],
     conclusion: tuple[Literal, ...],
+    symbol_sorts: dict[str, tuple[str, ...]] | None = None,
+    explicit_var_sorts: dict[str, str] | None = None,
 ) -> str:
     instantiated_equality_parent = tuple(substitute_literal(literal, substitution) for literal in equality_parent_clause)
     instantiated_target_parent = tuple(substitute_literal(literal, substitution) for literal in target_parent_clause)
     instantiated_equality = substitute_literal(selected_equality, substitution)
     instantiated_target = substitute_literal(selected_target, substitution)
-    conclusion_vars = set(clause_free_vars(conclusion))
-    parent_vars = set(clause_free_vars(instantiated_equality_parent)) | set(clause_free_vars(instantiated_target_parent))
-    uncovered_vars = sorted(parent_vars - conclusion_vars)
-    if uncovered_vars:
-        raise CertificateError(
-            "Megalodon smoke paramodulation elaboration has parent variables not bound by conclusion: "
-            + ", ".join(uncovered_vars)
-        )
+    extra_substitution = uncovered_witness_substitution(
+        normalize_clause(instantiated_equality_parent + instantiated_target_parent),
+        conclusion,
+        symbol_sorts,
+        explicit_var_sorts,
+    )
+    if extra_substitution:
+        substitution = compose_substitution(substitution, extra_substitution)
+        instantiated_equality_parent = tuple(substitute_literal(literal, substitution) for literal in equality_parent_clause)
+        instantiated_target_parent = tuple(substitute_literal(literal, substitution) for literal in target_parent_clause)
+        instantiated_equality = substitute_literal(selected_equality, substitution)
+        instantiated_target = substitute_literal(selected_target, substitution)
     if instantiated_equality not in normalize_clause(instantiated_equality_parent):
         raise CertificateError("Megalodon smoke paramodulation equality literal is not present after substitution")
     if instantiated_target not in normalize_clause(instantiated_target_parent):
@@ -4478,36 +4525,63 @@ def paramodulation_proof_text(
 
 def collect_term_symbols(
     term: Term,
-    constants: set[str],
-    functions: dict[str, int],
+    constants: dict[str, str],
+    functions: dict[str, tuple[int, str]],
     bound_constants: set[str] | None = None,
+    expected_sort: str | None = None,
 ) -> None:
     bound_constants = bound_constants or set()
-    collect_term_symbols_with_context(term, constants, functions, bound_constants, ())
+    collect_term_symbols_with_context(term, constants, functions, bound_constants, (), expected_sort)
+
+
+def record_term_constant(constants: dict[str, str], name: str, sort: str | None) -> None:
+    normalized = require_supported_sort(sort or "set", f"constant sort for {name}")
+    previous = constants.get(name)
+    if previous is None or previous == "set":
+        constants[name] = normalized
+
+
+def record_term_function(functions: dict[str, tuple[int, str]], name: str, arity: int, result_sort: str | None) -> None:
+    normalized = require_supported_sort(result_sort or "set", f"function result sort for {name}")
+    previous = functions.get(name)
+    if previous is None:
+        functions[name] = (arity, normalized)
+        return
+    previous_arity, previous_sort = previous
+    if previous_sort == normalized:
+        result_sort_text = previous_sort
+    elif previous_sort == "set":
+        result_sort_text = normalized
+    elif normalized == "set":
+        result_sort_text = previous_sort
+    else:
+        result_sort_text = previous_sort
+    functions[name] = (max(previous_arity, arity), result_sort_text)
 
 
 def collect_term_symbols_with_context(
     term: Term,
-    constants: set[str],
-    functions: dict[str, int],
+    constants: dict[str, str],
+    functions: dict[str, tuple[int, str]],
     bound_constants: set[str],
     db_context: tuple[str, ...],
+    expected_sort: str | None,
 ) -> None:
     v_eq_args = named_binary_application(term, "vEQ")
     if v_eq_args is not None:
         for arg in v_eq_args:
-            collect_term_symbols_with_context(arg, constants, functions, bound_constants, db_context)
+            collect_term_symbols_with_context(arg, constants, functions, bound_constants, db_context, "prop")
         return
     quantifier = quantifier_application(term)
     if quantifier is not None:
         _kind, body_term, _lambda_hint = quantifier
         binder = f"db{len(db_context)}"
-        collect_term_symbols_with_context(body_term.args[0], constants, functions, bound_constants | {binder}, (*db_context, binder))
+        collect_term_symbols_with_context(body_term.args[0], constants, functions, bound_constants | {binder}, (*db_context, binder), "prop")
         return
     lambda_hint = lambda_hint_for_term(term)
     if lambda_hint is not None:
         binder = f"db{len(db_context)}"
-        collect_term_symbols_with_context(term.args[0], constants, functions, bound_constants | {binder}, (*db_context, binder))
+        collect_term_symbols_with_context(term.args[0], constants, functions, bound_constants | {binder}, (*db_context, binder), expected_sort)
         return
     if term.kind == "const":
         db_match = DB_NAME_RE.match(term.name)
@@ -4519,20 +4593,33 @@ def collect_term_symbols_with_context(
             or term.name in CERTIFICATE_BUILTIN_SYMBOLS
         ):
             return
-        constants.add(term.name)
+        record_term_constant(constants, term.name, expected_sort)
     elif term.kind == "app":
-        previous = functions.setdefault(term.name, len(term.args))
-        if previous != len(term.args):
-            raise CertificateError(f"function {term.name!r} used with inconsistent arity")
+        record_term_function(functions, term.name, len(term.args), expected_sort)
+        constants.pop(term.name, None)
     elif term.kind == "apply":
-        collect_term_symbols_with_context(term.args[0], constants, functions, bound_constants, db_context)
-        collect_term_symbols_with_context(term.args[1], constants, functions, bound_constants, db_context)
+        spine = application_spine(term)
+        head = spine[0]
+        if (
+            len(spine) > 1
+            and head.kind in {"const", "app"}
+            and head.name not in bound_constants
+            and head.name not in lambda_binder_sorts()
+            and head.name not in CERTIFICATE_BUILTIN_SYMBOLS
+        ):
+            record_term_function(functions, head.name, len(spine) - 1, expected_sort)
+            constants.pop(head.name, None)
+            for arg in spine[1:]:
+                collect_term_symbols_with_context(arg, constants, functions, bound_constants, db_context, "set")
+            return
+        collect_term_symbols_with_context(term.args[0], constants, functions, bound_constants, db_context, None)
+        collect_term_symbols_with_context(term.args[1], constants, functions, bound_constants, db_context, "set")
         return
     for arg in term.args:
-        collect_term_symbols_with_context(arg, constants, functions, bound_constants, db_context)
+        collect_term_symbols_with_context(arg, constants, functions, bound_constants, db_context, "set")
 
 
-def collect_atom_symbols(atom: Term, prop_atoms: set[str], predicates: dict[str, int], constants: set[str], functions: dict[str, int]) -> None:
+def collect_atom_symbols(atom: Term, prop_atoms: set[str], predicates: dict[str, int], constants: dict[str, str], functions: dict[str, tuple[int, str]]) -> None:
     if atom.kind == "opaque":
         prop_atoms.add(atom.name)
     elif atom.kind == "pred":
@@ -4540,18 +4627,18 @@ def collect_atom_symbols(atom: Term, prop_atoms: set[str], predicates: dict[str,
         if previous != len(atom.args):
             raise CertificateError(f"predicate {atom.name!r} used with inconsistent arity")
         for arg in atom.args:
-            collect_term_symbols(arg, constants, functions)
+            collect_term_symbols(arg, constants, functions, expected_sort="set")
     elif atom.kind == "eq":
         for arg in atom.args:
-            collect_term_symbols(arg, constants, functions)
+            collect_term_symbols(arg, constants, functions, expected_sort=atom.name)
     else:
         raise CertificateError(f"cannot collect symbols from atom kind {atom.kind!r}")
 
 
 def certificate_symbol_declarations(clauses: dict[str, tuple[Literal, ...]]) -> list[str]:
     prop_atoms: set[str] = set()
-    constants: set[str] = set()
-    functions: dict[str, int] = {}
+    constants: dict[str, str] = {}
+    functions: dict[str, tuple[int, str]] = {}
     predicates: dict[str, int] = {}
     for clause in clauses.values():
         for literal in clause:
@@ -4559,15 +4646,38 @@ def certificate_symbol_declarations(clauses: dict[str, tuple[Literal, ...]]) -> 
     declarations: list[str] = []
     for name in sorted(prop_atoms):
         declarations.append(f"Variable {require_megalodon_ident(name, 'atom')}:prop.")
-    for name in sorted(constants):
-        declarations.append(f"Variable {require_megalodon_ident(name, 'constant')}:set.")
-    for name, arity in sorted(functions.items()):
-        sort = "->".join(["set"] * arity + ["set"])
+    for name, sort in sorted(constants.items()):
+        declarations.append(f"Variable {require_megalodon_ident(name, 'constant')}:{sort}.")
+    for name, (arity, result_sort) in sorted(functions.items()):
+        sort = "->".join(["set"] * arity + [result_sort])
         declarations.append(f"Variable {require_megalodon_ident(name, 'function')}:{sort}.")
     for name, arity in sorted(predicates.items()):
         sort = "->".join(["set"] * arity + ["prop"])
         declarations.append(f"Variable {require_megalodon_ident(name, 'predicate')}:{sort}.")
     return declarations
+
+
+def merge_outline_declarations(outline: list[str], inferred: list[str]) -> list[str]:
+    by_symbol: dict[str, str] = {}
+    for declaration in outline:
+        symbol = declaration_symbol_name(declaration)
+        if symbol is not None:
+            by_symbol[symbol] = declaration
+    for declaration in inferred:
+        symbol = declaration_symbol_name(declaration)
+        if symbol is not None:
+            previous = by_symbol.get(symbol)
+            if previous is not None:
+                previous_parts = declaration_symbol_sorts([previous]).get(symbol)
+                inferred_parts = declaration_symbol_sorts([declaration]).get(symbol)
+                if (
+                    previous_parts is not None
+                    and inferred_parts is not None
+                    and (len(previous_parts) > 1 or len(previous_parts) >= len(inferred_parts))
+                ):
+                    continue
+            by_symbol[symbol] = declaration
+    return sorted(by_symbol.values())
 
 
 def instantiate_proof(proof_name: str, parent_clause: tuple[Literal, ...], substitution: dict[str, Term]) -> str:
@@ -4891,13 +5001,14 @@ def emit_megalodon_smoke(data: dict[str, Any], clauses: dict[str, tuple[Literal,
 
 
 def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, tuple[Literal, ...]], theorem_name: str) -> str:
+    inferred_declarations = certificate_symbol_declarations(clauses)
     outline_declarations = data.get("declarations")
     if outline_declarations is not None:
         if not isinstance(outline_declarations, list) or not all(isinstance(item, str) and item.startswith("Variable ") for item in outline_declarations):
             raise CertificateError("declarations must be a list of Megalodon Variable declarations")
-        declarations = sorted(set(outline_declarations))
+        declarations = merge_outline_declarations(sorted(set(outline_declarations)), inferred_declarations)
     else:
-        declarations = certificate_symbol_declarations(clauses)
+        declarations = inferred_declarations
     equality_sorts = sorted(
         {
             literal.atom.name
@@ -4974,7 +5085,11 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
         declaration = f"Variable {sat_split_name(var)}:prop."
         if declaration not in declarations:
             lines.append(declaration)
+    witness_declaration = "Variable vampire_witness_set:set."
+    if witness_declaration not in declarations:
+        lines.append(witness_declaration)
     symbol_sorts = declaration_symbol_sorts(declarations)
+    symbol_sorts["vampire_witness_set"] = split_sort("set")
     symbol_sorts.update(
         {
             "f__false": split_sort("prop"),
@@ -5082,6 +5197,8 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
                     proof_names[parents[1]],
                     pivot,
                     clause,
+                    symbol_sorts,
+                    explicit_var_sorts,
                 ),
                 symbol_sorts,
                 explicit_var_sorts,
@@ -5196,6 +5313,8 @@ def emit_megalodon_smoke_with_context(data: dict[str, Any], clauses: dict[str, t
                     position,
                     substitution,
                     clause,
+                    symbol_sorts,
+                    explicit_var_sorts,
                 ),
                 symbol_sorts,
                 explicit_var_sorts,
