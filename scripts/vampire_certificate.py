@@ -2430,7 +2430,7 @@ def infer_definition_input_step(
     }
 
 
-def embedded_certificate_json_summary(text: str) -> dict[str, Any] | None:
+def embedded_certificate_json_data(text: str) -> dict[str, Any] | None:
     start = text.find(CERTIFICATE_JSON_START)
     if start < 0:
         return None
@@ -2452,6 +2452,14 @@ def embedded_certificate_json_summary(text: str) -> dict[str, Any] | None:
     steps = data.get("steps")
     if not isinstance(steps, list) or not all(isinstance(step, dict) for step in steps):
         raise CertificateError("embedded certificate JSON steps must be an object list")
+    return data
+
+
+def embedded_certificate_json_summary(text: str) -> dict[str, Any] | None:
+    data = embedded_certificate_json_data(text)
+    if data is None:
+        return None
+    steps = data["steps"]
     rules: dict[str, int] = {}
     missing_ids = 0
     missing_clauses = 0
@@ -5164,6 +5172,9 @@ def certificate_summary(data: dict[str, Any], clauses: dict[str, tuple[Literal, 
             for key, value in sorted(embedded.items())
             if isinstance(key, str) and isinstance(value, (int, dict))
         }
+    outline_error = data.get("outline_reconstruction_error")
+    if isinstance(outline_error, str):
+        summary["outline_reconstruction_error"] = outline_error
     return summary
 
 
@@ -5179,16 +5190,29 @@ def main() -> int:
 
     try:
         if args.from_vampire_outline:
-            data = certificate_from_vampire_outline(
-                args.certificate.read_text(encoding="utf-8"),
-                args.certificate.stem,
-            )
+            outline_text = args.certificate.read_text(encoding="utf-8")
+            data = certificate_from_vampire_outline(outline_text, args.certificate.stem)
         else:
             data = json.loads(args.certificate.read_text(encoding="utf-8"))
         clauses = check_certificate(data)
-    except (OSError, json.JSONDecodeError, CertificateError) as exc:
+    except (OSError, json.JSONDecodeError) as exc:
         print(f"certificate check failed: {exc}", file=sys.stderr)
         return 1
+    except CertificateError as exc:
+        if not args.from_vampire_outline:
+            print(f"certificate check failed: {exc}", file=sys.stderr)
+            return 1
+        try:
+            embedded = embedded_certificate_json_data(outline_text)
+            if embedded is None:
+                raise exc
+            embedded["problem"] = args.certificate.stem
+            embedded["outline_reconstruction_error"] = str(exc)
+            data = embedded
+            clauses = check_certificate(data)
+        except CertificateError as embedded_exc:
+            print(f"certificate check failed: {embedded_exc}", file=sys.stderr)
+            return 1
 
     if args.write_certificate is not None:
         args.write_certificate.parent.mkdir(parents=True, exist_ok=True)
