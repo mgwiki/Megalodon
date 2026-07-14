@@ -2765,12 +2765,63 @@ let megalodon_safe_ident prefix s =
   else if is_alpha result.[0] then result
   else "x_" ^ result
 
-let simple_source_label = function
-  | SourceAxiom name -> "axiom_" ^ name
-  | SourceConjecture name -> "conjecture_" ^ name
-  | SourceNegatedConjecture name -> "negated_conjecture_" ^ name
-  | SourceDefinition name -> "definition_" ^ name
-  | SourceSetReflexivity name -> "set_reflexivity_" ^ name
+let is_hex_char = function
+  | '0' .. '9' | 'a' .. 'f' | 'A' .. 'F' -> true
+  | _ -> false
+
+let hex_value = function
+  | '0' .. '9' as c -> Char.code c - Char.code '0'
+  | 'a' .. 'f' as c -> 10 + Char.code c - Char.code 'a'
+  | 'A' .. 'F' as c -> 10 + Char.code c - Char.code 'A'
+  | _ -> 0
+
+let decode_megalodon_tptp_name name =
+  let encoded =
+    if name = "emptyname" then name
+    else if String.length name > 2
+            && String.sub name 0 2 = "c_"
+            && (name.[2] = '_'
+                || ('A' <= name.[2] && name.[2] <= 'Z')
+                || ('0' <= name.[2] && name.[2] <= '9')) then
+      String.sub name 2 (String.length name - 2)
+    else name
+  in
+  let buf = Buffer.create (String.length encoded) in
+  let rec loop i =
+    if i >= String.length encoded then ()
+    else if encoded.[i] = '_'
+            && i + 2 < String.length encoded
+            && is_hex_char encoded.[i + 1]
+            && is_hex_char encoded.[i + 2] then
+      begin
+        Buffer.add_char buf
+          (Char.chr ((hex_value encoded.[i + 1] * 16) + hex_value encoded.[i + 2]));
+        loop (i + 3)
+      end
+    else
+      begin
+        Buffer.add_char buf encoded.[i];
+        loop (i + 1)
+      end
+  in
+  loop 0;
+  Buffer.contents buf
+
+let simple_source_kind_and_tptp_name = function
+  | SourceAxiom name -> ("axiom", name)
+  | SourceConjecture name -> ("conjecture", name)
+  | SourceNegatedConjecture name -> ("negated_conjecture", name)
+  | SourceDefinition name -> ("definition", name)
+  | SourceSetReflexivity name -> ("set_reflexivity", name)
+
+let simple_source_label source_map source =
+  let kind, tptp_name = simple_source_kind_and_tptp_name source in
+  let displayed_name =
+    match List.find_opt (fun entry -> entry.source_map_tptp_name = tptp_name) source_map with
+    | Some entry when entry.source_map_source_name <> "" -> entry.source_map_source_name
+    | _ -> decode_megalodon_tptp_name tptp_name
+  in
+  kind ^ "_" ^ displayed_name
 
 let simple_fresh_name used base =
   let base = megalodon_safe_ident "" base in
@@ -2907,7 +2958,7 @@ let simple_condensation_proof id parent_id subst result checked names =
   | _ ->
       emit_error (id ^ ": simple emitter supports only two-literal propositional condensation")
 
-let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") cert =
+let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_map=[]) cert =
   ignore (check_certificate cert);
   let prop_names = collect_simple_prop_names cert in
   let lines = ref
@@ -2928,7 +2979,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") cert =
     emitted_names := (id, name) :: !emitted_names
   in
   let input_name id source =
-    simple_fresh_name used_names ("src_" ^ simple_source_label source ^ "__" ^ id)
+    simple_fresh_name used_names ("src_" ^ simple_source_label source_map source ^ "__" ^ id)
   in
   let derived_name id = simple_fresh_name used_names id in
   let add_checked id clause =

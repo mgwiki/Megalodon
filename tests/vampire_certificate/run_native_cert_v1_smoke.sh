@@ -44,6 +44,29 @@ if ! rg -q 'assume src_axiom_a2__c2:' "$WORK_DIR/native_cert_v1_valid_emit.mg"; 
 fi
 
 bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_name_mangled_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_name_mangled_valid.th0.p \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_source_name_mangled_valid_emit.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_name_mangled_valid_emit.log"
+if ! rg -q 'Vampire certificate v1 source map checked 2 sources' \
+    "$WORK_DIR/native_cert_v1_source_name_mangled_valid_emit.log"; then
+  echo "native certificate v1 checker did not validate the source-name map fixture" >&2
+  exit 1
+fi
+if ! rg -q 'assume src_axiom_Foo_bar__c1:' \
+    "$WORK_DIR/native_cert_v1_source_name_mangled_valid_emit.mg"; then
+  echo "native certificate v1 simple emitter did not use the original Foo_bar source name" >&2
+  exit 1
+fi
+if ! rg -q 'assume src_axiom_Not_x2Fp__c2:' \
+    "$WORK_DIR/native_cert_v1_source_name_mangled_valid_emit.mg"; then
+  echo "native certificate v1 simple emitter did not sanitize the original Not/p source name" >&2
+  exit 1
+fi
+bin/megalodon "$WORK_DIR/native_cert_v1_source_name_mangled_valid_emit.mg" \
+  >"$WORK_DIR/native_cert_v1_source_name_mangled_valid_emit.check.log"
+
+bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_resolution_mirrored_valid.sexp \
   -vampirecertv1emit "$WORK_DIR/native_cert_v1_resolution_mirrored_valid_emit.mg" \
   "$dummy" >"$WORK_DIR/native_cert_v1_resolution_mirrored_valid_emit.log"

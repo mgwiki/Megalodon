@@ -6982,12 +6982,14 @@ let check_vampire_cert_v1_file fn =
       if !vampirecertv1strict then Vampire_cert_v1.check_certificate_strict cert
       else Vampire_cert_v1.check_certificate cert
     in
+    let source_map_for_emit = ref [] in
     begin match !vampirecertv1source with
     | None ->
         if !vampirecertv1strict && Vampire_cert_v1.certificate_source_count cert > 0 then
           raise (Vampire_cert_v1.Error "strict certificate v1 requires -vampirecertv1source for source-backed inputs")
     | Some source_fn ->
         let source_map = Vampire_cert_v1.parse_source_map (read_all source_fn) in
+        source_map_for_emit := source_map;
         let source_count = Vampire_cert_v1.validate_certificate_sources source_map cert in
         Printf.printf "Vampire certificate v1 source map checked %d source%s.\n"
           source_count
@@ -7000,7 +7002,7 @@ let check_vampire_cert_v1_file fn =
     begin match !vampirecertv1emit with
     | None -> ()
     | Some out_fn ->
-        let content = Vampire_cert_v1.emit_simple_megalodon cert in
+        let content = Vampire_cert_v1.emit_simple_megalodon ~source_map:!source_map_for_emit cert in
         let ch = open_out out_fn in
         output_string ch content;
         close_out ch;

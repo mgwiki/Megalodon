@@ -41,7 +41,8 @@ term-changing substitutions fail closed with a `simple Megalodon emitter`
 error. Input assumptions are named from their original certificate source, for
 example `src_axiom_<source>__<step>`, so the generated proof skeleton remains
 connected to the original Megalodon/TPTP lemma or conjecture name instead of
-only exposing Vampire unit ids.
+only exposing Vampire unit ids. When `-vampirecertv1source` is supplied, the
+emitter uses the Megalodon source-map name rather than a TPTP-escaped fallback.
 The path is intentionally small: it is the seed of native proof-term/text
 elaboration from the OCaml certificate checker, not a replacement for the
 strict certificate gate over larger live corpora.
