@@ -448,6 +448,54 @@ CLOSED_PASS 45
 /project/tmp/native_cert_v1_closed_corpus.tZAxBx
 ```
 
+## July 14 Increment: Negated Implication ENNF
+
+The native emitter now replays the common ENNF transformation
+`~(A -> B)` to `A /\ ~B`.  The proof term is direct and classical: it derives
+`A` by `dneg` using the parent contradiction, and derives `B -> False` by
+feeding a constant `A -> B` proof back to the parent contradiction.  Universal
+binders continue to be handled by the existing ENNF binder recursion.
+
+This moved the cached source-linked closed frontier from 45 to 47 closed
+passes:
+
+```text
+TMPDIR=/project/tmp \
+PROBLEM_DIR=/project/tmp/source_linked_strict_100_corpus_fresh_041947 \
+WORK_DIR=/project/tmp/source_linked_slice_1_400_closed_ennf_neg_imp_121949 \
+JOBS=20 MIN_PASS=0 CLOSED_CERT_V1=1 EMIT_TIMEOUT=30 CHECK_TIMEOUT=45 \
+tests/vampire_certificate/run_native_emit_cached_parallel.sh \
+  /project/tmp/source_linked_slice_1_400_fresh_042040
+
+CLOSED_PASS 47
+EMIT_FAIL 166
+/project/tmp/source_linked_slice_1_400_closed_ennf_neg_imp_121949
+```
+
+The two new committed closed cases are:
+
+```text
+hammer.10497.10.th0.p
+hammer.10587.10.th0.p
+```
+
+Validation for this increment:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+native certificate v1 smoke test passed
+/project/tmp/native_cert_v1.UI7WfV
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_source_map_export_smoke.sh
+Megalodon TH0 source-map export smoke passed
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh
+CLOSED_PASS 47
+/project/tmp/native_cert_v1_closed_corpus.FBArvw
+```
+
 ## Remaining P0 Work
 
 Closed mode is necessary but not sufficient.

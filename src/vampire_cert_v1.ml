@@ -5518,6 +5518,30 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
         let body_proof = convert env source_body target_body ("(" ^ proof ^ " " ^ binder ^ ")") in
         "(fun " ^ binder ^ ":" ^ sort ^ " => " ^ body_proof ^ ")"
     | _ when source = target -> proof
+    | Imp (Imp (left, right), false_tm),
+      Ap (Ap (TmH "vampire_and", target_left), target_right)
+        when is_vampire_false false_tm ->
+        begin match target_right with
+        | Imp (neg_right, target_false)
+            when target_left = left && neg_right = right && is_vampire_false target_false ->
+            let left_text = formula_text env left in
+            let right_text = formula_text env right in
+            let target_right_text = formula_text env target_right in
+            let left_proof =
+              Printf.sprintf
+                "(dneg (%s) (fun Hennf_not_left:%s -> False => %s (fun Hennf_left:%s => (Hennf_not_left Hennf_left) (%s))))"
+                left_text left_text proof left_text right_text
+            in
+            let right_proof =
+              Printf.sprintf
+                "(fun Hennf_right:%s => %s (fun Hennf_left:%s => Hennf_right))"
+                right_text proof left_text
+            in
+            Printf.sprintf
+              "(fun Hennf_goal:prop => fun Hennf_and:%s -> %s -> Hennf_goal => Hennf_and %s %s)"
+              left_text target_right_text left_proof right_proof
+        | _ -> emit_error (id ^ ": ENNF proof expected negated implication-to-and target")
+        end
     | Imp (left, right), Ap (Ap (TmH "vampire_or", neg_left), target_right) ->
         begin match neg_left with
         | Imp (neg_source, false_tm) when neg_source = left && is_vampire_false false_tm ->
