@@ -3708,66 +3708,10 @@ let simple_remove_index id label index clause =
   |> List.filter (fun (i, _) -> i <> index)
   |> List.map snd
 
-let simple_resolution_proof id left_id right_id left_index right_index result checked names =
-  let left_clause = lookup_simple_clause checked left_id in
-  let right_clause = lookup_simple_clause checked right_id in
-  let left_pivot = simple_clause_nth id "left" left_index left_clause in
-  let right_pivot = simple_clause_nth id "right" right_index right_clause in
-  if not (complementary left_pivot right_pivot) then
-    emit_error (id ^ ": pivots are not complementary");
-  let left_rest = simple_remove_index id "left" left_index left_clause in
-  let right_rest = simple_remove_index id "right" right_index right_clause in
-  let positive_parent, negative_parent, positive_rest, negative_rest =
-    match left_pivot, right_pivot with
-    | Pos _, Neg _ -> left_id, right_id, left_rest, right_rest
-    | Neg _, Pos _ -> right_id, left_id, right_rest, left_rest
-    | _ -> emit_error (id ^ ": pivots are not complementary")
-  in
-  let positive_parent_name = lookup_simple_name names positive_parent in
-  let negative_parent_name = lookup_simple_name names negative_parent in
-  match positive_rest, negative_rest, result with
-  | [tail], [], [res] when tail = res ->
-      let target = simple_literal_prop res in
-      let target_arg = simple_prop_arg target in
-      Printf.sprintf
-        "(%s %s (fun Hlit_0 => ((%s Hlit_0) %s)) (fun Htail_1 => Htail_1))"
-        positive_parent_name target_arg negative_parent_name target_arg
-  | [], [tail], [res] when tail = res ->
-      let target = simple_literal_prop res in
-      let target_arg = simple_prop_arg target in
-      Printf.sprintf
-        "(%s %s (fun Hlit_0 => ((Hlit_0 %s) %s)) (fun Htail_1 => Htail_1))"
-        negative_parent_name target_arg positive_parent_name target_arg
-  | [], [], [] ->
-      Printf.sprintf "((%s %s) False)" negative_parent_name positive_parent_name
-  | _ ->
-      emit_error (id ^ ": simple emitter supports only unit resolution and binary-tail unit resolution")
-
-let rec simple_clause_intro_proof clause lit proof =
-  match clause with
-  | [] -> emit_error "cannot introduce a literal into the empty clause"
-  | [single] when single = lit -> proof
-  | head :: tail when head = lit ->
-      Printf.sprintf "(fun vclause_goal Hhead Htail => Hhead %s)" proof
-  | _ :: tail ->
-      let tail_proof = simple_clause_intro_proof tail lit proof in
-      Printf.sprintf "(fun vclause_goal Hhead Htail => Htail %s)" tail_proof
-
-let simple_factor_proof id parent_id left_index right_index result checked names =
-  let parent_clause = lookup_simple_clause checked parent_id in
-  let left = simple_clause_nth id "left" left_index parent_clause in
-  let right = simple_clause_nth id "right" right_index parent_clause in
-  if left <> right then emit_error (id ^ ": factor literals are not identical");
-  match parent_clause, result with
-  | dup1 :: dup2 :: tail, _ when dup1 = dup2 && left_index = 0 && right_index = 1 && result = dup1 :: tail ->
-      let target = simple_clause_prop result in
-      let target_arg = simple_prop_arg target in
-      let parent_name = lookup_simple_name names parent_id in
-      let left_branch = simple_clause_intro_proof result dup1 "Hlit_0" in
-      Printf.sprintf "(%s %s (fun Hlit_0 => %s) (fun Htail_1 => Htail_1))"
-        parent_name target_arg left_branch
-  | _ ->
-      emit_error (id ^ ": simple emitter supports only duplicated head-literal factoring")
+let simple_sorts_subset smaller larger =
+  List.for_all
+    (fun (name, sort) -> List.exists (fun (name', sort') -> name = name' && sort = sort') larger)
+    smaller
 
 let simple_wrap_forall_intro sorts proof =
   List.fold_right
@@ -3781,6 +3725,97 @@ let simple_apply_forall_vars proof sorts =
     (fun acc (name, _) -> "(" ^ acc ^ " " ^ megalodon_ident name ^ ")")
     proof
     sorts
+
+let simple_resolution_proof
+    literal_prop parent_sorts_of result_sorts id left_id right_id left_index right_index result checked names =
+  let left_clause = lookup_simple_clause checked left_id in
+  let right_clause = lookup_simple_clause checked right_id in
+  let left_pivot = simple_clause_nth id "left" left_index left_clause in
+  let right_pivot = simple_clause_nth id "right" right_index right_clause in
+  if not (complementary left_pivot right_pivot) then
+    emit_error (id ^ ": pivots are not complementary");
+  let left_rest = simple_remove_index id "left" left_index left_clause in
+  let right_rest = simple_remove_index id "right" right_index right_clause in
+  let positive_parent, negative_parent, positive_index, negative_index, positive_rest, negative_rest =
+    match left_pivot, right_pivot with
+    | Pos _, Neg _ -> left_id, right_id, left_index, right_index, left_rest, right_rest
+    | Neg _, Pos _ -> right_id, left_id, right_index, left_index, right_rest, left_rest
+    | _ -> emit_error (id ^ ": pivots are not complementary")
+  in
+  let positive_parent_name =
+    simple_apply_forall_vars (lookup_simple_name names positive_parent) (parent_sorts_of positive_parent)
+  in
+  let negative_parent_name =
+    simple_apply_forall_vars (lookup_simple_name names negative_parent) (parent_sorts_of negative_parent)
+  in
+  let wrap proof = simple_wrap_forall_intro result_sorts proof in
+  match positive_rest, negative_rest, result with
+  | [tail], [], [res] when tail = res ->
+      if positive_index <> 0 then
+        emit_error (id ^ ": simple binary-tail resolution expects the positive pivot at the clause head");
+      let target = literal_prop res in
+      let target_arg = simple_prop_arg target in
+      wrap
+        (Printf.sprintf
+           "(%s %s (fun Hlit_0 => ((%s Hlit_0) %s)) (fun Htail_1 => Htail_1))"
+           positive_parent_name target_arg negative_parent_name target_arg)
+  | [], [tail], [res] when tail = res ->
+      if negative_index <> 0 then
+        emit_error (id ^ ": simple binary-tail resolution expects the negative pivot at the clause head");
+      let target = literal_prop res in
+      let target_arg = simple_prop_arg target in
+      wrap
+        (Printf.sprintf
+           "(%s %s (fun Hlit_0 => ((Hlit_0 %s) %s)) (fun Htail_1 => Htail_1))"
+           negative_parent_name target_arg positive_parent_name target_arg)
+  | [], [], [] ->
+      if positive_index <> 0 || negative_index <> 0 then
+        emit_error (id ^ ": simple unit resolution expects pivots at the clause head");
+      wrap (Printf.sprintf "((%s %s) False)" negative_parent_name positive_parent_name)
+  | _ ->
+      emit_error (id ^ ": simple emitter supports only unit resolution and binary-tail unit resolution")
+
+let rec simple_clause_intro_proof clause lit proof =
+  match clause with
+  | [] -> emit_error "cannot introduce a literal into the empty clause"
+  | [single] when single = lit -> proof
+  | head :: tail when head = lit ->
+      Printf.sprintf "(fun vclause_goal Hhead Htail => Hhead %s)" proof
+  | _ :: tail ->
+      let tail_proof = simple_clause_intro_proof tail lit proof in
+      Printf.sprintf "(fun vclause_goal Hhead Htail => Htail %s)" tail_proof
+
+let rec simple_clause_projection_proof target_prop target_clause source_clause source_proof depth =
+  match source_clause with
+  | [] -> emit_error "cannot project from the empty clause"
+  | [lit] -> simple_clause_intro_proof target_clause lit source_proof
+  | lit :: rest ->
+      let head_name = "Hproj_lit_" ^ string_of_int depth in
+      let tail_name = "Hproj_tail_" ^ string_of_int depth in
+      let head_branch = simple_clause_intro_proof target_clause lit head_name in
+      let tail_branch =
+        simple_clause_projection_proof target_prop target_clause rest tail_name (depth + 1)
+      in
+      Printf.sprintf "(%s %s (fun %s => %s) (fun %s => %s))"
+        source_proof (simple_prop_arg target_prop)
+        head_name head_branch
+        tail_name tail_branch
+
+let simple_factor_proof clause_body_prop parent_sorts result_sorts id parent_id left_index right_index result checked names =
+  let parent_clause = lookup_simple_clause checked parent_id in
+  let left = simple_clause_nth id "left" left_index parent_clause in
+  let right = simple_clause_nth id "right" right_index parent_clause in
+  if left <> right then emit_error (id ^ ": factor literals are not identical");
+  let remove_index = if left_index > right_index then left_index else right_index in
+  let expected = simple_remove_index id "removed factor" remove_index parent_clause in
+  if expected <> result then
+    emit_error (id ^ ": simple factor proof expects the result to remove the later duplicate");
+  let target = clause_body_prop result in
+  let parent_name =
+    simple_apply_forall_vars (lookup_simple_name names parent_id) parent_sorts
+  in
+  simple_wrap_forall_intro result_sorts
+    (simple_clause_projection_proof target result parent_clause parent_name 0)
 
 let simple_equality_resolution_proof id parent_id literal_index result parent_sorts result_sorts checked names =
   let parent_clause = lookup_simple_clause checked parent_id in
@@ -4863,11 +4898,94 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                 "condensation" id [parent_id] result
           end
       | Resolve (id, left_id, right_id, left_index, right_index, result) ->
-          ignore (left_index, right_index);
-          add_clause_inference_bridge "resolve" id [left_id; right_id] result
+          let prop, sorts = clause_prop_and_sorts_for_ids id [left_id; right_id] result in
+          let left_sorts = variable_sorts_for_ids [left_id] in
+          let right_sorts = variable_sorts_for_ids [right_id] in
+          let type_env =
+            simple_type_env_with_variables
+              (left_sorts @ right_sorts @ sorts |> simple_unique_variable_sorts)
+              symbol_type_env
+          in
+          let left_clause = lookup_simple_clause !checked left_id in
+          let right_clause = lookup_simple_clause !checked right_id in
+          let clause_body_prop clause =
+            try simple_clause_prop_with_type_env type_env clause
+            with Error _ -> simple_clause_prop clause
+          in
+          let literal_prop literal =
+            try simple_literal_prop_with_type_env type_env literal
+            with Error _ -> simple_literal_prop literal
+          in
+          let structural_clause_prop sorts clause =
+            simple_quantify_prop sorts (clause_body_prop clause)
+          in
+          let structurally_safe =
+            simple_sorts_subset left_sorts sorts
+            && simple_sorts_subset right_sorts sorts
+            && emitted_parent_prop left_id = structural_clause_prop left_sorts left_clause
+            && emitted_parent_prop right_id = structural_clause_prop right_sorts right_clause
+            && prop = structural_clause_prop sorts result
+          in
+          begin match
+            if not structurally_safe then None
+            else
+              try Some (simple_resolution_proof
+                          literal_prop
+                          (fun parent_id ->
+                             if parent_id = left_id then left_sorts
+                             else if parent_id = right_id then right_sorts
+                             else variable_sorts_for_ids [parent_id])
+                          sorts id left_id right_id left_index right_index result
+                          !checked !emitted_names)
+              with Error _ -> None
+          with
+          | Some proof ->
+              let name = derived_name id in
+              add_emitted id name;
+              add_emitted_prop_and_sorts id prop sorts;
+              claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")];
+              add_checked id result
+          | None ->
+              add_clause_inference_bridge "resolve" id [left_id; right_id] result
+          end
       | Factor (id, parent_id, left_index, right_index, result) ->
-          ignore (left_index, right_index);
-          add_clause_inference_bridge "factor" id [parent_id] result
+          let prop, sorts = clause_prop_and_sorts_for_ids id [parent_id] result in
+          let parent_sorts = variable_sorts_for_ids [parent_id] in
+          let type_env =
+            simple_type_env_with_variables
+              (parent_sorts @ sorts |> simple_unique_variable_sorts)
+              symbol_type_env
+          in
+          let parent_clause = lookup_simple_clause !checked parent_id in
+          let clause_body_prop clause =
+            try simple_clause_prop_with_type_env type_env clause
+            with Error _ -> simple_clause_prop clause
+          in
+          let structural_clause_prop sorts clause =
+            simple_quantify_prop sorts (clause_body_prop clause)
+          in
+          let structurally_safe =
+            simple_sorts_subset parent_sorts sorts
+            && emitted_parent_prop parent_id = structural_clause_prop parent_sorts parent_clause
+            && prop = structural_clause_prop sorts result
+          in
+          begin match
+            if not structurally_safe then None
+            else
+              try Some (simple_factor_proof
+                          clause_body_prop parent_sorts sorts id parent_id left_index right_index result
+                          !checked !emitted_names)
+              with Error _ -> None
+          with
+          | Some proof ->
+              let name = derived_name id in
+              add_emitted id name;
+              add_emitted_prop_and_sorts id prop sorts;
+              claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")];
+              add_checked id result
+          | None ->
+              add_clause_inference_bridge "factor" id [parent_id] result
+          end
       | EqualitySymmetry (id, parent_id, literal_index, result) ->
           let prop, sorts = clause_prop_and_sorts_for_ids id [parent_id] result in
           let parent_sorts = variable_sorts_for_ids [parent_id] in
