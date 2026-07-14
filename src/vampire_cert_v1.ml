@@ -4388,6 +4388,40 @@ let rec simple_clause_prop_with_type_env type_env = function
       ^ simple_clause_prop_with_type_env type_env rest
       ^ ")"
 
+let simple_substitute_proof
+    clause_body_prop type_env id parent_id subst result parent_sorts result_sorts checked names =
+  let parent_clause = lookup_simple_clause checked parent_id in
+  let substituted_parent = subst_clause subst parent_clause in
+  if not (same_clause_multiset substituted_parent result) then
+    emit_error (id ^ ": simple substitution proof expects the explicit substituted parent clause");
+  let subst_sources = List.map fst subst in
+  if not
+       (List.for_all
+          (fun source_name ->
+             List.exists (fun (name, _) -> name = source_name) parent_sorts)
+          subst_sources) then
+    emit_error (id ^ ": simple substitution proof only instantiates quantified parent variables");
+  let arg_for_parent_var (name, sort) =
+    let tm =
+      match List.assoc_opt name subst with
+      | Some tm -> tm
+      | None -> TmH name
+    in
+    let text = simple_tm_expr_with_expected type_env (Some sort) tm in
+    match tm with
+    | TmH _ | DB _ -> text
+    | _ -> "(" ^ text ^ ")"
+  in
+  let parent_expr =
+    List.fold_left
+      (fun acc parent_sort -> "(" ^ acc ^ " " ^ arg_for_parent_var parent_sort ^ ")")
+      (lookup_simple_name names parent_id)
+      parent_sorts
+  in
+  let target = clause_body_prop result in
+  simple_wrap_forall_intro result_sorts
+    (simple_clause_projection_proof target result substituted_parent parent_expr 0)
+
 let simple_condensation_proof id parent_id subst result checked names =
   if subst <> [] then
     emit_error (id ^ ": simple emitter does not support term-changing condensation");
@@ -4922,21 +4956,62 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           assumptions := !assumptions @ [(name, prop)];
           add_checked id result
       | Substitute (id, parent_id, subst, result) ->
+          let subst_sorts = substitution_variable_sorts parent_id subst in
+          let prop, sorts = clause_prop_and_sorts_for_ids ~extra_sorts:subst_sorts id [parent_id] result in
+          let parent_sorts = variable_sorts_for_ids [parent_id] in
+          let type_env =
+            simple_type_env_with_variables
+              (parent_sorts @ subst_sorts @ sorts |> simple_unique_variable_sorts)
+              symbol_type_env
+          in
+          let parent_clause = lookup_simple_clause !checked parent_id in
+          let clause_body_prop clause =
+            try simple_clause_prop_with_type_env type_env clause
+            with Error _ -> simple_clause_prop clause
+          in
+          let structural_clause_prop sorts clause =
+            simple_quantify_prop sorts (clause_body_prop clause)
+          in
+          let substituted_parent = subst_clause subst parent_clause in
+          let substituted_sources = List.map fst subst in
+          let remaining_parent_sorts =
+            parent_sorts
+            |> List.filter (fun (name, _) -> not (List.mem name substituted_sources))
+          in
+          let needed_sorts =
+            remaining_parent_sorts @ subst_sorts |> simple_unique_variable_sorts
+          in
+          let structurally_safe =
+            same_clause_multiset substituted_parent result
+            && simple_sorts_subset needed_sorts sorts
+            && emitted_parent_prop parent_id = structural_clause_prop parent_sorts parent_clause
+            && prop = structural_clause_prop sorts result
+          in
           begin match
-            try Some (simple_copy_proof id parent_id result !checked !emitted_names)
-            with Error _ -> None
+            try
+              let proof = simple_copy_proof id parent_id result !checked !emitted_names in
+              Some (proof, emitted_parent_prop parent_id, variable_sorts_for_ids [parent_id])
+            with Error _ ->
+              if not structurally_safe then None
+              else
+                try
+                  let proof =
+                    simple_substitute_proof
+                      clause_body_prop type_env id parent_id subst result
+                      parent_sorts sorts !checked !emitted_names
+                  in
+                  Some (proof, prop, sorts)
+                with Error _ -> None
           with
-          | Some proof ->
+          | Some (proof, claim_prop, claim_sorts) ->
               let name = derived_name id in
-              let prop = emitted_parent_prop parent_id in
-              let sorts = variable_sorts_for_ids [parent_id] in
               add_emitted id name;
-              add_emitted_prop_and_sorts id prop sorts;
-              claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")];
+              add_emitted_prop_and_sorts id claim_prop claim_sorts;
+              claims := !claims @ [(name, claim_prop, "exact " ^ proof ^ ".")];
               add_checked id result
           | None ->
               add_clause_inference_bridge
-                ~extra_sorts:(substitution_variable_sorts parent_id subst)
+                ~extra_sorts:subst_sorts
                 "substitute" id [parent_id] result
           end
       | Condensation (id, parent_id, subst, result) ->
