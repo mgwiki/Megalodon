@@ -3321,6 +3321,17 @@ let simple_fresh_vlam_name () =
   incr simple_vlam_name_counter;
   name
 
+let simple_with_stable_vlam_names f =
+  let previous = !simple_vlam_name_counter in
+  simple_vlam_name_counter := 0;
+  match f () with
+  | result ->
+      simple_vlam_name_counter := previous;
+      result
+  | exception exn ->
+      simple_vlam_name_counter := previous;
+      raise exn
+
 let simple_db_index name =
   if is_db_ident name then
     Some (int_of_string (String.sub name 2 (String.length name - 2)))
@@ -3921,6 +3932,18 @@ let simple_apply_forall_vars proof sorts =
     proof
     sorts
 
+let simple_witness_for_sort sort =
+  match String.trim sort with
+  | "set" -> "(Eps_i (fun Xeps:set => vampire_true))"
+  | "prop" -> "vampire_true"
+  | other -> emit_error ("no canonical witness for quantified sort " ^ other)
+
+let simple_apply_forall_witnesses proof sorts =
+  List.fold_left
+    (fun acc (_, sort) -> "(" ^ acc ^ " " ^ simple_witness_for_sort sort ^ ")")
+    proof
+    sorts
+
 let simple_resolution_proof
     literal_prop parent_sorts_of result_sorts id left_id right_id left_index right_index result checked names =
   let left_clause = lookup_simple_clause checked left_id in
@@ -4314,6 +4337,9 @@ let simple_clause_vlam_bound_names clause =
   |> List.fold_left (fun acc literal -> scan acc (literal_atom literal)) []
   |> List.sort_uniq compare
 
+let simple_tm_vlam_bound_names tm =
+  simple_clause_vlam_bound_names [Pos tm]
+
 let simple_clause_contains_vlam clause =
   let rec contains = function
     | TmH "vLAM" -> true
@@ -4359,7 +4385,7 @@ let simple_clause_prop_and_sorts_for_step ?(available_sorts=[]) cert id clause =
   match metadata_step_proposition cert id with
   | Some proposition -> (proposition, metadata_step_variable_sort_pairs cert id)
   | None ->
-      let prop = simple_clause_prop clause in
+      let prop = simple_with_stable_vlam_names (fun () -> simple_clause_prop clause) in
       let names = simple_clause_names clause in
       let variable_sorts = simple_variable_sorts_for_names names available_sorts in
       (simple_quantify_prop variable_sorts prop, variable_sorts)
@@ -6910,6 +6936,8 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       List.mem_assoc name symbol_type_env
       || List.mem name collected_global_names
       || List.mem name declared_symbol_names
+      || name = "vLAM"
+      || name = "vPI"
       || is_db_ident name
     in
     subst
@@ -6926,7 +6954,13 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             let inferred =
               simple_infer_tm_variable_sorts ?expected:source_sort symbol_type_env target
             in
-            direct @ List.filter (fun (name, _) -> not (known_context_name name)) inferred)
+            let vlam_bound_names = simple_tm_vlam_bound_names target in
+            direct @
+            List.filter
+              (fun (name, _) ->
+                 not (known_context_name name)
+                 && not (List.mem name vlam_bound_names))
+              inferred)
     |> simple_unique_variable_sorts
   in
   let clause_prop_and_sorts_for_ids ?(extra_sorts=[]) id parent_ids result =
@@ -6953,10 +6987,15 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
         (simple_quantify_prop definition_sorts prop, metadata_sorts)
     | Some _ | None ->
         try
-          let prop = simple_clause_prop_with_type_env local_type_env result in
+          let prop =
+            simple_with_stable_vlam_names
+              (fun () -> simple_clause_prop_with_type_env local_type_env result)
+          in
           (simple_fix_known_higher_order_binders (simple_quantify_prop variable_sorts prop), variable_sorts)
         with Error _ ->
-          let prop = simple_clause_prop result in
+          let prop =
+            simple_with_stable_vlam_names (fun () -> simple_clause_prop result)
+          in
           (simple_fix_known_higher_order_binders (simple_quantify_prop variable_sorts prop), variable_sorts)
   in
   let formula_literal_prop_and_sorts id literal =
@@ -7142,7 +7181,30 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
               (parent_sorts @ target_sorts |> simple_unique_variable_sorts)
               symbol_type_env
           in
+          let redundant_parent_application () =
+            let parent_formula = lookup_formula checked_certificate parent_id in
+            let parent_vars_unused =
+              parent_sorts
+              |> List.for_all
+                   (fun (name, _) ->
+                      let ident = megalodon_ident name in
+                      not (tm_contains_symbol ident formula)
+                      && not (List.exists (fun (target_name, _) -> target_name = ident) target_sorts))
+            in
+            if parent_vars_unused
+               && (parent_formula = formula
+                   || same_mod_scoped_vampire_var_renaming parent_formula formula) then
+              let parent_name = lookup_simple_name !emitted_names parent_id in
+              Some (simple_apply_forall_witnesses parent_name parent_sorts)
+            else None
+          in
           begin match
+            match
+              try redundant_parent_application ()
+              with Error _ -> None
+            with
+            | Some proof -> Some proof
+            | None ->
             if simple_tm_has_db_name formula then None
             else try
               let parent_formula = lookup_formula checked_certificate parent_id in
@@ -7465,18 +7527,21 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
               (parent_sorts @ subst_sorts @ sorts |> simple_unique_variable_sorts)
               symbol_type_env
           in
+          let stable f = simple_with_stable_vlam_names f in
           let parent_clause = lookup_simple_clause !checked parent_id in
           let clause_body_prop clause =
-            try simple_clause_prop_with_type_env type_env clause
-            with Error _ -> simple_clause_prop clause
+            stable (fun () ->
+              try simple_clause_prop_with_type_env type_env clause
+              with Error _ -> simple_clause_prop clause)
           in
           let structural_clause_prop sorts clause =
             simple_quantify_prop sorts (clause_body_prop clause)
           in
           let formula_clause_prop sorts clause =
             let body =
-              try simple_clause_formula_prop_with_type_env type_env clause
-              with Error _ -> simple_clause_prop clause
+              stable (fun () ->
+                try simple_clause_formula_prop_with_type_env type_env clause
+                with Error _ -> simple_clause_prop clause)
             in
             simple_quantify_prop sorts body
           in
@@ -7872,17 +7937,20 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
               (equality_sorts @ target_sorts @ sorts |> simple_unique_variable_sorts)
               symbol_type_env
           in
+          let stable f = simple_with_stable_vlam_names f in
           let clause_body_prop clause =
-            try simple_clause_prop_with_type_env type_env clause
-            with Error _ -> simple_clause_prop clause
+            stable (fun () ->
+              try simple_clause_prop_with_type_env type_env clause
+              with Error _ -> simple_clause_prop clause)
           in
           let structural_clause_prop sorts clause =
             simple_quantify_prop sorts (clause_body_prop clause)
           in
           let formula_clause_prop sorts clause =
             let body =
-              try simple_clause_formula_prop_with_type_env type_env clause
-              with Error _ -> simple_clause_prop clause
+              stable (fun () ->
+                try simple_clause_formula_prop_with_type_env type_env clause
+                with Error _ -> simple_clause_prop clause)
             in
             simple_quantify_prop sorts body
           in

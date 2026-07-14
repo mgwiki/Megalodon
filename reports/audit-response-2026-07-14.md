@@ -1082,3 +1082,77 @@ with CLOSED_PASS and zero non-source premises.
 ```
 
 Only after that should the project resume broadening rule coverage.
+
+## Follow-up: Lambda Substitution Replay
+
+The next closed increment addresses a small but real native-replay failure in
+the first-order/lambda boundary, without adding any theorem-specific names.
+
+The failing target was `hammer.10644.15.th0.p`. Its remaining non-source
+premises were:
+
+```text
+bridge_fool__u204
+bridge_substitute__u473_subst0
+bridge_paramodulate__u473
+```
+
+The native certificate already contained detailed replay steps for the latter
+two: an explicit substitution of a quantified `set` variable by
+`Repl omega (vLAM ...)`, followed by paramodulation through the equality
+introduced from the original `int` definition. The issue was in the Megalodon
+emitter:
+
+- rendered `vLAM` binders used a global fresh counter, so identical certificate
+  lambdas could be printed as different `vdbN` names in different generated
+  propositions;
+- substitution-sort inference treated the certificate constructor `vLAM` as a
+  free variable in the substitution term;
+- FOOL conversion could not replay the case where native `LAMV` had already
+  parsed to the same `vLAM` term, but the emitted parent proposition still had a
+  redundant unused metadata `forall`.
+
+The implemented correction is general:
+
+- generated clause propositions now render `vLAM` binders with stable local
+  names during proposition construction and replay-safety checks;
+- substitution-sort inference filters lambda-bound names and treats `vLAM`/`vPI`
+  as known certificate constructors;
+- FOOL formula replay has a guarded path for parent formulas that are already
+  equal to the target after native `LAMV` parsing, while the emitted parent type
+  has only unused metadata binders. These binders are instantiated with a
+  canonical witness (`Eps_i (fun Xeps:set => vampire_true)` for `set`, and
+  `vampire_true` for `prop`).
+
+Focused validation:
+
+```text
+/project/tmp/focused_10644_closed_141415
+EMIT_STATUS=0
+CHECK_STATUS=0
+```
+
+Cached 20-way replay over the existing source-linked frontier:
+
+```text
+TMPDIR=/project/tmp \
+PROBLEM_DIR=/project/tmp/source_linked_strict_100_corpus_fresh_041947 \
+WORK_DIR=/project/tmp/source_linked_slice_1_400_closed_vlam_subst_fool_141422 \
+JOBS=20 MIN_PASS=0 CLOSED_CERT_V1=1 EMIT_TIMEOUT=30 CHECK_TIMEOUT=45 \
+tests/vampire_certificate/run_native_emit_cached_parallel.sh \
+  /project/tmp/source_linked_slice_1_400_fresh_042040
+
+CLOSED_PASS 73
+EMIT_FAIL 140
+```
+
+The new committed closed case is:
+
+```text
+hammer.10644.15.th0.p
+```
+
+This is still not a broad architectural finish. It is a Prover9-style
+increment in the right direction: a summarized Vampire bridge was replaced by
+replay of the detailed native certificate steps already present in the proof
+object.
