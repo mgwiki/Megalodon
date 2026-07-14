@@ -65,6 +65,14 @@ type checked_item =
   | CheckedFormula of tm
   | CheckedSatClauseRecord
 
+type ennf_chain_item =
+  | EnnfChainBinder of tp
+  | EnnfChainPremise of tm
+
+type matched_ennf_chain_item =
+  | MatchedEnnfBinder of string * string * tp
+  | MatchedEnnfPremise of tm * tm * string
+
 type step =
   | Input of string * source * clause
   | FormulaInput of string * source * literal
@@ -6845,9 +6853,10 @@ let rec simple_formula_prop_text_with_used used type_env tm =
                   let binder = megalodon_ident name in
                   known_sort = sort
                   && is_vampire_var_name binder
+                  && not (List.mem binder used)
                   && tm_contains_symbol binder body)
         in
-        match List.rev candidates with
+        match candidates with
         | (name, _) :: _ -> megalodon_ident name
         | [] ->
             begin match max_vampire_var_name body with
@@ -6915,7 +6924,7 @@ let rec simple_formula_prop_text type_env tm =
                   && is_vampire_var_name binder
                   && tm_contains_symbol binder body)
         in
-        match List.rev candidates with
+        match candidates with
         | (name, _) :: _ -> megalodon_ident name
         | [] ->
             begin match max_vampire_var_name body with
@@ -7034,7 +7043,7 @@ let simple_formula_orientation_proof ?(prefer_last_binder=false) type_env source
           ^ ")"
       | Imp (source_left, source_right), Imp (target_left, target_right) ->
           let arg = fresh "Horient_arg_" in
-          let target_left_text = simple_formula_prop_text env target_left in
+          let target_left_text = simple_formula_prop_text_with_used used env target_left in
           let source_left_proof = convert env used target_left source_left arg in
           let source_right_proof = "(" ^ proof ^ " " ^ source_left_proof ^ ")" in
           let target_right_proof = convert env used source_right target_right source_right_proof in
@@ -7043,11 +7052,11 @@ let simple_formula_orientation_proof ?(prefer_last_binder=false) type_env source
         Ap (Ap (TmH "vampire_and", target_left), target_right) ->
           let left_name = fresh "Horient_left_" in
           let right_name = fresh "Horient_right_" in
-          let source_left_text = simple_formula_prop_text env source_left in
-          let source_right_text = simple_formula_prop_text env source_right in
-          let target_left_text = simple_formula_prop_text env target_left in
-          let target_right_text = simple_formula_prop_text env target_right in
-          let target_text = simple_formula_prop_text env target in
+          let source_left_text = simple_formula_prop_text_with_used used env source_left in
+          let source_right_text = simple_formula_prop_text_with_used used env source_right in
+          let target_left_text = simple_formula_prop_text_with_used used env target_left in
+          let target_right_text = simple_formula_prop_text_with_used used env target_right in
+          let target_text = simple_formula_prop_text_with_used used env target in
           let left_proof = convert env used source_left target_left left_name in
           let right_proof = convert env used source_right target_right right_name in
           let target_intro =
@@ -7066,16 +7075,16 @@ let simple_formula_orientation_proof ?(prefer_last_binder=false) type_env source
           let a_name = fresh "Horient_assoc_a_" in
           let b_name = fresh "Horient_assoc_b_" in
           let c_name = fresh "Horient_assoc_c_" in
-          let source_a_text = simple_formula_prop_text env source_a in
-          let source_b_text = simple_formula_prop_text env source_b in
-          let source_c_text = simple_formula_prop_text env source_c in
-          let target_a_text = simple_formula_prop_text env target_a in
-          let target_b_text = simple_formula_prop_text env target_b in
-          let target_c_text = simple_formula_prop_text env target_c in
+          let source_a_text = simple_formula_prop_text_with_used used env source_a in
+          let source_b_text = simple_formula_prop_text_with_used used env source_b in
+          let source_c_text = simple_formula_prop_text_with_used used env source_c in
+          let target_a_text = simple_formula_prop_text_with_used used env target_a in
+          let target_b_text = simple_formula_prop_text_with_used used env target_b in
+          let target_c_text = simple_formula_prop_text_with_used used env target_c in
           let target_left_text =
-            simple_formula_prop_text env (Ap (Ap (TmH "vampire_or", target_a), target_b))
+            simple_formula_prop_text_with_used used env (Ap (Ap (TmH "vampire_or", target_a), target_b))
           in
-          let target_text = simple_formula_prop_text env target in
+          let target_text = simple_formula_prop_text_with_used used env target in
           let a_proof = convert env used source_a target_a a_name in
           let b_proof = convert env used source_b target_b b_name in
           let c_proof = convert env used source_c target_c c_name in
@@ -7103,7 +7112,7 @@ let simple_formula_orientation_proof ?(prefer_last_binder=false) type_env source
 	            "(%s %s (fun %s:%s => %s) (fun Horient_assoc_tail:(%s) => Horient_assoc_tail %s (fun %s:%s => %s) (fun %s:%s => %s)))"
 	            proof (simple_prop_arg target_text)
 	            a_name source_a_text (target_from_left target_left_from_a)
-	            (simple_formula_prop_text env (Ap (Ap (TmH "vampire_or", source_b), source_c)))
+	            (simple_formula_prop_text_with_used used env (Ap (Ap (TmH "vampire_or", source_b), source_c)))
 	            (simple_prop_arg target_text)
 	            b_name source_b_text (target_from_left target_left_from_b)
 	            c_name source_c_text target_from_c
@@ -7111,11 +7120,11 @@ let simple_formula_orientation_proof ?(prefer_last_binder=false) type_env source
 	        Ap (Ap (TmH "vampire_or", target_left), target_right) ->
 	          let left_name = fresh "Horient_left_" in
           let right_name = fresh "Horient_right_" in
-          let source_left_text = simple_formula_prop_text env source_left in
-          let source_right_text = simple_formula_prop_text env source_right in
-          let target_left_text = simple_formula_prop_text env target_left in
-          let target_right_text = simple_formula_prop_text env target_right in
-          let target_text = simple_formula_prop_text env target in
+          let source_left_text = simple_formula_prop_text_with_used used env source_left in
+          let source_right_text = simple_formula_prop_text_with_used used env source_right in
+          let target_left_text = simple_formula_prop_text_with_used used env target_left in
+          let target_right_text = simple_formula_prop_text_with_used used env target_right in
+          let target_text = simple_formula_prop_text_with_used used env target in
           let left_proof = convert env used source_left target_left left_name in
           let right_proof = convert env used source_right target_right right_name in
           let left_intro =
@@ -7146,9 +7155,9 @@ let simple_formula_orientation_proof ?(prefer_last_binder=false) type_env source
             else subst_tm [(source_raw, TmH binder)] source_body
           in
           let body_env = (binder, sort) :: env in
-          let source_body_text = simple_formula_prop_text body_env source_body in
-          let target_body_text = simple_formula_prop_text body_env target_body in
-          let target_text = simple_formula_prop_text env target in
+          let source_body_text = simple_formula_prop_text_with_used (binder :: used) body_env source_body in
+          let target_body_text = simple_formula_prop_text_with_used (binder :: used) body_env target_body in
+          let target_text = simple_formula_prop_text_with_used used env target in
           let witness_name = fresh "Horient_exists_" in
           let body_proof =
             convert body_env (binder :: used) source_body target_body witness_name
@@ -7164,7 +7173,20 @@ let simple_formula_orientation_proof ?(prefer_last_binder=false) type_env source
               when source_left = target_right && source_right = target_left ->
               "(" ^ simple_literal_equality_symmetry_proof env (Pos source) proof ^ ")"
           | _ ->
-              emit_error "formula orientation transport supports only equality symmetry and simple logical structure"
+              begin match source, target with
+              | Ap (Ap (TmH "vampire_eq_prop", source_left), source_right),
+                Ap (Ap (TmH "vampire_eq_prop", target_left), target_right)
+                  when source_left = target_right && source_right = target_left ->
+                  let left_text = simple_tm_expr_with_expected env (Some "prop") source_left in
+                  let right_text = simple_tm_expr_with_expected env (Some "prop") source_right in
+                  "(vampire_eq_prop_sym (" ^ left_text ^ ") (" ^ right_text ^ ") " ^ proof ^ ")"
+              | _ ->
+                  emit_error
+                    ("formula orientation transport supports only equality symmetry and simple logical structure: "
+                     ^ simple_formula_prop_text_with_used used env source
+                     ^ " ==> "
+                     ^ simple_formula_prop_text_with_used used env target)
+              end
           end
   in
   convert type_env [] source target proof
@@ -7193,6 +7215,12 @@ let simple_skolem_formula_proof ?opened_witness
     let name = prefix ^ string_of_int !proof_index in
     incr proof_index;
     name
+  in
+  let is_exists_head = function
+    | TmH ("vampire_exists_prop" | "vampire_exists_set"
+          | "vampire_exists_set_prop" | "vampire_exists_set_set"
+          | "vampire_exists_set_set_prop") -> true
+    | _ -> false
   in
   let fallback_binder sort =
     let rec find_from i =
@@ -7244,9 +7272,7 @@ let simple_skolem_formula_proof ?opened_witness
         "vampire_and (" ^ formula_text env left ^ ") (" ^ formula_text env right ^ ")"
     | Ap (Ap (TmH "vampire_or", left), right) ->
         "vampire_or (" ^ formula_text env left ^ ") (" ^ formula_text env right ^ ")"
-    | Ap (exists_head, Lam (tp, body))
-        when exists_head = TmH "vampire_exists_prop"
-             || exists_head = TmH "vampire_exists_set" ->
+    | Ap (exists_head, Lam (tp, body)) when is_exists_head exists_head ->
         let sort = simple_tp_expr tp in
         let exists_name =
           match sort with
@@ -7289,7 +7315,7 @@ let simple_skolem_formula_proof ?opened_witness
     | _ ->
         simple_formula_prop_text_with_used [] env tm
   in
-  let rec transport env source target proof =
+  let rec transport env available_subst source target proof =
     if source = target then proof
     else
       match source, target with
@@ -7300,7 +7326,27 @@ let simple_skolem_formula_proof ?opened_witness
           Printf.sprintf
             "(fun %s:%s => %s)"
             binder (simple_binder_sort_expr sort)
-            (transport env source_body target_body ("(" ^ proof ^ " " ^ binder ^ ")"))
+            (transport env available_subst source_body target_body ("(" ^ proof ^ " " ^ binder ^ ")"))
+      | Ap (Ap (TmH "vampire_and", source_left), source_right),
+        Ap (Ap (TmH "vampire_and", target_left), target_right) ->
+          let left_name = fresh "Hskolem_and_left_" in
+          let right_name = fresh "Hskolem_and_right_" in
+          let source_left_text = formula_text env source_left in
+          let source_right_text = formula_text env source_right in
+          let target_left_text = formula_text env target_left in
+          let target_right_text = formula_text env target_right in
+          let target_text = formula_text env target in
+          let left_proof = transport env available_subst source_left target_left left_name in
+          let right_proof = transport env available_subst source_right target_right right_name in
+          let target_intro =
+            Printf.sprintf
+              "(fun vskolem_and_goal:prop => fun Hskolem_and:(%s) -> (%s) -> vskolem_and_goal => Hskolem_and %s %s)"
+              target_left_text target_right_text left_proof right_proof
+          in
+          Printf.sprintf
+            "(%s %s (fun %s:%s => fun %s:%s => %s))"
+            proof (simple_prop_arg target_text)
+            left_name source_left_text right_name source_right_text target_intro
       | Ap (Ap (TmH "vampire_or", source_a),
             Ap (Ap (TmH "vampire_or", source_b), source_c)),
         Ap (Ap (TmH "vampire_or",
@@ -7319,9 +7365,9 @@ let simple_skolem_formula_proof ?opened_witness
             formula_text env (Ap (Ap (TmH "vampire_or", target_a), target_b))
           in
           let target_text = formula_text env target in
-          let a_proof = transport env source_a target_a a_name in
-          let b_proof = transport env source_b target_b b_name in
-          let c_proof = transport env source_c target_c c_name in
+          let a_proof = transport env available_subst source_a target_a a_name in
+          let b_proof = transport env available_subst source_b target_b b_name in
+          let c_proof = transport env available_subst source_c target_c c_name in
           let target_left_from_a =
             Printf.sprintf
               "(fun vassoc_left_goal:prop => fun Hassoc_left:(%s) -> vassoc_left_goal => fun Hassoc_right:(%s) -> vassoc_left_goal => Hassoc_left %s)"
@@ -7359,8 +7405,8 @@ let simple_skolem_formula_proof ?opened_witness
           let target_left_text = formula_text env target_left in
           let target_right_text = formula_text env target_right in
           let target_text = formula_text env target in
-          let left_proof = transport env source_left target_left left_name in
-          let right_proof = transport env source_right target_right right_name in
+          let left_proof = transport env available_subst source_left target_left left_name in
+          let right_proof = transport env available_subst source_right target_right right_name in
           let left_intro =
             Printf.sprintf
               "(fun vskolem_goal:prop => fun Hleft:(%s) -> vskolem_goal => fun Hright:(%s) -> vskolem_goal => Hleft %s)"
@@ -7377,22 +7423,30 @@ let simple_skolem_formula_proof ?opened_witness
             left_name source_left_text left_intro
             right_name source_right_text right_intro
       | Ap (exists_head, Lam (source_tp, body)), _
-          when exists_head = TmH "vampire_exists_prop"
-               || exists_head = TmH "vampire_exists_set" ->
+          when is_exists_head exists_head || available_subst <> [] ->
           let source_sort = simple_tp_expr source_tp in
           let raw_source_var =
-            match subst with
+            match available_subst with
             | [(source_var, _)] -> source_var
             | _ ->
                 begin match
-                  List.find_opt (fun (source_var, _) -> tm_contains_symbol source_var body) subst
+                  List.find_opt
+                    (fun (source_var, _) -> tm_contains_symbol source_var body)
+                    available_subst
                 with
                 | Some (source_var, _) -> source_var
-                | None -> fst (List.hd subst)
+                | None ->
+                    begin match available_subst with
+                    | (source_var, _) :: _ -> source_var
+                    | [] -> emit_error (id ^ ": skolem proof has no remaining substitution for existential")
+                    end
                 end
           in
           let source_var = megalodon_ident raw_source_var in
           let skolem_tm = skolem_subst_for_var raw_source_var in
+          let remaining_subst =
+            List.filter (fun (source_var, _) -> source_var <> raw_source_var) available_subst
+          in
           let choice_body = subst_tm [(raw_source_var, skolem_tm)] body in
           begin match choice_for_sort source_sort, opened_witness with
           | Some choice_theorem, _ ->
@@ -7405,12 +7459,55 @@ let simple_skolem_formula_proof ?opened_witness
                   "(%s (%s) %s)"
                   choice_theorem predicate_text proof
               in
-              transport env choice_body target choice_proof
+              transport env remaining_subst choice_body target choice_proof
           | None, Some witness_name ->
-              transport env choice_body target witness_name
+              transport env remaining_subst choice_body target witness_name
           | None, _ ->
               emit_error
                 (id ^ ": skolem proof has no choice theorem for witness sort " ^ source_sort)
+          end
+      | Ap (_, Ap (TmH "vLAM", body)), _ when available_subst <> [] ->
+          let raw_source_var =
+            match available_subst with
+            | [(source_var, _)] -> source_var
+            | (source_var, _) :: _ -> source_var
+            | [] -> emit_error (id ^ ": skolem proof has no remaining substitution for vLAM existential")
+          in
+          let source_var = megalodon_ident raw_source_var in
+          let skolem_tm = skolem_subst_for_var raw_source_var in
+          let source_sort =
+            match
+              List.assoc_opt source_var binder_sorts,
+              simple_tm_sort type_env skolem_tm
+            with
+            | Some sort, _ | None, Some sort -> sort
+            | None, None -> "set"
+          in
+          let remaining_subst =
+            List.filter (fun (source_var, _) -> source_var <> raw_source_var) available_subst
+          in
+          let named_body = subst_tm [("db0", TmH source_var)] body in
+          let choice_body =
+            subst_tm [("db0", skolem_tm); (raw_source_var, skolem_tm)] body
+          in
+          begin match choice_for_sort source_sort, opened_witness with
+          | Some choice_theorem, _ ->
+              let predicate_env = (source_var, source_sort) :: env in
+              let predicate_text =
+                "fun " ^ source_var ^ ":" ^ simple_binder_sort_expr source_sort
+                ^ " => " ^ formula_text predicate_env named_body
+              in
+              let choice_proof =
+                Printf.sprintf
+                  "(%s (%s) %s)"
+                  choice_theorem predicate_text proof
+              in
+              transport env remaining_subst choice_body target choice_proof
+          | None, Some witness_name ->
+              transport env remaining_subst choice_body target witness_name
+          | None, _ ->
+              emit_error
+                (id ^ ": skolem proof has no choice theorem for vLAM witness sort " ^ source_sort)
           end
       | _ ->
           simple_formula_orientation_proof ~prefer_last_binder:true env source target proof
@@ -7418,7 +7515,7 @@ let simple_skolem_formula_proof ?opened_witness
   let parent_expr =
     simple_apply_forall_vars (lookup_simple_name names parent_id) parent_sorts
   in
-  transport type_env source target parent_expr
+  transport type_env subst source target parent_expr
 
 let simple_predicate_definition_proof type_env id formula =
   let _, atom, body = predicate_definition_parts id formula in
@@ -7575,6 +7672,29 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
         | (name, _) :: _ -> megalodon_ident name
         | [] -> fallback_binder sort
   in
+  let is_exists_head = function
+    | TmH ("vampire_exists_prop" | "vampire_exists_set"
+          | "vampire_exists_set_prop" | "vampire_exists_set_set"
+          | "vampire_exists_set_set_prop") -> true
+    | _ -> false
+  in
+  let exists_name_for_sort = function
+    | "set" -> "vampire_exists_set"
+    | "prop" -> "vampire_exists_prop"
+    | "set->prop" -> "vampire_exists_set_prop"
+    | "set->set" -> "vampire_exists_set_set"
+    | "set->set->prop" -> "vampire_exists_set_set_prop"
+    | _ -> "vampire_exists_set"
+  in
+  let exists_intro_name_for_sort sort =
+    match sort with
+    | "set" -> "vampire_exists_set_intro"
+    | "prop" -> "vampire_exists_prop_intro"
+    | "set->prop" -> "vampire_exists_set_prop_intro"
+    | "set->set" -> "vampire_exists_set_set_intro"
+    | "set->set->prop" -> "vampire_exists_set_set_prop_intro"
+    | _ -> emit_error (id ^ ": ENNF proof has unsupported existential witness sort " ^ sort)
+  in
   let rec formula_text local_env tm =
     let used = List.map fst local_env in
     let render_env = local_env @ type_env in
@@ -7622,19 +7742,9 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
         "vampire_and (" ^ formula_text local_env left ^ ") (" ^ formula_text local_env right ^ ")"
     | Ap (Ap (TmH "vampire_or", left), right) ->
         "vampire_or (" ^ formula_text local_env left ^ ") (" ^ formula_text local_env right ^ ")"
-    | Ap (exists_head, Lam (tp, body))
-        when exists_head = TmH "vampire_exists_prop"
-             || exists_head = TmH "vampire_exists_set" ->
+    | Ap (exists_head, Lam (tp, body)) when is_exists_head exists_head ->
         let sort = simple_tp_expr tp in
-        let exists_name =
-          match sort with
-          | "set" -> "vampire_exists_set"
-          | "prop" -> "vampire_exists_prop"
-          | "set->prop" -> "vampire_exists_set_prop"
-          | "set->set" -> "vampire_exists_set_set"
-          | "set->set->prop" -> "vampire_exists_set_set_prop"
-          | _ -> "vampire_exists_set"
-        in
+        let exists_name = exists_name_for_sort sort in
         let binder = choose_formula_binder sort body in
         exists_name ^ " (fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => "
         ^ simple_with_db_aliases [binder]
@@ -7685,188 +7795,167 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
         end
     | Imp (source_quantified, false_tm), target_exists
         when is_vampire_false false_tm ->
-        let rec all_spine acc = function
-          | All (tp, body) -> all_spine (tp :: acc) body
-          | body -> (List.rev acc, body)
-        in
-        let rec exists_spine acc = function
-          | Ap (exists_head, Lam (tp, body))
-              when exists_head = TmH "vampire_exists_prop"
-                   || exists_head = TmH "vampire_exists_set" ->
-              exists_spine (tp :: acc) body
-          | body -> (List.rev acc, body)
-        in
-        let rec implication_spine acc = function
-          | Imp (left, right) -> implication_spine (left :: acc) right
+        let rec source_chain acc = function
+          | All (tp, body) -> source_chain (EnnfChainBinder tp :: acc) body
+          | Imp (left, right) -> source_chain (EnnfChainPremise left :: acc) right
           | conclusion -> (List.rev acc, conclusion)
         in
-        let rec target_and_spine acc = function
-          | Ap (Ap (TmH "vampire_and", left), right) ->
-              target_and_spine (left :: acc) right
-          | Imp (conclusion, target_false) when is_vampire_false target_false ->
-              Some (List.rev acc, conclusion)
-          | _ -> None
+        let rec match_target_chain env acc items target =
+          match items, target with
+          | EnnfChainBinder tp :: rest, Ap (exists_head, Lam (target_tp, body))
+              when tp = target_tp && is_exists_head exists_head ->
+              let sort = simple_tp_expr tp in
+              let binder = binder_for_body sort body in
+              match_target_chain
+                ((binder, sort) :: env)
+                (MatchedEnnfBinder (binder, sort, tp) :: acc)
+                rest body
+          | EnnfChainPremise premise :: rest, Ap (Ap (TmH "vampire_and", left), right)
+              when left = ennf_pos premise ->
+              let premise_name = fresh_proof_var "Hennf_premise_" in
+              match_target_chain
+                env
+                (MatchedEnnfPremise (premise, left, premise_name) :: acc)
+                rest right
+          | [], target_leaf -> (List.rev acc, target_leaf)
+          | EnnfChainBinder _ :: _, _ ->
+              emit_error (id ^ ": ENNF proof expected an existential for a negated universal binder")
+          | EnnfChainPremise premise :: _, Ap (Ap (TmH "vampire_and", left), _) ->
+              emit_error
+                (id ^ ": ENNF proof target premise does not match positive-normalized source premise: "
+                 ^ formula_text env premise ^ " vs " ^ formula_text env left)
+          | EnnfChainPremise _ :: _, _ ->
+              emit_error (id ^ ": ENNF proof expected a conjunction for a negated implication premise")
         in
-        let source_binder_tps, source_body = all_spine [] source_quantified in
-        let target_binder_tps, target_body = exists_spine [] target_exists in
-        if source_binder_tps = [] || source_binder_tps <> target_binder_tps then
-          emit_error (id ^ ": ENNF proof expected negated universal and matching existential binders");
-        begin match target_and_spine [] target_body with
-        | Some (target_premises, target_conclusion) ->
-            let source_premises, source_conclusion = implication_spine [] source_body in
-            if source_premises = [] then
-              emit_error (id ^ ": ENNF proof expected at least one universal implication premise");
-            if List.length source_premises <> List.length target_premises
-               || source_conclusion <> target_conclusion
-               || not (List.for_all2
-                         (fun source_premise target_premise ->
-                            ennf_pos source_premise = target_premise)
-                         source_premises
-                         target_premises) then
-              emit_error (id ^ ": ENNF proof expected target body to mirror negated universal implication spine");
-            let rec target_exists_binders acc tps target =
-              match tps, target with
-              | [], _ -> List.rev acc
-              | tp :: rest,
-                Ap (exists_head, Lam (target_tp, body))
-                  when tp = target_tp
-                       && (exists_head = TmH "vampire_exists_prop"
-                           || exists_head = TmH "vampire_exists_set") ->
-                  let sort = simple_tp_expr tp in
-                  let binder = binder_for_body sort body in
-                  target_exists_binders ((binder, sort) :: acc) rest body
-              | _ ->
-                  emit_error (id ^ ": ENNF proof could not recover target existential binders")
-            in
-            let binders = target_exists_binders [] source_binder_tps target_exists in
-            let env = List.rev_append binders env in
-            let premise_names =
-              List.map (fun _ -> fresh_proof_var "Hennf_premise_") source_premises
-            in
-            let target_premise_proofs =
-              List.map2
-                (fun (source_premise, target_premise) premise_name ->
-                   convert env source_premise target_premise premise_name)
-                (List.combine source_premises target_premises)
-                premise_names
-            in
-            let conclusion_text = formula_text env source_conclusion in
-            let not_conclusion_name = fresh_proof_var "Hennf_not_conclusion_" in
-            let rec target_and_intro proofs target =
-              match proofs, target with
-              | [], Imp (conclusion, target_false)
-                  when conclusion = source_conclusion && is_vampire_false target_false ->
-                  not_conclusion_name
-              | proof :: rest, Ap (Ap (TmH "vampire_and", left), right) ->
-                  let goal_name = fresh_proof_var "Hennf_and_goal_" in
-                  let and_name = fresh_proof_var "Hennf_and_" in
-                  let left_text = formula_text env left in
-                  let right_text = formula_text env right in
-                  let right_proof = target_and_intro rest right in
-                  Printf.sprintf
-                    "(fun %s:prop => fun %s:(%s) -> (%s) -> %s => %s %s %s)"
-                    goal_name and_name left_text right_text goal_name
-                    and_name proof right_proof
-              | _ ->
-                  emit_error (id ^ ": ENNF proof could not build target conjunction witness")
-            in
-            let rec exists_intro env binders target =
-              match binders, target with
-              | [], _ -> target_and_intro target_premise_proofs target
-              | (binder, sort) :: rest,
-                Ap (exists_head, Lam (tp, body))
-                  when simple_tp_expr tp = sort
-                       && (exists_head = TmH "vampire_exists_prop"
-                           || exists_head = TmH "vampire_exists_set") ->
-                  let body_env = (binder, sort) :: env in
-                  let body_text = formula_text body_env body in
-                  let body_proof = exists_intro body_env rest body in
-                  let intro_name =
-                    match sort with
-                    | "set" -> "vampire_exists_set_intro"
-                    | "prop" -> "vampire_exists_prop_intro"
-                    | "set->prop" -> "vampire_exists_set_prop_intro"
-                    | "set->set" -> "vampire_exists_set_set_intro"
-                    | "set->set->prop" -> "vampire_exists_set_set_prop_intro"
-                    | _ -> emit_error (id ^ ": ENNF proof has unsupported existential witness sort " ^ sort)
-                  in
-                  Printf.sprintf
-                    "(%s (fun %s:%s => %s) %s %s)"
-                    intro_name binder (simple_binder_sort_expr sort) body_text binder body_proof
-              | _ ->
-                  emit_error (id ^ ": ENNF proof could not build nested existential witness")
-            in
-            let witness_text = exists_intro [] binders target_exists in
-            let contradiction =
-              let body =
-                Printf.sprintf
-                  "dneg (%s) (fun %s:(%s) -> False => Hennf_not_goal ((%s Hennf_exists_goal) Hennf_exists_case))"
-                  conclusion_text not_conclusion_name conclusion_text witness_text
-              in
-              let body =
-                List.fold_right2
-                  (fun premise name acc ->
-                     Printf.sprintf
-                       "fun %s:%s => %s"
-                       name (formula_text env premise) acc)
-                  source_premises premise_names body
-              in
-              let body =
-                List.fold_right
-                  (fun (binder, sort) acc ->
-                     Printf.sprintf "fun %s:%s => %s" binder (simple_binder_sort_expr sort) acc)
-                  binders body
-              in
-              Printf.sprintf "%s (%s)" proof body
-            in
-            let case_type =
-              match binders, target_exists with
-              | (binder, sort) :: rest_binders, Ap (_, Lam (_, body)) ->
-                  let rec formula_text_with_binders local_env preferred tm =
-                    match preferred, tm with
-                    | (preferred_binder, preferred_sort) :: rest,
-                      Ap (exists_head, Lam (tp, body))
-                        when simple_tp_expr tp = preferred_sort
-                             && (exists_head = TmH "vampire_exists_prop"
-                                 || exists_head = TmH "vampire_exists_set") ->
-                        let exists_name =
-                          match preferred_sort with
-                          | "set" -> "vampire_exists_set"
-                          | "prop" -> "vampire_exists_prop"
-                          | "set->prop" -> "vampire_exists_set_prop"
-                          | "set->set" -> "vampire_exists_set_set"
-                          | "set->set->prop" -> "vampire_exists_set_set_prop"
-                          | _ -> "vampire_exists_set"
-                        in
-                        exists_name ^ " (fun " ^ preferred_binder ^ ":" ^ simple_binder_sort_expr preferred_sort ^ " => "
-                        ^ simple_with_db_aliases [preferred_binder]
-                            (fun () ->
-                               formula_text_with_binders
-                                 ((preferred_binder, preferred_sort) :: local_env)
-                                 rest
-                                 body)
-                        ^ ")"
-                    | _ -> formula_text local_env tm
-                  in
-                  let body_text =
-                    simple_with_db_aliases [binder]
-                      (fun () ->
-                         formula_text_with_binders
-                           ((binder, sort) :: env)
-                           rest_binders
-                           body)
-                  in
+        let source_items, source_conclusion = source_chain [] source_quantified in
+        if source_items = [] then
+          emit_error (id ^ ": ENNF proof expected a non-empty negated chain");
+        let matched_items, target_leaf = match_target_chain env [] source_items target_exists in
+        let neg_source_conclusion = Imp (source_conclusion, vampire_false) in
+        if target_leaf <> ennf_neg source_conclusion then
+          emit_error
+            (id ^ ": ENNF proof target leaf does not match negative-normalized source conclusion");
+        let not_conclusion_name = fresh_proof_var "Hennf_not_conclusion_" in
+        let rec target_witness env matched target =
+          match matched, target with
+          | MatchedEnnfBinder (binder, sort, tp) :: rest,
+            Ap (exists_head, Lam (target_tp, body))
+              when tp = target_tp && is_exists_head exists_head ->
+              let body_env = (binder, sort) :: env in
+              let body_text = formula_text body_env body in
+              let body_proof = target_witness body_env rest body in
+              Printf.sprintf
+                "(%s (fun %s:%s => %s) %s %s)"
+                (exists_intro_name_for_sort sort)
+                binder (simple_binder_sort_expr sort) body_text binder body_proof
+          | MatchedEnnfPremise (premise, target_premise, premise_name) :: rest,
+            Ap (Ap (TmH "vampire_and", left), right)
+              when left = target_premise ->
+              let goal_name = fresh_proof_var "Hennf_and_goal_" in
+              let and_name = fresh_proof_var "Hennf_and_" in
+              let left_text = formula_text env left in
+              let right_text = formula_text env right in
+              let left_proof = convert env premise target_premise premise_name in
+              let right_proof = target_witness env rest right in
+              Printf.sprintf
+                "(fun %s:prop => fun %s:(%s) -> (%s) -> %s => %s %s %s)"
+                goal_name and_name left_text right_text goal_name
+                and_name left_proof right_proof
+          | [], _ ->
+              convert env neg_source_conclusion target not_conclusion_name
+          | _ ->
+              emit_error (id ^ ": ENNF proof could not build target witness")
+        in
+        let witness_text = target_witness env matched_items target_exists in
+        let rec source_argument env matched body =
+          match matched with
+          | [] -> body
+          | MatchedEnnfBinder (binder, sort, _) :: rest ->
+              Printf.sprintf
+                "fun %s:%s => %s"
+                binder (simple_binder_sort_expr sort)
+                (source_argument ((binder, sort) :: env) rest body)
+          | MatchedEnnfPremise (premise, _, premise_name) :: rest ->
+              Printf.sprintf
+                "fun %s:%s => %s"
+                premise_name (formula_text env premise)
+                (source_argument env rest body)
+        in
+        let conclusion_env =
+          List.fold_left
+            (fun env -> function
+               | MatchedEnnfBinder (binder, sort, _) -> (binder, sort) :: env
+               | MatchedEnnfPremise _ -> env)
+            env matched_items
+        in
+        let conclusion_text = formula_text conclusion_env source_conclusion in
+        let rec formula_text_with_binders local_env preferred tm =
+          match preferred, tm with
+          | (preferred_binder, preferred_sort) :: rest,
+            Ap (exists_head, Lam (tp, body))
+              when simple_tp_expr tp = preferred_sort && is_exists_head exists_head ->
+              exists_name_for_sort preferred_sort
+              ^ " (fun " ^ preferred_binder ^ ":" ^ simple_binder_sort_expr preferred_sort ^ " => "
+              ^ simple_with_db_aliases [preferred_binder]
+                  (fun () ->
+                     formula_text_with_binders
+                       ((preferred_binder, preferred_sort) :: local_env)
+                       rest
+                       body)
+              ^ ")"
+          | _ -> formula_text local_env tm
+        in
+        let matched_binders =
+          matched_items
+          |> List.filter_map
+               (function
+                 | MatchedEnnfBinder (binder, sort, _) -> Some (binder, sort)
+                 | MatchedEnnfPremise _ -> None)
+        in
+        let contradiction_for target_contradiction =
+          let body =
+            Printf.sprintf
+              "dneg (%s) (fun %s:(%s) -> False => %s)"
+              conclusion_text not_conclusion_name conclusion_text target_contradiction
+          in
+          Printf.sprintf "%s (%s)" proof (source_argument env matched_items body)
+        in
+        begin match target_exists with
+        | Ap (exists_head, Lam (_, body)) when is_exists_head exists_head ->
+            begin match matched_binders with
+            | (binder, sort) :: rest_binders ->
+                let body_text =
+                  simple_with_db_aliases [binder]
+                    (fun () ->
+                       formula_text_with_binders
+                         ((binder, sort) :: env)
+                         rest_binders
+                         body)
+                in
+                let case_type =
                   Printf.sprintf
                     "(forall %s:%s, %s -> Hennf_exists_goal)"
                     binder (simple_binder_sort_expr sort) body_text
-              | _ ->
-                  emit_error (id ^ ": ENNF proof expected an existential target continuation")
+                in
+                let target_contradiction =
+                  Printf.sprintf
+                    "Hennf_not_goal ((%s Hennf_exists_goal) Hennf_exists_case)"
+                    witness_text
+                in
+                Printf.sprintf
+                  "(fun Hennf_exists_goal:prop => fun Hennf_exists_case:%s => dneg Hennf_exists_goal (fun Hennf_not_goal:Hennf_exists_goal -> False => %s))"
+                  case_type (contradiction_for target_contradiction)
+            | [] ->
+                emit_error (id ^ ": ENNF proof expected a matched existential binder")
+            end
+        | _ ->
+            let target_text = formula_text env target_exists in
+            let target_contradiction =
+              Printf.sprintf "Hennf_not_goal %s" witness_text
             in
             Printf.sprintf
-              "(fun Hennf_exists_goal:prop => fun Hennf_exists_case:%s => dneg Hennf_exists_goal (fun Hennf_not_goal:Hennf_exists_goal -> False => %s))"
-              case_type contradiction
-        | _ ->
-            emit_error (id ^ ": ENNF proof expected negated universal target body to end in not")
+              "dneg (%s) (fun Hennf_not_goal:(%s) -> False => %s)"
+              target_text target_text (contradiction_for target_contradiction)
         end
     | Imp (left, right), Ap (Ap (TmH "vampire_or", neg_left), target_right) ->
         if neg_left = ennf_neg left then
@@ -8251,6 +8340,19 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       | TmH raw_name -> Some (megalodon_ident raw_name, args)
       | _ -> None
     in
+    let subst_variable_env =
+      subst
+      |> List.map
+           (fun (raw_source_var, skolem_tm) ->
+              let source_var = megalodon_ident raw_source_var in
+              let sort =
+                match simple_tm_sort base_symbol_type_env skolem_tm with
+                | Some sort -> sort
+                | None -> "set"
+              in
+              (source_var, sort))
+      |> simple_unique_variable_sorts
+    in
     let binder_for_arg env index arg =
       match arg with
       | TmH raw_name ->
@@ -8298,9 +8400,13 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                   let source_var = megalodon_ident raw_source_var in
                   let arg_binders = List.mapi (binder_for_arg env) args in
                   let predicate_env =
-                    (source_var, source_sort) :: arg_binders @ generated_env @ base_symbol_type_env
+                    (source_var, source_sort)
+                    :: (arg_binders @ subst_variable_env @ generated_env @ base_symbol_type_env
+                        |> simple_unique_variable_sorts)
                   in
-                  let body_text = simple_formula_prop_text predicate_env body in
+                  let body_text =
+                    simple_formula_prop_text_with_used [source_var] predicate_env body
+                  in
                   let sort =
                     List.fold_right
                       (fun (_, sort) acc -> simple_arrow_sort sort acc)
