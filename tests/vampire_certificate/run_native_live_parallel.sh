@@ -27,6 +27,7 @@ WALL_SECONDS=${WALL_SECONDS:-15}
 MIN_PASS=${MIN_PASS:-100}
 CHECK_SOURCE_MAP=${CHECK_SOURCE_MAP:-0}
 STRICT_CERT_V1=${STRICT_CERT_V1:-0}
+VAMPIRE_PROOF_ARGS=${VAMPIRE_PROOF_ARGS:-"--proof_extra lean --skolemization syntactic --shuffle_input off"}
 VAMPIRE_EXTRA_ARGS=${VAMPIRE_EXTRA_ARGS:-}
 WORK_DIR=${WORK_DIR:-"$TMPDIR/megalodon_native_live_${LIMIT}"}
 
@@ -92,7 +93,11 @@ run_one() {
   fi
 
   local timed_out=0
+  local proof_args=()
   local extra_args=()
+  if [[ -n "$VAMPIRE_PROOF_ARGS" ]]; then
+    read -r -a proof_args <<< "$VAMPIRE_PROOF_ARGS"
+  fi
   if [[ -n "$VAMPIRE_EXTRA_ARGS" ]]; then
     read -r -a extra_args <<< "$VAMPIRE_EXTRA_ARGS"
   fi
@@ -103,6 +108,7 @@ run_one() {
       -t "$VAMPIRE_SECONDS" \
       --proof megalodon \
       --output_axiom_names on \
+      "${proof_args[@]}" \
       "${extra_args[@]}" \
       "$problem"; then
     timed_out=1
@@ -144,7 +150,7 @@ run_one() {
   fi
 }
 
-export ROOT TMPDIR MEGALODON VAMPIRE PROBLEM_DIR WORK_DIR VAMPIRE_SECONDS WALL_SECONDS CHECK_SOURCE_MAP STRICT_CERT_V1 VAMPIRE_EXTRA_ARGS
+export ROOT TMPDIR MEGALODON VAMPIRE PROBLEM_DIR WORK_DIR VAMPIRE_SECONDS WALL_SECONDS CHECK_SOURCE_MAP STRICT_CERT_V1 VAMPIRE_PROOF_ARGS VAMPIRE_EXTRA_ARGS
 export -f run_with_wall_timeout run_one
 
 xargs -a "$WORK_DIR/problems.txt" -n1 -P "$JOBS" bash -c 'run_one "$0"'

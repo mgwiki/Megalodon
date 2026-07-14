@@ -40,7 +40,12 @@ This script runs Vampire in parallel, extracts only the native S-expression
 certificate block emitted by Vampire, and checks it with Megalodon's OCaml
 `-vampirecertv1` importer. It rejects certificates that contain
 Vampire-derived source assumptions; a counted success must be traced through
-certificate steps rather than imported as a fresh input.
+certificate steps rather than imported as a fresh input. By default it invokes
+Vampire with the same extra proof-detail options used by Megalodon's live
+`-vampireabyproof megalodon` bridge:
+`--proof_extra lean --skolemization syntactic --shuffle_input off`. Override
+`VAMPIRE_PROOF_ARGS` only when intentionally testing another proof-export
+configuration.
 
 For freshly exported TH0 files containing `% megalodon_source_map` comments,
 set `CHECK_SOURCE_MAP=1` to additionally run `-vampirecertv1source` for every
@@ -74,7 +79,9 @@ tests/vampire_certificate/run_source_linked_corpus_parallel.sh
 
 Set `MEGALODON_FILE`, `LIMIT`, `JOBS`, `VAMPIRE_SECONDS`, `WALL_SECONDS`, and
 `WORK_DIR` to control the corpus and runtime. Temporary corpora and outputs
-default to `/project/tmp`.
+default to `/project/tmp`. This wrapper enables source-map validation and
+strict certificate checking by default; set `STRICT_CERT_V1=0` only for
+diagnostic non-counted runs.
 
 The older Python/JSON prototype smoke script is now named
 `run_legacy_python_smoke.sh`. It remains useful for diagnostics and regression

@@ -324,16 +324,21 @@ Megalodon reconstruction backend directly:
 
 The live mode writes the exact THF problem generated at each `aby`, runs
 Vampire with the selected `-vampireabyproof` mode, and fails the Megalodon
-check unless Vampire reports a proved SZS status and emits a proof payload.  In
-`megalodon` mode Megalodon passes Vampire the reconstruction options
-`--proof_extra lean --skolemization syntactic --shuffle_input off` and requires
-the `megalodon_reconstruction_*` payload markers.  This is a strict
-certificate gate for `aby`; it is not yet a native Megalodon kernel proof-term
-reconstructor, so `-allowincompleteqed` is still required.  The generated THF
-conjecture and selected local hypotheses are head-expanded at transparent
-definitions when that exposes `forall` or `->`, while preserving native THF
-equality, so definition-only goals such as subset reflexivity remain easy for
-Vampire.
+check unless Vampire proves the obligation and emits a proof payload.  In
+`megalodon` mode Megalodon passes Vampire
+`--output_axiom_names on --proof_extra lean --skolemization syntactic
+--shuffle_input off`, extracts the native
+`megalodon_certificate_native_sexpr_*` block, checks it with
+`Vampire_cert_v1.check_certificate_strict`, and validates all certificate input
+sources against the `% megalodon_source_map` comments in the generated THF
+problem.  The old `megalodon_reconstruction_*` outline is still useful as a
+human-readable diagnostic, but acceptance of `-vampireabyproof megalodon` now
+depends on the native certificate block.  This is a strict certificate gate for
+`aby`; it is not yet a native Megalodon kernel proof-term reconstructor, so
+`-allowincompleteqed` is still required.  The generated THF conjecture and
+selected local hypotheses are head-expanded at transparent definitions when
+that exposes `forall` or `->`, while preserving native THF equality, so
+definition-only goals such as subset reflexivity remain easy for Vampire.
 
 For the currently supported native reconstruction fragment, add
 `-vampireabynative`.  This tries to turn an `aby` goal into a native Megalodon
