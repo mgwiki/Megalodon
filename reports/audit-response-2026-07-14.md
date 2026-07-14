@@ -398,6 +398,56 @@ CLOSED_PASS 42
 /project/tmp/native_cert_v1_closed_corpus.4W9xr6
 ```
 
+## July 14 Increment: Prop-Valued Definition Inputs
+
+The native emitter now treats Vampire `definition_input` steps with
+`function_definition` metadata as checked Megalodon definitions even when the
+introduced symbol has a proposition-valued sort such as `set->prop` or `prop`.
+Previously only all-set function definitions were converted to definitions, so
+some cases still carried `derived:definition_input` assumptions. These are now
+emitted as definitions plus reflexivity-style equality proofs.
+
+This moved the cached source-linked closed frontier from 42 to 45 closed
+passes:
+
+```text
+TMPDIR=/project/tmp \
+PROBLEM_DIR=/project/tmp/source_linked_strict_100_corpus_fresh_041947 \
+WORK_DIR=/project/tmp/source_linked_slice_1_400_closed_definput_final_121351 \
+JOBS=20 MIN_PASS=0 CLOSED_CERT_V1=1 EMIT_TIMEOUT=30 CHECK_TIMEOUT=45 \
+tests/vampire_certificate/run_native_emit_cached_parallel.sh \
+  /project/tmp/source_linked_slice_1_400_fresh_042040
+
+CLOSED_PASS 45
+EMIT_FAIL 168
+/project/tmp/source_linked_slice_1_400_closed_definput_final_121351
+```
+
+The three new committed closed cases are:
+
+```text
+hammer.11577.51.th0.p
+hammer.11669.25.th0.p
+hammer.11671.25.th0.p
+```
+
+Validation for this increment:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+native certificate v1 smoke test passed
+/project/tmp/native_cert_v1.NMdhO6
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_source_map_export_smoke.sh
+Megalodon TH0 source-map export smoke passed
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh
+CLOSED_PASS 45
+/project/tmp/native_cert_v1_closed_corpus.tZAxBx
+```
+
 ## Remaining P0 Work
 
 Closed mode is necessary but not sufficient.

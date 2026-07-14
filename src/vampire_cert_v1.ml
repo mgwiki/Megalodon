@@ -5641,19 +5641,13 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     if not (List.mem line !lines) then lines := !lines @ [line]
   in
   let symbol_type_env = simple_symbol_type_env cert in
-  let rec simple_set_arrow_sort sort =
-    match simple_split_arrow_type sort with
-    | None -> simple_strip_outer_parens sort = "set"
-    | Some (domain, codomain) ->
-        simple_set_arrow_sort domain && simple_set_arrow_sort codomain
-  in
   let function_definition_for_step id result =
     match
       metadata_step_extra_field cert id "function_definition" "introduced_symbol",
       metadata_step_extra_field cert id "function_definition" "sort",
       result
     with
-    | Some introduced, Some sort, [Pos atom] when simple_set_arrow_sort sort ->
+    | Some introduced, Some sort, [Pos atom] ->
         let introduced = megalodon_ident introduced in
         let sort = simple_strip_outer_parens sort in
         let proof =
@@ -6152,7 +6146,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                 (simple_ennf_formula_proof
                    type_env id parent_sorts target_sorts
                    parent_formula formula parent_name)
-            with Error msg -> if closed then emit_error msg else None
+            with Error _ -> None
           with
           | Some proof ->
               add_emitted id name;
