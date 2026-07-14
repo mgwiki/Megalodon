@@ -2187,23 +2187,26 @@ let clause_matches_native_trace left right =
 let check_unit_resulting_resolution checked id main_parent_id traces result =
   if traces = [] then error (id ^ ": unit_resulting_resolution trace is empty");
   let main_clause = lookup_clause checked main_parent_id in
+  let non_split_length clause =
+    List.length (List.filter (fun lit -> not (is_split_literal lit)) clause)
+  in
   let rec check_trace current = function
     | [] -> current
     | trace :: rest ->
         let unit_clause = lookup_clause checked trace.urr_unit_parent in
-        begin match unit_clause with
-        | [_] -> ()
-        | _ -> error (id ^ ": URR unit parent " ^ trace.urr_unit_parent ^ " is not a unit clause")
-        end;
+        if non_split_length unit_clause <> 1 then
+          error (id ^ ": URR unit parent " ^ trace.urr_unit_parent ^ " is not a unit clause");
         if not (complementary_mod_equality trace.urr_selected_substituted trace.urr_unit_substituted) then
           error (id ^ ": URR substituted selected and unit literals are not complementary");
-        if List.length trace.urr_remaining >= List.length current then
+        let current_non_split_length = non_split_length current in
+        let remaining_non_split_length = non_split_length trace.urr_remaining in
+        if remaining_non_split_length >= current_non_split_length then
           error (id ^ ": URR trace did not remove a literal");
         let selected_is_linked =
           clause_contains_literal_mod trace.urr_selected current
           || clause_contains_literal_mod trace.urr_selected_substituted current
         in
-        if not selected_is_linked && List.length current = List.length trace.urr_remaining + 1 then
+        if not selected_is_linked && current_non_split_length = remaining_non_split_length + 1 then
           error (id ^ ": URR selected literal is not linked to the current clause");
         check_trace trace.urr_remaining rest
   in
