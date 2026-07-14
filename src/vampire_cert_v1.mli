@@ -114,6 +114,7 @@ type source_map_entry = {
   source_map_tptp_name : string;
   source_map_source_name : string;
   source_map_hash : string;
+  source_map_decl_hash : string option;
 }
 
 val parse_sexpr : string -> sexpr

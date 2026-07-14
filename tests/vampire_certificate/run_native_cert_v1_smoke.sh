@@ -49,6 +49,31 @@ if ! rg -q 'Vampire certificate v1 source map checked 3 sources' "$WORK_DIR/nati
 fi
 
 bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_hash_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_hash_valid.log"
+
+if ! rg -q 'Vampire certificate v1 source map checked 3 sources' "$WORK_DIR/native_cert_v1_source_map_hash_valid.log"; then
+  echo "native certificate v1 source-map hash validation did not report all mapped inputs" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_hash_mismatch_bad.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_hash_mismatch_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_source_map_hash_mismatch_bad.err"; then
+  echo "native certificate v1 source-map validation accepted a stale source hash" >&2
+  exit 1
+fi
+
+if ! rg -q 'has source hash .* but the THF declaration is tagged' \
+    "$WORK_DIR/native_cert_v1_source_map_hash_mismatch_bad.err"; then
+  echo "native certificate v1 source-map hash mismatch failure did not explain the stale hash" >&2
+  exit 1
+fi
+
+bin/megalodon \
   -vampirecertv1strict \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_valid.th0.p \

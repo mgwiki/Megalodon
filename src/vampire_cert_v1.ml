@@ -116,6 +116,7 @@ type source_map_entry = {
   source_map_tptp_name : string;
   source_map_source_name : string;
   source_map_hash : string;
+  source_map_decl_hash : string option;
 }
 
 let error msg = raise (Error msg)
@@ -2734,6 +2735,7 @@ let source_map_entry_of_sexpr = function
         source_map_tptp_name = atom tptp_name;
         source_map_source_name = atom source_name;
         source_map_hash = atom source_hash;
+        source_map_decl_hash = None;
       }
   | _ -> error "malformed Megalodon source-map comment"
 
@@ -2752,15 +2754,65 @@ let lines_of_text text =
 
 let parse_source_map text =
   let prefix_len = String.length source_map_prefix in
+  let lines = lines_of_text text in
+  let trim_ascii value =
+    let len = String.length value in
+    let rec left i =
+      if i < len && is_space value.[i] then left (i + 1) else i
+    in
+    let rec right i =
+      if i >= 0 && is_space value.[i] then right (i - 1) else i
+    in
+    let l = left 0 in
+    let r = right (len - 1) in
+    if r < l then "" else String.sub value l (r - l + 1)
+  in
+  let is_hex = function
+    | '0' .. '9' | 'a' .. 'f' | 'A' .. 'F' -> true
+    | _ -> false
+  in
+  let looks_like_hash value =
+    String.length value = 64
+    &&
+    let rec loop i =
+      i = 64 || (is_hex value.[i] && loop (i + 1))
+    in
+    loop 0
+  in
+  let thf_decl_hash_of_line line =
+    if string_starts_with "thf(" line then
+      try
+        let comma = String.index_from line 4 ',' in
+        let name = String.sub line 4 (comma - 4) in
+        let percent = String.rindex line '%' in
+        let hash =
+          String.sub line (percent + 1) (String.length line - percent - 1)
+          |> trim_ascii
+        in
+        if looks_like_hash hash then Some (name, hash) else None
+      with Not_found | Invalid_argument _ -> None
+    else None
+  in
+  let decl_hashes = Hashtbl.create 101 in
+  List.iter
+    (fun line ->
+      match thf_decl_hash_of_line line with
+      | Some (name, hash) -> Hashtbl.replace decl_hashes name hash
+      | None -> ())
+    lines;
+  let decl_hash name =
+    try Some (Hashtbl.find decl_hashes name) with Not_found -> None
+  in
   List.fold_left
     (fun entries line ->
       if string_starts_with source_map_prefix line then
         let body = String.sub line prefix_len (String.length line - prefix_len) in
-        source_map_entry_of_sexpr (parse_sexpr body) :: entries
+        let entry = source_map_entry_of_sexpr (parse_sexpr body) in
+        { entry with source_map_decl_hash = decl_hash entry.source_map_tptp_name } :: entries
       else
         entries)
     []
-    (lines_of_text text)
+    lines
   |> List.rev
 
 let source_name = function
@@ -2806,6 +2858,18 @@ let source_map_kind_compatible source entry =
   | SourceSetReflexivity _, _ -> false
 
 let source_map_entry_well_formed entry =
+  let is_hex = function
+    | '0' .. '9' | 'a' .. 'f' | 'A' .. 'F' -> true
+    | _ -> false
+  in
+  let looks_like_hash value =
+    String.length value = 64
+    &&
+    let rec loop i =
+      i = 64 || (is_hex value.[i] && loop (i + 1))
+    in
+    loop 0
+  in
   if entry.source_map_tptp_name = "" then
     error "Megalodon source-map entry has an empty TPTP name";
   if entry.source_map_source_name = "" then
@@ -2818,7 +2882,26 @@ let source_map_entry_well_formed entry =
            ^ entry.source_map_tptp_name
            ^ " is a global "
            ^ entry.source_map_kind
-           ^ " but has an empty source hash")
+           ^ " but has an empty source hash");
+      if looks_like_hash entry.source_map_hash then
+        begin match entry.source_map_decl_hash with
+        | Some declared when declared = entry.source_map_hash -> ()
+        | Some declared ->
+            error
+              ("Megalodon source-map entry for "
+               ^ entry.source_map_tptp_name
+               ^ " has source hash "
+               ^ entry.source_map_hash
+               ^ " but the THF declaration is tagged "
+               ^ declared)
+        | None ->
+            error
+              ("Megalodon source-map entry for "
+               ^ entry.source_map_tptp_name
+               ^ " has source hash "
+               ^ entry.source_map_hash
+               ^ " but the THF declaration has no matching trailing hash")
+        end
   | _ -> ()
 
 let source_map_entry_requires_reflexive_equality entry =
