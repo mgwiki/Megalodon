@@ -1390,3 +1390,27 @@ The result is intentionally not counted as a closed-proof improvement. It
 preserves the strict zero-non-source guard while clarifying that the current
 predicate-definition route needs more Vampire-side detail, not more guessing in
 the Megalodon emitter.
+
+## Follow-up: Scope Reset After Re-Reading the Audit
+
+After re-reading the audit on `vampire/megalodon3`, I removed an uncommitted
+attempt to expand the native format with `avatar_definition` and `avatar_split`
+constructors. That work exposed useful Vampire metadata, but it was the wrong
+near-term move: AVATAR is explicitly outside the audit's recommended qualifying
+fragment, and adding importer constructors would have grown the broad path
+without producing additional closed Megalodon proofs.
+
+The branch is therefore kept on the closed-corpus milestone:
+
+- no new AVATAR constructors are added to the native certificate datatype;
+- the existing AVATAR component/refutation records remain diagnostics and
+  closed-mode blockers, not qualifying replay steps;
+- closed mode continues to reject every derived AVATAR premise as a non-source
+  theorem assumption;
+- the next work should target committed, reproducible, source-linked
+  `CLOSED_PASS` cases, with any new Vampire-side detail justified by a concrete
+  closed replay step rather than by aggregate bridge reduction.
+
+This is a deliberate rollback of scope, not a proof improvement. It aligns the
+branch with the audit's main recommendation: keep the trusted result small,
+fail closed, and expand only after the source-bound zero-premise corpus grows.
