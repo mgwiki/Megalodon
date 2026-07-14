@@ -2831,7 +2831,7 @@ let check_certificate_strict cert =
 
 let emit_error msg = error ("simple Megalodon emitter: " ^ msg)
 
-let simple_normalize_vlam_text text =
+let simple_normalize_vlam_text ?(lambda_binder_sort = fun _ -> None) text =
   let is_name_char = function
     | 'A'..'Z' | 'a'..'z' | '0'..'9' | '_' | '\'' -> true
     | _ -> false
@@ -2883,30 +2883,98 @@ let simple_normalize_vlam_text text =
     loop 0
   and parse_vlam_parts source i =
     let body, stop = parse_arg source i in
+    let vlam_text_candidates body =
+      let body = String.trim body in
+      ["vLAM " ^ body; "vLAM (" ^ body ^ ")"]
+    in
+    let binder_sort body =
+      match vlam_text_candidates body |> List.find_map lambda_binder_sort with
+      | Some sort -> sort
+      | None -> "set"
+    in
     let rec collect arity body =
       let trimmed = String.trim body in
       if is_token_at trimmed "vLAM" 0 then
         let nested_body, nested_stop = parse_arg trimmed 4 in
-        if nested_stop = String.length trimmed then collect (arity + 1) nested_body
-        else (arity, normalize trimmed)
-      else (arity, normalize trimmed)
+        if nested_stop = String.length trimmed then
+          let nested_sorts, normalized_body = collect (arity + 1) nested_body in
+          (binder_sort body :: nested_sorts, normalized_body)
+        else ([binder_sort body], normalize trimmed)
+      else ([binder_sort body], normalize trimmed)
     in
-    let arity, normalized_body = collect 1 body in
-    (arity, normalized_body, stop)
-  and render_lambda arity normalized_body =
+    let sorts, normalized_body = collect 1 body in
+    (sorts, normalized_body, stop)
+  and render_lambda sorts normalized_body =
+    let arity = List.length sorts in
     let rec binders n acc =
       if n < 0 then acc else binders (n - 1) (acc @ ["db" ^ string_of_int n])
     in
     let binder_text =
       binders (arity - 1) []
-      |> List.map (fun name -> "fun " ^ name ^ ":set")
+      |> List.combine sorts
+      |> List.map (fun (sort, name) -> "fun " ^ name ^ ":" ^ sort)
     in
     "(" ^ String.concat " => " (binder_text @ [normalized_body]) ^ ")"
   in
   normalize text
 
 let metadata_step_proposition cert id =
-  Option.map simple_normalize_vlam_text (List.assoc_opt id cert.metadata.step_propositions)
+  let parse_lambda_sorts fields =
+    fields
+    |> List.fold_left
+         (fun acc field ->
+            match String.index_opt field '=' with
+            | None -> acc
+            | Some eq ->
+                let key = String.sub field 0 eq in
+                let value = String.sub field (eq + 1) (String.length field - eq - 1) in
+                (key, value) :: acc)
+         []
+  in
+  let current_lambda_sorts =
+    cert.metadata.step_extras
+    |> List.filter (fun (step_id, _, _) -> step_id = id)
+    |> List.concat_map (fun (_, _, fields) -> fields)
+    |> parse_lambda_sorts
+  in
+  let global_lambda_sorts =
+    cert.metadata.step_extras
+    |> List.concat_map (fun (_, _, fields) -> fields)
+    |> parse_lambda_sorts
+  in
+  let lambda_binder_sort_from fields text =
+    let is_step_lambda_key key =
+      let prefix = "step_lambda_" in
+      let prefix_len = String.length prefix in
+      let len = String.length key in
+      len > prefix_len
+      && String.sub key 0 prefix_len = prefix
+      &&
+      let rec digits i =
+        i >= len || (match key.[i] with '0'..'9' -> digits (i + 1) | _ -> false)
+      in
+      digits prefix_len
+    in
+    let matching_prefix =
+      fields
+      |> List.find_map
+           (fun (key, value) ->
+              if value = text && is_step_lambda_key key then
+                Some key
+              else None)
+    in
+    match matching_prefix with
+    | None -> None
+    | Some key -> List.assoc_opt (key ^ "_binder_sort") fields
+  in
+  let lambda_binder_sort text =
+    match lambda_binder_sort_from current_lambda_sorts text with
+    | Some sort -> Some sort
+    | None -> lambda_binder_sort_from global_lambda_sorts text
+  in
+  Option.map
+    (simple_normalize_vlam_text ~lambda_binder_sort)
+    (List.assoc_opt id cert.metadata.step_propositions)
 
 let metadata_step_variable_sorts cert id =
   match List.assoc_opt id cert.metadata.step_variable_sorts with
@@ -3101,6 +3169,13 @@ let is_vampire_bool_const = function
   | TmH "f__true" | TmH "vampire_true" | TmH "f__false" | TmH "vampire_false" -> true
   | _ -> false
 
+let is_db_ident name =
+  let len = String.length name in
+  let rec digits i =
+    i >= len || (match name.[i] with '0'..'9' -> digits (i + 1) | _ -> false)
+  in
+  len > 2 && String.sub name 0 2 = "db" && digits 2
+
 let simple_bool_const_prop = function
   | TmH "f__true" | TmH "vampire_true" -> Some "vampire_true"
   | TmH "f__false" | TmH "vampire_false" -> Some "vampire_false"
@@ -3113,18 +3188,67 @@ let rec flatten_application = function
   | tm -> (tm, [])
 
 let rec simple_vlam_expr body =
-  let rec collect arity = function
-    | Ap (TmH "vLAM", body) -> collect (arity + 1) body
-    | body -> (arity, body)
+  let logical_head = function
+    | "vLAM" | "vPI" | "vOR" | "vAND" | "vNOT" | "vIMP"
+    | "vampire_or" | "vampire_and" | "vampire_true" | "vampire_false"
+    | "f__true" | "f__false" -> true
+    | _ -> false
   in
-  let arity, body = collect 1 body in
+  let rec contains_db = function
+    | TmH name -> is_db_ident name
+    | DB _ -> true
+    | Prim _ -> false
+    | TpAp (tm, _) -> contains_db tm
+    | Ap (fn, arg) -> contains_db fn || contains_db arg
+    | Lam (_, body) | All (_, body) -> contains_db body
+    | Imp (left, right) -> contains_db left || contains_db right
+  in
+  let rec db_in_nonlogical_application tm =
+    let head, args = flatten_application tm in
+    let here =
+      match head with
+      | TmH name when not (logical_head name) ->
+          List.exists contains_db args
+      | _ -> false
+    in
+    here ||
+    match tm with
+    | TmH _ | DB _ | Prim _ -> false
+    | TpAp (tm, _) -> db_in_nonlogical_application tm
+    | Ap (fn, arg) -> db_in_nonlogical_application fn || db_in_nonlogical_application arg
+    | Lam (_, body) | All (_, body) -> db_in_nonlogical_application body
+    | Imp (left, right) -> db_in_nonlogical_application left || db_in_nonlogical_application right
+  in
+  let rec has_prop_logical_head tm =
+    let head, args = flatten_application tm in
+    let here =
+      match head with
+      | TmH ("vOR" | "vAND" | "vNOT" | "vIMP" | "vampire_or" | "vampire_and") -> true
+      | _ -> false
+    in
+    here || List.exists has_prop_logical_head args
+  in
+  let binder_sort body =
+    if db_in_nonlogical_application body then "set"
+    else if has_prop_logical_head body then "prop"
+    else "set"
+  in
+  let rec collect arity = function
+    | Ap (TmH "vLAM", body) ->
+        let sorts, final_body = collect (arity + 1) body in
+        (binder_sort body :: sorts, final_body)
+    | body -> ([binder_sort body], body)
+  in
+  let sorts, body = collect 1 body in
+  let arity = List.length sorts in
   let rec binders i acc =
     if i < 0 then acc else binders (i - 1) (acc @ ["db" ^ string_of_int i])
   in
   let binders = binders (arity - 1) [] in
   "("
   ^ String.concat " => "
-      (List.map (fun name -> "fun " ^ name ^ ":set") binders
+      ((List.combine sorts binders
+        |> List.map (fun (sort, name) -> "fun " ^ name ^ ":" ^ sort))
        @ [simple_tm_expr body])
   ^ ")"
 
@@ -3203,9 +3327,13 @@ let collect_simple_names cert =
          [
            "False"; "True"; "or"; "vampire_or"; "vampire_and"; "vampire_exists_set";
            "vampire_exists_prop"; "vampire_false"; "vampire_true"; "vampire_eq_prop";
+           "vampire_exists_set_set_prop";
+           "vampire_eq_prop_to_prop_to_prop";
            "vampire_eq_set_to_set"; "vampire_eq_set_to_prop";
-           "vampire_eq_set_to_set_to_prop";
-           "f__true"; "f__false"; "vLAM"
+           "vampire_eq_set_to_set_to_prop"; "vampire_eq_set_to_set_to_set";
+           "vampire_eq_lp_set_to_set_rp_to_set";
+           "vampire_eq_lp_set_to_prop_rp_to_set";
+           "f__true"; "f__false"; "vLAM"; "vPI"
          ]
   in
   let add_prop acc name =
@@ -3336,6 +3464,10 @@ let collect_simple_names cert =
     | Contradiction _ -> acc
   in
   let props, terms = List.fold_left add_step ([], []) cert.steps in
+  let terms =
+    terms
+    |> List.filter (fun name -> not (is_db_ident name && List.mem name props))
+  in
   let collisions = List.filter (fun name -> List.mem name terms) props in
   begin match collisions with
   | [] -> ()
@@ -3427,7 +3559,20 @@ let simple_factor_proof id parent_id left_index right_index result checked names
   | _ ->
       emit_error (id ^ ": simple emitter supports only duplicated head-literal factoring")
 
-let simple_equality_resolution_proof id parent_id literal_index result checked names =
+let simple_wrap_forall_intro sorts proof =
+  List.fold_right
+    (fun (name, sort) body ->
+       "(fun " ^ megalodon_ident name ^ ":" ^ sort ^ " => " ^ body ^ ")")
+    sorts
+    proof
+
+let simple_apply_forall_vars proof sorts =
+  List.fold_left
+    (fun acc (name, _) -> "(" ^ acc ^ " " ^ megalodon_ident name ^ ")")
+    proof
+    sorts
+
+let simple_equality_resolution_proof id parent_id literal_index result parent_sorts result_sorts checked names =
   let parent_clause = lookup_simple_clause checked parent_id in
   let literal = simple_clause_nth id "equality-resolution" literal_index parent_clause in
   begin match parent_clause, literal, result with
@@ -3437,8 +3582,12 @@ let simple_equality_resolution_proof id parent_id literal_index result checked n
           let target = simple_literal_prop kept in
           let target_arg = simple_prop_arg target in
           let parent_name = lookup_simple_name names parent_id in
-          Printf.sprintf "(%s %s (fun Hkeep_0 => Hkeep_0) (fun Hneq_1 => ((Hneq_1 (fun Q H => H)) %s)))"
-            parent_name target_arg target_arg
+          let parent_expr = simple_apply_forall_vars parent_name parent_sorts in
+          let proof =
+            Printf.sprintf "(%s %s (fun Hkeep_0 => Hkeep_0) (fun Hneq_1 => ((Hneq_1 (fun Q H => H)) %s)))"
+              parent_expr target_arg target_arg
+          in
+          simple_wrap_forall_intro result_sorts proof
       | Some _ -> emit_error (id ^ ": equality-resolution equality is not reflexive")
       | None -> emit_error (id ^ ": equality-resolution literal is not an equality")
       end
@@ -3566,12 +3715,18 @@ let simple_symbol_type_env cert =
       ("vampire_exists_prop", "(prop->prop)->prop");
       ("vampire_exists_set_prop", "((set->prop)->prop)->prop");
       ("vampire_exists_set_set", "((set->set)->prop)->prop");
+      ("vampire_exists_set_set_prop", "((set->set->prop)->prop)->prop");
       ("vampire_false", "prop"); ("vampire_true", "prop");
       ("vampire_eq_prop", "prop->prop->prop");
       ("vampire_eq_prop_to_set", "(prop->set)->(prop->set)->prop");
+      ("vampire_eq_prop_to_prop_to_prop", "(prop->prop->prop)->(prop->prop->prop)->prop");
       ("vampire_eq_set_to_set", "(set->set)->(set->set)->prop");
       ("vampire_eq_set_to_prop", "(set->prop)->(set->prop)->prop");
       ("vampire_eq_set_to_set_to_prop", "(set->set->prop)->(set->set->prop)->prop");
+      ("vampire_eq_set_to_set_to_set", "(set->set->set)->(set->set->set)->prop");
+      ("vampire_eq_lp_set_to_set_rp_to_set", "((set->set)->set)->((set->set)->set)->prop");
+      ("vampire_eq_lp_set_to_prop_rp_to_set", "((set->prop)->set)->((set->prop)->set)->prop");
+      ("vPI", "(set->prop)->prop");
       ("f__true", "prop"); ("f__false", "prop")
     ]
   in
@@ -3695,6 +3850,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       "Definition vampire_exists_prop : (prop -> prop) -> prop := fun P:prop->prop => forall q:prop, (forall x:prop, P x -> q) -> q.";
       "Definition vampire_exists_set_prop : ((set->prop) -> prop) -> prop := fun P:(set->prop)->prop => forall q:prop, (forall x:set->prop, P x -> q) -> q.";
       "Definition vampire_exists_set_set : ((set->set) -> prop) -> prop := fun P:(set->set)->prop => forall q:prop, (forall x:set->set, P x -> q) -> q.";
+      "Definition vampire_exists_set_set_prop : ((set->set->prop) -> prop) -> prop := fun P:(set->set->prop)->prop => forall q:prop, (forall x:set->set->prop, P x -> q) -> q.";
       "Definition vampire_eq_prop : prop -> prop -> prop := fun A B:prop => forall Q:prop->prop, Q A -> Q B.";
       "Section Eq.";
       "Variable A:SType.";
@@ -3702,9 +3858,14 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       "End Eq.";
       "Infix = 502 := eq.";
       "Definition vampire_eq_prop_to_set : (prop->set)->(prop->set)->prop := fun x y:prop->set => forall Q:(prop->set)->(prop->set)->prop, Q x y -> Q y x.";
+      "Definition vampire_eq_prop_to_prop_to_prop : (prop->prop->prop)->(prop->prop->prop)->prop := fun x y:prop->prop->prop => forall Q:(prop->prop->prop)->(prop->prop->prop)->prop, Q x y -> Q y x.";
       "Definition vampire_eq_set_to_set : (set->set)->(set->set)->prop := fun x y:set->set => forall Q:(set->set)->(set->set)->prop, Q x y -> Q y x.";
       "Definition vampire_eq_set_to_prop : (set->prop)->(set->prop)->prop := fun x y:set->prop => forall Q:(set->prop)->(set->prop)->prop, Q x y -> Q y x.";
       "Definition vampire_eq_set_to_set_to_prop : (set->set->prop)->(set->set->prop)->prop := fun x y:set->set->prop => forall Q:(set->set->prop)->(set->set->prop)->prop, Q x y -> Q y x.";
+      "Definition vampire_eq_set_to_set_to_set : (set->set->set)->(set->set->set)->prop := fun x y:set->set->set => forall Q:(set->set->set)->(set->set->set)->prop, Q x y -> Q y x.";
+      "Definition vampire_eq_lp_set_to_set_rp_to_set : ((set->set)->set)->((set->set)->set)->prop := fun x y:(set->set)->set => forall Q:((set->set)->set)->((set->set)->set)->prop, Q x y -> Q y x.";
+      "Definition vampire_eq_lp_set_to_prop_rp_to_set : ((set->prop)->set)->((set->prop)->set)->prop := fun x y:(set->prop)->set => forall Q:((set->prop)->set)->((set->prop)->set)->prop, Q x y -> Q y x.";
+      "Definition vPI : (set->prop)->prop := fun P:set->prop => forall x:set, P x.";
       "Definition vampire_set_ap : set->set->set := fun x y:set => x.";
       "Notation SetImplicitOp vampire_set_ap.";
     ]
@@ -4011,13 +4172,14 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           ignore literal_index;
           add_clause_inference_bridge "equality_symmetry" id [parent_id] result
       | EqualityResolution (id, parent_id, literal_index, result) ->
+          let prop, sorts = clause_prop_and_sorts_for_ids id [parent_id] result in
+          let parent_sorts = variable_sorts_for_ids [parent_id] in
           begin match
-            try Some (simple_equality_resolution_proof id parent_id literal_index result !checked !emitted_names)
+            try Some (simple_equality_resolution_proof id parent_id literal_index result parent_sorts sorts !checked !emitted_names)
             with Error _ -> None
           with
           | Some proof ->
               let name = derived_name id in
-              let prop, sorts = clause_prop_and_sorts_for_ids id [parent_id] result in
               add_emitted id name;
               add_emitted_prop_and_sorts id prop sorts;
               claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")];
