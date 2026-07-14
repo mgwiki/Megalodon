@@ -15,10 +15,16 @@ fi
 export TMPDIR="${TMPDIR:-/project/tmp}"
 mkdir -p "$TMPDIR"
 
-tmp_mg="$(mktemp)"
-tmp_out="$(mktemp -d)"
-log="$(mktemp)"
-trap 'rm -f "$tmp_mg" "$log"; rm -rf "$tmp_out"' EXIT
+WORK_DIR="${WORK_DIR:-$(mktemp -d "$TMPDIR/native_aby_smoke.XXXXXX")}"
+mkdir -p "$WORK_DIR"
+tmp_mg="$WORK_DIR/100thms_12_h_slice.mg"
+tmp_out="$WORK_DIR/out"
+log="$WORK_DIR/megalodon.log"
+rm -rf "$tmp_out"
+mkdir -p "$tmp_out"
+if [ "${CLEANUP:-0}" = "1" ]; then
+  trap 'rm -rf "$WORK_DIR"' EXIT
+fi
 
 sed -n '1,500p' examples/hammer/100thms_12_h.mg > "$tmp_mg"
 
@@ -245,3 +251,5 @@ grep -q " of Subq_binunion_eq was assigned id" "$log"
 ! grep -q "Theorem binunion_Subq_2 admitted" "$log"
 ! grep -q "Theorem binunion_Subq_min admitted" "$log"
 ! grep -q "Theorem Subq_binunion_eq admitted" "$log"
+
+echo "native aby smoke artifacts: $WORK_DIR"

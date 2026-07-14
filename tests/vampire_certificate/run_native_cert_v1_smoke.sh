@@ -35,6 +35,40 @@ fi
 bin/megalodon "$WORK_DIR/native_cert_v1_valid_emit.mg" \
   >"$WORK_DIR/native_cert_v1_valid_emit.check.log"
 
+bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_resolution_mirrored_valid.sexp \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_resolution_mirrored_valid_emit.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_resolution_mirrored_valid_emit.log"
+if ! rg -q 'Vampire certificate v1 checked 6 steps' \
+    "$WORK_DIR/native_cert_v1_resolution_mirrored_valid_emit.log"; then
+  echo "native certificate v1 checker did not accept the mirrored resolution fixture" >&2
+  exit 1
+fi
+if rg -n '\badmit\b|\baby\b|-allowincompleteqed' \
+    "$WORK_DIR/native_cert_v1_resolution_mirrored_valid_emit.mg"; then
+  echo "native certificate v1 mirrored resolution emitter generated an admission marker" >&2
+  exit 1
+fi
+bin/megalodon "$WORK_DIR/native_cert_v1_resolution_mirrored_valid_emit.mg" \
+  >"$WORK_DIR/native_cert_v1_resolution_mirrored_valid_emit.check.log"
+
+bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_factor_prop_valid.sexp \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_factor_prop_valid_emit.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_factor_prop_valid_emit.log"
+if ! rg -q 'Vampire certificate v1 checked 5 steps' \
+    "$WORK_DIR/native_cert_v1_factor_prop_valid_emit.log"; then
+  echo "native certificate v1 checker did not accept the propositional factor fixture" >&2
+  exit 1
+fi
+if rg -n '\badmit\b|\baby\b|-allowincompleteqed' \
+    "$WORK_DIR/native_cert_v1_factor_prop_valid_emit.mg"; then
+  echo "native certificate v1 propositional factor emitter generated an admission marker" >&2
+  exit 1
+fi
+bin/megalodon "$WORK_DIR/native_cert_v1_factor_prop_valid_emit.mg" \
+  >"$WORK_DIR/native_cert_v1_factor_prop_valid_emit.check.log"
+
 if bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_factor_equality_valid.sexp \
   -vampirecertv1emit "$WORK_DIR/native_cert_v1_factor_equality_unsupported.mg" \
@@ -734,3 +768,4 @@ if ! rg -q 'final certificate step is not the empty clause' "$WORK_DIR/native_ce
 fi
 
 echo "native certificate v1 smoke test passed"
+echo "native certificate v1 artifacts: $WORK_DIR"

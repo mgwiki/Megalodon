@@ -33,8 +33,9 @@ bin/megalodon \
   /project/tmp/empty.mg
 ```
 
-This currently emits a no-admit Megalodon proof only for the simplest
-propositional input/resolve/contradiction fragment. Unsupported rules and
+This currently emits a no-admit Megalodon proof only for a small propositional
+fragment: input assumptions, unit/binary-tail resolution, two-literal
+propositional factoring, and contradiction. Unsupported rules and
 non-propositional literals fail closed with a `simple Megalodon emitter` error.
 The path is intentionally small: it is the seed of native proof-term/text
 elaboration from the OCaml certificate checker, not a replacement for the

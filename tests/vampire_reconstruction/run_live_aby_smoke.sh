@@ -15,9 +15,15 @@ fi
 export TMPDIR="${TMPDIR:-/project/tmp}"
 mkdir -p "$TMPDIR"
 
-tmp_mg="$(mktemp)"
-tmp_out="$(mktemp -d)"
-trap 'rm -f "$tmp_mg"; rm -rf "$tmp_out"' EXIT
+WORK_DIR="${WORK_DIR:-$(mktemp -d "$TMPDIR/live_aby_smoke.XXXXXX")}"
+mkdir -p "$WORK_DIR"
+tmp_mg="$WORK_DIR/100thms_12_h_slice.mg"
+tmp_out="$WORK_DIR/out"
+rm -rf "$tmp_out"
+mkdir -p "$tmp_out"
+if [ "${CLEANUP:-0}" = "1" ]; then
+  trap 'rm -rf "$WORK_DIR"' EXIT
+fi
 proof_mode="${MEGALODON_VAMPIRE_PROOF:-tptp}"
 
 sed -n '1,169p' examples/hammer/100thms_12_h.mg > "$tmp_mg"
@@ -40,3 +46,5 @@ else
   grep -q 'SZS status \(Theorem\|Unsatisfiable\|ContradictoryAxioms\)' "$tmp_out"/*.out
   grep -q 'SZS output start\|inference(' "$tmp_out"/*.out
 fi
+
+echo "live aby smoke artifacts: $WORK_DIR"

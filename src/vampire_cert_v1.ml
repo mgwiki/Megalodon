@@ -2773,6 +2773,7 @@ let collect_simple_prop_names cert =
   let add_step acc = function
     | Input (_, _, clause) -> add_clause acc clause
     | Resolve (_, _, _, _, _, clause) -> add_clause acc clause
+    | Factor (_, _, _, _, clause) -> add_clause acc clause
     | Contradiction _ -> acc
     | step -> emit_error ("unsupported rule " ^ step_id step)
   in
@@ -2782,6 +2783,11 @@ let lookup_simple_clause checked id =
   match List.assoc_opt id checked with
   | Some clause -> clause
   | None -> emit_error ("missing parent " ^ id)
+
+let simple_clause_nth id label index clause =
+  if index < 0 || index >= List.length clause then
+    emit_error (id ^ ": " ^ label ^ " index is out of bounds");
+  List.nth clause index
 
 let simple_remove_index id label index clause =
   if index < 0 || index >= List.length clause then
@@ -2793,8 +2799,8 @@ let simple_remove_index id label index clause =
 let simple_resolution_proof id left_id right_id left_index right_index result checked =
   let left_clause = lookup_simple_clause checked left_id in
   let right_clause = lookup_simple_clause checked right_id in
-  let left_pivot = List.nth left_clause left_index in
-  let right_pivot = List.nth right_clause right_index in
+  let left_pivot = simple_clause_nth id "left" left_index left_clause in
+  let right_pivot = simple_clause_nth id "right" right_index right_clause in
   if not (complementary left_pivot right_pivot) then
     emit_error (id ^ ": pivots are not complementary");
   let left_rest = simple_remove_index id "left" left_index left_clause in
@@ -2811,10 +2817,28 @@ let simple_resolution_proof id left_id right_id left_index right_index result ch
       Printf.sprintf
         "(%s %s (fun Hlit_0 => ((%s Hlit_0) %s)) (fun Htail_1 => Htail_1))"
         positive_parent target negative_parent target
+  | [], [tail], [res] when tail = res ->
+      let target = simple_literal_prop res in
+      Printf.sprintf
+        "(%s %s (fun Hlit_0 => ((Hlit_0 %s) %s)) (fun Htail_1 => Htail_1))"
+        negative_parent target positive_parent target
   | [], [], [] ->
       Printf.sprintf "((%s %s) False)" negative_parent positive_parent
   | _ ->
-      emit_error (id ^ ": simple emitter supports only unit resolution and binary-positive-tail resolution")
+      emit_error (id ^ ": simple emitter supports only unit resolution and binary-tail unit resolution")
+
+let simple_factor_proof id parent_id left_index right_index result checked =
+  let parent_clause = lookup_simple_clause checked parent_id in
+  let left = simple_clause_nth id "left" left_index parent_clause in
+  let right = simple_clause_nth id "right" right_index parent_clause in
+  if left <> right then emit_error (id ^ ": factor literals are not identical");
+  match parent_clause, result with
+  | [a; b], [res] when a = b && a = res ->
+      let target = simple_literal_prop res in
+      Printf.sprintf "(%s %s (fun Hlit_0 => Hlit_0) (fun Htail_1 => Htail_1))"
+        parent_id target
+  | _ ->
+      emit_error (id ^ ": simple emitter supports only two-literal propositional factoring")
 
 let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") cert =
   ignore (check_certificate cert);
@@ -2844,6 +2868,10 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") cert =
           let proof =
             simple_resolution_proof id left_id right_id left_index right_index result !checked
           in
+          claims := !claims @ [(id, simple_clause_prop result, proof)];
+          add_checked id result
+      | Factor (id, parent_id, left_index, right_index, result) ->
+          let proof = simple_factor_proof id parent_id left_index right_index result !checked in
           claims := !claims @ [(id, simple_clause_prop result, proof)];
           add_checked id result
       | Contradiction (id, parent_id) ->
