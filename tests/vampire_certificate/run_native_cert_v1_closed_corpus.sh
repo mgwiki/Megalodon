@@ -62,7 +62,7 @@ run_one() {
     return 0
   fi
 
-  if rg -n '\b(admit|aby)\b|-allowincompleteqed|bridge_|assume definition_input__|assume vampire_eq_prop_ext' \
+  if rg -n '\b(admit|aby)\b|-allowincompleteqed|bridge_|^assume (definition_input__|avatar_|theory_|predicate_definition__|vampire_eq_prop_ext\b)' \
       "$case_dir/out.mg" > "$case_dir/forbidden.txt"; then
     local first
     first=$(head -1 "$case_dir/forbidden.txt" | tr '\t' ' ')

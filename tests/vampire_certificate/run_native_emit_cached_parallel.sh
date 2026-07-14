@@ -104,6 +104,15 @@ run_one() {
   fi
 
   if [[ "$CLOSED_CERT_V1" == "1" ]] \
+      && rg -n '^assume (bridge_|definition_input__|avatar_|theory_|predicate_definition__|vampire_eq_prop_ext\b)' \
+          "$case_dir/out.mg" > "$case_dir/forbidden.txt"; then
+    local first
+    first=$(head -1 "$case_dir/forbidden.txt" | tr '\t' ' ')
+    printf '%s\tFORBIDDEN_NON_SOURCE_PREMISE\t%s\n' "$name" "$first" > "$case_dir/result.tsv"
+    return 0
+  fi
+
+  if [[ "$CLOSED_CERT_V1" == "1" ]] \
       && awk '/^\/\/ vampire_source_assumption / && $0 !~ /source_formula_status "closed_formula_checked"/ {print FNR ":" $0}' \
           "$case_dir/out.mg" > "$case_dir/unchecked_sources.txt" \
       && [[ -s "$case_dir/unchecked_sources.txt" ]]; then

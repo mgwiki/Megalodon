@@ -131,7 +131,10 @@ Set `CLOSED_CERT_V1=1` on the cached emitter harness to request
 no non-source theorem premises; the summary status is `CLOSED_PASS`. Ordinary
 `PASS` rows remain useful integration evidence, but they are not closed proof
 reconstruction successes if generated scripts contain bridge or derived
-premises.
+premises. The closed harness also scans emitted scripts for known non-source
+assumption prefixes (`bridge_`, `definition_input__`, `avatar_`, `theory_`,
+and predicate-definition helper assumptions) as a defense in depth; these
+premises must be replayed as Megalodon claims before the case can count.
 
 To export a Megalodon development once and then check the resulting source-mapped
 TH0 corpus in parallel, use:
