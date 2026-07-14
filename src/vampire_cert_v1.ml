@@ -3623,6 +3623,48 @@ let simple_prop_equal_mod_cnf_defs left right =
   in
   normalize left = normalize right
 
+let simple_prop_equal_mod_fool_exhaustiveness_or_alias left right =
+  let replace_all needle replacement text =
+    let needle_len = String.length needle in
+    let text_len = String.length text in
+    let buffer = Buffer.create text_len in
+    let rec loop i =
+      if i >= text_len then ()
+      else if i + needle_len <= text_len && String.sub text i needle_len = needle then begin
+        Buffer.add_string buffer replacement;
+        loop (i + needle_len)
+      end else begin
+        Buffer.add_char buffer text.[i];
+        loop (i + 1)
+      end
+    in
+    loop 0;
+    Buffer.contents buffer
+  in
+  let normalize text =
+    text
+    |> replace_all "vampire_false" "False"
+    |> replace_all "vampire_true" "True"
+    |> replace_all "vampire_or" ""
+    |> replace_all "\\/" ""
+    |> String.to_seq
+    |> Seq.filter
+         (function
+           | ' ' | '\n' | '\t' | '\r' | '(' | ')' -> false
+           | _ -> true)
+    |> String.of_seq
+  in
+  normalize left = normalize right
+
+let simple_fool_exhaustiveness_clause = function
+  | [left; right] ->
+      begin match true_false_equality_var left, true_false_equality_var right with
+      | Some ("f__true", x), Some ("f__false", y)
+      | Some ("f__false", x), Some ("f__true", y) -> x = y
+      | _ -> false
+      end
+  | _ -> false
+
 let collect_simple_names cert =
   let declared_names = metadata_declared_names cert in
   let variable_sorts = metadata_variable_sorts cert in
@@ -5900,6 +5942,25 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           let parent_prop = emitted_parent_prop parent_id in
           let parent_structural_prop = structural_clause_prop parent_sorts parent_clause in
           let parent_formula_prop = formula_clause_prop parent_sorts parent_clause in
+          let parent_is_fool_exhaustiveness =
+            simple_fool_exhaustiveness_clause parent_clause
+            && List.exists
+                 (function
+                   | FoolExhaustiveness (step_id, _) when step_id = parent_id -> true
+                   | _ -> false)
+                 cert.steps
+          in
+          let parent_prop_matches =
+            parent_prop = parent_structural_prop
+            || parent_prop = parent_formula_prop
+            || simple_prop_equal_mod_app_parens parent_prop parent_structural_prop
+            || simple_prop_equal_mod_app_parens parent_prop parent_formula_prop
+            || (parent_is_fool_exhaustiveness
+                && (simple_prop_equal_mod_fool_exhaustiveness_or_alias
+                      parent_prop parent_structural_prop
+                    || simple_prop_equal_mod_fool_exhaustiveness_or_alias
+                         parent_prop parent_formula_prop))
+          in
           let substituted_parent = subst_clause subst parent_clause in
           let substituted_sources = List.map fst subst in
           let remaining_parent_sorts =
@@ -5912,10 +5973,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           let structurally_safe =
             same_clause_multiset substituted_parent result
             && simple_sorts_subset needed_sorts sorts
-            && (parent_prop = parent_structural_prop
-                || parent_prop = parent_formula_prop
-                || simple_prop_equal_mod_app_parens parent_prop parent_structural_prop
-                || simple_prop_equal_mod_app_parens parent_prop parent_formula_prop)
+            && parent_prop_matches
             && prop = structural_clause_prop sorts result
           in
           begin match
