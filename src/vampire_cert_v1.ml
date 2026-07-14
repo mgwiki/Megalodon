@@ -7261,7 +7261,23 @@ let simple_formula_orientation_proof
           let body_env = (binder, sort) :: env in
           let source_body_text = render_source (binder :: used) body_env source_body in
           let target_body_text = render_target (binder :: used) body_env target_body in
-          let target_text = render_target used env target in
+          let target_text =
+            let exists_name =
+              match sort with
+              | "set" -> "vampire_exists_set"
+              | "prop" -> "vampire_exists_prop"
+              | "set->prop" -> "vampire_exists_set_prop"
+              | "set->set" -> "vampire_exists_set_set"
+              | "set->set->prop" -> "vampire_exists_set_set_prop"
+              | _ ->
+                  (match target_exists with
+                  | TmH "vampire_exists_prop" -> "vampire_exists_prop"
+                  | TmH "vampire_exists_set" -> "vampire_exists_set"
+                  | _ -> "vampire_exists_set")
+            in
+            exists_name ^ " (fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort
+            ^ " => " ^ target_body_text ^ ")"
+          in
           let witness_name = fresh "Horient_exists_" in
           let body_proof =
             convert body_env (binder :: used) source_body target_body witness_name
@@ -8583,8 +8599,19 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           end
       | _ -> (generated_env, acc)
     in
+    let parent_formula_for_definitions =
+      let formula = lookup_formula checked_certificate parent_id in
+      if
+        List.exists
+          (function
+            | RectifyFormula (id, _, _, _) when id = parent_id -> true
+            | _ -> false)
+          cert.steps
+      then left_assoc_vampire_or_formula formula
+      else formula
+    in
     let _, definitions =
-      collect (lookup_formula checked_certificate parent_id) [] [] []
+      collect parent_formula_for_definitions [] [] []
     in
     List.rev definitions
   in
