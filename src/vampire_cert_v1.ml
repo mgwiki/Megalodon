@@ -3276,6 +3276,100 @@ let metadata_avatar_split_parent_var_bindings cert id =
       in
       loop 0 []
 
+let metadata_avatar_split_literal_class_bindings cert id =
+  let field key = metadata_step_extra_field cert id "avatar_split" key in
+  let int_field key =
+    match field key with
+    | Some text -> (try Some (int_of_string text) with Failure _ -> None)
+    | None -> None
+  in
+  let component_levels =
+    match int_field "component_parent_count" with
+    | None -> []
+    | Some count ->
+        let rec loop index acc =
+          if index > count then acc
+          else
+            let prefix = "component_parent_" ^ string_of_int index in
+            let acc =
+              match field (prefix ^ "_split_level"), field (prefix ^ "_split_var") with
+              | Some level, Some split_var -> (level, "split_" ^ split_var) :: acc
+              | _ -> acc
+            in
+            loop (index + 1) acc
+        in
+        loop 1 []
+  in
+  match int_field "literal_class_count" with
+  | None -> []
+  | Some class_count ->
+      let rec classes index acc =
+        if index >= class_count then List.rev acc
+        else
+          let prefix = "literal_class_" ^ string_of_int index in
+          let acc =
+            match field (prefix ^ "_matched_split_level"), int_field (prefix ^ "_literal_count") with
+            | Some level, Some literal_count ->
+                begin match List.assoc_opt level component_levels with
+                | None -> acc
+                | Some split_name ->
+                    let rec literals literal_index acc =
+                      if literal_index >= literal_count then acc
+                      else
+                        let key = prefix ^ "_literal_" ^ string_of_int literal_index in
+                        let acc =
+                          match field key with
+                          | Some literal_text -> (literal_text, split_name) :: acc
+                          | None -> acc
+                        in
+                        literals (literal_index + 1) acc
+                    in
+                    literals 0 acc
+                end
+            | _ -> acc
+          in
+          classes (index + 1) acc
+      in
+      classes 0 []
+
+let metadata_avatar_definition_bodies cert =
+  let field fields key =
+    let prefix = key ^ "=" in
+    let prefix_len = String.length prefix in
+    fields
+    |> List.find_map
+         (fun field ->
+            if String.length field >= prefix_len
+               && String.sub field 0 prefix_len = prefix then
+              Some (String.sub field prefix_len (String.length field - prefix_len))
+            else None)
+  in
+  let strip_avatar_component_body split_name clause =
+    let prefix = "vampire_or " in
+    let suffix = " ((" ^ split_name ^ ") -> vampire_false)" in
+    let prefix_len = String.length prefix in
+    let suffix_len = String.length suffix in
+    let len = String.length clause in
+    if len >= prefix_len + suffix_len
+       && String.sub clause 0 prefix_len = prefix
+       && String.sub clause (len - suffix_len) suffix_len = suffix then
+      Some (String.sub clause prefix_len (len - prefix_len - suffix_len))
+    else None
+  in
+  cert.metadata.step_extras
+  |> List.filter_map
+       (fun (_, kind, fields) ->
+          if kind <> "avatar_definition" then None
+          else
+            match field fields "component_split_var", field fields "component_clause" with
+            | Some split_var, Some clause ->
+                let split_name = "split_" ^ split_var in
+                begin match strip_avatar_component_body split_name clause with
+                | Some body -> Some (split_name, body)
+                | None -> None
+                end
+            | _ -> None)
+
 let metadata_definition_lhs_sort_pairs cert id =
   let is_db_name name =
     let len = String.length name in
@@ -6459,7 +6553,7 @@ let simple_formula_projection_with_eliminators target_prop target_clause source_
   project 0 source_formula source_proof
 
 let simple_avatar_split_proof
-    type_env split_definitions parent_var_bindings id result_sorts parent_id parent_sorts parent_clause result parent_name =
+    type_env split_definitions parent_var_bindings literal_class_bindings id result_sorts parent_id parent_sorts parent_clause result parent_name =
   let raw_target_formula = simple_clause_formula_tm result in
   let target_formula = left_assoc_vampire_or_formula raw_target_formula in
   let rec prop_text = function
@@ -6505,26 +6599,56 @@ let simple_avatar_split_proof
     let false_elim proof =
       Printf.sprintf "(%s %s)" proof (simple_prop_arg target_prop)
     in
+    let split_literal_from_source lit =
+      let source_prop = prop_text (formula_tm_of_literal lit) in
+      literal_class_bindings
+      |> List.find_map
+           (fun (literal_text, split_name) ->
+              if simple_prop_equal_mod_cnf_defs source_prop literal_text then
+                let split_lit =
+                  match lit with
+                  | Pos _ -> Pos (TmH split_name)
+                  | Neg _ -> Neg (TmH split_name)
+                in
+                if formula_contains_literal target_formula split_lit
+                   &&
+                   match List.assoc_opt split_name split_definitions with
+                   | Some (_, _, body_prop) ->
+                       not (string_starts_with "forall " (String.trim body_prop))
+                   | None -> false then
+                  Some split_lit
+                else None
+              else None)
+    in
+    let project_source_literal lit proof =
+      if formula_contains_literal target_formula lit then
+        Some (formula_intro_proof target_formula lit proof)
+      else
+        match split_literal_from_source lit with
+        | Some split_lit -> Some (formula_intro_proof target_formula split_lit proof)
+        | None -> None
+    in
     let rec project depth clause proof =
       match clause with
       | [] -> emit_error (id ^ ": avatar split cannot project from empty clause")
       | [lit] ->
-          if formula_contains_literal target_formula lit then
-            formula_intro_proof target_formula lit proof
-          else
+          begin match project_source_literal lit proof with
+          | Some proof -> proof
+          | None ->
             begin match eliminator lit proof with
             | Some contradiction -> false_elim contradiction
             | None -> emit_error "avatar split projection has an unhandled literal"
             end
+          end
       | lit :: rest ->
           let head_name = "Havatar_split_lit_" ^ string_of_int depth in
           let tail_name = "Havatar_split_tail_" ^ string_of_int depth in
           let head_type = prop_text (formula_tm_of_literal lit) in
           let tail_type = prop_text (simple_clause_formula_tm rest) in
           let head_branch =
-            if formula_contains_literal target_formula lit then
-              formula_intro_proof target_formula lit head_name
-            else
+            match project_source_literal lit head_name with
+            | Some proof -> proof
+            | None ->
               begin match eliminator lit head_name with
               | Some contradiction -> false_elim contradiction
               | None -> emit_error "avatar split projection has an unhandled literal"
@@ -8949,7 +9073,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
         end
     | _ -> None
   in
-  let avatar_split_definitions =
+  let avatar_split_component_definitions =
     cert.steps
     |> List.filter_map
          (function
@@ -8957,6 +9081,25 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                avatar_split_definition_for_component id result
            | _ -> None)
     |> List.sort_uniq compare
+  in
+  let avatar_split_metadata_definitions =
+    metadata_avatar_definition_bodies cert
+    |> List.filter_map
+         (fun (split_name, body_prop) ->
+            if List.exists
+                 (fun (existing_name, _, _, _) -> existing_name = split_name)
+                 avatar_split_component_definitions then
+              None
+            else
+              Some
+                (split_name,
+                 Printf.sprintf "Definition %s : prop := %s." split_name body_prop,
+                 [],
+                 body_prop))
+    |> List.sort_uniq compare
+  in
+  let avatar_split_definitions =
+    avatar_split_component_definitions @ avatar_split_metadata_definitions
   in
   let avatar_split_definition_names =
     List.map (fun (name, _, _, _) -> name) avatar_split_definitions
@@ -9993,6 +10136,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                     (simple_avatar_split_proof
                        type_env avatar_split_definition_env
                        (metadata_avatar_split_parent_var_bindings cert id)
+                       (metadata_avatar_split_literal_class_bindings cert id)
                        id sorts
                        parent_id (variable_sorts_for_ids [parent_id]) parent_clause
                        proof_result parent_name)
