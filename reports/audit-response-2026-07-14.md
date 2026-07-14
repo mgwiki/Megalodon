@@ -100,6 +100,26 @@ bridge_total 5669
 1 equality_factoring
 ```
 
+Closed-mode frontier measurement on the same cached source-linked corpus:
+
+```text
+CLOSED_PASS 2
+EMIT_FAIL 211
+/project/tmp/source_linked_slice_1_400_closed_frontier_100422
+```
+
+The two current cached closed passes are:
+
+```text
+hammer.10823.92.th0.p
+hammer.11560.31.th0.p
+```
+
+The first blockers in the failed cases are concentrated in the expected
+non-closed classes: `vampire_eq_prop_ext`, FOOL/normal-form/CNF/skolem bridges,
+AVATAR component/refutation assumptions, predicate-definition assumptions, and
+definition-input assumptions.
+
 ## Remaining P0 Work
 
 Closed mode is necessary but not sufficient.
