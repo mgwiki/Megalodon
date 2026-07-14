@@ -2659,14 +2659,35 @@ let source_map_entry_requires_reflexive_equality entry =
   | "set_reflexivity" | "local_set_reflexivity" -> true
   | _ -> false
 
+let source_map_entry_requires_equality entry =
+  match entry.source_map_kind with
+  | "def" | "definition" | "local_definition"
+  | "set_reflexivity" | "local_set_reflexivity" -> true
+  | _ -> false
+
 let is_reflexive_equality_atom atom =
   match equality_sides atom with
   | Some (left, right) -> left = right
   | None -> false
 
+let is_equality_atom atom =
+  match equality_sides atom with
+  | Some _ -> true
+  | None -> false
+
+let is_equality_literal = function
+  | Pos atom -> is_equality_atom atom
+  | Neg _ -> false
+
 let is_reflexive_equality_literal = function
   | Pos atom -> is_reflexive_equality_atom atom
   | Neg _ -> false
+
+let step_is_equality_source = function
+  | Input (_, _, [literal]) -> is_equality_literal literal
+  | FormulaInput (_, _, literal) -> is_equality_literal literal
+  | FormulaTermInput (_, _, formula) -> is_equality_atom formula
+  | _ -> false
 
 let step_is_reflexive_equality_source = function
   | Input (_, _, [literal]) -> is_reflexive_equality_literal literal
@@ -2702,6 +2723,12 @@ let validate_certificate_sources source_map cert =
               (id ^ ": certificate " ^ source_kind_name source
                ^ " source " ^ name ^ " maps to incompatible source-map kind "
                ^ entry.source_map_kind);
+          if source_map_entry_requires_equality entry
+             && not (step_is_equality_source step) then
+            error
+              (id ^ ": certificate source " ^ name
+               ^ " maps to " ^ entry.source_map_kind
+               ^ " but is not an equality input");
           if source_map_entry_requires_reflexive_equality entry
              && not (step_is_reflexive_equality_source step) then
             error

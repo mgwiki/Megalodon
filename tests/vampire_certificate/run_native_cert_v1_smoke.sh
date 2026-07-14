@@ -128,6 +128,20 @@ if ! rg -q 'source d1 maps to incompatible source-map kind definition' "$WORK_DI
 fi
 
 if bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_definition_non_equality_bad.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_definition_non_equality_bad.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_definition_non_equality_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_source_map_definition_non_equality_bad.err"; then
+  echo "native certificate v1 source-map checker accepted a non-equality local definition input" >&2
+  exit 1
+fi
+
+if ! rg -q 'maps to local_definition but is not an equality input' "$WORK_DIR/native_cert_v1_source_map_definition_non_equality_bad.err"; then
+  echo "native certificate v1 source-map definition-shape failure did not explain the side condition" >&2
+  exit 1
+fi
+
+if bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_missing.th0.p \
   "$dummy" >"$WORK_DIR/native_cert_v1_source_map_missing.out" \

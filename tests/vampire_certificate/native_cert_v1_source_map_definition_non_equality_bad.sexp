@@ -1,17 +1,11 @@
 (certificate vampire-megalodon 1
-  (problem "native-cert-v1-source-map-definition-valid")
+  (problem "native-cert-v1-source-map-definition-non-equality-bad")
   (input c1 (source definition "d1")
     (clause
-      (pos
-        (AP
-          (AP (TMH "=") (TMH "d"))
-          (TMH "body")))))
+      (pos (TMH "p"))))
   (input c2 (source axiom "a2")
     (clause
-      (neg
-        (AP
-          (AP (TMH "=") (TMH "d"))
-          (TMH "body")))))
+      (neg (TMH "p"))))
   (resolve c3
     (parents c1 c2)
     (pivot 0 0)
