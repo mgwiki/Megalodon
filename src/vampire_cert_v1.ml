@@ -5163,6 +5163,26 @@ let rec simple_clause_formula_tm = function
 let simple_clause_formula_prop_with_type_env type_env clause =
   simple_tm_expr_with_expected type_env (Some "prop") (simple_clause_formula_tm clause)
 
+let rec simple_formula_clause_projection_proof type_env target_prop target_clause source_formula source_proof depth =
+  match source_formula with
+  | Ap (Ap (TmH "vampire_or", left), right) ->
+      let left_name = "Hformula_lit_" ^ string_of_int depth in
+      let right_name = "Hformula_tail_" ^ string_of_int depth in
+      let left_branch =
+        simple_formula_clause_projection_proof
+          type_env target_prop target_clause left left_name (depth + 1)
+      in
+      let right_branch =
+        simple_formula_clause_projection_proof
+          type_env target_prop target_clause right right_name (depth + 1)
+      in
+      Printf.sprintf "(%s %s (fun %s => %s) (fun %s => %s))"
+        source_proof (simple_prop_arg target_prop)
+        left_name left_branch
+        right_name right_branch
+  | atom ->
+      simple_clause_intro_proof target_clause (literal_of_formula_tm atom) source_proof
+
 let simple_literal_equality_symmetry_proof type_env source_literal proof =
   let sym_helper left right source_proof =
     if is_vampire_bool_const left || is_vampire_bool_const right then
@@ -5375,6 +5395,7 @@ let simple_paramodulate_unit_proof
     (consume_equality (Some equality_index) equality_clause equality_expr 0)
 
 let simple_substitute_proof
+    ?(formula_parent=false)
     clause_body_prop type_env id parent_id subst result parent_sorts result_sorts checked names =
   let parent_clause = lookup_simple_clause checked parent_id in
   let substituted_parent = subst_clause subst parent_clause in
@@ -5405,8 +5426,19 @@ let simple_substitute_proof
       parent_sorts
   in
   let target = clause_body_prop result in
-  simple_wrap_forall_intro result_sorts
-    (simple_clause_projection_proof target result substituted_parent parent_expr 0)
+  let proof =
+    if formula_parent then
+      let source_formula =
+        substituted_parent
+        |> simple_clause_formula_tm
+        |> left_assoc_vampire_or_formula
+      in
+      simple_formula_clause_projection_proof
+        type_env target result source_formula parent_expr 0
+    else
+      simple_clause_projection_proof target result substituted_parent parent_expr 0
+  in
+  simple_wrap_forall_intro result_sorts proof
 
 let simple_substituted_parent_expr type_env subst parent_sorts parent_name =
   let subst_sources = List.map fst subst in
@@ -8809,11 +8841,19 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                    | _ -> false)
                  cert.steps
           in
-          let parent_prop_matches =
+          let parent_matches_structural =
             parent_prop = parent_structural_prop
-            || parent_prop = parent_formula_prop
             || simple_prop_equal_mod_app_parens parent_prop parent_structural_prop
+            || simple_prop_equal_mod_cnf_defs parent_prop parent_structural_prop
+          in
+          let parent_matches_formula =
+            parent_prop = parent_formula_prop
             || simple_prop_equal_mod_app_parens parent_prop parent_formula_prop
+            || simple_prop_equal_mod_cnf_defs parent_prop parent_formula_prop
+          in
+          let parent_prop_matches =
+            parent_matches_structural
+            || parent_matches_formula
             || (parent_is_fool_exhaustiveness
                 && (simple_prop_equal_mod_fool_exhaustiveness_or_alias
                       parent_prop parent_structural_prop
@@ -8845,6 +8885,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                 try
                   let proof =
                     simple_substitute_proof
+                      ~formula_parent:(parent_matches_formula && not parent_matches_structural)
                       clause_body_prop type_env id parent_id effective_subst result
                       parent_sorts sorts !checked !emitted_names
                   in
@@ -9222,6 +9263,8 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             || emitted = formula
             || simple_prop_equal_mod_app_parens emitted structural
             || simple_prop_equal_mod_app_parens emitted formula
+            || simple_prop_equal_mod_cnf_defs emitted structural
+            || simple_prop_equal_mod_cnf_defs emitted formula
           in
           let structurally_safe =
             simple_sorts_subset equality_sorts sorts
