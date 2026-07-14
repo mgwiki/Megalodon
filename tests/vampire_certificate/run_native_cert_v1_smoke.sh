@@ -855,6 +855,35 @@ if ! rg -q 'claim theory_fool_exhaustiveness__b1:' \
 fi
 
 bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_distinctness_valid.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_fool_distinctness_valid.log"
+
+if ! rg -q 'Vampire certificate v1 checked 4 steps' "$WORK_DIR/native_cert_v1_fool_distinctness_valid.log"; then
+  echo "native certificate v1 checker did not accept the valid FOOL distinctness fixture" >&2
+  exit 1
+fi
+
+bin/megalodon \
+  -vampirecertv1closed \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_distinctness_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_fool_distinctness_valid.th0.p \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_fool_distinctness_closed.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_fool_distinctness_closed.out" \
+  2>"$WORK_DIR/native_cert_v1_fool_distinctness_closed.err"
+if rg -n '\b(admit|aby)\b|-allowincompleteqed|bridge_|derived:theory_fool_distinctness' \
+    "$WORK_DIR/native_cert_v1_fool_distinctness_closed.mg"; then
+  echo "closed native certificate v1 FOOL-distinctness emitter left an admission or bridge" >&2
+  exit 1
+fi
+bin/megalodon -hf "$WORK_DIR/native_cert_v1_fool_distinctness_closed.mg" \
+  >"$WORK_DIR/native_cert_v1_fool_distinctness_closed.check.log"
+if ! rg -q 'claim theory_fool_distinctness__d1:' \
+    "$WORK_DIR/native_cert_v1_fool_distinctness_closed.mg"; then
+  echo "closed native certificate v1 FOOL-distinctness emitter did not emit a replayed claim" >&2
+  exit 1
+fi
+
+bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_formula_cnf_valid.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_formula_cnf_valid.log"
 

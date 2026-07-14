@@ -6014,6 +6014,37 @@ let simple_fool_exhaustiveness_proof type_env result_sorts id clause =
   in
   simple_wrap_forall_intro result_sorts proof
 
+let simple_fool_distinctness_proof type_env result_sorts id clause =
+  let literal =
+    match clause with
+    | [Neg atom] -> atom
+    | [_] -> emit_error (id ^ ": FOOL distinctness literal must be negative")
+    | _ -> emit_error (id ^ ": FOOL distinctness proof expects a singleton clause")
+  in
+  let contradiction =
+    match equality_sides literal with
+    | Some (left, right)
+        when (is_vampire_bool_const left && not (is_vampire_false left)
+              && is_vampire_false right) ->
+        Printf.sprintf
+          "(fun Hfool_distinct:%s => Hfool_distinct (fun X Y:prop => X) %s)"
+          (simple_atom_prop_with_type_env type_env literal)
+          simple_true_proof
+    | Some (left, right)
+        when (is_vampire_false left
+              && is_vampire_bool_const right && not (is_vampire_false right)) ->
+        Printf.sprintf
+          "(fun Hfool_distinct:%s => Hfool_distinct (fun X Y:prop => Y) %s)"
+          (simple_atom_prop_with_type_env type_env literal)
+          simple_true_proof
+    | Some _ ->
+        emit_error (id ^ ": FOOL distinctness proof expected true != false")
+    | None ->
+        emit_error (id ^ ": FOOL distinctness proof literal is not an equality")
+  in
+  simple_wrap_forall_intro result_sorts
+    (simple_clause_intro_proof clause (Neg literal) contradiction)
+
 let simple_inequality_name_intro_proof type_env result_sorts id result =
   let literal, named =
     match result with
@@ -8454,9 +8485,12 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       | FoolDistinctness (id, result) ->
           let name = simple_fresh_name used_names ("theory_fool_distinctness__" ^ id) in
           let prop, sorts = simple_clause_prop_and_sorts_for_step cert id result in
+          let type_env = simple_type_env_with_variables sorts symbol_type_env in
+          let proof = simple_fool_distinctness_proof type_env sorts id result in
           add_emitted id name;
           add_emitted_prop_and_sorts id prop sorts;
-          derived_assumptions := !derived_assumptions @ [(name, prop)];
+          uses_vampire_eq_prop_ext := true;
+          claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")];
           add_checked id result
       | PredicateDefinition (id, _, formula) ->
           let name = simple_fresh_name used_names ("theory_predicate_definition__" ^ id) in

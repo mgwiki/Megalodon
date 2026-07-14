@@ -1545,3 +1545,45 @@ bridge_fool 1
 This is still not a broad completion claim. It is one additional
 source-linked, zero-non-source-premise reconstruction in the cached frontier,
 with the closed gate unchanged.
+
+## Follow-up: FOOL Distinctness Replay
+
+The next adjustment removes `theory_fool_distinctness` from the non-source
+premise set. Vampire's FOOL distinctness clause has the shape `$true !=
+$false`; the Megalodon replay now proves it directly from the existing encoded
+definitions of `True`, `False`, and `vampire_eq_prop`, by instantiating the
+equality eliminator with the appropriate projection predicate. No new axiom,
+choice principle, or Vampire run is involved.
+
+A dedicated native certificate fixture was added for this path:
+
+```text
+tests/vampire_certificate/native_cert_v1_fool_distinctness_valid.sexp
+tests/vampire_certificate/native_cert_v1_fool_distinctness_valid.th0.p
+```
+
+The focused closed fixture emits a Megalodon claim
+`theory_fool_distinctness__d1` and `bin/megalodon -hf` checks it. On the cached
+frontier, this does not increase `CLOSED_PASS`, because the affected library
+cases immediately expose later AVATAR premises. It does, however, remove FOOL
+distinctness from the first-blocker list:
+
+```text
+CLOSED_PASS 93
+EMIT_FAIL 120
+/project/tmp/fool_distinctness_frontier_172334
+
+avatar_component 95
+bridge_skolem_formula 18
+definition_input 4
+bridge_predicate_definition_fold 2
+bridge_fool 1
+```
+
+Validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+TMPDIR=/project/tmp JOBS=10 tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh
+```
