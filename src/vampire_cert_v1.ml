@@ -2772,6 +2772,8 @@ let collect_simple_prop_names cert =
   let add_clause acc clause = List.fold_left add_literal acc clause in
   let add_step acc = function
     | Input (_, _, clause) -> add_clause acc clause
+    | Substitute (_, _, _, clause) -> add_clause acc clause
+    | Condensation (_, _, _, clause) -> add_clause acc clause
     | Resolve (_, _, _, _, _, clause) -> add_clause acc clause
     | Factor (_, _, _, _, clause) -> add_clause acc clause
     | Contradiction _ -> acc
@@ -2840,6 +2842,24 @@ let simple_factor_proof id parent_id left_index right_index result checked =
   | _ ->
       emit_error (id ^ ": simple emitter supports only two-literal propositional factoring")
 
+let simple_copy_proof id parent_id result checked =
+  let parent_clause = lookup_simple_clause checked parent_id in
+  if parent_clause <> result then
+    emit_error (id ^ ": simple emitter supports only exact clause copies for substitution");
+  parent_id
+
+let simple_condensation_proof id parent_id subst result checked =
+  if subst <> [] then
+    emit_error (id ^ ": simple emitter does not support term-changing condensation");
+  let parent_clause = lookup_simple_clause checked parent_id in
+  match parent_clause, result with
+  | [a; b], [res] when a = b && a = res ->
+      let target = simple_literal_prop res in
+      Printf.sprintf "(%s %s (fun Hlit_0 => Hlit_0) (fun Htail_1 => Htail_1))"
+        parent_id target
+  | _ ->
+      emit_error (id ^ ": simple emitter supports only two-literal propositional condensation")
+
 let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") cert =
   ignore (check_certificate cert);
   let prop_names = collect_simple_prop_names cert in
@@ -2864,6 +2884,14 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") cert =
       | Input (id, _, clause) ->
           assumptions := !assumptions @ [(id, simple_clause_prop clause)];
           add_checked id clause
+      | Substitute (id, parent_id, _, result) ->
+          let proof = simple_copy_proof id parent_id result !checked in
+          claims := !claims @ [(id, simple_clause_prop result, proof)];
+          add_checked id result
+      | Condensation (id, parent_id, subst, result) ->
+          let proof = simple_condensation_proof id parent_id subst result !checked in
+          claims := !claims @ [(id, simple_clause_prop result, proof)];
+          add_checked id result
       | Resolve (id, left_id, right_id, left_index, right_index, result) ->
           let proof =
             simple_resolution_proof id left_id right_id left_index right_index result !checked

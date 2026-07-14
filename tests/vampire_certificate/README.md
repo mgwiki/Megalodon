@@ -35,8 +35,10 @@ bin/megalodon \
 
 This currently emits a no-admit Megalodon proof only for a small propositional
 fragment: input assumptions, unit/binary-tail resolution, two-literal
-propositional factoring, and contradiction. Unsupported rules and
-non-propositional literals fail closed with a `simple Megalodon emitter` error.
+propositional factoring/condensation, exact no-op substitution copies, and
+contradiction. Unsupported rules, non-propositional literals, and
+term-changing substitutions fail closed with a `simple Megalodon emitter`
+error.
 The path is intentionally small: it is the seed of native proof-term/text
 elaboration from the OCaml certificate checker, not a replacement for the
 strict certificate gate over larger live corpora.

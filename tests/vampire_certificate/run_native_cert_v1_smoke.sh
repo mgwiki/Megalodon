@@ -69,6 +69,54 @@ fi
 bin/megalodon "$WORK_DIR/native_cert_v1_factor_prop_valid_emit.mg" \
   >"$WORK_DIR/native_cert_v1_factor_prop_valid_emit.check.log"
 
+bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_substitute_prop_noop_valid.sexp \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_substitute_prop_noop_valid_emit.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_substitute_prop_noop_valid_emit.log"
+if ! rg -q 'Vampire certificate v1 checked 5 steps' \
+    "$WORK_DIR/native_cert_v1_substitute_prop_noop_valid_emit.log"; then
+  echo "native certificate v1 checker did not accept the no-op substitute fixture" >&2
+  exit 1
+fi
+if rg -n '\badmit\b|\baby\b|-allowincompleteqed' \
+    "$WORK_DIR/native_cert_v1_substitute_prop_noop_valid_emit.mg"; then
+  echo "native certificate v1 no-op substitute emitter generated an admission marker" >&2
+  exit 1
+fi
+bin/megalodon "$WORK_DIR/native_cert_v1_substitute_prop_noop_valid_emit.mg" \
+  >"$WORK_DIR/native_cert_v1_substitute_prop_noop_valid_emit.check.log"
+
+bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_condensation_prop_valid.sexp \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_condensation_prop_valid_emit.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_condensation_prop_valid_emit.log"
+if ! rg -q 'Vampire certificate v1 checked 5 steps' \
+    "$WORK_DIR/native_cert_v1_condensation_prop_valid_emit.log"; then
+  echo "native certificate v1 checker did not accept the propositional condensation fixture" >&2
+  exit 1
+fi
+if rg -n '\badmit\b|\baby\b|-allowincompleteqed' \
+    "$WORK_DIR/native_cert_v1_condensation_prop_valid_emit.mg"; then
+  echo "native certificate v1 propositional condensation emitter generated an admission marker" >&2
+  exit 1
+fi
+bin/megalodon "$WORK_DIR/native_cert_v1_condensation_prop_valid_emit.mg" \
+  >"$WORK_DIR/native_cert_v1_condensation_prop_valid_emit.check.log"
+
+if bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_substitute_prop_changed_unsupported.sexp \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_substitute_prop_changed_unsupported.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_substitute_prop_changed_unsupported.out" \
+  2>"$WORK_DIR/native_cert_v1_substitute_prop_changed_unsupported.err"; then
+  echo "native certificate v1 simple emitter accepted a term-changing substitution" >&2
+  exit 1
+fi
+if ! rg -q 'simple Megalodon emitter.*exact clause copies' \
+    "$WORK_DIR/native_cert_v1_substitute_prop_changed_unsupported.err"; then
+  echo "native certificate v1 substitution failure did not explain exact-copy limitation" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_factor_equality_valid.sexp \
   -vampirecertv1emit "$WORK_DIR/native_cert_v1_factor_equality_unsupported.mg" \
