@@ -947,6 +947,29 @@ let vampire_or left right =
 let vampire_and left right =
   Ap (Ap (TmH "vampire_and", left), right)
 
+let rec left_assoc_vampire_or_formula tm =
+  let normalize = left_assoc_vampire_or_formula in
+  let rec collect_or acc = function
+    | Ap (Ap (TmH "vampire_or", left), right) ->
+        collect_or (collect_or acc right) left
+    | other -> normalize other :: acc
+  in
+  let build_left = function
+    | [] -> tm
+    | first :: rest -> List.fold_left vampire_or first rest
+  in
+  match tm with
+  | Ap (Ap (TmH "vampire_or", _), _) ->
+      tm |> collect_or [] |> build_left
+  | Ap (Ap (TmH "vampire_and", left), right) ->
+      vampire_and (normalize left) (normalize right)
+  | Imp (left, right) -> Imp (normalize left, normalize right)
+  | All (tp, body) -> All (tp, normalize body)
+  | Lam (tp, body) -> Lam (tp, normalize body)
+  | TpAp (m, a) -> TpAp (normalize m, a)
+  | Ap (m, n) -> Ap (normalize m, normalize n)
+  | TmH _ | DB _ | Prim _ -> tm
+
 let vampire_exists tp body =
   Ap (TmH "vampire_exists_prop", Lam (tp, body))
 
@@ -4619,7 +4642,9 @@ let simple_arrow_sort domain codomain =
   domain ^ "->" ^ codomain
 
 let simple_binder_sort_expr sort =
-  sort
+  match simple_split_arrow_type sort with
+  | Some _ -> "(" ^ sort ^ ")"
+  | None -> sort
 
 let simple_symbol_type_env cert =
   let builtins =
@@ -5508,8 +5533,12 @@ let simple_cnf_clause_projection_proof
   let rec formula_prop_text env = function
     | All (tp, body) ->
         let sort = simple_tp_expr tp in
-        let binder = "Xcnf_text_" ^ string_of_int (List.length env) in
-        "forall " ^ binder ^ ":" ^ sort ^ ", "
+        let binder =
+          match max_vampire_var_name body with
+          | Some name -> megalodon_ident name
+          | None -> "Xcnf_text_" ^ string_of_int (List.length env)
+        in
+        "forall " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ ", "
         ^ formula_prop_text ((binder, sort) :: env) body
     | Imp (left, right) ->
         "(" ^ formula_prop_text env left ^ " -> " ^ formula_prop_text env right ^ ")"
@@ -5530,8 +5559,12 @@ let simple_cnf_clause_projection_proof
           | "set->set->prop" -> "vampire_exists_set_set_prop"
           | _ -> "vampire_exists_set"
         in
-        let binder = "Xcnf_exists_text_" ^ string_of_int (List.length env) in
-        exists_name ^ " (fun " ^ binder ^ ":" ^ sort ^ " => "
+        let binder =
+          match max_vampire_var_name body with
+          | Some name -> megalodon_ident name
+          | None -> "Xcnf_exists_text_" ^ string_of_int (List.length env)
+        in
+        exists_name ^ " (fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => "
         ^ formula_prop_text ((binder, sort) :: env) body ^ ")"
     | atom ->
         begin match equality_sides atom with
@@ -5661,7 +5694,7 @@ let simple_fool_formula_proof type_env id parent_sorts result_sorts source targe
         let binder = fallback_binder sort in
         let env = (binder, sort) :: env in
         let body_proof = convert direction env source_body target_body ("(" ^ proof ^ " " ^ binder ^ ")") in
-        "(fun " ^ binder ^ ":" ^ sort ^ " => " ^ body_proof ^ ")"
+          "(fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => " ^ body_proof ^ ")"
     | Imp (source_left, source_right), Imp (target_left, target_right) ->
         begin match direction with
         | `Forward ->
@@ -6012,7 +6045,7 @@ let rec simple_formula_prop_text type_env tm =
             | None -> "Xformula"
             end
       in
-      "forall " ^ binder ^ ":" ^ sort ^ ", "
+      "forall " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ ", "
       ^ simple_formula_prop_text ((binder, sort) :: type_env) body
   | Imp (left, right) ->
       "(" ^ simple_formula_prop_text type_env left ^ " -> "
@@ -6041,7 +6074,7 @@ let rec simple_formula_prop_text type_env tm =
         | Some name -> megalodon_ident name
         | None -> "Xformula"
       in
-      exists_name ^ " (fun " ^ binder ^ ":" ^ sort ^ " => "
+      exists_name ^ " (fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => "
       ^ simple_formula_prop_text ((binder, sort) :: type_env) body ^ ")"
   | atom ->
       begin match equality_sides atom with
@@ -6089,7 +6122,7 @@ let simple_formula_orientation_proof type_env source target proof =
             else subst_tm [(source_raw, TmH binder)] source_body
           in
           let env = (binder, sort) :: env in
-          "(fun " ^ binder ^ ":" ^ sort ^ " => "
+          "(fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => "
           ^ convert env (binder :: used) source_body target_body ("(" ^ proof ^ " " ^ binder ^ ")")
           ^ ")"
       | Imp (source_left, source_right), Imp (target_left, target_right) ->
@@ -6167,8 +6200,8 @@ let simple_formula_orientation_proof type_env source target proof =
           Printf.sprintf
             "(%s (%s) (fun %s:%s => fun %s:%s => fun vorient_exists_goal:prop => fun Horient_exists_case:(forall %s:%s, (%s) -> vorient_exists_goal) => Horient_exists_case %s %s))"
             proof (simple_prop_arg target_text)
-            binder sort witness_name source_body_text
-            binder sort target_body_text binder body_proof
+            binder (simple_binder_sort_expr sort) witness_name source_body_text
+            binder (simple_binder_sort_expr sort) target_body_text binder body_proof
       | _ ->
           begin match equality_sides source, equality_sides target with
           | Some (source_left, source_right), Some (target_left, target_right)
@@ -6180,7 +6213,7 @@ let simple_formula_orientation_proof type_env source target proof =
   in
   convert type_env [] source target proof
 
-let simple_skolem_formula_proof
+let simple_skolem_formula_proof ?opened_witness
     type_env id parent_id subst source target parent_sorts result_sorts names =
   let binder_sorts =
     parent_sorts @ result_sorts |> simple_unique_variable_sorts
@@ -6221,8 +6254,57 @@ let simple_skolem_formula_proof
           let env = (binder, sort) :: env in
           Printf.sprintf
             "(fun %s:%s => %s)"
-            binder sort
+            binder (simple_binder_sort_expr sort)
             (transport env source_body target_body ("(" ^ proof ^ " " ^ binder ^ ")"))
+      | Ap (Ap (TmH "vampire_or", source_a),
+            Ap (Ap (TmH "vampire_or", source_b), source_c)),
+        Ap (Ap (TmH "vampire_or",
+                Ap (Ap (TmH "vampire_or", target_a), target_b)),
+            target_c) ->
+          let a_name = fresh "Hskolem_assoc_a_" in
+          let b_name = fresh "Hskolem_assoc_b_" in
+          let c_name = fresh "Hskolem_assoc_c_" in
+          let source_a_text = simple_formula_prop_text env source_a in
+          let source_b_text = simple_formula_prop_text env source_b in
+          let source_c_text = simple_formula_prop_text env source_c in
+          let target_a_text = simple_formula_prop_text env target_a in
+          let target_b_text = simple_formula_prop_text env target_b in
+          let target_c_text = simple_formula_prop_text env target_c in
+          let target_left_text =
+            simple_formula_prop_text env (Ap (Ap (TmH "vampire_or", target_a), target_b))
+          in
+          let target_text = simple_formula_prop_text env target in
+          let a_proof = transport env source_a target_a a_name in
+          let b_proof = transport env source_b target_b b_name in
+          let c_proof = transport env source_c target_c c_name in
+          let target_left_from_a =
+            Printf.sprintf
+              "(fun vassoc_left_goal:prop => fun Hassoc_left:(%s) -> vassoc_left_goal => fun Hassoc_right:(%s) -> vassoc_left_goal => Hassoc_left %s)"
+              target_a_text target_b_text a_proof
+          in
+          let target_left_from_b =
+            Printf.sprintf
+              "(fun vassoc_left_goal:prop => fun Hassoc_left:(%s) -> vassoc_left_goal => fun Hassoc_right:(%s) -> vassoc_left_goal => Hassoc_right %s)"
+              target_a_text target_b_text b_proof
+          in
+          let target_from_left left_proof =
+            Printf.sprintf
+              "(fun vassoc_goal:prop => fun Hassoc_left:(%s) -> vassoc_goal => fun Hassoc_right:(%s) -> vassoc_goal => Hassoc_left %s)"
+              target_left_text target_c_text left_proof
+          in
+          let target_from_c =
+            Printf.sprintf
+              "(fun vassoc_goal:prop => fun Hassoc_left:(%s) -> vassoc_goal => fun Hassoc_right:(%s) -> vassoc_goal => Hassoc_right %s)"
+              target_left_text target_c_text c_proof
+          in
+          Printf.sprintf
+            "(%s %s (fun %s:%s => %s) (fun Hskolem_assoc_tail:(%s) => Hskolem_assoc_tail %s (fun %s:%s => %s) (fun %s:%s => %s)))"
+            proof (simple_prop_arg target_text)
+            a_name source_a_text (target_from_left target_left_from_a)
+            (simple_formula_prop_text env (Ap (Ap (TmH "vampire_or", source_b), source_c)))
+            (simple_prop_arg target_text)
+            b_name source_b_text (target_from_left target_left_from_b)
+            c_name source_c_text target_from_c
       | Ap (Ap (TmH "vampire_or", source_left), source_right),
         Ap (Ap (TmH "vampire_or", target_left), target_right) ->
           let left_name = fresh "Hskolem_left_" in
@@ -6253,9 +6335,6 @@ let simple_skolem_formula_proof
           when exists_head = TmH "vampire_exists_prop"
                || exists_head = TmH "vampire_exists_set" ->
           let source_sort = simple_tp_expr source_tp in
-          if source_sort <> "set" then
-            emit_error
-              (id ^ ": skolem proof supports only set existential witnesses");
           let raw_source_var =
             match subst with
             | [(source_var, _)] -> source_var
@@ -6269,17 +6348,25 @@ let simple_skolem_formula_proof
           in
           let source_var = megalodon_ident raw_source_var in
           let skolem_tm = skolem_subst_for_var raw_source_var in
-          let predicate_env = (source_var, source_sort) :: env in
-          let predicate_text =
-            "fun " ^ source_var ^ ":" ^ source_sort ^ " => " ^ simple_formula_prop_text predicate_env body
-          in
-          let choice_proof =
-            Printf.sprintf
-              "(vampire_exists_set_choice (%s) %s)"
-              predicate_text proof
-          in
           let choice_body = subst_tm [(raw_source_var, skolem_tm)] body in
-          transport env choice_body target choice_proof
+          begin match source_sort, opened_witness with
+          | "set", _ ->
+              let predicate_env = (source_var, source_sort) :: env in
+              let predicate_text =
+                "fun " ^ source_var ^ ":" ^ simple_binder_sort_expr source_sort ^ " => " ^ simple_formula_prop_text predicate_env body
+              in
+              let choice_proof =
+                Printf.sprintf
+                  "(vampire_exists_set_choice (%s) %s)"
+                  predicate_text proof
+              in
+              transport env choice_body target choice_proof
+          | _, Some witness_name ->
+              transport env choice_body target witness_name
+          | _ ->
+              emit_error
+                (id ^ ": skolem proof supports only set existential witnesses without an opened higher-type witness")
+          end
       | _ ->
           simple_formula_orientation_proof env source target proof
   in
@@ -6362,7 +6449,7 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
             | (name, _) :: _ -> megalodon_ident name
             | [] -> "Xennf_text_" ^ string_of_int (List.length env)
           in
-          "forall " ^ binder ^ ":" ^ sort ^ ", "
+          "forall " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ ", "
           ^ formula_text ((binder, sort) :: env) body
       | Imp (left, right) ->
           "(" ^ formula_text env left ^ " -> " ^ formula_text env right ^ ")"
@@ -6388,7 +6475,7 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
             | Some name -> megalodon_ident name
             | None -> "Xennf_exists_text_" ^ string_of_int (List.length env)
           in
-          exists_name ^ " (fun " ^ binder ^ ":" ^ sort ^ " => "
+          exists_name ^ " (fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => "
           ^ formula_text ((binder, sort) :: env) body ^ ")"
       | atom ->
           begin match equality_sides atom with
@@ -6402,7 +6489,7 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
         let binder = binder_for_body sort target_body in
         let env = (binder, sort) :: env in
         let body_proof = convert env source_body target_body ("(" ^ proof ^ " " ^ binder ^ ")") in
-        "(fun " ^ binder ^ ":" ^ sort ^ " => " ^ body_proof ^ ")"
+        "(fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => " ^ body_proof ^ ")"
     | _ when source = target -> proof
     | Imp (Imp (left, right), false_tm),
       Ap (Ap (TmH "vampire_and", target_left), target_right)
@@ -6513,7 +6600,7 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
                   let right_text = formula_text env right in
                   let right_proof = target_and_intro rest right in
                   Printf.sprintf
-                    "(fun %s:prop => fun %s:%s -> %s -> %s => %s %s %s)"
+                    "(fun %s:prop => fun %s:(%s) -> (%s) -> %s => %s %s %s)"
                     goal_name and_name left_text right_text goal_name
                     and_name proof right_proof
               | _ ->
@@ -6527,15 +6614,21 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
                   when simple_tp_expr tp = sort
                        && (exists_head = TmH "vampire_exists_prop"
                            || exists_head = TmH "vampire_exists_set") ->
-                  let goal_name = fresh_proof_var "Hennf_exists_intro_goal_" in
-                  let case_name = fresh_proof_var "Hennf_exists_intro_case_" in
                   let body_env = (binder, sort) :: env in
                   let body_text = formula_text body_env body in
                   let body_proof = exists_intro body_env rest body in
+                  let intro_name =
+                    match sort with
+                    | "set" -> "vampire_exists_set_intro"
+                    | "prop" -> "vampire_exists_prop_intro"
+                    | "set->prop" -> "vampire_exists_set_prop_intro"
+                    | "set->set" -> "vampire_exists_set_set_intro"
+                    | "set->set->prop" -> "vampire_exists_set_set_prop_intro"
+                    | _ -> emit_error (id ^ ": ENNF proof has unsupported existential witness sort " ^ sort)
+                  in
                   Printf.sprintf
-                    "(fun %s:prop => fun %s:(forall %s:%s, %s -> %s) => %s %s %s)"
-                    goal_name case_name binder sort body_text goal_name
-                    case_name binder body_proof
+                    "(%s (fun %s:%s => %s) %s %s)"
+                    intro_name binder (simple_binder_sort_expr sort) body_text binder body_proof
               | _ ->
                   emit_error (id ^ ": ENNF proof could not build nested existential witness")
             in
@@ -6557,7 +6650,7 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
               let body =
                 List.fold_right
                   (fun (binder, sort) acc ->
-                     Printf.sprintf "fun %s:%s => %s" binder sort acc)
+                     Printf.sprintf "fun %s:%s => %s" binder (simple_binder_sort_expr sort) acc)
                   binders body
               in
               Printf.sprintf "%s (%s)" proof body
@@ -6567,7 +6660,7 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
               | (binder, sort) :: _, Ap (_, Lam (_, body)) ->
                   Printf.sprintf
                     "(forall %s:%s, %s -> Hennf_exists_goal)"
-                    binder sort (formula_text env body)
+                    binder (simple_binder_sort_expr sort) (formula_text env body)
               | _ ->
                   emit_error (id ^ ": ENNF proof expected an existential target continuation")
             in
@@ -6674,6 +6767,21 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       "Definition vampire_exists_set_prop : ((set->prop) -> prop) -> prop := fun P:(set->prop)->prop => forall q:prop, (forall x:set->prop, P x -> q) -> q.";
       "Definition vampire_exists_set_set : ((set->set) -> prop) -> prop := fun P:(set->set)->prop => forall q:prop, (forall x:set->set, P x -> q) -> q.";
       "Definition vampire_exists_set_set_prop : ((set->set->prop) -> prop) -> prop := fun P:(set->set->prop)->prop => forall q:prop, (forall x:set->set->prop, P x -> q) -> q.";
+      "Theorem vampire_exists_set_intro : forall P:set->prop, forall x:set, P x -> vampire_exists_set P.";
+      "exact (fun P:set->prop => fun x:set => fun HP:P x => fun q:prop => fun Hcase:(forall y:set, P y -> q) => Hcase x HP).";
+      "Qed.";
+      "Theorem vampire_exists_prop_intro : forall P:prop->prop, forall x:prop, P x -> vampire_exists_prop P.";
+      "exact (fun P:prop->prop => fun x:prop => fun HP:P x => fun q:prop => fun Hcase:(forall y:prop, P y -> q) => Hcase x HP).";
+      "Qed.";
+      "Theorem vampire_exists_set_prop_intro : forall P:(set->prop)->prop, forall x:set->prop, P x -> vampire_exists_set_prop P.";
+      "exact (fun P:(set->prop)->prop => fun x:set->prop => fun HP:P x => fun q:prop => fun Hcase:(forall y:set->prop, P y -> q) => Hcase x HP).";
+      "Qed.";
+      "Theorem vampire_exists_set_set_intro : forall P:(set->set)->prop, forall x:set->set, P x -> vampire_exists_set_set P.";
+      "exact (fun P:(set->set)->prop => fun x:set->set => fun HP:P x => fun q:prop => fun Hcase:(forall y:set->set, P y -> q) => Hcase x HP).";
+      "Qed.";
+      "Theorem vampire_exists_set_set_prop_intro : forall P:(set->set->prop)->prop, forall x:set->set->prop, P x -> vampire_exists_set_set_prop P.";
+      "exact (fun P:(set->set->prop)->prop => fun x:set->set->prop => fun HP:P x => fun q:prop => fun Hcase:(forall y:set->set->prop, P y -> q) => Hcase x HP).";
+      "Qed.";
       "(* Parameter Eps_i \"174b78e53fc239e8c2aab4ab5a996a27e3e5741e88070dad186e05fb13f275e5\" *)";
       "Parameter Eps_i : (set->prop)->set.";
       "Axiom Eps_i_ax : forall P:set->prop, forall x:set, P x -> P (Eps_i P).";
@@ -6830,6 +6938,37 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   let inequality_split_definition_names =
     List.map (fun (name, _, _) -> name) inequality_split_definitions
   in
+  let local_skolem_witnesses_for_step parent_id subst =
+    let subst_for_current body =
+      match
+        List.find_opt
+          (fun (source_var, _) -> tm_contains_symbol source_var body)
+          subst
+      with
+      | Some found -> Some found
+      | None ->
+          begin match subst with
+          | [found] -> Some found
+          | _ -> None
+          end
+    in
+    match lookup_formula checked_certificate parent_id with
+    | Ap (exists_head, Lam (source_tp, body))
+        when exists_head = TmH "vampire_exists_prop"
+             || exists_head = TmH "vampire_exists_set" ->
+        let source_sort = simple_tp_expr source_tp in
+        if source_sort = "set" then []
+        else
+          begin match subst_for_current body with
+          | Some (_, skolem_tm) ->
+              begin match flatten_value_application skolem_tm with
+              | TmH raw_name, [] -> [(megalodon_ident raw_name, source_sort)]
+              | _ -> []
+              end
+          | None -> []
+          end
+    | _ -> []
+  in
   let skolem_definitions_for_step id parent_id subst =
     let binder_sorts = metadata_step_variable_sort_pairs cert id in
     let binder_index = ref 0 in
@@ -6928,7 +7067,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                       (fun (binder, sort) acc ->
                          "fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => " ^ acc)
                       arg_binders
-                      (Printf.sprintf "Eps_i (fun %s:%s => %s)" source_var source_sort body_text)
+                      (Printf.sprintf "Eps_i (fun %s:%s => %s)" source_var (simple_binder_sort_expr source_sort) body_text)
                   in
                   let definition =
                     (name, Printf.sprintf "Definition %s : %s := %s." name sort rhs, sort)
@@ -6960,9 +7099,23 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   let skolem_definition_names =
     List.map (fun (name, _, _) -> name) skolem_definitions
   in
+  let local_skolem_witnesses =
+    cert.steps
+    |> List.fold_left
+         (fun acc -> function
+            | SkolemFormula (_, parent_id, subst, _) ->
+                local_skolem_witnesses_for_step parent_id subst @ acc
+            | _ -> acc)
+         []
+    |> List.sort_uniq compare
+  in
+  let local_skolem_witness_names =
+    List.map fst local_skolem_witnesses
+  in
   let symbol_type_env =
     (List.map (fun (name, _, sort) -> (name, sort)) inequality_split_definitions
      @ List.map (fun (name, _, sort) -> (name, sort)) skolem_definitions)
+    @ local_skolem_witnesses
     @ base_symbol_type_env
     |> List.sort_uniq compare
   in
@@ -7017,12 +7170,27 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   in
   let local_definition_names =
     function_definition_names @ inequality_split_definition_names
-    @ skolem_definition_names
+    @ skolem_definition_names @ local_skolem_witness_names
   in
   let generated_prelude_names =
     [
       "Eps_i"; "Eps_i_ax"; "vampire_exists_set_choice";
+      "vampire_exists_set_intro"; "vampire_exists_prop_intro";
+      "vampire_exists_set_prop_intro"; "vampire_exists_set_set_intro";
+      "vampire_exists_set_set_prop_intro";
     ]
+  in
+  let skolem_formula_step_ids =
+    cert.steps
+    |> List.filter_map
+         (function
+           | SkolemFormula (id, _, _, _) -> Some id
+           | _ -> None)
+  in
+  let emitted_formula_for_parent parent_id formula =
+    if List.mem parent_id skolem_formula_step_ids then
+      left_assoc_vampire_or_formula formula
+    else formula
   in
   let add_symbol_declaration line =
     match simple_declared_name line with
@@ -7089,6 +7257,15 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   let derived_assumptions = ref [] in
   let bridge_assumptions = ref [] in
   let claims = ref [] in
+  let proof_line_counter = ref 0 in
+  let add_claim name prop proof =
+    claims := !claims @ [(name, prop, proof)]
+  in
+  let add_proof_line line =
+    let name = Printf.sprintf "__proof_line_%d" !proof_line_counter in
+    incr proof_line_counter;
+    claims := !claims @ [(name, "", line)]
+  in
   let uses_vampire_eq_prop_ext = ref false in
   let final_empty = ref None in
   let add_emitted id name =
@@ -7623,7 +7800,56 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           end
       | SkolemFormula (id, parent_id, subst, formula) ->
           let name = derived_name id in
+          let proof_formula = left_assoc_vampire_or_formula formula in
           let target_prop, target_sorts = formula_tm_prop_and_sorts id formula in
+          let opened_higher_order_skolem () =
+            let parent_formula = lookup_formula checked_certificate parent_id in
+            match parent_formula with
+            | Ap (exists_head, Lam (source_tp, body))
+                when exists_head = TmH "vampire_exists_prop"
+                     || exists_head = TmH "vampire_exists_set" ->
+                let source_sort = simple_tp_expr source_tp in
+                if source_sort = "set" then None
+                else
+                  let raw_source_var, skolem_tm =
+                    match subst with
+                    | [(source_var, skolem_tm)] -> source_var, skolem_tm
+                    | _ ->
+                        begin match
+                          List.find_opt
+                            (fun (source_var, _) -> tm_contains_symbol source_var body)
+                            subst
+                        with
+                        | Some found -> found
+                        | None -> raise (Error (id ^ ": higher-type skolem opening could not find substituted variable"))
+                        end
+                  in
+                  begin match flatten_value_application skolem_tm with
+                  | TmH raw_skolem_name, [] ->
+                      let skolem_name = megalodon_ident raw_skolem_name in
+                      let witness_name = simple_fresh_name used_names (name ^ "_witness") in
+                      let witness_body = subst_tm [(raw_source_var, skolem_tm)] body in
+                      let witness_prop =
+                        simple_formula_prop_text
+                          ((skolem_name, source_sort) :: symbol_type_env)
+                          witness_body
+                      in
+                      let type_env =
+                        simple_type_env_with_variables
+                          (target_sorts |> simple_unique_variable_sorts)
+                          symbol_type_env
+                      in
+                      let proof =
+                        simple_skolem_formula_proof
+                          ~opened_witness:witness_name
+                          type_env id parent_id subst parent_formula proof_formula
+                          [] target_sorts !emitted_names
+                      in
+                      Some (skolem_name, source_sort, witness_name, witness_prop, proof)
+                  | _ -> None
+                  end
+            | _ -> None
+          in
           begin match
             try
               let parent_formula = lookup_formula checked_certificate parent_id in
@@ -7635,7 +7861,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
               in
               Some
                 (simple_skolem_formula_proof
-                   type_env id parent_id subst parent_formula formula
+                   type_env id parent_id subst parent_formula proof_formula
                    parent_sorts target_sorts !emitted_names)
             with Error _ -> None
           with
@@ -7644,7 +7870,21 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
               add_emitted_prop_and_sorts id target_prop target_sorts;
               claims := !claims @ [(name, target_prop, "exact " ^ proof ^ ".")]
           | None ->
-              add_formula_inference_bridge "skolem_formula" id [parent_id] target_prop
+              begin match
+                try opened_higher_order_skolem ()
+                with Error _ -> None
+              with
+              | Some (skolem_name, source_sort, witness_name, witness_prop, proof) ->
+                  let parent_name = lookup_simple_name !emitted_names parent_id in
+                  add_proof_line ("apply " ^ parent_name ^ ".");
+                  add_proof_line ("let " ^ skolem_name ^ ":" ^ simple_binder_sort_expr source_sort ^ ".");
+                  add_proof_line ("assume " ^ witness_name ^ ": " ^ witness_prop ^ ".");
+                  add_emitted id name;
+                  add_emitted_prop_and_sorts id target_prop target_sorts;
+                  add_claim name target_prop ("exact " ^ proof ^ ".")
+              | None ->
+                  add_formula_inference_bridge "skolem_formula" id [parent_id] target_prop
+              end
           end
       | SkolemFormulaComputed (id, parent_id, _) ->
           add_formula_inference_bridge "skolem_formula" id [parent_id] (simple_formula_prop cert id)
@@ -7674,7 +7914,10 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                     (simple_cnf_literal_clause_parent_proof
                        target_prop parent_sorts target_sorts parent_clause result parent_name)
                 with Error _ ->
-                  let parent_formula = lookup_formula checked_certificate parent_id in
+                  let parent_formula =
+                    lookup_formula checked_certificate parent_id
+                    |> emitted_formula_for_parent parent_id
+                  in
                   Some
                     (simple_cnf_literal_proof
                        parent_sorts target_sorts parent_formula result parent_name)
@@ -7714,7 +7957,10 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             in
             begin match
               try
-                let parent_formula = lookup_formula checked_certificate parent_id in
+                let parent_formula =
+                  lookup_formula checked_certificate parent_id
+                  |> emitted_formula_for_parent parent_id
+                in
                 let parent_name = lookup_simple_name !emitted_names parent_id in
                 let parent_prefix_sorts =
                   take_prefix (prefix_forall_count parent_formula) parent_sorts
@@ -8458,11 +8704,14 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       ] @ !claims;
   List.iter
     (fun (name, prop, proof) ->
-       lines := !lines @
-         [
-           Printf.sprintf "claim %s: %s." (megalodon_ident name) prop;
-           Printf.sprintf "{ %s }" proof;
-         ])
+       if prop = "" && string_starts_with "__proof_line_" name then
+         lines := !lines @ [proof]
+       else
+         lines := !lines @
+           [
+             Printf.sprintf "claim %s: %s." (megalodon_ident name) prop;
+             Printf.sprintf "{ %s }" proof;
+           ])
     !claims;
   let final_name = lookup_simple_name !emitted_names final in
   lines := !lines @ [Printf.sprintf "exact %s." (megalodon_ident final_name); "Qed."];
