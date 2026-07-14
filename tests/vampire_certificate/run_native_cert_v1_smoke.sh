@@ -565,6 +565,19 @@ if ! rg -q 'predicate_definition is not a non-recursive definitional disjunction
 fi
 
 if bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_invalid_predicate_definition_symbol.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_invalid_predicate_definition_symbol.out" \
+  2>"$WORK_DIR/native_cert_v1_invalid_predicate_definition_symbol.err"; then
+  echo "native certificate v1 checker accepted a predicate definition with the wrong symbol" >&2
+  exit 1
+fi
+
+if ! rg -q 'predicate_definition symbol wrong does not match definiendum pdef' "$WORK_DIR/native_cert_v1_invalid_predicate_definition_symbol.err"; then
+  echo "native certificate v1 invalid-predicate-definition-symbol failure did not explain the rejected symbol" >&2
+  exit 1
+fi
+
+if bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_invalid_predicate_definition_fold.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_invalid_predicate_definition_fold.out" \
   2>"$WORK_DIR/native_cert_v1_invalid_predicate_definition_fold.err"; then

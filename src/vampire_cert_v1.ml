@@ -1716,10 +1716,10 @@ let predicate_definition_parts id formula =
   match body with
   | Ap (Ap (TmH "vampire_or", left), right) ->
       begin match is_negated_definiendum left with
-      | Some (defined, atom) when not (tm_contains_symbol defined right) -> (atom, right)
+      | Some (defined, atom) when not (tm_contains_symbol defined right) -> (defined, atom, right)
       | _ ->
           begin match is_negated_definiendum right with
-          | Some (defined, atom) when not (tm_contains_symbol defined left) -> (atom, left)
+          | Some (defined, atom) when not (tm_contains_symbol defined left) -> (defined, atom, left)
           | _ -> error (id ^ ": predicate_definition is not a non-recursive definitional disjunction")
           end
       end
@@ -1727,7 +1727,9 @@ let predicate_definition_parts id formula =
 
 let check_predicate_definition id symbol formula =
   if symbol = "" then error (id ^ ": predicate_definition symbol must be non-empty");
-  ignore (predicate_definition_parts id formula)
+  let defined, _, _ = predicate_definition_parts id formula in
+  if symbol <> defined then
+    error (id ^ ": predicate_definition symbol " ^ symbol ^ " does not match definiendum " ^ defined)
 
 let combine_replacement left right =
   match left, right with
@@ -1756,7 +1758,7 @@ let rec tm_matches_one_replacement source target needle replacement =
 let check_predicate_definition_fold checked id source_id definition_id result =
   let source = lookup_formula checked source_id in
   let definition = lookup_formula checked definition_id in
-  let definiendum, body = predicate_definition_parts definition_id definition in
+  let _, definiendum, body = predicate_definition_parts definition_id definition in
   match tm_matches_one_replacement source result body definiendum with
   | Some true -> ()
   | _ -> error (id ^ ": predicate_definition_fold result is not one definition-body replacement")
@@ -1797,7 +1799,7 @@ let check_predicate_definition_fold_chain checked id source_id definition_ids re
     List.fold_left
       (fun candidates definition_id ->
          let definition = lookup_formula checked definition_id in
-         let definiendum, body = predicate_definition_parts definition_id definition in
+         let _, definiendum, body = predicate_definition_parts definition_id definition in
          let next =
            unique_terms
              (List.fold_left
