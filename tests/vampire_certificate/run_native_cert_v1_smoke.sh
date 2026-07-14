@@ -26,6 +26,15 @@ if ! rg -q 'Vampire certificate v1 checked 6 steps' "$WORK_DIR/native_cert_v1_va
 fi
 
 bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_metadata_valid.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_metadata_valid.log"
+
+if ! rg -q 'Vampire certificate v1 checked 4 steps' "$WORK_DIR/native_cert_v1_metadata_valid.log"; then
+  echo "native certificate v1 checker did not accept metadata-bearing certificates" >&2
+  exit 1
+fi
+
+bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
   -vampirecertv1emit "$WORK_DIR/native_cert_v1_valid_emit.mg" \
   "$dummy" >"$WORK_DIR/native_cert_v1_valid_emit.log"

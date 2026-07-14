@@ -702,6 +702,12 @@ let parse_problem = function
   | List [Atom "problem"; name] -> Some (atom name)
   | _ -> None
 
+let is_certificate_metadata = function
+  | List [Atom "symbol_declaration"; _] -> true
+  | List [Atom "step_proposition"; _; _] -> true
+  | List (Atom "step_variable_sorts" :: _) -> true
+  | _ -> false
+
 let parse_certificate text =
   match parse_sexpr text with
   | List (Atom "certificate" :: Atom "vampire-megalodon" :: Atom "1" :: rest) ->
@@ -714,7 +720,11 @@ let parse_certificate text =
             end
         | [] -> (None, [])
       in
-      let steps = List.map parse_step step_forms in
+      let steps =
+        step_forms
+        |> List.filter (fun form -> not (is_certificate_metadata form))
+        |> List.map parse_step
+      in
       check_duplicate_ids steps;
       { problem; steps }
   | _ -> error "expected (certificate vampire-megalodon 1 ...)"
