@@ -4303,6 +4303,21 @@ let simple_tm_names tm =
 let simple_tm_has_db_name tm =
   simple_tm_names tm |> List.exists is_db_ident
 
+let simple_tm_has_unscoped_db_name tm =
+  let rec contains under_vlam = function
+    | TmH name -> is_db_ident name && not under_vlam
+    | DB _ | Prim _ -> false
+    | TpAp (body, _) -> contains under_vlam body
+    | Ap (TmH "vLAM", body) -> contains true body
+    | Ap (left, right) -> contains under_vlam left || contains under_vlam right
+    | Lam (_, body) | All (_, body) -> contains under_vlam body
+    | Imp (left, right) -> contains under_vlam left || contains under_vlam right
+  in
+  contains false tm
+
+let simple_clause_has_unscoped_db_name clause =
+  List.exists (fun literal -> simple_tm_has_unscoped_db_name (literal_atom literal)) clause
+
 let simple_clause_names clause =
   clause
   |> List.fold_left
@@ -5444,6 +5459,33 @@ let simple_cnf_clause_projection_proof
   in
   simple_wrap_forall_intro target_sorts
     (project_formula 0 used_prefix_binders type_env (strip_forall source) source_proof)
+
+let simple_cnf_imp_false_singleton_proof
+    parent_sorts target_sorts source target_clause parent_name =
+  match strip_forall source, target_clause with
+  | Imp (left, right), [Neg atom]
+      when is_vampire_false right
+           && (left = atom || same_mod_scoped_vampire_var_renaming_and_equality left atom) ->
+      simple_wrap_forall_intro target_sorts
+        (simple_apply_forall_vars parent_name parent_sorts)
+  | _ ->
+      emit_error "CNF implication-to-false projection does not match singleton negative clause"
+
+let simple_cnf_literal_proof
+    parent_sorts target_sorts source target_clause parent_name =
+  let source_clause = [literal_of_formula_tm source] in
+  if not (same_clause_multiset source_clause target_clause) then
+    emit_error "CNF literal target does not match parent literal";
+  simple_wrap_forall_intro target_sorts
+    (simple_apply_forall_vars parent_name parent_sorts)
+
+let simple_cnf_literal_clause_parent_proof
+    target_prop parent_sorts target_sorts source_clause target_clause parent_name =
+  if not (same_clause_multiset source_clause target_clause) then
+    emit_error "CNF literal target does not match singleton parent clause";
+  let parent_expr = simple_apply_forall_vars parent_name parent_sorts in
+  simple_wrap_forall_intro target_sorts
+    (simple_clause_projection_proof target_prop target_clause source_clause parent_expr 0)
 
 let simple_fool_formula_proof type_env id parent_sorts result_sorts source target parent_name =
   let binder_sorts =
@@ -7170,8 +7212,25 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             add_emitted id name;
             add_emitted_prop_and_sorts id prop sorts;
             claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")]
-          end else
-            add_formula_inference_bridge "formula_copy" id [parent_id] prop
+          end else begin
+            begin match
+              try
+                let parent_formula = lookup_formula checked_certificate parent_id in
+                let parent_sorts = metadata_step_variable_sort_pairs cert parent_id in
+                Some
+                  (simple_cnf_literal_proof
+                     parent_sorts sorts parent_formula [literal] proof)
+              with Error _ -> None
+            with
+            | Some copy_proof ->
+                add_emitted id name;
+                add_emitted_prop_and_sorts id prop sorts;
+                claims := !claims @ [(name, prop, "exact " ^ copy_proof ^ ".")]
+            | None ->
+                add_formula_inference_bridge "formula_copy" id [parent_id] prop
+            end
+          end;
+          add_checked id [literal]
       | FoolFormula (id, parent_id, formula) ->
           let name = derived_name id in
           let target_prop, target_sorts = formula_tm_prop_and_sorts id formula in
@@ -7205,10 +7264,10 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             with
             | Some proof -> Some proof
             | None ->
-            if simple_tm_has_db_name formula then None
+            if simple_tm_has_unscoped_db_name formula then None
             else try
               let parent_formula = lookup_formula checked_certificate parent_id in
-              if simple_tm_has_db_name parent_formula then
+              if simple_tm_has_unscoped_db_name parent_formula then
                 raise (Error (id ^ ": FOOL formula contains db names"));
               let parent_name = lookup_simple_name !emitted_names parent_id in
               let saved_vlam_counter = !simple_vlam_name_counter in
@@ -7401,8 +7460,30 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             claims := !claims @
               [(name, target_prop, "exact " ^ lookup_simple_name !emitted_names parent_id ^ ".")]
           end else begin
-            add_emitted id name;
-            add_bridge_claim ~kind:"cnf" id parent_id name target_prop target_sorts
+            begin match
+              try
+                let parent_sorts = variable_sorts_for_ids [parent_id] in
+                let parent_name = lookup_simple_name !emitted_names parent_id in
+                try
+                  let parent_clause = lookup_simple_clause !checked parent_id in
+                  Some
+                    (simple_cnf_literal_clause_parent_proof
+                       target_prop parent_sorts target_sorts parent_clause result parent_name)
+                with Error _ ->
+                  let parent_formula = lookup_formula checked_certificate parent_id in
+                  Some
+                    (simple_cnf_literal_proof
+                       parent_sorts target_sorts parent_formula result parent_name)
+              with Error _ -> None
+            with
+            | Some proof ->
+                add_emitted id name;
+                add_emitted_prop_and_sorts id target_prop target_sorts;
+                claims := !claims @ [(name, target_prop, "exact " ^ proof ^ ".")]
+            | None ->
+                add_emitted id name;
+                add_bridge_claim ~kind:"cnf" id parent_id name target_prop target_sorts
+            end
           end;
           add_checked id result
       | CnfFormulaClause (id, parent_id, index, result) ->
@@ -7430,11 +7511,16 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             begin match
               try
                 let parent_formula = lookup_formula checked_certificate parent_id in
+                let parent_name = lookup_simple_name !emitted_names parent_id in
+                try
+                  Some
+                    (simple_cnf_imp_false_singleton_proof
+                       parent_sorts target_sorts parent_formula result parent_name)
+                with Error _ ->
                 let expected = nth index (cnf_clauses parent_formula) (id ^ " CNF clause") in
                 if not (same_clause_multiset expected result) then None
                 else if not (simple_sorts_subset parent_sorts target_sorts) then None
                 else
-                  let parent_name = lookup_simple_name !emitted_names parent_id in
                   try
                     Some
                       (simple_cnf_clause_projection_proof
@@ -7673,21 +7759,25 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           in
           let left_clause = lookup_simple_clause !checked left_id in
           let right_clause = lookup_simple_clause !checked right_id in
+          let stable f = simple_with_stable_vlam_names f in
           let clause_body_prop clause =
-            try simple_clause_prop_with_type_env type_env clause
-            with Error _ -> simple_clause_prop clause
+            stable (fun () ->
+              try simple_clause_prop_with_type_env type_env clause
+              with Error _ -> simple_clause_prop clause)
           in
           let literal_prop literal =
-            try simple_literal_prop_with_type_env type_env literal
-            with Error _ -> simple_literal_prop literal
+            stable (fun () ->
+              try simple_literal_prop_with_type_env type_env literal
+              with Error _ -> simple_literal_prop literal)
           in
           let structural_clause_prop sorts clause =
             simple_quantify_prop sorts (clause_body_prop clause)
           in
           let formula_clause_prop sorts clause =
             let body =
-              try simple_clause_formula_prop_with_type_env type_env clause
-              with Error _ -> simple_clause_prop clause
+              stable (fun () ->
+                try simple_clause_formula_prop_with_type_env type_env clause
+                with Error _ -> simple_clause_prop clause)
             in
             simple_quantify_prop sorts body
           in
@@ -7788,13 +7878,16 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
               (parent_sorts @ sorts |> simple_unique_variable_sorts)
               symbol_type_env
           in
+          let stable f = simple_with_stable_vlam_names f in
           let target_body_prop =
-            try simple_clause_prop_with_type_env type_env result
-            with Error _ -> simple_clause_prop result
+            stable (fun () ->
+              try simple_clause_prop_with_type_env type_env result
+              with Error _ -> simple_clause_prop result)
           in
           let parent_body_prop =
-            try simple_clause_prop_with_type_env type_env parent_clause
-            with Error _ -> simple_clause_prop parent_clause
+            stable (fun () ->
+              try simple_clause_prop_with_type_env type_env parent_clause
+              with Error _ -> simple_clause_prop parent_clause)
           in
           let parent_structural_prop =
             simple_quantify_prop parent_sorts parent_body_prop
@@ -7802,13 +7895,11 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           let target_structural_prop =
             simple_quantify_prop sorts target_body_prop
           in
-          let has_db_name clause =
-            simple_clause_names clause |> List.exists is_db_ident
-          in
           ignore parent_structural_prop;
           ignore target_structural_prop;
           begin match
-            if has_db_name parent_clause || has_db_name result then None
+            if simple_clause_has_unscoped_db_name parent_clause
+               || simple_clause_has_unscoped_db_name result then None
             else
               try Some (simple_equality_symmetry_clause_proof
                           type_env id parent_id literal_index result target_body_prop
@@ -7833,9 +7924,11 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
               (parent_sorts @ sorts |> simple_unique_variable_sorts)
               symbol_type_env
           in
+          let stable f = simple_with_stable_vlam_names f in
           let clause_body_prop clause =
-            try simple_clause_prop_with_type_env type_env clause
-            with Error _ -> simple_clause_prop clause
+            stable (fun () ->
+              try simple_clause_prop_with_type_env type_env clause
+              with Error _ -> simple_clause_prop clause)
           in
           let structural_clause_prop sorts clause =
             simple_quantify_prop sorts (clause_body_prop clause)

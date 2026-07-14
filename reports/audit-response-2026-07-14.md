@@ -1156,3 +1156,56 @@ This is still not a broad architectural finish. It is a Prover9-style
 increment in the right direction: a summarized Vampire bridge was replaced by
 replay of the detailed native certificate steps already present in the proof
 object.
+
+## Follow-up: CNF Literal and Unit Resolution Replay
+
+The next focused target was the repeated `.46` family headed by
+`hammer.10208.46.th0.p`. After the lambda-substitution work, the representative
+proof had only:
+
+```text
+bridge_cnf__u239
+bridge_resolve__u305
+```
+
+The native certificate showed that `u239` is not a theorem-specific step. It is
+the standard conversion of a checked singleton formula/clause
+`P -> vampire_false` into the negative singleton clause for `P`. The final
+`u305` step is ordinary unit resolution between that negative singleton and the
+positive unit `u304`.
+
+Implemented general changes:
+
+- `FormulaCopy` now records its singleton clause in the emitter's checked-clause
+  map, so later clause inferences can use it as a real parent.
+- `cnf_literal` now has native replay for both checked formula parents and
+  checked singleton-clause parents.
+- `resolve` now renders `vLAM`-containing structural safety checks with stable
+  lambda binder names.
+- FOOL/equality checks distinguish unscoped `db*` names from `db*` names scoped
+  under explicit `vLAM`.
+
+Focused closed emission for `hammer.10208.46.th0.p` now reaches zero non-source
+premises and emits native `u239` and `u305` claims. The generated Megalodon
+script still fails source-linked checking because the earlier source/rectify
+glue for local facts with lambda binders is not yet principled: Vampire's
+rectified formula metadata can expose lambda-local binders as outer
+`forall`s, while the original Megalodon lemma has only the real theorem
+binders. A short attempt to render such source formulas directly from the AST
+was backed out because it regressed the committed closed corpus.
+
+Validation kept for this increment:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_source_map_export_smoke.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh
+
+CLOSED_PASS 73
+```
+
+The next source-linking step should not be another string-rendering heuristic.
+It needs a small, explicit rectification/alpha-conversion proof object for
+original Megalodon facts with lambda binders, so the source theorem is connected
+to Vampire's rectified formula before FOOL conversion.
