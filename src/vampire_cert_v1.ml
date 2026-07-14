@@ -5273,27 +5273,30 @@ let simple_cnf_clause_projection_proof
     try simple_clause_prop_with_type_env type_env target_clause
     with Error _ -> simple_clause_prop target_clause
   in
-  let choose_binder sort body =
+  let choose_binder used sort body =
     let candidates =
       target_sorts
       |> List.filter
            (fun (name, known_sort) ->
-              known_sort = sort && tm_contains_symbol (megalodon_ident name) body)
+              let binder = megalodon_ident name in
+              known_sort = sort
+              && not (List.mem binder used)
+              && tm_contains_symbol binder body)
     in
     match candidates with
     | (name, _) :: _ -> megalodon_ident name
     | [] -> emit_error "CNF clause projection could not find a target binder for nested forall"
   in
-  let rec project_formula depth formula proof =
+  let rec project_formula depth used formula proof =
     match formula with
     | All (tp, body) ->
-        let binder = choose_binder (simple_tp_expr tp) body in
-        project_formula (depth + 1) body ("(" ^ proof ^ " " ^ binder ^ ")")
+        let binder = choose_binder used (simple_tp_expr tp) body in
+        project_formula (depth + 1) (binder :: used) body ("(" ^ proof ^ " " ^ binder ^ ")")
     | Ap (Ap (TmH "vampire_or", left), right) ->
         let left_name = "Hcnf_formula_left_" ^ string_of_int depth in
         let right_name = "Hcnf_formula_right_" ^ string_of_int depth in
-        let left_branch = project_formula (depth + 1) left left_name in
-        let right_branch = project_formula (depth + 1) right right_name in
+        let left_branch = project_formula (depth + 1) used left left_name in
+        let right_branch = project_formula (depth + 1) used right right_name in
         Printf.sprintf "(%s %s (fun %s => %s) (fun %s => %s))"
           proof (simple_prop_arg target_prop)
           left_name left_branch
@@ -5301,8 +5304,11 @@ let simple_cnf_clause_projection_proof
     | atom ->
         simple_clause_intro_proof target_clause (literal_of_formula_tm atom) proof
   in
+  let used_prefix_binders =
+    List.map (fun (name, _) -> megalodon_ident name) source_prefix_sorts
+  in
   simple_wrap_forall_intro target_sorts
-    (project_formula 0 (strip_forall source) source_proof)
+    (project_formula 0 used_prefix_binders (strip_forall source) source_proof)
 
 let simple_fool_formula_proof type_env id parent_sorts result_sorts source target parent_name =
   let binder_sorts =

@@ -613,6 +613,60 @@ CLOSED_PASS 61
 /project/tmp/native_cert_v1_closed_corpus.3iMfeo
 ```
 
+## July 14 Increment: CNF Nested Binder Discipline
+
+The recursive CNF clause projection replay now tracks which universal binders
+have already been applied from the source formula prefix. When a remaining
+nested `forall` occurs under a disjunction branch, the emitter chooses a fresh
+target binder of the right sort that occurs in that nested body, rather than
+accidentally reusing an outer binder that also appears in the body.
+
+This fixes a generated proof-term error in `hammer.11523.29.th0.p`, where the
+previous replay instantiated an inner clause binder with `m`'s outer variable
+position. The cached closed frontier now has no `CHECK_FAIL` cases and moved
+from 61 to 62 closed passes:
+
+```text
+TMPDIR=/project/tmp \
+PROBLEM_DIR=/project/tmp/source_linked_strict_100_corpus_fresh_041947 \
+WORK_DIR=/project/tmp/source_linked_slice_1_400_closed_cnf_binder_fix_124216 \
+JOBS=20 MIN_PASS=0 CLOSED_CERT_V1=1 EMIT_TIMEOUT=30 CHECK_TIMEOUT=45 \
+tests/vampire_certificate/run_native_emit_cached_parallel.sh \
+  /project/tmp/source_linked_slice_1_400_fresh_042040
+
+CLOSED_PASS 62
+EMIT_FAIL 151
+/project/tmp/source_linked_slice_1_400_closed_cnf_binder_fix_124216
+```
+
+The new committed closed case is:
+
+```text
+hammer.11523.29.th0.p
+```
+
+Validation for this increment:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+
+Direct focused checks:
+hammer.11523.29.th0 CLOSED_PASS
+hammer.10795.33.th0 CLOSED_PASS
+/project/tmp/cnf_binder_fix_focus_124205
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh
+CLOSED_PASS 62
+/project/tmp/native_cert_v1_closed_corpus.GmTSWl
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+native certificate v1 smoke test passed
+/project/tmp/native_cert_v1.bjo36c
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_source_map_export_smoke.sh
+Megalodon TH0 source-map export smoke passed
+```
+
 ## Remaining P0 Work
 
 Closed mode is necessary but not sufficient.
