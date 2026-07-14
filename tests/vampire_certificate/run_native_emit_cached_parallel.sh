@@ -103,6 +103,16 @@ run_one() {
     return 0
   fi
 
+  if [[ "$CLOSED_CERT_V1" == "1" ]] \
+      && awk '/^\/\/ vampire_source_assumption / && $0 !~ /source_formula_status "closed_formula_checked"/ {print FNR ":" $0}' \
+          "$case_dir/out.mg" > "$case_dir/unchecked_sources.txt" \
+      && [[ -s "$case_dir/unchecked_sources.txt" ]]; then
+    local first
+    first=$(head -1 "$case_dir/unchecked_sources.txt" | tr '\t' ' ')
+    printf '%s\tUNCHECKED_SOURCE\t%s\n' "$name" "$first" > "$case_dir/result.tsv"
+    return 0
+  fi
+
   local proof_check_args=()
   if rg -q '^Axiom prop_ext :' "$case_dir/out.mg"; then
     proof_check_args+=(-hf)

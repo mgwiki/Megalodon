@@ -302,6 +302,21 @@ if ! rg -q 'does not match the THF declaration formula' \
   exit 1
 fi
 
+if bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_local_fact_formula_mismatch_bad.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_local_fact_formula_mismatch_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_source_map_local_fact_formula_mismatch_bad.err"; then
+  echo "native certificate v1 source-map checker accepted a mismatched local fact formula" >&2
+  exit 1
+fi
+
+if ! rg -q 'does not match the THF declaration formula' \
+    "$WORK_DIR/native_cert_v1_source_map_local_fact_formula_mismatch_bad.err"; then
+  echo "native certificate v1 source-map local-fact formula-mismatch failure did not explain the semantic mismatch" >&2
+  exit 1
+fi
+
 bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_unsupported_formula.th0.p \
@@ -572,10 +587,15 @@ fi
 
 bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_formula_copy_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_formula_copy_valid.th0.p \
   "$dummy" >"$WORK_DIR/native_cert_v1_formula_copy_valid.log"
 
 if ! rg -q 'Vampire certificate v1 checked 5 steps' "$WORK_DIR/native_cert_v1_formula_copy_valid.log"; then
   echo "native certificate v1 checker did not accept the valid formula-copy fixture" >&2
+  exit 1
+fi
+if ! rg -q 'Vampire certificate v1 source map checked 2 sources' "$WORK_DIR/native_cert_v1_formula_copy_valid.log"; then
+  echo "native certificate v1 source-map checker did not accept the negated conjecture formula-copy fixture" >&2
   exit 1
 fi
 

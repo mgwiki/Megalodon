@@ -1,4 +1,4 @@
 % megalodon_source_map (local_fact "not_true" "not_true" "")
-thf(not_true,axiom,$true).
+thf(not_true,axiom,~($true = 'X0')).
 % megalodon_source_map (local_fact "not_false" "not_false" "")
-thf(not_false,axiom,$true).
+thf(not_false,axiom,~($false = 'X0')).

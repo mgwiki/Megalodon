@@ -10089,6 +10089,8 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
        in
        let source_formula_status =
          match entry with
+         | Some entry when closed && entry.source_map_decl_formula <> None ->
+             "closed_formula_checked"
          | Some entry when entry.source_map_hash <> "" ->
              begin match entry.source_map_decl_formula, closed with
              | Some _, true -> "closed_formula_checked"
@@ -10706,7 +10708,14 @@ let rec simple_tptp_clause text =
 
 let rec source_tm_equiv left right =
   left = right ||
+  same_mod_scoped_vampire_var_renaming_and_equality left right ||
   match left, right with
+  | TmH left_name, TmH right_name
+      when (List.mem left_name ["$true"; "vampire_true"; "f__true"]
+            && List.mem right_name ["$true"; "vampire_true"; "f__true"])
+           || (List.mem left_name ["$false"; "vampire_false"; "f__false"]
+               && List.mem right_name ["$false"; "vampire_false"; "f__false"]) ->
+      true
   | Ap (Ap (TmH "=", left_a), left_b), Ap (Ap (TmH "=", right_a), right_b) ->
       (source_tm_equiv left_a right_a && source_tm_equiv left_b right_b)
       || (source_tm_equiv left_a right_b && source_tm_equiv left_b right_a)
@@ -10848,6 +10857,31 @@ let parse_simple_thf_formula_term text =
   try
     let tokens = Array.of_list (thf_tokens text) in
     let len = Array.length tokens in
+    let binder_index = ref 0 in
+    let canonical_binder_name () =
+      let name = "X" ^ string_of_int !binder_index in
+      incr binder_index;
+      name
+    in
+    let bound_names = ref [] in
+    let with_canonical_binders binders f =
+      let saved = !bound_names in
+      let canonical =
+        List.map
+          (fun (name, tp) ->
+             let canonical_name = canonical_binder_name () in
+             bound_names := (name, canonical_name) :: !bound_names;
+             (canonical_name, tp))
+          binders
+      in
+      try
+        let result = f canonical in
+        bound_names := saved;
+        result
+      with exn ->
+        bound_names := saved;
+        raise exn
+    in
     let at i = if i < len then Some tokens.(i) else None in
     let expect tok i =
       match at i with
@@ -10930,26 +10964,32 @@ let parse_simple_thf_formula_term text =
     | Some ThfForall ->
         let binders, j = parse_binders (i + 1) in
         let j = expect ThfColon j in
-        let body, k = parse_formula j in
-        (List.fold_right (fun (_, tp) acc -> All (tp, acc)) binders body, k)
+        with_canonical_binders binders
+          (fun binders ->
+             let body, k = parse_formula j in
+             (List.fold_right (fun (_, tp) acc -> All (tp, acc)) binders body, k))
     | Some ThfExists ->
         let binders, j = parse_binders (i + 1) in
         let j = expect ThfColon j in
-        let body, k = parse_formula j in
-        (List.fold_right
-           (fun (_, tp) acc -> Ap (TmH "vampire_exists_prop", Lam (tp, acc)))
-           binders
-           body,
-         k)
+        with_canonical_binders binders
+          (fun binders ->
+             let body, k = parse_formula j in
+             (List.fold_right
+                (fun (_, tp) acc -> Ap (TmH "vampire_exists_prop", Lam (tp, acc)))
+                binders
+                body,
+              k))
     | Some ThfLambda ->
         let binders, j = parse_binders (i + 1) in
         let j = expect ThfColon j in
-        let body, k = parse_formula j in
-        (List.fold_right
-           (fun (name, _tp) acc -> Ap (TmH "vLAM", subst_named_tm name acc))
-           binders
-           body,
-         k)
+        with_canonical_binders binders
+          (fun binders ->
+             let body, k = parse_formula j in
+             (List.fold_right
+                (fun (name, _tp) acc -> Ap (TmH "vLAM", subst_named_tm name acc))
+                binders
+                body,
+              k))
     | _ -> parse_application i
   and parse_application i =
     let head, i = parse_atom i in
@@ -10965,7 +11005,13 @@ let parse_simple_thf_formula_term text =
     match at i with
     | Some (ThfName "$true") -> (TmH "vampire_true", i + 1)
     | Some (ThfName "$false") -> (TmH "vampire_false", i + 1)
-    | Some (ThfName name) -> (TmH (decode_megalodon_tptp_name name), i + 1)
+    | Some (ThfName name) ->
+        let name =
+          match List.assoc_opt name !bound_names with
+          | Some canonical -> canonical
+          | None -> decode_megalodon_tptp_name name
+        in
+        (TmH name, i + 1)
     | Some ThfLParen ->
         let tm, j = parse_formula (i + 1) in
         (tm, expect ThfRParen j)
@@ -10988,33 +11034,49 @@ let rec clause_of_source_term = function
       clause_of_source_term left @ clause_of_source_term right
   | tm -> [literal_of_source_term tm]
 
-let source_step_matches_thf_formula step formula =
+let source_step_matches_source_term ?(negated=false) step source_tm =
+  let source_tm =
+    if negated then Imp (source_tm, TmH "vampire_false") else source_tm
+  in
+  match step with
+  | Input (_, _, clause) ->
+      same_source_clause_multiset (clause_of_source_term source_tm) clause
+  | FormulaInput (_, _, literal) ->
+      source_literal_equiv (literal_of_source_term source_tm) literal
+  | FormulaTermInput (_, _, formula_tm) ->
+      source_tm_equiv source_tm formula_tm
+  | _ -> true
+
+let source_step_matches_thf_formula ?(negated=false) step formula =
   match parse_simple_thf_formula_term formula with
   | None -> None
   | Some source_tm ->
-      Some
-        (match step with
-      | Input (_, _, clause) ->
-          same_source_clause_multiset (clause_of_source_term source_tm) clause
-      | FormulaInput (_, _, literal) ->
-          source_literal_equiv (literal_of_source_term source_tm) literal
-      | FormulaTermInput (_, _, formula_tm) ->
-          source_tm_equiv source_tm formula_tm
-      | _ -> true)
+      Some (source_step_matches_source_term ~negated step source_tm)
 
-let source_step_matches_tptp_formula step formula =
-  match source_step_matches_thf_formula step formula with
+let source_step_matches_simple_tptp_formula ?(negated=false) step formula =
+  if negated then
+    match simple_tptp_literal formula with
+    | Some (Pos atom) ->
+        Some
+          (source_step_matches_source_term
+             ~negated:true step atom)
+    | _ -> None
+  else
+    source_step_matches_simple_tptp_formula step formula
+
+let source_step_matches_tptp_formula ?(negated=false) step formula =
+  match source_step_matches_thf_formula ~negated step formula with
   | Some matched -> matched
   | None ->
-      begin match source_step_matches_simple_tptp_formula step formula with
+      begin match source_step_matches_simple_tptp_formula ~negated step formula with
       | Some matched -> matched
       | None -> true
       end
 
-let source_step_matches_tptp_formula_checked step formula =
-  match source_step_matches_thf_formula step formula with
+let source_step_matches_tptp_formula_checked ?(negated=false) step formula =
+  match source_step_matches_thf_formula ~negated step formula with
   | Some matched -> Some matched
-  | None -> source_step_matches_simple_tptp_formula step formula
+  | None -> source_step_matches_simple_tptp_formula ~negated step formula
 
 let validate_certificate_sources ?(require_formula_match=false) source_map cert =
   let table = Hashtbl.create 101 in
@@ -11067,8 +11129,13 @@ let validate_certificate_sources ?(require_formula_match=false) source_map cert 
             | _ -> ()
             end;
           begin match entry.source_map_decl_formula with
-          | Some formula when source_map_entry_requires_true_formula_check entry ->
-              begin match source_step_matches_tptp_formula_checked step formula with
+          | Some formula ->
+              let negated =
+                match source with
+                | SourceNegatedConjecture _ -> true
+                | _ -> false
+              in
+              begin match source_step_matches_tptp_formula_checked ~negated step formula with
               | Some true -> ()
               | Some false ->
                   error
