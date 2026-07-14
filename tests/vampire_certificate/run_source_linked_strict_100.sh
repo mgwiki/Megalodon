@@ -12,5 +12,7 @@ export VAMPIRE_SECONDS="${VAMPIRE_SECONDS:-10}"
 export WALL_SECONDS="${WALL_SECONDS:-15}"
 export WORK_DIR="${WORK_DIR:-"$TMPDIR/source_linked_strict_100"}"
 export CORPUS_DIR="${CORPUS_DIR:-"$TMPDIR/source_linked_strict_100_corpus"}"
+ln -sfn "$WORK_DIR" "$TMPDIR/latest_source_linked_strict_100"
+ln -sfn "$CORPUS_DIR" "$TMPDIR/latest_source_linked_strict_100_corpus"
 
 exec "$ROOT/tests/vampire_certificate/run_source_linked_corpus_parallel.sh"

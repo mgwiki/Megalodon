@@ -42,6 +42,7 @@ fi
 
 rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR/cases"
+ln -sfn "$WORK_DIR" "$TMPDIR/latest_megalodon_native_live"
 
 if [[ -n "$PROBLEMS_FILE" ]]; then
   sed -n "1,${LIMIT}p" "$PROBLEMS_FILE" > "$WORK_DIR/problems.txt"
@@ -183,6 +184,8 @@ find "$WORK_DIR/cases" -name native.sexp -type f -size +0 -print0 \
       }' \
   | sort > "$WORK_DIR/rule_counts.txt"
 cat "$WORK_DIR/rule_counts.txt"
+echo "native live artifacts: $WORK_DIR"
+echo "native live latest link: $TMPDIR/latest_megalodon_native_live"
 
 passes=$(awk -F '\t' '$2 == "PASS" {n++} END {print n + 0}' "$WORK_DIR/summary.tsv")
 failures=$(awk -F '\t' '$2 == "FAIL" {n++} END {print n + 0}' "$WORK_DIR/summary.tsv")

@@ -17,6 +17,7 @@ mkdir -p "$TMPDIR"
 
 WORK_DIR="${WORK_DIR:-$(mktemp -d "$TMPDIR/native_aby_smoke.XXXXXX")}"
 mkdir -p "$WORK_DIR"
+ln -sfn "$WORK_DIR" "$TMPDIR/latest_native_aby_smoke"
 tmp_mg="$WORK_DIR/100thms_12_h_slice.mg"
 tmp_out="$WORK_DIR/out"
 log="$WORK_DIR/megalodon.log"
@@ -253,3 +254,4 @@ grep -q " of Subq_binunion_eq was assigned id" "$log"
 ! grep -q "Theorem Subq_binunion_eq admitted" "$log"
 
 echo "native aby smoke artifacts: $WORK_DIR"
+echo "native aby smoke latest link: $TMPDIR/latest_native_aby_smoke"

@@ -7,6 +7,7 @@ BASE_TMPDIR="${TMPDIR:-/project/tmp}"
 mkdir -p "$BASE_TMPDIR"
 WORK_DIR="${WORK_DIR:-$(mktemp -d "$BASE_TMPDIR/native_cert_v1.XXXXXX")}"
 mkdir -p "$WORK_DIR"
+ln -sfn "$WORK_DIR" "$BASE_TMPDIR/latest_native_cert_v1"
 
 if [ ! -x bin/megalodon ]; then
   ./makeopt
@@ -848,3 +849,4 @@ fi
 
 echo "native certificate v1 smoke test passed"
 echo "native certificate v1 artifacts: $WORK_DIR"
+echo "native certificate v1 latest link: $BASE_TMPDIR/latest_native_cert_v1"

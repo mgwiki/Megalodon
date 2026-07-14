@@ -17,6 +17,7 @@ mkdir -p "$TMPDIR"
 
 WORK_DIR="${WORK_DIR:-$(mktemp -d "$TMPDIR/live_aby_smoke.XXXXXX")}"
 mkdir -p "$WORK_DIR"
+ln -sfn "$WORK_DIR" "$TMPDIR/latest_live_aby_smoke"
 tmp_mg="$WORK_DIR/100thms_12_h_slice.mg"
 tmp_out="$WORK_DIR/out"
 rm -rf "$tmp_out"
@@ -51,3 +52,4 @@ else
 fi
 
 echo "live aby smoke artifacts: $WORK_DIR"
+echo "live aby smoke latest link: $TMPDIR/latest_live_aby_smoke"

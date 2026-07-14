@@ -29,6 +29,7 @@ fi
 
 rm -rf "$CORPUS_DIR"
 mkdir -p "$CORPUS_DIR"
+ln -sfn "$CORPUS_DIR" "$TMPDIR/latest_megalodon_source_linked_corpus"
 
 "$MEGALODON" \
   -allowincompleteqed \
@@ -36,6 +37,8 @@ mkdir -p "$CORPUS_DIR"
   "$MEGALODON_FILE" \
   > "$CORPUS_DIR/export.out" \
   2> "$CORPUS_DIR/export.err"
+echo "source-linked corpus artifacts: $CORPUS_DIR"
+echo "source-linked corpus latest link: $TMPDIR/latest_megalodon_source_linked_corpus"
 
 PROBLEM_DIR="$CORPUS_DIR" \
 CHECK_SOURCE_MAP=1 \
