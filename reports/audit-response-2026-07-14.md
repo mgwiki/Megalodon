@@ -1667,3 +1667,23 @@ definition_input 4
 bridge_predicate_definition_fold 2
 bridge_fool 1
 ```
+
+## Follow-up: Strict Source Linking Policy
+
+After rereading the audit on `vampire/megalodon3`, one criticism was stale in
+implementation but still correct in policy. The concrete `$true` source-map hole
+had already been turned into negative tests, and closed mode was already
+requiring checked source formulas. However, ordinary strict certificate checking
+still used the weaker source-linking policy: formulas outside the checked THF
+fragment were accepted for diagnostics instead of rejected.
+
+That was too weak for a mode named strict. This branch now requires semantic
+source-formula matching in both strict paths:
+
+- standalone `-vampirecertv1strict`;
+- the integrated `-vampireabyproof megalodon` native-certificate checker.
+
+Plain `-vampirecertv1` remains a loose inspection mode so unsupported formulas
+can still be triaged without claiming a qualifying reconstruction. The smoke
+suite now has an explicit regression: the unsupported-source fixture is accepted
+by ordinary inspection, rejected by strict, and rejected by closed mode.

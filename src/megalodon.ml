@@ -595,7 +595,12 @@ let check_vampire_aby_native_certificate content output proof_file =
           let cert = Vampire_cert_v1.parse_certificate payload in
           let checked = Vampire_cert_v1.check_certificate_strict cert in
           let source_map = Vampire_cert_v1.parse_source_map content in
-          let source_count = Vampire_cert_v1.validate_certificate_sources source_map cert in
+          let source_count =
+            Vampire_cert_v1.validate_certificate_sources
+              ~require_formula_match:true
+              source_map
+              cert
+          in
           if !verbosity > 8 then
             begin
               Printf.printf
@@ -7030,7 +7035,7 @@ let check_vampire_cert_v1_file fn =
         source_map_for_emit := source_map;
         let source_count =
           Vampire_cert_v1.validate_certificate_sources
-            ~require_formula_match:!vampirecertv1closed
+            ~require_formula_match:(!vampirecertv1strict || !vampirecertv1closed)
             source_map
             cert
         in

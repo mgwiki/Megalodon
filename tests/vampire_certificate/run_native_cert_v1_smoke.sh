@@ -329,6 +329,22 @@ if ! rg -q 'Vampire certificate v1 source map checked 3 sources' \
 fi
 
 if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_unsupported_formula.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_unsupported_formula_strict.out" \
+  2>"$WORK_DIR/native_cert_v1_source_map_unsupported_formula_strict.err"; then
+  echo "strict native certificate v1 source-map checker accepted an unsupported THF source formula" >&2
+  exit 1
+fi
+
+if ! rg -q 'outside the checked source-linking fragment' \
+    "$WORK_DIR/native_cert_v1_source_map_unsupported_formula_strict.err"; then
+  echo "strict native certificate v1 unsupported-formula failure did not explain the source-linking gap" >&2
+  exit 1
+fi
+
+if bin/megalodon \
   -vampirecertv1closed \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_unsupported_formula.th0.p \
