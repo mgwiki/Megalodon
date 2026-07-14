@@ -4109,7 +4109,7 @@ let simple_factor_proof clause_body_prop parent_sorts result_sorts id parent_id 
   if left <> right then emit_error (id ^ ": factor literals are not identical");
   let remove_index = if left_index > right_index then left_index else right_index in
   let expected = simple_remove_index id "removed factor" remove_index parent_clause in
-  if expected <> result then
+  if not (same_clause_multiset expected result) then
     emit_error (id ^ ": simple factor proof expects the result to remove the later duplicate");
   let target = clause_body_prop result in
   let parent_name =
