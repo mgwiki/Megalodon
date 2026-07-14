@@ -1285,3 +1285,52 @@ frontier is therefore not source-linking for this family; it is the still-open
 closed-mode bridge classes such as normal form, skolem formula, CNF variants,
 substitution/paramodulation variants, AVATAR components, and theory-derived
 steps.
+
+## Follow-up: CNF Parent Prefix Discipline
+
+The next adjustment follows the audit's recommendation to prefer small,
+checked replay corrections over broad bridge-count chasing.
+
+One class of CNF replay failures came from using all metadata variable sorts of
+the parent step when replaying `cnf_formula_clause`. Some of those variables are
+introduced inside the formula body rather than in the formula's leading `forall`
+prefix. Treating them as leading proof arguments makes the emitted Megalodon
+term apply a parent theorem to arguments it does not actually take.
+
+The emitter now computes:
+
+```ocaml
+take_prefix (prefix_forall_count parent_formula) parent_sorts
+```
+
+and passes that restricted prefix to the CNF singleton/projection replay
+helpers. This keeps the source proposition and the replay proof aligned with
+the native formula shape instead of with unrelated metadata binders.
+
+I also tested a broader higher-order Skolem choice experiment for
+`set->prop`. That experiment was deliberately not committed: it could make
+`hammer.10654.21` emit without bridges, but the generated proof did not
+standalone-check in Megalodon. In particular, the attempted `set->prop` choice
+prelude would have required a new trusted axiom. Keeping it would have violated
+the audit's trust-boundary recommendation, so this branch leaves those cases as
+closed-mode failures with explicit `bridge_normal_form` /
+`bridge_skolem_formula` diagnostics.
+
+Validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_source_map_export_smoke.sh
+
+TMPDIR=/project/tmp \
+WORK_DIR=/project/tmp/closed_cnf_prefix_final_151556 \
+PROBLEM_DIR=/project/tmp/source_linked_strict_100_corpus_fresh_041947 \
+JOBS=20 MIN_PASS=0 CLOSED_CERT_V1=1 EMIT_TIMEOUT=30 CHECK_TIMEOUT=45 \
+tests/vampire_certificate/run_native_emit_cached_parallel.sh \
+  /project/tmp/source_linked_slice_1_400_fresh_042040
+
+CLOSED_PASS 77
+EMIT_FAIL 136
+CHECK_FAIL 0
+```

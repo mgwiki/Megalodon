@@ -4603,9 +4603,7 @@ let simple_arrow_sort domain codomain =
   domain ^ "->" ^ codomain
 
 let simple_binder_sort_expr sort =
-  match simple_split_arrow_type sort with
-  | Some _ -> "(" ^ sort ^ ")"
-  | None -> sort
+  sort
 
 let simple_symbol_type_env cert =
   let builtins =
@@ -6946,7 +6944,11 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   let local_definition_names =
     function_definition_names @ inequality_split_definition_names @ skolem_definition_names
   in
-  let generated_prelude_names = ["Eps_i"; "Eps_i_ax"; "vampire_exists_set_choice"] in
+  let generated_prelude_names =
+    [
+      "Eps_i"; "Eps_i_ax"; "vampire_exists_set_choice";
+    ]
+  in
   let add_symbol_declaration line =
     match simple_declared_name line with
     | Some name when List.mem (megalodon_ident name) generated_prelude_names -> ()
@@ -7639,24 +7641,27 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
               try
                 let parent_formula = lookup_formula checked_certificate parent_id in
                 let parent_name = lookup_simple_name !emitted_names parent_id in
+                let parent_prefix_sorts =
+                  take_prefix (prefix_forall_count parent_formula) parent_sorts
+                in
                 try
                   Some
                     (simple_cnf_imp_false_singleton_proof
-                       parent_sorts target_sorts parent_formula result parent_name)
+                       parent_prefix_sorts target_sorts parent_formula result parent_name)
                 with Error _ ->
                 let expected = nth index (cnf_clauses parent_formula) (id ^ " CNF clause") in
                 if not (same_clause_multiset expected result) then None
-                else if not (simple_sorts_subset parent_sorts target_sorts) then None
+                else if not (simple_sorts_subset parent_prefix_sorts target_sorts) then None
                 else
                   try
                     Some
                       (simple_cnf_clause_projection_proof
-                         type_env parent_sorts target_sorts parent_formula result
+                         type_env parent_prefix_sorts target_sorts parent_formula result
                          parent_name)
                   with Error _ ->
                     Some
                       (simple_cnf_and_projection_proof
-                         type_env parent_sorts target_sorts parent_formula result
+                         type_env parent_prefix_sorts target_sorts parent_formula result
                          parent_name)
               with Error _ -> None
             with
