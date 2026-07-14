@@ -39,6 +39,9 @@ printf '%s\n' "$allowed_rules" | sort > "$allowed_file"
 : > "$WORK_DIR/eligible.tsv"
 : > "$WORK_DIR/excluded.tsv"
 : > "$WORK_DIR/core_closed_cases.list"
+all_rules="$WORK_DIR/all_case_rules.tsv"
+: > "$all_rules"
+mkdir -p "$WORK_DIR/cases_by_rule"
 
 find "$CASES_DIR" -maxdepth 1 -name '*.native.sexp' -type f | sort |
 while IFS= read -r native; do
@@ -50,6 +53,11 @@ while IFS= read -r native; do
       if (m[1] !~ metadata) print m[1]
     }
   ' metadata="$metadata_rules" "$native" | sort -u > "$rules_file"
+  while IFS= read -r rule || [[ -n "$rule" ]]; do
+    [[ -z "$rule" ]] && continue
+    printf '%s\t%s\n' "$base" "$rule" >> "$all_rules"
+    printf '%s\n' "$base" >> "$WORK_DIR/cases_by_rule/$rule.list"
+  done < "$rules_file"
   comm -23 "$rules_file" "$allowed_file" > "$bad_file"
   if [[ ! -s "$bad_file" ]]; then
     printf '%s\tCORE_ELIGIBLE\t%s\n' "$base" "$(paste -sd, "$rules_file")" \
@@ -63,6 +71,16 @@ done
 
 eligible_count=$(wc -l < "$WORK_DIR/eligible.tsv" | tr -d ' ')
 excluded_count=$(wc -l < "$WORK_DIR/excluded.tsv" | tr -d ' ')
+if [[ -s "$all_rules" ]]; then
+  cut -f2 "$all_rules" | sort | uniq -c | sort -nr > "$WORK_DIR/rule_counts.txt"
+  awk -F '\t' '$2 == "EXCLUDED" {split($3, rules, ","); for (i in rules) if (rules[i] != "") print rules[i]}' \
+    "$WORK_DIR/excluded.tsv" | sort | uniq -c | sort -nr > "$WORK_DIR/excluded_rule_counts.txt"
+  find "$WORK_DIR/cases_by_rule" -type f -name '*.list' -print0 \
+    | xargs -0 -r -n1 sh -c 'sort -u "$1" -o "$1"' sh
+else
+  : > "$WORK_DIR/rule_counts.txt"
+  : > "$WORK_DIR/excluded_rule_counts.txt"
+fi
 
 {
   printf 'CORE_ELIGIBLE %s\n' "$eligible_count"
@@ -72,9 +90,13 @@ excluded_count=$(wc -l < "$WORK_DIR/excluded.tsv" | tr -d ' ')
 
 echo "native certificate v1 core closed audit artifacts: $WORK_DIR"
 echo "native certificate v1 core closed audit latest link: $TMPDIR/latest_native_cert_v1_core_closed_audit"
+echo "native certificate v1 core closed audit rule counts: $WORK_DIR/rule_counts.txt"
+echo "native certificate v1 core closed audit excluded rule counts: $WORK_DIR/excluded_rule_counts.txt"
 
 if (( eligible_count < MIN_CORE )); then
   echo "core closed audit has fewer than $MIN_CORE whitelist-only cases" >&2
+  echo "top excluded native certificate rules:" >&2
+  sed -n '1,20p' "$WORK_DIR/excluded_rule_counts.txt" >&2
   sed -n '1,40p' "$WORK_DIR/excluded.tsv" >&2
   exit 1
 fi

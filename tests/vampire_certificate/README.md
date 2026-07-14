@@ -153,6 +153,10 @@ before delegating to the closed corpus checker. If it fails with
 `CORE_ELIGIBLE 0`, that is an honest statement that the current committed closed
 fixtures are broad source-linked reconstructions rather than the restricted
 first-order milestone requested by the audit.
+The audit run also writes `rule_counts.txt`, `excluded_rule_counts.txt`, and
+`cases_by_rule/*.list` under `/project/tmp/latest_native_cert_v1_core_closed_audit`
+so the next reconstruction work can target the largest repeated blocking
+classes instead of isolated examples.
 
 To export a Megalodon development once and then check the resulting source-mapped
 TH0 corpus in parallel, use:

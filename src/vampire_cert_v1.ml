@@ -4739,6 +4739,11 @@ let simple_type_env_with_variables variable_sorts type_env =
   in
   variable_sorts @ type_env
 
+let simple_type_env_with_variable_overrides variable_sorts type_env =
+  let variable_names = List.map fst variable_sorts in
+  variable_sorts
+  @ List.filter (fun (name, _) -> not (List.mem name variable_names)) type_env
+
 let simple_clause_prop_and_sorts_for_step ?(available_sorts=[]) cert id clause =
   match metadata_step_proposition cert id with
   | Some proposition when not (simple_clause_contains_function_alias clause) ->
@@ -6998,16 +7003,30 @@ let simple_rendered_prop_equiv left right =
   in
   normalize left = normalize right
 
-let simple_formula_orientation_proof ?(prefer_last_binder=false) type_env source target proof =
+let simple_formula_orientation_proof
+    ?(prefer_last_binder=false)
+    ?source_type_env
+    ?target_type_env
+    type_env source target proof =
+  let source_type_env =
+    match source_type_env with
+    | Some env -> env
+    | None -> type_env
+  in
+  let target_type_env =
+    match target_type_env with
+    | Some env -> env
+    | None -> type_env
+  in
   let proof_index = ref 0 in
   let fresh prefix =
     let name = prefix ^ string_of_int !proof_index in
     incr proof_index;
     name
   in
-  let choose_binder used sort body =
+  let choose_binder binder_env used sort body =
     let candidates =
-      type_env
+      binder_env
       |> List.filter
            (fun (name, known_sort) ->
               let binder = megalodon_ident name in
@@ -7024,13 +7043,33 @@ let simple_formula_orientation_proof ?(prefer_last_binder=false) type_env source
         let binder = fresh "Xorient_" in
         (binder, binder)
   in
+  let source_render_env env =
+    simple_type_env_with_variable_overrides env source_type_env
+  in
+  let target_render_env env =
+    simple_type_env_with_variable_overrides env target_type_env
+  in
+  let generic_render_env env =
+    simple_type_env_with_variable_overrides env type_env
+  in
+  let render_source used env tm =
+    simple_formula_prop_text_with_used used (source_render_env env) tm
+  in
+  let render_target used env tm =
+    simple_formula_prop_text_with_used used (target_render_env env) tm
+  in
   let rec convert env used source target proof =
     if source = target then proof
     else
       match source, target with
       | All (source_tp, source_body), All (target_tp, target_body) when source_tp = target_tp ->
           let sort = simple_tp_expr source_tp in
-          let source_binder, target_binder = choose_binder used sort source_body, choose_binder used sort target_body in
+          let source_binder =
+            choose_binder source_type_env used sort source_body
+          in
+          let target_binder =
+            choose_binder target_type_env used sort target_body
+          in
           let source_raw, _ = source_binder in
           let _, binder = target_binder in
           let source_body =
@@ -7043,7 +7082,7 @@ let simple_formula_orientation_proof ?(prefer_last_binder=false) type_env source
           ^ ")"
       | Imp (source_left, source_right), Imp (target_left, target_right) ->
           let arg = fresh "Horient_arg_" in
-          let target_left_text = simple_formula_prop_text_with_used used env target_left in
+          let target_left_text = render_target used env target_left in
           let source_left_proof = convert env used target_left source_left arg in
           let source_right_proof = "(" ^ proof ^ " " ^ source_left_proof ^ ")" in
           let target_right_proof = convert env used source_right target_right source_right_proof in
@@ -7052,11 +7091,11 @@ let simple_formula_orientation_proof ?(prefer_last_binder=false) type_env source
         Ap (Ap (TmH "vampire_and", target_left), target_right) ->
           let left_name = fresh "Horient_left_" in
           let right_name = fresh "Horient_right_" in
-          let source_left_text = simple_formula_prop_text_with_used used env source_left in
-          let source_right_text = simple_formula_prop_text_with_used used env source_right in
-          let target_left_text = simple_formula_prop_text_with_used used env target_left in
-          let target_right_text = simple_formula_prop_text_with_used used env target_right in
-          let target_text = simple_formula_prop_text_with_used used env target in
+          let source_left_text = render_source used env source_left in
+          let source_right_text = render_source used env source_right in
+          let target_left_text = render_target used env target_left in
+          let target_right_text = render_target used env target_right in
+          let target_text = render_target used env target in
           let left_proof = convert env used source_left target_left left_name in
           let right_proof = convert env used source_right target_right right_name in
           let target_intro =
@@ -7075,16 +7114,16 @@ let simple_formula_orientation_proof ?(prefer_last_binder=false) type_env source
           let a_name = fresh "Horient_assoc_a_" in
           let b_name = fresh "Horient_assoc_b_" in
           let c_name = fresh "Horient_assoc_c_" in
-          let source_a_text = simple_formula_prop_text_with_used used env source_a in
-          let source_b_text = simple_formula_prop_text_with_used used env source_b in
-          let source_c_text = simple_formula_prop_text_with_used used env source_c in
-          let target_a_text = simple_formula_prop_text_with_used used env target_a in
-          let target_b_text = simple_formula_prop_text_with_used used env target_b in
-          let target_c_text = simple_formula_prop_text_with_used used env target_c in
+          let source_a_text = render_source used env source_a in
+          let source_b_text = render_source used env source_b in
+          let source_c_text = render_source used env source_c in
+          let target_a_text = render_target used env target_a in
+          let target_b_text = render_target used env target_b in
+          let target_c_text = render_target used env target_c in
           let target_left_text =
-            simple_formula_prop_text_with_used used env (Ap (Ap (TmH "vampire_or", target_a), target_b))
+            render_target used env (Ap (Ap (TmH "vampire_or", target_a), target_b))
           in
-          let target_text = simple_formula_prop_text_with_used used env target in
+          let target_text = render_target used env target in
           let a_proof = convert env used source_a target_a a_name in
           let b_proof = convert env used source_b target_b b_name in
           let c_proof = convert env used source_c target_c c_name in
@@ -7112,7 +7151,7 @@ let simple_formula_orientation_proof ?(prefer_last_binder=false) type_env source
 	            "(%s %s (fun %s:%s => %s) (fun Horient_assoc_tail:(%s) => Horient_assoc_tail %s (fun %s:%s => %s) (fun %s:%s => %s)))"
 	            proof (simple_prop_arg target_text)
 	            a_name source_a_text (target_from_left target_left_from_a)
-	            (simple_formula_prop_text_with_used used env (Ap (Ap (TmH "vampire_or", source_b), source_c)))
+	            (render_source used env (Ap (Ap (TmH "vampire_or", source_b), source_c)))
 	            (simple_prop_arg target_text)
 	            b_name source_b_text (target_from_left target_left_from_b)
 	            c_name source_c_text target_from_c
@@ -7120,11 +7159,11 @@ let simple_formula_orientation_proof ?(prefer_last_binder=false) type_env source
 	        Ap (Ap (TmH "vampire_or", target_left), target_right) ->
 	          let left_name = fresh "Horient_left_" in
           let right_name = fresh "Horient_right_" in
-          let source_left_text = simple_formula_prop_text_with_used used env source_left in
-          let source_right_text = simple_formula_prop_text_with_used used env source_right in
-          let target_left_text = simple_formula_prop_text_with_used used env target_left in
-          let target_right_text = simple_formula_prop_text_with_used used env target_right in
-          let target_text = simple_formula_prop_text_with_used used env target in
+          let source_left_text = render_source used env source_left in
+          let source_right_text = render_source used env source_right in
+          let target_left_text = render_target used env target_left in
+          let target_right_text = render_target used env target_right in
+          let target_text = render_target used env target in
           let left_proof = convert env used source_left target_left left_name in
           let right_proof = convert env used source_right target_right right_name in
           let left_intro =
@@ -7148,16 +7187,20 @@ let simple_formula_orientation_proof ?(prefer_last_binder=false) type_env source
                && (source_exists = TmH "vampire_exists_prop"
                    || source_exists = TmH "vampire_exists_set") ->
           let sort = simple_tp_expr source_tp in
-          let source_raw, _ = choose_binder used sort source_body in
-          let _, binder = choose_binder used sort target_body in
+          let source_raw, _ =
+            choose_binder source_type_env used sort source_body
+          in
+          let _, binder =
+            choose_binder target_type_env used sort target_body
+          in
           let source_body =
             if source_raw = binder then source_body
             else subst_tm [(source_raw, TmH binder)] source_body
           in
           let body_env = (binder, sort) :: env in
-          let source_body_text = simple_formula_prop_text_with_used (binder :: used) body_env source_body in
-          let target_body_text = simple_formula_prop_text_with_used (binder :: used) body_env target_body in
-          let target_text = simple_formula_prop_text_with_used used env target in
+          let source_body_text = render_source (binder :: used) body_env source_body in
+          let target_body_text = render_target (binder :: used) body_env target_body in
+          let target_text = render_target used env target in
           let witness_name = fresh "Horient_exists_" in
           let body_proof =
             convert body_env (binder :: used) source_body target_body witness_name
@@ -7171,25 +7214,25 @@ let simple_formula_orientation_proof ?(prefer_last_binder=false) type_env source
           begin match equality_sides source, equality_sides target with
           | Some (source_left, source_right), Some (target_left, target_right)
               when source_left = target_right && source_right = target_left ->
-              "(" ^ simple_literal_equality_symmetry_proof env (Pos source) proof ^ ")"
+              "(" ^ simple_literal_equality_symmetry_proof (generic_render_env env) (Pos source) proof ^ ")"
           | _ ->
               begin match source, target with
               | Ap (Ap (TmH "vampire_eq_prop", source_left), source_right),
                 Ap (Ap (TmH "vampire_eq_prop", target_left), target_right)
                   when source_left = target_right && source_right = target_left ->
-                  let left_text = simple_tm_expr_with_expected env (Some "prop") source_left in
-                  let right_text = simple_tm_expr_with_expected env (Some "prop") source_right in
+                  let left_text = simple_tm_expr_with_expected (generic_render_env env) (Some "prop") source_left in
+                  let right_text = simple_tm_expr_with_expected (generic_render_env env) (Some "prop") source_right in
                   "(vampire_eq_prop_sym (" ^ left_text ^ ") (" ^ right_text ^ ") " ^ proof ^ ")"
               | _ ->
                   emit_error
                     ("formula orientation transport supports only equality symmetry and simple logical structure: "
-                     ^ simple_formula_prop_text_with_used used env source
+                     ^ render_source used env source
                      ^ " ==> "
-                     ^ simple_formula_prop_text_with_used used env target)
+                     ^ render_target used env target)
               end
           end
   in
-  convert type_env [] source target proof
+  convert [] [] source target proof
 
 let simple_skolem_formula_proof ?opened_witness
     type_env id parent_id subst source target parent_sorts result_sorts names =
@@ -8312,19 +8355,33 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     in
     let binder_sorts = metadata_step_variable_sort_pairs cert id in
     let binder_index = ref 0 in
-    let fallback_binder sort =
-      let rec find_from i =
-        match List.nth_opt binder_sorts i with
-        | Some (name, known_sort) when known_sort = sort ->
-            binder_index := i + 1;
-            megalodon_ident name
-        | Some _ -> find_from (i + 1)
-        | None ->
-            let name = "Xskolem_def_" ^ string_of_int !binder_index in
-            incr binder_index;
-            name
-      in
-      find_from !binder_index
+    let fallback_binder env sort body =
+      let used = List.map fst env in
+      match
+        List.find_opt
+          (fun (name, known_sort) ->
+             let binder = megalodon_ident name in
+             known_sort = sort
+             && not (List.mem binder used)
+             && tm_contains_symbol binder body)
+          binder_sorts
+      with
+      | Some (name, _) -> megalodon_ident name
+      | None ->
+          let rec find_from i =
+            match List.nth_opt binder_sorts i with
+            | Some (name, known_sort)
+                when known_sort = sort
+                     && not (List.mem (megalodon_ident name) used) ->
+                binder_index := i + 1;
+                megalodon_ident name
+            | Some _ -> find_from (i + 1)
+            | None ->
+                let name = "Xskolem_def_" ^ string_of_int !binder_index in
+                incr binder_index;
+                name
+          in
+          find_from !binder_index
     in
     let subst_for_current body =
       match
@@ -8385,7 +8442,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       match current_source with
       | All (tp, body) ->
           let sort = simple_tp_expr tp in
-          let binder = fallback_binder sort in
+          let binder = fallback_binder env sort body in
           collect body ((binder, sort) :: env) generated_env acc
       | Ap (Ap (TmH "vampire_or", left), right)
       | Ap (Ap (TmH "vampire_and", left), right) ->
@@ -9138,6 +9195,12 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                 (parent_sorts @ sorts |> simple_unique_variable_sorts)
                 symbol_type_env
             in
+            let parent_type_env =
+              simple_type_env_with_variable_overrides parent_sorts symbol_type_env
+            in
+            let target_type_env =
+              simple_type_env_with_variable_overrides sorts symbol_type_env
+            in
             begin match
               try
                 Some
@@ -9157,7 +9220,12 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                 end else begin
                   let proof_target_formula = left_assoc_vampire_or_formula formula in
                   begin match
-                    try Some (simple_formula_orientation_proof type_env parent_formula proof_target_formula proof)
+                    try
+                      Some
+                        (simple_formula_orientation_proof
+                           ~source_type_env:parent_type_env
+                           ~target_type_env
+                           type_env parent_formula proof_target_formula proof)
                     with Error _ -> None
                   with
                   | Some orient_proof ->
