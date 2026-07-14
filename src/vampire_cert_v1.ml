@@ -647,6 +647,48 @@ let step_id = function
   | Superposition (id, _, _, _, _, _, _, _, _, _, _) -> id
   | Contradiction (id, _) -> id
 
+let step_rule_name = function
+  | Input _ -> "input"
+  | FormulaInput _ -> "formula_input"
+  | FormulaTermInput _ -> "formula_term_input"
+  | FormulaTermCopy _ -> "formula_term_copy"
+  | RectifyFormula _ -> "rectify_formula"
+  | FoolFormula _ -> "fool_formula"
+  | EnnfFormula _ -> "ennf_formula"
+  | SkolemFormula _ -> "skolem_formula"
+  | SkolemFormulaComputed _ -> "skolem_formula_computed"
+  | CnfFormulaClause _ -> "cnf_formula_clause"
+  | FormulaCopy _ -> "formula_copy"
+  | FoolBool _ -> "fool_bool"
+  | CnfLiteral _ -> "cnf_literal"
+  | PredicateDefinition _ -> "predicate_definition"
+  | PredicateDefinitionFold _ -> "predicate_definition_fold"
+  | PredicateDefinitionFoldChain _ -> "predicate_definition_fold_chain"
+  | DefinitionInput _ -> "definition_input"
+  | DefinitionRewriteChain _ -> "definition_rewrite_chain"
+  | AvatarComponent _ -> "avatar_component"
+  | AvatarRefutation _ -> "avatar_refutation"
+  | FoolExhaustiveness _ -> "fool_exhaustiveness"
+  | FoolDistinctness _ -> "fool_distinctness"
+  | InequalityNameIntro _ -> "inequality_name_intro"
+  | InequalitySplit _ -> "inequality_split"
+  | Substitute _ -> "substitute"
+  | Condensation _ -> "condensation"
+  | UnitResultingResolution _ -> "unit_resulting_resolution"
+  | Resolve _ -> "resolve"
+  | SubsumptionResolution _ -> "subsumption_resolution"
+  | Factor _ -> "factor"
+  | EqualityResolution _ -> "equality_resolution"
+  | EqualityResolutionConstraints _ -> "equality_resolution_constraints"
+  | EqualityFactoring _ -> "equality_factoring"
+  | EqualityFactoringConstraints _ -> "equality_factoring_constraints"
+  | TruthConflict _ -> "truth_conflict"
+  | EqualitySymmetry _ -> "equality_symmetry"
+  | BoolSimplify _ -> "bool_simplify"
+  | Paramodulate _ -> "paramodulate"
+  | Superposition _ -> "superposition"
+  | Contradiction _ -> "contradiction"
+
 let check_duplicate_ids steps =
   let seen = Hashtbl.create 17 in
   List.iter
@@ -2893,7 +2935,7 @@ let collect_simple_names cert =
     | EqualitySymmetry (_, _, _, clause) -> add_clause acc clause
     | EqualityResolution (_, _, _, clause) -> add_clause acc clause
     | Contradiction _ -> acc
-    | step -> emit_error ("unsupported rule " ^ step_id step)
+    | step -> emit_error ("unsupported rule " ^ step_rule_name step ^ " at step " ^ step_id step)
   in
   let props, terms = List.fold_left add_step ([], []) cert.steps in
   let collisions = List.filter (fun name -> List.mem name terms) props in
@@ -3137,7 +3179,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           claims := !claims @ [(name, "False", "exact " ^ parent_name ^ ".")];
           add_checked id []
       | step ->
-          emit_error ("unsupported rule " ^ step_id step))
+          emit_error ("unsupported rule " ^ step_rule_name step ^ " at step " ^ step_id step))
     cert.steps;
   let final =
     match !final_empty with
