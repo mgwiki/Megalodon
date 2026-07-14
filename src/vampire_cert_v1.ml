@@ -2843,6 +2843,13 @@ let simple_unsupported_step cert step =
   | [] -> with_prop
   | sorts -> with_prop ^ "; variable_sorts: " ^ String.concat ", " sorts
 
+let simple_formula_prop cert id =
+  match metadata_step_proposition cert id with
+  | Some proposition -> proposition
+  | None ->
+      emit_error
+        ("formula step " ^ id ^ " has no step_proposition metadata; rebuild Vampire proof output with native metadata")
+
 let megalodon_ident s =
   let n = String.length s in
   if n = 0 then emit_error "empty identifier";
@@ -2995,6 +3002,12 @@ let collect_simple_names cert =
   let add_clause acc clause = List.fold_left add_literal acc clause in
   let add_step acc = function
     | Input (_, _, clause) -> add_clause acc clause
+    | FormulaInput (id, _, _) ->
+        ignore (simple_formula_prop cert id);
+        acc
+    | FormulaTermInput (id, _, _) ->
+        ignore (simple_formula_prop cert id);
+        acc
     | Substitute (_, _, _, clause) -> add_clause acc clause
     | Condensation (_, _, _, clause) -> add_clause acc clause
     | Resolve (_, _, _, _, _, clause) -> add_clause acc clause
@@ -3168,8 +3181,12 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
         "End Eq.";
         "Infix = 502 := eq.";
       ];
-  List.iter (fun name -> lines := !lines @ ["Variable " ^ name ^ ":prop."]) prop_names;
-  List.iter (fun name -> lines := !lines @ ["Variable " ^ name ^ ":set."]) term_names;
+  let add_line_once line =
+    if not (List.mem line !lines) then lines := !lines @ [line]
+  in
+  List.iter add_line_once cert.metadata.symbol_declarations;
+  List.iter (fun name -> add_line_once ("Variable " ^ name ^ ":prop.")) prop_names;
+  List.iter (fun name -> add_line_once ("Variable " ^ name ^ ":set.")) term_names;
   let used_names = ref (prop_names @ term_names) in
   let emitted_names = ref [] in
   let checked = ref [] in
@@ -3194,6 +3211,14 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           add_emitted id name;
           assumptions := !assumptions @ [(name, simple_clause_prop clause)];
           add_checked id clause
+      | FormulaInput (id, source, _) ->
+          let name = input_name id source in
+          add_emitted id name;
+          assumptions := !assumptions @ [(name, simple_formula_prop cert id)]
+      | FormulaTermInput (id, source, _) ->
+          let name = input_name id source in
+          add_emitted id name;
+          assumptions := !assumptions @ [(name, simple_formula_prop cert id)]
       | Substitute (id, parent_id, _, result) ->
           let name = derived_name id in
           let proof = simple_copy_proof id parent_id result !checked !emitted_names in
