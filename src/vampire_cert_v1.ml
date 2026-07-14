@@ -5260,19 +5260,27 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   in
   let substitution_variable_sorts parent_id subst =
     let parent_sorts = variable_sorts_for_ids [parent_id] in
+    let known_context_name name =
+      List.mem_assoc name symbol_type_env
+      || List.mem name collected_global_names
+      || List.mem name declared_symbol_names
+      || is_db_ident name
+    in
     subst
     |> List.concat_map
          (fun (source_name, target) ->
             let source_sort = List.assoc_opt source_name parent_sorts in
             let direct =
               match target, source_sort with
-              | TmH target_name, Some sort -> [(megalodon_ident target_name, sort)]
+              | TmH target_name, Some sort ->
+                  let target_name = megalodon_ident target_name in
+                  if known_context_name target_name then [] else [(target_name, sort)]
               | _ -> []
             in
             let inferred =
               simple_infer_tm_variable_sorts ?expected:source_sort symbol_type_env target
             in
-            direct @ inferred)
+            direct @ List.filter (fun (name, _) -> not (known_context_name name)) inferred)
     |> simple_unique_variable_sorts
   in
   let clause_prop_and_sorts_for_ids ?(extra_sorts=[]) id parent_ids result =
