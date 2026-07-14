@@ -42,6 +42,9 @@ if [ "$proof_mode" = "megalodon" ]; then
   grep -q 'megalodon_step(' "$tmp_out"/*.out
   grep -q 'megalodon_reconstruction_end' "$tmp_out"/*.out
   grep -q 'megalodon_certificate_native_sexpr_end' "$tmp_out"/*.out
+  ! grep -q 'megalodon_certificate_json_start' "$tmp_out"/*.out
+  ! grep -q 'megalodon_certificate_step' "$tmp_out"/*.out
+  ! grep -q 'megalodon_certificate_clause' "$tmp_out"/*.out
 else
   grep -q 'SZS status \(Theorem\|Unsatisfiable\|ContradictoryAxioms\)' "$tmp_out"/*.out
   grep -q 'SZS output start\|inference(' "$tmp_out"/*.out
