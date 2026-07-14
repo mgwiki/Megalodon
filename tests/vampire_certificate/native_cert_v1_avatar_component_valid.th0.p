@@ -1,4 +1,4 @@
-% megalodon_source_map (known "split_1_active" "original_split_1_active" "hash-split-1-active")
-thf(split_1_active,axiom,$true).
-% megalodon_source_map (known "not_p" "original_not_p" "hash-not-p")
-thf(not_p,axiom,$true).
+% megalodon_source_map (known "split_1_active" "original_split_1_active" "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
+thf(split_1_active,axiom,$true). % eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+% megalodon_source_map (known "not_p" "original_not_p" "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+thf(not_p,axiom,$true). % ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff

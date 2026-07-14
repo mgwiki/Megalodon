@@ -2883,25 +2883,31 @@ let source_map_entry_well_formed entry =
            ^ " is a global "
            ^ entry.source_map_kind
            ^ " but has an empty source hash");
-      if looks_like_hash entry.source_map_hash then
-        begin match entry.source_map_decl_hash with
-        | Some declared when declared = entry.source_map_hash -> ()
-        | Some declared ->
-            error
-              ("Megalodon source-map entry for "
-               ^ entry.source_map_tptp_name
-               ^ " has source hash "
-               ^ entry.source_map_hash
-               ^ " but the THF declaration is tagged "
-               ^ declared)
-        | None ->
-            error
-              ("Megalodon source-map entry for "
-               ^ entry.source_map_tptp_name
-               ^ " has source hash "
-               ^ entry.source_map_hash
-               ^ " but the THF declaration has no matching trailing hash")
-        end
+      if not (looks_like_hash entry.source_map_hash) then
+        error
+          ("Megalodon source-map entry for "
+           ^ entry.source_map_tptp_name
+           ^ " is a global "
+           ^ entry.source_map_kind
+           ^ " but has a malformed source hash");
+      begin match entry.source_map_decl_hash with
+      | Some declared when declared = entry.source_map_hash -> ()
+      | Some declared ->
+          error
+            ("Megalodon source-map entry for "
+             ^ entry.source_map_tptp_name
+             ^ " has source hash "
+             ^ entry.source_map_hash
+             ^ " but the THF declaration is tagged "
+             ^ declared)
+      | None ->
+          error
+            ("Megalodon source-map entry for "
+             ^ entry.source_map_tptp_name
+             ^ " has source hash "
+             ^ entry.source_map_hash
+             ^ " but the THF declaration has no matching trailing hash")
+      end
   | _ -> ()
 
 let source_map_entry_requires_reflexive_equality entry =
