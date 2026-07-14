@@ -154,6 +154,27 @@ PASS 1
 /project/tmp/source_origin_gate_emit_retry_101639
 ```
 
+The emitted Megalodon proof artifacts now also contain machine-readable
+`vampire_source_assumption` comments for every original source premise. Each
+binding records the generated theorem parameter, certificate step, certificate
+source kind, TPTP source name, original Megalodon source name, source-map kind,
+source hash, and rendered proposition. This still does not discharge the
+premises inside the original context, but it removes another hidden naming step:
+the next replay stage can tell exactly which theorem parameter is supposed to be
+filled by which original lemma, local fact, conjecture edge, definition, or
+set-reflexivity fact.
+
+Validation for source-assumption bindings:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_source_map_export_smoke.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+
+PASS 213
+/project/tmp/source_linked_slice_1_400_emit_source_bindings_101934
+```
+
 ## Remaining P0 Work
 
 Closed mode is necessary but not sufficient.

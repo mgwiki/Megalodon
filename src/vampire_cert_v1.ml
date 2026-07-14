@@ -3248,6 +3248,10 @@ let simple_source_label source_map source =
   in
   kind ^ "_" ^ displayed_name
 
+let simple_source_map_entry source_map source =
+  let _, tptp_name = simple_source_kind_and_tptp_name source in
+  List.find_opt (fun entry -> entry.source_map_tptp_name = tptp_name) source_map
+
 let simple_fresh_name used base =
   let base = megalodon_safe_ident "" base in
   let rec choose n =
@@ -5469,6 +5473,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   let emitted_var_sorts = ref [] in
   let checked = ref [] in
   let assumptions = ref [] in
+  let source_assumption_bindings = ref [] in
   let derived_assumptions = ref [] in
   let bridge_assumptions = ref [] in
   let claims = ref [] in
@@ -5489,6 +5494,10 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   in
   let input_name id source =
     simple_fresh_name used_names ("src_" ^ simple_source_label source_map source ^ "__" ^ id)
+  in
+  let add_source_assumption_binding id source name prop =
+    source_assumption_bindings :=
+      !source_assumption_bindings @ [(id, source, name, prop)]
   in
   let derived_name id = simple_fresh_name used_names id in
   let add_checked id clause =
@@ -5688,19 +5697,22 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           add_emitted id name;
           add_emitted_prop_and_sorts id prop sorts;
           assumptions := !assumptions @ [(name, prop)];
+          add_source_assumption_binding id source name prop;
           add_checked id clause
       | FormulaInput (id, source, literal) ->
           let name = input_name id source in
           let prop, sorts = formula_literal_prop_and_sorts id literal in
           add_emitted id name;
           add_emitted_prop_and_sorts id prop sorts;
-          assumptions := !assumptions @ [(name, prop)]
+          assumptions := !assumptions @ [(name, prop)];
+          add_source_assumption_binding id source name prop
       | FormulaTermInput (id, source, formula) ->
           let name = input_name id source in
           let prop, sorts = formula_tm_prop_and_sorts id formula in
           add_emitted id name;
           add_emitted_prop_and_sorts id prop sorts;
-          assumptions := !assumptions @ [(name, prop)]
+          assumptions := !assumptions @ [(name, prop)];
+          add_source_assumption_binding id source name prop
       | FormulaTermCopy (id, parent_id, formula) ->
           let name = derived_name id in
           let proof = lookup_simple_name !emitted_names parent_id in
@@ -6477,6 +6489,42 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     String.concat " -> "
       (List.map (fun (_, prop) -> "(" ^ prop ^ ")") theorem_assumptions @ ["False"])
   in
+  let quote_comment_value value =
+    "\"" ^ String.escaped value ^ "\""
+  in
+  List.iter
+    (fun (id, source, name, prop) ->
+       let source_kind, tptp_name = simple_source_kind_and_tptp_name source in
+       let entry = simple_source_map_entry source_map source in
+       let source_name =
+         match entry with
+         | Some entry when entry.source_map_source_name <> "" -> entry.source_map_source_name
+         | _ -> decode_megalodon_tptp_name tptp_name
+       in
+       let source_map_kind =
+         match entry with
+         | Some entry -> entry.source_map_kind
+         | None -> ""
+       in
+       let source_hash =
+         match entry with
+         | Some entry -> entry.source_map_hash
+         | None -> ""
+       in
+       lines := !lines @
+         [
+           Printf.sprintf
+             "// vampire_source_assumption ((parameter %s) (step %s) (certificate_source_kind %s) (tptp_name %s) (source_name %s) (source_map_kind %s) (source_hash %s) (proposition %s))"
+             (quote_comment_value name)
+             (quote_comment_value id)
+             (quote_comment_value source_kind)
+             (quote_comment_value tptp_name)
+             (quote_comment_value source_name)
+             (quote_comment_value source_map_kind)
+             (quote_comment_value source_hash)
+             (quote_comment_value prop);
+         ])
+    !source_assumption_bindings;
   lines := !lines @ [Printf.sprintf "Theorem %s : %s." (megalodon_ident theorem_name) theorem_type];
   List.iter
     (fun (name, prop) ->

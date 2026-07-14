@@ -73,6 +73,11 @@ if ! rg -q '// Vampire certificate source origin: examples/hammer/100thms_12_h\.
   echo "native certificate v1 simple emitter did not preserve source-origin metadata" >&2
   exit 1
 fi
+if ! rg -q '// vampire_source_assumption \(\(parameter "src_axiom_Foo_bar__c1"\) \(step "c1"\) \(certificate_source_kind "axiom"\) \(tptp_name "c_Foo_5Fbar"\) \(source_name "Foo_bar"\) \(source_map_kind "local_fact"\)' \
+    "$WORK_DIR/native_cert_v1_source_name_mangled_valid_emit.mg"; then
+  echo "native certificate v1 simple emitter did not preserve source-assumption binding metadata" >&2
+  exit 1
+fi
 if ! rg -q 'assume src_axiom_Foo_bar__c1:' \
     "$WORK_DIR/native_cert_v1_source_name_mangled_valid_emit.mg"; then
   echo "native certificate v1 simple emitter did not use the original Foo_bar source name" >&2
