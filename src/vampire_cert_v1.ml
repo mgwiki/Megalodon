@@ -7284,28 +7284,34 @@ let simple_skolem_formula_proof ?opened_witness
     | Some tm -> tm
     | None -> emit_error (id ^ ": skolem proof could not find substitution variable")
   in
+  let inferred_formula_binder env sort body =
+    let candidates =
+      env
+      |> List.filter
+           (fun (name, known_sort) ->
+              let binder = megalodon_ident name in
+              known_sort = sort
+              && is_vampire_var_name binder
+              && tm_contains_symbol binder body)
+    in
+    match List.rev candidates with
+    | (name, _) :: _ -> Some (megalodon_ident name)
+    | [] ->
+        begin match first_unused_vampire_var_name [] body with
+        | Some name -> Some (megalodon_ident name)
+        | None -> None
+        end
+  in
+  let formula_binder env sort body =
+    match inferred_formula_binder env sort body with
+    | Some binder -> binder
+    | None -> fallback_binder sort
+  in
   let rec formula_text env tm =
     match tm with
     | All (tp, body) ->
         let sort = simple_tp_expr tp in
-        let binder =
-          let candidates =
-            env
-            |> List.filter
-                 (fun (name, known_sort) ->
-                    let binder = megalodon_ident name in
-                    known_sort = sort
-                    && is_vampire_var_name binder
-                    && tm_contains_symbol binder body)
-          in
-          match List.rev candidates with
-          | (name, _) :: _ -> megalodon_ident name
-          | [] ->
-              begin match first_unused_vampire_var_name [] body with
-              | Some name -> megalodon_ident name
-              | None -> fallback_binder sort
-              end
-        in
+        let binder = formula_binder env sort body in
         "forall " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ ", "
         ^ simple_with_db_aliases [binder]
             (fun () -> formula_text ((binder, sort) :: env) body)
@@ -7364,7 +7370,36 @@ let simple_skolem_formula_proof ?opened_witness
       match source, target with
       | All (source_tp, source_body), All (target_tp, target_body) when source_tp = target_tp ->
           let sort = simple_tp_expr source_tp in
-          let binder = fallback_binder sort in
+          let fallback = fallback_binder sort in
+          let source_raw =
+            if tm_contains_symbol fallback source_body then Some fallback
+            else inferred_formula_binder env sort source_body
+          in
+          let target_raw =
+            if tm_contains_symbol fallback target_body then Some fallback
+            else inferred_formula_binder env sort target_body
+          in
+          let binder =
+            if tm_contains_symbol fallback source_body
+               || tm_contains_symbol fallback target_body then
+              fallback
+            else
+              match target_raw, source_raw with
+              | Some binder, _ | None, Some binder -> binder
+              | None, None -> fallback
+          in
+          let source_body =
+            match source_raw with
+            | Some raw when raw <> binder ->
+                subst_tm [(raw, TmH binder)] source_body
+            | _ -> source_body
+          in
+          let target_body =
+            match target_raw with
+            | Some raw when raw <> binder ->
+                subst_tm [(raw, TmH binder)] target_body
+            | _ -> target_body
+          in
           let env = (binder, sort) :: env in
           Printf.sprintf
             "(fun %s:%s => %s)"
@@ -9431,6 +9466,16 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           let name = derived_name id in
           let proof_formula = left_assoc_vampire_or_formula formula in
           let target_prop, target_sorts = formula_tm_prop_and_sorts id formula in
+          let normalize_skolem_parent_formula parent_id formula =
+            if
+              List.exists
+                (function
+                  | RectifyFormula (id, _, _, _) when id = parent_id -> true
+                  | _ -> false)
+                cert.steps
+            then left_assoc_vampire_or_formula formula
+            else formula
+          in
           let opened_higher_order_skolem () =
             let parent_formula = lookup_formula checked_certificate parent_id in
             match parent_formula with
@@ -9472,6 +9517,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                         let proof_parent_formula =
                           proof_parent_formula_for_emitted_prop
                             type_env parent_id parent_formula
+                          |> normalize_skolem_parent_formula parent_id
                         in
                         simple_skolem_formula_proof
                           ~opened_witness:witness_name
@@ -9495,6 +9541,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
               let proof_parent_formula =
                 proof_parent_formula_for_emitted_prop
                   type_env parent_id parent_formula
+                |> normalize_skolem_parent_formula parent_id
               in
               Some
                 (simple_skolem_formula_proof
