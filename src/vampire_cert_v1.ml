@@ -6960,6 +6960,35 @@ let rec simple_formula_prop_text type_env tm =
       | None -> simple_tm_expr_with_expected type_env (Some "prop") atom
       end
 
+let simple_rendered_prop_equiv left right =
+  let replace_substring needle replacement text =
+    let needle_len = String.length needle in
+    let text_len = String.length text in
+    let buffer = Buffer.create text_len in
+    let rec loop i =
+      if i >= text_len then ()
+      else if i + needle_len <= text_len
+              && String.sub text i needle_len = needle then
+        (Buffer.add_string buffer replacement; loop (i + needle_len))
+      else
+        (Buffer.add_char buffer text.[i]; loop (i + 1))
+    in
+    loop 0;
+    Buffer.contents buffer
+  in
+  let normalize text =
+    text
+    |> replace_substring "vampire_true" "True"
+    |> replace_substring "vampire_false" "False"
+    |> String.to_seq
+    |> Seq.filter
+         (function
+           | ' ' | '\n' | '\t' | '\r' | '(' | ')' -> false
+           | _ -> true)
+    |> String.of_seq
+  in
+  normalize left = normalize right
+
 let simple_formula_orientation_proof type_env source target proof =
   let proof_index = ref 0 in
   let fresh prefix =
@@ -8707,6 +8736,24 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     | Some clause -> simple_clause_prop clause
     | None -> simple_parent_prop cert parent_id
   in
+  let proof_parent_formula_for_emitted_prop type_env parent_id formula =
+    let emitted_prop = emitted_parent_prop parent_id in
+    let raw_prop =
+      try Some (simple_formula_prop_text type_env formula)
+      with Error _ -> None
+    in
+    let left_formula = left_assoc_vampire_or_formula formula in
+    let left_prop =
+      try Some (simple_formula_prop_text type_env left_formula)
+      with Error _ -> None
+    in
+    match raw_prop, left_prop with
+    | Some raw, Some left
+        when simple_rendered_prop_equiv emitted_prop left
+             && not (simple_rendered_prop_equiv emitted_prop raw) ->
+        left_formula
+    | _ -> formula
+  in
   let add_bridge_claim ?(kind="native") id parent_id name target_prop target_sorts =
     let parent_name = lookup_simple_name !emitted_names parent_id in
     let bridge_name = simple_fresh_name used_names ("bridge_" ^ kind ^ "__" ^ id) in
@@ -8977,44 +9024,15 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           let structural_target_prop =
             simple_quantify_prop target_sorts (literal_prop result)
           in
-          let rendered_prop_equiv left right =
-            let replace_substring needle replacement text =
-              let needle_len = String.length needle in
-              let text_len = String.length text in
-              let buffer = Buffer.create text_len in
-              let rec loop i =
-                if i >= text_len then ()
-                else if i + needle_len <= text_len
-                        && String.sub text i needle_len = needle then
-                  (Buffer.add_string buffer replacement; loop (i + needle_len))
-                else
-                  (Buffer.add_char buffer text.[i]; loop (i + 1))
-              in
-              loop 0;
-              Buffer.contents buffer
-            in
-            let normalize text =
-              text
-              |> replace_substring "vampire_true" "True"
-              |> replace_substring "vampire_false" "False"
-              |> String.to_seq
-              |> Seq.filter
-                   (function
-                     | ' ' | '\n' | '\t' | '\r' | '(' | ')' -> false
-                     | _ -> true)
-              |> String.of_seq
-            in
-            normalize left = normalize right
-          in
           begin match
-            if not (rendered_prop_equiv (emitted_parent_prop parent_id) parent_prop) then
+            if not (simple_rendered_prop_equiv (emitted_parent_prop parent_id) parent_prop) then
               if closed then
                 emit_error
                   (id ^ ": FOOL bool parent proposition mismatch: emitted "
                    ^ emitted_parent_prop parent_id ^ " but reconstructed "
                    ^ parent_prop)
               else None
-            else if not (rendered_prop_equiv target_prop structural_target_prop) then
+            else if not (simple_rendered_prop_equiv target_prop structural_target_prop) then
               if closed then
                 emit_error
                   (id ^ ": FOOL bool target proposition mismatch: metadata "
@@ -9106,7 +9124,10 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                           symbol_type_env
                       in
                       let proof =
-                        let proof_parent_formula = left_assoc_vampire_or_formula parent_formula in
+                        let proof_parent_formula =
+                          proof_parent_formula_for_emitted_prop
+                            type_env parent_id parent_formula
+                        in
                         simple_skolem_formula_proof
                           ~opened_witness:witness_name
                           type_env id parent_id subst proof_parent_formula proof_formula
@@ -9120,12 +9141,15 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           begin match
             try
               let parent_formula = lookup_formula checked_certificate parent_id in
-              let proof_parent_formula = left_assoc_vampire_or_formula parent_formula in
               let parent_sorts = [] in
               let type_env =
                 simple_type_env_with_variables
                   (parent_sorts @ target_sorts |> simple_unique_variable_sorts)
                   symbol_type_env
+              in
+              let proof_parent_formula =
+                proof_parent_formula_for_emitted_prop
+                  type_env parent_id parent_formula
               in
               Some
                 (simple_skolem_formula_proof
