@@ -1209,3 +1209,79 @@ The next source-linking step should not be another string-rendering heuristic.
 It needs a small, explicit rectification/alpha-conversion proof object for
 original Megalodon facts with lambda binders, so the source theorem is connected
 to Vampire's rectified formula before FOOL conversion.
+
+## Follow-up: Source Rectification Prefix Replay
+
+That source-linking step has now been implemented for the `.46` family. The
+problem was not a missing source map: the original Megalodon assumptions were
+linked to the correct Vampire input facts. The failure was proof-term shape.
+Vampire's rectification can expose names used inside lambda terms as additional
+leading formula binders, while the original Megalodon fact only quantifies the
+real theorem variables. A direct `exact src_axiom...` therefore had the right
+body proposition up to scoped lambda renaming, but the wrong number of leading
+arguments.
+
+Implemented general changes:
+
+- `RectifyFormula` now tries an explicit extra-prefix proof before generic
+  formula-orientation replay. It introduces the target prefix binders in the
+  emitted order and applies the source theorem to the parent binders that are
+  genuinely present there.
+- The emitted-prefix parser now preserves the proposition order instead of
+  reversing the leading `forall`s.
+- Later formula transformations can pre-apply surplus emitted parent binders to
+  canonical witnesses before running their ordinary replay. This handles the
+  common shape where the emitted parent proposition has lambda-rectification
+  binders but the native formula object has only the real formula-level
+  `forall`s.
+
+The representative case now emits the intended source-linked skeleton:
+
+```text
+claim u228: forall X5:set, forall X4:set, forall X2:set,
+  forall X6:set, forall X3:set, forall X1:set, forall X0:set, ...
+{ exact (fun X5:set => fun X4:set => fun X2:set => fun X6:set =>
+    fun X3:set => fun X1:set => fun X0:set =>
+      ((src_axiom_Hv3__u76 X1) X0)). }
+```
+
+The following four formerly checking-failing source-linked cases are now part
+of the committed closed corpus:
+
+```text
+hammer.10208.46
+hammer.10269.46
+hammer.10304.46
+hammer.10363.46
+```
+
+Validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_source_map_export_smoke.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh
+
+CLOSED_PASS 77
+```
+
+Cached 20-way replay over the source-linked frontier, without rerunning Vampire:
+
+```text
+TMPDIR=/project/tmp \
+WORK_DIR=/project/tmp/rectify_prefix_parent_replay_145107 \
+PROBLEM_DIR=/project/tmp/source_linked_strict_100_corpus_fresh_041947 \
+JOBS=20 MIN_PASS=0 CLOSED_CERT_V1=1 EMIT_TIMEOUT=30 CHECK_TIMEOUT=45 \
+tests/vampire_certificate/run_native_emit_cached_parallel.sh \
+  /project/tmp/source_linked_slice_1_400_fresh_042040
+
+CLOSED_PASS 77
+EMIT_FAIL 136
+```
+
+There were no remaining `CHECK_FAIL` cases in that replay. The remaining
+frontier is therefore not source-linking for this family; it is the still-open
+closed-mode bridge classes such as normal form, skolem formula, CNF variants,
+substitution/paramodulation variants, AVATAR components, and theory-derived
+steps.

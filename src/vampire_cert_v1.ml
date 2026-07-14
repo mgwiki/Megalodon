@@ -3926,6 +3926,67 @@ let simple_wrap_forall_intro sorts proof =
     sorts
     proof
 
+let simple_forall_prefix_sorts prop =
+  let len = String.length prop in
+  let is_space = function ' ' | '\n' | '\r' | '\t' -> true | _ -> false in
+  let is_ident = function
+    | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' | '\'' -> true
+    | _ -> false
+  in
+  let rec skip i =
+    if i < len && is_space prop.[i] then skip (i + 1) else i
+  in
+  let starts_with i prefix =
+    let prefix_len = String.length prefix in
+    i + prefix_len <= len && String.sub prop i prefix_len = prefix
+  in
+  let rec parse acc i =
+    let i = skip i in
+    if not (starts_with i "forall") then acc
+    else
+      let j = i + 6 in
+      if j < len && is_ident prop.[j] then acc
+      else
+        let j = skip j in
+        let name_start = j in
+        let rec scan_name k =
+          if k < len && is_ident prop.[k] then scan_name (k + 1) else k
+        in
+        let name_end = scan_name name_start in
+        if name_end = name_start then acc
+        else
+          let name = String.sub prop name_start (name_end - name_start) in
+          let k = skip name_end in
+          if k >= len || prop.[k] <> ':' then acc
+          else
+            let sort_start = skip (k + 1) in
+            let rec scan_sort depth k =
+              if k >= len then k
+              else
+                match prop.[k] with
+                | '(' -> scan_sort (depth + 1) (k + 1)
+                | ')' -> scan_sort (max 0 (depth - 1)) (k + 1)
+                | ',' when depth = 0 -> k
+                | _ -> scan_sort depth (k + 1)
+            in
+            let sort_end = scan_sort 0 sort_start in
+            if sort_end >= len || prop.[sort_end] <> ',' then acc
+            else
+              let sort =
+                String.sub prop sort_start (sort_end - sort_start)
+                |> String.trim
+              in
+              parse (acc @ [(megalodon_ident name, sort)]) (sort_end + 1)
+  in
+  parse [] 0
+
+let simple_wrap_forall_intro_in_order sorts proof =
+  List.fold_right
+    (fun (name, sort) body ->
+       "(fun " ^ megalodon_ident name ^ ":" ^ sort ^ " => " ^ body ^ ")")
+    sorts
+    proof
+
 let simple_apply_forall_vars proof sorts =
   List.fold_left
     (fun acc (name, _) -> "(" ^ acc ^ " " ^ megalodon_ident name ^ ")")
@@ -3943,6 +4004,49 @@ let simple_apply_forall_witnesses proof sorts =
     (fun acc (_, sort) -> "(" ^ acc ^ " " ^ simple_witness_for_sort sort ^ ")")
     proof
     sorts
+
+let simple_parent_proof_with_emitted_prefix parent_prop parent_formula parent_name =
+  let emitted_prefix = simple_forall_prefix_sorts parent_prop in
+  let formula_prefix_count = prefix_forall_count parent_formula in
+  let extra_prefix_count = List.length emitted_prefix - formula_prefix_count in
+  if extra_prefix_count <= 0 then parent_name
+  else
+    simple_apply_forall_witnesses
+      parent_name
+      (take_prefix extra_prefix_count emitted_prefix)
+
+let simple_rectify_extra_prefix_binders_proof
+    parent_prop target_prop parent_formula target_formula parent_name =
+  let parent_binders = simple_forall_prefix_sorts parent_prop in
+  let target_binders = simple_forall_prefix_sorts target_prop in
+  if List.length target_binders <= List.length parent_binders then
+    emit_error "rectification prefix replay expects extra target binders";
+  if not
+       (same_mod_scoped_vampire_var_renaming parent_formula target_formula
+        || same_mod_scoped_vampire_var_renaming_and_equality parent_formula target_formula
+        || same_mod_scoped_vampire_var_renaming
+             (strip_forall parent_formula)
+             (strip_forall target_formula)
+        || same_mod_scoped_vampire_var_renaming_and_equality
+             (strip_forall parent_formula)
+             (strip_forall target_formula)) then
+    emit_error "rectification prefix replay body is not a scoped renaming";
+  let target_sort name =
+    List.assoc_opt name target_binders
+  in
+  let parent_application =
+    List.fold_left
+      (fun acc (name, sort) ->
+         let arg =
+           match target_sort name with
+           | Some target_sort when target_sort = sort -> name
+           | _ -> simple_witness_for_sort sort
+         in
+         "(" ^ acc ^ " " ^ arg ^ ")")
+      parent_name
+      parent_binders
+  in
+  simple_wrap_forall_intro_in_order target_binders parent_application
 
 let simple_resolution_proof
     literal_prop parent_sorts_of result_sorts id left_id right_id left_index right_index result checked names =
@@ -7180,8 +7284,8 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           let proof = lookup_simple_name !emitted_names parent_id in
           let prop, sorts = formula_tm_prop_and_sorts id formula in
           let parent_formula = lookup_formula checked_certificate parent_id in
-          if emitted_parent_prop parent_id = prop
-             || same_mod_scoped_vampire_var_renaming parent_formula formula then begin
+          let parent_prop = emitted_parent_prop parent_id in
+          if parent_prop = prop then begin
             add_emitted id name;
             add_emitted_prop_and_sorts id prop sorts;
             claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")]
@@ -7193,15 +7297,33 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                 symbol_type_env
             in
             begin match
-              try Some (simple_formula_orientation_proof type_env parent_formula formula proof)
+              try
+                Some
+                  (simple_rectify_extra_prefix_binders_proof
+                     parent_prop prop parent_formula formula proof)
               with Error _ -> None
             with
-            | Some orient_proof ->
+            | Some prefix_proof ->
                 add_emitted id name;
                 add_emitted_prop_and_sorts id prop sorts;
-                claims := !claims @ [(name, prop, "exact " ^ orient_proof ^ ".")]
+                claims := !claims @ [(name, prop, "exact " ^ prefix_proof ^ ".")]
             | None ->
-                add_formula_inference_bridge "rectify_formula" id [parent_id] prop
+                begin match
+                  try Some (simple_formula_orientation_proof type_env parent_formula formula proof)
+                  with Error _ -> None
+                with
+                | Some orient_proof ->
+                    add_emitted id name;
+                    add_emitted_prop_and_sorts id prop sorts;
+                    claims := !claims @ [(name, prop, "exact " ^ orient_proof ^ ".")]
+                | None ->
+                    if same_mod_scoped_vampire_var_renaming parent_formula formula then begin
+                      add_emitted id name;
+                      add_emitted_prop_and_sorts id prop sorts;
+                      claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")]
+                    end else
+                      add_formula_inference_bridge "rectify_formula" id [parent_id] prop
+                end
             end
           end
       | FormulaCopy (id, parent_id, literal) ->
@@ -7269,7 +7391,12 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
               let parent_formula = lookup_formula checked_certificate parent_id in
               if simple_tm_has_unscoped_db_name parent_formula then
                 raise (Error (id ^ ": FOOL formula contains db names"));
-              let parent_name = lookup_simple_name !emitted_names parent_id in
+              let parent_name =
+                simple_parent_proof_with_emitted_prefix
+                  (emitted_parent_prop parent_id)
+                  parent_formula
+                  (lookup_simple_name !emitted_names parent_id)
+              in
               let saved_vlam_counter = !simple_vlam_name_counter in
               let proof =
                 try
