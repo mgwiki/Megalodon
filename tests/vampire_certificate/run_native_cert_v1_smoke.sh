@@ -619,9 +619,14 @@ if rg -n '\badmit\b|\baby\b|-allowincompleteqed' \
   echo "native certificate v1 equality-symmetry emitter generated an admission marker" >&2
   exit 1
 fi
-if ! rg -q 'symmetry\. exact src_axiom_eq_forward__p1\.' \
+if ! rg -Fq 'bridge_equality_symmetry__p2: (a = b) -> b = a.' \
     "$WORK_DIR/native_cert_v1_equality_symmetry_valid_emit.mg"; then
-  echo "native certificate v1 equality-symmetry emitter did not generate a Megalodon symmetry proof" >&2
+  echo "native certificate v1 equality-symmetry emitter did not expose a bridge proof" >&2
+  exit 1
+fi
+if ! rg -Fq 'exact (bridge_equality_symmetry__p2 src_axiom_eq_forward__p1).' \
+    "$WORK_DIR/native_cert_v1_equality_symmetry_valid_emit.mg"; then
+  echo "native certificate v1 equality-symmetry emitter did not use the bridge proof" >&2
   exit 1
 fi
 bin/megalodon "$WORK_DIR/native_cert_v1_equality_symmetry_valid_emit.mg" \
