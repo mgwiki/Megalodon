@@ -1466,6 +1466,45 @@ bridge_predicate_definition_fold 2
 bridge_fool 1
 ```
 
+## Follow-up: Source Binding Qualification Status
+
+The audit's strongest correctness objection was that a source-linked proof can
+still be only label-linked unless the emitted source formula is compared to the
+certificate input. This branch already made closed mode reject unsupported or
+mismatching hash-backed source formulas. The generated Megalodon artifact now
+also exposes that distinction directly in each `vampire_source_assumption`
+comment through a `source_formula_status` field:
+
+```text
+source_formula_status "closed_formula_checked"
+source_formula_status "decl_formula_present_unhashed"
+source_formula_status "local_or_unhashed"
+```
+
+The committed closed corpus harness now rejects any 64-hex-hash global source
+binding whose emitted status is still unchecked, missing, or missing from the
+source map. This does not add a proof rule and does not increase the closed
+count; it tightens what can be counted as a reproducible closed proof artifact.
+
+Validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+TMPDIR=/project/tmp JOBS=10 tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh
+
+CLOSED_PASS 77
+/project/tmp/native_cert_v1_closed_corpus.othto4
+```
+
+Operationally, the audit reset is now interpreted as follows: `CLOSED_PASS`
+with zero non-source premises, source-origin metadata, source-assumption
+bindings, and checked hash-backed source statuses is the qualifying result.
+Ordinary `PASS`, aggregate bridge reduction, and broad frontier movement remain
+diagnostic only. The next large architectural step should be to move proof
+construction toward native `Syntax.pf` objects or to add richer Vampire-side
+atomic proof details, not to resume Python-side reconstruction.
+
 The important audit guard is still intact: these numbers are `CLOSED_PASS`
 counts, and closed mode still rejects every remaining bridge or derived
 non-source theorem premise.
@@ -1586,4 +1625,45 @@ Validation:
 TMPDIR=/project/tmp ./makeopt
 TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
 TMPDIR=/project/tmp JOBS=10 tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh
+```
+
+## Follow-up: Guarded AVATAR Component Replay
+
+The next step targets the largest remaining first-blocker class without
+declaring the whole AVATAR SAT refutation trusted. For each guarded AVATAR
+component, the emitter now introduces the split atom as a Megalodon definition
+of the corresponding component formula and proves the component clause by
+classical case analysis over that formula. This is currently limited to
+components whose split body is syntactically available from the native
+certificate and does not contain unscoped `db*` names; scoped/de-Bruijn
+components still remain explicit closed-mode failures until the certificate
+carries enough scoped structure to replay them safely.
+
+The small AVATAR component fixture now has closed emit/check coverage. It emits
+`Definition split_1 : prop := p.` and a checked `claim avatar_component__c0`,
+with no bridge or derived AVATAR premise.
+
+Validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+TMPDIR=/project/tmp JOBS=10 tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh
+```
+
+The cached frontier did not increase `CLOSED_PASS`, because most affected cases
+now expose `avatar_refutation` or later preprocessing bridges. It did move the
+first-blocker profile from AVATAR components to AVATAR refutations:
+
+```text
+CLOSED_PASS 93
+EMIT_FAIL 120
+/project/tmp/avatar_component_frontier_173336
+
+avatar_refutation 87
+bridge_skolem_formula 18
+avatar_component 8
+definition_input 4
+bridge_predicate_definition_fold 2
+bridge_fool 1
 ```

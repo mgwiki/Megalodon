@@ -6045,6 +6045,61 @@ let simple_fool_distinctness_proof type_env result_sorts id clause =
   simple_wrap_forall_intro result_sorts
     (simple_clause_intro_proof clause (Neg literal) contradiction)
 
+let simple_avatar_component_proof type_env split_definitions id result_sorts result =
+  let split_literals, component_literals =
+    List.partition is_split_literal result
+  in
+  let split_literal =
+    match split_literals with
+    | [literal] -> literal
+    | [] -> emit_error (id ^ ": avatar component proof expected a split literal")
+    | _ -> emit_error (id ^ ": avatar component proof expected exactly one split literal")
+  in
+  let split_name =
+    match split_literal with
+    | Pos (TmH name) | Neg (TmH name) -> megalodon_ident name
+    | _ -> emit_error (id ^ ": avatar component split literal is not a split atom")
+  in
+  let target_prop = simple_clause_prop_with_type_env type_env result in
+  let body_clause, body_prop =
+    match List.assoc_opt split_name split_definitions with
+    | Some (_, body_clause, body_prop) -> body_clause, body_prop
+    | None ->
+        emit_error (id ^ ": avatar component has no local split definition")
+  in
+  let prove_from_body proof_name =
+    simple_clause_projection_proof target_prop result body_clause proof_name 0
+  in
+  let proof =
+    match split_literal with
+    | Neg (TmH _) ->
+        let positive_branch = prove_from_body "Havatar_body" in
+        let negative_branch =
+          simple_clause_intro_proof result split_literal "Havatar_not_body"
+        in
+        Printf.sprintf
+          "((vampire_xm (%s)) %s (fun Havatar_body:%s => %s) (fun Havatar_not_body:%s -> False => %s))"
+          body_prop target_prop body_prop positive_branch body_prop negative_branch
+    | Pos (TmH _) ->
+        begin match component_literals, body_clause with
+        | [Neg atom], [Pos body_atom] when atom = body_atom ->
+            let positive_branch =
+              simple_clause_intro_proof result split_literal "Havatar_body"
+            in
+            let negative_branch =
+              simple_clause_intro_proof result (Neg atom) "Havatar_not_body"
+            in
+            Printf.sprintf
+              "((vampire_xm (%s)) %s (fun Havatar_body:%s => %s) (fun Havatar_not_body:%s -> False => %s))"
+              body_prop target_prop body_prop positive_branch body_prop negative_branch
+        | _ ->
+            emit_error
+              (id ^ ": avatar component positive split proof supports only singleton complements")
+        end
+    | _ -> emit_error (id ^ ": avatar component split literal is not a split atom")
+  in
+  simple_wrap_forall_intro result_sorts proof
+
 let simple_inequality_name_intro_proof type_env result_sorts id result =
   let literal, named =
     match result with
@@ -7614,9 +7669,63 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   let predicate_definition_names =
     List.map (fun (name, _, _) -> name) predicate_definitions
   in
+  let avatar_split_definition_for_component id result =
+    let split_literals, component_literals =
+      List.partition is_split_literal result
+    in
+    let definition split_name sorts body_clause =
+      if body_clause = [] || simple_clause_has_unscoped_db_name body_clause then None
+      else
+        let type_env = simple_type_env_with_variables sorts symbol_type_env in
+        try
+          let body_prop =
+            simple_quantify_prop sorts
+              (simple_clause_prop_with_type_env type_env body_clause)
+          in
+          Some
+            (split_name,
+             Printf.sprintf "Definition %s : prop := %s." split_name body_prop,
+             body_clause,
+             body_prop)
+        with Error _ -> None
+    in
+    match split_literals with
+    | [Neg (TmH raw_split_name)]
+        when component_literals <> [] ->
+        let split_name = megalodon_ident raw_split_name in
+        let sorts = metadata_step_variable_sort_pairs cert id in
+        definition split_name sorts component_literals
+    | [Pos (TmH raw_split_name)] ->
+        begin match component_literals with
+        | [Neg atom] ->
+            let split_name = megalodon_ident raw_split_name in
+            let sorts = metadata_step_variable_sort_pairs cert id in
+            definition split_name sorts [Pos atom]
+        | _ -> None
+        end
+    | _ -> None
+  in
+  let avatar_split_definitions =
+    cert.steps
+    |> List.filter_map
+         (function
+           | AvatarComponent (id, result) ->
+               avatar_split_definition_for_component id result
+           | _ -> None)
+    |> List.sort_uniq compare
+  in
+  let avatar_split_definition_names =
+    List.map (fun (name, _, _, _) -> name) avatar_split_definitions
+  in
+  let avatar_split_definition_env =
+    List.map
+      (fun (name, definition, body_clause, body_prop) ->
+         (name, (definition, body_clause, body_prop)))
+      avatar_split_definitions
+  in
   let local_definition_names =
     function_definition_names @ predicate_definition_names @ inequality_split_definition_names
-    @ skolem_definition_names @ local_skolem_witness_names
+    @ skolem_definition_names @ avatar_split_definition_names @ local_skolem_witness_names
   in
   let generated_prelude_names =
     [
@@ -7706,6 +7815,9 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           && not (is_db_ident name && List.mem name higher_order_definition_db_names) then
          add_line_once ("Variable " ^ name ^ ":set."))
     term_names;
+  List.iter
+    (fun (_, definition, _, _) -> add_line_once definition)
+    avatar_split_definitions;
   let used_names = ref (prop_names @ term_names @ local_definition_names) in
   let emitted_names = ref [] in
   let emitted_props = ref [] in
@@ -8538,7 +8650,23 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           let prop, sorts = simple_clause_prop_and_sorts_for_step cert id result in
           add_emitted id name;
           add_emitted_prop_and_sorts id prop sorts;
-          derived_assumptions := !derived_assumptions @ [(name, prop)];
+          begin match
+            try
+              let type_env =
+                simple_type_env_with_variables
+                  (sorts |> simple_unique_variable_sorts)
+                  symbol_type_env
+              in
+              Some
+                (simple_avatar_component_proof
+                   type_env avatar_split_definition_env id sorts result)
+            with Error _ -> None
+          with
+          | Some proof ->
+              claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")]
+          | None ->
+              derived_assumptions := !derived_assumptions @ [(name, prop)]
+          end;
           add_checked id result
       | AvatarRefutation (id, _, _, result) ->
           let name = simple_fresh_name used_names ("avatar_refutation__" ^ id) in
@@ -9157,10 +9285,23 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
          | Some entry -> entry.source_map_hash
          | None -> ""
        in
+       let source_formula_status =
+         match entry with
+         | Some entry when entry.source_map_hash <> "" ->
+             begin match entry.source_map_decl_formula, closed with
+             | Some _, true -> "closed_formula_checked"
+             | Some _, false -> "decl_formula_present_unchecked"
+             | None, _ -> "missing_decl_formula"
+             end
+         | Some entry when entry.source_map_decl_formula <> None ->
+             "decl_formula_present_unhashed"
+         | Some _ -> "local_or_unhashed"
+         | None -> "missing_source_map"
+       in
        lines := !lines @
          [
            Printf.sprintf
-             "// vampire_source_assumption ((parameter %s) (step %s) (certificate_source_kind %s) (tptp_name %s) (source_name %s) (source_map_kind %s) (source_hash %s) (proposition %s))"
+             "// vampire_source_assumption ((parameter %s) (step %s) (certificate_source_kind %s) (tptp_name %s) (source_name %s) (source_map_kind %s) (source_hash %s) (source_formula_status %s) (proposition %s))"
              (quote_comment_value name)
              (quote_comment_value id)
              (quote_comment_value source_kind)
@@ -9168,6 +9309,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
              (quote_comment_value source_name)
              (quote_comment_value source_map_kind)
              (quote_comment_value source_hash)
+             (quote_comment_value source_formula_status)
              (quote_comment_value prop);
          ])
     !source_assumption_bindings;

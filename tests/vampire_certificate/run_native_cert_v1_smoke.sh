@@ -78,6 +78,11 @@ if ! rg -q '// vampire_source_assumption \(\(parameter "src_axiom_Foo_bar__c1"\)
   echo "native certificate v1 simple emitter did not preserve source-assumption binding metadata" >&2
   exit 1
 fi
+if ! rg -q 'source_formula_status "decl_formula_present_unhashed"' \
+    "$WORK_DIR/native_cert_v1_source_name_mangled_valid_emit.mg"; then
+  echo "native certificate v1 simple emitter did not classify local source-assumption binding metadata" >&2
+  exit 1
+fi
 if ! rg -q 'assume src_axiom_Foo_bar__c1:' \
     "$WORK_DIR/native_cert_v1_source_name_mangled_valid_emit.mg"; then
   echo "native certificate v1 simple emitter did not use the original Foo_bar source name" >&2
@@ -361,6 +366,11 @@ if ! rg -q 'Vampire certificate v1 closed checked 6 steps' "$WORK_DIR/native_cer
 fi
 if rg -q 'bridge_' "$WORK_DIR/native_cert_v1_closed_source_map_valid.mg"; then
   echo "closed native certificate v1 emitter generated a bridge premise for a closed fixture" >&2
+  exit 1
+fi
+if ! rg -q 'source_hash "[0-9a-fA-F]{64}".*source_formula_status "closed_formula_checked"' \
+    "$WORK_DIR/native_cert_v1_closed_source_map_valid.mg"; then
+  echo "closed native certificate v1 emitter did not mark hash-backed source bindings as checked" >&2
   exit 1
 fi
 bin/megalodon -hf "$WORK_DIR/native_cert_v1_closed_source_map_valid.mg" \
@@ -745,6 +755,31 @@ if ! rg -q 'Vampire certificate v1 strict checked 6 steps' "$WORK_DIR/native_cer
   echo "strict native certificate v1 checker did not accept the valid AVATAR component fixture" >&2
   exit 1
 fi
+
+bin/megalodon \
+  -vampirecertv1closed \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_avatar_component_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_avatar_component_valid.th0.p \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_avatar_component_closed.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_avatar_component_closed.out" \
+  2>"$WORK_DIR/native_cert_v1_avatar_component_closed.err"
+if rg -n '\b(admit|aby)\b|-allowincompleteqed|bridge_|derived:avatar_component' \
+    "$WORK_DIR/native_cert_v1_avatar_component_closed.mg"; then
+  echo "closed native certificate v1 AVATAR-component emitter left an admission or bridge" >&2
+  exit 1
+fi
+if ! rg -q 'Definition split_1 : prop := p.' \
+    "$WORK_DIR/native_cert_v1_avatar_component_closed.mg"; then
+  echo "closed native certificate v1 AVATAR-component emitter did not define the split atom" >&2
+  exit 1
+fi
+if ! rg -q 'claim avatar_component__c0:' \
+    "$WORK_DIR/native_cert_v1_avatar_component_closed.mg"; then
+  echo "closed native certificate v1 AVATAR-component emitter did not emit a replayed claim" >&2
+  exit 1
+fi
+bin/megalodon -hf "$WORK_DIR/native_cert_v1_avatar_component_closed.mg" \
+  >"$WORK_DIR/native_cert_v1_avatar_component_closed.check.log"
 
 if bin/megalodon \
   -vampirecertv1strict \

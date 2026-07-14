@@ -53,6 +53,14 @@ run_one() {
     return 0
   fi
 
+  if rg -n '^// vampire_source_assumption .*source_hash "[0-9a-fA-F]{64}".*source_formula_status "(decl_formula_present_unchecked|missing_decl_formula|missing_source_map)"' \
+      "$case_dir/out.mg" > "$case_dir/unchecked_global_sources.txt"; then
+    local first
+    first=$(head -1 "$case_dir/unchecked_global_sources.txt" | tr '\t' ' ')
+    printf '%s\tUNCHECKED_GLOBAL_SOURCE\t%s\n' "$base" "$first" > "$case_dir/result.tsv"
+    return 0
+  fi
+
   if rg -n '\b(admit|aby)\b|-allowincompleteqed|bridge_|assume definition_input__|assume vampire_eq_prop_ext' \
       "$case_dir/out.mg" > "$case_dir/forbidden.txt"; then
     local first
