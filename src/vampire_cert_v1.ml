@@ -1195,6 +1195,8 @@ let rec skolemize_formula_tm subst tm =
       skolemize_formula_tm subst (subst_tm subst body)
   | Ap (TmH "vampire_exists_prop", Ap (TmH "vLAM", body)) ->
       skolemize_formula_tm subst (subst_tm subst body)
+  | TpAp (m, a) -> TpAp (skolemize_formula_tm subst m, a)
+  | Ap (m, n) -> Ap (skolemize_formula_tm subst m, skolemize_formula_tm subst n)
   | Lam (tp, body) -> Lam (tp, skolemize_formula_tm subst body)
   | _ -> tm
 

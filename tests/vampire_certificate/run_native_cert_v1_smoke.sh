@@ -482,6 +482,15 @@ if ! rg -q 'Vampire certificate v1 checked 6 steps' "$WORK_DIR/native_cert_v1_sk
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_skolem_application_valid.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_skolem_application_valid.log"
+
+if ! rg -q 'Vampire certificate v1 checked 6 steps' "$WORK_DIR/native_cert_v1_skolem_application_valid.log"; then
+  echo "native certificate v1 checker did not accept Skolem substitution under application" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_skolem_bogus_shape_bad.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_skolem_bogus_shape_bad.out" \
