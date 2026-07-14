@@ -19,10 +19,15 @@ tests/vampire_certificate/run_native_cert_v1_smoke.sh
 This is the primary certificate smoke test. It checks the OCaml
 `-vampirecertv1` importer against native S-expression fixtures and should be the
 first test used for counted reconstruction work.
-Use `-vampirecertv1strict` with `-vampirecertv1` for the stricter counted gate;
-that mode accepts shape-checked AVATAR component bridge clauses and traced
-AVATAR SAT refutations. Legacy AVATAR refutations without `(sat_proof ...)`
-remain rejected in strict mode.
+Use `-vampirecertv1strict` with `-vampirecertv1` for structural certificate
+validation plus source-map validation. Strict mode is not a closed proof gate:
+it can still emit theorem premises for unsupported reconstruction steps. Use
+`-vampirecertv1closed` when a result should count as a zero-extra-premise
+reconstruction attempt. Closed mode implies strict checking and fails emission
+if any bridge premise, derived-theory premise, AVATAR premise, definition-input
+premise, predicate-definition premise, or unproved helper premise would be added
+to the generated theorem. Successful cached closed runs are reported as
+`CLOSED_PASS`, not `PASS`.
 
 The native checker also has an initial proof-emission path:
 
@@ -120,6 +125,13 @@ runs `-vampirecertv1emit`, rejects generated files containing `admit`, `aby`, or
 `-allowincompleteqed`, and checks each emitted `.mg` file with `bin/megalodon`.
 It defaults to strict source-map validation, 20-way parallelism, and
 `/project/tmp`.
+
+Set `CLOSED_CERT_V1=1` on the cached emitter harness to request
+`-vampirecertv1closed`. In that mode a case passes only when emission introduces
+no non-source theorem premises; the summary status is `CLOSED_PASS`. Ordinary
+`PASS` rows remain useful integration evidence, but they are not closed proof
+reconstruction successes if generated scripts contain bridge or derived
+premises.
 
 To export a Megalodon development once and then check the resulting source-mapped
 TH0 corpus in parallel, use:

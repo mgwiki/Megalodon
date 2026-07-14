@@ -5361,7 +5361,7 @@ let simple_fool_bool_proof
   in
   simple_wrap_forall_intro result_sorts proof
 
-let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_map=[]) cert =
+let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_map=[]) ?(closed=false) cert =
   let checked_certificate = check_certificate cert in
   simple_lambda_sort_env := metadata_lambda_sort_env cert;
   let prop_names, term_names = collect_simple_names cert in
@@ -5438,6 +5438,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   let emitted_var_sorts = ref [] in
   let checked = ref [] in
   let assumptions = ref [] in
+  let derived_assumptions = ref [] in
   let bridge_assumptions = ref [] in
   let claims = ref [] in
   let uses_vampire_eq_prop_ext = ref false in
@@ -5873,21 +5874,21 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           let prop, sorts = simple_clause_prop_and_sorts_for_step cert id result in
           add_emitted id name;
           add_emitted_prop_and_sorts id prop sorts;
-          assumptions := !assumptions @ [(name, prop)];
+          derived_assumptions := !derived_assumptions @ [(name, prop)];
           add_checked id result
       | FoolDistinctness (id, result) ->
           let name = simple_fresh_name used_names ("theory_fool_distinctness__" ^ id) in
           let prop, sorts = simple_clause_prop_and_sorts_for_step cert id result in
           add_emitted id name;
           add_emitted_prop_and_sorts id prop sorts;
-          assumptions := !assumptions @ [(name, prop)];
+          derived_assumptions := !derived_assumptions @ [(name, prop)];
           add_checked id result
       | PredicateDefinition (id, _, formula) ->
           let name = simple_fresh_name used_names ("theory_predicate_definition__" ^ id) in
           let prop, sorts = formula_tm_prop_and_sorts id formula in
           add_emitted id name;
           add_emitted_prop_and_sorts id prop sorts;
-          assumptions := !assumptions @ [(name, prop)]
+          derived_assumptions := !derived_assumptions @ [(name, prop)]
       | PredicateDefinitionFold (id, source_id, definition_id, formula) ->
           let target_prop, _ = formula_tm_prop_and_sorts id formula in
           add_formula_inference_bridge "predicate_definition_fold" id [source_id; definition_id] target_prop
@@ -5899,21 +5900,21 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           let prop, sorts = clause_prop_and_sorts_for_ids id [] result in
           add_emitted id name;
           add_emitted_prop_and_sorts id prop sorts;
-          assumptions := !assumptions @ [(name, prop)];
+          derived_assumptions := !derived_assumptions @ [(name, prop)];
           add_checked id result
       | AvatarComponent (id, result) ->
           let name = simple_fresh_name used_names ("avatar_component__" ^ id) in
           let prop, sorts = simple_clause_prop_and_sorts_for_step cert id result in
           add_emitted id name;
           add_emitted_prop_and_sorts id prop sorts;
-          assumptions := !assumptions @ [(name, prop)];
+          derived_assumptions := !derived_assumptions @ [(name, prop)];
           add_checked id result
       | AvatarRefutation (id, _, _, result) ->
           let name = simple_fresh_name used_names ("avatar_refutation__" ^ id) in
           let prop, sorts = simple_clause_prop_and_sorts_for_step cert id result in
           add_emitted id name;
           add_emitted_prop_and_sorts id prop sorts;
-          assumptions := !assumptions @ [(name, prop)];
+          derived_assumptions := !derived_assumptions @ [(name, prop)];
           add_checked id result
       | Substitute (id, parent_id, subst, result) ->
           let subst_sorts = substitution_variable_sorts parent_id subst in
@@ -6413,7 +6414,34 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
         "forall p q:prop, (p -> q) -> (q -> p) -> vampire_eq_prop p q")]
     else []
   in
-  let theorem_assumptions = proof_assumptions @ !assumptions @ !bridge_assumptions in
+  if closed then begin
+    let non_source_premises =
+      List.map (fun (name, _) -> "proof:" ^ name) proof_assumptions
+      @ List.map (fun (name, _) -> "derived:" ^ name) !derived_assumptions
+      @ List.map (fun (name, _) -> "bridge:" ^ name) !bridge_assumptions
+    in
+    match non_source_premises with
+    | [] -> ()
+    | _ ->
+        let rec take n items =
+          if n <= 0 then [] else
+          match items with
+          | [] -> []
+          | head :: tail -> head :: take (n - 1) tail
+        in
+        let shown = take 12 non_source_premises in
+        let suffix =
+          let remaining = List.length non_source_premises - List.length shown in
+          if remaining > 0 then Printf.sprintf " and %d more" remaining else ""
+        in
+        emit_error
+          ("closed certificate v1 emission requires zero non-source premises; found "
+           ^ String.concat ", " shown
+           ^ suffix)
+  end;
+  let theorem_assumptions =
+    proof_assumptions @ !assumptions @ !derived_assumptions @ !bridge_assumptions
+  in
   let theorem_type =
     String.concat " -> "
       (List.map (fun (_, prop) -> "(" ^ prop ^ ")") theorem_assumptions @ ["False"])

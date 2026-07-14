@@ -30,6 +30,7 @@ let vampireabynativestrict : bool ref = ref false;;
 let vampirecertv1 : string option ref = ref None;;
 let vampirecertv1source : string option ref = ref None;;
 let vampirecertv1strict : bool ref = ref false;;
+let vampirecertv1closed : bool ref = ref false;;
 let vampirecertv1emit : string option ref = ref None;;
 let bushy = ref false;;
 let bushykdeps : (string,unit) Hashtbl.t = Hashtbl.create 10;;
@@ -6979,13 +6980,14 @@ let check_vampire_cert_v1_file fn =
   try
     let cert = Vampire_cert_v1.parse_certificate (read_all fn) in
     let checked =
-      if !vampirecertv1strict then Vampire_cert_v1.check_certificate_strict cert
+      if !vampirecertv1strict || !vampirecertv1closed then Vampire_cert_v1.check_certificate_strict cert
       else Vampire_cert_v1.check_certificate cert
     in
     let source_map_for_emit = ref [] in
     begin match !vampirecertv1source with
     | None ->
-        if !vampirecertv1strict && Vampire_cert_v1.certificate_source_count cert > 0 then
+        if (!vampirecertv1strict || !vampirecertv1closed)
+           && Vampire_cert_v1.certificate_source_count cert > 0 then
           raise (Vampire_cert_v1.Error "strict certificate v1 requires -vampirecertv1source for source-backed inputs")
     | Some source_fn ->
         let source_map = Vampire_cert_v1.parse_source_map (read_all source_fn) in
@@ -6996,13 +6998,20 @@ let check_vampire_cert_v1_file fn =
           (if source_count = 1 then "" else "s")
     end;
     Printf.printf "Vampire certificate v1%s checked %d step%s.\n"
-      (if !vampirecertv1strict then " strict" else "")
+      (if !vampirecertv1closed then " closed"
+       else if !vampirecertv1strict then " strict"
+       else "")
       (List.length checked)
       (if List.length checked = 1 then "" else "s");
     begin match !vampirecertv1emit with
     | None -> ()
     | Some out_fn ->
-        let content = Vampire_cert_v1.emit_simple_megalodon ~source_map:!source_map_for_emit cert in
+        let content =
+          Vampire_cert_v1.emit_simple_megalodon
+            ~source_map:!source_map_for_emit
+            ~closed:!vampirecertv1closed
+            cert
+        in
         let ch = open_out out_fn in
         output_string ch content;
         close_out ch;
@@ -7241,6 +7250,11 @@ let _ =
           end
         else if Sys.argv.(!j) = "-vampirecertv1strict" then
           vampirecertv1strict := true
+        else if Sys.argv.(!j) = "-vampirecertv1closed" then
+          begin
+            vampirecertv1strict := true;
+            vampirecertv1closed := true
+          end
         else if Sys.argv.(!j) = "-vampirecertv1source" then
           begin
 	    if !j < i-2 then

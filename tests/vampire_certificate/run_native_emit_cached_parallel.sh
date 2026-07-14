@@ -10,6 +10,7 @@ PROBLEM_DIR=${PROBLEM_DIR:-"$ROOT/examples/hammer"}
 JOBS=${JOBS:-20}
 CHECK_SOURCE_MAP=${CHECK_SOURCE_MAP:-1}
 STRICT_CERT_V1=${STRICT_CERT_V1:-1}
+CLOSED_CERT_V1=${CLOSED_CERT_V1:-0}
 EMIT_TIMEOUT=${EMIT_TIMEOUT:-30}
 CHECK_TIMEOUT=${CHECK_TIMEOUT:-30}
 MIN_PASS=${MIN_PASS:-1}
@@ -69,7 +70,9 @@ run_one() {
   fi
 
   local check_args=()
-  if [[ "$STRICT_CERT_V1" == "1" ]]; then
+  if [[ "$CLOSED_CERT_V1" == "1" ]]; then
+    check_args+=(-vampirecertv1closed)
+  elif [[ "$STRICT_CERT_V1" == "1" ]]; then
     check_args+=(-vampirecertv1strict)
   fi
   check_args+=(-vampirecertv1 "$native")
@@ -102,10 +105,14 @@ run_one() {
     return 0
   fi
 
-  printf '%s\tPASS\n' "$name" > "$case_dir/result.tsv"
+  if [[ "$CLOSED_CERT_V1" == "1" ]]; then
+    printf '%s\tCLOSED_PASS\n' "$name" > "$case_dir/result.tsv"
+  else
+    printf '%s\tPASS\n' "$name" > "$case_dir/result.tsv"
+  fi
 }
 
-export MEGALODON PROBLEM_DIR WORK_DIR CHECK_SOURCE_MAP STRICT_CERT_V1 EMIT_TIMEOUT CHECK_TIMEOUT
+export MEGALODON PROBLEM_DIR WORK_DIR CHECK_SOURCE_MAP STRICT_CERT_V1 CLOSED_CERT_V1 EMIT_TIMEOUT CHECK_TIMEOUT
 export -f run_one
 
 xargs -a "$WORK_DIR/pass_cases.tsv" -n2 -P "$JOBS" bash -c 'run_one "$0" "$1"'
@@ -118,7 +125,11 @@ awk -F '\t' '{count[$2]++} END {for (status in count) print status, count[status
   "$WORK_DIR/summary.tsv" \
   | sort > "$WORK_DIR/counts.txt"
 
-awk -F '\t' '$2 != "PASS"' "$WORK_DIR/summary.tsv" > "$WORK_DIR/nonpass.tsv"
+if [[ "$CLOSED_CERT_V1" == "1" ]]; then
+  awk -F '\t' '$2 != "CLOSED_PASS"' "$WORK_DIR/summary.tsv" > "$WORK_DIR/nonpass.tsv"
+else
+  awk -F '\t' '$2 != "PASS"' "$WORK_DIR/summary.tsv" > "$WORK_DIR/nonpass.tsv"
+fi
 
 {
   printf 'Latest Vampire/Megalodon artifacts as of %s UTC\n\n' "$(date -u +%Y-%m-%dT%H:%M:%S)"
@@ -148,8 +159,15 @@ echo "native emit cached artifacts: $WORK_DIR"
 echo "native emit cached latest link: $TMPDIR/latest_megalodon_native_emit_cached"
 echo "artifact manifest: $TMPDIR/LATEST_ARTIFACTS.txt"
 
-passes=$(awk -F '\t' '$2 == "PASS" {n++} END {print n + 0}' "$WORK_DIR/summary.tsv")
+if [[ "$CLOSED_CERT_V1" == "1" ]]; then
+  passes=$(awk -F '\t' '$2 == "CLOSED_PASS" {n++} END {print n + 0}' "$WORK_DIR/summary.tsv")
+else
+  passes=$(awk -F '\t' '$2 == "PASS" {n++} END {print n + 0}' "$WORK_DIR/summary.tsv")
+fi
 failures=$(awk -F '\t' '$2 != "PASS" {n++} END {print n + 0}' "$WORK_DIR/summary.tsv")
+if [[ "$CLOSED_CERT_V1" == "1" ]]; then
+  failures=$(awk -F '\t' '$2 != "CLOSED_PASS" {n++} END {print n + 0}' "$WORK_DIR/summary.tsv")
+fi
 
 if (( failures != 0 )); then
   echo "native emit cached validation had $failures failures" >&2

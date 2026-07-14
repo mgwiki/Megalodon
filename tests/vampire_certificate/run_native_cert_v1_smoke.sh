@@ -161,6 +161,22 @@ fi
 bin/megalodon "$WORK_DIR/native_cert_v1_substitute_prop_changed_bridge.mg" \
   >"$WORK_DIR/native_cert_v1_substitute_prop_changed_bridge.check.log"
 
+if bin/megalodon \
+  -vampirecertv1closed \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_substitute_prop_changed_unsupported.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_substitute_prop_changed_unsupported.th0.p \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_substitute_prop_changed_closed.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_substitute_prop_changed_closed.out" \
+  2>"$WORK_DIR/native_cert_v1_substitute_prop_changed_closed.err"; then
+  echo "closed native certificate v1 emitter accepted a substitution bridge premise" >&2
+  exit 1
+fi
+if ! rg -q 'zero non-source premises.*bridge:bridge_substitute__c2' \
+    "$WORK_DIR/native_cert_v1_substitute_prop_changed_closed.err"; then
+  echo "closed native certificate v1 substitution failure did not report the bridge premise" >&2
+  exit 1
+fi
+
 bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_factor_equality_valid.sexp \
   -vampirecertv1emit "$WORK_DIR/native_cert_v1_factor_equality_valid_emit.mg" \
@@ -232,6 +248,24 @@ if ! rg -q 'Vampire certificate v1 strict checked 6 steps' "$WORK_DIR/native_cer
   echo "strict native certificate v1 checker did not accept mapped inputs" >&2
   exit 1
 fi
+
+bin/megalodon \
+  -vampirecertv1closed \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_valid.th0.p \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_closed_source_map_valid.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_closed_source_map_valid.log"
+
+if ! rg -q 'Vampire certificate v1 closed checked 6 steps' "$WORK_DIR/native_cert_v1_closed_source_map_valid.log"; then
+  echo "closed native certificate v1 checker did not accept the closed mapped fixture" >&2
+  exit 1
+fi
+if rg -q 'bridge_' "$WORK_DIR/native_cert_v1_closed_source_map_valid.mg"; then
+  echo "closed native certificate v1 emitter generated a bridge premise for a closed fixture" >&2
+  exit 1
+fi
+bin/megalodon "$WORK_DIR/native_cert_v1_closed_source_map_valid.mg" \
+  >"$WORK_DIR/native_cert_v1_closed_source_map_valid.check.log"
 
 if bin/megalodon \
     -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_local_fact_negated.sexp \
@@ -619,14 +653,14 @@ if rg -n '\badmit\b|\baby\b|-allowincompleteqed' \
   echo "native certificate v1 equality-symmetry emitter generated an admission marker" >&2
   exit 1
 fi
-if ! rg -Fq 'bridge_equality_symmetry__p2: (a = b) -> b = a.' \
+if rg -q 'bridge_equality_symmetry__' \
     "$WORK_DIR/native_cert_v1_equality_symmetry_valid_emit.mg"; then
-  echo "native certificate v1 equality-symmetry emitter did not expose a bridge proof" >&2
+  echo "native certificate v1 equality-symmetry emitter still exposed a bridge proof" >&2
   exit 1
 fi
-if ! rg -Fq 'exact (bridge_equality_symmetry__p2 src_axiom_eq_forward__p1).' \
+if ! rg -Fq 'exact (vampire_eq_set_sym (a) (b) src_axiom_eq_forward__p1).' \
     "$WORK_DIR/native_cert_v1_equality_symmetry_valid_emit.mg"; then
-  echo "native certificate v1 equality-symmetry emitter did not use the bridge proof" >&2
+  echo "native certificate v1 equality-symmetry emitter did not replay symmetry directly" >&2
   exit 1
 fi
 bin/megalodon "$WORK_DIR/native_cert_v1_equality_symmetry_valid_emit.mg" \
@@ -638,6 +672,22 @@ bin/megalodon \
 
 if ! rg -q 'Vampire certificate v1 checked 6 steps' "$WORK_DIR/native_cert_v1_fool_exhaustiveness_valid.log"; then
   echo "native certificate v1 checker did not accept the valid FOOL exhaustiveness fixture" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1closed \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_exhaustiveness_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_fool_exhaustiveness_valid.th0.p \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.out" \
+  2>"$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.err"; then
+  echo "closed native certificate v1 emitter accepted a FOOL theory premise" >&2
+  exit 1
+fi
+if ! rg -q 'zero non-source premises.*derived:theory_fool_exhaustiveness__b1' \
+    "$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.err"; then
+  echo "closed native certificate v1 FOOL-exhaustiveness failure did not report the derived premise" >&2
   exit 1
 fi
 
@@ -659,16 +709,32 @@ if rg -n '\badmit\b|\baby\b|-allowincompleteqed' \
   echo "native certificate v1 formula-CNF emitter generated an admission marker" >&2
   exit 1
 fi
-if ! rg -q 'bridge_fool__f1' "$WORK_DIR/native_cert_v1_formula_cnf_valid_emit.mg"; then
-  echo "native certificate v1 formula-CNF emitter did not expose the FOOL bridge obligation" >&2
+if rg -q 'bridge_fool__f1' "$WORK_DIR/native_cert_v1_formula_cnf_valid_emit.mg"; then
+  echo "native certificate v1 formula-CNF emitter still exposed the replayed FOOL obligation" >&2
   exit 1
 fi
-if ! rg -q 'bridge_cnf__c1' "$WORK_DIR/native_cert_v1_formula_cnf_valid_emit.mg"; then
-  echo "native certificate v1 formula-CNF emitter did not expose the CNF bridge obligation" >&2
+if ! rg -q 'bridge_normal_form__f2' "$WORK_DIR/native_cert_v1_formula_cnf_valid_emit.mg"; then
+  echo "native certificate v1 formula-CNF emitter did not expose the normal-form bridge obligation" >&2
   exit 1
 fi
 bin/megalodon "$WORK_DIR/native_cert_v1_formula_cnf_valid_emit.mg" \
   >"$WORK_DIR/native_cert_v1_formula_cnf_valid_emit.check.log"
+
+if bin/megalodon \
+  -vampirecertv1closed \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_formula_cnf_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_formula_cnf_valid.th0.p \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_formula_cnf_closed.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_formula_cnf_closed.out" \
+  2>"$WORK_DIR/native_cert_v1_formula_cnf_closed.err"; then
+  echo "closed native certificate v1 emitter accepted formula/CNF bridge premises" >&2
+  exit 1
+fi
+if ! rg -q 'zero non-source premises.*bridge:bridge_' \
+    "$WORK_DIR/native_cert_v1_formula_cnf_closed.err"; then
+  echo "closed native certificate v1 formula-CNF failure did not report bridge premises" >&2
+  exit 1
+fi
 
 bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_formula_cnf_vampire_order_valid.sexp \
@@ -705,9 +771,9 @@ if bin/megalodon \
   echo "native certificate v1 simple emitter accepted unsupported formula transformation" >&2
   exit 1
 fi
-if ! rg -q 'only named/application terms are supported in simple native emission' \
+if ! rg -q 'unsupported identifier =' \
     "$WORK_DIR/native_cert_v1_rectify_scoped_equality_symmetry_unsupported.err"; then
-  echo "native certificate v1 simple emitter did not report unsupported quantified-literal diagnostics" >&2
+  echo "native certificate v1 simple emitter did not report the unsupported equality identifier" >&2
   exit 1
 fi
 

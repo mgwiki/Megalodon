@@ -134,4 +134,8 @@ val validate_certificate_sources : source_map_entry list -> certificate -> int
 val check_certificate : certificate -> (string * checked_item) list
 val check_certificate_strict : certificate -> (string * checked_item) list
 val emit_simple_megalodon :
-  ?theorem_name:string -> ?source_map:source_map_entry list -> certificate -> string
+  ?theorem_name:string ->
+  ?source_map:source_map_entry list ->
+  ?closed:bool ->
+  certificate ->
+  string
