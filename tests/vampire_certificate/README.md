@@ -105,6 +105,22 @@ The defaults use `/project/tmp`, `JOBS=20`, `VAMPIRE_SECONDS=10`,
 filename list to `/project/tmp/native_slice_START_END.list` and then delegates
 to `run_native_live_parallel.sh`.
 
+To reuse an existing native live run without rerunning Vampire, emit and check
+Megalodon proof scripts from its accepted native certificates:
+
+```sh
+PROBLEM_DIR=/project/tmp/native_source_linked_corpus_1000 \
+JOBS=20 \
+tests/vampire_certificate/run_native_emit_cached_parallel.sh \
+  /project/tmp/latest_megalodon_native_live
+```
+
+This script filters `PASS` rows from one or more native run `summary.tsv` files,
+runs `-vampirecertv1emit`, rejects generated files containing `admit`, `aby`, or
+`-allowincompleteqed`, and checks each emitted `.mg` file with `bin/megalodon`.
+It defaults to strict source-map validation, 20-way parallelism, and
+`/project/tmp`.
+
 To export a Megalodon development once and then check the resulting source-mapped
 TH0 corpus in parallel, use:
 

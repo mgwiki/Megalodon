@@ -2870,53 +2870,67 @@ let simple_normalize_vlam_text ?(lambda_binder_sort = fun _ -> None) text =
       let stop = atom_end start in
       (String.sub source start (stop - start), stop)
   in
-  let rec normalize source =
+  let fresh_index = ref 0 in
+  let fresh_binder () =
+    let name = "vdb" ^ string_of_int !fresh_index in
+    incr fresh_index;
+    name
+  in
+  let rec parse_db_token source i =
+    let len = String.length source in
+    if i + 2 <= len
+       && String.sub source i 2 = "db"
+       && (i = 0 || not (is_name_char source.[i - 1])) then begin
+      let rec digits j =
+        if j < len then
+          match source.[j] with
+          | '0'..'9' -> digits (j + 1)
+          | _ -> j
+        else j
+      in
+      let stop = digits (i + 2) in
+      if stop > i + 2
+         && (stop = len || not (is_name_char source.[stop])) then
+        Some
+          (int_of_string (String.sub source (i + 2) (stop - i - 2)), stop)
+      else None
+    end else None
+  in
+  let rec normalize env source =
     let source_len = String.length source in
     let rec loop i =
       if i >= source_len then ""
       else if is_token_at source "vLAM" i then
-        let arity, body, stop = parse_vlam_parts source (i + 4) in
-        render_lambda arity body ^ loop stop
-      else
-        String.make 1 source.[i] ^ loop (i + 1)
+        let body, stop = parse_arg source (i + 4) in
+        render_lambda env body ^ loop stop
+      else begin
+        match parse_db_token source i with
+        | Some (index, stop) ->
+            let replacement =
+              match List.nth_opt env index with
+              | Some (name, _) -> name
+              | None -> "db" ^ string_of_int index
+            in
+            replacement ^ loop stop
+        | None -> String.make 1 source.[i] ^ loop (i + 1)
+      end
     in
     loop 0
-  and parse_vlam_parts source i =
-    let body, stop = parse_arg source i in
+  and binder_sort body =
     let vlam_text_candidates body =
       let body = String.trim body in
       ["vLAM " ^ body; "vLAM (" ^ body ^ ")"]
     in
-    let binder_sort body =
-      match vlam_text_candidates body |> List.find_map lambda_binder_sort with
-      | Some sort -> sort
-      | None -> "set"
-    in
-    let rec collect arity body =
-      let trimmed = String.trim body in
-      if is_token_at trimmed "vLAM" 0 then
-        let nested_body, nested_stop = parse_arg trimmed 4 in
-        if nested_stop = String.length trimmed then
-          let nested_sorts, normalized_body = collect (arity + 1) nested_body in
-          (binder_sort body :: nested_sorts, normalized_body)
-        else ([binder_sort body], normalize trimmed)
-      else ([binder_sort body], normalize trimmed)
-    in
-    let sorts, normalized_body = collect 1 body in
-    (sorts, normalized_body, stop)
-  and render_lambda sorts normalized_body =
-    let arity = List.length sorts in
-    let rec binders n acc =
-      if n < 0 then acc else binders (n - 1) (acc @ ["db" ^ string_of_int n])
-    in
-    let binder_text =
-      binders (arity - 1) []
-      |> List.combine sorts
-      |> List.map (fun (sort, name) -> "fun " ^ name ^ ":" ^ sort)
-    in
-    "(" ^ String.concat " => " (binder_text @ [normalized_body]) ^ ")"
+    match vlam_text_candidates body |> List.find_map lambda_binder_sort with
+    | Some sort -> sort
+    | None -> "set"
+  and render_lambda env body =
+    let sort = binder_sort body in
+    let name = fresh_binder () in
+    let normalized_body = normalize ((name, sort) :: env) (String.trim body) in
+    "(fun " ^ name ^ ":" ^ sort ^ " => " ^ normalized_body ^ ")"
   in
-  normalize text
+  normalize [] text
 
 let metadata_step_proposition cert id =
   let parse_lambda_sorts fields =
@@ -3010,8 +3024,87 @@ let metadata_step_extra_field cert id kind key =
                if String.length field >= prefix_len
                   && String.sub field 0 prefix_len = prefix then
                  Some (String.sub field prefix_len (String.length field - prefix_len))
-               else None)
-            fields)
+	               else None)
+	            fields)
+
+let metadata_definition_lhs_sort_pairs cert id =
+  let is_db_name name =
+    let len = String.length name in
+    let rec digits i =
+      i >= len || (match name.[i] with '0'..'9' -> digits (i + 1) | _ -> false)
+    in
+    len > 2 && String.sub name 0 2 = "db" && digits 2
+  in
+  let field_value fields key =
+    let prefix = key ^ "=" in
+    let prefix_len = String.length prefix in
+    fields
+    |> List.find_map
+         (fun field ->
+            if String.length field >= prefix_len
+               && String.sub field 0 prefix_len = prefix then
+              Some (String.sub field prefix_len (String.length field - prefix_len))
+            else None)
+  in
+  metadata_step_extra_fields cert id "function_definition"
+  |> List.filter_map
+       (fun fields ->
+          match field_value fields "lhs", field_value fields "equality_sort" with
+          | Some lhs, Some sort when is_db_name lhs -> Some (lhs, sort)
+          | _ -> None)
+
+let metadata_higher_order_definition_db_names cert =
+  cert.metadata.step_extras
+  |> List.concat_map
+       (fun (id, kind, _) ->
+          if kind <> "function_definition" then []
+          else
+            metadata_definition_lhs_sort_pairs cert id
+            |> List.filter_map
+                 (fun (name, sort) ->
+                    if sort <> "set" && sort <> "prop" then Some name else None))
+  |> List.sort_uniq String.compare
+
+let metadata_lambda_sort_env cert =
+  let parse_fields fields =
+    let kvs =
+      fields
+      |> List.filter_map
+           (fun field ->
+              match String.index_opt field '=' with
+              | None -> None
+              | Some eq ->
+                  Some
+                    (String.sub field 0 eq,
+                     String.sub field (eq + 1) (String.length field - eq - 1)))
+    in
+    let is_lambda_key key =
+      let prefixes = ["step_lambda_"; "target_lambda_"] in
+      List.exists
+        (fun prefix ->
+           let prefix_len = String.length prefix in
+           let len = String.length key in
+           len > prefix_len
+           && String.sub key 0 prefix_len = prefix
+           &&
+           let rec digits i =
+             i >= len || (match key.[i] with '0'..'9' -> digits (i + 1) | _ -> false)
+           in
+           digits prefix_len)
+        prefixes
+    in
+    kvs
+    |> List.filter_map
+         (fun (key, term) ->
+            if is_lambda_key key then
+              match List.assoc_opt (key ^ "_sort") kvs with
+              | Some sort -> Some (term, sort)
+              | None -> None
+            else None)
+  in
+  cert.metadata.step_extras
+  |> List.concat_map (fun (_, _, fields) -> parse_fields fields)
+  |> List.sort_uniq compare
 
 let simple_unsupported_step cert step =
   let id = step_id step in
@@ -3176,6 +3269,39 @@ let is_db_ident name =
   in
   len > 2 && String.sub name 0 2 = "db" && digits 2
 
+let simple_db_alias_env : string list ref = ref []
+
+let simple_vlam_name_counter = ref 0
+
+let simple_fresh_vlam_name () =
+  let name = "vdb" ^ string_of_int !simple_vlam_name_counter in
+  incr simple_vlam_name_counter;
+  name
+
+let simple_db_index name =
+  if is_db_ident name then
+    Some (int_of_string (String.sub name 2 (String.length name - 2)))
+  else None
+
+let simple_db_alias_by_index index =
+  List.nth_opt !simple_db_alias_env index
+
+let simple_name_expr name =
+  match Option.bind (simple_db_index name) simple_db_alias_by_index with
+  | Some alias -> alias
+  | None -> megalodon_ident name
+
+let simple_with_db_aliases aliases f =
+  let previous = !simple_db_alias_env in
+  simple_db_alias_env := aliases @ previous;
+  match f () with
+  | result ->
+      simple_db_alias_env := previous;
+      result
+  | exception exn ->
+      simple_db_alias_env := previous;
+      raise exn
+
 let simple_bool_const_prop = function
   | TmH "f__true" | TmH "vampire_true" -> Some "vampire_true"
   | TmH "f__false" | TmH "vampire_false" -> Some "vampire_false"
@@ -3186,6 +3312,56 @@ let rec flatten_application = function
       let head, args = flatten_application fn in
       (head, args @ [arg])
   | tm -> (tm, [])
+
+let rec flatten_value_application = function
+  | Ap (TmH "vLAM", _) as tm -> (tm, [])
+  | Ap (fn, arg) ->
+      let head, args = flatten_value_application fn in
+      (head, args @ [arg])
+  | tm -> (tm, [])
+
+let simple_lambda_sort_env : (string * string) list ref = ref []
+
+let rec simple_source_tm_expr tm =
+  let render_arg arg =
+    match arg with
+    | TmH _ | DB _ | Prim _ -> simple_source_tm_expr arg
+    | _ -> "(" ^ simple_source_tm_expr arg ^ ")"
+  in
+  match tm with
+  | TmH name -> megalodon_ident name
+  | DB i -> "db" ^ string_of_int i
+  | Prim i -> "prim_" ^ string_of_int i
+  | TpAp (tm, _) -> simple_source_tm_expr tm
+  | Ap (TmH "vLAM", body) ->
+      let body_text = simple_source_tm_expr body in
+      begin match body with
+      | TmH _ | DB _ | Prim _ -> "vLAM " ^ body_text
+      | _ -> "vLAM (" ^ body_text ^ ")"
+      end
+  | Ap _ ->
+      let head, args = flatten_value_application tm in
+      String.concat " " (simple_source_tm_expr head :: List.map render_arg args)
+  | Lam _ | All _ | Imp _ ->
+      emit_error "logical terms are not supported in source-term rendering"
+
+let simple_lambda_sort tm =
+  match tm with
+  | Ap (TmH "vLAM", _) ->
+      List.assoc_opt (simple_source_tm_expr tm) !simple_lambda_sort_env
+  | _ -> None
+
+let rec simple_tp_expr = function
+  | Prop -> "prop"
+  | Set -> "set"
+  | TpVar _ -> emit_error "type variables are not supported in simple native emission"
+  | Ar (left, right) ->
+      let left_text =
+        match left with
+        | Ar _ -> "(" ^ simple_tp_expr left ^ ")"
+        | _ -> simple_tp_expr left
+      in
+      left_text ^ "->" ^ simple_tp_expr right
 
 let rec simple_vlam_expr body =
   let logical_head = function
@@ -3241,6 +3417,28 @@ let rec simple_vlam_expr body =
   in
   let sorts, body = collect 1 body in
   let arity = List.length sorts in
+  let rec binders n acc =
+    if n <= 0 then acc else binders (n - 1) (acc @ [simple_fresh_vlam_name ()])
+  in
+  let binders = binders arity [] in
+  let body_text =
+    simple_with_db_aliases (List.rev binders)
+      (fun () -> simple_tm_expr body)
+  in
+  "("
+	  ^ String.concat " => "
+	      ((List.combine sorts binders
+	        |> List.map (fun (sort, name) -> "fun " ^ name ^ ":" ^ sort))
+	       @ [body_text])
+	  ^ ")"
+
+and simple_lam_expr tp body =
+  let rec collect acc = function
+    | Lam (tp, body) -> collect (acc @ [tp]) body
+    | body -> (acc, body)
+  in
+  let sorts, body = collect [tp] body in
+  let arity = List.length sorts in
   let rec binders i acc =
     if i < 0 then acc else binders (i - 1) (acc @ ["db" ^ string_of_int i])
   in
@@ -3248,7 +3446,7 @@ let rec simple_vlam_expr body =
   "("
   ^ String.concat " => "
       ((List.combine sorts binders
-        |> List.map (fun (sort, name) -> "fun " ^ name ^ ":" ^ sort))
+        |> List.map (fun (sort, name) -> "fun " ^ name ^ ":" ^ simple_tp_expr sort))
        @ [simple_tm_expr body])
   ^ ")"
 
@@ -3256,6 +3454,9 @@ and simple_tm_expr tm =
   match simple_bool_const_prop tm with
   | Some name -> name
   | None ->
+      begin match tm with
+      | Lam (tp, body) -> simple_lam_expr tp body
+      | _ ->
       let head, args = flatten_application tm in
       begin match head, args with
       | TmH "vLAM", body :: rest ->
@@ -3273,8 +3474,12 @@ and simple_tm_expr tm =
       | _ ->
           let head_text =
             match head with
-            | TmH name -> megalodon_ident name
-            | DB i -> "db" ^ string_of_int i
+            | TmH name -> simple_name_expr name
+            | DB i ->
+                begin match simple_db_alias_by_index i with
+                | Some alias -> alias
+                | None -> "db" ^ string_of_int i
+                end
             | Imp _ | All _ | Lam _ | TpAp _ | Prim _ ->
                 emit_error "only named/application terms are supported in simple native emission"
             | _ -> "(" ^ simple_tm_expr head ^ ")"
@@ -3286,15 +3491,16 @@ and simple_tm_expr tm =
                 match arg with
                 | TmH _ | DB _ -> simple_tm_expr arg
                 | _ -> "(" ^ simple_tm_expr arg ^ ")"
-              in
-              String.concat " " (head_text :: List.map arg_text args)
+	              in
+	              String.concat " " (head_text :: List.map arg_text args)
+	      end
       end
 
 let simple_prop_equality left right =
   "vampire_eq_prop (" ^ simple_tm_expr left ^ ") (" ^ simple_tm_expr right ^ ")"
 
 let simple_atom_prop = function
-  | TmH name -> megalodon_ident name
+  | TmH name -> simple_name_expr name
   | atom ->
       begin match equality_sides atom with
       | Some (left, right) when is_vampire_bool_const left || is_vampire_bool_const right ->
@@ -3333,6 +3539,10 @@ let collect_simple_names cert =
            "vampire_eq_set_to_set_to_prop"; "vampire_eq_set_to_set_to_set";
            "vampire_eq_lp_set_to_set_rp_to_set";
            "vampire_eq_lp_set_to_prop_rp_to_set";
+           "vampire_eq_set_to_lp_set_to_set_rp_to_set";
+           "vampire_eq_lp_set_to_set_rp_to_set_to_set";
+           "vampire_eq_lp_set_to_set_to_set_rp_to_set_to_set";
+           "vampire_eq_set_to_lp_set_to_set_to_set_rp_to_set_to_set";
            "f__true"; "f__false"; "vLAM"; "vPI"
          ]
   in
@@ -3623,6 +3833,41 @@ let simple_clause_names clause =
             (simple_tm_names (literal_atom literal)))
        []
 
+let simple_clause_vlam_bound_names clause =
+  let rec add_name acc name =
+    if is_db_ident name && not (List.mem name acc) then name :: acc else acc
+  in
+  let rec names_under_vlam acc = function
+    | TmH name -> add_name acc name
+    | DB _ | Prim _ -> acc
+    | TpAp (tm, _) -> names_under_vlam acc tm
+    | Ap (fn, arg) -> names_under_vlam (names_under_vlam acc fn) arg
+    | Lam (_, body) | All (_, body) -> names_under_vlam acc body
+    | Imp (left, right) -> names_under_vlam (names_under_vlam acc left) right
+  in
+  let rec scan acc = function
+    | Ap (TmH "vLAM", body) -> names_under_vlam acc body
+    | TmH _ | DB _ | Prim _ -> acc
+    | TpAp (tm, _) -> scan acc tm
+    | Ap (fn, arg) -> scan (scan acc fn) arg
+    | Lam (_, body) | All (_, body) -> scan acc body
+    | Imp (left, right) -> scan (scan acc left) right
+  in
+  clause
+  |> List.fold_left (fun acc literal -> scan acc (literal_atom literal)) []
+  |> List.sort_uniq compare
+
+let simple_clause_contains_vlam clause =
+  let rec contains = function
+    | TmH "vLAM" -> true
+    | TmH _ | DB _ | Prim _ -> false
+    | TpAp (tm, _) -> contains tm
+    | Ap (fn, arg) -> contains fn || contains arg
+    | Lam (_, body) | All (_, body) -> contains body
+    | Imp (left, right) -> contains left || contains right
+  in
+  List.exists (fun literal -> contains (literal_atom literal)) clause
+
 let simple_quantify_prop variable_sorts prop =
   List.fold_right
     (fun (name, sort) body -> "forall " ^ megalodon_ident name ^ ":" ^ sort ^ ", " ^ body)
@@ -3645,6 +3890,13 @@ let simple_unique_variable_sorts sorts =
        else acc @ [(name, sort)])
     []
     sorts
+
+let simple_type_env_with_variables variable_sorts type_env =
+  let variable_sorts =
+    variable_sorts
+    |> List.filter (fun (name, _) -> not (List.mem_assoc name type_env))
+  in
+  variable_sorts @ type_env
 
 let simple_clause_prop_and_sorts_for_step ?(available_sorts=[]) cert id clause =
   match metadata_step_proposition cert id with
@@ -3681,6 +3933,35 @@ let simple_strip_outer_parens typ =
   in
   loop typ
 
+let simple_replace_all ~pattern ~replacement text =
+  let pattern_len = String.length pattern in
+  if pattern_len = 0 then text
+  else
+    let text_len = String.length text in
+    let buf = Buffer.create text_len in
+    let rec loop i =
+      if i >= text_len then ()
+      else if i + pattern_len <= text_len
+              && String.sub text i pattern_len = pattern then begin
+        Buffer.add_string buf replacement;
+        loop (i + pattern_len)
+      end else begin
+        Buffer.add_char buf text.[i];
+        loop (i + 1)
+      end
+    in
+    loop 0;
+    Buffer.contents buf
+
+let simple_fix_known_higher_order_binders text =
+  text
+  |> simple_replace_all
+       ~pattern:"In_rec_i ((fun db1:set => fun db0:set => If_i"
+       ~replacement:"In_rec_i ((fun db1:set => fun db0:set->set => If_i"
+  |> simple_replace_all
+       ~pattern:"In_rec_i (fun db1:set => fun db0:set => If_i"
+       ~replacement:"In_rec_i (fun db1:set => fun db0:set->set => If_i"
+
 let simple_split_arrow_type typ =
   let typ = simple_strip_outer_parens typ in
   let len = String.length typ in
@@ -3706,6 +3987,19 @@ let simple_split_arrow_type typ =
       in
       Some (left, right)
 
+let simple_arrow_sort domain codomain =
+  let domain =
+    match simple_split_arrow_type domain with
+    | Some _ -> "(" ^ domain ^ ")"
+    | None -> domain
+  in
+  domain ^ "->" ^ codomain
+
+let simple_binder_sort_expr sort =
+  match simple_split_arrow_type sort with
+  | Some _ -> "(" ^ sort ^ ")"
+  | None -> sort
+
 let simple_symbol_type_env cert =
   let builtins =
     [
@@ -3726,6 +4020,10 @@ let simple_symbol_type_env cert =
       ("vampire_eq_set_to_set_to_set", "(set->set->set)->(set->set->set)->prop");
       ("vampire_eq_lp_set_to_set_rp_to_set", "((set->set)->set)->((set->set)->set)->prop");
       ("vampire_eq_lp_set_to_prop_rp_to_set", "((set->prop)->set)->((set->prop)->set)->prop");
+      ("vampire_eq_set_to_lp_set_to_set_rp_to_set", "(set->((set->set)->set))->(set->((set->set)->set))->prop");
+      ("vampire_eq_lp_set_to_set_rp_to_set_to_set", "((set->set)->set->set)->((set->set)->set->set)->prop");
+      ("vampire_eq_lp_set_to_set_to_set_rp_to_set_to_set", "((set->set->set)->set->set)->((set->set->set)->set->set)->prop");
+      ("vampire_eq_set_to_lp_set_to_set_to_set_rp_to_set_to_set", "(set->((set->set->set)->set->set))->(set->((set->set->set)->set->set))->prop");
       ("vPI", "(set->prop)->prop");
       ("f__true", "prop"); ("f__false", "prop")
     ]
@@ -3785,8 +4083,15 @@ let simple_infer_tm_variable_sorts ?expected type_env tm =
           | Some (domain, codomain) -> (Some domain, Some codomain)
           | None -> (None, None)
         in
-        let _, acc = infer domain acc arg in
-        (codomain, acc)
+        let arg_sort, acc = infer domain acc arg in
+        let acc =
+          match fn, fn_sort, domain, arg_sort, expected with
+          | TmH name, None, None, Some domain, Some codomain ->
+              simple_add_inferred_sort type_env acc name (domain ^ "->" ^ codomain)
+          | _ -> acc
+        in
+        let result_sort = match codomain with Some _ -> codomain | None -> expected in
+        (result_sort, acc)
     | Lam (_, body) ->
         let _, acc = infer None acc body in
         (expected, acc)
@@ -3799,6 +4104,195 @@ let simple_infer_tm_variable_sorts ?expected type_env tm =
         (Some "prop", acc)
   in
   snd (infer expected [] tm)
+
+let rec simple_tm_sort type_env = function
+  | TmH name -> List.assoc_opt (megalodon_ident name) type_env
+  | DB _ | Prim _ -> None
+  | TpAp (fn, _) -> simple_tm_sort type_env fn
+  | Ap (TmH "vLAM", _) as tm -> simple_lambda_sort tm
+  | Ap (fn, _) ->
+      begin match Option.bind (simple_tm_sort type_env fn) simple_split_arrow_type with
+      | Some (_, codomain) -> Some codomain
+      | None -> None
+      end
+  | Lam _ | Imp _ | All _ -> None
+
+let simple_infer_literal_variable_sorts type_env = function
+  | Pos atom | Neg atom ->
+      begin match equality_sides atom with
+      | Some (left, right) ->
+          let left_sort = simple_tm_sort type_env left in
+          let right_sort = simple_tm_sort type_env right in
+          simple_infer_tm_variable_sorts ?expected:right_sort type_env left
+          @ simple_infer_tm_variable_sorts ?expected:left_sort type_env right
+          |> simple_unique_variable_sorts
+      | None -> simple_infer_tm_variable_sorts ~expected:"prop" type_env atom
+      end
+
+let simple_infer_clause_variable_sorts type_env clause =
+  clause
+  |> List.concat_map (simple_infer_literal_variable_sorts type_env)
+  |> simple_unique_variable_sorts
+
+let rec simple_tm_expr_with_expected type_env expected tm =
+  match simple_bool_const_prop tm with
+  | Some name -> name
+  | None ->
+      begin match tm with
+      | Ap (TmH "vLAM", body) ->
+          simple_vlam_expr_with_expected type_env expected body
+      | Ap (fn, arg) ->
+          let head, args = flatten_value_application tm in
+          let arg_sorts = List.map (simple_tm_sort type_env) args in
+          let all_arg_sorts =
+            List.fold_right
+              (fun sort acc ->
+                 match sort, acc with
+                 | Some sort, Some sorts -> Some (sort :: sorts)
+                 | _ -> None)
+              arg_sorts
+              (Some [])
+          in
+          begin match head, expected, all_arg_sorts with
+          | Ap (TmH "vLAM", _), Some result_sort, Some arg_sorts ->
+              let head_expected =
+                List.fold_right simple_arrow_sort arg_sorts result_sort
+              in
+              let head_text =
+                "(" ^ simple_tm_expr_with_expected type_env (Some head_expected) head ^ ")"
+              in
+              let arg_texts =
+                List.map2
+                  (fun arg sort ->
+                     match arg with
+                     | TmH _ | DB _ -> simple_tm_expr_with_expected type_env (Some sort) arg
+                     | _ -> "(" ^ simple_tm_expr_with_expected type_env (Some sort) arg ^ ")")
+                  args
+                  arg_sorts
+              in
+              String.concat " " (head_text :: arg_texts)
+          | _ ->
+              let fn_sort = simple_tm_sort type_env fn in
+              let domain, codomain =
+                match Option.bind fn_sort simple_split_arrow_type with
+                | Some (domain, codomain) -> (Some domain, Some codomain)
+                | None -> (simple_tm_sort type_env arg, None)
+              in
+              let fn_expected =
+                match fn_sort, domain with
+                | None, Some domain ->
+                    Some (simple_arrow_sort domain (match expected with Some sort -> sort | None -> "set"))
+                | _ -> None
+              in
+              let fn_text =
+                match fn with
+                | TmH _ | DB _ -> simple_tm_expr_with_expected type_env fn_expected fn
+                | _ -> "(" ^ simple_tm_expr_with_expected type_env fn_expected fn ^ ")"
+              in
+              let arg_text =
+                match arg with
+                | TmH _ | DB _ -> simple_tm_expr_with_expected type_env domain arg
+                | _ -> "(" ^ simple_tm_expr_with_expected type_env domain arg ^ ")"
+              in
+              ignore codomain;
+              fn_text ^ " " ^ arg_text
+          end
+      | _ -> simple_tm_expr tm
+      end
+
+and simple_vlam_expr_with_expected type_env expected body =
+  let expected =
+    match expected with
+    | Some _ -> expected
+    | None -> simple_lambda_sort (Ap (TmH "vLAM", body))
+  in
+  let rec collect sorts expected body =
+    match Option.bind expected simple_split_arrow_type with
+    | Some (domain, codomain) ->
+        begin match body with
+        | Ap (TmH "vLAM", nested) -> collect (sorts @ [domain]) (Some codomain) nested
+        | _ -> (sorts @ [domain], Some codomain, body)
+        end
+    | None -> emit_error "typed vLAM rendering requires an arrow expected type"
+  in
+  match expected with
+  | None -> simple_vlam_expr body
+  | Some _ ->
+      begin match
+        try Some (collect [] expected body)
+        with Error _ -> None
+      with
+      | None -> simple_vlam_expr body
+      | Some (sorts, final_expected, body) ->
+          let arity = List.length sorts in
+          let rec binders n acc =
+            if n <= 0 then acc else binders (n - 1) (acc @ [simple_fresh_vlam_name ()])
+          in
+          let binders = binders arity [] in
+          let body_type_env = List.combine binders sorts @ type_env in
+          let body_text =
+            simple_with_db_aliases (List.rev binders)
+              (fun () -> simple_tm_expr_with_expected body_type_env final_expected body)
+          in
+          "("
+          ^ String.concat " => "
+              ((List.combine sorts binders
+                |> List.map (fun (sort, name) -> "fun " ^ name ^ ":" ^ simple_binder_sort_expr sort))
+               @ [body_text])
+          ^ ")"
+      end
+
+let simple_equality_symbol_for_sort sort =
+  match simple_strip_outer_parens sort with
+  | "prop" -> Some "vampire_eq_prop"
+  | "set->set" -> Some "vampire_eq_set_to_set"
+  | "set->prop" -> Some "vampire_eq_set_to_prop"
+  | "set->set->prop" -> Some "vampire_eq_set_to_set_to_prop"
+  | "set->set->set" -> Some "vampire_eq_set_to_set_to_set"
+  | "(set->set)->set" -> Some "vampire_eq_lp_set_to_set_rp_to_set"
+  | "(set->prop)->set" -> Some "vampire_eq_lp_set_to_prop_rp_to_set"
+  | "set->((set->set)->set)"
+  | "set->(set->set)->set" -> Some "vampire_eq_set_to_lp_set_to_set_rp_to_set"
+  | "(set->set)->set->set" -> Some "vampire_eq_lp_set_to_set_rp_to_set_to_set"
+  | "(set->set->set)->set->set" -> Some "vampire_eq_lp_set_to_set_to_set_rp_to_set_to_set"
+  | "set->((set->set->set)->set->set)"
+  | "set->(set->set->set)->set->set" ->
+      Some "vampire_eq_set_to_lp_set_to_set_to_set_rp_to_set_to_set"
+  | _ -> None
+
+let simple_equality_prop_with_type_env type_env left right =
+  let left_expected = simple_tm_sort type_env right in
+  let right_expected = simple_tm_sort type_env left in
+  let left_text = simple_tm_expr_with_expected type_env left_expected left in
+  let right_text = simple_tm_expr_with_expected type_env right_expected right in
+  match left_expected, right_expected with
+  | Some "set", _ | _, Some "set" -> left_text ^ " = " ^ right_text
+  | Some sort, _ | _, Some sort ->
+      begin match simple_equality_symbol_for_sort sort with
+      | Some equality -> equality ^ " (" ^ left_text ^ ") (" ^ right_text ^ ")"
+      | None -> left_text ^ " = " ^ right_text
+      end
+  | None, None -> left_text ^ " = " ^ right_text
+
+let simple_atom_prop_with_type_env type_env atom =
+  match equality_sides atom with
+  | Some (left, right) when is_vampire_bool_const left || is_vampire_bool_const right ->
+      simple_prop_equality left right
+  | Some (left, right) -> simple_equality_prop_with_type_env type_env left right
+  | None -> simple_tm_expr_with_expected type_env None atom
+
+let simple_literal_prop_with_type_env type_env = function
+  | Pos atom -> simple_atom_prop_with_type_env type_env atom
+  | Neg atom -> "(" ^ simple_atom_prop_with_type_env type_env atom ^ " -> False)"
+
+let rec simple_clause_prop_with_type_env type_env = function
+  | [] -> "False"
+  | [lit] -> simple_literal_prop_with_type_env type_env lit
+  | lit :: rest ->
+      "(" ^ simple_literal_prop_with_type_env type_env lit
+      ^ " \\/ "
+      ^ simple_clause_prop_with_type_env type_env rest
+      ^ ")"
 
 let simple_condensation_proof id parent_id subst result checked names =
   if subst <> [] then
@@ -3835,6 +4329,7 @@ let simple_equality_symmetry_body id parent_id literal_index result checked name
 
 let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_map=[]) cert =
   ignore (check_certificate cert);
+  simple_lambda_sort_env := metadata_lambda_sort_env cert;
   let prop_names, term_names = collect_simple_names cert in
   let lines = ref
     [
@@ -3865,6 +4360,10 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       "Definition vampire_eq_set_to_set_to_set : (set->set->set)->(set->set->set)->prop := fun x y:set->set->set => forall Q:(set->set->set)->(set->set->set)->prop, Q x y -> Q y x.";
       "Definition vampire_eq_lp_set_to_set_rp_to_set : ((set->set)->set)->((set->set)->set)->prop := fun x y:(set->set)->set => forall Q:((set->set)->set)->((set->set)->set)->prop, Q x y -> Q y x.";
       "Definition vampire_eq_lp_set_to_prop_rp_to_set : ((set->prop)->set)->((set->prop)->set)->prop := fun x y:(set->prop)->set => forall Q:((set->prop)->set)->((set->prop)->set)->prop, Q x y -> Q y x.";
+      "Definition vampire_eq_set_to_lp_set_to_set_rp_to_set : (set->((set->set)->set))->(set->((set->set)->set))->prop := fun x y:set->((set->set)->set) => forall Q:(set->((set->set)->set))->(set->((set->set)->set))->prop, Q x y -> Q y x.";
+      "Definition vampire_eq_lp_set_to_set_rp_to_set_to_set : ((set->set)->set->set)->((set->set)->set->set)->prop := fun x y:(set->set)->set->set => forall Q:((set->set)->set->set)->((set->set)->set->set)->prop, Q x y -> Q y x.";
+      "Definition vampire_eq_lp_set_to_set_to_set_rp_to_set_to_set : ((set->set->set)->set->set)->((set->set->set)->set->set)->prop := fun x y:(set->set->set)->set->set => forall Q:((set->set->set)->set->set)->((set->set->set)->set->set)->prop, Q x y -> Q y x.";
+      "Definition vampire_eq_set_to_lp_set_to_set_to_set_rp_to_set_to_set : (set->((set->set->set)->set->set))->(set->((set->set->set)->set->set))->prop := fun x y:set->((set->set->set)->set->set) => forall Q:(set->((set->set->set)->set->set))->(set->((set->set->set)->set->set))->prop, Q x y -> Q y x.";
       "Definition vPI : (set->prop)->prop := fun P:set->prop => forall x:set, P x.";
       "Definition vampire_set_ap : set->set->set := fun x y:set => x.";
       "Notation SetImplicitOp vampire_set_ap.";
@@ -3874,8 +4373,17 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     if not (List.mem line !lines) then lines := !lines @ [line]
   in
   List.iter add_line_once cert.metadata.symbol_declarations;
-  List.iter (fun name -> add_line_once ("Variable " ^ name ^ ":prop.")) prop_names;
-  List.iter (fun name -> add_line_once ("Variable " ^ name ^ ":set.")) term_names;
+  let higher_order_definition_db_names = metadata_higher_order_definition_db_names cert in
+  List.iter
+    (fun name ->
+       if not (is_db_ident name && List.mem name higher_order_definition_db_names) then
+         add_line_once ("Variable " ^ name ^ ":prop."))
+    prop_names;
+  List.iter
+    (fun name ->
+       if not (is_db_ident name && List.mem name higher_order_definition_db_names) then
+         add_line_once ("Variable " ^ name ^ ":set."))
+    term_names;
   let used_names = ref (prop_names @ term_names) in
   let emitted_names = ref [] in
   let emitted_props = ref [] in
@@ -3916,6 +4424,34 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     |> simple_unique_variable_sorts
   in
   let symbol_type_env = simple_symbol_type_env cert in
+  let declared_symbol_names =
+    metadata_declared_names cert
+    |> List.map megalodon_ident
+    |> List.sort_uniq compare
+  in
+  let collected_global_names =
+    prop_names @ term_names
+    |> List.filter (fun name -> not (is_db_ident name))
+    |> List.sort_uniq compare
+  in
+  let optional_megalodon_ident name =
+    try Some (megalodon_ident name) with Error _ -> None
+  in
+  let local_clause_names clause =
+    let vlam_bound_names = simple_clause_vlam_bound_names clause in
+    simple_clause_names clause
+    |> List.filter_map
+         (fun name ->
+            match optional_megalodon_ident name with
+            | Some ident
+              when ident <> "vLAM"
+                   && ident <> "vPI"
+                   && not (List.mem_assoc ident symbol_type_env)
+                   && not (List.mem ident collected_global_names)
+                   && not (List.mem ident declared_symbol_names)
+                   && not (List.mem ident vlam_bound_names) -> Some ident
+            | _ -> None)
+  in
   let substitution_variable_sorts parent_id subst =
     let parent_sorts = variable_sorts_for_ids [parent_id] in
     subst
@@ -3934,12 +4470,59 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     |> simple_unique_variable_sorts
   in
   let clause_prop_and_sorts_for_ids ?(extra_sorts=[]) id parent_ids result =
-    simple_clause_prop_and_sorts_for_step
-      ~available_sorts:(extra_sorts @ variable_sorts_for_ids (id :: parent_ids))
-      cert id result
+    let vlam_bound_names = simple_clause_vlam_bound_names result in
+    let available_sorts =
+      extra_sorts
+      @ simple_infer_clause_variable_sorts symbol_type_env result
+      @ variable_sorts_for_ids (id :: parent_ids)
+      |> simple_unique_variable_sorts
+      |> List.filter (fun (name, _) -> not (List.mem name vlam_bound_names))
+    in
+    let names = local_clause_names result in
+    let variable_sorts = simple_variable_sorts_for_names names available_sorts in
+    let local_type_env = simple_type_env_with_variables available_sorts symbol_type_env in
+    match metadata_step_proposition cert id with
+    | Some prop ->
+        let metadata_sorts = metadata_step_variable_sort_pairs cert id in
+        let definition_sorts = metadata_definition_lhs_sort_pairs cert id in
+        let metadata_sorts =
+          metadata_sorts @ definition_sorts
+          |> simple_unique_variable_sorts
+        in
+        let prop = simple_fix_known_higher_order_binders prop in
+        (simple_quantify_prop definition_sorts prop, metadata_sorts)
+    | None ->
+        try
+          let prop = simple_clause_prop_with_type_env local_type_env result in
+          (simple_fix_known_higher_order_binders (simple_quantify_prop variable_sorts prop), variable_sorts)
+        with Error _ ->
+          let prop = simple_clause_prop result in
+          (simple_fix_known_higher_order_binders (simple_quantify_prop variable_sorts prop), variable_sorts)
   in
-  let formula_prop_and_sorts id =
-    (simple_formula_prop cert id, metadata_step_variable_sort_pairs cert id)
+  let formula_literal_prop_and_sorts id literal =
+    let sorts = metadata_step_variable_sort_pairs cert id in
+    match metadata_step_proposition cert id with
+    | Some prop -> (simple_fix_known_higher_order_binders prop, sorts)
+    | None ->
+        let prop =
+          try
+            match literal with
+            | Pos atom -> simple_atom_prop_with_type_env symbol_type_env atom
+            | Neg atom -> "(" ^ simple_atom_prop_with_type_env symbol_type_env atom ^ " -> False)"
+          with Error _ -> simple_formula_prop cert id
+        in
+        (prop, sorts)
+  in
+  let formula_tm_prop_and_sorts id formula =
+    let sorts = metadata_step_variable_sort_pairs cert id in
+    match metadata_step_proposition cert id with
+    | Some prop -> (simple_fix_known_higher_order_binders prop, sorts)
+    | None ->
+        let prop =
+          try simple_atom_prop_with_type_env symbol_type_env formula
+          with Error _ -> simple_formula_prop cert id
+        in
+        (prop, sorts)
   in
   let emitted_parent_prop parent_id =
     match List.assoc_opt parent_id !emitted_props with
@@ -4004,70 +4587,71 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     (function
       | Input (id, source, clause) ->
           let name = input_name id source in
-          let prop, sorts = simple_clause_prop_and_sorts_for_step cert id clause in
+          let prop, sorts = clause_prop_and_sorts_for_ids id [] clause in
           add_emitted id name;
           add_emitted_prop_and_sorts id prop sorts;
           assumptions := !assumptions @ [(name, prop)];
           add_checked id clause
-      | FormulaInput (id, source, _) ->
+      | FormulaInput (id, source, literal) ->
           let name = input_name id source in
-          let prop, sorts = formula_prop_and_sorts id in
+          let prop, sorts = formula_literal_prop_and_sorts id literal in
           add_emitted id name;
           add_emitted_prop_and_sorts id prop sorts;
           assumptions := !assumptions @ [(name, prop)]
-      | FormulaTermInput (id, source, _) ->
+      | FormulaTermInput (id, source, formula) ->
           let name = input_name id source in
-          let prop, sorts = formula_prop_and_sorts id in
+          let prop, sorts = formula_tm_prop_and_sorts id formula in
           add_emitted id name;
           add_emitted_prop_and_sorts id prop sorts;
           assumptions := !assumptions @ [(name, prop)]
-      | FormulaTermCopy (id, parent_id, _) ->
+      | FormulaTermCopy (id, parent_id, formula) ->
           let name = derived_name id in
           let proof = lookup_simple_name !emitted_names parent_id in
-          let prop, sorts = formula_prop_and_sorts id in
+          let prop, sorts = formula_tm_prop_and_sorts id formula in
           if emitted_parent_prop parent_id = prop then begin
             add_emitted id name;
             add_emitted_prop_and_sorts id prop sorts;
             claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")]
           end else
             add_formula_inference_bridge "formula_term_copy" id [parent_id] prop
-      | RectifyFormula (id, parent_id, _, _) ->
+      | RectifyFormula (id, parent_id, _, formula) ->
           let name = derived_name id in
           let proof = lookup_simple_name !emitted_names parent_id in
-          let prop, sorts = formula_prop_and_sorts id in
+          let prop, sorts = formula_tm_prop_and_sorts id formula in
           if emitted_parent_prop parent_id = prop then begin
             add_emitted id name;
             add_emitted_prop_and_sorts id prop sorts;
             claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")]
           end else
             add_formula_inference_bridge "rectify_formula" id [parent_id] prop
-      | FormulaCopy (id, parent_id, _) ->
+      | FormulaCopy (id, parent_id, literal) ->
           let name = derived_name id in
           let proof = lookup_simple_name !emitted_names parent_id in
-          let prop, sorts = formula_prop_and_sorts id in
+          let prop, sorts = formula_literal_prop_and_sorts id literal in
           if emitted_parent_prop parent_id = prop then begin
             add_emitted id name;
             add_emitted_prop_and_sorts id prop sorts;
             claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")]
           end else
             add_formula_inference_bridge "formula_copy" id [parent_id] prop
-      | FoolFormula (id, parent_id, _) ->
+      | FoolFormula (id, parent_id, formula) ->
           let name = derived_name id in
-          let target_prop, target_sorts = formula_prop_and_sorts id in
+          let target_prop, target_sorts = formula_tm_prop_and_sorts id formula in
           add_emitted id name;
           add_bridge_claim ~kind:"fool" id parent_id name target_prop target_sorts
       | FoolBool (id, parent_id, result) ->
           let name = derived_name id in
-          let target_prop, target_sorts = formula_prop_and_sorts id in
+          let target_prop, target_sorts = formula_literal_prop_and_sorts id result in
           add_emitted id name;
           add_bridge_claim ~kind:"fool" id parent_id name target_prop target_sorts
-      | EnnfFormula (id, parent_id, _) ->
+      | EnnfFormula (id, parent_id, formula) ->
           let name = derived_name id in
-          let target_prop, target_sorts = formula_prop_and_sorts id in
+          let target_prop, target_sorts = formula_tm_prop_and_sorts id formula in
           add_emitted id name;
           add_bridge_claim ~kind:"normal_form" id parent_id name target_prop target_sorts
-      | SkolemFormula (id, parent_id, _, _) ->
-          add_formula_inference_bridge "skolem_formula" id [parent_id] (simple_formula_prop cert id)
+      | SkolemFormula (id, parent_id, _, formula) ->
+          let target_prop, _ = formula_tm_prop_and_sorts id formula in
+          add_formula_inference_bridge "skolem_formula" id [parent_id] target_prop
       | SkolemFormulaComputed (id, parent_id, _) ->
           add_formula_inference_bridge "skolem_formula" id [parent_id] (simple_formula_prop cert id)
       | CnfLiteral (id, parent_id, result) ->
@@ -4096,19 +4680,21 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           add_emitted_prop_and_sorts id prop sorts;
           assumptions := !assumptions @ [(name, prop)];
           add_checked id result
-      | PredicateDefinition (id, _, _) ->
+      | PredicateDefinition (id, _, formula) ->
           let name = simple_fresh_name used_names ("theory_predicate_definition__" ^ id) in
-          let prop, sorts = formula_prop_and_sorts id in
+          let prop, sorts = formula_tm_prop_and_sorts id formula in
           add_emitted id name;
           add_emitted_prop_and_sorts id prop sorts;
           assumptions := !assumptions @ [(name, prop)]
-      | PredicateDefinitionFold (id, source_id, definition_id, _) ->
-          add_formula_inference_bridge "predicate_definition_fold" id [source_id; definition_id] (simple_formula_prop cert id)
-      | PredicateDefinitionFoldChain (id, source_id, definition_ids, _) ->
-          add_formula_inference_bridge "predicate_definition_fold_chain" id (source_id :: definition_ids) (simple_formula_prop cert id)
+      | PredicateDefinitionFold (id, source_id, definition_id, formula) ->
+          let target_prop, _ = formula_tm_prop_and_sorts id formula in
+          add_formula_inference_bridge "predicate_definition_fold" id [source_id; definition_id] target_prop
+      | PredicateDefinitionFoldChain (id, source_id, definition_ids, formula) ->
+          let target_prop, _ = formula_tm_prop_and_sorts id formula in
+          add_formula_inference_bridge "predicate_definition_fold_chain" id (source_id :: definition_ids) target_prop
       | DefinitionInput (id, result) ->
           let name = simple_fresh_name used_names ("definition_input__" ^ id) in
-          let prop, sorts = simple_clause_prop_and_sorts_for_step cert id result in
+          let prop, sorts = clause_prop_and_sorts_for_ids id [] result in
           add_emitted id name;
           add_emitted_prop_and_sorts id prop sorts;
           assumptions := !assumptions @ [(name, prop)];
