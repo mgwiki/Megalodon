@@ -496,6 +496,70 @@ CLOSED_PASS 47
 /project/tmp/native_cert_v1_closed_corpus.FBArvw
 ```
 
+## July 14 Increment: Nested ENNF and CNF Clause Projection
+
+The ENNF implication-to-or replay now uses fresh hypothesis names at each
+recursive implication step. This fixes nested implications where the previous
+generated proof could accidentally reuse the inner positive hypothesis for both
+premises.
+
+The native emitter also treats a `formula_term_copy` whose native formula AST is
+unchanged as an exact proof copy, even when Vampire's metadata pretty-prints an
+associated variant. CNF formula-clause replay can now project and permute a
+single disjunctive source clause with the existing Megalodon disjunction
+eliminator instead of requiring an identical rendered clause order.
+
+This moved the cached source-linked closed frontier from 47 to 60 closed
+passes:
+
+```text
+TMPDIR=/project/tmp \
+PROBLEM_DIR=/project/tmp/source_linked_strict_100_corpus_fresh_041947 \
+WORK_DIR=/project/tmp/source_linked_slice_1_400_closed_cnf_or_projection_122448 \
+JOBS=20 MIN_PASS=0 CLOSED_CERT_V1=1 EMIT_TIMEOUT=30 CHECK_TIMEOUT=45 \
+tests/vampire_certificate/run_native_emit_cached_parallel.sh \
+  /project/tmp/source_linked_slice_1_400_fresh_042040
+
+CLOSED_PASS 60
+EMIT_FAIL 153
+/project/tmp/source_linked_slice_1_400_closed_cnf_or_projection_122448
+```
+
+The thirteen new committed closed cases are:
+
+```text
+hammer.10455.26.th0.p
+hammer.10546.26.th0.p
+hammer.10791.28.th0.p
+hammer.10988.26.th0.p
+hammer.10995.40.th0.p
+hammer.11281.32.th0.p
+hammer.11287.64.th0.p
+hammer.11531.26.th0.p
+hammer.11703.242.th0.p
+hammer.11808.21.th0.p
+hammer.11810.25.th0.p
+hammer.11849.21.th0.p
+hammer.11851.25.th0.p
+```
+
+Validation for this increment:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+native certificate v1 smoke test passed
+/project/tmp/native_cert_v1.yyHqq4
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_source_map_export_smoke.sh
+Megalodon TH0 source-map export smoke passed
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh
+CLOSED_PASS 60
+/project/tmp/native_cert_v1_closed_corpus.wPRsO6
+```
+
 ## Remaining P0 Work
 
 Closed mode is necessary but not sufficient.

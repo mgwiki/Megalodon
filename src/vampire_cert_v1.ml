@@ -5245,6 +5245,24 @@ let simple_cnf_and_projection_proof
   | _ ->
       emit_error "CNF conjunction projection supports only vampire_and parents"
 
+let simple_cnf_clause_projection_proof
+    type_env parent_sorts target_sorts source target_clause parent_name =
+  let source_clauses = cnf_clauses source in
+  let source_clause =
+    match source_clauses with
+    | [source_clause] -> source_clause
+    | _ -> emit_error "CNF clause projection supports only a single source clause"
+  in
+  if not (same_clause_multiset source_clause target_clause) then
+    emit_error "CNF clause projection target is not the source clause multiset";
+  let source_proof = simple_apply_forall_vars parent_name parent_sorts in
+  let target_prop =
+    try simple_clause_prop_with_type_env type_env target_clause
+    with Error _ -> simple_clause_prop target_clause
+  in
+  simple_wrap_forall_intro target_sorts
+    (simple_clause_projection_proof target_prop target_clause source_clause source_proof 0)
+
 let simple_fool_formula_proof type_env id parent_sorts result_sorts source target parent_name =
   let binder_sorts =
     parent_sorts @ result_sorts |> simple_unique_variable_sorts
@@ -5481,6 +5499,12 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
     parent_sorts @ result_sorts |> simple_unique_variable_sorts
   in
   let binder_index = ref 0 in
+  let proof_var_index = ref 0 in
+  let fresh_proof_var prefix =
+    let name = prefix ^ string_of_int !proof_var_index in
+    incr proof_var_index;
+    name
+  in
   let fallback_binder sort =
     let name =
       match List.nth_opt binder_sorts !binder_index with
@@ -5524,18 +5548,22 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
         begin match target_right with
         | Imp (neg_right, target_false)
             when target_left = left && neg_right = right && is_vampire_false target_false ->
+            let not_left_name = fresh_proof_var "Hennf_not_left_" in
+            let left_name = fresh_proof_var "Hennf_left_" in
+            let right_name = fresh_proof_var "Hennf_right_" in
             let left_text = formula_text env left in
             let right_text = formula_text env right in
             let target_right_text = formula_text env target_right in
             let left_proof =
               Printf.sprintf
-                "(dneg (%s) (fun Hennf_not_left:%s -> False => %s (fun Hennf_left:%s => (Hennf_not_left Hennf_left) (%s))))"
-                left_text left_text proof left_text right_text
+                "(dneg (%s) (fun %s:%s -> False => %s (fun %s:%s => (%s %s) (%s))))"
+                left_text not_left_name left_text proof left_name left_text
+                not_left_name left_name right_text
             in
             let right_proof =
               Printf.sprintf
-                "(fun Hennf_right:%s => %s (fun Hennf_left:%s => Hennf_right))"
-                right_text proof left_text
+                "(fun %s:%s => %s (fun %s:%s => %s))"
+                right_name right_text proof left_name left_text right_name
             in
             Printf.sprintf
               "(fun Hennf_goal:prop => fun Hennf_and:%s -> %s -> Hennf_goal => Hennf_and %s %s)"
@@ -5545,15 +5573,17 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
     | Imp (left, right), Ap (Ap (TmH "vampire_or", neg_left), target_right) ->
         begin match neg_left with
         | Imp (neg_source, false_tm) when neg_source = left && is_vampire_false false_tm ->
+            let pos_name = fresh_proof_var "Hennf_pos_" in
+            let neg_name = fresh_proof_var "Hennf_neg_" in
             let left_text = formula_text env left in
             let target_text = formula_text env target in
             let neg_left_text = formula_text env neg_left in
             let target_right_text = formula_text env target_right in
-            let right_proof = convert env right target_right ("(" ^ proof ^ " Hennf_pos)") in
+            let right_proof = convert env right target_right ("(" ^ proof ^ " " ^ pos_name ^ ")") in
             let left_intro =
               Printf.sprintf
-                "(fun vennf_goal:prop => fun Hleft:%s -> vennf_goal => fun Hright:%s -> vennf_goal => Hleft Hennf_neg)"
-                neg_left_text target_right_text
+                "(fun vennf_goal:prop => fun Hleft:%s -> vennf_goal => fun Hright:%s -> vennf_goal => Hleft %s)"
+                neg_left_text target_right_text neg_name
             in
             let right_intro =
               Printf.sprintf
@@ -5561,8 +5591,10 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
                 neg_left_text target_right_text right_proof
             in
             Printf.sprintf
-              "((vampire_xm (%s)) %s (fun Hennf_pos:%s => %s) (fun Hennf_neg:%s -> False => %s))"
-              left_text (simple_prop_arg target_text) left_text right_intro left_text left_intro
+              "((vampire_xm (%s)) %s (fun %s:%s => %s) (fun %s:%s -> False => %s))"
+              left_text (simple_prop_arg target_text)
+              pos_name left_text right_intro
+              neg_name left_text left_intro
         | _ -> emit_error (id ^ ": ENNF proof expected implication-to-or target")
         end
     | _ ->
@@ -5991,10 +6023,19 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           let name = derived_name id in
           let proof = lookup_simple_name !emitted_names parent_id in
           let prop, sorts = formula_tm_prop_and_sorts id formula in
-          if emitted_parent_prop parent_id = prop then begin
+          let parent_prop = emitted_parent_prop parent_id in
+          let copied_native_formula =
+            try lookup_formula checked_certificate parent_id = formula
+            with Error _ -> false
+          in
+          if parent_prop = prop then begin
             add_emitted id name;
             add_emitted_prop_and_sorts id prop sorts;
             claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")]
+          end else if copied_native_formula then begin
+            add_emitted id name;
+            add_emitted_prop_and_sorts id parent_prop sorts;
+            claims := !claims @ [(name, parent_prop, "exact " ^ proof ^ ".")]
           end else
             add_formula_inference_bridge "formula_term_copy" id [parent_id] prop
       | RectifyFormula (id, parent_id, _, formula) ->
@@ -6234,10 +6275,17 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                 if not (same_clause_multiset expected result) then None
                 else if not (simple_sorts_subset parent_sorts target_sorts) then None
                 else
-                  Some
-                    (simple_cnf_and_projection_proof
-                       type_env parent_sorts target_sorts parent_formula result
-                       (lookup_simple_name !emitted_names parent_id))
+                  let parent_name = lookup_simple_name !emitted_names parent_id in
+                  try
+                    Some
+                      (simple_cnf_clause_projection_proof
+                         type_env parent_sorts target_sorts parent_formula result
+                         parent_name)
+                  with Error _ ->
+                    Some
+                      (simple_cnf_and_projection_proof
+                         type_env parent_sorts target_sorts parent_formula result
+                         parent_name)
               with Error _ -> None
             with
             | Some proof ->
