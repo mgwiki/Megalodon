@@ -352,6 +352,52 @@ TMPDIR=/project/tmp tests/vampire_certificate/run_source_map_export_smoke.sh
 Megalodon TH0 source-map export smoke passed
 ```
 
+The next increment on `vampire/megalodon3` closes a larger, frequent
+FOOL/ENNF/CNF class. The generated prelude now uses the indexed classical
+`dneg` axiom to derive `vampire_xm`, replays Vampire
+`fool_exhaustiveness` by case analysis, replays the common ENNF
+`A -> B` to `~A \/ B` transformation, normalizes `vampire_or`/`\/` and
+`vampire_false`/`False` for CNF identity projections, and fixes
+prop-sort paramodulation/truth-conflict proof terms to use Megalodon's binary
+equality eliminator.
+
+This moved the cached source-linked closed frontier from 11 to 42 closed
+passes:
+
+```text
+TMPDIR=/project/tmp \
+PROBLEM_DIR=/project/tmp/source_linked_strict_100_corpus_fresh_041947 \
+WORK_DIR=/project/tmp/source_linked_slice_1_400_closed_ennf_fool_114054 \
+JOBS=20 MIN_PASS=0 CLOSED_CERT_V1=1 EMIT_TIMEOUT=30 CHECK_TIMEOUT=45 \
+tests/vampire_certificate/run_native_emit_cached_parallel.sh \
+  /project/tmp/source_linked_slice_1_400_fresh_042040
+
+CLOSED_PASS 42
+EMIT_FAIL 171
+/project/tmp/source_linked_slice_1_400_closed_ennf_fool_114054
+```
+
+The committed closed corpus has been promoted to all 42 current closed passes.
+The added cases retain `% megalodon_origin` links back to
+`examples/hammer/100thms_12_h.mg`.
+
+Validation for this increment:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+native certificate v1 smoke test passed
+/project/tmp/native_cert_v1.oEKExp
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_source_map_export_smoke.sh
+Megalodon TH0 source-map export smoke passed
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh
+CLOSED_PASS 42
+/project/tmp/native_cert_v1_closed_corpus.4W9xr6
+```
+
 ## Remaining P0 Work
 
 Closed mode is necessary but not sufficient.

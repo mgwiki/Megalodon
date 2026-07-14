@@ -3633,6 +3633,8 @@ let simple_prop_equal_mod_cnf_defs left right =
     text
     |> replace_all "vampire_false" "False"
     |> replace_all "vampire_true" "True"
+    |> replace_all "vampire_or" ""
+    |> replace_all "\\/" ""
     |> String.to_seq
     |> Seq.filter
          (function
@@ -4119,11 +4121,11 @@ let rec simple_clause_remove_truth_conflict_proof
     | Pos atom ->
         begin match equality_sides atom with
         | Some (left, right) when is_true left && is_false right ->
-            Printf.sprintf "((%s (fun Z:prop => Z) %s) %s)"
+            Printf.sprintf "((%s (fun X Y:prop => X) %s) %s)"
               proof true_proof (simple_prop_arg target_prop)
         | Some (left, right) when is_false left && is_true right ->
-            Printf.sprintf "((%s (fun Z:prop => Z -> %s) (fun Hfalse:False => Hfalse %s)) %s)"
-              proof (simple_prop_arg target_prop) (simple_prop_arg target_prop) true_proof
+            Printf.sprintf "((%s (fun X Y:prop => Y) %s) %s)"
+              proof true_proof (simple_prop_arg target_prop)
         | Some _ ->
             emit_error "truth-conflict selected equality is not true = false"
         | None ->
@@ -4827,28 +4829,23 @@ let simple_paramodulate_unit_proof
   in
   let rewrite_selected_proof equality_lit_proof target_lit_proof =
     if sort = "prop" then begin
-      let var_name = "vpm_z" in
-      let var_tm = TmH var_name in
-      let ctx_atom = replace_tm_at_position target_atom rewrite_position var_tm (id ^ " context") in
+      let left_is_from = left = from_tm && right = to_tm in
+      let right_is_from = right = from_tm && left = to_tm in
+      if not (left_is_from || right_is_from) then
+        emit_error (id ^ ": paramodulation from/to terms do not match equality literal");
+      let left_var = "vpm_left" in
+      let right_var = "vpm_right" in
+      let replacement = TmH (if left_is_from then left_var else right_var) in
+      let ctx_atom = replace_tm_at_position target_atom rewrite_position replacement (id ^ " context") in
       let ctx_literal = replace_literal_atom target_literal ctx_atom in
-      let ctx_type_env = (var_name, "prop") :: type_env in
+      let ctx_type_env = (left_var, "prop") :: (right_var, "prop") :: type_env in
       let ctx_prop = simple_literal_prop_with_type_env ctx_type_env ctx_literal in
-      let ctx = "(fun " ^ var_name ^ ":prop => " ^ ctx_prop ^ ")" in
-      if left = from_tm && right = to_tm then
-        Printf.sprintf "(%s %s %s)" equality_lit_proof ctx target_lit_proof
-      else if right = from_tm && left = to_tm then
-        let prop_arg tm =
-          let text = render_tm ~expected:"prop" tm in
-          match tm with
-          | TmH _ | DB _ -> text
-          | _ -> "(" ^ text ^ ")"
-        in
-        let left_text = prop_arg left in
-        let right_text = prop_arg right in
-        Printf.sprintf "((vampire_eq_prop_sym %s %s %s) %s %s)"
-          left_text right_text equality_lit_proof ctx target_lit_proof
-      else
-        emit_error (id ^ ": paramodulation from/to terms do not match equality literal")
+      let ctx =
+        "(fun " ^ left_var ^ ":prop"
+        ^ " => fun " ^ right_var ^ ":prop"
+        ^ " => " ^ ctx_prop ^ ")"
+      in
+      Printf.sprintf "(%s %s %s)" equality_lit_proof ctx target_lit_proof
     end else begin
       let left_is_from = left = from_tm && right = to_tm in
       let right_is_from = right = from_tm && left = to_tm in
@@ -5381,6 +5378,174 @@ let simple_fool_bool_proof
   in
   simple_wrap_forall_intro result_sorts proof
 
+let simple_fool_exhaustiveness_proof type_env result_sorts id clause =
+  let literal_prop lit =
+    try simple_literal_prop_with_type_env type_env lit
+    with Error _ -> simple_literal_prop lit
+  in
+  let equality_case lit =
+    match lit with
+    | Pos atom ->
+        begin match equality_sides atom with
+        | Some (left, right) when is_vampire_bool_const left && not (is_vampire_false left) ->
+            Some (`TrueEq, true, right)
+        | Some (left, right) when is_vampire_bool_const right && not (is_vampire_false right) ->
+            Some (`TrueEq, false, left)
+        | Some (left, right) when is_vampire_false left ->
+            Some (`FalseEq, true, right)
+        | Some (left, right) when is_vampire_false right ->
+            Some (`FalseEq, false, left)
+        | _ -> None
+        end
+    | Neg _ -> None
+  in
+  let left_lit, right_lit =
+    match clause with
+    | [left_lit; right_lit] -> left_lit, right_lit
+    | _ -> emit_error (id ^ ": FOOL exhaustiveness proof expects exactly two literals")
+  in
+  let left_prop = literal_prop left_lit in
+  let right_prop = literal_prop right_lit in
+  let target_prop = "(" ^ left_prop ^ " \\/ " ^ right_prop ^ ")" in
+  let left_intro proof =
+    Printf.sprintf
+      "(fun vfool_goal:prop => fun Hleft:%s -> vfool_goal => fun Hright:%s -> vfool_goal => Hleft %s)"
+      left_prop right_prop proof
+  in
+  let right_intro proof =
+    Printf.sprintf
+      "(fun vfool_goal:prop => fun Hleft:%s -> vfool_goal => fun Hright:%s -> vfool_goal => Hright %s)"
+      left_prop right_prop proof
+  in
+  let eq_proof lit positive_case_name negative_case_name =
+    match equality_case lit with
+    | Some (`TrueEq, true, tm) ->
+        let tm_text = simple_tm_expr_with_expected type_env (Some "prop") tm in
+        Some (tm, Printf.sprintf "(vampire_fool_prop_to_true_eq (%s) %s)" tm_text positive_case_name)
+    | Some (`TrueEq, false, tm) ->
+        let tm_text = simple_tm_expr_with_expected type_env (Some "prop") tm in
+        Some (tm, Printf.sprintf "(vampire_fool_prop_to_eq_true (%s) %s)" tm_text positive_case_name)
+    | Some (`FalseEq, true, tm) ->
+        let tm_text = simple_tm_expr_with_expected type_env (Some "prop") tm in
+        Some (tm, Printf.sprintf "(vampire_fool_not_prop_to_false_eq (%s) %s)" tm_text negative_case_name)
+    | Some (`FalseEq, false, tm) ->
+        let tm_text = simple_tm_expr_with_expected type_env (Some "prop") tm in
+        Some (tm, Printf.sprintf "(vampire_fool_not_prop_to_eq_false (%s) %s)" tm_text negative_case_name)
+    | None -> None
+  in
+  let left_eq = eq_proof left_lit "Hfool_true" "Hfool_false" in
+  let right_eq = eq_proof right_lit "Hfool_true" "Hfool_false" in
+  let is_true_eq lit =
+    match equality_case lit with
+    | Some (`TrueEq, _, _) -> true
+    | _ -> false
+  in
+  let is_false_eq lit =
+    match equality_case lit with
+    | Some (`FalseEq, _, _) -> true
+    | _ -> false
+  in
+  let exhaustiveness_tm =
+    match left_eq, right_eq with
+    | Some (tm_left, _), Some (tm_right, _) when tm_left = tm_right -> tm_left
+    | _ ->
+        emit_error
+          (id ^ ": FOOL exhaustiveness proof expects true/false equalities for one Boolean term")
+  in
+  let left_branch =
+    match left_eq, right_eq with
+    | Some (_, proof), _ when is_true_eq left_lit ->
+        left_intro proof
+    | _, Some (_, proof) when is_true_eq right_lit ->
+        right_intro proof
+    | _ -> emit_error (id ^ ": FOOL exhaustiveness proof did not find true branch")
+  in
+  let right_branch =
+    match left_eq, right_eq with
+    | Some (_, proof), _ when is_false_eq left_lit ->
+        left_intro proof
+    | _, Some (_, proof) when is_false_eq right_lit ->
+        right_intro proof
+    | _ -> emit_error (id ^ ": FOOL exhaustiveness proof did not find false branch")
+  in
+  let tm_text = simple_tm_expr_with_expected type_env (Some "prop") exhaustiveness_tm in
+  let proof =
+    Printf.sprintf
+      "((vampire_xm (%s)) %s (fun Hfool_true:%s => %s) (fun Hfool_false:%s -> False => %s))"
+      tm_text target_prop tm_text left_branch tm_text right_branch
+  in
+  simple_wrap_forall_intro result_sorts proof
+
+let simple_ennf_formula_proof type_env id parent_sorts result_sorts source target parent_name =
+  let binder_sorts =
+    parent_sorts @ result_sorts |> simple_unique_variable_sorts
+  in
+  let binder_index = ref 0 in
+  let fallback_binder sort =
+    let name =
+      match List.nth_opt binder_sorts !binder_index with
+      | Some (name, _) ->
+          incr binder_index;
+          megalodon_ident name
+      | None ->
+          let name = "Xennf_" ^ string_of_int !binder_index in
+          incr binder_index;
+          name
+    in
+    ignore sort;
+    name
+  in
+  let rec convert env source target proof =
+    let rec formula_text env tm =
+      match tm with
+      | Imp (left, right) ->
+          "(" ^ formula_text env left ^ " -> " ^ formula_text env right ^ ")"
+      | Ap (Ap (TmH "vampire_or", left), right) ->
+          "vampire_or (" ^ formula_text env left ^ ") (" ^ formula_text env right ^ ")"
+      | Ap (Ap (TmH "vampire_and", left), right) ->
+          "vampire_and (" ^ formula_text env left ^ ") (" ^ formula_text env right ^ ")"
+      | atom ->
+          begin match equality_sides atom with
+          | Some _ -> simple_atom_prop_with_type_env env atom
+          | None -> simple_tm_expr_with_expected env (Some "prop") atom
+          end
+    in
+    match source, target with
+    | All (source_tp, source_body), All (target_tp, target_body) when source_tp = target_tp ->
+        let sort = simple_tp_expr source_tp in
+        let binder = fallback_binder sort in
+        let env = (binder, sort) :: env in
+        let body_proof = convert env source_body target_body ("(" ^ proof ^ " " ^ binder ^ ")") in
+        "(fun " ^ binder ^ ":" ^ sort ^ " => " ^ body_proof ^ ")"
+    | _ when source = target -> proof
+    | Imp (left, right), Ap (Ap (TmH "vampire_or", neg_left), target_right) ->
+        begin match neg_left with
+        | Imp (neg_source, false_tm) when neg_source = left && is_vampire_false false_tm ->
+            let left_text = formula_text env left in
+            let target_text = formula_text env target in
+            let neg_left_text = formula_text env neg_left in
+            let target_right_text = formula_text env target_right in
+            let right_proof = convert env right target_right ("(" ^ proof ^ " Hennf_pos)") in
+            let left_intro =
+              Printf.sprintf
+                "(fun vennf_goal:prop => fun Hleft:%s -> vennf_goal => fun Hright:%s -> vennf_goal => Hleft Hennf_neg)"
+                neg_left_text target_right_text
+            in
+            let right_intro =
+              Printf.sprintf
+                "(fun vennf_goal:prop => fun Hleft:%s -> vennf_goal => fun Hright:%s -> vennf_goal => Hright %s)"
+                neg_left_text target_right_text right_proof
+            in
+            Printf.sprintf
+              "((vampire_xm (%s)) %s (fun Hennf_pos:%s => %s) (fun Hennf_neg:%s -> False => %s))"
+              left_text (simple_prop_arg target_text) left_text right_intro left_text left_intro
+        | _ -> emit_error (id ^ ": ENNF proof expected implication-to-or target")
+        end
+    | _ ->
+        emit_error (id ^ ": ENNF proof supports only universal implication-to-or transformations")
+  in
+  convert type_env source target parent_name
+
 let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_map=[]) ?source_origin ?(closed=false) cert =
   let checked_certificate = check_certificate cert in
   simple_lambda_sort_env := metadata_lambda_sort_env cert;
@@ -5389,6 +5554,8 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     [
       "Definition True : prop := forall p:prop, p -> p.";
       "Definition False : prop := forall p:prop, p.";
+      "Definition not : prop -> prop := fun A:prop => A -> False.";
+      "Prefix ~ 700 := not.";
       "Definition and : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> B -> p) -> p.";
       "Definition iff : prop -> prop -> prop := fun A B:prop => and (A -> B) (B -> A).";
       "Section Eq.";
@@ -5397,10 +5564,14 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       "End Eq.";
       "Infix = 502 := eq.";
       "Axiom prop_ext : forall p q:prop, iff p q -> p = q.";
+      "Axiom dneg : forall P:prop, ~~P -> P.";
       "Definition vampire_false : prop := False.";
       "Definition vampire_true : prop := True.";
       "Definition or : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> p) -> (B -> p) -> p.";
       "Infix \\/ 785 left := or.";
+      "Theorem vampire_xm : forall P:prop, P \\/ (P -> False).";
+      "exact (fun P:prop => fun q:prop => fun Hleft:P -> q => fun Hright:(P -> False) -> q => dneg q (fun Hnq:q -> False => Hnq (Hright (fun HP:P => Hnq (Hleft HP))))).";
+      "Qed.";
       "Definition vampire_or : prop -> prop -> prop := or.";
       "Definition vampire_and : prop -> prop -> prop := and.";
       "Definition vampire_exists_set : (set -> prop) -> prop := fun P:set->prop => forall q:prop, (forall x:set, P x -> q) -> q.";
@@ -5856,7 +6027,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
               simple_vlam_name_counter := saved_vlam_counter;
               Some
                 proof
-            with Error _ -> None
+            with Error msg -> if closed then emit_error msg else None
           with
           | Some proof ->
               uses_vampire_eq_prop_ext := true;
@@ -5967,8 +6138,30 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       | EnnfFormula (id, parent_id, formula) ->
           let name = derived_name id in
           let target_prop, target_sorts = formula_tm_prop_and_sorts id formula in
-          add_emitted id name;
-          add_bridge_claim ~kind:"normal_form" id parent_id name target_prop target_sorts
+          begin match
+            try
+              let parent_formula = lookup_formula checked_certificate parent_id in
+              let parent_name = lookup_simple_name !emitted_names parent_id in
+              let parent_sorts = metadata_step_variable_sort_pairs cert parent_id in
+              let type_env =
+                simple_type_env_with_variables
+                  (parent_sorts @ target_sorts |> simple_unique_variable_sorts)
+                  symbol_type_env
+              in
+              Some
+                (simple_ennf_formula_proof
+                   type_env id parent_sorts target_sorts
+                   parent_formula formula parent_name)
+            with Error msg -> if closed then emit_error msg else None
+          with
+          | Some proof ->
+              add_emitted id name;
+              add_emitted_prop_and_sorts id target_prop target_sorts;
+              claims := !claims @ [(name, target_prop, "exact " ^ proof ^ ".")]
+          | None ->
+              add_emitted id name;
+              add_bridge_claim ~kind:"normal_form" id parent_id name target_prop target_sorts
+          end
       | SkolemFormula (id, parent_id, _, formula) ->
           let target_prop, _ = formula_tm_prop_and_sorts id formula in
           add_formula_inference_bridge "skolem_formula" id [parent_id] target_prop
@@ -6042,9 +6235,12 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       | FoolExhaustiveness (id, result) ->
           let name = simple_fresh_name used_names ("theory_fool_exhaustiveness__" ^ id) in
           let prop, sorts = simple_clause_prop_and_sorts_for_step cert id result in
+          let type_env = simple_type_env_with_variables sorts symbol_type_env in
+          let proof = simple_fool_exhaustiveness_proof type_env sorts id result in
+          uses_vampire_eq_prop_ext := true;
           add_emitted id name;
           add_emitted_prop_and_sorts id prop sorts;
-          derived_assumptions := !derived_assumptions @ [(name, prop)];
+          claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")];
           add_checked id result
       | FoolDistinctness (id, result) ->
           let name = simple_fresh_name used_names ("theory_fool_distinctness__" ^ id) in
@@ -6672,6 +6868,12 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
         ("vampire_fool_true_eq_to_prop",
          "forall A:prop, vampire_eq_prop vampire_true A -> A",
          "exact (fun A:prop => fun HE:vampire_eq_prop vampire_true A => HE (fun X Y:prop => X) (fun p:prop => fun H:p => H)).");
+        ("vampire_fool_not_prop_to_eq_false",
+         "forall A:prop, (A -> False) -> vampire_eq_prop A vampire_false",
+         "exact (fun A:prop => fun HNA:A -> False => vampire_eq_prop_ext A vampire_false (fun HA:A => HNA HA) (fun HF:False => HF A)).");
+        ("vampire_fool_not_prop_to_false_eq",
+         "forall A:prop, (A -> False) -> vampire_eq_prop vampire_false A",
+         "exact (fun A:prop => fun HNA:A -> False => vampire_eq_prop_ext vampire_false A (fun HF:False => HF A) (fun HA:A => HNA HA)).");
       ] @ !claims;
   List.iter
     (fun (name, prop, proof) ->

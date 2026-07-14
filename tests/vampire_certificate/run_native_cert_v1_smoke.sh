@@ -834,19 +834,23 @@ if ! rg -q 'Vampire certificate v1 checked 6 steps' "$WORK_DIR/native_cert_v1_fo
   exit 1
 fi
 
-if bin/megalodon \
+bin/megalodon \
   -vampirecertv1closed \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_exhaustiveness_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_fool_exhaustiveness_valid.th0.p \
   -vampirecertv1emit "$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.mg" \
   "$dummy" >"$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.out" \
-  2>"$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.err"; then
-  echo "closed native certificate v1 emitter accepted a FOOL theory premise" >&2
+  2>"$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.err"
+if rg -n '\b(admit|aby)\b|-allowincompleteqed|bridge_|derived:theory_fool_exhaustiveness' \
+    "$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.mg"; then
+  echo "closed native certificate v1 FOOL-exhaustiveness emitter left an admission or bridge" >&2
   exit 1
 fi
-if ! rg -q 'zero non-source premises.*derived:theory_fool_exhaustiveness__b1' \
-    "$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.err"; then
-  echo "closed native certificate v1 FOOL-exhaustiveness failure did not report the derived premise" >&2
+bin/megalodon -hf "$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.mg" \
+  >"$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.check.log"
+if ! rg -q 'claim theory_fool_exhaustiveness__b1:' \
+    "$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.mg"; then
+  echo "closed native certificate v1 FOOL-exhaustiveness emitter did not emit a replayed claim" >&2
   exit 1
 fi
 
@@ -872,26 +876,33 @@ if rg -q 'bridge_fool__f1' "$WORK_DIR/native_cert_v1_formula_cnf_valid_emit.mg";
   echo "native certificate v1 formula-CNF emitter still exposed the replayed FOOL obligation" >&2
   exit 1
 fi
-if ! rg -q 'bridge_normal_form__f2' "$WORK_DIR/native_cert_v1_formula_cnf_valid_emit.mg"; then
-  echo "native certificate v1 formula-CNF emitter did not expose the normal-form bridge obligation" >&2
+if rg -q 'bridge_normal_form__f2' "$WORK_DIR/native_cert_v1_formula_cnf_valid_emit.mg"; then
+  echo "native certificate v1 formula-CNF emitter still exposed the replayed normal-form obligation" >&2
+  exit 1
+fi
+if ! rg -q 'claim f2:' "$WORK_DIR/native_cert_v1_formula_cnf_valid_emit.mg"; then
+  echo "native certificate v1 formula-CNF emitter did not emit the replayed normal-form claim" >&2
   exit 1
 fi
 bin/megalodon -hf "$WORK_DIR/native_cert_v1_formula_cnf_valid_emit.mg" \
   >"$WORK_DIR/native_cert_v1_formula_cnf_valid_emit.check.log"
 
-if bin/megalodon \
+bin/megalodon \
   -vampirecertv1closed \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_formula_cnf_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_formula_cnf_valid.th0.p \
   -vampirecertv1emit "$WORK_DIR/native_cert_v1_formula_cnf_closed.mg" \
   "$dummy" >"$WORK_DIR/native_cert_v1_formula_cnf_closed.out" \
-  2>"$WORK_DIR/native_cert_v1_formula_cnf_closed.err"; then
-  echo "closed native certificate v1 emitter accepted formula/CNF bridge premises" >&2
+  2>"$WORK_DIR/native_cert_v1_formula_cnf_closed.err"
+if rg -n '\b(admit|aby)\b|-allowincompleteqed|bridge_' \
+    "$WORK_DIR/native_cert_v1_formula_cnf_closed.mg"; then
+  echo "closed native certificate v1 formula-CNF emitter left an admission or bridge" >&2
   exit 1
 fi
-if ! rg -q 'zero non-source premises.*bridge:bridge_' \
-    "$WORK_DIR/native_cert_v1_formula_cnf_closed.err"; then
-  echo "closed native certificate v1 formula-CNF failure did not report bridge premises" >&2
+bin/megalodon -hf "$WORK_DIR/native_cert_v1_formula_cnf_closed.mg" \
+  >"$WORK_DIR/native_cert_v1_formula_cnf_closed.check.log"
+if ! rg -q 'claim f2:' "$WORK_DIR/native_cert_v1_formula_cnf_closed.mg"; then
+  echo "closed native certificate v1 formula-CNF emitter did not emit the replayed normal-form claim" >&2
   exit 1
 fi
 
