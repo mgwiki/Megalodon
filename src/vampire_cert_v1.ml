@@ -10049,8 +10049,26 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
               derived_assumptions := !derived_assumptions @ [(name, prop)]
           end
       | PredicateDefinitionFold (id, source_id, definition_id, formula) ->
-          let target_prop, _ = formula_tm_prop_and_sorts id formula in
-          add_formula_inference_bridge "predicate_definition_fold" id [source_id; definition_id] target_prop
+          let target_prop, target_sorts = formula_tm_prop_and_sorts id formula in
+          let can_use_transparent_definition =
+            try
+              let definition = lookup_formula checked_certificate definition_id in
+              let _, atom, _ = predicate_definition_parts definition_id definition in
+              let definiendum = predicate_definition_definiendum_term atom in
+              match flatten_value_application definiendum with
+              | TmH _, [] -> true
+              | _ -> false
+            with Error _ -> false
+          in
+          if can_use_transparent_definition then begin
+            let name = derived_name id in
+            let source_name = lookup_simple_name !emitted_names source_id in
+            ignore (lookup_simple_name !emitted_names definition_id);
+            add_emitted id name;
+            add_emitted_prop_and_sorts id target_prop target_sorts;
+            claims := !claims @ [(name, target_prop, "exact " ^ source_name ^ ".")]
+          end else
+            add_formula_inference_bridge "predicate_definition_fold" id [source_id; definition_id] target_prop
       | PredicateDefinitionFoldChain (id, source_id, definition_ids, formula) ->
           let target_prop, _ = formula_tm_prop_and_sorts id formula in
           add_formula_inference_bridge "predicate_definition_fold_chain" id (source_id :: definition_ids) target_prop
