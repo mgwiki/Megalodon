@@ -4183,6 +4183,9 @@ let simple_tm_names tm =
   in
   collect [] tm
 
+let simple_tm_has_db_name tm =
+  simple_tm_names tm |> List.exists is_db_ident
+
 let simple_clause_names clause =
   clause
   |> List.fold_left
@@ -5109,16 +5112,12 @@ let simple_fool_atom_forward_proof type_env source target proof =
   match simple_fool_eq_to_true source target with
   | Some (`SourceLeft, left, right) ->
       let left_text = simple_prop_term_expr type_env source left in
-      let right_text = simple_tm_expr_with_expected type_env (Some "prop") right in
-      Printf.sprintf
-        "(vampire_eq_prop_ext (%s) (%s) (fun H => %s) (fun H => %s))"
-        left_text right_text simple_true_proof proof
+      ignore (simple_tm_expr_with_expected type_env (Some "prop") right);
+      Printf.sprintf "(vampire_fool_prop_to_eq_true (%s) %s)" left_text proof
   | Some (`SourceRight, left, right) ->
-      let left_text = simple_tm_expr_with_expected type_env (Some "prop") left in
       let right_text = simple_prop_term_expr type_env source right in
-      Printf.sprintf
-        "(vampire_eq_prop_ext (%s) (%s) (fun H => %s) (fun H => %s))"
-        left_text right_text proof simple_true_proof
+      ignore (simple_tm_expr_with_expected type_env (Some "prop") left);
+      Printf.sprintf "(vampire_fool_prop_to_true_eq (%s) %s)" right_text proof
   | None ->
       if source = target then proof
       else emit_error "FOOL formula atom is not an equality-to-true lifting"
@@ -5127,12 +5126,11 @@ let simple_fool_atom_backward_proof type_env source target proof =
   match simple_fool_eq_to_true source target with
   | Some (`SourceLeft, left, right) ->
       let left_text = simple_prop_term_expr type_env source left in
-      let right_text = simple_tm_expr_with_expected type_env (Some "prop") right in
-      Printf.sprintf
-        "((vampire_eq_prop_sym (%s) (%s) %s) (fun Z:prop => Z) %s)"
-        left_text right_text proof simple_true_proof
-  | Some (`SourceRight, _, _) ->
-      Printf.sprintf "(%s (fun Z:prop => Z) %s)" proof simple_true_proof
+      ignore (simple_tm_expr_with_expected type_env (Some "prop") right);
+      Printf.sprintf "(vampire_fool_eq_true_to_prop (%s) %s)" left_text proof
+  | Some (`SourceRight, _, right) ->
+      let right_text = simple_prop_term_expr type_env source right in
+      Printf.sprintf "(vampire_fool_true_eq_to_prop (%s) %s)" right_text proof
   | None ->
       if source = target then proof
       else emit_error "FOOL formula atom is not an equality-to-true lifting"
@@ -5153,12 +5151,15 @@ let rec simple_fool_prefix_imp_shape source target =
   | All _, _
   | _, All _ ->
       false
+  | Imp (source_left, source_right), Imp (target_left, target_right) ->
+      simple_fool_prefix_imp_shape source_left target_left
+      && simple_fool_prefix_imp_shape source_right target_right
   | Imp _, _
   | _, Imp _ ->
       false
   | _ ->
       not (simple_tm_contains_all source || simple_tm_contains_all target)
-      && Option.is_some (simple_fool_eq_to_true source target)
+      && (source = target || Option.is_some (simple_fool_eq_to_true source target))
 
 let simple_cnf_and_projection_proof
     type_env parent_sorts target_sorts source target_clause parent_name =
@@ -5666,8 +5667,11 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
               symbol_type_env
           in
           begin match
-            try
+            if simple_tm_has_db_name formula then None
+            else try
               let parent_formula = lookup_formula checked_certificate parent_id in
+              if simple_tm_has_db_name parent_formula then
+                raise (Error (id ^ ": FOOL formula contains db names"));
               let parent_name = lookup_simple_name !emitted_names parent_id in
               let saved_vlam_counter = !simple_vlam_name_counter in
               let proof =
@@ -6361,6 +6365,22 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     (fun (name, prop) ->
        lines := !lines @ [Printf.sprintf "assume %s: %s." (megalodon_ident name) prop])
     theorem_assumptions;
+  if !uses_vampire_eq_prop_ext then
+    claims :=
+      [
+        ("vampire_fool_prop_to_eq_true",
+         "forall A:prop, A -> vampire_eq_prop A vampire_true",
+         "exact (fun A:prop => fun HA:A => vampire_eq_prop_ext A vampire_true (fun H:A => (fun p:prop => fun H:p => H)) (fun H:True => HA)).");
+        ("vampire_fool_prop_to_true_eq",
+         "forall A:prop, A -> vampire_eq_prop vampire_true A",
+         "exact (fun A:prop => fun HA:A => vampire_eq_prop_ext vampire_true A (fun H:True => HA) (fun H:A => (fun p:prop => fun H:p => H))).");
+        ("vampire_fool_eq_true_to_prop",
+         "forall A:prop, vampire_eq_prop A vampire_true -> A",
+         "exact (fun A:prop => fun HE:vampire_eq_prop A vampire_true => (vampire_eq_prop_sym A vampire_true HE) (fun Z:prop => Z) (fun p:prop => fun H:p => H)).");
+        ("vampire_fool_true_eq_to_prop",
+         "forall A:prop, vampire_eq_prop vampire_true A -> A",
+         "exact (fun A:prop => fun HE:vampire_eq_prop vampire_true A => HE (fun Z:prop => Z) (fun p:prop => fun H:p => H)).");
+      ] @ !claims;
   List.iter
     (fun (name, prop, proof) ->
        lines := !lines @
