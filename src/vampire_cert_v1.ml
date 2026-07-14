@@ -2636,12 +2636,47 @@ let source_map_kind_compatible source entry =
   | SourceNegatedConjecture _, _ -> false
   | SourceSetReflexivity _, _ -> false
 
+let source_map_entry_well_formed entry =
+  if entry.source_map_tptp_name = "" then
+    error "Megalodon source-map entry has an empty TPTP name";
+  if entry.source_map_source_name = "" then
+    error ("Megalodon source-map entry for " ^ entry.source_map_tptp_name ^ " has an empty source name");
+  match entry.source_map_kind with
+  | "known" | "def" ->
+      if entry.source_map_hash = "" then
+        error
+          ("Megalodon source-map entry for "
+           ^ entry.source_map_tptp_name
+           ^ " is a global "
+           ^ entry.source_map_kind
+           ^ " but has an empty source hash")
+  | _ -> ()
+
+let source_map_entry_requires_reflexive_equality entry =
+  match entry.source_map_kind with
+  | "set_reflexivity" | "local_set_reflexivity" -> true
+  | _ -> false
+
+let is_reflexive_equality_atom atom =
+  match equality_sides atom with
+  | Some (left, right) -> left = right
+  | None -> false
+
+let is_reflexive_equality_literal = function
+  | Pos atom -> is_reflexive_equality_atom atom
+  | Neg _ -> false
+
+let step_is_reflexive_equality_source = function
+  | Input (_, _, [literal]) -> is_reflexive_equality_literal literal
+  | FormulaInput (_, _, literal) -> is_reflexive_equality_literal literal
+  | FormulaTermInput (_, _, formula) -> is_reflexive_equality_atom formula
+  | _ -> false
+
 let validate_certificate_sources source_map cert =
   let table = Hashtbl.create 101 in
   List.iter
     (fun entry ->
-      if entry.source_map_tptp_name = "" then
-        error "Megalodon source-map entry has an empty TPTP name";
+      source_map_entry_well_formed entry;
       if Hashtbl.mem table entry.source_map_tptp_name then
         error ("duplicate Megalodon source-map entry for " ^ entry.source_map_tptp_name);
       Hashtbl.add table entry.source_map_tptp_name entry)
@@ -2665,6 +2700,12 @@ let validate_certificate_sources source_map cert =
               (id ^ ": certificate " ^ source_kind_name source
                ^ " source " ^ name ^ " maps to incompatible source-map kind "
                ^ entry.source_map_kind);
+          if source_map_entry_requires_reflexive_equality entry
+             && not (step_is_reflexive_equality_source step) then
+            error
+              (id ^ ": certificate source " ^ name
+               ^ " maps to " ^ entry.source_map_kind
+               ^ " but is not a reflexive equality input");
           incr checked)
     cert.steps;
   !checked

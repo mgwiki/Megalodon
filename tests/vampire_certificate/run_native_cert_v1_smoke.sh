@@ -155,6 +155,44 @@ if ! rg -q 'duplicate Megalodon source-map entry for a1' "$WORK_DIR/native_cert_
   exit 1
 fi
 
+if bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_known_empty_hash_bad.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_known_empty_hash_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_source_map_known_empty_hash_bad.err"; then
+  echo "native certificate v1 source-map checker accepted a global known entry without a hash" >&2
+  exit 1
+fi
+
+if ! rg -q 'global known but has an empty source hash' "$WORK_DIR/native_cert_v1_source_map_known_empty_hash_bad.err"; then
+  echo "native certificate v1 source-map hash failure did not explain the missing known hash" >&2
+  exit 1
+fi
+
+bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_set_reflexivity_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_set_reflexivity_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_set_reflexivity_valid.log"
+
+if ! rg -q 'Vampire certificate v1 source map checked 2 sources' "$WORK_DIR/native_cert_v1_source_map_set_reflexivity_valid.log"; then
+  echo "native certificate v1 source-map checker did not accept a reflexive set source" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_set_reflexivity_bad.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_set_reflexivity_bad.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_set_reflexivity_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_source_map_set_reflexivity_bad.err"; then
+  echo "native certificate v1 source-map checker accepted a non-reflexive set-reflexivity source" >&2
+  exit 1
+fi
+
+if ! rg -q 'maps to set_reflexivity but is not a reflexive equality input' "$WORK_DIR/native_cert_v1_source_map_set_reflexivity_bad.err"; then
+  echo "native certificate v1 source-map set-reflexivity failure did not explain the side condition" >&2
+  exit 1
+fi
+
 bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_factor_equality_valid.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_factor_equality_valid.log"
