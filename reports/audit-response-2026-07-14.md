@@ -850,6 +850,73 @@ hammer.10609.51.th0.p
 hammer.11602.25.th0.p
 ```
 
+## Increment: Functional Skolem Choice and Distributed CNF Projection
+
+The latest update closes a more complex member of the same Smolka-style family.
+The Skolem replay now transports through universal quantifiers, disjunctions,
+and existential subformulas rather than only handling a top-level existential.
+This permits functional Skolem definitions whose arguments are the surrounding
+Vampire variables, for example a symbol of sort
+`prop->set->(set->set)->set->set` defined by an `Eps_i` choice term.
+
+The ENNF replay also handles the implication-to-disjunction case where the
+left disjunct is not syntactically `A -> False`, but is instead the classical
+existential form produced from a negated universal.  The CNF formula-clause
+projection was generalized from one exact source clause to selecting a target
+clause out of the source formula's computed CNF clauses and projecting through
+the relevant conjunction branch.  Two generated proof-term bugs found by the
+focused checker were fixed at the same time: quantified branch types are now
+parenthesized in Skolem `vampire_or` eliminators, and formula text rendering no
+longer picks constants such as `vampire_false` as recovered forall binders.
+
+The representative focused case now emits with no bridge/admit/aby dependency
+and checks in Megalodon:
+
+```text
+hammer.11888.36.th0 CLOSED_PASS
+/project/tmp/functional_skolem_cnf_11888_134609
+```
+
+Cached parallel replay over the same source-linked frontier, without rerunning
+Vampire:
+
+```text
+TMPDIR=/project/tmp \
+PROBLEM_DIR=/project/tmp/source_linked_strict_100_corpus_fresh_041947 \
+WORK_DIR=/project/tmp/source_linked_slice_1_400_closed_functional_skolem_cnf_134618 \
+JOBS=20 MIN_PASS=0 CLOSED_CERT_V1=1 EMIT_TIMEOUT=30 CHECK_TIMEOUT=45 \
+tests/vampire_certificate/run_native_emit_cached_parallel.sh \
+  /project/tmp/source_linked_slice_1_400_fresh_042040
+
+CLOSED_PASS 70
+EMIT_FAIL 143
+/project/tmp/source_linked_slice_1_400_closed_functional_skolem_cnf_134618
+```
+
+The two new committed closed cases are:
+
+```text
+hammer.11870.37.th0.p
+hammer.11888.36.th0.p
+```
+
+Validation for this increment:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+native certificate v1 smoke test passed
+/project/tmp/native_cert_v1.KETmLX
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_source_map_export_smoke.sh
+Megalodon TH0 source-map export smoke passed
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh
+CLOSED_PASS 70
+/project/tmp/native_cert_v1_closed_corpus.jsSYbu
+```
+
 ## Remaining P0 Work
 
 Closed mode is necessary but not sufficient.

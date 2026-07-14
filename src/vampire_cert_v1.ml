@@ -5321,18 +5321,43 @@ let simple_cnf_and_projection_proof
 let simple_cnf_clause_projection_proof
     type_env parent_sorts target_sorts source target_clause parent_name =
   let source_clauses = cnf_clauses source in
-  let source_clause =
-    match source_clauses with
-    | [source_clause] -> source_clause
-    | _ -> emit_error "CNF clause projection supports only a single source clause"
-  in
-  if not (same_clause_multiset source_clause target_clause) then
+  if not (List.exists (fun source_clause -> same_clause_multiset source_clause target_clause) source_clauses) then
     emit_error "CNF clause projection target is not the source clause multiset";
+  let clause_is_subset_of_target source_clause =
+    List.for_all
+      (fun lit -> List.exists ((=) lit) target_clause)
+      source_clause
+  in
   let source_prefix_sorts = take_prefix (prefix_forall_count source) parent_sorts in
   let source_proof = simple_apply_forall_vars parent_name source_prefix_sorts in
   let target_prop =
     try simple_clause_prop_with_type_env type_env target_clause
     with Error _ -> simple_clause_prop target_clause
+  in
+  let rec formula_prop_text env = function
+    | All (tp, body) ->
+        let sort = simple_tp_expr tp in
+        let binder = "Xcnf_text_" ^ string_of_int (List.length env) in
+        "forall " ^ binder ^ ":" ^ sort ^ ", "
+        ^ formula_prop_text ((binder, sort) :: env) body
+    | Imp (left, right) ->
+        "(" ^ formula_prop_text env left ^ " -> " ^ formula_prop_text env right ^ ")"
+    | Ap (Ap (TmH "vampire_or", left), right) ->
+        "vampire_or (" ^ formula_prop_text env left ^ ") (" ^ formula_prop_text env right ^ ")"
+    | Ap (Ap (TmH "vampire_and", left), right) ->
+        "vampire_and (" ^ formula_prop_text env left ^ ") (" ^ formula_prop_text env right ^ ")"
+    | Ap (exists_head, Lam (tp, body))
+        when exists_head = TmH "vampire_exists_prop"
+             || exists_head = TmH "vampire_exists_set" ->
+        let sort = simple_tp_expr tp in
+        let binder = "Xcnf_exists_text_" ^ string_of_int (List.length env) in
+        "vampire_exists_set (fun " ^ binder ^ ":" ^ sort ^ " => "
+        ^ formula_prop_text ((binder, sort) :: env) body ^ ")"
+    | atom ->
+        begin match equality_sides atom with
+        | Some _ -> simple_atom_prop_with_type_env env atom
+        | None -> simple_tm_expr_with_expected env (Some "prop") atom
+        end
   in
   let choose_binder used sort body =
     let candidates =
@@ -5348,16 +5373,39 @@ let simple_cnf_clause_projection_proof
     | (name, _) :: _ -> megalodon_ident name
     | [] -> emit_error "CNF clause projection could not find a target binder for nested forall"
   in
-  let rec project_formula depth used formula proof =
+  let rec project_formula depth used env formula proof =
     match formula with
     | All (tp, body) ->
         let binder = choose_binder used (simple_tp_expr tp) body in
-        project_formula (depth + 1) (binder :: used) body ("(" ^ proof ^ " " ^ binder ^ ")")
+        let sort = simple_tp_expr tp in
+        project_formula (depth + 1) (binder :: used) ((binder, sort) :: env)
+          body ("(" ^ proof ^ " " ^ binder ^ ")")
+    | Ap (Ap (TmH "vampire_and", left), right) ->
+        let left_name = "Hcnf_formula_and_left_" ^ string_of_int depth in
+        let right_name = "Hcnf_formula_and_right_" ^ string_of_int depth in
+        let left_text = formula_prop_text env left in
+        let right_text = formula_prop_text env right in
+        let use_left =
+          cnf_clauses left
+          |> List.exists clause_is_subset_of_target
+        in
+        let selected_branch =
+          if use_left then project_formula (depth + 1) used env left left_name
+          else if
+            cnf_clauses right
+            |> List.exists clause_is_subset_of_target
+          then project_formula (depth + 1) used env right right_name
+          else emit_error "CNF conjunction source does not contain target clause"
+        in
+        Printf.sprintf
+          "(%s %s (fun %s:%s => fun %s:%s => %s))"
+          proof (simple_prop_arg target_prop)
+          left_name left_text right_name right_text selected_branch
     | Ap (Ap (TmH "vampire_or", left), right) ->
         let left_name = "Hcnf_formula_left_" ^ string_of_int depth in
         let right_name = "Hcnf_formula_right_" ^ string_of_int depth in
-        let left_branch = project_formula (depth + 1) used left left_name in
-        let right_branch = project_formula (depth + 1) used right right_name in
+        let left_branch = project_formula (depth + 1) used env left left_name in
+        let right_branch = project_formula (depth + 1) used env right right_name in
         Printf.sprintf "(%s %s (fun %s => %s) (fun %s => %s))"
           proof (simple_prop_arg target_prop)
           left_name left_branch
@@ -5369,7 +5417,7 @@ let simple_cnf_clause_projection_proof
     List.map (fun (name, _) -> megalodon_ident name) source_prefix_sorts
   in
   simple_wrap_forall_intro target_sorts
-    (project_formula 0 used_prefix_binders (strip_forall source) source_proof)
+    (project_formula 0 used_prefix_binders type_env (strip_forall source) source_proof)
 
 let simple_fool_formula_proof type_env id parent_sorts result_sorts source target parent_name =
   let binder_sorts =
@@ -5739,7 +5787,24 @@ let rec simple_formula_prop_text type_env tm =
   match tm with
   | All (tp, body) ->
       let sort = simple_tp_expr tp in
-      let binder = "Xformula" in
+      let binder =
+        let candidates =
+          type_env
+          |> List.filter
+               (fun (name, known_sort) ->
+                  let binder = megalodon_ident name in
+                  known_sort = sort
+                  && is_vampire_var_name binder
+                  && tm_contains_symbol binder body)
+        in
+        match List.rev candidates with
+        | (name, _) :: _ -> megalodon_ident name
+        | [] ->
+            begin match max_vampire_var_name body with
+            | Some name -> megalodon_ident name
+            | None -> "Xformula"
+            end
+      in
       "forall " ^ binder ^ ":" ^ sort ^ ", "
       ^ simple_formula_prop_text ((binder, sort) :: type_env) body
   | Imp (left, right) ->
@@ -5825,40 +5890,107 @@ let simple_formula_orientation_proof type_env source target proof =
 
 let simple_skolem_formula_proof
     type_env id parent_id subst source target parent_sorts result_sorts names =
-  let rec choose current_source current_proof = function
-    | [] -> (current_source, current_proof)
-    | (source_var, TmH raw_skolem) :: rest ->
-        begin match current_source with
-        | Ap (exists_head, Lam (Set, body))
-            when exists_head = TmH "vampire_exists_prop"
-                 || exists_head = TmH "vampire_exists_set" ->
-            let raw_source_var = source_var in
-            let source_var = megalodon_ident source_var in
-            let skolem = megalodon_ident raw_skolem in
-            let predicate_env = (source_var, "set") :: type_env in
-            let predicate_text =
-              "fun " ^ source_var ^ ":set => " ^ simple_formula_prop_text predicate_env body
-            in
-            let choice_proof =
-              Printf.sprintf
-                "(vampire_exists_set_choice (%s) %s)"
-                predicate_text current_proof
-            in
-            choose (subst_tm [(raw_source_var, TmH skolem)] body) choice_proof rest
-        | _ ->
-            emit_error (id ^ ": skolem proof expected a nested set-valued existential")
-        end
-    | _ :: _ ->
-        emit_error (id ^ ": skolem proof supports only set-valued symbol substitutions")
+  let binder_sorts =
+    parent_sorts @ result_sorts |> simple_unique_variable_sorts
+  in
+  let binder_index = ref 0 in
+  let proof_index = ref 0 in
+  let fresh prefix =
+    let name = prefix ^ string_of_int !proof_index in
+    incr proof_index;
+    name
+  in
+  let fallback_binder sort =
+    let rec find_from i =
+      match List.nth_opt binder_sorts i with
+      | Some (name, known_sort) when known_sort = sort ->
+          binder_index := i + 1;
+          megalodon_ident name
+      | Some _ -> find_from (i + 1)
+      | None ->
+          let name = "Xskolem_" ^ string_of_int !binder_index in
+          incr binder_index;
+          name
+    in
+    find_from !binder_index
+  in
+  let skolem_subst_for_var source_var =
+    match List.assoc_opt source_var subst with
+    | Some tm -> tm
+    | None -> emit_error (id ^ ": skolem proof could not find substitution variable")
+  in
+  let rec transport env source target proof =
+    if source = target then proof
+    else
+      match source, target with
+      | All (source_tp, source_body), All (target_tp, target_body) when source_tp = target_tp ->
+          let sort = simple_tp_expr source_tp in
+          let binder = fallback_binder sort in
+          let env = (binder, sort) :: env in
+          Printf.sprintf
+            "(fun %s:%s => %s)"
+            binder sort
+            (transport env source_body target_body ("(" ^ proof ^ " " ^ binder ^ ")"))
+      | Ap (Ap (TmH "vampire_or", source_left), source_right),
+        Ap (Ap (TmH "vampire_or", target_left), target_right) ->
+          let left_name = fresh "Hskolem_left_" in
+          let right_name = fresh "Hskolem_right_" in
+          let source_left_text = simple_formula_prop_text env source_left in
+          let source_right_text = simple_formula_prop_text env source_right in
+          let target_left_text = simple_formula_prop_text env target_left in
+          let target_right_text = simple_formula_prop_text env target_right in
+          let target_text = simple_formula_prop_text env target in
+          let left_proof = transport env source_left target_left left_name in
+          let right_proof = transport env source_right target_right right_name in
+          let left_intro =
+            Printf.sprintf
+              "(fun vskolem_goal:prop => fun Hleft:(%s) -> vskolem_goal => fun Hright:(%s) -> vskolem_goal => Hleft %s)"
+              target_left_text target_right_text left_proof
+          in
+          let right_intro =
+            Printf.sprintf
+              "(fun vskolem_goal:prop => fun Hleft:(%s) -> vskolem_goal => fun Hright:(%s) -> vskolem_goal => Hright %s)"
+              target_left_text target_right_text right_proof
+          in
+          Printf.sprintf
+            "(%s %s (fun %s:%s => %s) (fun %s:%s => %s))"
+            proof (simple_prop_arg target_text)
+            left_name source_left_text left_intro
+            right_name source_right_text right_intro
+      | Ap (exists_head, Lam (Set, body)), _
+          when exists_head = TmH "vampire_exists_prop"
+               || exists_head = TmH "vampire_exists_set" ->
+          let raw_source_var =
+            match subst with
+            | [(source_var, _)] -> source_var
+            | _ ->
+                begin match
+                  List.find_opt (fun (source_var, _) -> tm_contains_symbol source_var body) subst
+                with
+                | Some (source_var, _) -> source_var
+                | None -> fst (List.hd subst)
+                end
+          in
+          let source_var = megalodon_ident raw_source_var in
+          let skolem_tm = skolem_subst_for_var raw_source_var in
+          let predicate_env = (source_var, "set") :: env in
+          let predicate_text =
+            "fun " ^ source_var ^ ":set => " ^ simple_formula_prop_text predicate_env body
+          in
+          let choice_proof =
+            Printf.sprintf
+              "(vampire_exists_set_choice (%s) %s)"
+              predicate_text proof
+          in
+          let choice_body = subst_tm [(raw_source_var, skolem_tm)] body in
+          transport env choice_body target choice_proof
+      | _ ->
+          simple_formula_orientation_proof env source target proof
   in
   let parent_expr =
     simple_apply_forall_vars (lookup_simple_name names parent_id) parent_sorts
   in
-  let choice_body, choice_proof = choose source parent_expr subst in
-  let proof =
-    simple_formula_orientation_proof type_env choice_body target choice_proof
-  in
-  simple_wrap_forall_intro result_sorts proof
+  transport type_env source target parent_expr
 
 let simple_ennf_formula_proof type_env id parent_sorts result_sorts source target parent_name =
   let binder_sorts =
@@ -6111,7 +6243,39 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
               left_text (simple_prop_arg target_text)
               pos_name left_text right_intro
               neg_name left_text left_intro
-        | _ -> emit_error (id ^ ": ENNF proof expected implication-to-or target")
+        | _ ->
+            let pos_name = fresh_proof_var "Hennf_pos_" in
+            let neg_name = fresh_proof_var "Hennf_neg_" in
+            let left_text = formula_text env left in
+            let right_text = formula_text env right in
+            let target_text = formula_text env target in
+            let target_left_text = formula_text env neg_left in
+            let target_right_text = formula_text env target_right in
+            let right_proof = convert env right target_right pos_name in
+            let source_left_name = fresh_proof_var "Hennf_source_left_" in
+            let neg_left_source_proof =
+              Printf.sprintf
+                "(fun %s:%s => %s (%s %s))"
+                source_left_name left_text neg_name proof source_left_name
+            in
+            let left_proof =
+              convert env (Imp (left, vampire_false)) neg_left neg_left_source_proof
+            in
+            let left_intro =
+              Printf.sprintf
+                "(fun vennf_goal:prop => fun Hleft:%s -> vennf_goal => fun Hright:(%s) -> vennf_goal => Hleft %s)"
+                target_left_text target_right_text left_proof
+            in
+            let right_intro =
+              Printf.sprintf
+                "(fun vennf_goal:prop => fun Hleft:%s -> vennf_goal => fun Hright:(%s) -> vennf_goal => Hright %s)"
+                target_left_text target_right_text right_proof
+            in
+            Printf.sprintf
+              "((vampire_xm (%s)) %s (fun %s:%s => %s) (fun %s:%s -> False => %s))"
+              right_text (simple_prop_arg target_text)
+              pos_name right_text right_intro
+              neg_name right_text left_intro
         end
     | _ ->
         emit_error (id ^ ": ENNF proof supports only universal implication-to-or transformations")
@@ -6307,36 +6471,120 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   let inequality_split_definition_names =
     List.map (fun (name, _, _) -> name) inequality_split_definitions
   in
-  let skolem_definitions_for_step _id parent_id subst =
-    let rec build current_source generated_env acc = function
-      | [] -> List.rev acc
-      | (source_var, TmH raw_skolem) :: rest ->
-          begin match current_source with
-          | Ap (exists_head, Lam (Set, body))
-              when exists_head = TmH "vampire_exists_prop"
-                   || exists_head = TmH "vampire_exists_set" ->
-              let name = megalodon_ident raw_skolem in
-              let raw_source_var = source_var in
-              let source_var = megalodon_ident source_var in
-              let predicate_env = (source_var, "set") :: generated_env @ base_symbol_type_env in
-              let body_text = simple_formula_prop_text predicate_env body in
-              let definition =
-                (name,
-                 Printf.sprintf
-                   "Definition %s : set := Eps_i (fun %s:set => %s)."
-                   name source_var body_text,
-                 "set")
-              in
-              build
-                (subst_tm [(raw_source_var, TmH name)] body)
-                ((name, "set") :: generated_env)
-                (definition :: acc)
-                rest
-          | _ -> List.rev acc
-          end
-      | _ :: _ -> List.rev acc
+  let skolem_definitions_for_step id parent_id subst =
+    let binder_sorts = metadata_step_variable_sort_pairs cert id in
+    let binder_index = ref 0 in
+    let fallback_binder sort =
+      let rec find_from i =
+        match List.nth_opt binder_sorts i with
+        | Some (name, known_sort) when known_sort = sort ->
+            binder_index := i + 1;
+            megalodon_ident name
+        | Some _ -> find_from (i + 1)
+        | None ->
+            let name = "Xskolem_def_" ^ string_of_int !binder_index in
+            incr binder_index;
+            name
+      in
+      find_from !binder_index
     in
-    build (lookup_formula checked_certificate parent_id) [] [] subst
+    let subst_for_current body =
+      match
+        List.find_opt
+          (fun (source_var, _) -> tm_contains_symbol source_var body)
+          subst
+      with
+      | Some found -> Some found
+      | None ->
+          begin match subst with
+          | [found] -> Some found
+          | _ -> None
+          end
+    in
+    let skolem_head_and_args tm =
+      let head, args = flatten_value_application tm in
+      match head with
+      | TmH raw_name -> Some (megalodon_ident raw_name, args)
+      | _ -> None
+    in
+    let binder_for_arg env index arg =
+      match arg with
+      | TmH raw_name ->
+          let name = megalodon_ident raw_name in
+          let sort =
+            match List.assoc_opt name env with
+            | Some sort -> sort
+            | None ->
+                begin match simple_tm_sort (env @ base_symbol_type_env) arg with
+                | Some sort -> sort
+                | None -> "set"
+                end
+          in
+          (name, sort)
+      | _ ->
+          let name = "skolem_arg" ^ string_of_int index in
+          let sort =
+            match simple_tm_sort (env @ base_symbol_type_env) arg with
+            | Some sort -> sort
+            | None -> "set"
+          in
+          (name, sort)
+    in
+    let rec collect current_source env generated_env acc =
+      match current_source with
+      | All (tp, body) ->
+          let sort = simple_tp_expr tp in
+          let binder = fallback_binder sort in
+          collect body ((binder, sort) :: env) generated_env acc
+      | Ap (Ap (TmH "vampire_or", left), right)
+      | Ap (Ap (TmH "vampire_and", left), right) ->
+          let generated_env, acc = collect left env generated_env acc in
+          collect right env generated_env acc
+      | Imp (left, right) ->
+          let generated_env, acc = collect left env generated_env acc in
+          collect right env generated_env acc
+      | Ap (exists_head, Lam (Set, body))
+          when exists_head = TmH "vampire_exists_prop"
+               || exists_head = TmH "vampire_exists_set" ->
+          begin match subst_for_current body with
+          | Some (raw_source_var, skolem_tm) ->
+              begin match skolem_head_and_args skolem_tm with
+              | Some (name, args) ->
+                  let source_var = megalodon_ident raw_source_var in
+                  let arg_binders = List.mapi (binder_for_arg env) args in
+                  let predicate_env =
+                    (source_var, "set") :: arg_binders @ generated_env @ base_symbol_type_env
+                  in
+                  let body_text = simple_formula_prop_text predicate_env body in
+                  let sort =
+                    List.fold_right
+                      (fun (_, sort) acc -> simple_arrow_sort sort acc)
+                      arg_binders
+                      "set"
+                  in
+                  let rhs =
+                    List.fold_right
+                      (fun (binder, sort) acc ->
+                         "fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => " ^ acc)
+                      arg_binders
+                      (Printf.sprintf "Eps_i (fun %s:set => %s)" source_var body_text)
+                  in
+                  let definition =
+                    (name, Printf.sprintf "Definition %s : %s := %s." name sort rhs, sort)
+                  in
+                  let substituted_body = subst_tm [(raw_source_var, skolem_tm)] body in
+                  collect substituted_body env ((name, sort) :: generated_env)
+                    (definition :: acc)
+              | None -> (generated_env, acc)
+              end
+          | None -> (generated_env, acc)
+          end
+      | _ -> (generated_env, acc)
+    in
+    let _, definitions =
+      collect (lookup_formula checked_certificate parent_id) [] [] []
+    in
+    List.rev definitions
   in
   let skolem_definitions =
     cert.steps
