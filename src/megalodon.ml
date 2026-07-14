@@ -6748,6 +6748,14 @@ let preset_ptm_all_id (m:ptm) : string =
 
 let preset_hf_index () =
   Hashtbl.add indextms "174b78e53fc239e8c2aab4ab5a996a27e3e5741e88070dad186e05fb13f275e5" (Ar(Ar(Set,Prop),Set));
+  Hashtbl.add indextms "431fc21268bb816a6863cbbc67e0dc2f464b853f3de702356377e69622c53662" (Ar(Ar(Prop,Prop),Prop));
+  Hashtbl.add indextms "767ba9d76b6e9cc3ee2d3ac565970dc8696692d69668566e6bdcd383d2e1f319" (Ar(Ar(Ar(Set,Prop),Prop),Ar(Set,Prop)));
+  Hashtbl.add indextms "ed85eff40ecc0b8787005cbd9d54b5db6c35246db186aed964f3b6f89cd015f8" (Ar(Ar(Ar(Set,Set),Prop),Ar(Set,Set)));
+  Hashtbl.add indextms "7e81600038c894130f4e1811dfec03dc034a88423cec5eb9361221c65e3c34c0" (Ar(Ar(Ar(Set,Ar(Set,Prop)),Prop),Ar(Set,Ar(Set,Prop))));
+  Hashtbl.add indexknowns "6b41a6c708fbf6811d82e5779931513ec2038aa89c75ec1a738314de9939f8be" ();
+  Hashtbl.add indexknowns "45d19dce8d55f80220047e45e62aa10f87457fe7f5f0c0a60961bb71e690d938" ();
+  Hashtbl.add indexknowns "c320b7c9632bf47e1605efb7cbc88128e349c429d23c94453b8ba70ed2edbfcd" ();
+  Hashtbl.add indexknowns "005fb5ab278291afee47d8d4167d5b5579bcd703b8238809af60a9972e1fb94b" ();
   Hashtbl.add indextms "5bf697cb0d1cdefbe881504469f6c48cc388994115b82514dfc4fb5e67ac1a87" Prop;
   Hashtbl.add indextms "5867641425602c707eaecd5be95229f6fd709c9b58d50af108dfe27cb49ac069" Prop;
   Hashtbl.add indextms "058f630dd89cad5a22daa56e097e3bdf85ce16ebd3dbf7994e404e2a98800f7f" (Ar(Prop,Prop));
