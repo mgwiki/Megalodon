@@ -4623,6 +4623,45 @@ let rec simple_clause_prop_with_type_env type_env = function
       ^ simple_clause_prop_with_type_env type_env rest
       ^ ")"
 
+let simple_literal_equality_symmetry_proof type_env source_literal proof =
+  let sym_helper left right source_proof =
+    if is_vampire_bool_const left || is_vampire_bool_const right then
+      let left_text = simple_tm_expr_with_expected type_env (Some "prop") left in
+      let right_text = simple_tm_expr_with_expected type_env (Some "prop") right in
+      "vampire_eq_prop_sym (" ^ left_text ^ ") (" ^ right_text ^ ") " ^ source_proof
+    else
+      let sort =
+        match simple_tm_sort type_env left, simple_tm_sort type_env right with
+        | Some sort, _ | _, Some sort -> simple_strip_outer_parens sort
+        | None, None -> "set"
+      in
+      match sort with
+      | "set" ->
+          let left_text = simple_tm_expr_with_expected type_env (Some "set") left in
+          let right_text = simple_tm_expr_with_expected type_env (Some "set") right in
+          "vampire_eq_set_sym (" ^ left_text ^ ") (" ^ right_text ^ ") " ^ source_proof
+      | "prop" ->
+          let left_text = simple_tm_expr_with_expected type_env (Some "prop") left in
+          let right_text = simple_tm_expr_with_expected type_env (Some "prop") right in
+          "vampire_eq_prop_sym (" ^ left_text ^ ") (" ^ right_text ^ ") " ^ source_proof
+      | _ ->
+          emit_error ("simple equality-symmetry does not support equality at sort " ^ sort)
+  in
+  match source_literal with
+  | Pos atom ->
+      begin match equality_sides atom with
+      | Some (left, right) -> sym_helper left right proof
+      | None -> emit_error "simple equality-symmetry literal is not an equality"
+      end
+  | Neg atom ->
+      begin match equality_sides atom with
+      | Some (left, right) ->
+          "(fun Hswapped_eq => " ^ proof ^ " ("
+          ^ sym_helper right left "Hswapped_eq"
+          ^ "))"
+      | None -> emit_error "simple equality-symmetry literal is not an equality"
+      end
+
 let simple_paramodulate_unit_proof
     clause_body_prop type_env id equality_parent_id target_parent_id equality_index target_index position
     from_tm to_tm result equality_sorts target_sorts result_sorts checked names =
@@ -4659,8 +4698,18 @@ let simple_paramodulate_unit_proof
   let rewritten_atom = replace_tm_at_position target_atom rewrite_position to_tm (id ^ " target") in
   let rewritten_literal = replace_literal_atom target_literal rewritten_atom in
   let expected = target_rest @ [rewritten_literal] in
-  if not (same_clause_multiset expected result) then
-    emit_error (id ^ ": simple paramodulation proof expects target rest plus the direct rewritten literal");
+  let result_literal, result_literal_needs_symmetry =
+    if same_clause_multiset expected result then
+      rewritten_literal, false
+    else
+      match swap_literal_equality rewritten_literal with
+      | Some swapped_literal
+          when same_clause_multiset (target_rest @ [swapped_literal]) result ->
+          swapped_literal, true
+      | _ ->
+          emit_error
+            (id ^ ": simple paramodulation proof expects target rest plus the rewritten literal")
+  in
   let sort =
     match simple_tm_sort type_env from_tm, simple_tm_sort type_env to_tm with
     | Some sort, _ | _, Some sort -> simple_strip_outer_parens sort
@@ -4720,6 +4769,13 @@ let simple_paramodulate_unit_proof
       Printf.sprintf "(%s %s %s)" equality_expr ctx target_lit_proof
     end
   in
+  let result_literal_proof target_lit_proof =
+    let direct_proof = rewrite_selected_proof target_lit_proof in
+    if result_literal_needs_symmetry then
+      "(" ^ simple_literal_equality_symmetry_proof type_env rewritten_literal direct_proof ^ ")"
+    else
+      direct_proof
+  in
   let target_prop = clause_body_prop result in
   let rec consume_target selected_index source_clause source_proof depth =
     match source_clause with
@@ -4727,7 +4783,7 @@ let simple_paramodulate_unit_proof
     | [lit] ->
         begin match selected_index with
         | Some 0 ->
-            simple_clause_intro_proof result rewritten_literal (rewrite_selected_proof source_proof)
+            simple_clause_intro_proof result result_literal (result_literal_proof source_proof)
         | Some _ -> emit_error "paramodulation selected target index is out of bounds"
         | None -> simple_clause_intro_proof result lit source_proof
         end
@@ -4737,7 +4793,7 @@ let simple_paramodulate_unit_proof
         let head_branch =
           match selected_index with
           | Some 0 ->
-              simple_clause_intro_proof result rewritten_literal (rewrite_selected_proof head_name)
+              simple_clause_intro_proof result result_literal (result_literal_proof head_name)
           | _ -> simple_clause_intro_proof result lit head_name
         in
         let rest_selected =
