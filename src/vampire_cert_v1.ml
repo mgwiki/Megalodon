@@ -3748,10 +3748,10 @@ let rec simple_clause_intro_proof clause lit proof =
   | [] -> emit_error "cannot introduce a literal into the empty clause"
   | [single] when single = lit -> proof
   | head :: tail when head = lit ->
-      Printf.sprintf "(fun q Hhead Htail => Hhead %s)" proof
+      Printf.sprintf "(fun vclause_goal Hhead Htail => Hhead %s)" proof
   | _ :: tail ->
       let tail_proof = simple_clause_intro_proof tail lit proof in
-      Printf.sprintf "(fun q Hhead Htail => Htail %s)" tail_proof
+      Printf.sprintf "(fun vclause_goal Hhead Htail => Htail %s)" tail_proof
 
 let simple_factor_proof id parent_id left_index right_index result checked names =
   let parent_clause = lookup_simple_clause checked parent_id in
@@ -4327,6 +4327,106 @@ let simple_equality_symmetry_body id parent_id literal_index result checked name
       emit_error (id ^ ": simple emitter supports only unit positive equality symmetry")
   end
 
+let simple_equality_symmetry_proof type_env source_literal proof =
+  let sym_helper left right source_proof =
+    if is_vampire_bool_const left || is_vampire_bool_const right then
+      let left_text = simple_tm_expr_with_expected type_env (Some "prop") left in
+      let right_text = simple_tm_expr_with_expected type_env (Some "prop") right in
+      "vampire_eq_prop_sym (" ^ left_text ^ ") (" ^ right_text ^ ") " ^ source_proof
+    else
+      let sort =
+        match simple_tm_sort type_env left, simple_tm_sort type_env right with
+        | Some sort, _ | _, Some sort -> simple_strip_outer_parens sort
+        | None, None -> "set"
+      in
+      match sort with
+      | "set" ->
+          let left_text = simple_tm_expr_with_expected type_env (Some "set") left in
+          let right_text = simple_tm_expr_with_expected type_env (Some "set") right in
+          "vampire_eq_set_sym (" ^ left_text ^ ") (" ^ right_text ^ ") " ^ source_proof
+      | "prop" ->
+          let left_text = simple_tm_expr_with_expected type_env (Some "prop") left in
+          let right_text = simple_tm_expr_with_expected type_env (Some "prop") right in
+          "vampire_eq_prop_sym (" ^ left_text ^ ") (" ^ right_text ^ ") " ^ source_proof
+      | _ ->
+          emit_error ("simple equality-symmetry does not support equality at sort " ^ sort)
+  in
+  match source_literal with
+  | Pos atom ->
+      begin match equality_sides atom with
+      | Some (left, right) -> sym_helper left right proof
+      | None -> emit_error "simple equality-symmetry literal is not an equality"
+      end
+  | Neg atom ->
+      begin match equality_sides atom with
+      | Some (left, right) ->
+          "(fun Hswapped_eq => " ^ proof ^ " ("
+          ^ sym_helper right left "Hswapped_eq"
+          ^ "))"
+      | None -> emit_error "simple equality-symmetry literal is not an equality"
+      end
+
+let rec simple_clause_equality_symmetry_proof
+    type_env target_prop target_clause selected_index source_clause source_proof depth =
+  match source_clause with
+  | [] -> emit_error "simple equality-symmetry cannot map an empty source clause"
+  | [lit] ->
+      begin match selected_index with
+      | Some 0 ->
+          let swapped =
+            match swap_literal_equality lit with
+            | Some swapped -> swapped
+            | None -> emit_error "simple equality-symmetry literal is not an equality"
+          in
+          simple_clause_intro_proof
+            target_clause swapped
+            ("(" ^ simple_equality_symmetry_proof type_env lit source_proof ^ ")")
+      | Some _ -> emit_error "simple equality-symmetry selected index is out of bounds"
+      | None -> simple_clause_intro_proof target_clause lit source_proof
+      end
+  | lit :: rest ->
+      let head_name = "Hsym_lit_" ^ string_of_int depth in
+      let tail_name = "Hsym_tail_" ^ string_of_int depth in
+      let head_branch =
+        match selected_index with
+        | Some 0 ->
+            let swapped =
+              match swap_literal_equality lit with
+              | Some swapped -> swapped
+              | None -> emit_error "simple equality-symmetry literal is not an equality"
+            in
+            simple_clause_intro_proof
+              target_clause swapped
+              ("(" ^ simple_equality_symmetry_proof type_env lit head_name ^ ")")
+        | _ -> simple_clause_intro_proof target_clause lit head_name
+      in
+      let rest_selected =
+        match selected_index with
+        | Some 0 -> None
+        | Some n -> Some (n - 1)
+        | None -> None
+      in
+      let tail_branch =
+        simple_clause_equality_symmetry_proof
+          type_env target_prop target_clause rest_selected rest tail_name (depth + 1)
+      in
+      Printf.sprintf "(%s %s (fun %s => %s) (fun %s => %s))"
+        source_proof (simple_prop_arg target_prop)
+        head_name head_branch
+        tail_name tail_branch
+
+let simple_equality_symmetry_clause_proof
+    type_env id parent_id literal_index result target_prop parent_sorts result_sorts checked names =
+  let parent_clause = lookup_simple_clause checked parent_id in
+  ignore (simple_clause_nth id "equality-symmetry" literal_index parent_clause);
+  let parent_name = lookup_simple_name names parent_id in
+  let parent_expr = simple_apply_forall_vars parent_name parent_sorts in
+  let proof =
+    simple_clause_equality_symmetry_proof
+      type_env target_prop result (Some literal_index) parent_clause parent_expr 0
+  in
+  simple_wrap_forall_intro result_sorts proof
+
 let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_map=[]) cert =
   ignore (check_certificate cert);
   simple_lambda_sort_env := metadata_lambda_sort_env cert;
@@ -4352,6 +4452,20 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       "Definition eq : A->A->prop := fun x y:A => forall Q:A->A->prop, Q x y -> Q y x.";
       "End Eq.";
       "Infix = 502 := eq.";
+      "Theorem vampire_eq_prop_sym : forall A:prop, forall B:prop, vampire_eq_prop A B -> vampire_eq_prop B A.";
+      "let A B.";
+      "assume H.";
+      "let Q.";
+      "assume HQ.";
+      "exact H (fun Z:prop => Q Z -> Q A) (fun HA => HA) HQ.";
+      "Qed.";
+      "Theorem vampire_eq_set_sym : forall x:set, forall y:set, x = y -> y = x.";
+      "let x y.";
+      "assume H.";
+      "let Q.";
+      "assume HQ.";
+      "exact H (fun a b:set => Q b a) HQ.";
+      "Qed.";
       "Definition vampire_eq_prop_to_set : (prop->set)->(prop->set)->prop := fun x y:prop->set => forall Q:(prop->set)->(prop->set)->prop, Q x y -> Q y x.";
       "Definition vampire_eq_prop_to_prop_to_prop : (prop->prop->prop)->(prop->prop->prop)->prop := fun x y:prop->prop->prop => forall Q:(prop->prop->prop)->(prop->prop->prop)->prop, Q x y -> Q y x.";
       "Definition vampire_eq_set_to_set : (set->set)->(set->set)->prop := fun x y:set->set => forall Q:(set->set)->(set->set)->prop, Q x y -> Q y x.";
@@ -4755,8 +4869,47 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           ignore (left_index, right_index);
           add_clause_inference_bridge "factor" id [parent_id] result
       | EqualitySymmetry (id, parent_id, literal_index, result) ->
-          ignore literal_index;
-          add_clause_inference_bridge "equality_symmetry" id [parent_id] result
+          let prop, sorts = clause_prop_and_sorts_for_ids id [parent_id] result in
+          let parent_sorts = variable_sorts_for_ids [parent_id] in
+          let parent_clause = lookup_simple_clause !checked parent_id in
+          let type_env =
+            simple_type_env_with_variables
+              (parent_sorts @ sorts |> simple_unique_variable_sorts)
+              symbol_type_env
+          in
+          let target_body_prop =
+            try simple_clause_prop_with_type_env type_env result
+            with Error _ -> simple_clause_prop result
+          in
+          let parent_body_prop =
+            try simple_clause_prop_with_type_env type_env parent_clause
+            with Error _ -> simple_clause_prop parent_clause
+          in
+          let parent_structural_prop =
+            simple_quantify_prop parent_sorts parent_body_prop
+          in
+          let target_structural_prop =
+            simple_quantify_prop sorts target_body_prop
+          in
+          begin match
+            if emitted_parent_prop parent_id <> parent_structural_prop
+               || prop <> target_structural_prop then
+              None
+            else
+              try Some (simple_equality_symmetry_clause_proof
+                          type_env id parent_id literal_index result target_body_prop
+                          parent_sorts sorts !checked !emitted_names)
+              with Error _ -> None
+          with
+          | Some proof ->
+              let name = derived_name id in
+              add_emitted id name;
+              add_emitted_prop_and_sorts id prop sorts;
+              claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")];
+              add_checked id result
+          | None ->
+              add_clause_inference_bridge "equality_symmetry" id [parent_id] result
+          end
       | EqualityResolution (id, parent_id, literal_index, result) ->
           let prop, sorts = clause_prop_and_sorts_for_ids id [parent_id] result in
           let parent_sorts = variable_sorts_for_ids [parent_id] in
