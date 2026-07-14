@@ -3592,6 +3592,37 @@ let simple_prop_equal_mod_app_parens left right =
   in
   normalize left = normalize right
 
+let simple_prop_equal_mod_cnf_defs left right =
+  let replace_all needle replacement text =
+    let needle_len = String.length needle in
+    let text_len = String.length text in
+    let buffer = Buffer.create text_len in
+    let rec loop i =
+      if i >= text_len then ()
+      else if i + needle_len <= text_len && String.sub text i needle_len = needle then begin
+        Buffer.add_string buffer replacement;
+        loop (i + needle_len)
+      end else begin
+        Buffer.add_char buffer text.[i];
+        loop (i + 1)
+      end
+    in
+    loop 0;
+    Buffer.contents buffer
+  in
+  let normalize text =
+    text
+    |> replace_all "vampire_false" "False"
+    |> replace_all "vampire_true" "True"
+    |> String.to_seq
+    |> Seq.filter
+         (function
+           | ' ' | '\n' | '\t' | '\r' | '(' | ')' -> false
+           | _ -> true)
+    |> String.of_seq
+  in
+  normalize left = normalize right
+
 let collect_simple_names cert =
   let declared_names = metadata_declared_names cert in
   let variable_sorts = metadata_variable_sorts cert in
@@ -5338,6 +5369,14 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
         in
         (prop, sorts)
   in
+  let clause_formula_prop_for_sorts sorts clause =
+    let type_env = simple_type_env_with_variables sorts symbol_type_env in
+    let body =
+      try simple_clause_formula_prop_with_type_env type_env clause
+      with Error _ -> simple_clause_prop clause
+    in
+    simple_quantify_prop sorts body
+  in
   let emitted_parent_prop parent_id =
     match List.assoc_opt parent_id !emitted_props with
     | Some proposition -> proposition
@@ -5521,8 +5560,14 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       | CnfLiteral (id, parent_id, result) ->
           let name = derived_name id in
           let target_prop, target_sorts = clause_prop_and_sorts_for_ids id [parent_id] result in
-          if emitted_parent_prop parent_id = target_prop
-             || simple_prop_equal_mod_app_parens (emitted_parent_prop parent_id) target_prop then begin
+          let parent_prop = emitted_parent_prop parent_id in
+          let target_formula_prop = clause_formula_prop_for_sorts target_sorts result in
+          if parent_prop = target_prop
+             || parent_prop = target_formula_prop
+             || simple_prop_equal_mod_app_parens parent_prop target_prop
+             || simple_prop_equal_mod_app_parens parent_prop target_formula_prop
+             || simple_prop_equal_mod_cnf_defs parent_prop target_prop
+             || simple_prop_equal_mod_cnf_defs parent_prop target_formula_prop then begin
             add_emitted id name;
             add_emitted_prop_and_sorts id target_prop target_sorts;
             claims := !claims @
@@ -5535,8 +5580,14 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       | CnfFormulaClause (id, parent_id, _, result) ->
           let name = derived_name id in
           let target_prop, target_sorts = clause_prop_and_sorts_for_ids id [parent_id] result in
-          if emitted_parent_prop parent_id = target_prop
-             || simple_prop_equal_mod_app_parens (emitted_parent_prop parent_id) target_prop then begin
+          let parent_prop = emitted_parent_prop parent_id in
+          let target_formula_prop = clause_formula_prop_for_sorts target_sorts result in
+          if parent_prop = target_prop
+             || parent_prop = target_formula_prop
+             || simple_prop_equal_mod_app_parens parent_prop target_prop
+             || simple_prop_equal_mod_app_parens parent_prop target_formula_prop
+             || simple_prop_equal_mod_cnf_defs parent_prop target_prop
+             || simple_prop_equal_mod_cnf_defs parent_prop target_formula_prop then begin
             add_emitted id name;
             add_emitted_prop_and_sorts id target_prop target_sorts;
             claims := !claims @
