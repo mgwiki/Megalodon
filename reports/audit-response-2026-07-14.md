@@ -1469,3 +1469,79 @@ bridge_fool 1
 The important audit guard is still intact: these numbers are `CLOSED_PASS`
 counts, and closed mode still rejects every remaining bridge or derived
 non-source theorem premise.
+
+## Follow-up: Local Function Definition Inputs
+
+The next closed blocker addressed after predicate definitions was Vampire
+`definition_input` for introduced function symbols with arguments. The previous
+replay handled only zero-argument abbreviations, so clauses such as
+
+```text
+forall X1:set, ordsucc X1 = sF10 X1
+```
+
+were still theorem premises in closed mode. The emitter now recognizes
+introduced-symbol applications on either side of a singleton equality clause,
+builds the corresponding Megalodon definition proof under the explicit
+argument binders, and keeps the equality as a checked `claim`.
+
+There is an additional scoping issue for higher-order Skolem witnesses. Some
+introduced `sF*` abbreviations depend on a witness opened locally by the
+existing Church-existential elimination:
+
+```text
+apply u293.
+let sK7:(set->prop).
+assume ...
+```
+
+Such abbreviations cannot soundly be emitted as top-level `Definition`s. For
+those certificates the emitter instead treats the introduced function symbols
+as local aliases while rendering later clauses and formulas, so the generated
+claims refer to the locally opened witness rather than to an escaped global
+constant.
+
+Focused validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+
+OUT=/project/tmp/definition_input_10806_final_171218
+bin/megalodon -vampirecertv1closed ... hammer.10806.144.th0/native.sexp ...
+bin/megalodon -hf $OUT/out.mg
+
+Everything looks good.
+```
+
+Regression validation:
+
+```text
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+TMPDIR=/project/tmp JOBS=10 tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh
+
+CLOSED_PASS 77
+/project/tmp/native_cert_v1_closed_corpus.zIrvHC
+```
+
+Cached closed frontier after this change:
+
+```text
+CLOSED_PASS 93
+EMIT_FAIL 120
+/project/tmp/definition_input_frontier_171231
+```
+
+First blockers in that frontier:
+
+```text
+avatar_component 79
+bridge_skolem_formula 18
+theory_fool_distinctness 16
+definition_input 4
+bridge_predicate_definition_fold 2
+bridge_fool 1
+```
+
+This is still not a broad completion claim. It is one additional
+source-linked, zero-non-source-premise reconstruction in the cached frontier,
+with the closed gate unchanged.

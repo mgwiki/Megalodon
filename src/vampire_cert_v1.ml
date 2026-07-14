@@ -1543,6 +1543,14 @@ let take_prefix n xs =
   in
   loop n [] xs
 
+let drop_prefix n xs =
+  let rec loop n = function
+    | xs when n <= 0 -> xs
+    | [] -> []
+    | _ :: xs -> loop (n - 1) xs
+  in
+  loop n xs
+
 let literal_of_formula_tm tm =
   match tm with
   | Imp (atom, false_tm) when is_vampire_false false_tm -> Neg atom
@@ -3463,6 +3471,27 @@ let rec flatten_value_application = function
 
 let simple_lambda_sort_env : (string * string) list ref = ref []
 
+let simple_function_alias_env : (string * ((string * string) list * tm)) list ref = ref []
+
+let simple_alias_binder_sort_expr sort =
+  if String.contains sort '-' then "(" ^ sort ^ ")" else sort
+
+let rec simple_tm_contains_function_alias = function
+  | TmH name -> List.mem_assoc name !simple_function_alias_env
+  | DB _ | Prim _ -> false
+  | TpAp (tm, _) -> simple_tm_contains_function_alias tm
+  | Ap (left, right)
+  | Imp (left, right) ->
+      simple_tm_contains_function_alias left || simple_tm_contains_function_alias right
+  | Lam (_, body)
+  | All (_, body) -> simple_tm_contains_function_alias body
+
+let simple_literal_contains_function_alias = function
+  | Pos atom | Neg atom -> simple_tm_contains_function_alias atom
+
+let simple_clause_contains_function_alias clause =
+  List.exists simple_literal_contains_function_alias clause
+
 let rec simple_source_tm_expr tm =
   let render_arg arg =
     match arg with
@@ -3599,18 +3628,50 @@ and simple_tm_expr tm =
       | Lam (tp, body) -> simple_lam_expr tp body
       | _ ->
       let head, args = flatten_application tm in
+      let arg_text arg =
+        match arg with
+        | TmH raw when List.mem_assoc raw !simple_function_alias_env ->
+            "(" ^ simple_tm_expr arg ^ ")"
+        | TmH _ | DB _ -> simple_tm_expr arg
+        | _ -> "(" ^ simple_tm_expr arg ^ ")"
+      in
       begin match head, args with
       | TmH "vLAM", body :: rest ->
           let head_text = simple_vlam_expr body in
           begin match rest with
           | [] -> head_text
-          | _ ->
-              let arg_text arg =
-                match arg with
-                | TmH _ | DB _ -> simple_tm_expr arg
-                | _ -> "(" ^ simple_tm_expr arg ^ ")"
+          | _ -> String.concat " " (head_text :: List.map arg_text rest)
+          end
+      | TmH raw_name, _ ->
+          let name = megalodon_ident raw_name in
+          begin match List.assoc_opt name !simple_function_alias_env with
+          | Some (binders, body) ->
+              let arity = List.length binders in
+              let provided = take_prefix arity args in
+              let extra = drop_prefix arity args in
+              let remaining = drop_prefix (List.length provided) binders in
+              let substitution =
+                List.map2
+                  (fun (binder, _) arg -> (binder, arg))
+                  (take_prefix (List.length provided) binders)
+                  provided
               in
-              String.concat " " (head_text :: List.map arg_text rest)
+              let expanded = subst_tm substitution body in
+              let expanded =
+                List.fold_left (fun acc arg -> Ap (acc, arg)) expanded extra
+              in
+              let text = simple_tm_expr expanded in
+              List.fold_right
+                (fun (binder, sort) acc ->
+                   "(fun " ^ binder ^ ":" ^ simple_alias_binder_sort_expr sort ^ " => " ^ acc ^ ")")
+                remaining
+                text
+          | None ->
+              let head_text = simple_name_expr raw_name in
+              begin match args with
+              | [] -> head_text
+              | _ -> String.concat " " (head_text :: List.map arg_text args)
+              end
           end
       | _ ->
           let head_text =
@@ -3627,13 +3688,7 @@ and simple_tm_expr tm =
           in
           match args with
           | [] -> head_text
-          | _ ->
-              let arg_text arg =
-                match arg with
-                | TmH _ | DB _ -> simple_tm_expr arg
-                | _ -> "(" ^ simple_tm_expr arg ^ ")"
-	              in
-	              String.concat " " (head_text :: List.map arg_text args)
+          | _ -> String.concat " " (head_text :: List.map arg_text args)
 	      end
       end
 
@@ -4591,10 +4646,28 @@ let simple_type_env_with_variables variable_sorts type_env =
 
 let simple_clause_prop_and_sorts_for_step ?(available_sorts=[]) cert id clause =
   match metadata_step_proposition cert id with
-  | Some proposition -> (proposition, metadata_step_variable_sort_pairs cert id)
+  | Some proposition when not (simple_clause_contains_function_alias clause) ->
+      (proposition, metadata_step_variable_sort_pairs cert id)
   | None ->
       let prop = simple_with_stable_vlam_names (fun () -> simple_clause_prop clause) in
       let names = simple_clause_names clause in
+      let names =
+        names
+        |> List.filter
+             (fun name ->
+                not (List.mem_assoc name !simple_function_alias_env))
+      in
+      let variable_sorts = simple_variable_sorts_for_names names available_sorts in
+      (simple_quantify_prop variable_sorts prop, variable_sorts)
+  | Some _ ->
+      let prop = simple_with_stable_vlam_names (fun () -> simple_clause_prop clause) in
+      let names = simple_clause_names clause in
+      let names =
+        names
+        |> List.filter
+             (fun name ->
+                not (List.mem_assoc name !simple_function_alias_env))
+      in
       let variable_sorts = simple_variable_sorts_for_names names available_sorts in
       (simple_quantify_prop variable_sorts prop, variable_sorts)
 
@@ -4872,6 +4945,8 @@ let rec simple_tm_expr_with_expected type_env expected tm =
                 List.map2
                   (fun arg sort ->
                      match arg with
+                     | TmH raw when List.mem_assoc raw !simple_function_alias_env ->
+                         "(" ^ simple_tm_expr_with_expected type_env (Some sort) arg ^ ")"
                      | TmH _ | DB _ -> simple_tm_expr_with_expected type_env (Some sort) arg
                      | _ -> "(" ^ simple_tm_expr_with_expected type_env (Some sort) arg ^ ")")
                   args
@@ -4898,6 +4973,8 @@ let rec simple_tm_expr_with_expected type_env expected tm =
               in
               let arg_text =
                 match arg with
+                | TmH raw when List.mem_assoc raw !simple_function_alias_env ->
+                    "(" ^ simple_tm_expr_with_expected type_env domain arg ^ ")"
                 | TmH _ | DB _ -> simple_tm_expr_with_expected type_env domain arg
                 | _ -> "(" ^ simple_tm_expr_with_expected type_env domain arg ^ ")"
               in
@@ -7327,6 +7404,9 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   let local_skolem_witness_names =
     List.map fst local_skolem_witnesses
   in
+  let use_local_function_aliases =
+    local_skolem_witness_names <> []
+  in
   let symbol_type_env =
     (List.map (fun (name, _, sort) -> (name, sort)) inequality_split_definitions
      @ List.map (fun (name, _, sort) -> (name, sort)) skolem_definitions)
@@ -7343,31 +7423,72 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     | Some introduced, Some sort, [Pos atom] ->
         let introduced = megalodon_ident introduced in
         let sort = simple_strip_outer_parens sort in
-        let proof =
-          if sort = "set" then "reflexivity."
-          else "exact (fun Q H => H)."
+        let sort_parts = simple_arrow_sort_parts sort in
+        let codomain_sort =
+          match List.rev sort_parts with
+          | codomain :: _ -> codomain
+          | [] -> sort
+        in
+        let introduced_application tm =
+          match flatten_value_application tm with
+          | TmH head, args when megalodon_ident head = introduced ->
+              let arg_sorts =
+                if List.length sort_parts = List.length args + 1 then
+                  take_prefix (List.length args) sort_parts
+                else []
+              in
+              if List.length arg_sorts <> List.length args then None
+              else
+                let rec bind acc = function
+                  | [], [] -> Some (List.rev acc)
+                  | TmH raw :: rest_args, sort :: rest_sorts ->
+                      let binder = megalodon_ident raw in
+                      if List.mem_assoc binder acc then None
+                      else bind ((binder, sort) :: acc) (rest_args, rest_sorts)
+                  | _ -> None
+                in
+                bind [] (args, arg_sorts)
+          | _ -> None
+        in
+        let proof binders =
+          let body = "fun Q H => H" in
+          let body =
+            List.fold_right
+              (fun (binder, sort) acc ->
+                 "fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => " ^ acc)
+              binders
+              body
+          in
+          "exact (" ^ body ^ ")."
+        in
+        let definition binders body =
+          let definition_env = binders @ symbol_type_env in
+          if simple_tm_has_db_name body then None
+          else
+            let rhs =
+              simple_tm_expr_with_expected definition_env (Some codomain_sort) body
+              |> List.fold_right
+                   (fun (binder, sort) acc ->
+                      "fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => " ^ acc)
+                   binders
+            in
+            Some
+              (introduced,
+               Printf.sprintf "Definition %s : %s := %s." introduced sort rhs,
+               proof binders,
+               binders,
+               body)
         in
         begin match equality_sides atom with
-        | Some (left, TmH right)
-            when megalodon_ident right = introduced && not (simple_tm_has_db_name left) ->
-            Some
-              (introduced,
-               Printf.sprintf
-                 "Definition %s : %s := %s."
-                 introduced
-                 sort
-                 (simple_tm_expr_with_expected symbol_type_env (Some sort) left),
-               proof)
-        | Some (TmH left, right)
-            when megalodon_ident left = introduced && not (simple_tm_has_db_name right) ->
-            Some
-              (introduced,
-               Printf.sprintf
-                 "Definition %s : %s := %s."
-                 introduced
-                 sort
-                 (simple_tm_expr_with_expected symbol_type_env (Some sort) right),
-               proof)
+        | Some (left, right) ->
+            begin match introduced_application right with
+            | Some binders -> definition binders left
+            | None ->
+                begin match introduced_application left with
+                | Some binders -> definition binders right
+                | None -> None
+                end
+            end
         | _ -> None
         end
     | _ -> None
@@ -7381,8 +7502,15 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     |> List.sort_uniq compare
   in
   let function_definition_names =
-    List.map (fun (name, _, _) -> name) function_definitions
+    List.map (fun (name, _, _, _, _) -> name) function_definitions
   in
+  let function_definition_aliases =
+    if use_local_function_aliases then
+      function_definitions
+      |> List.map (fun (name, _, _, binders, body) -> (name, (binders, body)))
+    else []
+  in
+  simple_function_alias_env := function_definition_aliases;
   let predicate_definition_for_step id formula =
     try
       let defined, atom, body = predicate_definition_parts id formula in
@@ -7485,11 +7613,12 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     | Some name when List.mem (megalodon_ident name) local_definition_names ->
         begin match
           List.find_opt
-            (fun (definition_name, _, _) ->
+            (fun (definition_name, _, _, _, _) ->
                definition_name = megalodon_ident name)
             function_definitions
         with
-        | Some (_, definition, _) -> add_line_once definition
+        | Some (_, definition, _, _, _) ->
+            if not use_local_function_aliases then add_line_once definition
         | None ->
             begin match
               List.find_opt
@@ -7675,7 +7804,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     let variable_sorts = simple_variable_sorts_for_names names available_sorts in
     let local_type_env = simple_type_env_with_variables available_sorts symbol_type_env in
     match metadata_step_proposition cert id with
-    | Some prop when parent_ids = [] ->
+    | Some prop when parent_ids = [] && not (simple_clause_contains_function_alias result) ->
         let metadata_sorts = metadata_step_variable_sort_pairs cert id in
         let definition_sorts = metadata_definition_lhs_sort_pairs cert id in
         let metadata_sorts =
@@ -7700,8 +7829,18 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   let formula_literal_prop_and_sorts id literal =
     let sorts = metadata_step_variable_sort_pairs cert id in
     match metadata_step_proposition cert id with
-    | Some prop -> (simple_fix_known_higher_order_binders prop, sorts)
+    | Some prop when not (simple_literal_contains_function_alias literal) ->
+        (simple_fix_known_higher_order_binders prop, sorts)
     | None ->
+        let prop =
+          try
+            match literal with
+            | Pos atom -> simple_atom_prop_with_type_env symbol_type_env atom
+            | Neg atom -> "(" ^ simple_atom_prop_with_type_env symbol_type_env atom ^ " -> False)"
+          with Error _ -> simple_formula_prop cert id
+        in
+        (prop, sorts)
+    | Some _ ->
         let prop =
           try
             match literal with
@@ -7714,8 +7853,15 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   let formula_tm_prop_and_sorts id formula =
     let sorts = metadata_step_variable_sort_pairs cert id in
     match metadata_step_proposition cert id with
-    | Some prop -> (simple_fix_known_higher_order_binders prop, sorts)
+    | Some prop when not (simple_tm_contains_function_alias formula) ->
+        (simple_fix_known_higher_order_binders prop, sorts)
     | None ->
+        let prop =
+          try simple_atom_prop_with_type_env symbol_type_env formula
+          with Error _ -> simple_formula_prop cert id
+        in
+        (prop, sorts)
+    | Some _ ->
         let prop =
           try simple_atom_prop_with_type_env symbol_type_env formula
           with Error _ -> simple_formula_prop cert id
@@ -8347,7 +8493,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           add_emitted id name;
           add_emitted_prop_and_sorts id prop sorts;
           begin match function_definition_for_step id result with
-          | Some (_, _, proof) ->
+          | Some (_, _, proof, _, _) ->
               claims := !claims @ [(name, prop, proof)]
           | None ->
               derived_assumptions := !derived_assumptions @ [(name, prop)]
