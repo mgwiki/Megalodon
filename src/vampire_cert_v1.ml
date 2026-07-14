@@ -2891,6 +2891,7 @@ let collect_simple_names cert =
     | Resolve (_, _, _, _, _, clause) -> add_clause acc clause
     | Factor (_, _, _, _, clause) -> add_clause acc clause
     | EqualitySymmetry (_, _, _, clause) -> add_clause acc clause
+    | EqualityResolution (_, _, _, clause) -> add_clause acc clause
     | Contradiction _ -> acc
     | step -> emit_error ("unsupported rule " ^ step_id step)
   in
@@ -2958,19 +2959,48 @@ let simple_resolution_proof id left_id right_id left_index right_index result ch
   | _ ->
       emit_error (id ^ ": simple emitter supports only unit resolution and binary-tail unit resolution")
 
+let rec simple_clause_intro_proof clause lit proof =
+  match clause with
+  | [] -> emit_error "cannot introduce a literal into the empty clause"
+  | [single] when single = lit -> proof
+  | head :: tail when head = lit ->
+      Printf.sprintf "(fun q Hhead Htail => Hhead %s)" proof
+  | _ :: tail ->
+      let tail_proof = simple_clause_intro_proof tail lit proof in
+      Printf.sprintf "(fun q Hhead Htail => Htail %s)" tail_proof
+
 let simple_factor_proof id parent_id left_index right_index result checked names =
   let parent_clause = lookup_simple_clause checked parent_id in
   let left = simple_clause_nth id "left" left_index parent_clause in
   let right = simple_clause_nth id "right" right_index parent_clause in
   if left <> right then emit_error (id ^ ": factor literals are not identical");
   match parent_clause, result with
-  | [a; b], [res] when a = b && a = res ->
-      let target = simple_literal_prop res in
+  | dup1 :: dup2 :: tail, _ when dup1 = dup2 && left_index = 0 && right_index = 1 && result = dup1 :: tail ->
+      let target = simple_clause_prop result in
       let parent_name = lookup_simple_name names parent_id in
-      Printf.sprintf "(%s %s (fun Hlit_0 => Hlit_0) (fun Htail_1 => Htail_1))"
-        parent_name target
+      let left_branch = simple_clause_intro_proof result dup1 "Hlit_0" in
+      Printf.sprintf "(%s %s (fun Hlit_0 => %s) (fun Htail_1 => Htail_1))"
+        parent_name target left_branch
   | _ ->
-      emit_error (id ^ ": simple emitter supports only two-literal propositional factoring")
+      emit_error (id ^ ": simple emitter supports only duplicated head-literal factoring")
+
+let simple_equality_resolution_proof id parent_id literal_index result checked names =
+  let parent_clause = lookup_simple_clause checked parent_id in
+  let literal = simple_clause_nth id "equality-resolution" literal_index parent_clause in
+  begin match parent_clause, literal, result with
+  | [kept; Neg atom], Neg _, [res] when literal_index = 1 && kept = res ->
+      begin match equality_sides atom with
+      | Some (left, right) when left = right ->
+          let target = simple_literal_prop kept in
+          let parent_name = lookup_simple_name names parent_id in
+          Printf.sprintf "(%s %s (fun Hkeep_0 => Hkeep_0) (fun Hneq_1 => ((Hneq_1 (fun Q H => H)) %s)))"
+            parent_name target target
+      | Some _ -> emit_error (id ^ ": equality-resolution equality is not reflexive")
+      | None -> emit_error (id ^ ": equality-resolution literal is not an equality")
+      end
+  | _ ->
+      emit_error (id ^ ": simple emitter supports only binary clauses ending in a reflexive disequality")
+  end
 
 let simple_copy_proof id parent_id result checked names =
   let parent_clause = lookup_simple_clause checked parent_id in
@@ -3088,6 +3118,14 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           in
           add_emitted id name;
           claims := !claims @ [(name, simple_clause_prop result, body)];
+          add_checked id result
+      | EqualityResolution (id, parent_id, literal_index, result) ->
+          let name = derived_name id in
+          let proof =
+            simple_equality_resolution_proof id parent_id literal_index result !checked !emitted_names
+          in
+          add_emitted id name;
+          claims := !claims @ [(name, simple_clause_prop result, "exact " ^ proof ^ ".")];
           add_checked id result
       | Contradiction (id, parent_id) ->
           let name = derived_name id in
