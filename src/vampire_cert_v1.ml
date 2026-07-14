@@ -1906,6 +1906,17 @@ let string_starts_with prefix value =
   let prefix_len = String.length prefix in
   String.length value >= prefix_len && String.sub value 0 prefix_len = prefix
 
+let string_find_substring needle value =
+  let needle_len = String.length needle in
+  let value_len = String.length value in
+  let rec loop index =
+    if needle_len = 0 then Some 0
+    else if index + needle_len > value_len then None
+    else if String.sub value index needle_len = needle then Some index
+    else loop (index + 1)
+  in
+  loop 0
+
 let split_literal_name = function
   | Pos (TmH name)
   | Neg (TmH name) ->
@@ -6168,7 +6179,68 @@ let simple_avatar_component_proof type_env split_definitions id result_sorts res
     | Pos (TmH name) | Neg (TmH name) -> megalodon_ident name
     | _ -> emit_error (id ^ ": avatar component split literal is not a split atom")
   in
-  let target_prop = simple_clause_prop_with_type_env type_env result in
+  let raw_target_formula = simple_clause_formula_tm result in
+  let target_formula = left_assoc_vampire_or_formula raw_target_formula in
+  let raw_target_prop = simple_clause_prop_with_type_env type_env result in
+  let rec prop_text = function
+    | TmH name when string_starts_with "split_" name -> megalodon_ident name
+    | Imp (left, right) ->
+        "(" ^ prop_text left ^ " -> " ^ prop_text right ^ ")"
+    | Ap (Ap (TmH "vampire_or", left), right) ->
+        "(" ^ prop_text left ^ " \\/ " ^ prop_text right ^ ")"
+    | Ap (Ap (TmH "vampire_and", left), right) ->
+        "vampire_and (" ^ prop_text left ^ ") (" ^ prop_text right ^ ")"
+    | atom ->
+        begin match equality_sides atom with
+        | Some _ -> simple_atom_prop_with_type_env type_env atom
+        | None -> simple_tm_expr_with_expected type_env (Some "prop") atom
+        end
+  in
+  let target_prop = prop_text target_formula in
+  let orient_target proof =
+    if raw_target_formula = target_formula then proof
+    else
+      match raw_target_formula, target_formula with
+      | Ap (Ap (TmH "vampire_or", source_a),
+            Ap (Ap (TmH "vampire_or", source_b), source_c)),
+        Ap (Ap (TmH "vampire_or",
+                Ap (Ap (TmH "vampire_or", target_a), target_b)),
+            target_c)
+          when source_a = target_a && source_b = target_b && source_c = target_c ->
+          let a_text = prop_text target_a in
+          let b_text = prop_text target_b in
+          let c_text = prop_text target_c in
+          let target_left_text = prop_text (vampire_or target_a target_b) in
+          let source_tail_text = prop_text (vampire_or source_b source_c) in
+          let target_left_from_a =
+            Printf.sprintf
+              "(fun vavatar_assoc_left_goal:prop => fun Hleft:(%s) -> vavatar_assoc_left_goal => fun Hright:(%s) -> vavatar_assoc_left_goal => Hleft Havatar_assoc_a)"
+              a_text b_text
+          in
+          let target_left_from_b =
+            Printf.sprintf
+              "(fun vavatar_assoc_left_goal:prop => fun Hleft:(%s) -> vavatar_assoc_left_goal => fun Hright:(%s) -> vavatar_assoc_left_goal => Hright Havatar_assoc_b)"
+              a_text b_text
+          in
+          let target_from_left left_proof =
+            Printf.sprintf
+              "(fun vavatar_assoc_goal:prop => fun Hleft:(%s) -> vavatar_assoc_goal => fun Hright:(%s) -> vavatar_assoc_goal => Hleft %s)"
+              target_left_text c_text left_proof
+          in
+          let target_from_c =
+            Printf.sprintf
+              "(fun vavatar_assoc_goal:prop => fun Hleft:(%s) -> vavatar_assoc_goal => fun Hright:(%s) -> vavatar_assoc_goal => Hright Havatar_assoc_c)"
+              target_left_text c_text
+          in
+          Printf.sprintf
+            "(%s %s (fun Havatar_assoc_a:%s => %s) (fun Havatar_assoc_tail:(%s) => Havatar_assoc_tail %s (fun Havatar_assoc_b:%s => %s) (fun Havatar_assoc_c:%s => %s)))"
+            proof (simple_prop_arg target_prop)
+            a_text (target_from_left target_left_from_a)
+            source_tail_text (simple_prop_arg target_prop)
+            b_text (target_from_left target_left_from_b)
+            c_text target_from_c
+      | _ -> emit_error (id ^ ": avatar component target association is unsupported")
+  in
   let body_clause, body_prop =
     match List.assoc_opt split_name split_definitions with
     | Some (_, body_clause, body_prop) -> body_clause, body_prop
@@ -6176,29 +6248,74 @@ let simple_avatar_component_proof type_env split_definitions id result_sorts res
         emit_error (id ^ ": avatar component has no local split definition")
   in
   let prove_from_body proof_name =
-    simple_clause_projection_proof target_prop result body_clause proof_name 0
+    let body_proof =
+      List.fold_left
+        (fun acc (name, _) -> "(" ^ acc ^ " " ^ megalodon_ident name ^ ")")
+        proof_name
+        result_sorts
+    in
+    simple_clause_projection_proof raw_target_prop result body_clause body_proof 0
+    |> orient_target
+  in
+  let body_instance_proof proof_name =
+    List.fold_left
+      (fun acc (name, _) -> "(" ^ acc ^ " " ^ megalodon_ident name ^ ")")
+      proof_name
+      result_sorts
+  in
+  let body_target_formula = left_assoc_vampire_or_formula (simple_clause_formula_tm body_clause) in
+  let body_target_prop = prop_text body_target_formula in
+  let split_prop = prop_text (formula_tm_of_literal split_literal) in
+  let target_from_body proof_name =
+    let body_proof = body_instance_proof proof_name in
+    if result = component_literals @ [split_literal]
+       && simple_clause_formula_tm body_clause = body_target_formula then
+      Printf.sprintf
+        "(fun vavatar_goal:prop => fun Hleft:(%s) -> vavatar_goal => fun Hright:(%s) -> vavatar_goal => Hleft %s)"
+        body_target_prop split_prop body_proof
+    else
+      prove_from_body proof_name
+  in
+  let target_from_not_body proof_name =
+    if result = component_literals @ [split_literal] then
+      Printf.sprintf
+        "(fun vavatar_goal:prop => fun Hleft:(%s) -> vavatar_goal => fun Hright:(%s) -> vavatar_goal => Hright %s)"
+        body_target_prop split_prop proof_name
+    else
+      simple_clause_intro_proof result split_literal proof_name |> orient_target
   in
   let proof =
     match split_literal with
     | Neg (TmH _) ->
-        let positive_branch = prove_from_body "Havatar_body" in
-        let negative_branch =
-          simple_clause_intro_proof result split_literal "Havatar_not_body"
-        in
+        let positive_branch = target_from_body "Havatar_body" in
+        let negative_branch = target_from_not_body "Havatar_not_body" in
         Printf.sprintf
-          "((vampire_xm (%s)) %s (fun Havatar_body:%s => %s) (fun Havatar_not_body:%s -> False => %s))"
+          "((vampire_xm (%s)) %s (fun Havatar_body:%s => %s) (fun Havatar_not_body:(%s) -> False => %s))"
           body_prop target_prop body_prop positive_branch body_prop negative_branch
     | Pos (TmH _) ->
         begin match component_literals, body_clause with
         | [Neg atom], [Pos body_atom] when atom = body_atom ->
+            let component_prop = prop_text (formula_tm_of_literal (Neg atom)) in
             let positive_branch =
-              simple_clause_intro_proof result split_literal "Havatar_body"
+              if result = component_literals @ [split_literal] then
+                Printf.sprintf
+                  "(fun vavatar_goal:prop => fun Hleft:(%s) -> vavatar_goal => fun Hright:(%s) -> vavatar_goal => Hright Havatar_body)"
+                  component_prop split_prop
+              else
+                simple_clause_intro_proof result split_literal "Havatar_body"
+                |> orient_target
             in
             let negative_branch =
-              simple_clause_intro_proof result (Neg atom) "Havatar_not_body"
+              if result = component_literals @ [split_literal] then
+                Printf.sprintf
+                  "(fun vavatar_goal:prop => fun Hleft:(%s) -> vavatar_goal => fun Hright:(%s) -> vavatar_goal => Hleft Havatar_not_body)"
+                  component_prop split_prop
+              else
+                simple_clause_intro_proof result (Neg atom) "Havatar_not_body"
+                |> orient_target
             in
             Printf.sprintf
-              "((vampire_xm (%s)) %s (fun Havatar_body:%s => %s) (fun Havatar_not_body:%s -> False => %s))"
+              "((vampire_xm (%s)) %s (fun Havatar_body:%s => %s) (fun Havatar_not_body:(%s) -> False => %s))"
               body_prop target_prop body_prop positive_branch body_prop negative_branch
         | _ ->
             emit_error
@@ -6226,6 +6343,8 @@ let simple_clause_projection_with_eliminators target_prop target_clause source_c
     | lit :: rest ->
         let head_name = "Havatar_split_lit_" ^ string_of_int depth in
         let tail_name = "Havatar_split_tail_" ^ string_of_int depth in
+        let head_type = simple_literal_prop lit in
+        let tail_type = simple_clause_prop rest in
         let head_branch =
           if List.exists ((=) lit) target_clause then
             simple_clause_intro_proof target_clause lit head_name
@@ -6236,16 +6355,105 @@ let simple_clause_projection_with_eliminators target_prop target_clause source_c
             end
         in
         let tail_branch = project (depth + 1) rest tail_name in
-        Printf.sprintf "(%s %s (fun %s => %s) (fun %s => %s))"
+        Printf.sprintf "(%s %s (fun %s:%s => %s) (fun %s:%s => %s))"
           proof (simple_prop_arg target_prop)
-          head_name head_branch
-          tail_name tail_branch
+          head_name head_type head_branch
+          tail_name tail_type tail_branch
   in
   project 0 source_clause source_proof
 
+let simple_formula_projection_with_eliminators target_prop target_clause source_formula source_proof eliminator =
+  let false_elim proof =
+    Printf.sprintf "(%s %s)" proof (simple_prop_arg target_prop)
+  in
+  let rec formula_prop = function
+    | TmH name -> simple_name_expr name
+    | Imp (left, right) -> "(" ^ formula_prop left ^ " -> " ^ formula_prop right ^ ")"
+    | Ap (Ap (TmH "vampire_or", left), right) ->
+        "(" ^ formula_prop left ^ " \\/ " ^ formula_prop right ^ ")"
+    | atom -> simple_atom_prop atom
+  in
+  let rec project depth formula proof =
+    match formula with
+    | Ap (Ap (TmH "vampire_or", left), right) ->
+        let left_name = "Havatar_formula_lit_" ^ string_of_int depth in
+        let right_name = "Havatar_formula_tail_" ^ string_of_int depth in
+        let left_branch = project (depth + 1) left left_name in
+        let right_branch = project (depth + 1) right right_name in
+        Printf.sprintf "(%s %s (fun %s:%s => %s) (fun %s:%s => %s))"
+          proof (simple_prop_arg target_prop)
+          left_name (formula_prop left) left_branch
+          right_name (formula_prop right) right_branch
+    | atom ->
+        let lit = literal_of_formula_tm atom in
+        if List.exists ((=) lit) target_clause then
+          simple_clause_intro_proof target_clause lit proof
+        else
+          begin match eliminator lit proof with
+          | Some contradiction -> false_elim contradiction
+          | None -> emit_error "avatar formula projection has an unhandled literal"
+          end
+  in
+  project 0 source_formula source_proof
+
 let simple_avatar_split_proof
     type_env split_definitions id result_sorts parent_id parent_clause result parent_name =
+  let raw_target_formula = simple_clause_formula_tm result in
+  let target_formula = left_assoc_vampire_or_formula raw_target_formula in
   let target_prop = simple_clause_prop_with_type_env type_env result in
+  let rec prop_text = function
+    | TmH name when string_starts_with "split_" name -> megalodon_ident name
+    | Imp (left, right) ->
+        "(" ^ prop_text left ^ " -> " ^ prop_text right ^ ")"
+    | Ap (Ap (TmH "vampire_or", left), right) ->
+        "(" ^ prop_text left ^ " \\/ " ^ prop_text right ^ ")"
+    | atom -> simple_tm_expr_with_expected type_env (Some "prop") atom
+  in
+  let orient_target proof =
+    if raw_target_formula = target_formula then proof
+    else
+      match raw_target_formula, target_formula with
+      | Ap (Ap (TmH "vampire_or", source_a),
+            Ap (Ap (TmH "vampire_or", source_b), source_c)),
+        Ap (Ap (TmH "vampire_or",
+                Ap (Ap (TmH "vampire_or", target_a), target_b)),
+            target_c)
+          when source_a = target_a && source_b = target_b && source_c = target_c ->
+          let a_text = prop_text target_a in
+          let b_text = prop_text target_b in
+          let c_text = prop_text target_c in
+          let target_left_text = prop_text (vampire_or target_a target_b) in
+          let target_text = prop_text target_formula in
+          let source_tail_text = prop_text (vampire_or source_b source_c) in
+          let target_left_from_a =
+            Printf.sprintf
+              "(fun vavatar_split_assoc_left_goal:prop => fun Hleft:(%s) -> vavatar_split_assoc_left_goal => fun Hright:(%s) -> vavatar_split_assoc_left_goal => Hleft Havatar_split_assoc_a)"
+              a_text b_text
+          in
+          let target_left_from_b =
+            Printf.sprintf
+              "(fun vavatar_split_assoc_left_goal:prop => fun Hleft:(%s) -> vavatar_split_assoc_left_goal => fun Hright:(%s) -> vavatar_split_assoc_left_goal => Hright Havatar_split_assoc_b)"
+              a_text b_text
+          in
+          let target_from_left left_proof =
+            Printf.sprintf
+              "(fun vavatar_split_assoc_goal:prop => fun Hleft:(%s) -> vavatar_split_assoc_goal => fun Hright:(%s) -> vavatar_split_assoc_goal => Hleft %s)"
+              target_left_text c_text left_proof
+          in
+          let target_from_c =
+            Printf.sprintf
+              "(fun vavatar_split_assoc_goal:prop => fun Hleft:(%s) -> vavatar_split_assoc_goal => fun Hright:(%s) -> vavatar_split_assoc_goal => Hright Havatar_split_assoc_c)"
+              target_left_text c_text
+          in
+          Printf.sprintf
+            "(%s %s (fun Havatar_split_assoc_a:%s => %s) (fun Havatar_split_assoc_tail:(%s) => Havatar_split_assoc_tail %s (fun Havatar_split_assoc_b:%s => %s) (fun Havatar_split_assoc_c:%s => %s)))"
+            proof (simple_prop_arg target_text)
+            a_text (target_from_left target_left_from_a)
+            source_tail_text (simple_prop_arg target_text)
+            b_text (target_from_left target_left_from_b)
+            c_text target_from_c
+      | _ -> emit_error (id ^ ": avatar split target association is unsupported")
+  in
   let split_name_of_literal = function
     | Pos (TmH name) | Neg (TmH name) when string_starts_with "split_" name ->
         Some (megalodon_ident name)
@@ -6381,15 +6589,17 @@ let simple_avatar_split_proof
   let direct =
     try
       Some
-        (simple_wrap_forall_intro result_sorts
-           (simple_clause_projection_proof target_prop result parent_clause parent_name 0))
+        (simple_clause_projection_proof target_prop result parent_clause parent_name 0)
     with Error _ -> None
   in
-  match direct with
-  | Some proof -> proof
-  | None -> simple_wrap_forall_intro result_sorts (cases [] result)
+  let proof =
+    match direct with
+    | Some proof -> proof
+    | None -> cases [] result
+  in
+  simple_wrap_forall_intro result_sorts (orient_target proof)
 
-let simple_avatar_refutation_proof id parent_ids sat_clauses checked names =
+let simple_avatar_refutation_proof cert id parent_ids sat_clauses checked names =
   if parent_ids = [] || List.length parent_ids <> List.length sat_clauses then
     emit_error (id ^ ": avatar refutation proof expects one parent per SAT input");
   let inputs = List.combine parent_ids sat_clauses in
@@ -6432,13 +6642,47 @@ let simple_avatar_refutation_proof id parent_ids sat_clauses checked names =
     match falsified with
     | None -> emit_error (id ^ ": SAT assignment did not falsify any input clause")
     | Some (parent_id, _) ->
-        let parent_clause = lookup_simple_clause checked parent_id in
+        let parent_clause =
+          let clause = lookup_simple_clause checked parent_id in
+          match metadata_step_proposition cert parent_id with
+          | None -> clause
+          | Some parent_prop ->
+              let indexed =
+                clause
+                |> List.mapi
+                     (fun index lit ->
+                        let position =
+                          match split_literal_name lit with
+                          | Some raw_name ->
+                              string_find_substring (megalodon_ident raw_name) parent_prop
+                          | None -> None
+                        in
+                        (index, position, lit))
+              in
+              if List.for_all (fun (_, position, _) -> Option.is_some position) indexed then
+                indexed
+                |> List.sort
+                     (fun (left_index, left_pos, _) (right_index, right_pos, _) ->
+                        match left_pos, right_pos with
+                        | Some left_pos, Some right_pos ->
+                            let cmp = compare left_pos right_pos in
+                            if cmp = 0 then compare left_index right_index else cmp
+                        | _ -> compare left_index right_index)
+                |> List.map (fun (_, _, lit) -> lit)
+              else
+                clause
+        in
         let parent_name = lookup_simple_name names parent_id in
         let eliminator lit proof =
           contradiction_from_assignment assignments lit proof
         in
-        simple_clause_projection_with_eliminators
-          "False" [] parent_clause parent_name eliminator
+        let parent_formula =
+          parent_clause
+          |> simple_clause_formula_tm
+          |> left_assoc_vampire_or_formula
+        in
+        simple_formula_projection_with_eliminators
+          "False" [] parent_formula parent_name eliminator
   in
   let rec cases assignments = function
     | [] -> leaf assignments
@@ -6785,9 +7029,58 @@ let simple_formula_orientation_proof type_env source target proof =
           Printf.sprintf "(%s (%s) (fun %s:%s => fun %s:%s => %s))"
             proof target_text
             left_name source_left_text right_name source_right_text target_intro
-      | Ap (Ap (TmH "vampire_or", source_left), source_right),
-        Ap (Ap (TmH "vampire_or", target_left), target_right) ->
-          let left_name = fresh "Horient_left_" in
+      | Ap (Ap (TmH "vampire_or", source_a),
+            Ap (Ap (TmH "vampire_or", source_b), source_c)),
+        Ap (Ap (TmH "vampire_or",
+                Ap (Ap (TmH "vampire_or", target_a), target_b)),
+            target_c) ->
+          let a_name = fresh "Horient_assoc_a_" in
+          let b_name = fresh "Horient_assoc_b_" in
+          let c_name = fresh "Horient_assoc_c_" in
+          let source_a_text = simple_formula_prop_text env source_a in
+          let source_b_text = simple_formula_prop_text env source_b in
+          let source_c_text = simple_formula_prop_text env source_c in
+          let target_a_text = simple_formula_prop_text env target_a in
+          let target_b_text = simple_formula_prop_text env target_b in
+          let target_c_text = simple_formula_prop_text env target_c in
+          let target_left_text =
+            simple_formula_prop_text env (Ap (Ap (TmH "vampire_or", target_a), target_b))
+          in
+          let target_text = simple_formula_prop_text env target in
+          let a_proof = convert env used source_a target_a a_name in
+          let b_proof = convert env used source_b target_b b_name in
+          let c_proof = convert env used source_c target_c c_name in
+          let target_left_from_a =
+            Printf.sprintf
+              "(fun vorient_left_goal:prop => fun Horient_left:(%s) -> vorient_left_goal => fun Horient_right:(%s) -> vorient_left_goal => Horient_left %s)"
+              target_a_text target_b_text a_proof
+          in
+          let target_left_from_b =
+            Printf.sprintf
+              "(fun vorient_left_goal:prop => fun Horient_left:(%s) -> vorient_left_goal => fun Horient_right:(%s) -> vorient_left_goal => Horient_right %s)"
+              target_a_text target_b_text b_proof
+          in
+          let target_from_left left_proof =
+            Printf.sprintf
+              "(fun vorient_goal:prop => fun Horient_left:(%s) -> vorient_goal => fun Horient_right:(%s) -> vorient_goal => Horient_left %s)"
+              target_left_text target_c_text left_proof
+          in
+          let target_from_c =
+	            Printf.sprintf
+	              "(fun vorient_goal:prop => fun Horient_left:(%s) -> vorient_goal => fun Horient_right:(%s) -> vorient_goal => Horient_right %s)"
+	              target_left_text target_c_text c_proof
+	          in
+	          Printf.sprintf
+	            "(%s %s (fun %s:%s => %s) (fun Horient_assoc_tail:(%s) => Horient_assoc_tail %s (fun %s:%s => %s) (fun %s:%s => %s)))"
+	            proof (simple_prop_arg target_text)
+	            a_name source_a_text (target_from_left target_left_from_a)
+	            (simple_formula_prop_text env (Ap (Ap (TmH "vampire_or", source_b), source_c)))
+	            (simple_prop_arg target_text)
+	            b_name source_b_text (target_from_left target_left_from_b)
+	            c_name source_c_text target_from_c
+	      | Ap (Ap (TmH "vampire_or", source_left), source_right),
+	        Ap (Ap (TmH "vampire_or", target_left), target_right) ->
+	          let left_name = fresh "Horient_left_" in
           let right_name = fresh "Horient_right_" in
           let source_left_text = simple_formula_prop_text env source_left in
           let source_right_text = simple_formula_prop_text env source_right in
@@ -7405,7 +7698,35 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
             emit_error (id ^ ": ENNF proof expected negated universal target body to end in not")
         end
     | Imp (left, right), Ap (Ap (TmH "vampire_or", neg_left), target_right) ->
-        begin match neg_left with
+        if neg_left = ennf_neg left then
+          let pos_name = fresh_proof_var "Hennf_pos_" in
+          let neg_name = fresh_proof_var "Hennf_neg_" in
+          let left_text = formula_text env left in
+          let target_text = formula_text env target in
+          let target_left_text = formula_text env neg_left in
+          let target_right_text = formula_text env target_right in
+          let left_proof =
+            convert env (Imp (left, vampire_false)) neg_left neg_name
+          in
+          let right_proof =
+            convert env right target_right ("(" ^ proof ^ " " ^ pos_name ^ ")")
+          in
+          let left_intro =
+            Printf.sprintf
+              "(fun vennf_goal:prop => fun Hleft:%s -> vennf_goal => fun Hright:(%s) -> vennf_goal => Hleft %s)"
+              target_left_text target_right_text left_proof
+          in
+          let right_intro =
+            Printf.sprintf
+              "(fun vennf_goal:prop => fun Hleft:%s -> vennf_goal => fun Hright:(%s) -> vennf_goal => Hright %s)"
+              target_left_text target_right_text right_proof
+          in
+          Printf.sprintf
+            "((vampire_xm (%s)) %s (fun %s:(%s) => %s) (fun %s:(%s) -> False => %s))"
+            left_text (simple_prop_arg target_text)
+            pos_name left_text right_intro
+            neg_name left_text left_intro
+        else begin match neg_left with
         | Imp (neg_source, false_tm) when neg_source = left && is_vampire_false false_tm ->
             let pos_name = fresh_proof_var "Hennf_pos_" in
             let neg_name = fresh_proof_var "Hennf_neg_" in
@@ -8506,8 +8827,9 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                 add_emitted_prop_and_sorts id prop sorts;
                 claims := !claims @ [(name, prop, "exact " ^ prefix_proof ^ ".")]
             | None ->
+                let proof_target_formula = left_assoc_vampire_or_formula formula in
                 begin match
-                  try Some (simple_formula_orientation_proof type_env parent_formula formula proof)
+                  try Some (simple_formula_orientation_proof type_env parent_formula proof_target_formula proof)
                   with Error _ -> None
                 with
                 | Some orient_proof ->
@@ -8784,9 +9106,10 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                           symbol_type_env
                       in
                       let proof =
+                        let proof_parent_formula = left_assoc_vampire_or_formula parent_formula in
                         simple_skolem_formula_proof
                           ~opened_witness:witness_name
-                          type_env id parent_id subst parent_formula proof_formula
+                          type_env id parent_id subst proof_parent_formula proof_formula
                           [] target_sorts !emitted_names
                       in
                       Some (skolem_name, source_sort, witness_name, witness_prop, proof)
@@ -8797,6 +9120,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           begin match
             try
               let parent_formula = lookup_formula checked_certificate parent_id in
+              let proof_parent_formula = left_assoc_vampire_or_formula parent_formula in
               let parent_sorts = [] in
               let type_env =
                 simple_type_env_with_variables
@@ -8805,7 +9129,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
               in
               Some
                 (simple_skolem_formula_proof
-                   type_env id parent_id subst parent_formula proof_formula
+                   type_env id parent_id subst proof_parent_formula proof_formula
                    parent_sorts target_sorts !emitted_names)
             with Error _ -> None
           with
@@ -9041,10 +9365,36 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                        |> simple_unique_variable_sorts)
                       symbol_type_env
                   in
+                  let proof_result =
+                    let indexed =
+                      result
+                      |> List.mapi
+                           (fun index lit ->
+                              let position =
+                                match split_literal_name lit with
+                                | Some raw_name ->
+                                    string_find_substring (megalodon_ident raw_name) prop
+                                | None -> None
+                              in
+                              (index, position, lit))
+                    in
+                    if List.for_all (fun (_, position, _) -> Option.is_some position) indexed then
+                      indexed
+                      |> List.sort
+                           (fun (left_index, left_pos, _) (right_index, right_pos, _) ->
+                              match left_pos, right_pos with
+                              | Some left_pos, Some right_pos ->
+                                  let cmp = compare left_pos right_pos in
+                                  if cmp = 0 then compare left_index right_index else cmp
+                              | _ -> compare left_index right_index)
+                      |> List.map (fun (_, _, lit) -> lit)
+                    else
+                      result
+                  in
                   Some
                     (simple_avatar_split_proof
                        type_env avatar_split_definition_env id sorts
-                       parent_id parent_clause result parent_name)
+                       parent_id parent_clause proof_result parent_name)
                 with Error _ -> None
               with
               | Some proof ->
@@ -9074,7 +9424,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
               else
                 Some
                   (simple_avatar_refutation_proof
-                     id parent_ids sat_clauses !checked !emitted_names)
+                     cert id parent_ids sat_clauses !checked !emitted_names)
             with Error _ -> None
           with
           | Some proof ->
@@ -9146,6 +9496,13 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                     || simple_prop_equal_mod_fool_exhaustiveness_or_alias
                          parent_prop parent_formula_prop))
           in
+          let parent_is_avatar_component =
+            List.exists
+              (function
+                | AvatarComponent (step_id, _) when step_id = parent_id -> true
+                | _ -> false)
+              cert.steps
+          in
           let substituted_parent = subst_clause effective_subst parent_clause in
           let substituted_sources = List.map fst effective_subst in
           let remaining_parent_sorts =
@@ -9171,7 +9528,9 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                 try
                   let proof =
                     simple_substitute_proof
-                      ~formula_parent:(parent_matches_formula && not parent_matches_structural)
+                      ~formula_parent:
+                        ((parent_matches_formula && not parent_matches_structural)
+                         || parent_is_avatar_component)
                       clause_body_prop type_env id parent_id effective_subst result
                       parent_sorts sorts !checked !emitted_names
                   in
