@@ -6134,10 +6134,13 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           let target_structural_prop =
             simple_quantify_prop sorts target_body_prop
           in
+          let has_db_name clause =
+            simple_clause_names clause |> List.exists is_db_ident
+          in
+          ignore parent_structural_prop;
+          ignore target_structural_prop;
           begin match
-            if emitted_parent_prop parent_id <> parent_structural_prop
-               || prop <> target_structural_prop then
-              None
+            if has_db_name parent_clause || has_db_name result then None
             else
               try Some (simple_equality_symmetry_clause_proof
                           type_env id parent_id literal_index result target_body_prop
