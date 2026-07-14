@@ -34,6 +34,16 @@ if ! rg -q '^% megalodon_source_map ' "$problem"; then
   exit 1
 fi
 
+if ! rg -q '^% megalodon_origin ' "$problem"; then
+  echo "TH0 problem does not contain Megalodon origin comments" >&2
+  exit 1
+fi
+
+if ! rg -q '^% megalodon_origin \(\(file "examples/hammer/100thms_12_h\.mg"\) \(line "[0-9]+"\) \(char "[0-9]+"\) \(kind "aby"\)\)' "$problem"; then
+  echo "TH0 origin comment does not identify the original Megalodon file, position, and obligation kind" >&2
+  exit 1
+fi
+
 if awk '/^% megalodon_source_map / {
     if (match($0, /"[^"]+"/)) {
       name = substr($0, RSTART + 1, RLENGTH - 2)

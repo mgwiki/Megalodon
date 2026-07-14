@@ -18,6 +18,7 @@ let countremovedpfs = ref 0;;
 let pfposinfo = ref [];;
 let warnaboutreproven = ref false;;
 let createabyprobs = ref false;;
+let current_input_file : string option ref = ref None;;
 let abyproblemscached = ref false;;
 let sb : Buffer.t = Buffer.create 10000;;
 let vampireaby : string option ref = ref None;;
@@ -678,8 +679,20 @@ let tptp_source_map_comment kind tptp_name source_name source_hash =
     (tptp_source_map_quote source_name)
     (tptp_source_map_quote source_hash)
 
+let tptp_origin_comment kind =
+  match !current_input_file with
+  | None -> ""
+  | Some file ->
+      Printf.sprintf
+        "%% megalodon_origin ((file %s) (line \"%d\") (char \"%d\") (kind %s))\n"
+        (tptp_source_map_quote file)
+        !lineno
+        !charno
+        (tptp_source_map_quote kind)
+
 let th0_aby_problem_content claimtm cxtm cxpf xl conjn =
   Buffer.clear sb;
+  Buffer.add_string sb (tptp_origin_comment "aby");
   let used_source_formula_names = Hashtbl.create 101 in
   let fresh_source_formula_name base =
     let rec try_index i =
@@ -6991,6 +7004,21 @@ let check_vampire_cert_v1_file fn =
           raise (Vampire_cert_v1.Error "strict certificate v1 requires -vampirecertv1source for source-backed inputs")
     | Some source_fn ->
         let source_map = Vampire_cert_v1.parse_source_map (read_all source_fn) in
+        begin match Vampire_cert_v1.parse_source_origin (read_all source_fn) with
+        | Some origin ->
+            let pos =
+              match origin.Vampire_cert_v1.source_origin_line, origin.Vampire_cert_v1.source_origin_char with
+              | Some line, Some chr -> Printf.sprintf " line %d char %d" line chr
+              | Some line, None -> Printf.sprintf " line %d" line
+              | None, Some chr -> Printf.sprintf " char %d" chr
+              | None, None -> ""
+            in
+            Printf.printf "Vampire certificate v1 source origin %s%s (%s).\n"
+              origin.Vampire_cert_v1.source_origin_file
+              pos
+              origin.Vampire_cert_v1.source_origin_kind
+        | None -> ()
+        end;
         source_map_for_emit := source_map;
         let source_count = Vampire_cert_v1.validate_certificate_sources source_map cert in
         Printf.printf "Vampire certificate v1 source map checked %d source%s.\n"
@@ -7009,6 +7037,11 @@ let check_vampire_cert_v1_file fn =
         let content =
           Vampire_cert_v1.emit_simple_megalodon
             ~source_map:!source_map_for_emit
+            ?source_origin:
+              (begin match !vampirecertv1source with
+               | None -> None
+               | Some source_fn -> Vampire_cert_v1.parse_source_origin (read_all source_fn)
+               end)
             ~closed:!vampirecertv1closed
             cert
         in
@@ -7626,7 +7659,8 @@ let _ =
       done;
       includingsigfile := false;
       let checkfile () =
-	let c = open_in (Sys.argv.(i-1)) in
+        let c = open_in (Sys.argv.(i-1)) in
+        current_input_file := Some (Sys.argv.(i-1));
         begin
           match !sexprallsubgoals with
           | None ->
@@ -7832,7 +7866,7 @@ let _ =
         | Some fn -> check_vampire_cert_v1_file fn
       end;
       begin
-	match !solvesproblemfile with
+        match !solvesproblemfile with
 	| None -> checkfile ()
 	| Some probf ->
 	    let p = open_in probf in

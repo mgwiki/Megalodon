@@ -128,6 +128,13 @@ type source_map_entry = {
   source_map_decl_formula : string option;
 }
 
+type source_origin = {
+  source_origin_file : string;
+  source_origin_line : int option;
+  source_origin_char : int option;
+  source_origin_kind : string;
+}
+
 let error msg = raise (Error msg)
 
 let is_space = function
@@ -5362,7 +5369,7 @@ let simple_fool_bool_proof
   in
   simple_wrap_forall_intro result_sorts proof
 
-let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_map=[]) ?(closed=false) cert =
+let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_map=[]) ?source_origin ?(closed=false) cert =
   let checked_certificate = check_certificate cert in
   simple_lambda_sort_env := metadata_lambda_sort_env cert;
   let prop_names, term_names = collect_simple_names cert in
@@ -5418,6 +5425,24 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       "Notation SetImplicitOp vampire_set_ap.";
     ]
   in
+  begin match source_origin with
+  | None -> ()
+  | Some origin ->
+      let pos =
+        match origin.source_origin_line, origin.source_origin_char with
+        | Some line, Some chr -> Printf.sprintf " line %d char %d" line chr
+        | Some line, None -> Printf.sprintf " line %d" line
+        | None, Some chr -> Printf.sprintf " char %d" chr
+        | None, None -> ""
+      in
+      lines :=
+        (Printf.sprintf
+           "// Vampire certificate source origin: %s%s (%s)."
+           origin.source_origin_file
+           pos
+           origin.source_origin_kind)
+        :: !lines
+  end;
   let add_line_once line =
     if not (List.mem line !lines) then lines := !lines @ [line]
   in
@@ -6481,6 +6506,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   String.concat "\n" !lines ^ "\n"
 
 let source_map_prefix = "% megalodon_source_map "
+let source_origin_prefix = "% megalodon_origin "
 
 let source_map_entry_of_sexpr = function
   | List [Atom kind; tptp_name; source_name; source_hash] ->
@@ -6604,6 +6630,49 @@ let parse_source_map text =
     []
     lines
   |> List.rev
+
+let source_origin_of_sexpr = function
+  | List fields ->
+      let lookup key =
+        fields
+        |> List.find_map
+             (function
+               | List [Atom k; value] when k = key -> Some (atom value)
+               | _ -> None)
+      in
+      let int_opt key =
+        match lookup key with
+        | None | Some "" -> None
+        | Some value ->
+            try Some (int_of_string value)
+            with Failure _ -> error ("malformed Megalodon origin " ^ key ^ " value " ^ value)
+      in
+      begin match lookup "file" with
+      | None | Some "" -> error "Megalodon origin has no source file"
+      | Some file ->
+          {
+            source_origin_file = file;
+            source_origin_line = int_opt "line";
+            source_origin_char = int_opt "char";
+            source_origin_kind =
+              begin match lookup "kind" with
+              | Some kind when kind <> "" -> kind
+              | _ -> "unknown"
+              end;
+          }
+      end
+  | _ -> error "malformed Megalodon origin comment"
+
+let parse_source_origin text =
+  let prefix_len = String.length source_origin_prefix in
+  lines_of_text text
+  |> List.find_map
+       (fun line ->
+          if string_starts_with source_origin_prefix line then
+            let body = String.sub line prefix_len (String.length line - prefix_len) in
+            Some (source_origin_of_sexpr (parse_sexpr body))
+          else
+            None)
 
 let source_name = function
   | SourceAxiom name

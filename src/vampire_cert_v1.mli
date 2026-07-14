@@ -126,17 +126,26 @@ type source_map_entry = {
   source_map_decl_formula : string option;
 }
 
+type source_origin = {
+  source_origin_file : string;
+  source_origin_line : int option;
+  source_origin_char : int option;
+  source_origin_kind : string;
+}
+
 val parse_sexpr : string -> sexpr
 val parse_certificate : string -> certificate
 val step_id : step -> string
 val certificate_source_count : certificate -> int
 val parse_source_map : string -> source_map_entry list
+val parse_source_origin : string -> source_origin option
 val validate_certificate_sources : source_map_entry list -> certificate -> int
 val check_certificate : certificate -> (string * checked_item) list
 val check_certificate_strict : certificate -> (string * checked_item) list
 val emit_simple_megalodon :
   ?theorem_name:string ->
   ?source_map:source_map_entry list ->
+  ?source_origin:source_origin ->
   ?closed:bool ->
   certificate ->
   string

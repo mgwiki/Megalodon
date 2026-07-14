@@ -120,6 +120,26 @@ non-closed classes: `vampire_eq_prop_ext`, FOOL/normal-form/CNF/skolem bridges,
 AVATAR component/refutation assumptions, predicate-definition assumptions, and
 definition-input assumptions.
 
+Additional source-linking work on `vampire/megalodon3` now records the original
+Megalodon obligation location in exported THF problems. `-createabyprobs` emits
+a `% megalodon_origin` comment with source file, line, character, and obligation
+kind; the native certificate source parser preserves this metadata; and the
+simple proof emitter writes it into the generated Megalodon reconstruction file.
+This is not yet full context replay, but it gives every generated proof artifact
+a machine-checkable anchor back to the exact original development site rather
+than only to the generated THF filename.
+
+Validation for this provenance change:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_source_map_export_smoke.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+
+PASS 213
+/project/tmp/source_linked_slice_1_400_emit_origin_metadata_101311
+```
+
 ## Remaining P0 Work
 
 Closed mode is necessary but not sufficient.
