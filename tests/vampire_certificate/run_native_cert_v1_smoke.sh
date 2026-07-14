@@ -84,23 +84,31 @@ if ! rg -q 'Vampire certificate v1 strict checked 6 steps' "$WORK_DIR/native_cer
   exit 1
 fi
 
-bin/megalodon \
-  -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_local_fact_negated.sexp \
-  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_local_fact_negated.th0.p \
-  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_local_fact_negated.log"
-
-if ! rg -q 'Vampire certificate v1 source map checked 2 sources' "$WORK_DIR/native_cert_v1_source_map_local_fact_negated.log"; then
-  echo "native certificate v1 source-map checker did not accept negated local_fact preprocessing" >&2
+if bin/megalodon \
+    -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_local_fact_negated.sexp \
+    -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_local_fact_negated.th0.p \
+    "$dummy" >"$WORK_DIR/native_cert_v1_source_map_local_fact_negated_bad.log" \
+    2>"$WORK_DIR/native_cert_v1_source_map_local_fact_negated_bad.err"; then
+  echo "native certificate v1 source-map checker accepted negated local_fact preprocessing" >&2
   exit 1
 fi
 
-bin/megalodon \
-  -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_local_definition_negated.sexp \
-  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_local_definition_negated.th0.p \
-  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_local_definition_negated.log"
+if ! rg -q 'incompatible source-map kind' "$WORK_DIR/native_cert_v1_source_map_local_fact_negated_bad.err"; then
+  echo "native certificate v1 source-map local_fact rejection did not explain the incompatible kind" >&2
+  exit 1
+fi
 
-if ! rg -q 'Vampire certificate v1 source map checked 2 sources' "$WORK_DIR/native_cert_v1_source_map_local_definition_negated.log"; then
-  echo "native certificate v1 source-map checker did not accept negated local_definition preprocessing" >&2
+if bin/megalodon \
+    -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_local_definition_negated.sexp \
+    -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_local_definition_negated.th0.p \
+    "$dummy" >"$WORK_DIR/native_cert_v1_source_map_local_definition_negated_bad.log" \
+    2>"$WORK_DIR/native_cert_v1_source_map_local_definition_negated_bad.err"; then
+  echo "native certificate v1 source-map checker accepted negated local_definition preprocessing" >&2
+  exit 1
+fi
+
+if ! rg -q 'incompatible source-map kind' "$WORK_DIR/native_cert_v1_source_map_local_definition_negated_bad.err"; then
+  echo "native certificate v1 source-map local_definition rejection did not explain the incompatible kind" >&2
   exit 1
 fi
 

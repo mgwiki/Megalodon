@@ -2849,7 +2849,7 @@ let source_map_kind_compatible source entry =
   | SourceAxiom _, ("known" | "axiom" | "local_fact" | "set_reflexivity" | "local_set_reflexivity") -> true
   | SourceConjecture _, "conjecture" -> true
   | SourceDefinition _, ("def" | "definition" | "local_definition") -> true
-  | SourceNegatedConjecture _, ("conjecture" | "negated_conjecture" | "known" | "local_fact" | "local_definition") -> true
+  | SourceNegatedConjecture _, ("conjecture" | "negated_conjecture") -> true
   | SourceSetReflexivity _, ("set_reflexivity" | "local_set_reflexivity") -> true
   | SourceAxiom _, _ -> false
   | SourceConjecture _, _ -> false
