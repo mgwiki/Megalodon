@@ -5840,23 +5840,48 @@ let simple_formula_orientation_proof type_env source target proof =
     incr proof_index;
     name
   in
-  let rec convert env source target proof =
+  let choose_binder used sort body =
+    let candidates =
+      type_env
+      |> List.filter
+           (fun (name, known_sort) ->
+              let binder = megalodon_ident name in
+              known_sort = sort
+              && is_vampire_var_name binder
+              && not (List.mem binder used)
+              && tm_contains_symbol binder body)
+    in
+    match candidates with
+    | (name, _) :: _ ->
+        let binder = megalodon_ident name in
+        (binder, binder)
+    | [] ->
+        let binder = fresh "Xorient_" in
+        (binder, binder)
+  in
+  let rec convert env used source target proof =
     if source = target then proof
     else
       match source, target with
       | All (source_tp, source_body), All (target_tp, target_body) when source_tp = target_tp ->
           let sort = simple_tp_expr source_tp in
-          let binder = fresh "Xorient_" in
+          let source_binder, target_binder = choose_binder used sort source_body, choose_binder used sort target_body in
+          let source_raw, _ = source_binder in
+          let _, binder = target_binder in
+          let source_body =
+            if source_raw = binder then source_body
+            else subst_tm [(source_raw, TmH binder)] source_body
+          in
           let env = (binder, sort) :: env in
           "(fun " ^ binder ^ ":" ^ sort ^ " => "
-          ^ convert env source_body target_body ("(" ^ proof ^ " " ^ binder ^ ")")
+          ^ convert env (binder :: used) source_body target_body ("(" ^ proof ^ " " ^ binder ^ ")")
           ^ ")"
       | Imp (source_left, source_right), Imp (target_left, target_right) ->
           let arg = fresh "Horient_arg_" in
           let target_left_text = simple_formula_prop_text env target_left in
-          let source_left_proof = convert env target_left source_left arg in
+          let source_left_proof = convert env used target_left source_left arg in
           let source_right_proof = "(" ^ proof ^ " " ^ source_left_proof ^ ")" in
-          let target_right_proof = convert env source_right target_right source_right_proof in
+          let target_right_proof = convert env used source_right target_right source_right_proof in
           "(fun " ^ arg ^ ":" ^ target_left_text ^ " => " ^ target_right_proof ^ ")"
       | Ap (Ap (TmH "vampire_and", source_left), source_right),
         Ap (Ap (TmH "vampire_and", target_left), target_right) ->
@@ -5867,16 +5892,67 @@ let simple_formula_orientation_proof type_env source target proof =
           let target_left_text = simple_formula_prop_text env target_left in
           let target_right_text = simple_formula_prop_text env target_right in
           let target_text = simple_formula_prop_text env target in
-          let left_proof = convert env source_left target_left left_name in
-          let right_proof = convert env source_right target_right right_name in
+          let left_proof = convert env used source_left target_left left_name in
+          let right_proof = convert env used source_right target_right right_name in
           let target_intro =
             Printf.sprintf
-              "(fun vorient_goal:prop => fun Horient_and:%s -> %s -> vorient_goal => Horient_and %s %s)"
+              "(fun vorient_goal:prop => fun Horient_and:(%s) -> (%s) -> vorient_goal => Horient_and %s %s)"
               target_left_text target_right_text left_proof right_proof
           in
           Printf.sprintf "(%s (%s) (fun %s:%s => fun %s:%s => %s))"
             proof target_text
             left_name source_left_text right_name source_right_text target_intro
+      | Ap (Ap (TmH "vampire_or", source_left), source_right),
+        Ap (Ap (TmH "vampire_or", target_left), target_right) ->
+          let left_name = fresh "Horient_left_" in
+          let right_name = fresh "Horient_right_" in
+          let source_left_text = simple_formula_prop_text env source_left in
+          let source_right_text = simple_formula_prop_text env source_right in
+          let target_left_text = simple_formula_prop_text env target_left in
+          let target_right_text = simple_formula_prop_text env target_right in
+          let target_text = simple_formula_prop_text env target in
+          let left_proof = convert env used source_left target_left left_name in
+          let right_proof = convert env used source_right target_right right_name in
+          let left_intro =
+            Printf.sprintf
+              "(fun vorient_goal:prop => fun Hleft:(%s) -> vorient_goal => fun Hright:(%s) -> vorient_goal => Hleft %s)"
+              target_left_text target_right_text left_proof
+          in
+          let right_intro =
+            Printf.sprintf
+              "(fun vorient_goal:prop => fun Hleft:(%s) -> vorient_goal => fun Hright:(%s) -> vorient_goal => Hright %s)"
+              target_left_text target_right_text right_proof
+          in
+          Printf.sprintf
+            "(%s %s (fun %s:%s => %s) (fun %s:%s => %s))"
+            proof (simple_prop_arg target_text)
+            left_name source_left_text left_intro
+            right_name source_right_text right_intro
+      | Ap (source_exists, Lam (source_tp, source_body)),
+        Ap (target_exists, Lam (target_tp, target_body))
+          when source_exists = target_exists && source_tp = target_tp
+               && (source_exists = TmH "vampire_exists_prop"
+                   || source_exists = TmH "vampire_exists_set") ->
+          let sort = simple_tp_expr source_tp in
+          let source_raw, _ = choose_binder used sort source_body in
+          let _, binder = choose_binder used sort target_body in
+          let source_body =
+            if source_raw = binder then source_body
+            else subst_tm [(source_raw, TmH binder)] source_body
+          in
+          let body_env = (binder, sort) :: env in
+          let source_body_text = simple_formula_prop_text body_env source_body in
+          let target_body_text = simple_formula_prop_text body_env target_body in
+          let target_text = simple_formula_prop_text env target in
+          let witness_name = fresh "Horient_exists_" in
+          let body_proof =
+            convert body_env (binder :: used) source_body target_body witness_name
+          in
+          Printf.sprintf
+            "(%s (%s) (fun %s:%s => fun %s:%s => fun vorient_exists_goal:prop => fun Horient_exists_case:(forall %s:%s, (%s) -> vorient_exists_goal) => Horient_exists_case %s %s))"
+            proof (simple_prop_arg target_text)
+            binder sort witness_name source_body_text
+            binder sort target_body_text binder body_proof
       | _ ->
           begin match equality_sides source, equality_sides target with
           | Some (source_left, source_right), Some (target_left, target_right)
@@ -5886,7 +5962,7 @@ let simple_formula_orientation_proof type_env source target proof =
               emit_error "formula orientation transport supports only equality symmetry and simple logical structure"
           end
   in
-  convert type_env source target proof
+  convert type_env [] source target proof
 
 let simple_skolem_formula_proof
     type_env id parent_id subst source target parent_sorts result_sorts names =
@@ -7028,8 +7104,25 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             add_emitted id name;
             add_emitted_prop_and_sorts id prop sorts;
             claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")]
-          end else
-            add_formula_inference_bridge "rectify_formula" id [parent_id] prop
+          end else begin
+            let parent_sorts = metadata_step_variable_sort_pairs cert parent_id in
+            let type_env =
+              simple_type_env_with_variables
+                (parent_sorts @ sorts |> simple_unique_variable_sorts)
+                symbol_type_env
+            in
+            begin match
+              try Some (simple_formula_orientation_proof type_env parent_formula formula proof)
+              with Error _ -> None
+            with
+            | Some orient_proof ->
+                add_emitted id name;
+                add_emitted_prop_and_sorts id prop sorts;
+                claims := !claims @ [(name, prop, "exact " ^ orient_proof ^ ".")]
+            | None ->
+                add_formula_inference_bridge "rectify_formula" id [parent_id] prop
+            end
+          end
       | FormulaCopy (id, parent_id, literal) ->
           let name = derived_name id in
           let proof = lookup_simple_name !emitted_names parent_id in

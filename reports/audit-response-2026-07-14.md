@@ -985,6 +985,68 @@ CLOSED_PASS 71
 /project/tmp/native_cert_v1_closed_corpus.VIAlNW
 ```
 
+## Increment: Orientation-Changing Rectification Under Or and Existentials
+
+The native rectification replay now handles the next non-trivial
+`rectify_formula` class: scoped variable renaming combined with Boolean
+equality orientation changes under `vampire_or` and Church-style existential
+formulas.  The proof generator now transports formulas through disjunctions and
+existentials, recovers source and target binder names from the native
+certificate variable environment, substitutes source binder names onto target
+binders before recurring, and uses the existing equality-symmetry proof at
+atomic leaves.
+
+This closes the remaining bridge in `hammer.1007.43.th0`.  The previous guarded
+pure-rectification replay had reduced that proof to
+`bridge_rectify_formula__u98`; this increment proves that step natively instead
+of treating it as an assumption.
+
+Focused check:
+
+```text
+hammer.1007.43.th0 CLOSED_PASS
+/project/tmp/rectify_or_exists_1007_140306
+```
+
+Cached parallel replay over the same source-linked frontier, without rerunning
+Vampire:
+
+```text
+TMPDIR=/project/tmp \
+PROBLEM_DIR=/project/tmp/source_linked_strict_100_corpus_fresh_041947 \
+WORK_DIR=/project/tmp/source_linked_slice_1_400_closed_rectify_or_exists_140320 \
+JOBS=20 MIN_PASS=0 CLOSED_CERT_V1=1 EMIT_TIMEOUT=30 CHECK_TIMEOUT=45 \
+tests/vampire_certificate/run_native_emit_cached_parallel.sh \
+  /project/tmp/source_linked_slice_1_400_fresh_042040
+
+CLOSED_PASS 72
+EMIT_FAIL 141
+/project/tmp/source_linked_slice_1_400_closed_rectify_or_exists_140320
+```
+
+The new committed closed case is:
+
+```text
+hammer.1007.43.th0.p
+```
+
+Validation for this increment:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+native certificate v1 smoke test passed
+/project/tmp/native_cert_v1.EP2blt
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_source_map_export_smoke.sh
+Megalodon TH0 source-map export smoke passed
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh
+CLOSED_PASS 72
+/project/tmp/native_cert_v1_closed_corpus.8L7vL5
+```
+
 ## Remaining P0 Work
 
 Closed mode is necessary but not sufficient.
