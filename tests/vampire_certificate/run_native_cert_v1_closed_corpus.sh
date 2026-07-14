@@ -26,6 +26,10 @@ run_one() {
     printf '%s\tMISSING_SOURCE\n' "$base" > "$case_dir/result.tsv"
     return 0
   fi
+  if ! rg -q '^% megalodon_origin ' "$source"; then
+    printf '%s\tMISSING_ORIGIN\n' "$base" > "$case_dir/result.tsv"
+    return 0
+  fi
 
   if ! "$MEGALODON" \
       -vampirecertv1closed \
@@ -36,6 +40,16 @@ run_one() {
     local err
     err=$(tail -1 "$case_dir/emit.err" | tr '\t' ' ')
     printf '%s\tEMIT_FAIL\t%s\n' "$base" "$err" > "$case_dir/result.tsv"
+    return 0
+  fi
+
+  if ! rg -q '^// Vampire certificate source origin:' "$case_dir/out.mg"; then
+    printf '%s\tMISSING_EMITTED_ORIGIN\n' "$base" > "$case_dir/result.tsv"
+    return 0
+  fi
+
+  if ! rg -q '^// vampire_source_assumption ' "$case_dir/out.mg"; then
+    printf '%s\tMISSING_SOURCE_BINDINGS\n' "$base" > "$case_dir/result.tsv"
     return 0
   fi
 

@@ -272,6 +272,38 @@ CLOSED_PASS 7
 /project/tmp/native_cert_v1_closed_corpus.e5Xqkc
 ```
 
+The committed closed corpus now also carries explicit source-origin metadata
+for each case, pointing back to the original `examples/hammer/100thms_12_h.mg`
+obligation location. The closed-corpus harness rejects committed cases with no
+`% megalodon_origin` line, rejects emitted Megalodon files that do not preserve
+that origin as a `// Vampire certificate source origin:` comment, and rejects
+emitted files without machine-readable `// vampire_source_assumption` bindings.
+This is still not full original-context replay, but it prevents the reproducible
+closed corpus from regressing to anonymous THF-only artifacts.
+
+Validation for the provenance-gated committed corpus:
+
+```text
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh
+
+CLOSED_PASS 7
+/project/tmp/native_cert_v1_closed_corpus.iiXKls
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+native certificate v1 smoke test passed
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_source_map_export_smoke.sh
+Megalodon TH0 source-map export smoke passed
+```
+
+I also tried to regenerate these seven origin-enabled certificates live with
+`/project/vampire-leancheck/vampire_rel_vampire/megalodon_10835`, seven-way
+parallelism, and the required 10s Vampire cap. That run produced six `NO_CERT`
+results and one timeout, so I did not replace the committed certificates with
+new ones. The current committed corpus should be treated as fixed reproducible
+certificate fixtures until Vampire-side deterministic regeneration is repaired
+or a current build reproduces them under the agreed limits.
+
 ## Remaining P0 Work
 
 Closed mode is necessary but not sufficient.

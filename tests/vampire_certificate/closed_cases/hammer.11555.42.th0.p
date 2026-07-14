@@ -1,3 +1,4 @@
+% megalodon_origin ((file "examples/hammer/100thms_12_h.mg") (line "11555") (char "42") (kind "aby"))
 % megalodon_source_map (type "c_Eps_5Fi" "Eps_i" "")
 thf(c_Eps_5Fi,type,(c_Eps_5Fi : (($i > $o) > $i))). % 174b78e53fc239e8c2aab4ab5a996a27e3e5741e88070dad186e05fb13f275e5
 % megalodon_source_map (type "c_In" "In" "")
