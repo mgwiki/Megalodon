@@ -76,6 +76,18 @@ accepted native certificate. Use `PROBLEM_DIR` or `PROBLEMS_FILE` to select the
 fresh source-mapped corpus. The script also writes `rule_counts.txt` under the
 work directory so broad runs show which native certificate constructors were
 actually exercised.
+
+For the fast source-linked gate over known Vampire-solvable THF exports, run:
+
+```sh
+tests/vampire_certificate/run_source_linked_strict_100.sh
+```
+
+It re-exports the current Megalodon file to `$TMPDIR`, then checks the tracked
+`source_linked_strict_100.list` in parallel with strict source-map validation.
+The list is intentionally a stable solved subset so normal iteration does not
+spend most of its time repeating known Vampire timeouts.
+
 Set `STRICT_CERT_V1=1` to run the live certificates through
 `-vampirecertv1strict`; these stricter runs require source maps and traced SAT
 proofs for AVATAR refutations.
