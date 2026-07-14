@@ -667,6 +667,69 @@ TMPDIR=/project/tmp tests/vampire_certificate/run_source_map_export_smoke.sh
 Megalodon TH0 source-map export smoke passed
 ```
 
+## July 14 Increment: Inequality Splitting Replay
+
+The native emitter now replays Vampire's `inequality_name_intro` and
+`inequality_split` steps for the common split-predicate shape exported in the
+native certificate.  Instead of treating the fresh `sP...` predicate as an
+unconstrained variable, the emitter turns it into a Megalodon definition of the
+form:
+
+```text
+Definition sP... : ...->prop :=
+  fun ... cert_splitN => cert_splitN = <named side> -> False.
+```
+
+The name-introduction clause is then proved from that definition as equality to
+`False`, and the split step is replayed by case-analysis over the source
+clause, replacing exactly the Vampire-provided negative equality literal by the
+corresponding equality-to-`True` split-name literal.  The replay supports both
+orientations of the source equality by reusing the existing native equality
+symmetry proof generator.
+
+This moved the cached source-linked closed frontier from 62 to 63 closed
+passes:
+
+```text
+TMPDIR=/project/tmp \
+PROBLEM_DIR=/project/tmp/source_linked_strict_100_corpus_fresh_041947 \
+WORK_DIR=/project/tmp/source_linked_slice_1_400_closed_ineq_split_125611 \
+JOBS=20 MIN_PASS=0 CLOSED_CERT_V1=1 EMIT_TIMEOUT=30 CHECK_TIMEOUT=45 \
+tests/vampire_certificate/run_native_emit_cached_parallel.sh \
+  /project/tmp/source_linked_slice_1_400_fresh_042040
+
+CLOSED_PASS 63
+EMIT_FAIL 150
+/project/tmp/source_linked_slice_1_400_closed_ineq_split_125611
+```
+
+The new committed closed case is:
+
+```text
+hammer.11453.77.th0.p
+```
+
+Validation for this increment:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+
+Direct focused check:
+hammer.11453.77.th0 CLOSED_PASS
+/project/tmp/ineq_split_focus_125441
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh
+CLOSED_PASS 63
+/project/tmp/native_cert_v1_closed_corpus.1Ta23E
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+native certificate v1 smoke test passed
+/project/tmp/native_cert_v1.eHQz5x
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_source_map_export_smoke.sh
+Megalodon TH0 source-map export smoke passed
+```
+
 ## Remaining P0 Work
 
 Closed mode is necessary but not sufficient.

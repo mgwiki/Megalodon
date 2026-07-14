@@ -2153,6 +2153,25 @@ let check_vampire_inequality_name_head id head =
   | Some name -> error (id ^ ": inequality splitting name head " ^ name ^ " is not a Vampire split-name symbol")
   | None -> error (id ^ ": inequality splitting name has no head symbol")
 
+let split_name_application id named =
+  let rec flatten = function
+    | Ap (fn, arg) ->
+        let head, args = flatten fn in
+        (head, args @ [arg])
+    | tm -> (tm, [])
+  in
+  match flatten named with
+  | TmH head, (_ :: _ as args) ->
+      check_vampire_inequality_name_head id (TmH head);
+      (head, args)
+  | head, (_ :: _ as args) ->
+      check_vampire_inequality_name_head id head;
+      begin match head_symbol head with
+      | Some name -> (name, args)
+      | None -> error (id ^ ": inequality split name has no head symbol")
+      end
+  | _ -> error (id ^ ": inequality split name literal is not a name application")
+
 let check_inequality_name_intro id clause =
   match clause with
   | [literal] ->
@@ -4425,6 +4444,11 @@ let simple_split_arrow_type typ =
       in
       Some (left, right)
 
+let rec simple_arrow_sort_parts typ =
+  match simple_split_arrow_type typ with
+  | Some (domain, codomain) -> domain :: simple_arrow_sort_parts codomain
+  | None -> [simple_strip_outer_parens typ]
+
 let simple_arrow_sort domain codomain =
   let domain =
     match simple_split_arrow_type domain with
@@ -5541,6 +5565,139 @@ let simple_fool_exhaustiveness_proof type_env result_sorts id clause =
   in
   simple_wrap_forall_intro result_sorts proof
 
+let simple_inequality_name_intro_proof type_env result_sorts id result =
+  let literal, named =
+    match result with
+    | [literal] ->
+        begin match bool_name_literal false literal with
+        | Some named -> literal, named
+        | None -> emit_error (id ^ ": inequality_name_intro must be a positive equality to false")
+        end
+    | _ -> emit_error (id ^ ": inequality_name_intro proof expects a singleton clause")
+  in
+  let named_text = simple_tm_expr_with_expected type_env (Some "prop") named in
+  let refutation =
+    Printf.sprintf
+      "(fun Hineq_name:%s => Hineq_name (fun Q H => H))"
+      named_text
+  in
+  let atom =
+    match literal with
+    | Pos atom -> atom
+    | Neg _ -> emit_error (id ^ ": inequality_name_intro literal is not positive")
+  in
+  let proof =
+    match equality_sides atom with
+    | Some (left, right) when is_vampire_false left && right = named ->
+        Printf.sprintf
+          "(vampire_fool_not_prop_to_false_eq (%s) %s)"
+          named_text refutation
+    | Some (left, right) when left = named && is_vampire_false right ->
+        Printf.sprintf
+          "(vampire_fool_not_prop_to_eq_false (%s) %s)"
+          named_text refutation
+    | Some _ ->
+        emit_error (id ^ ": inequality_name_intro literal is not an equality between the split name and false")
+    | None -> emit_error (id ^ ": inequality_name_intro literal is not an equality")
+  in
+  simple_wrap_forall_intro result_sorts
+    (simple_clause_intro_proof result literal proof)
+
+let simple_inequality_split_clause_proof
+    type_env id parent_id splits result target_prop parent_sorts result_sorts checked names =
+  let parent_clause = lookup_simple_clause checked parent_id in
+  let parent_proof =
+    simple_apply_forall_vars (lookup_simple_name names parent_id) parent_sorts
+  in
+  let last_arg args =
+    match List.rev args with
+    | arg :: _ -> arg
+    | [] -> emit_error (id ^ ": inequality split name has no arguments")
+  in
+  let replacement_proof split source_proof =
+    let split_name, split_args =
+      match bool_name_literal false split.split_name_literal with
+      | Some named -> split_name_application id named
+      | None -> emit_error (id ^ ": inequality split name literal is not false equality")
+    in
+    let split_arg = last_arg split_args in
+    let replacement_named =
+      match bool_name_literal true split.split_replacement with
+      | Some named -> named
+      | None -> emit_error (id ^ ": inequality split replacement is not true equality")
+    in
+    let replacement_name, replacement_args =
+      split_name_application id replacement_named
+    in
+    if replacement_name <> split_name then
+      emit_error (id ^ ": inequality split replacement uses a different split name");
+    let target_arg = last_arg replacement_args in
+    let source_atom =
+      match split.split_source with
+      | Neg atom -> atom
+      | Pos _ -> emit_error (id ^ ": inequality split source literal is not negative")
+    in
+    let source_to_named =
+      match equality_sides source_atom with
+      | Some (left, right) when left = target_arg && right = split_arg ->
+          source_proof
+      | Some (left, right) when left = split_arg && right = target_arg ->
+          "(" ^ simple_literal_equality_symmetry_proof type_env split.split_source source_proof ^ ")"
+      | Some _ ->
+          emit_error (id ^ ": inequality split source equality does not match split arguments")
+      | None -> emit_error (id ^ ": inequality split source literal is not an equality")
+    in
+    let named_text =
+      simple_tm_expr_with_expected type_env (Some "prop") replacement_named
+    in
+    let replacement_atom =
+      match split.split_replacement with
+      | Pos atom -> atom
+      | Neg _ -> emit_error (id ^ ": inequality split replacement is not positive")
+    in
+    match equality_sides replacement_atom with
+    | Some (left, right) when is_vampire_bool_const left && not (is_vampire_false left)
+                            && right = replacement_named ->
+        Printf.sprintf
+          "(vampire_fool_prop_to_true_eq (%s) %s)"
+          named_text source_to_named
+    | Some (left, right) when left = replacement_named
+                            && is_vampire_bool_const right && not (is_vampire_false right) ->
+        Printf.sprintf
+          "(vampire_fool_prop_to_eq_true (%s) %s)"
+          named_text source_to_named
+    | Some _ ->
+        emit_error (id ^ ": inequality split replacement is not an equality between true and the split name")
+    | None -> emit_error (id ^ ": inequality split replacement is not an equality")
+  in
+  let rec split_for_source lit = function
+    | [] -> None
+    | split :: rest ->
+        if split.split_source = lit then Some split else split_for_source lit rest
+  in
+  let introduce lit proof =
+    match split_for_source lit splits with
+    | Some split ->
+        simple_clause_intro_proof result split.split_replacement
+          (replacement_proof split proof)
+    | None -> simple_clause_intro_proof result lit proof
+  in
+  let rec project depth source_clause proof =
+    match source_clause with
+    | [] -> emit_error "cannot project inequality split from the empty clause"
+    | [lit] -> introduce lit proof
+    | lit :: rest ->
+        let head_name = "Hineq_lit_" ^ string_of_int depth in
+        let tail_name = "Hineq_tail_" ^ string_of_int depth in
+        let head_branch = introduce lit head_name in
+        let tail_branch = project (depth + 1) rest tail_name in
+        Printf.sprintf "(%s %s (fun %s => %s) (fun %s => %s))"
+          proof (simple_prop_arg target_prop)
+          head_name head_branch
+          tail_name tail_branch
+  in
+  simple_wrap_forall_intro result_sorts (project 0 parent_clause parent_proof)
+
 let simple_ennf_formula_proof type_env id parent_sorts result_sorts source target parent_name =
   let binder_sorts =
     parent_sorts @ result_sorts |> simple_unique_variable_sorts
@@ -5758,7 +5915,100 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   let add_line_once line =
     if not (List.mem line !lines) then lines := !lines @ [line]
   in
-  let symbol_type_env = simple_symbol_type_env cert in
+  let base_symbol_type_env = simple_symbol_type_env cert in
+  let inequality_split_definition_for_step id result =
+    match result with
+    | [literal] ->
+        begin match bool_name_literal false literal with
+        | Some named ->
+            let raw_name, args = split_name_application id named in
+            let name = megalodon_ident raw_name in
+            let sort =
+              match List.assoc_opt name base_symbol_type_env with
+              | Some sort -> sort
+              | None ->
+                  let arg_sorts =
+                    List.map
+                      (fun arg ->
+                         match simple_tm_sort base_symbol_type_env arg with
+                         | Some sort -> sort
+                         | None -> "set")
+                      args
+                  in
+                  List.fold_right simple_arrow_sort arg_sorts "prop"
+            in
+            let parts = simple_arrow_sort_parts sort in
+            if List.length parts <> List.length args + 1
+               || List.nth parts (List.length parts - 1) <> "prop" then
+              None
+            else
+              let arg_sorts = take_prefix (List.length args) parts in
+              let binders =
+                List.mapi (fun index sort -> ("cert_split" ^ string_of_int index, sort)) arg_sorts
+              in
+              let substitution =
+                List.combine args binders
+                |> List.filter_map
+                     (fun (arg, (binder, _)) ->
+                        match arg with
+                        | TmH original -> Some (original, TmH binder)
+                        | _ -> None)
+              in
+              let split_arg =
+                match List.rev args with
+                | arg :: _ -> subst_tm substitution arg
+                | [] -> emit_error (id ^ ": inequality split name has no arguments")
+              in
+              let definition_type_env = binders @ base_symbol_type_env in
+              let split_arg_sort =
+                match List.rev arg_sorts with
+                | sort :: _ -> Some sort
+                | [] -> Some "set"
+              in
+              let last_binder =
+                match List.rev binders with
+                | (binder, _) :: _ -> TmH binder
+                | [] -> emit_error (id ^ ": inequality split definition has no binder")
+              in
+              let equality =
+                simple_equality_prop_with_type_env
+                  definition_type_env last_binder split_arg
+              in
+              let body =
+                List.fold_right
+                  (fun (binder, sort) acc ->
+                     "fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => " ^ acc)
+                  binders
+                  (equality ^ " -> False")
+              in
+              ignore
+                (simple_tm_expr_with_expected
+                   definition_type_env split_arg_sort split_arg);
+              Some
+                (name,
+                 Printf.sprintf "Definition %s : %s := %s." name sort body,
+                 sort)
+        | None -> None
+        end
+    | _ -> None
+  in
+  let inequality_split_definitions =
+    cert.steps
+    |> List.filter_map
+         (function
+           | InequalityNameIntro (id, result) ->
+               inequality_split_definition_for_step id result
+           | _ -> None)
+    |> List.sort_uniq compare
+  in
+  let inequality_split_definition_names =
+    List.map (fun (name, _, _) -> name) inequality_split_definitions
+  in
+  let symbol_type_env =
+    (List.map (fun (name, _, sort) -> (name, sort)) inequality_split_definitions)
+    @ base_symbol_type_env
+    |> List.sort_uniq compare
+  in
   let function_definition_for_step id result =
     match
       metadata_step_extra_field cert id "function_definition" "introduced_symbol",
@@ -5808,9 +6058,12 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   let function_definition_names =
     List.map (fun (name, _, _) -> name) function_definitions
   in
+  let local_definition_names =
+    function_definition_names @ inequality_split_definition_names
+  in
   let add_symbol_declaration line =
     match simple_declared_name line with
-    | Some name when List.mem (megalodon_ident name) function_definition_names ->
+    | Some name when List.mem (megalodon_ident name) local_definition_names ->
         begin match
           List.find_opt
             (fun (definition_name, _, _) ->
@@ -5818,25 +6071,37 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             function_definitions
         with
         | Some (_, definition, _) -> add_line_once definition
-        | None -> ()
+        | None ->
+            begin match
+              List.find_opt
+                (fun (definition_name, _, _) ->
+                   definition_name = megalodon_ident name)
+                inequality_split_definitions
+            with
+            | Some (_, definition, _) -> add_line_once definition
+            | None -> ()
+            end
         end
     | _ -> add_line_once line
   in
   List.iter add_symbol_declaration cert.metadata.symbol_declarations;
+  List.iter
+    (fun (_, definition, _) -> add_line_once definition)
+    inequality_split_definitions;
   let higher_order_definition_db_names = metadata_higher_order_definition_db_names cert in
   List.iter
     (fun name ->
-       if not (List.mem (megalodon_ident name) function_definition_names)
+       if not (List.mem (megalodon_ident name) local_definition_names)
           && not (is_db_ident name && List.mem name higher_order_definition_db_names) then
          add_line_once ("Variable " ^ name ^ ":prop."))
     prop_names;
   List.iter
     (fun name ->
-       if not (List.mem (megalodon_ident name) function_definition_names)
+       if not (List.mem (megalodon_ident name) local_definition_names)
           && not (is_db_ident name && List.mem name higher_order_definition_db_names) then
          add_line_once ("Variable " ^ name ^ ":set."))
     term_names;
-  let used_names = ref (prop_names @ term_names) in
+  let used_names = ref (prop_names @ term_names @ local_definition_names) in
   let emitted_names = ref [] in
   let emitted_props = ref [] in
   let emitted_var_sorts = ref [] in
@@ -6887,9 +7152,47 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       | DefinitionRewriteChain (id, parent_id, _, result) ->
           add_clause_inference_bridge "definition_rewrite" id [parent_id] result
       | InequalityNameIntro (id, result) ->
-          add_clause_inference_bridge "inequality_name_intro" id [] result
-      | InequalitySplit (id, parent_id, _, result) ->
-          add_clause_inference_bridge "inequality_split" id [parent_id] result
+          let name = derived_name id in
+          let prop, sorts = clause_prop_and_sorts_for_ids id [] result in
+          let type_env = simple_type_env_with_variables sorts symbol_type_env in
+          begin match
+            try Some (simple_inequality_name_intro_proof type_env sorts id result)
+            with Error _ -> None
+          with
+          | Some proof ->
+              uses_vampire_eq_prop_ext := true;
+              add_emitted id name;
+              add_emitted_prop_and_sorts id prop sorts;
+              claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")];
+              add_checked id result
+          | None ->
+              add_clause_inference_bridge "inequality_name_intro" id [] result
+          end
+      | InequalitySplit (id, parent_id, splits, result) ->
+          let name = derived_name id in
+          let prop, sorts = clause_prop_and_sorts_for_ids id [parent_id] result in
+          let parent_sorts = variable_sorts_for_ids [parent_id] in
+          let type_env =
+            simple_type_env_with_variables
+              (parent_sorts @ sorts |> simple_unique_variable_sorts)
+              symbol_type_env
+          in
+          begin match
+            try Some
+                  (simple_inequality_split_clause_proof
+                     type_env id parent_id splits result prop parent_sorts sorts
+                     !checked !emitted_names)
+            with Error _ -> None
+          with
+          | Some proof ->
+              uses_vampire_eq_prop_ext := true;
+              add_emitted id name;
+              add_emitted_prop_and_sorts id prop sorts;
+              claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")];
+              add_checked id result
+          | None ->
+              add_clause_inference_bridge "inequality_split" id [parent_id] result
+          end
       | Contradiction (id, parent_id) ->
           let name = derived_name id in
           let parent_clause = lookup_simple_clause !checked parent_id in
