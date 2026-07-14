@@ -1414,3 +1414,58 @@ The branch is therefore kept on the closed-corpus milestone:
 This is a deliberate rollback of scope, not a proof improvement. It aligns the
 branch with the audit's main recommendation: keep the trusted result small,
 fail closed, and expand only after the source-bound zero-premise corpus grows.
+
+## Follow-up: Predicate Definitions Replayed Under Closed Mode
+
+A later pass revisited the predicate-definition blocker after adding stricter
+binder selection. The earlier concern remains valid in general: the emitter must
+not guess missing structure. The committed replay is therefore deliberately
+narrow. It handles Vampire `predicate_definition` steps whose certificate
+formula has the explicit definitional-disjunction shape already checked by the
+native certificate validator:
+
+```text
+forall args, vampire_or (defined_predicate args -> False) body
+```
+
+For such steps the Megalodon emitter now creates a local `Definition` for the
+introduced predicate symbol and proves the corresponding disjunction as a
+Megalodon `claim`, using classical `vampire_xm` over the defining body. If the
+shape or binder information is outside that fragment, the path still falls back
+to the old non-source premise, which closed mode rejects.
+
+This is not a broad-metric success criterion. It is a small closed-mode replay
+improvement because `theory_predicate_definition` is no longer the first
+forbidden premise in the cached frontier; the remaining first blockers are now
+mostly AVATAR components, Skolem formulas, FOOL distinctness, definition inputs,
+and predicate-definition folds.
+
+Validation for the committed change:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+TMPDIR=/project/tmp JOBS=10 tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh
+
+CLOSED_PASS 77
+/project/tmp/native_cert_v1_closed_corpus.zMxG3a
+
+CLOSED_PASS 92
+EMIT_FAIL 121
+/project/tmp/predicate_definition_frontier_165159
+```
+
+First blockers in the cached frontier after this change:
+
+```text
+avatar_component 79
+bridge_skolem_formula 18
+theory_fool_distinctness 16
+definition_input 5
+bridge_predicate_definition_fold 2
+bridge_fool 1
+```
+
+The important audit guard is still intact: these numbers are `CLOSED_PASS`
+counts, and closed mode still rejects every remaining bridge or derived
+non-source theorem premise.
