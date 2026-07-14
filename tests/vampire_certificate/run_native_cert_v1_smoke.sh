@@ -253,6 +253,32 @@ if ! rg -q 'does not match the THF declaration formula' \
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_formula_cnf_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_formula_cnf_known_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_formula_cnf_known_valid.log"
+
+if ! rg -q 'Vampire certificate v1 source map checked 3 sources' \
+    "$WORK_DIR/native_cert_v1_formula_cnf_known_valid.log"; then
+  echo "native certificate v1 source-map checker did not accept formula-backed known inputs" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_formula_cnf_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_formula_cnf_quantifier_mismatch_bad.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_formula_cnf_quantifier_mismatch_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_formula_cnf_quantifier_mismatch_bad.err"; then
+  echo "native certificate v1 source-map checker accepted a quantified formula mismatch" >&2
+  exit 1
+fi
+
+if ! rg -q 'does not match the THF declaration formula' \
+    "$WORK_DIR/native_cert_v1_formula_cnf_quantifier_mismatch_bad.err"; then
+  echo "native certificate v1 source-map quantified formula-mismatch failure did not explain the mismatch" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_hash_mismatch_bad.th0.p \

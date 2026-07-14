@@ -6869,23 +6869,311 @@ let rec simple_tptp_clause text =
       | None -> None
       end
 
+let rec source_tm_equiv left right =
+  left = right ||
+  match left, right with
+  | Ap (Ap (TmH "=", left_a), left_b), Ap (Ap (TmH "=", right_a), right_b) ->
+      (source_tm_equiv left_a right_a && source_tm_equiv left_b right_b)
+      || (source_tm_equiv left_a right_b && source_tm_equiv left_b right_a)
+  | TpAp (left_m, left_a), TpAp (right_m, right_a) ->
+      left_a = right_a && source_tm_equiv left_m right_m
+  | Ap (left_m, left_n), Ap (right_m, right_n) ->
+      source_tm_equiv left_m right_m && source_tm_equiv left_n right_n
+  | Lam (left_a, left_m), Lam (right_a, right_m) ->
+      left_a = right_a && source_tm_equiv left_m right_m
+  | Imp (left_m, left_n), Imp (right_m, right_n) ->
+      source_tm_equiv left_m right_m && source_tm_equiv left_n right_n
+  | All (left_a, left_m), All (right_a, right_m) ->
+      left_a = right_a && source_tm_equiv left_m right_m
+  | _ -> false
+
+let source_literal_equiv left right =
+  match left, right with
+  | Pos left_tm, Pos right_tm
+  | Neg left_tm, Neg right_tm -> source_tm_equiv left_tm right_tm
+  | _ -> false
+
+let same_source_clause_multiset left right =
+  let rec remove_one literal = function
+    | [] -> None
+    | candidate :: rest when source_literal_equiv literal candidate -> Some rest
+    | candidate :: rest ->
+        begin match remove_one literal rest with
+        | Some rest -> Some (candidate :: rest)
+        | None -> None
+        end
+  in
+  let rec loop remaining = function
+    | [] -> remaining = []
+    | literal :: literals ->
+        begin match remove_one literal remaining with
+        | Some remaining -> loop remaining literals
+        | None -> false
+        end
+  in
+  loop right left
+
 let source_step_matches_simple_tptp_formula step formula =
   match simple_tptp_clause formula with
-  | None -> true
+  | None -> None
   | Some source_clause ->
-      begin match step with
-      | Input (_, _, clause) -> same_clause_multiset source_clause clause
+      Some
+        (match step with
+      | Input (_, _, clause) ->
+          same_source_clause_multiset source_clause clause
       | FormulaInput (_, _, literal) ->
           begin match source_clause with
-          | [source_literal] -> source_literal = literal
+          | [source_literal] ->
+              source_literal_equiv source_literal literal
           | _ -> false
           end
       | FormulaTermInput (_, _, formula_tm) ->
           begin match source_clause with
-          | [Pos source_atom] -> source_atom = formula_tm
+          | [Pos source_atom] ->
+              source_tm_equiv source_atom formula_tm
           | _ -> false
           end
-      | _ -> true
+      | _ -> true)
+
+type thf_token =
+  | ThfName of string
+  | ThfLParen
+  | ThfRParen
+  | ThfLBracket
+  | ThfRBracket
+  | ThfColon
+  | ThfComma
+  | ThfAt
+  | ThfForall
+  | ThfExists
+  | ThfLambda
+  | ThfImp
+  | ThfAnd
+  | ThfOr
+  | ThfNot
+  | ThfEq
+  | ThfGt
+
+exception Unsupported_thf_source
+
+let thf_tokens text =
+  let len = String.length text in
+  let name_char = function
+    | 'A'..'Z' | 'a'..'z' | '0'..'9' | '_' | '$' -> true
+    | _ -> false
+  in
+  let rec quoted buf i =
+    if i >= len then raise Unsupported_thf_source
+    else
+      match text.[i] with
+      | '\'' -> (Buffer.contents buf, i + 1)
+      | '\\' when i + 1 < len ->
+          Buffer.add_char buf text.[i + 1];
+          quoted buf (i + 2)
+      | c ->
+          Buffer.add_char buf c;
+          quoted buf (i + 1)
+  in
+  let rec name start i =
+    if i < len && name_char text.[i] then name start (i + 1)
+    else (String.sub text start (i - start), i)
+  in
+  let rec loop i acc =
+    if i >= len then List.rev acc
+    else if is_space text.[i] then loop (i + 1) acc
+    else
+      match text.[i] with
+      | '(' -> loop (i + 1) (ThfLParen :: acc)
+      | ')' -> loop (i + 1) (ThfRParen :: acc)
+      | '[' -> loop (i + 1) (ThfLBracket :: acc)
+      | ']' -> loop (i + 1) (ThfRBracket :: acc)
+      | ':' -> loop (i + 1) (ThfColon :: acc)
+      | ',' -> loop (i + 1) (ThfComma :: acc)
+      | '@' -> loop (i + 1) (ThfAt :: acc)
+      | '!' -> loop (i + 1) (ThfForall :: acc)
+      | '?' -> loop (i + 1) (ThfExists :: acc)
+      | '^' -> loop (i + 1) (ThfLambda :: acc)
+      | '&' -> loop (i + 1) (ThfAnd :: acc)
+      | '|' -> loop (i + 1) (ThfOr :: acc)
+      | '~' -> loop (i + 1) (ThfNot :: acc)
+      | '=' when i + 1 < len && text.[i + 1] = '>' -> loop (i + 2) (ThfImp :: acc)
+      | '=' -> loop (i + 1) (ThfEq :: acc)
+      | '>' -> loop (i + 1) (ThfGt :: acc)
+      | '\'' ->
+          let value, j = quoted (Buffer.create 16) (i + 1) in
+          loop j (ThfName value :: acc)
+      | c when name_char c ->
+          let value, j = name i i in
+          loop j (ThfName value :: acc)
+      | _ -> raise Unsupported_thf_source
+  in
+  loop 0 []
+
+let parse_simple_thf_formula_term text =
+  let tokens = Array.of_list (thf_tokens text) in
+  let len = Array.length tokens in
+  let at i = if i < len then Some tokens.(i) else None in
+  let expect tok i =
+    match at i with
+    | Some got when got = tok -> i + 1
+    | _ -> raise Unsupported_thf_source
+  in
+  let rec parse_type i =
+    parse_type_arrow i
+  and parse_type_arrow i =
+    let left, i = parse_type_atom i in
+    match at i with
+    | Some ThfGt ->
+        let right, j = parse_type_arrow (i + 1) in
+        (Ar (left, right), j)
+    | _ -> (left, i)
+  and parse_type_atom i =
+    match at i with
+    | Some (ThfName "$i") -> (Set, i + 1)
+    | Some (ThfName "$o") -> (Prop, i + 1)
+    | Some ThfLParen ->
+        let tp, j = parse_type (i + 1) in
+        (tp, expect ThfRParen j)
+    | _ -> raise Unsupported_thf_source
+  and parse_binders i =
+    let i = expect ThfLBracket i in
+    let rec one i acc =
+      match at i with
+      | Some (ThfName name) ->
+          let i = expect ThfColon (i + 1) in
+          let tp, i = parse_type i in
+          begin match at i with
+          | Some ThfComma -> one (i + 1) ((name, tp) :: acc)
+          | Some ThfRBracket -> (List.rev ((name, tp) :: acc), i + 1)
+          | _ -> raise Unsupported_thf_source
+          end
+      | _ -> raise Unsupported_thf_source
+    in
+    one i []
+  and parse_formula i =
+    parse_imp i
+  and parse_imp i =
+    let left, i = parse_or i in
+    match at i with
+    | Some ThfImp ->
+        let right, j = parse_imp (i + 1) in
+        (Imp (left, right), j)
+    | _ -> (left, i)
+  and parse_or i =
+    let left, i = parse_and i in
+    let rec more left i =
+      match at i with
+      | Some ThfOr ->
+          let right, j = parse_and (i + 1) in
+          more (Ap (Ap (TmH "vampire_or", left), right)) j
+      | _ -> (left, i)
+    in
+    more left i
+  and parse_and i =
+    let left, i = parse_equality i in
+    let rec more left i =
+      match at i with
+      | Some ThfAnd ->
+          let right, j = parse_equality (i + 1) in
+          more (Ap (Ap (TmH "vampire_and", left), right)) j
+      | _ -> (left, i)
+    in
+    more left i
+  and parse_equality i =
+    let left, i = parse_prefix i in
+    match at i with
+    | Some ThfEq ->
+        let right, j = parse_prefix (i + 1) in
+        (Ap (Ap (TmH "=", left), right), j)
+    | _ -> (left, i)
+  and parse_prefix i =
+    match at i with
+    | Some ThfNot ->
+        let body, j = parse_prefix (i + 1) in
+        (Imp (body, TmH "vampire_false"), j)
+    | Some ThfForall ->
+        let binders, j = parse_binders (i + 1) in
+        let j = expect ThfColon j in
+        let body, k = parse_formula j in
+        (List.fold_right (fun (_, tp) acc -> All (tp, acc)) binders body, k)
+    | Some ThfExists ->
+        let binders, j = parse_binders (i + 1) in
+        let j = expect ThfColon j in
+        let body, k = parse_formula j in
+        (List.fold_right
+           (fun (_, tp) acc -> Ap (TmH "vampire_exists_prop", Lam (tp, acc)))
+           binders
+           body,
+         k)
+    | Some ThfLambda ->
+        let binders, j = parse_binders (i + 1) in
+        let j = expect ThfColon j in
+        let body, k = parse_formula j in
+        (List.fold_right
+           (fun (name, _tp) acc -> Ap (TmH "vLAM", subst_named_tm name acc))
+           binders
+           body,
+         k)
+    | _ -> parse_application i
+  and parse_application i =
+    let head, i = parse_atom i in
+    let rec more head i =
+      match at i with
+      | Some ThfAt ->
+          let arg, j = parse_atom (i + 1) in
+          more (Ap (head, arg)) j
+      | _ -> (head, i)
+    in
+    more head i
+  and parse_atom i =
+    match at i with
+    | Some (ThfName "$true") -> (TmH "vampire_true", i + 1)
+    | Some (ThfName "$false") -> (TmH "vampire_false", i + 1)
+    | Some (ThfName name) -> (TmH (decode_megalodon_tptp_name name), i + 1)
+    | Some ThfLParen ->
+        let tm, j = parse_formula (i + 1) in
+        (tm, expect ThfRParen j)
+    | _ -> raise Unsupported_thf_source
+  in
+  try
+    let tm, i = parse_formula 0 in
+    if i = len then Some tm else None
+  with Unsupported_thf_source -> None
+
+let is_vampire_false = function
+  | TmH "vampire_false" | TmH "$false" -> true
+  | _ -> false
+
+let literal_of_source_term = function
+  | Imp (body, false_tm) when is_vampire_false false_tm -> Neg body
+  | tm -> Pos tm
+
+let rec clause_of_source_term = function
+  | Ap (Ap (TmH "vampire_or", left), right) ->
+      clause_of_source_term left @ clause_of_source_term right
+  | tm -> [literal_of_source_term tm]
+
+let source_step_matches_thf_formula step formula =
+  match parse_simple_thf_formula_term formula with
+  | None -> None
+  | Some source_tm ->
+      Some
+        (match step with
+      | Input (_, _, clause) ->
+          same_source_clause_multiset (clause_of_source_term source_tm) clause
+      | FormulaInput (_, _, literal) ->
+          source_literal_equiv (literal_of_source_term source_tm) literal
+      | FormulaTermInput (_, _, formula_tm) ->
+          source_tm_equiv source_tm formula_tm
+      | _ -> true)
+
+let source_step_matches_tptp_formula step formula =
+  match source_step_matches_thf_formula step formula with
+  | Some matched -> matched
+  | None ->
+      begin match source_step_matches_simple_tptp_formula step formula with
+      | Some matched -> matched
+      | None -> true
       end
 
 let validate_certificate_sources source_map cert =
@@ -6941,7 +7229,7 @@ let validate_certificate_sources source_map cert =
           begin match entry.source_map_decl_formula with
           | Some formula
               when source_map_entry_requires_true_formula_check entry
-                   && not (source_step_matches_simple_tptp_formula step formula) ->
+                   && not (source_step_matches_tptp_formula step formula) ->
               error
                 (id ^ ": certificate source " ^ name
                  ^ " does not match the THF declaration formula")
