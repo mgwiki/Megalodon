@@ -4671,8 +4671,6 @@ let simple_paramodulate_unit_proof
   let target_literal = simple_clause_nth id "paramodulation target" target_index target_clause in
   let equality_rest = simple_remove_index id "paramodulation equality" equality_index equality_clause in
   let target_rest = simple_remove_index id "paramodulation target" target_index target_clause in
-  if equality_rest <> [] then
-    emit_error (id ^ ": simple paramodulation proof supports only unit equality parents");
   let equality_atom =
     match equality_literal with
     | Pos atom -> atom
@@ -4697,14 +4695,14 @@ let simple_paramodulate_unit_proof
   in
   let rewritten_atom = replace_tm_at_position target_atom rewrite_position to_tm (id ^ " target") in
   let rewritten_literal = replace_literal_atom target_literal rewritten_atom in
-  let expected = target_rest @ [rewritten_literal] in
+  let expected = equality_rest @ target_rest @ [rewritten_literal] in
   let result_literal, result_literal_needs_symmetry =
     if same_clause_multiset expected result then
       rewritten_literal, false
     else
       match swap_literal_equality rewritten_literal with
       | Some swapped_literal
-          when same_clause_multiset (target_rest @ [swapped_literal]) result ->
+          when same_clause_multiset (equality_rest @ target_rest @ [swapped_literal]) result ->
           swapped_literal, true
       | _ ->
           emit_error
@@ -4724,7 +4722,7 @@ let simple_paramodulate_unit_proof
   let render_tm ?expected tm =
     simple_tm_expr_with_expected type_env expected tm
   in
-  let rewrite_selected_proof target_lit_proof =
+  let rewrite_selected_proof equality_lit_proof target_lit_proof =
     if sort = "prop" then begin
       let var_name = "vpm_z" in
       let var_tm = TmH var_name in
@@ -4734,7 +4732,7 @@ let simple_paramodulate_unit_proof
       let ctx_prop = simple_literal_prop_with_type_env ctx_type_env ctx_literal in
       let ctx = "(fun " ^ var_name ^ ":prop => " ^ ctx_prop ^ ")" in
       if left = from_tm && right = to_tm then
-        Printf.sprintf "(%s %s %s)" equality_expr ctx target_lit_proof
+        Printf.sprintf "(%s %s %s)" equality_lit_proof ctx target_lit_proof
       else if right = from_tm && left = to_tm then
         let prop_arg tm =
           let text = render_tm ~expected:"prop" tm in
@@ -4745,7 +4743,7 @@ let simple_paramodulate_unit_proof
         let left_text = prop_arg left in
         let right_text = prop_arg right in
         Printf.sprintf "((vampire_eq_prop_sym %s %s %s) %s %s)"
-          left_text right_text equality_expr ctx target_lit_proof
+          left_text right_text equality_lit_proof ctx target_lit_proof
       else
         emit_error (id ^ ": paramodulation from/to terms do not match equality literal")
     end else begin
@@ -4766,24 +4764,25 @@ let simple_paramodulate_unit_proof
         ^ " => fun " ^ right_var ^ ":" ^ binder_sort
         ^ " => " ^ ctx_prop ^ ")"
       in
-      Printf.sprintf "(%s %s %s)" equality_expr ctx target_lit_proof
+      Printf.sprintf "(%s %s %s)" equality_lit_proof ctx target_lit_proof
     end
   in
-  let result_literal_proof target_lit_proof =
-    let direct_proof = rewrite_selected_proof target_lit_proof in
+  let result_literal_proof equality_lit_proof target_lit_proof =
+    let direct_proof = rewrite_selected_proof equality_lit_proof target_lit_proof in
     if result_literal_needs_symmetry then
       "(" ^ simple_literal_equality_symmetry_proof type_env rewritten_literal direct_proof ^ ")"
     else
       direct_proof
   in
   let target_prop = clause_body_prop result in
-  let rec consume_target selected_index source_clause source_proof depth =
+  let rec consume_target equality_lit_proof selected_index source_clause source_proof depth =
     match source_clause with
     | [] -> emit_error "cannot paramodulate from the empty clause"
     | [lit] ->
         begin match selected_index with
         | Some 0 ->
-            simple_clause_intro_proof result result_literal (result_literal_proof source_proof)
+            simple_clause_intro_proof result result_literal
+              (result_literal_proof equality_lit_proof source_proof)
         | Some _ -> emit_error "paramodulation selected target index is out of bounds"
         | None -> simple_clause_intro_proof result lit source_proof
         end
@@ -4793,7 +4792,8 @@ let simple_paramodulate_unit_proof
         let head_branch =
           match selected_index with
           | Some 0 ->
-              simple_clause_intro_proof result result_literal (result_literal_proof head_name)
+              simple_clause_intro_proof result result_literal
+                (result_literal_proof equality_lit_proof head_name)
           | _ -> simple_clause_intro_proof result lit head_name
         in
         let rest_selected =
@@ -4802,14 +4802,45 @@ let simple_paramodulate_unit_proof
           | Some n -> Some (n - 1)
           | None -> None
         in
-        let tail_branch = consume_target rest_selected rest tail_name (depth + 1) in
+        let tail_branch =
+          consume_target equality_lit_proof rest_selected rest tail_name (depth + 1)
+        in
+        Printf.sprintf "(%s %s (fun %s => %s) (fun %s => %s))"
+          source_proof (simple_prop_arg target_prop)
+          head_name head_branch
+          tail_name tail_branch
+  in
+  let rec consume_equality selected_index source_clause source_proof depth =
+    match source_clause with
+    | [] -> emit_error "cannot paramodulate from an empty equality clause"
+    | [lit] ->
+        begin match selected_index with
+        | Some 0 -> consume_target source_proof (Some target_index) target_clause target_expr 0
+        | Some _ -> emit_error "paramodulation equality index is out of bounds"
+        | None -> simple_clause_intro_proof result lit source_proof
+        end
+    | lit :: rest ->
+        let head_name = "Hparamod_eq_lit_" ^ string_of_int depth in
+        let tail_name = "Hparamod_eq_tail_" ^ string_of_int depth in
+        let head_branch =
+          match selected_index with
+          | Some 0 -> consume_target head_name (Some target_index) target_clause target_expr 0
+          | _ -> simple_clause_intro_proof result lit head_name
+        in
+        let rest_selected =
+          match selected_index with
+          | Some 0 -> None
+          | Some n -> Some (n - 1)
+          | None -> None
+        in
+        let tail_branch = consume_equality rest_selected rest tail_name (depth + 1) in
         Printf.sprintf "(%s %s (fun %s => %s) (fun %s => %s))"
           source_proof (simple_prop_arg target_prop)
           head_name head_branch
           tail_name tail_branch
   in
   simple_wrap_forall_intro result_sorts
-    (consume_target (Some target_index) target_clause target_expr 0)
+    (consume_equality (Some equality_index) equality_clause equality_expr 0)
 
 let simple_substitute_proof
     clause_body_prop type_env id parent_id subst result parent_sorts result_sorts checked names =
