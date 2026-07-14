@@ -3848,6 +3848,66 @@ let rec simple_clause_remove_reflexive_disequality_proof
         head_name head_branch
         tail_name tail_branch
 
+let rec simple_clause_remove_truth_conflict_proof
+    target_prop target_clause selected_index source_clause source_proof depth =
+  let true_proof = "(fun p:prop => fun H:p => H)" in
+  let is_true = function
+    | TmH "f__true" | TmH "vampire_true" -> true
+    | _ -> false
+  in
+  let is_false = function
+    | TmH "f__false" | TmH "vampire_false" -> true
+    | _ -> false
+  in
+  let selected_branch lit proof =
+    match lit with
+    | Pos atom ->
+        begin match equality_sides atom with
+        | Some (left, right) when is_true left && is_false right ->
+            Printf.sprintf "((%s (fun Z:prop => Z) %s) %s)"
+              proof true_proof (simple_prop_arg target_prop)
+        | Some (left, right) when is_false left && is_true right ->
+            Printf.sprintf "((%s (fun Z:prop => Z -> %s) (fun Hfalse:False => Hfalse %s)) %s)"
+              proof (simple_prop_arg target_prop) (simple_prop_arg target_prop) true_proof
+        | Some _ ->
+            emit_error "truth-conflict selected equality is not true = false"
+        | None ->
+            emit_error "truth-conflict selected literal is not an equality"
+        end
+    | Neg _ ->
+        emit_error "truth-conflict selected literal is not positive"
+  in
+  match source_clause with
+  | [] -> emit_error "cannot remove a literal from the empty clause"
+  | [lit] ->
+      begin match selected_index with
+      | Some 0 -> selected_branch lit source_proof
+      | Some _ -> emit_error "truth-conflict selected index is out of bounds"
+      | None -> simple_clause_intro_proof target_clause lit source_proof
+      end
+  | lit :: rest ->
+      let head_name = "Htruth_lit_" ^ string_of_int depth in
+      let tail_name = "Htruth_tail_" ^ string_of_int depth in
+      let head_branch =
+        match selected_index with
+        | Some 0 -> selected_branch lit head_name
+        | _ -> simple_clause_intro_proof target_clause lit head_name
+      in
+      let rest_selected =
+        match selected_index with
+        | Some 0 -> None
+        | Some n -> Some (n - 1)
+        | None -> None
+      in
+      let tail_branch =
+        simple_clause_remove_truth_conflict_proof
+          target_prop target_clause rest_selected rest tail_name (depth + 1)
+      in
+      Printf.sprintf "(%s %s (fun %s => %s) (fun %s => %s))"
+        source_proof (simple_prop_arg target_prop)
+        head_name head_branch
+        tail_name tail_branch
+
 let simple_factor_proof clause_body_prop parent_sorts result_sorts id parent_id left_index right_index result checked names =
   let parent_clause = lookup_simple_clause checked parent_id in
   let left = simple_clause_nth id "left" left_index parent_clause in
@@ -3897,6 +3957,18 @@ let simple_equality_resolution_clause_proof
   in
   simple_wrap_forall_intro result_sorts
     (simple_clause_remove_reflexive_disequality_proof
+       target result (Some literal_index) parent_clause parent_name 0)
+
+let simple_truth_conflict_clause_proof
+    clause_body_prop id parent_id literal_index result parent_sorts result_sorts checked names =
+  let parent_clause = lookup_simple_clause checked parent_id in
+  ignore (simple_clause_nth id "truth-conflict" literal_index parent_clause);
+  let target = clause_body_prop result in
+  let parent_name =
+    simple_apply_forall_vars (lookup_simple_name names parent_id) parent_sorts
+  in
+  simple_wrap_forall_intro result_sorts
+    (simple_clause_remove_truth_conflict_proof
        target result (Some literal_index) parent_clause parent_name 0)
 
 let simple_copy_proof id parent_id result checked names =
@@ -4422,6 +4494,47 @@ let simple_substitute_proof
   simple_wrap_forall_intro result_sorts
     (simple_clause_projection_proof target result substituted_parent parent_expr 0)
 
+let simple_substituted_parent_expr type_env subst parent_sorts parent_name =
+  let subst_sources = List.map fst subst in
+  if not
+       (List.for_all
+          (fun source_name ->
+             List.exists (fun (name, _) -> name = source_name) parent_sorts)
+          subst_sources) then
+    emit_error "substitution proof only instantiates quantified parent variables";
+  let arg_for_parent_var (name, sort) =
+    let tm =
+      match List.assoc_opt name subst with
+      | Some tm -> tm
+      | None -> TmH name
+    in
+    let text = simple_tm_expr_with_expected type_env (Some sort) tm in
+    match tm with
+    | TmH _ | DB _ -> text
+    | _ -> "(" ^ text ^ ")"
+  in
+  List.fold_left
+    (fun acc parent_sort -> "(" ^ acc ^ " " ^ arg_for_parent_var parent_sort ^ ")")
+    parent_name
+    parent_sorts
+
+let simple_condensation_clause_proof
+    clause_body_prop type_env id parent_id subst result parent_sorts result_sorts checked names =
+  let parent_clause = lookup_simple_clause checked parent_id in
+  let substituted_parent = subst_clause subst parent_clause in
+  let expected = unique_clause substituted_parent in
+  if expected <> result then
+    emit_error (id ^ ": simple condensation proof expects the duplicate-collapsed substituted parent clause");
+  if List.length expected >= List.length parent_clause then
+    emit_error (id ^ ": simple condensation proof expects at least one duplicate literal removal");
+  let parent_expr =
+    simple_substituted_parent_expr
+      type_env subst parent_sorts (lookup_simple_name names parent_id)
+  in
+  let target = clause_body_prop result in
+  simple_wrap_forall_intro result_sorts
+    (simple_clause_projection_proof target result substituted_parent parent_expr 0)
+
 let simple_condensation_proof id parent_id subst result checked names =
   if subst <> [] then
     emit_error (id ^ ": simple emitter does not support term-changing condensation");
@@ -4724,7 +4837,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     let variable_sorts = simple_variable_sorts_for_names names available_sorts in
     let local_type_env = simple_type_env_with_variables available_sorts symbol_type_env in
     match metadata_step_proposition cert id with
-    | Some prop ->
+    | Some prop when parent_ids = [] ->
         let metadata_sorts = metadata_step_variable_sort_pairs cert id in
         let definition_sorts = metadata_definition_lhs_sort_pairs cert id in
         let metadata_sorts =
@@ -4733,7 +4846,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
         in
         let prop = simple_fix_known_higher_order_binders prop in
         (simple_quantify_prop definition_sorts prop, metadata_sorts)
-    | None ->
+    | Some _ | None ->
         try
           let prop = simple_clause_prop_with_type_env local_type_env result in
           (simple_fix_known_higher_order_binders (simple_quantify_prop variable_sorts prop), variable_sorts)
@@ -5015,20 +5128,56 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                 "substitute" id [parent_id] result
           end
       | Condensation (id, parent_id, subst, result) ->
+          let subst_sorts = substitution_variable_sorts parent_id subst in
+          let prop, sorts = clause_prop_and_sorts_for_ids ~extra_sorts:subst_sorts id [parent_id] result in
+          let parent_sorts = variable_sorts_for_ids [parent_id] in
+          let type_env =
+            simple_type_env_with_variables
+              (parent_sorts @ subst_sorts @ sorts |> simple_unique_variable_sorts)
+              symbol_type_env
+          in
+          let parent_clause = lookup_simple_clause !checked parent_id in
+          let clause_body_prop clause =
+            try simple_clause_prop_with_type_env type_env clause
+            with Error _ -> simple_clause_prop clause
+          in
+          let structural_clause_prop sorts clause =
+            simple_quantify_prop sorts (clause_body_prop clause)
+          in
+          let substituted_parent = subst_clause subst parent_clause in
+          let substituted_sources = List.map fst subst in
+          let remaining_parent_sorts =
+            parent_sorts
+            |> List.filter (fun (name, _) -> not (List.mem name substituted_sources))
+          in
+          let needed_sorts =
+            remaining_parent_sorts @ subst_sorts |> simple_unique_variable_sorts
+          in
+          let structurally_safe =
+            unique_clause substituted_parent = result
+            && simple_sorts_subset needed_sorts sorts
+            && emitted_parent_prop parent_id = structural_clause_prop parent_sorts parent_clause
+            && prop = structural_clause_prop sorts result
+          in
           begin match
             try Some (simple_condensation_proof id parent_id subst result !checked !emitted_names)
-            with Error _ -> None
+            with Error _ ->
+              if not structurally_safe then None
+              else
+                try Some (simple_condensation_clause_proof
+                            clause_body_prop type_env id parent_id subst result
+                            parent_sorts sorts !checked !emitted_names)
+                with Error _ -> None
           with
           | Some proof ->
               let name = derived_name id in
-              let prop, sorts = clause_prop_and_sorts_for_ids id [parent_id] result in
               add_emitted id name;
               add_emitted_prop_and_sorts id prop sorts;
               claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")];
               add_checked id result
           | None ->
               add_clause_inference_bridge
-                ~extra_sorts:(substitution_variable_sorts parent_id subst)
+                ~extra_sorts:subst_sorts
                 "condensation" id [parent_id] result
           end
       | Resolve (id, left_id, right_id, left_index, right_index, result) ->
@@ -5224,8 +5373,44 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           add_clause_inference_bridge
             ~extra_sorts:(substitution_variable_sorts parent_id subst)
             "equality_factoring_constraints" id [parent_id] result
-      | TruthConflict (id, parent_id, _, result) ->
-          add_clause_inference_bridge "truth_conflict" id [parent_id] result
+      | TruthConflict (id, parent_id, literal_index, result) ->
+          let prop, sorts = clause_prop_and_sorts_for_ids id [parent_id] result in
+          let parent_sorts = variable_sorts_for_ids [parent_id] in
+          let parent_clause = lookup_simple_clause !checked parent_id in
+          let type_env =
+            simple_type_env_with_variables
+              (parent_sorts @ sorts |> simple_unique_variable_sorts)
+              symbol_type_env
+          in
+          let clause_body_prop clause =
+            try simple_clause_prop_with_type_env type_env clause
+            with Error _ -> simple_clause_prop clause
+          in
+          let structural_clause_prop sorts clause =
+            simple_quantify_prop sorts (clause_body_prop clause)
+          in
+          let structurally_safe =
+            simple_sorts_subset parent_sorts sorts
+            && emitted_parent_prop parent_id = structural_clause_prop parent_sorts parent_clause
+            && prop = structural_clause_prop sorts result
+          in
+          begin match
+            if not structurally_safe then None
+            else
+              try Some (simple_truth_conflict_clause_proof
+                          clause_body_prop id parent_id literal_index result
+                          parent_sorts sorts !checked !emitted_names)
+              with Error _ -> None
+          with
+          | Some proof ->
+              let name = derived_name id in
+              add_emitted id name;
+              add_emitted_prop_and_sorts id prop sorts;
+              claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")];
+              add_checked id result
+          | None ->
+              add_clause_inference_bridge "truth_conflict" id [parent_id] result
+          end
       | BoolSimplify (id, parent_id, _, _, _, _, result) ->
           add_clause_inference_bridge "bool_simplify" id [parent_id] result
       | Paramodulate (id, equality_parent_id, target_parent_id, _, _, _, _, _, result) ->
