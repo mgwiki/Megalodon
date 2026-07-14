@@ -14,12 +14,11 @@ else
       -maxdepth 1 \
       -type f \
       -executable \
-      -name 'megalodon_*' \
+      -name 'megalodon*_*' \
       2>/dev/null \
       | sort -V \
       | tail -n 1
   )
-  DEFAULT_VAMPIRE=${DEFAULT_VAMPIRE:-/project/vampire-leancheck/vampire_rel_vampire/megalodon_10780}
 fi
 VAMPIRE=${VAMPIRE:-"$DEFAULT_VAMPIRE"}
 SOURCE=${SOURCE:-examples/hammer/100thms_12_h.mg}

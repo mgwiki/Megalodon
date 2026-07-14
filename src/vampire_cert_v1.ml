@@ -3254,6 +3254,28 @@ let metadata_step_extra_field cert id kind key =
 	               else None)
 	            fields)
 
+let metadata_avatar_split_parent_var_bindings cert id =
+  let field key = metadata_step_extra_field cert id "avatar_split" key in
+  match field "parent_var_binding_count" with
+  | None -> []
+  | Some count_text ->
+      let count =
+        try int_of_string count_text with Failure _ -> 0
+      in
+      let rec loop index acc =
+        if index >= count then List.rev acc
+        else
+          let prefix = "parent_var_binding_" ^ string_of_int index in
+          let acc =
+            match field (prefix ^ "_parent_var"), field (prefix ^ "_split_var") with
+            | Some parent_var, Some split_var ->
+                (parent_var, "split_" ^ split_var) :: acc
+            | _ -> acc
+          in
+          loop (index + 1) acc
+      in
+      loop 0 []
+
 let metadata_definition_lhs_sort_pairs cert id =
   let is_db_name name =
     let len = String.length name in
@@ -6194,7 +6216,6 @@ let simple_avatar_component_proof type_env split_definitions id result_sorts res
   in
   let raw_target_formula = simple_clause_formula_tm result in
   let target_formula = left_assoc_vampire_or_formula raw_target_formula in
-  let raw_target_prop = simple_clause_prop_with_type_env type_env result in
   let rec prop_text = function
     | TmH name when string_starts_with "split_" name -> megalodon_ident name
     | Imp (left, right) ->
@@ -6210,6 +6231,55 @@ let simple_avatar_component_proof type_env split_definitions id result_sorts res
         end
   in
   let target_prop = prop_text target_formula in
+  let rec formula_contains_literal formula literal =
+    formula = formula_tm_of_literal literal
+    ||
+    match formula with
+    | Ap (Ap (TmH "vampire_or", left), right) ->
+        formula_contains_literal left literal
+        || formula_contains_literal right literal
+    | _ -> false
+  in
+  let rec formula_intro_proof formula literal proof =
+    if formula = formula_tm_of_literal literal then proof
+    else
+      match formula with
+      | Ap (Ap (TmH "vampire_or", left), right) ->
+          let left_prop = prop_text left in
+          let right_prop = prop_text right in
+          if formula_contains_literal left literal then
+            let left_proof = formula_intro_proof left literal proof in
+            Printf.sprintf
+              "(fun vavatar_goal:prop => fun Hleft:(%s) -> vavatar_goal => fun Hright:(%s) -> vavatar_goal => Hleft %s)"
+              left_prop right_prop left_proof
+          else if formula_contains_literal right literal then
+            let right_proof = formula_intro_proof right literal proof in
+            Printf.sprintf
+              "(fun vavatar_goal:prop => fun Hleft:(%s) -> vavatar_goal => fun Hright:(%s) -> vavatar_goal => Hright %s)"
+              left_prop right_prop right_proof
+          else
+            emit_error (id ^ ": avatar component target does not contain literal")
+      | _ -> emit_error (id ^ ": avatar component target is not an or-formula")
+  in
+  let rec formula_projection_from_clause source_clause source_proof depth =
+    match source_clause with
+    | [] -> emit_error (id ^ ": avatar component cannot project from empty body")
+    | [lit] -> formula_intro_proof target_formula lit source_proof
+    | lit :: rest ->
+        let head_name = "Havatar_component_lit_" ^ string_of_int depth in
+        let tail_name = "Havatar_component_tail_" ^ string_of_int depth in
+        let head_type = prop_text (formula_tm_of_literal lit) in
+        let tail_type = prop_text (simple_clause_formula_tm rest) in
+        let head_branch = formula_intro_proof target_formula lit head_name in
+        let tail_branch =
+          formula_projection_from_clause rest tail_name (depth + 1)
+        in
+        Printf.sprintf
+          "(%s %s (fun %s:%s => %s) (fun %s:%s => %s))"
+          source_proof (simple_prop_arg target_prop)
+          head_name head_type head_branch
+          tail_name tail_type tail_branch
+  in
   let orient_target proof =
     if raw_target_formula = target_formula then proof
     else
@@ -6267,35 +6337,14 @@ let simple_avatar_component_proof type_env split_definitions id result_sorts res
         proof_name
         result_sorts
     in
-    simple_clause_projection_proof raw_target_prop result body_clause body_proof 0
-    |> orient_target
+    formula_projection_from_clause body_clause body_proof 0
   in
-  let body_instance_proof proof_name =
-    List.fold_left
-      (fun acc (name, _) -> "(" ^ acc ^ " " ^ megalodon_ident name ^ ")")
-      proof_name
-      result_sorts
-  in
-  let body_target_formula = left_assoc_vampire_or_formula (simple_clause_formula_tm body_clause) in
-  let body_target_prop = prop_text body_target_formula in
   let split_prop = prop_text (formula_tm_of_literal split_literal) in
   let target_from_body proof_name =
-    let body_proof = body_instance_proof proof_name in
-    if result = component_literals @ [split_literal]
-       && simple_clause_formula_tm body_clause = body_target_formula then
-      Printf.sprintf
-        "(fun vavatar_goal:prop => fun Hleft:(%s) -> vavatar_goal => fun Hright:(%s) -> vavatar_goal => Hleft %s)"
-        body_target_prop split_prop body_proof
-    else
-      prove_from_body proof_name
+    prove_from_body proof_name
   in
   let target_from_not_body proof_name =
-    if result = component_literals @ [split_literal] then
-      Printf.sprintf
-        "(fun vavatar_goal:prop => fun Hleft:(%s) -> vavatar_goal => fun Hright:(%s) -> vavatar_goal => Hright %s)"
-        body_target_prop split_prop proof_name
-    else
-      simple_clause_intro_proof result split_literal proof_name |> orient_target
+    formula_intro_proof target_formula split_literal proof_name
   in
   let proof =
     match split_literal with
@@ -6410,10 +6459,9 @@ let simple_formula_projection_with_eliminators target_prop target_clause source_
   project 0 source_formula source_proof
 
 let simple_avatar_split_proof
-    type_env split_definitions id result_sorts parent_id parent_sorts parent_clause result parent_name =
+    type_env split_definitions parent_var_bindings id result_sorts parent_id parent_sorts parent_clause result parent_name =
   let raw_target_formula = simple_clause_formula_tm result in
   let target_formula = left_assoc_vampire_or_formula raw_target_formula in
-  let target_prop = simple_clause_prop_with_type_env type_env result in
   let rec prop_text = function
     | TmH name when string_starts_with "split_" name -> megalodon_ident name
     | Imp (left, right) ->
@@ -6422,50 +6470,73 @@ let simple_avatar_split_proof
         "(" ^ prop_text left ^ " \\/ " ^ prop_text right ^ ")"
     | atom -> simple_tm_expr_with_expected type_env (Some "prop") atom
   in
-  let orient_target proof =
-    if raw_target_formula = target_formula then proof
+  let target_prop = prop_text target_formula in
+  let rec formula_contains_literal formula literal =
+    formula = formula_tm_of_literal literal
+    ||
+    match formula with
+    | Ap (Ap (TmH "vampire_or", left), right) ->
+        formula_contains_literal left literal
+        || formula_contains_literal right literal
+    | _ -> false
+  in
+  let rec formula_intro_proof formula literal proof =
+    if formula = formula_tm_of_literal literal then proof
     else
-      match raw_target_formula, target_formula with
-      | Ap (Ap (TmH "vampire_or", source_a),
-            Ap (Ap (TmH "vampire_or", source_b), source_c)),
-        Ap (Ap (TmH "vampire_or",
-                Ap (Ap (TmH "vampire_or", target_a), target_b)),
-            target_c)
-          when source_a = target_a && source_b = target_b && source_c = target_c ->
-          let a_text = prop_text target_a in
-          let b_text = prop_text target_b in
-          let c_text = prop_text target_c in
-          let target_left_text = prop_text (vampire_or target_a target_b) in
-          let target_text = prop_text target_formula in
-          let source_tail_text = prop_text (vampire_or source_b source_c) in
-          let target_left_from_a =
+      match formula with
+      | Ap (Ap (TmH "vampire_or", left), right) ->
+          let left_prop = prop_text left in
+          let right_prop = prop_text right in
+          if formula_contains_literal left literal then
+            let left_proof = formula_intro_proof left literal proof in
             Printf.sprintf
-              "(fun vavatar_split_assoc_left_goal:prop => fun Hleft:(%s) -> vavatar_split_assoc_left_goal => fun Hright:(%s) -> vavatar_split_assoc_left_goal => Hleft Havatar_split_assoc_a)"
-              a_text b_text
-          in
-          let target_left_from_b =
+              "(fun vavatar_split_goal:prop => fun Hleft:(%s) -> vavatar_split_goal => fun Hright:(%s) -> vavatar_split_goal => Hleft %s)"
+              left_prop right_prop left_proof
+          else if formula_contains_literal right literal then
+            let right_proof = formula_intro_proof right literal proof in
             Printf.sprintf
-              "(fun vavatar_split_assoc_left_goal:prop => fun Hleft:(%s) -> vavatar_split_assoc_left_goal => fun Hright:(%s) -> vavatar_split_assoc_left_goal => Hright Havatar_split_assoc_b)"
-              a_text b_text
+              "(fun vavatar_split_goal:prop => fun Hleft:(%s) -> vavatar_split_goal => fun Hright:(%s) -> vavatar_split_goal => Hright %s)"
+              left_prop right_prop right_proof
+          else
+            emit_error (id ^ ": avatar split target does not contain literal")
+      | _ -> emit_error (id ^ ": avatar split target is not an or-formula")
+  in
+  let formula_projection_with_eliminators source_clause source_proof eliminator =
+    let false_elim proof =
+      Printf.sprintf "(%s %s)" proof (simple_prop_arg target_prop)
+    in
+    let rec project depth clause proof =
+      match clause with
+      | [] -> emit_error (id ^ ": avatar split cannot project from empty clause")
+      | [lit] ->
+          if formula_contains_literal target_formula lit then
+            formula_intro_proof target_formula lit proof
+          else
+            begin match eliminator lit proof with
+            | Some contradiction -> false_elim contradiction
+            | None -> emit_error "avatar split projection has an unhandled literal"
+            end
+      | lit :: rest ->
+          let head_name = "Havatar_split_lit_" ^ string_of_int depth in
+          let tail_name = "Havatar_split_tail_" ^ string_of_int depth in
+          let head_type = prop_text (formula_tm_of_literal lit) in
+          let tail_type = prop_text (simple_clause_formula_tm rest) in
+          let head_branch =
+            if formula_contains_literal target_formula lit then
+              formula_intro_proof target_formula lit head_name
+            else
+              begin match eliminator lit head_name with
+              | Some contradiction -> false_elim contradiction
+              | None -> emit_error "avatar split projection has an unhandled literal"
+              end
           in
-          let target_from_left left_proof =
-            Printf.sprintf
-              "(fun vavatar_split_assoc_goal:prop => fun Hleft:(%s) -> vavatar_split_assoc_goal => fun Hright:(%s) -> vavatar_split_assoc_goal => Hleft %s)"
-              target_left_text c_text left_proof
-          in
-          let target_from_c =
-            Printf.sprintf
-              "(fun vavatar_split_assoc_goal:prop => fun Hleft:(%s) -> vavatar_split_assoc_goal => fun Hright:(%s) -> vavatar_split_assoc_goal => Hright Havatar_split_assoc_c)"
-              target_left_text c_text
-          in
-          Printf.sprintf
-            "(%s %s (fun Havatar_split_assoc_a:%s => %s) (fun Havatar_split_assoc_tail:(%s) => Havatar_split_assoc_tail %s (fun Havatar_split_assoc_b:%s => %s) (fun Havatar_split_assoc_c:%s => %s)))"
-            proof (simple_prop_arg target_text)
-            a_text (target_from_left target_left_from_a)
-            source_tail_text (simple_prop_arg target_text)
-            b_text (target_from_left target_left_from_b)
-            c_text target_from_c
-      | _ -> emit_error (id ^ ": avatar split target association is unsupported")
+          let tail_branch = project (depth + 1) rest tail_name in
+          Printf.sprintf "(%s %s (fun %s:%s => %s) (fun %s:%s => %s))"
+            proof (simple_prop_arg target_prop)
+            head_name head_type head_branch
+            tail_name tail_type tail_branch
+    in
+    project 0 source_clause source_proof
   in
   let split_name_of_literal = function
     | Pos (TmH name) | Neg (TmH name) when string_starts_with "split_" name ->
@@ -6485,12 +6556,23 @@ let simple_avatar_split_proof
   let split_for_parent_variable name sort assignments =
     if sort <> "prop" then None
     else
-      split_definitions
-      |> List.find_opt
-           (fun (split_name, (_, body_clause, _)) ->
-              List.exists (fun (assigned, _) -> assigned = split_name) assignments
-              && clause_contains_symbol name body_clause)
-      |> Option.map (fun (split_name, _) -> split_name)
+      match
+        parent_var_bindings
+        |> List.find_map
+             (fun (parent_var, split_name) ->
+                if megalodon_ident parent_var = name
+                   && List.exists (fun (assigned, _) -> assigned = split_name) assignments then
+                  Some split_name
+                else None)
+      with
+      | Some _ as split_name -> split_name
+      | None ->
+          split_definitions
+          |> List.find_opt
+               (fun (split_name, (_, body_clause, _)) ->
+                  List.exists (fun (assigned, _) -> assigned = split_name) assignments
+                  && clause_contains_symbol name body_clause)
+          |> Option.map (fun (split_name, _) -> split_name)
   in
   let contradiction_from_assignment lit lit_proof assignments =
     match lit with
@@ -6620,8 +6702,7 @@ let simple_avatar_split_proof
     | Some proof -> proof
     | None ->
         let eliminator lit proof = contradiction_from_assignment lit proof assignments in
-        simple_clause_projection_with_eliminators
-          target_prop result parent_clause parent_name eliminator
+        formula_projection_with_eliminators parent_clause parent_name eliminator
   in
   let rec cases assignments = function
     | [] -> prove_from_contradiction assignments
@@ -6635,7 +6716,7 @@ let simple_avatar_split_proof
                 let true_name = branch_name "Havatar_split" split_name in
                 let false_name = branch_name "Havatar_not_split" split_name in
                 let true_branch =
-                  simple_clause_intro_proof result lit true_name
+                  formula_intro_proof target_formula lit true_name
                 in
                 let false_branch =
                   cases ((split_name, `False false_name) :: assignments) rest
@@ -6651,7 +6732,7 @@ let simple_avatar_split_proof
                   cases ((split_name, `True true_name) :: assignments) rest
                 in
                 let false_branch =
-                  simple_clause_intro_proof result lit false_name
+                  formula_intro_proof target_formula lit false_name
                 in
                 Printf.sprintf
                   "((vampire_xm (%s)) %s (fun %s:%s => %s) (fun %s:%s -> False => %s))"
@@ -6663,7 +6744,7 @@ let simple_avatar_split_proof
   let direct =
     try
       Some
-        (simple_clause_projection_proof target_prop result parent_clause parent_name 0)
+        (formula_projection_with_eliminators parent_clause parent_name (fun _ _ -> None))
     with Error _ -> None
   in
   let proof =
@@ -6671,7 +6752,7 @@ let simple_avatar_split_proof
     | Some proof -> proof
     | None -> cases [] result
   in
-  simple_wrap_forall_intro result_sorts (orient_target proof)
+  simple_wrap_forall_intro result_sorts proof
 
 let simple_avatar_refutation_proof cert id parent_ids sat_clauses checked names =
   if parent_ids = [] || List.length parent_ids <> List.length sat_clauses then
@@ -9910,7 +9991,9 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                   in
                   Some
                     (simple_avatar_split_proof
-                       type_env avatar_split_definition_env id sorts
+                       type_env avatar_split_definition_env
+                       (metadata_avatar_split_parent_var_bindings cert id)
+                       id sorts
                        parent_id (variable_sorts_for_ids [parent_id]) parent_clause
                        proof_result parent_name)
                 with Error _ -> None

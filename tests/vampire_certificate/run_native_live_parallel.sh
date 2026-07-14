@@ -11,7 +11,7 @@ DEFAULT_VAMPIRE=$(
     -maxdepth 1 \
     -type f \
     -executable \
-    -name 'megalodon2_*' \
+    -name 'megalodon*_*' \
     2>/dev/null \
     | sort -V \
     | tail -n 1
