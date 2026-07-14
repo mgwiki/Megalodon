@@ -4,6 +4,8 @@
   (step_variable_sorts "f1" ("X0:prop"))
   (step_proposition "f2" "forall X1:prop, X1 = X2")
   (step_variable_sorts "f2" ("X1:prop"))
+  (step_proposition "c1" "forall X1:prop, X1 = X2")
+  (step_variable_sorts "c1" ("X1:prop"))
   (formula_term_input f1 (source axiom "a1")
     (formula
       (ALL (PROP)

@@ -3008,6 +3008,15 @@ let collect_simple_names cert =
     | FormulaTermInput (id, _, _) ->
         ignore (simple_formula_prop cert id);
         acc
+    | FormulaTermCopy (id, _, _) ->
+        ignore (simple_formula_prop cert id);
+        acc
+    | RectifyFormula (id, _, _, _) ->
+        ignore (simple_formula_prop cert id);
+        acc
+    | FormulaCopy (id, _, _) ->
+        ignore (simple_formula_prop cert id);
+        acc
     | Substitute (_, _, _, clause) -> add_clause acc clause
     | Condensation (_, _, _, clause) -> add_clause acc clause
     | Resolve (_, _, _, _, _, clause) -> add_clause acc clause
@@ -3219,6 +3228,21 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           let name = input_name id source in
           add_emitted id name;
           assumptions := !assumptions @ [(name, simple_formula_prop cert id)]
+      | FormulaTermCopy (id, parent_id, _) ->
+          let name = derived_name id in
+          let proof = lookup_simple_name !emitted_names parent_id in
+          add_emitted id name;
+          claims := !claims @ [(name, simple_formula_prop cert id, "exact " ^ proof ^ ".")]
+      | RectifyFormula (id, parent_id, _, _) ->
+          let name = derived_name id in
+          let proof = lookup_simple_name !emitted_names parent_id in
+          add_emitted id name;
+          claims := !claims @ [(name, simple_formula_prop cert id, "exact " ^ proof ^ ".")]
+      | FormulaCopy (id, parent_id, _) ->
+          let name = derived_name id in
+          let proof = lookup_simple_name !emitted_names parent_id in
+          add_emitted id name;
+          claims := !claims @ [(name, simple_formula_prop cert id, "exact " ^ proof ^ ".")]
       | Substitute (id, parent_id, _, result) ->
           let name = derived_name id in
           let proof = simple_copy_proof id parent_id result !checked !emitted_names in

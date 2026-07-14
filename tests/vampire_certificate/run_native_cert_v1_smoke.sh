@@ -677,7 +677,7 @@ if bin/megalodon \
   echo "native certificate v1 simple emitter accepted unsupported formula transformation" >&2
   exit 1
 fi
-if ! rg -q 'unsupported rule rectify_formula at step f2; proposition: forall X1:prop, X1 = X2; variable_sorts: X1:prop' \
+if ! rg -q 'unsupported rule cnf_literal at step c1; proposition: forall X1:prop, X1 = X2; variable_sorts: X1:prop' \
     "$WORK_DIR/native_cert_v1_rectify_scoped_equality_symmetry_unsupported.err"; then
   echo "native certificate v1 simple emitter did not report formula metadata in unsupported-rule diagnostics" >&2
   exit 1
