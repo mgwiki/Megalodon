@@ -5093,6 +5093,149 @@ let simple_prop_term_expr type_env source_atom tm =
   if tm = source_atom then simple_atom_prop_with_type_env type_env source_atom
   else simple_tm_expr_with_expected type_env (Some "prop") tm
 
+let simple_bool_true_tm = function
+  | TmH "f__true" | TmH "vampire_true" -> true
+  | _ -> false
+
+let simple_fool_eq_to_true source target =
+  match equality_sides target with
+  | Some (left, right) when left = source && simple_bool_true_tm right ->
+      Some (`SourceLeft, left, right)
+  | Some (left, right) when right = source && simple_bool_true_tm left ->
+      Some (`SourceRight, left, right)
+  | _ -> None
+
+let simple_fool_atom_forward_proof type_env source target proof =
+  match simple_fool_eq_to_true source target with
+  | Some (`SourceLeft, left, right) ->
+      let left_text = simple_prop_term_expr type_env source left in
+      let right_text = simple_tm_expr_with_expected type_env (Some "prop") right in
+      Printf.sprintf
+        "(vampire_eq_prop_ext (%s) (%s) (fun H => %s) (fun H => %s))"
+        left_text right_text simple_true_proof proof
+  | Some (`SourceRight, left, right) ->
+      let left_text = simple_tm_expr_with_expected type_env (Some "prop") left in
+      let right_text = simple_prop_term_expr type_env source right in
+      Printf.sprintf
+        "(vampire_eq_prop_ext (%s) (%s) (fun H => %s) (fun H => %s))"
+        left_text right_text proof simple_true_proof
+  | None ->
+      if source = target then proof
+      else emit_error "FOOL formula atom is not an equality-to-true lifting"
+
+let simple_fool_atom_backward_proof type_env source target proof =
+  match simple_fool_eq_to_true source target with
+  | Some (`SourceLeft, left, right) ->
+      let left_text = simple_prop_term_expr type_env source left in
+      let right_text = simple_tm_expr_with_expected type_env (Some "prop") right in
+      Printf.sprintf
+        "((vampire_eq_prop_sym (%s) (%s) %s) (fun Z:prop => Z) %s)"
+        left_text right_text proof simple_true_proof
+  | Some (`SourceRight, _, _) ->
+      Printf.sprintf "(%s (fun Z:prop => Z) %s)" proof simple_true_proof
+  | None ->
+      if source = target then proof
+      else emit_error "FOOL formula atom is not an equality-to-true lifting"
+
+let rec simple_tm_contains_all = function
+  | All _ -> true
+  | TpAp (tm, _) -> simple_tm_contains_all tm
+  | Ap (left, right)
+  | Imp (left, right) ->
+      simple_tm_contains_all left || simple_tm_contains_all right
+  | Lam (_, body) -> simple_tm_contains_all body
+  | DB _ | TmH _ | Prim _ -> false
+
+let rec simple_fool_prefix_imp_shape source target =
+  match source, target with
+  | All (source_tp, source_body), All (target_tp, target_body) when source_tp = target_tp ->
+      simple_fool_prefix_imp_shape source_body target_body
+  | All _, _
+  | _, All _ ->
+      false
+  | Imp _, _
+  | _, Imp _ ->
+      false
+  | _ ->
+      not (simple_tm_contains_all source || simple_tm_contains_all target)
+      && Option.is_some (simple_fool_eq_to_true source target)
+
+let simple_fool_formula_proof type_env id parent_sorts result_sorts source target parent_name =
+  let binder_sorts =
+    parent_sorts @ result_sorts |> simple_unique_variable_sorts
+  in
+  let binder_index = ref 0 in
+  let proof_var_index = ref 0 in
+  let fallback_binder sort =
+    let name =
+      match List.nth_opt binder_sorts !binder_index with
+      | Some (name, known_sort) when known_sort = sort ->
+          incr binder_index;
+        megalodon_ident name
+      | Some (name, _) ->
+          incr binder_index;
+          megalodon_ident name
+      | None ->
+          let name = "Xfool_" ^ string_of_int !binder_index in
+          incr binder_index;
+          name
+    in
+    name
+  in
+  let fresh_proof_var () =
+    let name = "Hfool_arg_" ^ string_of_int !proof_var_index in
+    incr proof_var_index;
+    name
+  in
+  let rec convert direction env source target proof =
+    match source, target with
+    | All (source_tp, source_body), All (target_tp, target_body) when source_tp = target_tp ->
+        let sort = simple_tp_expr source_tp in
+        ignore target_body;
+        let binder = fallback_binder sort in
+        let env = (binder, sort) :: env in
+        let body_proof = convert direction env source_body target_body ("(" ^ proof ^ " " ^ binder ^ ")") in
+        "(fun " ^ binder ^ ":" ^ sort ^ " => " ^ body_proof ^ ")"
+    | Imp (source_left, source_right), Imp (target_left, target_right) ->
+        begin match direction with
+        | `Forward ->
+            let arg = fresh_proof_var () in
+            let left_source =
+              convert `Backward env source_left target_left arg
+            in
+            let source_right_proof = "(" ^ proof ^ " " ^ left_source ^ ")" in
+            let target_right =
+              convert `Forward env source_right target_right source_right_proof
+            in
+            "(fun " ^ arg ^ " => " ^ target_right ^ ")"
+        | `Backward ->
+            let arg = fresh_proof_var () in
+            let left_target =
+              convert `Forward env source_left target_left arg
+            in
+            let target_right_proof = "(" ^ proof ^ " " ^ left_target ^ ")" in
+            let source_right =
+              convert `Backward env source_right target_right target_right_proof
+            in
+            "(fun " ^ arg ^ " => " ^ source_right ^ ")"
+        end
+    | _ ->
+        ignore env;
+        begin match direction with
+        | `Forward -> simple_fool_atom_forward_proof type_env source target proof
+        | `Backward -> simple_fool_atom_backward_proof type_env source target proof
+        end
+  in
+  let expected = fool_formula_tm source in
+  if not (simple_fool_prefix_imp_shape source target) then
+    emit_error (id ^ ": FOOL formula proof supports only prefix-universal atomic lifting");
+  if expected <> target
+     && normalize_bool_equality_orientation expected <> normalize_bool_equality_orientation target
+     && normalize_equality_orientation expected <> normalize_equality_orientation target
+     && normalize_fool_formula_shape expected <> normalize_fool_formula_shape target then
+    emit_error (id ^ ": FOOL formula proof target does not match recursive lifting");
+  convert `Forward [] source target parent_name
+
 let simple_fool_bool_proof
     type_env parent_sorts result_sorts id parent_literal result_literal names parent_id =
   let parent_name =
@@ -5150,7 +5293,7 @@ let simple_fool_bool_proof
   simple_wrap_forall_intro result_sorts proof
 
 let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_map=[]) cert =
-  ignore (check_certificate cert);
+  let checked_certificate = check_certificate cert in
   simple_lambda_sort_env := metadata_lambda_sort_env cert;
   let prop_names, term_names = collect_simple_names cert in
   let lines = ref
@@ -5490,8 +5633,39 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       | FoolFormula (id, parent_id, formula) ->
           let name = derived_name id in
           let target_prop, target_sorts = formula_tm_prop_and_sorts id formula in
-          add_emitted id name;
-          add_bridge_claim ~kind:"fool" id parent_id name target_prop target_sorts
+          let parent_sorts = metadata_step_variable_sort_pairs cert parent_id in
+          let type_env =
+            simple_type_env_with_variables
+              (parent_sorts @ target_sorts |> simple_unique_variable_sorts)
+              symbol_type_env
+          in
+          begin match
+            try
+              let parent_formula = lookup_formula checked_certificate parent_id in
+              let parent_name = lookup_simple_name !emitted_names parent_id in
+              let saved_vlam_counter = !simple_vlam_name_counter in
+              let proof =
+                try
+                  simple_fool_formula_proof
+                    type_env id parent_sorts target_sorts parent_formula formula parent_name
+                with exn ->
+                  simple_vlam_name_counter := saved_vlam_counter;
+                  raise exn
+              in
+              simple_vlam_name_counter := saved_vlam_counter;
+              Some
+                proof
+            with Error _ -> None
+          with
+          | Some proof ->
+              uses_vampire_eq_prop_ext := true;
+              add_emitted id name;
+              add_emitted_prop_and_sorts id target_prop target_sorts;
+              claims := !claims @ [(name, target_prop, "exact " ^ proof ^ ".")]
+          | None ->
+              add_emitted id name;
+              add_bridge_claim ~kind:"fool" id parent_id name target_prop target_sorts
+          end
       | FoolBool (id, parent_id, result) ->
           let name = derived_name id in
           let target_prop, target_sorts = formula_literal_prop_and_sorts id result in
