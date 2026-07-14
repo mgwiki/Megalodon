@@ -7379,25 +7379,39 @@ let simple_skolem_formula_proof ?opened_witness
         | None -> None
         end
   in
-  let formula_binder env sort body =
-    match inferred_formula_binder env sort body with
-    | Some binder -> binder
-    | None -> fallback_binder sort
+  let metadata_formula_binder bound sort body =
+    binder_sorts
+    |> List.find_opt
+         (fun (name, known_sort) ->
+            let binder = megalodon_ident name in
+            known_sort = sort
+            && not (List.mem binder bound)
+            && tm_contains_symbol binder body)
+    |> Option.map (fun (name, _) -> megalodon_ident name)
   in
-  let rec formula_text env tm =
+  let formula_binder bound env sort body =
+    match metadata_formula_binder bound sort body with
+    | Some binder -> binder
+    | None ->
+        begin match inferred_formula_binder env sort body with
+        | Some binder -> binder
+        | None -> fallback_binder sort
+        end
+  in
+  let rec formula_text bound env tm =
     match tm with
     | All (tp, body) ->
         let sort = simple_tp_expr tp in
-        let binder = formula_binder env sort body in
+        let binder = formula_binder bound env sort body in
         "forall " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ ", "
         ^ simple_with_db_aliases [binder]
-            (fun () -> formula_text ((binder, sort) :: env) body)
+            (fun () -> formula_text (binder :: bound) ((binder, sort) :: env) body)
     | Imp (left, right) ->
-        "((" ^ formula_text env left ^ ") -> (" ^ formula_text env right ^ "))"
+        "((" ^ formula_text bound env left ^ ") -> (" ^ formula_text bound env right ^ "))"
     | Ap (Ap (TmH "vampire_and", left), right) ->
-        "vampire_and (" ^ formula_text env left ^ ") (" ^ formula_text env right ^ ")"
+        "vampire_and (" ^ formula_text bound env left ^ ") (" ^ formula_text bound env right ^ ")"
     | Ap (Ap (TmH "vampire_or", left), right) ->
-        "vampire_or (" ^ formula_text env left ^ ") (" ^ formula_text env right ^ ")"
+        "vampire_or (" ^ formula_text bound env left ^ ") (" ^ formula_text bound env right ^ ")"
     | Ap (exists_head, Lam (tp, body)) when is_exists_head exists_head ->
         let sort = simple_tp_expr tp in
         let exists_name =
@@ -7436,34 +7450,31 @@ let simple_skolem_formula_proof ?opened_witness
         in
         exists_name ^ " (fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => "
         ^ simple_with_db_aliases [binder]
-            (fun () -> formula_text ((binder, sort) :: env) body)
+            (fun () -> formula_text (binder :: bound) ((binder, sort) :: env) body)
         ^ ")"
     | _ ->
         simple_formula_prop_text_with_used [] env tm
   in
-  let rec transport env available_subst source target proof =
+  let rec transport bound env available_subst source target proof =
     if source = target then proof
     else
       match source, target with
       | All (source_tp, source_body), All (target_tp, target_body) when source_tp = target_tp ->
           let sort = simple_tp_expr source_tp in
-          let fallback = fallback_binder sort in
           let source_raw =
-            if tm_contains_symbol fallback source_body then Some fallback
-            else inferred_formula_binder env sort source_body
+            match metadata_formula_binder bound sort source_body with
+            | Some _ as found -> found
+            | None -> inferred_formula_binder env sort source_body
           in
           let target_raw =
-            if tm_contains_symbol fallback target_body then Some fallback
-            else inferred_formula_binder env sort target_body
+            match metadata_formula_binder bound sort target_body with
+            | Some _ as found -> found
+            | None -> inferred_formula_binder env sort target_body
           in
           let binder =
-            if tm_contains_symbol fallback source_body
-               || tm_contains_symbol fallback target_body then
-              fallback
-            else
-              match target_raw, source_raw with
-              | Some binder, _ | None, Some binder -> binder
-              | None, None -> fallback
+            match target_raw, source_raw with
+            | Some binder, _ | None, Some binder -> binder
+            | None, None -> fallback_binder sort
           in
           let source_body =
             match source_raw with
@@ -7481,16 +7492,16 @@ let simple_skolem_formula_proof ?opened_witness
           Printf.sprintf
             "(fun %s:%s => %s)"
             binder (simple_binder_sort_expr sort)
-            (transport env available_subst source_body target_body ("(" ^ proof ^ " " ^ binder ^ ")"))
+            (transport (binder :: bound) env available_subst source_body target_body ("(" ^ proof ^ " " ^ binder ^ ")"))
       | Ap (Ap (TmH "vampire_and", source_left), source_right),
         Ap (Ap (TmH "vampire_and", target_left), target_right) ->
           let left_name = fresh "Hskolem_and_left_" in
           let right_name = fresh "Hskolem_and_right_" in
-          let target_left_text = formula_text env target_left in
-          let target_right_text = formula_text env target_right in
-          let target_text = formula_text env target in
-          let left_proof = transport env available_subst source_left target_left left_name in
-          let right_proof = transport env available_subst source_right target_right right_name in
+          let target_left_text = formula_text bound env target_left in
+          let target_right_text = formula_text bound env target_right in
+          let target_text = formula_text bound env target in
+          let left_proof = transport bound env available_subst source_left target_left left_name in
+          let right_proof = transport bound env available_subst source_right target_right right_name in
           let target_intro =
             Printf.sprintf
               "(fun vskolem_and_goal:prop => fun Hskolem_and:(%s) -> (%s) -> vskolem_and_goal => Hskolem_and %s %s)"
@@ -7508,16 +7519,16 @@ let simple_skolem_formula_proof ?opened_witness
           let a_name = fresh "Hskolem_assoc_a_" in
           let b_name = fresh "Hskolem_assoc_b_" in
           let c_name = fresh "Hskolem_assoc_c_" in
-          let target_a_text = formula_text env target_a in
-          let target_b_text = formula_text env target_b in
-          let target_c_text = formula_text env target_c in
+          let target_a_text = formula_text bound env target_a in
+          let target_b_text = formula_text bound env target_b in
+          let target_c_text = formula_text bound env target_c in
           let target_left_text =
-            formula_text env (Ap (Ap (TmH "vampire_or", target_a), target_b))
+            formula_text bound env (Ap (Ap (TmH "vampire_or", target_a), target_b))
           in
-          let target_text = formula_text env target in
-          let a_proof = transport env available_subst source_a target_a a_name in
-          let b_proof = transport env available_subst source_b target_b b_name in
-          let c_proof = transport env available_subst source_c target_c c_name in
+          let target_text = formula_text bound env target in
+          let a_proof = transport bound env available_subst source_a target_a a_name in
+          let b_proof = transport bound env available_subst source_b target_b b_name in
+          let c_proof = transport bound env available_subst source_c target_c c_name in
           let target_left_from_a =
             Printf.sprintf
               "(fun vassoc_left_goal:prop => fun Hassoc_left:(%s) -> vassoc_left_goal => fun Hassoc_right:(%s) -> vassoc_left_goal => Hassoc_left %s)"
@@ -7549,11 +7560,11 @@ let simple_skolem_formula_proof ?opened_witness
         Ap (Ap (TmH "vampire_or", target_left), target_right) ->
           let left_name = fresh "Hskolem_left_" in
           let right_name = fresh "Hskolem_right_" in
-          let target_left_text = formula_text env target_left in
-          let target_right_text = formula_text env target_right in
-          let target_text = formula_text env target in
-          let left_proof = transport env available_subst source_left target_left left_name in
-          let right_proof = transport env available_subst source_right target_right right_name in
+          let target_left_text = formula_text bound env target_left in
+          let target_right_text = formula_text bound env target_right in
+          let target_text = formula_text bound env target in
+          let left_proof = transport bound env available_subst source_left target_left left_name in
+          let right_proof = transport bound env available_subst source_right target_right right_name in
           let left_intro =
             Printf.sprintf
               "(fun vskolem_goal:prop => fun Hleft:(%s) -> vskolem_goal => fun Hright:(%s) -> vskolem_goal => Hleft %s)"
@@ -7599,16 +7610,17 @@ let simple_skolem_formula_proof ?opened_witness
           | Some choice_theorem, _ ->
               let predicate_env = (source_var, source_sort) :: env in
               let predicate_text =
-                "fun " ^ source_var ^ ":" ^ simple_binder_sort_expr source_sort ^ " => " ^ formula_text predicate_env body
+                "fun " ^ source_var ^ ":" ^ simple_binder_sort_expr source_sort ^ " => "
+                ^ formula_text (source_var :: bound) predicate_env body
               in
               let choice_proof =
                 Printf.sprintf
                   "(%s (%s) %s)"
                   choice_theorem predicate_text proof
               in
-              transport env remaining_subst choice_body target choice_proof
+              transport bound env remaining_subst choice_body target choice_proof
           | None, Some witness_name ->
-              transport env remaining_subst choice_body target witness_name
+              transport bound env remaining_subst choice_body target witness_name
           | None, _ ->
               emit_error
                 (id ^ ": skolem proof has no choice theorem for witness sort " ^ source_sort)
@@ -7642,16 +7654,16 @@ let simple_skolem_formula_proof ?opened_witness
               let predicate_env = (source_var, source_sort) :: env in
               let predicate_text =
                 "fun " ^ source_var ^ ":" ^ simple_binder_sort_expr source_sort
-                ^ " => " ^ formula_text predicate_env named_body
+                ^ " => " ^ formula_text (source_var :: bound) predicate_env named_body
               in
               let choice_proof =
                 Printf.sprintf
                   "(%s (%s) %s)"
                   choice_theorem predicate_text proof
               in
-              transport env remaining_subst choice_body target choice_proof
+              transport bound env remaining_subst choice_body target choice_proof
           | None, Some witness_name ->
-              transport env remaining_subst choice_body target witness_name
+              transport bound env remaining_subst choice_body target witness_name
           | None, _ ->
               emit_error
                 (id ^ ": skolem proof has no choice theorem for vLAM witness sort " ^ source_sort)
@@ -7662,7 +7674,7 @@ let simple_skolem_formula_proof ?opened_witness
   let parent_expr =
     simple_apply_forall_vars (lookup_simple_name names parent_id) parent_sorts
   in
-  transport type_env subst source target parent_expr
+  transport [] type_env subst source target parent_expr
 
 let simple_predicate_definition_proof type_env id formula =
   let _, atom, body = predicate_definition_parts id formula in
