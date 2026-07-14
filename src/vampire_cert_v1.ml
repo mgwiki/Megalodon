@@ -1619,10 +1619,25 @@ let string_starts_with prefix value =
   let prefix_len = String.length prefix in
   String.length value >= prefix_len && String.sub value 0 prefix_len = prefix
 
-let is_split_literal = function
+let split_literal_name = function
   | Pos (TmH name)
-  | Neg (TmH name) -> string_starts_with "split_" name
-  | _ -> false
+  | Neg (TmH name) ->
+      if string_starts_with "split_" name then Some name else None
+  | _ -> None
+
+let split_literal_number lit =
+  match split_literal_name lit with
+  | Some name ->
+      (try
+          let n =
+            int_of_string (String.sub name 6 (String.length name - 6))
+          in
+          if n > 0 then Some n else None
+        with Failure _ -> None)
+  | None -> None
+
+let is_split_literal = function
+  | lit -> split_literal_name lit <> None
 
 let check_avatar_component id clause =
   let has_split = List.exists is_split_literal clause in
@@ -1631,6 +1646,24 @@ let check_avatar_component id clause =
     error (id ^ ": avatar_component must contain a split literal");
   if not has_component_literal then
     error (id ^ ": avatar_component must contain a component literal")
+
+let check_avatar_component_strict id clause =
+  let split_literals, component_literals =
+    List.partition is_split_literal clause
+  in
+  begin match split_literals with
+  | [split_literal] ->
+      begin match split_literal_number split_literal with
+      | Some _ -> ()
+      | None -> error (id ^ ": strict avatar_component split literal must be split_N with positive N")
+      end
+  | [] ->
+      error (id ^ ": strict avatar_component must contain exactly one split literal")
+  | _ :: _ :: _ ->
+      error (id ^ ": strict avatar_component must contain exactly one split literal")
+  end;
+  if component_literals = [] then
+    error (id ^ ": strict avatar_component must contain a component literal")
 
 let validate_sat_clauses id clauses =
   if clauses = [] then error (id ^ ": avatar_refutation must contain SAT clauses");
@@ -2536,8 +2569,9 @@ let check_step checked = function
       (id, CheckedClause []) :: checked
 
 let check_step_strict checked = function
-  | AvatarComponent (id, _) ->
-      error (id ^ ": strict certificate v1 rejects AVATAR component macro clauses")
+  | AvatarComponent (id, clause) ->
+      check_avatar_component_strict id clause;
+      check_step checked (AvatarComponent (id, clause))
   | AvatarRefutation (id, _, _) ->
       error (id ^ ": strict certificate v1 rejects AVATAR refutation macros")
   | SkolemFormulaComputed (id, _, _) ->

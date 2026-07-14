@@ -360,17 +360,29 @@ if ! rg -q 'Vampire certificate v1 checked 6 steps' "$WORK_DIR/native_cert_v1_av
   exit 1
 fi
 
-if bin/megalodon \
+bin/megalodon \
   -vampirecertv1strict \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_avatar_component_valid.sexp \
-  "$dummy" >"$WORK_DIR/native_cert_v1_avatar_component_strict.log" 2>&1; then
-  echo "strict native certificate v1 checker accepted an AVATAR component macro" >&2
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_avatar_component_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_avatar_component_strict.log"
+
+if ! rg -q 'Vampire certificate v1 strict checked 6 steps' "$WORK_DIR/native_cert_v1_avatar_component_strict.log"; then
+  echo "strict native certificate v1 checker did not accept the valid AVATAR component fixture" >&2
   exit 1
 fi
 
-if ! rg -q 'strict certificate v1 rejects AVATAR component macro clauses' \
-  "$WORK_DIR/native_cert_v1_avatar_component_strict.log"; then
-  echo "strict native certificate v1 checker rejected AVATAR component with the wrong error" >&2
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_avatar_component_multiple_splits_bad.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_avatar_component_multiple_splits_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_avatar_component_multiple_splits_bad.err"; then
+  echo "strict native certificate v1 checker accepted an AVATAR component with multiple split literals" >&2
+  exit 1
+fi
+
+if ! rg -q 'strict avatar_component must contain exactly one split literal' \
+  "$WORK_DIR/native_cert_v1_avatar_component_multiple_splits_bad.err"; then
+  echo "strict native certificate v1 multiple-split AVATAR component failure did not explain the rejected shape" >&2
   exit 1
 fi
 
