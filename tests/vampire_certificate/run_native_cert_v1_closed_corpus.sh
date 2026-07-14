@@ -7,6 +7,7 @@ export TMPDIR
 
 MEGALODON=${MEGALODON:-"$ROOT/bin/megalodon"}
 CASES_DIR=${CASES_DIR:-"$ROOT/tests/vampire_certificate/closed_cases"}
+CASE_LIST=${CASE_LIST:-}
 JOBS=${JOBS:-7}
 WORK_DIR=${WORK_DIR:-"$(mktemp -d "$TMPDIR/native_cert_v1_closed_corpus.XXXXXX")"}
 
@@ -89,9 +90,38 @@ run_one() {
 export MEGALODON CASES_DIR WORK_DIR
 export -f run_one
 
-find "$CASES_DIR" -maxdepth 1 -name '*.native.sexp' -type f -print0 \
-  | sort -z \
-  | xargs -0 -n1 -P "$JOBS" bash -c 'run_one "$0"'
+selected_cases="$WORK_DIR/selected_native_cases.list"
+: > "$selected_cases"
+if [[ -n "$CASE_LIST" ]]; then
+  while IFS= read -r raw || [[ -n "$raw" ]]; do
+    raw="${raw%%#*}"
+    raw="${raw#"${raw%%[![:space:]]*}"}"
+    raw="${raw%"${raw##*[![:space:]]}"}"
+    [[ -z "$raw" ]] && continue
+    if [[ "$raw" = /* ]]; then
+      native="$raw"
+    elif [[ "$raw" == *.native.sexp ]]; then
+      native="$CASES_DIR/$raw"
+    else
+      native="$CASES_DIR/$raw.native.sexp"
+    fi
+    if [[ ! -s "$native" ]]; then
+      echo "listed closed native certificate does not exist: $raw" >&2
+      exit 2
+    fi
+    printf '%s\n' "$native" >> "$selected_cases"
+  done < "$CASE_LIST"
+else
+  find "$CASES_DIR" -maxdepth 1 -name '*.native.sexp' -type f \
+    | sort > "$selected_cases"
+fi
+
+if [[ ! -s "$selected_cases" ]]; then
+  echo "no closed native certificate cases selected" >&2
+  exit 2
+fi
+
+xargs -a "$selected_cases" -n1 -P "$JOBS" bash -c 'run_one "$0"'
 
 find "$WORK_DIR/cases" -name result.tsv -type f -print0 \
   | xargs -0 cat \
@@ -104,6 +134,7 @@ awk -F '\t' '{count[$2]++} END {for (status in count) print status, count[status
 awk -F '\t' '$2 != "CLOSED_PASS"' "$WORK_DIR/summary.tsv" > "$WORK_DIR/nonpass.tsv"
 
 cat "$WORK_DIR/counts.txt"
+echo "native certificate v1 closed corpus selected cases: $selected_cases"
 echo "native certificate v1 closed corpus artifacts: $WORK_DIR"
 echo "native certificate v1 closed corpus latest link: $TMPDIR/latest_native_cert_v1_closed_corpus"
 

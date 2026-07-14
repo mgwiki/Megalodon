@@ -136,6 +136,24 @@ assumption prefixes (`bridge_`, `definition_input__`, `avatar_`, `theory_`,
 and predicate-definition helper assumptions) as a defense in depth; these
 premises must be replayed as Megalodon claims before the case can count.
 
+For the audit-recommended restricted milestone, use:
+
+```sh
+tests/vampire_certificate/run_native_cert_v1_core_closed_audit.sh
+```
+
+This is intentionally stricter than the broad closed corpus. It first filters
+tracked closed fixtures to certificates using only the small core clause-proof
+constructors (`input`, formula inputs/copies, substitution/condensation,
+resolution, factoring, equality resolution/symmetry, paramodulation, and
+contradiction). It excludes preprocessing-heavy rules such as FOOL, ENNF, CNF,
+Skolemization, AVATAR, predicate definitions, theory FOOL clauses, and
+inequality splitting. By default it requires at least ten whitelist-only cases
+before delegating to the closed corpus checker. If it fails with
+`CORE_ELIGIBLE 0`, that is an honest statement that the current committed closed
+fixtures are broad source-linked reconstructions rather than the restricted
+first-order milestone requested by the audit.
+
 To export a Megalodon development once and then check the resulting source-mapped
 TH0 corpus in parallel, use:
 
