@@ -6770,6 +6770,124 @@ let normalize_tptp_formula_text text =
   |> String.of_seq
   |> String.lowercase_ascii
 
+let rec strip_simple_tptp_outer_parens text =
+  let text = String.trim text in
+  let len = String.length text in
+  let balanced_inside =
+    if len < 2 || text.[0] <> '(' || text.[len - 1] <> ')' then false
+    else
+      let rec loop depth i =
+        if i >= len - 1 then depth = 1
+        else
+          match text.[i] with
+          | '(' -> loop (depth + 1) (i + 1)
+          | ')' ->
+              let depth = depth - 1 in
+              depth > 0 && loop depth (i + 1)
+          | _ -> loop depth (i + 1)
+      in
+      loop 1 1
+  in
+  if balanced_inside then
+    String.sub text 1 (len - 2) |> strip_simple_tptp_outer_parens
+  else
+    text
+
+let simple_tptp_top_level_char needle text =
+  let len = String.length text in
+  let rec loop depth i =
+    if i >= len then None
+    else
+      match text.[i] with
+      | '(' -> loop (depth + 1) (i + 1)
+      | ')' -> loop (max 0 (depth - 1)) (i + 1)
+      | c when depth = 0 && c = needle -> Some i
+      | _ -> loop depth (i + 1)
+  in
+  loop 0 0
+
+let simple_tptp_name text =
+  let text = strip_simple_tptp_outer_parens text in
+  let len = String.length text in
+  if len = 0 then None
+  else if text.[0] = '\'' && text.[len - 1] = '\'' && len >= 2 then
+    Some (String.sub text 1 (len - 2))
+  else
+    let valid_char = function
+      | 'A'..'Z' | 'a'..'z' | '0'..'9' | '_' | '$' -> true
+      | _ -> false
+    in
+    let rec loop i =
+      i = len || (valid_char text.[i] && loop (i + 1))
+    in
+    if loop 0 then Some text else None
+
+let rec simple_tptp_atom_tm text =
+  let text = strip_simple_tptp_outer_parens text in
+  match simple_tptp_top_level_char '=' text with
+  | Some index ->
+      let left = String.sub text 0 index in
+      let right = String.sub text (index + 1) (String.length text - index - 1) in
+      begin match simple_tptp_atom_tm left, simple_tptp_atom_tm right with
+      | Some left, Some right -> Some (Ap (Ap (TmH "=", left), right))
+      | _ -> None
+      end
+  | None ->
+      begin match simple_tptp_name text with
+      | Some "$true" -> Some (TmH "$true")
+      | Some "$false" -> Some (TmH "$false")
+      | Some name -> Some (TmH name)
+      | None -> None
+      end
+
+let rec simple_tptp_literal text =
+  let text = strip_simple_tptp_outer_parens text in
+  let len = String.length text in
+  if len > 0 && text.[0] = '~' then
+    let body = String.sub text 1 (len - 1) in
+    match simple_tptp_atom_tm body with
+    | Some atom -> Some (Neg atom)
+    | None -> None
+  else
+    match simple_tptp_atom_tm text with
+    | Some atom -> Some (Pos atom)
+    | None -> None
+
+let rec simple_tptp_clause text =
+  let text = strip_simple_tptp_outer_parens text in
+  match simple_tptp_top_level_char '|' text with
+  | Some index ->
+      let left = String.sub text 0 index in
+      let right = String.sub text (index + 1) (String.length text - index - 1) in
+      begin match simple_tptp_clause left, simple_tptp_clause right with
+      | Some left, Some right -> Some (left @ right)
+      | _ -> None
+      end
+  | None ->
+      begin match simple_tptp_literal text with
+      | Some literal -> Some [literal]
+      | None -> None
+      end
+
+let source_step_matches_simple_tptp_formula step formula =
+  match simple_tptp_clause formula with
+  | None -> true
+  | Some source_clause ->
+      begin match step with
+      | Input (_, _, clause) -> same_clause_multiset source_clause clause
+      | FormulaInput (_, _, literal) ->
+          begin match source_clause with
+          | [source_literal] -> source_literal = literal
+          | _ -> false
+          end
+      | FormulaTermInput (_, _, formula_tm) ->
+          begin match source_clause with
+          | [Pos source_atom] -> source_atom = formula_tm
+          | _ -> false
+          end
+      | _ -> true
+      end
+
 let validate_certificate_sources source_map cert =
   let table = Hashtbl.create 101 in
   List.iter
@@ -6820,6 +6938,15 @@ let validate_certificate_sources source_map cert =
                    ^ " maps to THF $true but the certificate input is not true")
             | _ -> ()
             end;
+          begin match entry.source_map_decl_formula with
+          | Some formula
+              when source_map_entry_requires_true_formula_check entry
+                   && not (source_step_matches_simple_tptp_formula step formula) ->
+              error
+                (id ^ ": certificate source " ^ name
+                 ^ " does not match the THF declaration formula")
+          | _ -> ()
+          end;
           incr checked)
     cert.steps;
   !checked

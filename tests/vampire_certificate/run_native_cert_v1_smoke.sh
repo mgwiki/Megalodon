@@ -240,6 +240,21 @@ fi
 
 if bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_formula_mismatch_bad.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_formula_mismatch_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_source_map_formula_mismatch_bad.err"; then
+  echo "native certificate v1 source-map checker accepted a mismatched THF formula" >&2
+  exit 1
+fi
+
+if ! rg -q 'does not match the THF declaration formula' \
+    "$WORK_DIR/native_cert_v1_source_map_formula_mismatch_bad.err"; then
+  echo "native certificate v1 source-map formula-mismatch failure did not explain the semantic mismatch" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_hash_mismatch_bad.th0.p \
   "$dummy" >"$WORK_DIR/native_cert_v1_source_map_hash_mismatch_bad.out" \
   2>"$WORK_DIR/native_cert_v1_source_map_hash_mismatch_bad.err"; then

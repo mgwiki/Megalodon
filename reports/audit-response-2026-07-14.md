@@ -29,6 +29,12 @@ This branch starts the requested architectural reset.
 - Hashed global source entries whose THF declaration is `$true` are rejected
   unless the certificate input is actually true. This turns the audit's concrete
   "`p \/ q` attached to `$true`" example into a negative smoke test.
+- Hashed global source entries with simple first-order THF clauses are now
+  compared against the certificate source input clause. This is deliberately
+  narrow: it handles atoms, negation, disjunction, and equality, and leaves
+  richer THF syntax for the later canonical `Syntax.tm` binding. The smoke suite
+  now rejects a certificate clause `(p \/ q)` mapped to a THF declaration
+  `(p \/ r)`.
 
 Validation performed on this branch:
 
@@ -47,6 +53,12 @@ PASS 213
 
 CLOSED_PASS 1
 /project/tmp/closed_mode_source_true_emit_094705
+
+PASS 213
+/project/tmp/source_linked_slice_1_400_emit_source_formula_guard_095205
+
+CLOSED_PASS 1
+/project/tmp/closed_mode_source_formula_emit_095258/work
 ```
 
 The 213-case run is still ordinary strict integration evidence, not a closed
@@ -81,10 +93,11 @@ Closed mode is necessary but not sufficient.
 
 The audit's source-linking criticism is only partially addressed. Current
 source-map validation now rejects the worst placeholder case, where a non-true
-certificate input is mapped to a THF `$true` declaration. It still does not
-prove in general that the certificate input proposition is the proposition
-exported from the original Megalodon development. A zero-bridge proof cannot
-count as source-semantic until full canonical source binding is implemented.
+certificate input is mapped to a THF `$true` declaration, and also rejects simple
+hashed global formula mismatches. It still does not prove in general that the
+certificate input proposition is the proposition exported from the original
+Megalodon development. A zero-bridge proof cannot count as source-semantic until
+full canonical source binding is implemented.
 
 The next required correction is therefore full source proposition binding,
 preferably by resolving certificate inputs to original Megalodon `Syntax.tm`
