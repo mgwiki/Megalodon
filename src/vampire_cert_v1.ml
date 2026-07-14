@@ -6017,6 +6017,36 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
     ignore sort;
     name
   in
+  let binder_for_body sort body =
+    let rec find_from i =
+      match List.nth_opt binder_sorts i with
+      | Some (name, known_sort) ->
+          let binder = megalodon_ident name in
+          if known_sort = sort
+             && is_vampire_var_name binder
+             && tm_contains_symbol binder body then begin
+            binder_index := i + 1;
+            Some binder
+          end else
+            find_from (i + 1)
+      | None -> None
+    in
+    match find_from !binder_index with
+    | Some binder -> binder
+    | None ->
+        let candidates =
+          binder_sorts
+          |> List.filter
+               (fun (name, known_sort) ->
+                  let binder = megalodon_ident name in
+                  known_sort = sort
+                  && is_vampire_var_name binder
+                  && tm_contains_symbol binder body)
+        in
+        match List.rev candidates with
+        | (name, _) :: _ -> megalodon_ident name
+        | [] -> fallback_binder sort
+  in
   let rec convert env source target proof =
     let rec formula_text env tm =
       match tm with
@@ -6027,7 +6057,10 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
               binder_sorts
               |> List.filter
                    (fun (name, known_sort) ->
-                      known_sort = sort && tm_contains_symbol (megalodon_ident name) body)
+                      let binder = megalodon_ident name in
+                      known_sort = sort
+                      && is_vampire_var_name binder
+                      && tm_contains_symbol binder body)
             in
             match List.rev candidates with
             | (name, _) :: _ -> megalodon_ident name
@@ -6061,7 +6094,7 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
     match source, target with
     | All (source_tp, source_body), All (target_tp, target_body) when source_tp = target_tp ->
         let sort = simple_tp_expr source_tp in
-        let binder = fallback_binder sort in
+        let binder = binder_for_body sort target_body in
         let env = (binder, sort) :: env in
         let body_proof = convert env source_body target_body ("(" ^ proof ^ " " ^ binder ^ ")") in
         "(fun " ^ binder ^ ":" ^ sort ^ " => " ^ body_proof ^ ")"
@@ -6080,7 +6113,7 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
             let target_right_text = formula_text env target_right in
             let left_proof =
               Printf.sprintf
-                "(dneg (%s) (fun %s:%s -> False => %s (fun %s:%s => (%s %s) (%s))))"
+                "(dneg (%s) (fun %s:(%s) -> False => %s (fun %s:%s => (%s %s) (%s))))"
                 left_text not_left_name left_text proof left_name left_text
                 not_left_name left_name right_text
             in
@@ -6129,13 +6162,21 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
               emit_error (id ^ ": ENNF proof expected at least one universal implication premise");
             if source_premises <> target_premises || source_conclusion <> target_conclusion then
               emit_error (id ^ ": ENNF proof expected target body to mirror negated universal implication spine");
-            let binders =
-              List.map
-                (fun tp ->
-                   let sort = simple_tp_expr tp in
-                   (fallback_binder sort, sort))
-                source_binder_tps
+            let rec target_exists_binders acc tps target =
+              match tps, target with
+              | [], _ -> List.rev acc
+              | tp :: rest,
+                Ap (exists_head, Lam (target_tp, body))
+                  when tp = target_tp
+                       && (exists_head = TmH "vampire_exists_prop"
+                           || exists_head = TmH "vampire_exists_set") ->
+                  let sort = simple_tp_expr tp in
+                  let binder = binder_for_body sort body in
+                  target_exists_binders ((binder, sort) :: acc) rest body
+              | _ ->
+                  emit_error (id ^ ": ENNF proof could not recover target existential binders")
             in
+            let binders = target_exists_binders [] source_binder_tps target_exists in
             let env = List.rev_append binders env in
             let premise_names =
               List.map (fun _ -> fresh_proof_var "Hennf_premise_") source_premises
@@ -6184,7 +6225,7 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
             let contradiction =
               let body =
                 Printf.sprintf
-                  "dneg (%s) (fun %s:%s -> False => Hennf_not_goal ((%s Hennf_exists_goal) Hennf_exists_case))"
+                  "dneg (%s) (fun %s:(%s) -> False => Hennf_not_goal ((%s Hennf_exists_goal) Hennf_exists_case))"
                   conclusion_text not_conclusion_name conclusion_text witness_text
               in
               let body =
@@ -6239,7 +6280,7 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
                 neg_left_text target_right_text right_proof
             in
             Printf.sprintf
-              "((vampire_xm (%s)) %s (fun %s:%s => %s) (fun %s:%s -> False => %s))"
+              "((vampire_xm (%s)) %s (fun %s:(%s) => %s) (fun %s:(%s) -> False => %s))"
               left_text (simple_prop_arg target_text)
               pos_name left_text right_intro
               neg_name left_text left_intro
@@ -6272,7 +6313,7 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
                 target_left_text target_right_text right_proof
             in
             Printf.sprintf
-              "((vampire_xm (%s)) %s (fun %s:%s => %s) (fun %s:%s -> False => %s))"
+              "((vampire_xm (%s)) %s (fun %s:(%s) => %s) (fun %s:(%s) -> False => %s))"
               right_text (simple_prop_arg target_text)
               pos_name right_text right_intro
               neg_name right_text left_intro
@@ -6981,7 +7022,9 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           let name = derived_name id in
           let proof = lookup_simple_name !emitted_names parent_id in
           let prop, sorts = formula_tm_prop_and_sorts id formula in
-          if emitted_parent_prop parent_id = prop then begin
+          let parent_formula = lookup_formula checked_certificate parent_id in
+          if emitted_parent_prop parent_id = prop
+             || same_mod_scoped_vampire_var_renaming parent_formula formula then begin
             add_emitted id name;
             add_emitted_prop_and_sorts id prop sorts;
             claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")]
@@ -7315,9 +7358,15 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           derived_assumptions := !derived_assumptions @ [(name, prop)];
           add_checked id result
       | Substitute (id, parent_id, subst, result) ->
-          let subst_sorts = substitution_variable_sorts parent_id subst in
-          let prop, sorts = clause_prop_and_sorts_for_ids ~extra_sorts:subst_sorts id [parent_id] result in
           let parent_sorts = variable_sorts_for_ids [parent_id] in
+          let effective_subst =
+            subst
+            |> List.filter
+                 (fun (source, _) ->
+                    List.exists (fun (name, _) -> name = source) parent_sorts)
+          in
+          let subst_sorts = substitution_variable_sorts parent_id effective_subst in
+          let prop, sorts = clause_prop_and_sorts_for_ids ~extra_sorts:subst_sorts id [parent_id] result in
           let type_env =
             simple_type_env_with_variables
               (parent_sorts @ subst_sorts @ sorts |> simple_unique_variable_sorts)
@@ -7360,8 +7409,8 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                     || simple_prop_equal_mod_fool_exhaustiveness_or_alias
                          parent_prop parent_formula_prop))
           in
-          let substituted_parent = subst_clause subst parent_clause in
-          let substituted_sources = List.map fst subst in
+          let substituted_parent = subst_clause effective_subst parent_clause in
+          let substituted_sources = List.map fst effective_subst in
           let remaining_parent_sorts =
             parent_sorts
             |> List.filter (fun (name, _) -> not (List.mem name substituted_sources))
@@ -7385,7 +7434,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                 try
                   let proof =
                     simple_substitute_proof
-                      clause_body_prop type_env id parent_id subst result
+                      clause_body_prop type_env id parent_id effective_subst result
                       parent_sorts sorts !checked !emitted_names
                   in
                   Some (proof, prop, sorts)
@@ -7784,7 +7833,13 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                @ substitution_variable_sorts equality_parent_id equality_subst)
             "superposition" id [target_parent_id; equality_parent_id] result
       | DefinitionRewriteChain (id, parent_id, _, result) ->
-          add_clause_inference_bridge "definition_rewrite" id [parent_id] result
+          let name = derived_name id in
+          let prop, sorts = clause_prop_and_sorts_for_ids id [parent_id] result in
+          let proof = lookup_simple_name !emitted_names parent_id in
+          add_emitted id name;
+          add_emitted_prop_and_sorts id prop sorts;
+          claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")];
+          add_checked id result
       | InequalityNameIntro (id, result) ->
           let name = derived_name id in
           let prop, sorts = clause_prop_and_sorts_for_ids id [] result in

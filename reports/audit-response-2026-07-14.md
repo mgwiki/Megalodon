@@ -917,6 +917,74 @@ CLOSED_PASS 70
 /project/tmp/native_cert_v1_closed_corpus.jsSYbu
 ```
 
+## Increment: Definition Rewrite, Irrelevant Substitution Entries, and Pure Rectification
+
+This update closes one more no-derived proof by replaying two smaller native
+certificate classes:
+
+- `definition_rewrite_chain` is emitted as a checked definitional equality step
+  when the folded symbols have already been introduced as Megalodon
+  `Definition`s.  The representative case folds a large `If_i` term through a
+  sequence of `sF...` definitions; Megalodon accepts `exact parent` after
+  unfolding those definitions.
+- `substitute` replay now ignores substitution entries whose source variable is
+  not quantified by the parent clause.  Vampire sometimes carries these
+  irrelevant entries in the proof trace; the actual clause instantiation should
+  be computed from the parent-bound variables only.
+
+The same patch also adds a guarded native replay for pure `rectify_formula`
+steps.  Direct `exact parent` is used only when the target is a scoped variable
+renaming of the parent formula.  Rectifications that also change Boolean
+equality orientation remain bridges until they have an explicit transport proof;
+for example `hammer.1007.43.th0` is now reduced to the single remaining
+`bridge_rectify_formula__u98` rather than being counted prematurely.
+
+Focused check:
+
+```text
+hammer.11635.105.th0 CLOSED_PASS
+/project/tmp/subst_filter_11635_135826
+```
+
+Cached parallel replay over the same source-linked frontier, without rerunning
+Vampire:
+
+```text
+TMPDIR=/project/tmp \
+PROBLEM_DIR=/project/tmp/source_linked_strict_100_corpus_fresh_041947 \
+WORK_DIR=/project/tmp/source_linked_slice_1_400_closed_defrewrite_subst_rectify_135840 \
+JOBS=20 MIN_PASS=0 CLOSED_CERT_V1=1 EMIT_TIMEOUT=30 CHECK_TIMEOUT=45 \
+tests/vampire_certificate/run_native_emit_cached_parallel.sh \
+  /project/tmp/source_linked_slice_1_400_fresh_042040
+
+CLOSED_PASS 71
+EMIT_FAIL 142
+/project/tmp/source_linked_slice_1_400_closed_defrewrite_subst_rectify_135840
+```
+
+The new committed closed case is:
+
+```text
+hammer.11635.105.th0.p
+```
+
+Validation for this increment:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+native certificate v1 smoke test passed
+/project/tmp/native_cert_v1.deIhWK
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_source_map_export_smoke.sh
+Megalodon TH0 source-map export smoke passed
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh
+CLOSED_PASS 71
+/project/tmp/native_cert_v1_closed_corpus.VIAlNW
+```
+
 ## Remaining P0 Work
 
 Closed mode is necessary but not sufficient.
