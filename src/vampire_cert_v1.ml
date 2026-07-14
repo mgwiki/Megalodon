@@ -5456,14 +5456,25 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     if not (List.mem line !lines) then lines := !lines @ [line]
   in
   let symbol_type_env = simple_symbol_type_env cert in
+  let rec simple_set_arrow_sort sort =
+    match simple_split_arrow_type sort with
+    | None -> simple_strip_outer_parens sort = "set"
+    | Some (domain, codomain) ->
+        simple_set_arrow_sort domain && simple_set_arrow_sort codomain
+  in
   let function_definition_for_step id result =
     match
       metadata_step_extra_field cert id "function_definition" "introduced_symbol",
       metadata_step_extra_field cert id "function_definition" "sort",
       result
     with
-    | Some introduced, Some sort, [Pos atom] when simple_strip_outer_parens sort = "set" ->
+    | Some introduced, Some sort, [Pos atom] when simple_set_arrow_sort sort ->
         let introduced = megalodon_ident introduced in
+        let sort = simple_strip_outer_parens sort in
+        let proof =
+          if sort = "set" then "reflexivity."
+          else "exact (fun Q H => H)."
+        in
         begin match equality_sides atom with
         | Some (left, TmH right)
             when megalodon_ident right = introduced && not (simple_tm_has_db_name left) ->
@@ -5473,7 +5484,8 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                  "Definition %s : %s := %s."
                  introduced
                  sort
-                 (simple_tm_expr_with_expected symbol_type_env (Some sort) left))
+                 (simple_tm_expr_with_expected symbol_type_env (Some sort) left),
+               proof)
         | Some (TmH left, right)
             when megalodon_ident left = introduced && not (simple_tm_has_db_name right) ->
             Some
@@ -5482,7 +5494,8 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                  "Definition %s : %s := %s."
                  introduced
                  sort
-                 (simple_tm_expr_with_expected symbol_type_env (Some sort) right))
+                 (simple_tm_expr_with_expected symbol_type_env (Some sort) right),
+               proof)
         | _ -> None
         end
     | _ -> None
@@ -5495,12 +5508,19 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
            | _ -> None)
     |> List.sort_uniq compare
   in
-  let function_definition_names = List.map fst function_definitions in
+  let function_definition_names =
+    List.map (fun (name, _, _) -> name) function_definitions
+  in
   let add_symbol_declaration line =
     match simple_declared_name line with
     | Some name when List.mem (megalodon_ident name) function_definition_names ->
-        begin match List.assoc_opt (megalodon_ident name) function_definitions with
-        | Some definition -> add_line_once definition
+        begin match
+          List.find_opt
+            (fun (definition_name, _, _) ->
+               definition_name = megalodon_ident name)
+            function_definitions
+        with
+        | Some (_, definition, _) -> add_line_once definition
         | None -> ()
         end
     | _ -> add_line_once line
@@ -5995,8 +6015,8 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           add_emitted id name;
           add_emitted_prop_and_sorts id prop sorts;
           begin match function_definition_for_step id result with
-          | Some _ ->
-              claims := !claims @ [(name, prop, "reflexivity.")]
+          | Some (_, _, proof) ->
+              claims := !claims @ [(name, prop, proof)]
           | None ->
               derived_assumptions := !derived_assumptions @ [(name, prop)]
           end;

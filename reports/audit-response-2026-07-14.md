@@ -230,6 +230,33 @@ EMIT_FAIL 207
 /project/tmp/source_linked_slice_1_400_closed_source_strict_104208
 ```
 
+The guarded `definition_input` replay now also covers introduced symbols whose
+type is a `set`-only arrow sort, such as `set->set`. The emitter turns these
+fresh symbols into Megalodon `Definition`s and proves the corresponding Vampire
+Leibniz function equality by the identity proof after unfolding. This is still
+guarded against de-Bruijn aliases and non-`set` arrow types.
+
+Validation for arrow-valued function definitions:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_source_map_export_smoke.sh
+
+PASS 213
+/project/tmp/source_linked_slice_1_400_emit_arrow_def_104840
+
+CLOSED_PASS 7
+EMIT_FAIL 206
+/project/tmp/source_linked_slice_1_400_closed_arrow_def_104829
+```
+
+The new closed case is:
+
+```text
+hammer.11203.25.th0.p
+```
+
 ## Remaining P0 Work
 
 Closed mode is necessary but not sufficient.
