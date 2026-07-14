@@ -4623,6 +4623,14 @@ let rec simple_clause_prop_with_type_env type_env = function
       ^ simple_clause_prop_with_type_env type_env rest
       ^ ")"
 
+let rec simple_clause_formula_tm = function
+  | [] -> vampire_false
+  | [lit] -> formula_tm_of_literal lit
+  | lit :: rest -> vampire_or (formula_tm_of_literal lit) (simple_clause_formula_tm rest)
+
+let simple_clause_formula_prop_with_type_env type_env clause =
+  simple_tm_expr_with_expected type_env (Some "prop") (simple_clause_formula_tm clause)
+
 let simple_literal_equality_symmetry_proof type_env source_literal proof =
   let sym_helper left right source_proof =
     if is_vampire_bool_const left || is_vampire_bool_const right then
@@ -5950,11 +5958,27 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           let structural_clause_prop sorts clause =
             simple_quantify_prop sorts (clause_body_prop clause)
           in
+          let formula_clause_prop sorts clause =
+            let body =
+              try simple_clause_formula_prop_with_type_env type_env clause
+              with Error _ -> simple_clause_prop clause
+            in
+            simple_quantify_prop sorts body
+          in
+          let emitted_parent_matches parent_id parent_sorts parent_clause =
+            let emitted = emitted_parent_prop parent_id in
+            let structural = structural_clause_prop parent_sorts parent_clause in
+            let formula = formula_clause_prop parent_sorts parent_clause in
+            emitted = structural
+            || emitted = formula
+            || simple_prop_equal_mod_app_parens emitted structural
+            || simple_prop_equal_mod_app_parens emitted formula
+          in
           let structurally_safe =
             simple_sorts_subset equality_sorts sorts
             && simple_sorts_subset target_sorts sorts
-            && emitted_parent_prop equality_parent_id = structural_clause_prop equality_sorts equality_clause
-            && emitted_parent_prop target_parent_id = structural_clause_prop target_sorts target_clause
+            && emitted_parent_matches equality_parent_id equality_sorts equality_clause
+            && emitted_parent_matches target_parent_id target_sorts target_clause
             && prop = structural_clause_prop sorts result
           in
           begin match
