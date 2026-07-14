@@ -125,6 +125,7 @@ type source_map_entry = {
   source_map_source_name : string;
   source_map_hash : string;
   source_map_decl_hash : string option;
+  source_map_decl_formula : string option;
 }
 
 let error msg = raise (Error msg)
@@ -6489,6 +6490,7 @@ let source_map_entry_of_sexpr = function
         source_map_source_name = atom source_name;
         source_map_hash = atom source_hash;
         source_map_decl_hash = None;
+        source_map_decl_formula = None;
       }
   | _ -> error "malformed Megalodon source-map comment"
 
@@ -6546,22 +6548,57 @@ let parse_source_map text =
       with Not_found | Invalid_argument _ -> None
     else None
   in
+  let thf_decl_formula_of_line line =
+    if string_starts_with "thf(" line then
+      try
+        let comma1 = String.index_from line 4 ',' in
+        let name = String.sub line 4 (comma1 - 4) in
+        let comma2 = String.index_from line (comma1 + 1) ',' in
+        let line_without_comment =
+          try String.sub line 0 (String.index line '%') with Not_found -> line
+        in
+        let close = String.rindex line_without_comment ')' in
+        let start = comma2 + 1 in
+        if close <= start then None
+        else
+          let formula =
+            String.sub line_without_comment start (close - start)
+            |> trim_ascii
+          in
+          Some (name, formula)
+      with Not_found | Invalid_argument _ -> None
+    else None
+  in
   let decl_hashes = Hashtbl.create 101 in
+  let decl_formulas = Hashtbl.create 101 in
   List.iter
     (fun line ->
       match thf_decl_hash_of_line line with
       | Some (name, hash) -> Hashtbl.replace decl_hashes name hash
       | None -> ())
     lines;
+  List.iter
+    (fun line ->
+      match thf_decl_formula_of_line line with
+      | Some (name, formula) -> Hashtbl.replace decl_formulas name formula
+      | None -> ())
+    lines;
   let decl_hash name =
     try Some (Hashtbl.find decl_hashes name) with Not_found -> None
+  in
+  let decl_formula name =
+    try Some (Hashtbl.find decl_formulas name) with Not_found -> None
   in
   List.fold_left
     (fun entries line ->
       if string_starts_with source_map_prefix line then
         let body = String.sub line prefix_len (String.length line - prefix_len) in
         let entry = source_map_entry_of_sexpr (parse_sexpr body) in
-        { entry with source_map_decl_hash = decl_hash entry.source_map_tptp_name } :: entries
+        {
+          entry with
+          source_map_decl_hash = decl_hash entry.source_map_tptp_name;
+          source_map_decl_formula = decl_formula entry.source_map_tptp_name;
+        } :: entries
       else
         entries)
     []
@@ -6704,6 +6741,35 @@ let step_is_reflexive_equality_source = function
   | FormulaTermInput (_, _, formula) -> is_reflexive_equality_atom formula
   | _ -> false
 
+let is_true_atom = function
+  | TmH "$true" | TmH "f__true" | TmH "vampire_true" -> true
+  | _ -> false
+
+let is_true_literal = function
+  | Pos atom -> is_true_atom atom
+  | Neg _ -> false
+
+let step_is_true_source = function
+  | Input (_, _, [literal]) -> is_true_literal literal
+  | FormulaInput (_, _, literal) -> is_true_literal literal
+  | FormulaTermInput (_, _, formula) -> is_true_atom formula
+  | _ -> false
+
+let source_map_entry_requires_true_formula_check entry =
+  match entry.source_map_kind with
+  | "known" | "axiom" -> entry.source_map_hash <> ""
+  | _ -> false
+
+let normalize_tptp_formula_text text =
+  text
+  |> String.to_seq
+  |> Seq.filter
+       (function
+         | ' ' | '\n' | '\t' | '\r' -> false
+         | c -> true)
+  |> String.of_seq
+  |> String.lowercase_ascii
+
 let validate_certificate_sources source_map cert =
   let table = Hashtbl.create 101 in
   List.iter
@@ -6744,6 +6810,16 @@ let validate_certificate_sources source_map cert =
               (id ^ ": certificate source " ^ name
                ^ " maps to " ^ entry.source_map_kind
                ^ " but is not a reflexive equality input");
+          if source_map_entry_requires_true_formula_check entry then
+            begin match entry.source_map_decl_formula with
+            | Some formula
+                when normalize_tptp_formula_text formula = "$true"
+                     && not (step_is_true_source step) ->
+                error
+                  (id ^ ": certificate source " ^ name
+                   ^ " maps to THF $true but the certificate input is not true")
+            | _ -> ()
+            end;
           incr checked)
     cert.steps;
   !checked

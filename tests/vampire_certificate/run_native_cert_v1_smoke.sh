@@ -225,6 +225,21 @@ fi
 
 if bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_true_mismatch_bad.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_true_mismatch_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_source_map_true_mismatch_bad.err"; then
+  echo "native certificate v1 source-map checker accepted a non-true certificate input for THF true" >&2
+  exit 1
+fi
+
+if ! rg -Fq 'maps to THF $true but the certificate input is not true' \
+    "$WORK_DIR/native_cert_v1_source_map_true_mismatch_bad.err"; then
+  echo "native certificate v1 source-map true-mismatch failure did not explain the semantic mismatch" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_hash_mismatch_bad.th0.p \
   "$dummy" >"$WORK_DIR/native_cert_v1_source_map_hash_mismatch_bad.out" \
   2>"$WORK_DIR/native_cert_v1_source_map_hash_mismatch_bad.err"; then

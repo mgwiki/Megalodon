@@ -24,6 +24,11 @@ This branch starts the requested architectural reset.
 - The native smoke suite now has closed positive and negative coverage.
 - README language now distinguishes ordinary integration `PASS` from qualifying
   closed `CLOSED_PASS`.
+- Source-map parsing now records the raw THF declaration formula for each mapped
+  source name.
+- Hashed global source entries whose THF declaration is `$true` are rejected
+  unless the certificate input is actually true. This turns the audit's concrete
+  "`p \/ q` attached to `$true`" example into a negative smoke test.
 
 Validation performed on this branch:
 
@@ -36,6 +41,12 @@ PASS 213
 
 CLOSED_PASS 1
 /project/tmp/closed_mode_smoke_emit_093949
+
+PASS 213
+/project/tmp/source_linked_slice_1_400_emit_source_true_guard_094615
+
+CLOSED_PASS 1
+/project/tmp/closed_mode_source_true_emit_094705
 ```
 
 The 213-case run is still ordinary strict integration evidence, not a closed
@@ -68,17 +79,16 @@ bridge_total 5669
 
 Closed mode is necessary but not sufficient.
 
-The audit's source-linking criticism remains open. Current source-map validation
-still mostly proves that a label exists and has a compatible role/hash comment;
-it does not yet prove that the certificate input proposition is the proposition
+The audit's source-linking criticism is only partially addressed. Current
+source-map validation now rejects the worst placeholder case, where a non-true
+certificate input is mapped to a THF `$true` declaration. It still does not
+prove in general that the certificate input proposition is the proposition
 exported from the original Megalodon development. A zero-bridge proof cannot
-count as source-semantic until this is fixed.
+count as source-semantic until full canonical source binding is implemented.
 
-The next required correction is therefore source proposition binding, preferably
-by resolving certificate inputs to original Megalodon `Syntax.tm` declarations
-or by independently recomputing canonical exported-formula hashes. The current
-fixture that maps arbitrary clauses to `$true` should become a negative test
-once that binding exists.
+The next required correction is therefore full source proposition binding,
+preferably by resolving certificate inputs to original Megalodon `Syntax.tm`
+declarations or by independently recomputing canonical exported-formula hashes.
 
 The audit is also right that the current emitter is still a source-text
 generator. The intended endpoint is native elaboration toward `Syntax.pf`, with
