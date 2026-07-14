@@ -2540,6 +2540,8 @@ let check_step_strict checked = function
       error (id ^ ": strict certificate v1 rejects AVATAR component macro clauses")
   | AvatarRefutation (id, _, _) ->
       error (id ^ ": strict certificate v1 rejects AVATAR refutation macros")
+  | SkolemFormulaComputed (id, _, _) ->
+      error (id ^ ": strict certificate v1 rejects computed skolem formulas without explicit Vampire results")
   | step -> check_step checked step
 
 let check_certificate_with step_checker cert =

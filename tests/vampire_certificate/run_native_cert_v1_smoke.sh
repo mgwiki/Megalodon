@@ -473,6 +473,21 @@ if ! rg -q 'skolem_formula result does not match explicit skolem substitution' "
   exit 1
 fi
 
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_skolem_computed_strict_bad.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_skolem_computed_strict_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_skolem_computed_strict_bad.err"; then
+  echo "strict native certificate v1 checker accepted a computed skolem formula" >&2
+  exit 1
+fi
+
+if ! rg -q 'strict certificate v1 rejects computed skolem formulas without explicit Vampire results' \
+  "$WORK_DIR/native_cert_v1_skolem_computed_strict_bad.err"; then
+  echo "strict native certificate v1 computed-skolem failure did not explain the rejected missing result" >&2
+  exit 1
+fi
+
 bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_predicate_definition_valid.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_predicate_definition_valid.log"
