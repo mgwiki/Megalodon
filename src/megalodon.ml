@@ -7020,7 +7020,12 @@ let check_vampire_cert_v1_file fn =
         | None -> ()
         end;
         source_map_for_emit := source_map;
-        let source_count = Vampire_cert_v1.validate_certificate_sources source_map cert in
+        let source_count =
+          Vampire_cert_v1.validate_certificate_sources
+            ~require_formula_match:!vampirecertv1closed
+            source_map
+            cert
+        in
         Printf.printf "Vampire certificate v1 source map checked %d source%s.\n"
           source_count
           (if source_count = 1 then "" else "s")

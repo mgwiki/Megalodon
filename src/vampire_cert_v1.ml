@@ -7188,15 +7188,16 @@ let thf_tokens text =
   loop 0 []
 
 let parse_simple_thf_formula_term text =
-  let tokens = Array.of_list (thf_tokens text) in
-  let len = Array.length tokens in
-  let at i = if i < len then Some tokens.(i) else None in
-  let expect tok i =
-    match at i with
-    | Some got when got = tok -> i + 1
-    | _ -> raise Unsupported_thf_source
-  in
-  let rec parse_type i =
+  try
+    let tokens = Array.of_list (thf_tokens text) in
+    let len = Array.length tokens in
+    let at i = if i < len then Some tokens.(i) else None in
+    let expect tok i =
+      match at i with
+      | Some got when got = tok -> i + 1
+      | _ -> raise Unsupported_thf_source
+    in
+    let rec parse_type i =
     parse_type_arrow i
   and parse_type_arrow i =
     let left, i = parse_type_atom i in
@@ -7313,7 +7314,6 @@ let parse_simple_thf_formula_term text =
         (tm, expect ThfRParen j)
     | _ -> raise Unsupported_thf_source
   in
-  try
     let tm, i = parse_formula 0 in
     if i = len then Some tm else None
   with Unsupported_thf_source -> None
@@ -7354,7 +7354,12 @@ let source_step_matches_tptp_formula step formula =
       | None -> true
       end
 
-let validate_certificate_sources source_map cert =
+let source_step_matches_tptp_formula_checked step formula =
+  match source_step_matches_thf_formula step formula with
+  | Some matched -> Some matched
+  | None -> source_step_matches_simple_tptp_formula step formula
+
+let validate_certificate_sources ?(require_formula_match=false) source_map cert =
   let table = Hashtbl.create 101 in
   List.iter
     (fun entry ->
@@ -7405,12 +7410,19 @@ let validate_certificate_sources source_map cert =
             | _ -> ()
             end;
           begin match entry.source_map_decl_formula with
-          | Some formula
-              when source_map_entry_requires_true_formula_check entry
-                   && not (source_step_matches_tptp_formula step formula) ->
-              error
-                (id ^ ": certificate source " ^ name
-                 ^ " does not match the THF declaration formula")
+          | Some formula when source_map_entry_requires_true_formula_check entry ->
+              begin match source_step_matches_tptp_formula_checked step formula with
+              | Some true -> ()
+              | Some false ->
+                  error
+                    (id ^ ": certificate source " ^ name
+                     ^ " does not match the THF declaration formula")
+              | None when require_formula_match ->
+                  error
+                    (id ^ ": certificate source " ^ name
+                     ^ " uses a THF declaration formula outside the checked source-linking fragment")
+              | None -> ()
+              end
           | _ -> ()
           end;
           incr checked)

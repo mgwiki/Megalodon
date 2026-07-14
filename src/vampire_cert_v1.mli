@@ -139,7 +139,7 @@ val step_id : step -> string
 val certificate_source_count : certificate -> int
 val parse_source_map : string -> source_map_entry list
 val parse_source_origin : string -> source_origin option
-val validate_certificate_sources : source_map_entry list -> certificate -> int
+val validate_certificate_sources : ?require_formula_match:bool -> source_map_entry list -> certificate -> int
 val check_certificate : certificate -> (string * checked_item) list
 val check_certificate_strict : certificate -> (string * checked_item) list
 val emit_simple_megalodon :

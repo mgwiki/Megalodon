@@ -210,6 +210,26 @@ hammer.11578.57.th0.p
 hammer.11706.270.th0.p
 ```
 
+Closed source-linking is now stricter than ordinary source-map diagnostics. If
+a hashed original THF formula is outside the checked source-linking fragment,
+ordinary `-vampirecertv1source` still accepts the case for corpus inspection,
+but `-vampirecertv1closed` rejects it before emission. This prevents a
+zero-bridge script from being counted when the source proposition was only
+label-linked. The smoke suite contains an explicit negative case using a THF
+connective outside the current parser.
+
+Validation for the closed-only unsupported-source rejection:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_source_map_export_smoke.sh
+
+CLOSED_PASS 6
+EMIT_FAIL 207
+/project/tmp/source_linked_slice_1_400_closed_source_strict_104208
+```
+
 ## Remaining P0 Work
 
 Closed mode is necessary but not sufficient.
@@ -220,10 +240,11 @@ certificate input is mapped to a THF `$true` declaration, and also rejects simpl
 hashed global formula mismatches and a substantial fragment of real emitted THF
 formulas. It still does not prove in general that the certificate input
 proposition is the proposition exported from the original Megalodon development:
-unsupported THF constructs are conservatively treated as unknown, and the
-comparison still happens after textual THF parsing rather than by resolving
-directly to the original Megalodon `Syntax.tm`. A zero-bridge proof cannot count
-as fully source-semantic until full canonical source binding is implemented.
+unsupported THF constructs are now rejected in closed mode, but ordinary
+diagnostic runs still treat them as unknown. The comparison also still happens
+after textual THF parsing rather than by resolving directly to the original
+Megalodon `Syntax.tm`. A zero-bridge proof cannot count as fully source-semantic
+until full canonical source binding is implemented.
 
 The next required correction is therefore full source proposition binding,
 preferably by resolving certificate inputs to original Megalodon `Syntax.tm`
