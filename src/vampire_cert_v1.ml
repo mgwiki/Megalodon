@@ -6208,6 +6208,254 @@ let simple_avatar_component_proof type_env split_definitions id result_sorts res
   in
   simple_wrap_forall_intro result_sorts proof
 
+let simple_clause_projection_with_eliminators target_prop target_clause source_clause source_proof eliminator =
+  let false_elim proof =
+    Printf.sprintf "(%s %s)" proof (simple_prop_arg target_prop)
+  in
+  let rec project depth clause proof =
+    match clause with
+    | [] -> emit_error "cannot project from the empty clause"
+    | [lit] ->
+        if List.exists ((=) lit) target_clause then
+          simple_clause_intro_proof target_clause lit proof
+        else
+          begin match eliminator lit proof with
+          | Some contradiction -> false_elim contradiction
+          | None -> emit_error "avatar split projection has an unhandled literal"
+          end
+    | lit :: rest ->
+        let head_name = "Havatar_split_lit_" ^ string_of_int depth in
+        let tail_name = "Havatar_split_tail_" ^ string_of_int depth in
+        let head_branch =
+          if List.exists ((=) lit) target_clause then
+            simple_clause_intro_proof target_clause lit head_name
+          else
+            begin match eliminator lit head_name with
+            | Some contradiction -> false_elim contradiction
+            | None -> emit_error "avatar split projection has an unhandled literal"
+            end
+        in
+        let tail_branch = project (depth + 1) rest tail_name in
+        Printf.sprintf "(%s %s (fun %s => %s) (fun %s => %s))"
+          proof (simple_prop_arg target_prop)
+          head_name head_branch
+          tail_name tail_branch
+  in
+  project 0 source_clause source_proof
+
+let simple_avatar_split_proof
+    type_env split_definitions id result_sorts parent_id parent_clause result parent_name =
+  let target_prop = simple_clause_prop_with_type_env type_env result in
+  let split_name_of_literal = function
+    | Pos (TmH name) | Neg (TmH name) when string_starts_with "split_" name ->
+        Some (megalodon_ident name)
+    | _ -> None
+  in
+  let split_atom_prop name = name in
+  let branch_name prefix split_name =
+    prefix ^ "_" ^ split_name
+  in
+  let lookup_assignment split_name assignments =
+    List.find_opt (fun (name, _) -> name = split_name) assignments
+  in
+  let contradiction_from_assignment lit lit_proof assignments =
+    match lit with
+    | Pos (TmH raw_name) | Neg (TmH raw_name)
+        when string_starts_with "split_" raw_name ->
+        let split_name = megalodon_ident raw_name in
+        begin match lit, lookup_assignment split_name assignments with
+        | Pos _, Some (_, `False not_name) ->
+            Some (Printf.sprintf "(%s %s)" not_name lit_proof)
+        | Neg _, Some (_, `True true_name) ->
+            Some (Printf.sprintf "(%s %s)" lit_proof true_name)
+        | _ -> None
+        end
+    | Pos atom | Neg atom ->
+        let try_definition (split_name, (_, body_clause, _)) =
+          match body_clause, lookup_assignment split_name assignments, lit with
+          | [Pos body_atom], Some (_, `False not_name), Pos source_atom
+              when source_atom = body_atom ->
+              Some (Printf.sprintf "(%s %s)" not_name lit_proof)
+          | [Pos body_atom], Some (_, `True true_name), Neg source_atom
+              when source_atom = body_atom ->
+              Some (Printf.sprintf "(%s %s)" lit_proof true_name)
+          | _ -> None
+        in
+        let rec first = function
+          | [] -> None
+          | item :: rest ->
+              begin match try_definition item with
+              | Some proof -> Some proof
+              | None -> first rest
+              end
+        in
+        first split_definitions
+  in
+  let prove_positive_split split_name assignments =
+    match List.assoc_opt split_name split_definitions with
+    | None -> emit_error (id ^ ": avatar split has no definition for " ^ split_name)
+    | Some (_, body_clause, body_prop) ->
+        let body_sorts = simple_forall_prefix_sorts body_prop in
+        let body_type_env = simple_type_env_with_variables body_sorts type_env in
+        let body_target_prop = simple_clause_prop_with_type_env body_type_env body_clause in
+        let parent_proof = simple_apply_forall_vars parent_name body_sorts in
+        let eliminator lit proof = contradiction_from_assignment lit proof assignments in
+        let body_proof =
+          simple_clause_projection_with_eliminators
+            body_target_prop body_clause parent_clause parent_proof eliminator
+        in
+        simple_wrap_forall_intro body_sorts body_proof
+  in
+  let prove_from_contradiction assignments =
+    let candidates =
+      result
+      |> List.filter_map
+           (function
+             | Pos (TmH raw_name) when string_starts_with "split_" raw_name ->
+                 let split_name = megalodon_ident raw_name in
+                 begin match lookup_assignment split_name assignments with
+                 | Some (_, `False not_name) -> Some (split_name, not_name)
+                 | _ -> None
+                 end
+             | _ -> None)
+    in
+    let rec try_candidates = function
+      | [] -> None
+      | (split_name, not_name) :: rest ->
+          if not (List.mem_assoc split_name split_definitions) then try_candidates rest
+          else
+            match
+              try Some (prove_positive_split split_name assignments)
+              with Error _ -> None
+            with
+            | Some split_proof ->
+                Some
+                  (Printf.sprintf "((%s %s) %s)"
+                     not_name split_proof (simple_prop_arg target_prop))
+            | None -> try_candidates rest
+    in
+    match try_candidates candidates with
+    | Some proof -> proof
+    | None ->
+        let eliminator lit proof = contradiction_from_assignment lit proof assignments in
+        simple_clause_projection_with_eliminators
+          target_prop result parent_clause parent_name eliminator
+  in
+  let rec cases assignments = function
+    | [] -> prove_from_contradiction assignments
+    | lit :: rest ->
+        begin match split_name_of_literal lit with
+        | None -> emit_error (id ^ ": avatar split result contains a non-split literal")
+        | Some split_name ->
+            let split_prop = split_atom_prop split_name in
+            begin match lit with
+            | Pos _ ->
+                let true_name = branch_name "Havatar_split" split_name in
+                let false_name = branch_name "Havatar_not_split" split_name in
+                let true_branch =
+                  simple_clause_intro_proof result lit true_name
+                in
+                let false_branch =
+                  cases ((split_name, `False false_name) :: assignments) rest
+                in
+                Printf.sprintf
+                  "((vampire_xm (%s)) %s (fun %s:%s => %s) (fun %s:%s -> False => %s))"
+                  split_prop target_prop true_name split_prop true_branch
+                  false_name split_prop false_branch
+            | Neg _ ->
+                let true_name = branch_name "Havatar_split" split_name in
+                let false_name = branch_name "Havatar_not_split" split_name in
+                let true_branch =
+                  cases ((split_name, `True true_name) :: assignments) rest
+                in
+                let false_branch =
+                  simple_clause_intro_proof result lit false_name
+                in
+                Printf.sprintf
+                  "((vampire_xm (%s)) %s (fun %s:%s => %s) (fun %s:%s -> False => %s))"
+                  split_prop target_prop true_name split_prop true_branch
+                  false_name split_prop false_branch
+            end
+        end
+  in
+  let direct =
+    try
+      Some
+        (simple_wrap_forall_intro result_sorts
+           (simple_clause_projection_proof target_prop result parent_clause parent_name 0))
+    with Error _ -> None
+  in
+  match direct with
+  | Some proof -> proof
+  | None -> simple_wrap_forall_intro result_sorts (cases [] result)
+
+let simple_avatar_refutation_proof id parent_ids sat_clauses checked names =
+  if parent_ids = [] || List.length parent_ids <> List.length sat_clauses then
+    emit_error (id ^ ": avatar refutation proof expects one parent per SAT input");
+  let inputs = List.combine parent_ids sat_clauses in
+  let vars =
+    sat_clauses
+    |> List.concat
+    |> List.map fst
+    |> List.sort_uniq compare
+  in
+  let split_prop var = "split_" ^ string_of_int var in
+  let true_name var = "Hsat_split_" ^ string_of_int var in
+  let false_name var = "Hsat_not_split_" ^ string_of_int var in
+  let assigned_value assignments var =
+    match List.assoc_opt var assignments with
+    | Some value -> value
+    | None -> emit_error (id ^ ": incomplete SAT assignment in avatar refutation proof")
+  in
+  let sat_literal_false assignments (var, polarity) =
+    assigned_value assignments var <> polarity
+  in
+  let split_var_of_literal lit = split_literal_number lit in
+  let contradiction_from_assignment assignments lit lit_proof =
+    match split_var_of_literal lit with
+    | None -> None
+    | Some var ->
+        begin match lit, assigned_value assignments var with
+        | Pos _, false ->
+            Some (Printf.sprintf "(%s %s)" (false_name var) lit_proof)
+        | Neg _, true ->
+            Some (Printf.sprintf "(%s %s)" lit_proof (true_name var))
+        | _ -> None
+        end
+  in
+  let leaf assignments =
+    let falsified =
+      List.find_opt
+        (fun (_, clause) -> List.for_all (sat_literal_false assignments) clause)
+        inputs
+    in
+    match falsified with
+    | None -> emit_error (id ^ ": SAT assignment did not falsify any input clause")
+    | Some (parent_id, _) ->
+        let parent_clause = lookup_simple_clause checked parent_id in
+        let parent_name = lookup_simple_name names parent_id in
+        let eliminator lit proof =
+          contradiction_from_assignment assignments lit proof
+        in
+        simple_clause_projection_with_eliminators
+          "False" [] parent_clause parent_name eliminator
+  in
+  let rec cases assignments = function
+    | [] -> leaf assignments
+    | var :: rest ->
+        let prop = split_prop var in
+        let positive =
+          cases ((var, true) :: assignments) rest
+        in
+        let negative =
+          cases ((var, false) :: assignments) rest
+        in
+        Printf.sprintf
+          "((vampire_xm (%s)) False (fun %s:%s => %s) (fun %s:%s -> False => %s))"
+          prop (true_name var) prop positive (false_name var) prop negative
+  in
+  cases [] vars
+
 let simple_inequality_name_intro_proof type_env result_sorts id result =
   let literal, named =
     match result with
@@ -8776,12 +9024,37 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
               derived_assumptions := !derived_assumptions @ [(name, prop)]
           end;
           add_checked id result
-      | AvatarSplit (id, _, result) ->
+      | AvatarSplit (id, parent_ids, result) ->
           let name = simple_fresh_name used_names ("avatar_split__" ^ id) in
           let prop, sorts = simple_clause_prop_and_sorts_for_step cert id result in
           add_emitted id name;
           add_emitted_prop_and_sorts id prop sorts;
-          derived_assumptions := !derived_assumptions @ [(name, prop)];
+          begin match parent_ids with
+          | [parent_id] ->
+              begin match
+                try
+                  let parent_clause = lookup_simple_clause !checked parent_id in
+                  let parent_name = lookup_simple_name !emitted_names parent_id in
+                  let type_env =
+                    simple_type_env_with_variables
+                      (variable_sorts_for_ids [parent_id; id]
+                       |> simple_unique_variable_sorts)
+                      symbol_type_env
+                  in
+                  Some
+                    (simple_avatar_split_proof
+                       type_env avatar_split_definition_env id sorts
+                       parent_id parent_clause result parent_name)
+                with Error _ -> None
+              with
+              | Some proof ->
+                  claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")]
+              | None ->
+                  derived_assumptions := !derived_assumptions @ [(name, prop)]
+              end
+          | _ ->
+              derived_assumptions := !derived_assumptions @ [(name, prop)]
+          end;
           add_checked id result
       | AvatarContradiction (id, _, result) ->
           let name = simple_fresh_name used_names ("avatar_contradiction__" ^ id) in
@@ -8790,12 +9063,25 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           add_emitted_prop_and_sorts id prop sorts;
           derived_assumptions := !derived_assumptions @ [(name, prop)];
           add_checked id result
-      | AvatarRefutation (id, _, _, _, result) ->
+      | AvatarRefutation (id, parent_ids, sat_clauses, _, result) ->
           let name = simple_fresh_name used_names ("avatar_refutation__" ^ id) in
           let prop, sorts = simple_clause_prop_and_sorts_for_step cert id result in
           add_emitted id name;
           add_emitted_prop_and_sorts id prop sorts;
-          derived_assumptions := !derived_assumptions @ [(name, prop)];
+          begin match
+            try
+              if result <> [] then None
+              else
+                Some
+                  (simple_avatar_refutation_proof
+                     id parent_ids sat_clauses !checked !emitted_names)
+            with Error _ -> None
+          with
+          | Some proof ->
+              claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")]
+          | None ->
+              derived_assumptions := !derived_assumptions @ [(name, prop)]
+          end;
           add_checked id result
       | Substitute (id, parent_id, subst, result) ->
           let parent_sorts = variable_sorts_for_ids [parent_id] in
