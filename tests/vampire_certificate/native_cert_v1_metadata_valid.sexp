@@ -3,6 +3,7 @@
   (symbol_declaration "Variable p:prop.")
   (step_proposition "c1" "p")
   (step_variable_sorts "c1" ("X0:set"))
+  (step_extra "c1" "fool" ("rule=fool elimination" "source=p" "target=vampire_eq_prop p vampire_true"))
   (input c1 (source axiom "p")
     (clause
       (pos (TMH "p"))))

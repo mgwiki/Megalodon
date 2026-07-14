@@ -108,6 +108,7 @@ type certificate_metadata = {
   symbol_declarations : string list;
   step_propositions : (string * string) list;
   step_variable_sorts : (string * string list) list;
+  step_extras : (string * string * string list) list;
 }
 
 type certificate = {

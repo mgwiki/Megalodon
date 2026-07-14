@@ -110,6 +110,7 @@ type certificate_metadata = {
   symbol_declarations : string list;
   step_propositions : (string * string) list;
   step_variable_sorts : (string * string list) list;
+  step_extras : (string * string * string list) list;
 }
 
 type certificate = {
@@ -713,6 +714,7 @@ let empty_certificate_metadata = {
   symbol_declarations = [];
   step_propositions = [];
   step_variable_sorts = [];
+  step_extras = [];
 }
 
 let parse_string_list = function
@@ -736,7 +738,13 @@ let parse_certificate_metadata metadata = function
         step_variable_sorts =
           metadata.step_variable_sorts @ [(atom id, parse_string_list sorts)];
       }
-  | List (Atom (("symbol_declaration" | "step_proposition" | "step_variable_sorts") as tag) :: _) ->
+  | List [Atom "step_extra"; id; kind; fields] ->
+      Some {
+        metadata with
+        step_extras =
+          metadata.step_extras @ [(atom id, atom kind, parse_string_list fields)];
+      }
+  | List (Atom (("symbol_declaration" | "step_proposition" | "step_variable_sorts" | "step_extra") as tag) :: _) ->
       error ("malformed certificate metadata record " ^ tag)
   | _ -> None
 
