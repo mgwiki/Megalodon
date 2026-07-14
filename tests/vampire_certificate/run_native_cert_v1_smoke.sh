@@ -243,6 +243,35 @@ if ! rg -q 'Vampire certificate v1 source map checked 3 sources' "$WORK_DIR/nati
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_synthetic_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_synthetic_valid.log"
+
+if ! rg -q 'Vampire certificate v1 source map checked 3 sources' \
+    "$WORK_DIR/native_cert_v1_source_map_synthetic_valid.log"; then
+  echo "native certificate v1 source-map checker did not synthesize THF declaration mappings" >&2
+  exit 1
+fi
+
+bin/megalodon \
+  -vampirecertv1closed \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_synthetic_valid.th0.p \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_source_map_synthetic_closed.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_synthetic_closed.log"
+
+if ! rg -q 'Vampire certificate v1 closed checked 6 steps' \
+    "$WORK_DIR/native_cert_v1_source_map_synthetic_closed.log"; then
+  echo "closed native certificate v1 checker did not accept synthesized THF declaration mappings" >&2
+  exit 1
+fi
+
+if rg -q 'bridge_' "$WORK_DIR/native_cert_v1_source_map_synthetic_closed.mg"; then
+  echo "closed native certificate v1 synthetic source-map fixture generated a bridge premise" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_true_mismatch_bad.th0.p \

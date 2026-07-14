@@ -9500,40 +9500,114 @@ let parse_source_map text =
     in
     loop 0
   in
-  let thf_decl_hash_of_line line =
-    if string_starts_with "thf(" line then
-      try
-        let comma = String.index_from line 4 ',' in
-        let name = String.sub line 4 (comma - 4) in
-        let percent = String.rindex line '%' in
-        let hash =
-          String.sub line (percent + 1) (String.length line - percent - 1)
-          |> trim_ascii
-        in
-        if looks_like_hash hash then Some (name, hash) else None
-      with Not_found | Invalid_argument _ -> None
+  let tptp_decl_prefix line =
+    if string_starts_with "thf(" line then Some ("thf", 4)
+    else if string_starts_with "fof(" line then Some ("fof", 4)
     else None
   in
-  let thf_decl_formula_of_line line =
-    if string_starts_with "thf(" line then
-      try
-        let comma1 = String.index_from line 4 ',' in
-        let name = String.sub line 4 (comma1 - 4) in
-        let comma2 = String.index_from line (comma1 + 1) ',' in
-        let line_without_comment =
-          try String.sub line 0 (String.index line '%') with Not_found -> line
-        in
-        let close = String.rindex line_without_comment ')' in
-        let start = comma2 + 1 in
-        if close <= start then None
-        else
-          let formula =
-            String.sub line_without_comment start (close - start)
-            |> trim_ascii
-          in
-          Some (name, formula)
-      with Not_found | Invalid_argument _ -> None
-    else None
+  let tptp_decl_hash_of_line line =
+    match tptp_decl_prefix line with
+    | Some (_, name_start) ->
+        begin
+          try
+            let comma = String.index_from line name_start ',' in
+            let name = String.sub line name_start (comma - name_start) in
+            let percent = String.rindex line '%' in
+            let hash =
+              String.sub line (percent + 1) (String.length line - percent - 1)
+              |> trim_ascii
+            in
+            if looks_like_hash hash then Some (name, hash) else None
+          with Not_found | Invalid_argument _ -> None
+        end
+    | None -> None
+  in
+  let tptp_decl_formula_of_line line =
+    match tptp_decl_prefix line with
+    | Some (_, name_start) ->
+        begin
+          try
+            let comma1 = String.index_from line name_start ',' in
+            let name = String.sub line name_start (comma1 - name_start) in
+            let comma2 = String.index_from line (comma1 + 1) ',' in
+            let line_without_comment =
+              try String.sub line 0 (String.index line '%') with Not_found -> line
+            in
+            let close = String.rindex line_without_comment ')' in
+            let start = comma2 + 1 in
+            if close <= start then None
+            else
+              let formula =
+                String.sub line_without_comment start (close - start)
+                |> trim_ascii
+              in
+              Some (name, formula)
+          with Not_found | Invalid_argument _ -> None
+        end
+    | None -> None
+  in
+  let tptp_decl_role_of_line line =
+    match tptp_decl_prefix line with
+    | Some (_, name_start) ->
+        begin
+          try
+            let comma1 = String.index_from line name_start ',' in
+            let name = String.sub line name_start (comma1 - name_start) in
+            let comma2 = String.index_from line (comma1 + 1) ',' in
+            let role =
+              String.sub line (comma1 + 1) (comma2 - comma1 - 1)
+              |> trim_ascii
+            in
+            Some (name, role)
+          with Not_found | Invalid_argument _ -> None
+        end
+    | None -> None
+  in
+  let hex_value = function
+    | '0' .. '9' as c -> Some (Char.code c - Char.code '0')
+    | 'a' .. 'f' as c -> Some (10 + Char.code c - Char.code 'a')
+    | 'A' .. 'F' as c -> Some (10 + Char.code c - Char.code 'A')
+    | _ -> None
+  in
+  let tptp_unmangle_name name =
+    let len = String.length name in
+    let start =
+      if len >= 3
+         && String.sub name 0 2 = "c_"
+         && (let c = name.[2] in c >= 'A' && c <= 'Z') then
+        2
+      else 0
+    in
+    let buffer = Buffer.create len in
+    let rec loop i =
+      if i >= len then ()
+      else if i + 2 < len && name.[i] = '_' then
+        begin match hex_value name.[i + 1], hex_value name.[i + 2] with
+        | Some hi, Some lo ->
+            Buffer.add_char buffer (Char.chr (hi * 16 + lo));
+            loop (i + 3)
+        | _ ->
+            Buffer.add_char buffer name.[i];
+            loop (i + 1)
+        end
+      else begin
+        Buffer.add_char buffer name.[i];
+        loop (i + 1)
+      end
+    in
+    loop start;
+    Buffer.contents buffer
+  in
+  let source_name_from_tptp name =
+    tptp_unmangle_name name
+  in
+  let source_map_kind_of_tptp_role role hash =
+    match String.lowercase_ascii role with
+    | "axiom" -> if hash <> None then "known" else "axiom"
+    | "definition" -> if hash <> None then "def" else "definition"
+    | "conjecture" -> "conjecture"
+    | "type" -> "type"
+    | other -> other
   in
   let replace_assoc key value entries =
     (key, value) :: List.remove_assoc key entries
@@ -9541,7 +9615,7 @@ let parse_source_map text =
   let decl_hashes =
     List.fold_left
       (fun acc line ->
-         match thf_decl_hash_of_line line with
+         match tptp_decl_hash_of_line line with
          | Some (name, hash) -> replace_assoc name hash acc
          | None -> acc)
       []
@@ -9550,8 +9624,17 @@ let parse_source_map text =
   let decl_formulas =
     List.fold_left
       (fun acc line ->
-         match thf_decl_formula_of_line line with
+         match tptp_decl_formula_of_line line with
          | Some (name, formula) -> replace_assoc name formula acc
+         | None -> acc)
+      []
+      lines
+  in
+  let decl_roles =
+    List.fold_left
+      (fun acc line ->
+         match tptp_decl_role_of_line line with
+         | Some (name, role) -> replace_assoc name role acc
          | None -> acc)
       []
       lines
@@ -9562,7 +9645,8 @@ let parse_source_map text =
   let decl_formula name =
     List.assoc_opt name decl_formulas
   in
-  List.fold_left
+  let explicit_entries =
+    List.fold_left
     (fun entries line ->
       if string_starts_with source_map_prefix line then
         let body = String.sub line prefix_len (String.length line - prefix_len) in
@@ -9576,7 +9660,30 @@ let parse_source_map text =
         entries)
     []
     lines
-  |> List.rev
+    |> List.rev
+  in
+  let explicit_names =
+    List.map (fun entry -> entry.source_map_tptp_name) explicit_entries
+  in
+  let synthetic_entries =
+    decl_roles
+    |> List.rev
+    |> List.filter_map
+         (fun (name, role) ->
+            if List.mem name explicit_names then None
+            else
+              let hash = decl_hash name in
+              let source_name = source_name_from_tptp name in
+              Some {
+                source_map_kind = source_map_kind_of_tptp_role role hash;
+                source_map_tptp_name = name;
+                source_map_source_name = source_name;
+                source_map_hash = Option.value ~default:"" hash;
+                source_map_decl_hash = hash;
+                source_map_decl_formula = decl_formula name;
+              })
+  in
+  explicit_entries @ synthetic_entries
 
 let source_origin_of_sexpr = function
   | List fields ->
