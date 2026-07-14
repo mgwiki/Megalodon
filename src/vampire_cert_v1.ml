@@ -7470,8 +7470,6 @@ let simple_skolem_formula_proof ?opened_witness
         Ap (Ap (TmH "vampire_and", target_left), target_right) ->
           let left_name = fresh "Hskolem_and_left_" in
           let right_name = fresh "Hskolem_and_right_" in
-          let source_left_text = formula_text env source_left in
-          let source_right_text = formula_text env source_right in
           let target_left_text = formula_text env target_left in
           let target_right_text = formula_text env target_right in
           let target_text = formula_text env target in
@@ -7483,9 +7481,9 @@ let simple_skolem_formula_proof ?opened_witness
               target_left_text target_right_text left_proof right_proof
           in
           Printf.sprintf
-            "(%s %s (fun %s:%s => fun %s:%s => %s))"
+            "(%s %s (fun %s => fun %s => %s))"
             proof (simple_prop_arg target_text)
-            left_name source_left_text right_name source_right_text target_intro
+            left_name right_name target_intro
       | Ap (Ap (TmH "vampire_or", source_a),
             Ap (Ap (TmH "vampire_or", source_b), source_c)),
         Ap (Ap (TmH "vampire_or",
@@ -7494,9 +7492,6 @@ let simple_skolem_formula_proof ?opened_witness
           let a_name = fresh "Hskolem_assoc_a_" in
           let b_name = fresh "Hskolem_assoc_b_" in
           let c_name = fresh "Hskolem_assoc_c_" in
-          let source_a_text = formula_text env source_a in
-          let source_b_text = formula_text env source_b in
-          let source_c_text = formula_text env source_c in
           let target_a_text = formula_text env target_a in
           let target_b_text = formula_text env target_b in
           let target_c_text = formula_text env target_c in
@@ -7528,19 +7523,16 @@ let simple_skolem_formula_proof ?opened_witness
               target_left_text target_c_text c_proof
           in
           Printf.sprintf
-            "(%s %s (fun %s:%s => %s) (fun Hskolem_assoc_tail:(%s) => Hskolem_assoc_tail %s (fun %s:%s => %s) (fun %s:%s => %s)))"
+            "(%s %s (fun %s => %s) (fun Hskolem_assoc_tail => Hskolem_assoc_tail %s (fun %s => %s) (fun %s => %s)))"
             proof (simple_prop_arg target_text)
-            a_name source_a_text (target_from_left target_left_from_a)
-            (formula_text env (Ap (Ap (TmH "vampire_or", source_b), source_c)))
+            a_name (target_from_left target_left_from_a)
             (simple_prop_arg target_text)
-            b_name source_b_text (target_from_left target_left_from_b)
-            c_name source_c_text target_from_c
+            b_name (target_from_left target_left_from_b)
+            c_name target_from_c
       | Ap (Ap (TmH "vampire_or", source_left), source_right),
         Ap (Ap (TmH "vampire_or", target_left), target_right) ->
           let left_name = fresh "Hskolem_left_" in
           let right_name = fresh "Hskolem_right_" in
-          let source_left_text = formula_text env source_left in
-          let source_right_text = formula_text env source_right in
           let target_left_text = formula_text env target_left in
           let target_right_text = formula_text env target_right in
           let target_text = formula_text env target in
@@ -7557,10 +7549,10 @@ let simple_skolem_formula_proof ?opened_witness
               target_left_text target_right_text right_proof
           in
           Printf.sprintf
-            "(%s %s (fun %s:%s => %s) (fun %s:%s => %s))"
+            "(%s %s (fun %s => %s) (fun %s => %s))"
             proof (simple_prop_arg target_text)
-            left_name source_left_text left_intro
-            right_name source_right_text right_intro
+            left_name left_intro
+            right_name right_intro
       | Ap (exists_head, Lam (source_tp, body)), _
           when is_exists_head exists_head || available_subst <> [] ->
           let source_sort = simple_tp_expr source_tp in
@@ -8559,7 +8551,8 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                   let arg_binders = List.mapi (binder_for_arg env) args in
                   let predicate_env =
                     (source_var, source_sort)
-                    :: (arg_binders @ subst_variable_env @ generated_env @ base_symbol_type_env
+                    :: (arg_binders @ env @ binder_sorts @ subst_variable_env
+                        @ generated_env @ base_symbol_type_env
                         |> simple_unique_variable_sorts)
                   in
                   let body_text =
