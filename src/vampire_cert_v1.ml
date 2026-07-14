@@ -5350,14 +5350,28 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       | CnfLiteral (id, parent_id, result) ->
           let name = derived_name id in
           let target_prop, target_sorts = clause_prop_and_sorts_for_ids id [parent_id] result in
-          add_emitted id name;
-          add_bridge_claim ~kind:"cnf" id parent_id name target_prop target_sorts;
+          if emitted_parent_prop parent_id = target_prop then begin
+            add_emitted id name;
+            add_emitted_prop_and_sorts id target_prop target_sorts;
+            claims := !claims @
+              [(name, target_prop, "exact " ^ lookup_simple_name !emitted_names parent_id ^ ".")]
+          end else begin
+            add_emitted id name;
+            add_bridge_claim ~kind:"cnf" id parent_id name target_prop target_sorts
+          end;
           add_checked id result
       | CnfFormulaClause (id, parent_id, _, result) ->
           let name = derived_name id in
           let target_prop, target_sorts = clause_prop_and_sorts_for_ids id [parent_id] result in
-          add_emitted id name;
-          add_bridge_claim ~kind:"cnf" id parent_id name target_prop target_sorts;
+          if emitted_parent_prop parent_id = target_prop then begin
+            add_emitted id name;
+            add_emitted_prop_and_sorts id target_prop target_sorts;
+            claims := !claims @
+              [(name, target_prop, "exact " ^ lookup_simple_name !emitted_names parent_id ^ ".")]
+          end else begin
+            add_emitted id name;
+            add_bridge_claim ~kind:"cnf" id parent_id name target_prop target_sorts
+          end;
           add_checked id result
       | FoolExhaustiveness (id, result) ->
           let name = simple_fresh_name used_names ("theory_fool_exhaustiveness__" ^ id) in
