@@ -2179,6 +2179,31 @@ let predicate_definition_definiendum_term atom =
   | Some (other, TmH h) when h = "f__true" || h = "f__false" -> other
   | _ -> atom
 
+let bool_equality_vampire_var = function
+  | atom ->
+      begin match equality_sides atom with
+      | Some (TmH h, TmH name)
+          when (h = "f__true" || h = "f__false"
+                || h = "vampire_true" || h = "vampire_false")
+               && is_vampire_var_name name -> Some name
+      | Some (TmH name, TmH h)
+          when (h = "f__true" || h = "f__false"
+                || h = "vampire_true" || h = "vampire_false")
+               && is_vampire_var_name name -> Some name
+      | _ -> None
+      end
+
+let preferred_formula_binder_name sort body =
+  if sort <> "prop" then None
+  else
+    match body with
+    | Ap (Ap (TmH "vampire_or", _), right)
+    | Ap (Ap (TmH "vampire_and", _), right) ->
+        bool_equality_vampire_var right
+    | Imp (left, _) ->
+        bool_equality_vampire_var left
+    | _ -> bool_equality_vampire_var body
+
 let check_predicate_definition id symbol formula =
   if symbol = "" then error (id ^ ": predicate_definition symbol must be non-empty");
   let defined, _, _ = predicate_definition_parts id formula in
@@ -7117,23 +7142,29 @@ let rec simple_formula_prop_text_with_used used type_env tm =
   | All (tp, body) ->
       let sort = simple_tp_expr tp in
       let binder =
-        let candidates =
-          type_env
-          |> List.filter
-               (fun (name, known_sort) ->
-                  let binder = megalodon_ident name in
-                  known_sort = sort
-                  && is_vampire_var_name binder
-                  && not (List.mem binder used)
-                  && tm_contains_symbol binder body)
-        in
-        match candidates with
-        | (name, _) :: _ -> megalodon_ident name
-        | [] ->
-            begin match max_vampire_var_name body with
-            | Some name -> megalodon_ident name
-            | None -> "Xformula"
-            end
+        match preferred_formula_binder_name sort body with
+        | Some name
+            when not (List.mem name used)
+                 && List.assoc_opt name type_env = Some sort ->
+            megalodon_ident name
+        | _ ->
+            let candidates =
+              type_env
+              |> List.filter
+                   (fun (name, known_sort) ->
+                      let binder = megalodon_ident name in
+                      known_sort = sort
+                      && is_vampire_var_name binder
+                      && not (List.mem binder used)
+                      && tm_contains_symbol binder body)
+            in
+            match candidates with
+            | (name, _) :: _ -> megalodon_ident name
+            | [] ->
+                begin match max_vampire_var_name body with
+                | Some name -> megalodon_ident name
+                | None -> "Xformula"
+                end
       in
       "forall " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ ", "
       ^ simple_formula_prop_text_with_used
@@ -7186,22 +7217,26 @@ let rec simple_formula_prop_text type_env tm =
   | All (tp, body) ->
       let sort = simple_tp_expr tp in
       let binder =
-        let candidates =
-          type_env
-          |> List.filter
-               (fun (name, known_sort) ->
-                  let binder = megalodon_ident name in
-                  known_sort = sort
-                  && is_vampire_var_name binder
-                  && tm_contains_symbol binder body)
-        in
-        match candidates with
-        | (name, _) :: _ -> megalodon_ident name
-        | [] ->
-            begin match max_vampire_var_name body with
-            | Some name -> megalodon_ident name
-            | None -> "Xformula"
-            end
+        match preferred_formula_binder_name sort body with
+        | Some name when List.assoc_opt name type_env = Some sort ->
+            megalodon_ident name
+        | _ ->
+            let candidates =
+              type_env
+              |> List.filter
+                   (fun (name, known_sort) ->
+                      let binder = megalodon_ident name in
+                      known_sort = sort
+                      && is_vampire_var_name binder
+                      && tm_contains_symbol binder body)
+            in
+            match candidates with
+            | (name, _) :: _ -> megalodon_ident name
+            | [] ->
+                begin match max_vampire_var_name body with
+                | Some name -> megalodon_ident name
+                | None -> "Xformula"
+                end
       in
       "forall " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ ", "
       ^ simple_formula_prop_text ((binder, sort) :: type_env) body
@@ -10958,13 +10993,21 @@ let parse_source_map text =
     else if string_starts_with "fof(" line then Some ("fof", 4)
     else None
   in
+  let tptp_decl_name name =
+    let name = trim_ascii name in
+    let len = String.length name in
+    if len >= 2 && name.[0] = '\'' && name.[len - 1] = '\'' then
+      String.sub name 1 (len - 2)
+    else
+      name
+  in
   let tptp_decl_hash_of_line line =
     match tptp_decl_prefix line with
     | Some (_, name_start) ->
         begin
           try
             let comma = String.index_from line name_start ',' in
-            let name = String.sub line name_start (comma - name_start) in
+            let name = String.sub line name_start (comma - name_start) |> tptp_decl_name in
             let percent = String.rindex line '%' in
             let hash =
               String.sub line (percent + 1) (String.length line - percent - 1)
@@ -10981,7 +11024,7 @@ let parse_source_map text =
         begin
           try
             let comma1 = String.index_from line name_start ',' in
-            let name = String.sub line name_start (comma1 - name_start) in
+            let name = String.sub line name_start (comma1 - name_start) |> tptp_decl_name in
             let comma2 = String.index_from line (comma1 + 1) ',' in
             let line_without_comment =
               try String.sub line 0 (String.index line '%') with Not_found -> line
@@ -11005,7 +11048,7 @@ let parse_source_map text =
         begin
           try
             let comma1 = String.index_from line name_start ',' in
-            let name = String.sub line name_start (comma1 - name_start) in
+            let name = String.sub line name_start (comma1 - name_start) |> tptp_decl_name in
             let comma2 = String.index_from line (comma1 + 1) ',' in
             let role =
               String.sub line (comma1 + 1) (comma2 - comma1 - 1)
@@ -11886,7 +11929,11 @@ let validate_certificate_sources ?(require_formula_match=false) source_map cert 
                      ^ " uses a THF declaration formula outside the checked source-linking fragment")
               | None -> ()
               end
-          | _ -> ()
+          | None when require_formula_match ->
+              error
+                (id ^ ": certificate source " ^ name
+                 ^ " has no THF declaration formula to check")
+          | None -> ()
           end;
           incr checked)
     cert.steps;
