@@ -538,6 +538,19 @@ if ! rg -q 'skolem_formula result does not match explicit skolem substitution' "
 fi
 
 if bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_skolem_duplicate_subst_bad.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_skolem_duplicate_subst_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_skolem_duplicate_subst_bad.err"; then
+  echo "native certificate v1 checker accepted duplicate Skolem substitution bindings" >&2
+  exit 1
+fi
+
+if ! rg -q 'duplicate substitution binding for X0' "$WORK_DIR/native_cert_v1_skolem_duplicate_subst_bad.err"; then
+  echo "native certificate v1 duplicate Skolem substitution failure did not explain the duplicate binding" >&2
+  exit 1
+fi
+
+if bin/megalodon \
   -vampirecertv1strict \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_skolem_computed_strict_bad.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_skolem_computed_strict_bad.out" \

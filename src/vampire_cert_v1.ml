@@ -326,11 +326,17 @@ let parse_tm_field name = function
 
 let parse_substitution = function
   | List (Atom "subst" :: entries) ->
-      List.map
-        (function
-          | List [name; tm] -> (atom name, parse_tm tm)
-          | _ -> error "expected substitution binding")
-        entries
+      let rec parse seen = function
+        | [] -> []
+        | List [name; tm] :: rest ->
+            let name = atom name in
+            if name = "" then error "substitution binding has an empty variable name";
+            if List.mem name seen then
+              error ("duplicate substitution binding for " ^ name);
+            (name, parse_tm tm) :: parse (name :: seen) rest
+        | _ -> error "expected substitution binding"
+      in
+      parse [] entries
   | _ -> error "expected substitution"
 
 let parse_result = function
