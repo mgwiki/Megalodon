@@ -2839,6 +2839,18 @@ let metadata_step_variable_sorts cert id =
   | Some sorts -> sorts
   | None -> []
 
+let variable_sort_pair sort =
+  match String.index_opt sort ':' with
+  | Some colon when colon > 0 ->
+      Some
+        (String.sub sort 0 colon,
+         String.sub sort (colon + 1) (String.length sort - colon - 1))
+  | _ -> None
+
+let metadata_step_variable_sort_pairs cert id =
+  metadata_step_variable_sorts cert id
+  |> List.filter_map variable_sort_pair
+
 let metadata_step_extra_fields cert id kind =
   cert.metadata.step_extras
   |> List.filter_map
@@ -2901,14 +2913,7 @@ let metadata_declared_names cert =
 let metadata_variable_sorts cert =
   cert.metadata.step_variable_sorts
   |> List.concat_map snd
-  |> List.filter_map
-       (fun sort ->
-          match String.index_opt sort ':' with
-          | Some colon when colon > 0 ->
-              Some
-                (String.sub sort 0 colon,
-                 String.sub sort (colon + 1) (String.length sort - colon - 1))
-          | _ -> None)
+  |> List.filter_map variable_sort_pair
   |> List.sort_uniq compare
 
 let megalodon_ident s =
@@ -3341,10 +3346,54 @@ let simple_copy_proof id parent_id result checked names =
     emit_error (id ^ ": simple emitter supports only exact clause copies for substitution");
   lookup_simple_name names parent_id
 
-let simple_clause_prop_for_step cert id clause =
+let simple_tm_names tm =
+  let rec collect acc = function
+    | TmH name -> if List.mem name acc then acc else name :: acc
+    | DB _ | Prim _ -> acc
+    | TpAp (m, _) -> collect acc m
+    | Ap (m, n) -> collect (collect acc m) n
+    | Lam (_, body) -> collect acc body
+    | Imp (left, right) -> collect (collect acc left) right
+    | All (_, body) -> collect acc body
+  in
+  collect [] tm
+
+let simple_clause_names clause =
+  clause
+  |> List.fold_left
+       (fun acc literal ->
+          List.fold_left
+            (fun acc name -> if List.mem name acc then acc else name :: acc)
+            acc
+            (simple_tm_names (literal_atom literal)))
+       []
+
+let simple_quantify_prop variable_sorts prop =
+  List.fold_right
+    (fun (name, sort) body -> "forall " ^ megalodon_ident name ^ ":" ^ sort ^ ", " ^ body)
+    variable_sorts
+    prop
+
+let simple_variable_sorts_for_names names available_sorts =
+  available_sorts
+  |> List.filter (fun (name, _) -> List.mem name names)
+  |> List.fold_left
+       (fun acc (name, sort) ->
+          if List.exists (fun (existing, _) -> existing = name) acc then acc
+          else acc @ [(name, sort)])
+       []
+
+let simple_clause_prop_and_sorts_for_step ?(available_sorts=[]) cert id clause =
   match metadata_step_proposition cert id with
-  | Some proposition -> proposition
-  | None -> simple_clause_prop clause
+  | Some proposition -> (proposition, metadata_step_variable_sort_pairs cert id)
+  | None ->
+      let prop = simple_clause_prop clause in
+      let names = simple_clause_names clause in
+      let variable_sorts = simple_variable_sorts_for_names names available_sorts in
+      (simple_quantify_prop variable_sorts prop, variable_sorts)
+
+let simple_clause_prop_for_step ?(available_sorts=[]) cert id clause =
+  fst (simple_clause_prop_and_sorts_for_step ~available_sorts cert id clause)
 
 let simple_condensation_proof id parent_id subst result checked names =
   if subst <> [] then
@@ -3394,14 +3443,19 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       "Definition vampire_and : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> B -> p) -> p.";
       "Definition vampire_exists_set : (set -> prop) -> prop := fun P:set->prop => forall q:prop, (forall x:set, P x -> q) -> q.";
       "Definition vampire_exists_prop : (prop -> prop) -> prop := fun P:prop->prop => forall q:prop, (forall x:prop, P x -> q) -> q.";
+      "Definition vampire_exists_set_prop : ((set->prop) -> prop) -> prop := fun P:(set->prop)->prop => forall q:prop, (forall x:set->prop, P x -> q) -> q.";
+      "Definition vampire_exists_set_set : ((set->set) -> prop) -> prop := fun P:(set->set)->prop => forall q:prop, (forall x:set->set, P x -> q) -> q.";
       "Definition vampire_eq_prop : prop -> prop -> prop := fun A B:prop => forall Q:prop->prop, Q A -> Q B.";
       "Section Eq.";
       "Variable A:SType.";
       "Definition eq : A->A->prop := fun x y:A => forall Q:A->A->prop, Q x y -> Q y x.";
       "End Eq.";
       "Infix = 502 := eq.";
+      "Definition vampire_eq_prop_to_set : (prop->set)->(prop->set)->prop := fun x y:prop->set => forall Q:(prop->set)->(prop->set)->prop, Q x y -> Q y x.";
       "Definition vampire_eq_set_to_set : (set->set)->(set->set)->prop := fun x y:set->set => forall Q:(set->set)->(set->set)->prop, Q x y -> Q y x.";
       "Definition vampire_eq_set_to_prop : (set->prop)->(set->prop)->prop := fun x y:set->prop => forall Q:(set->prop)->(set->prop)->prop, Q x y -> Q y x.";
+      "Definition vampire_set_ap : set->set->set := fun x y:set => x.";
+      "Notation SetImplicitOp vampire_set_ap.";
     ]
   in
   let add_line_once line =
@@ -3412,6 +3466,8 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   List.iter (fun name -> add_line_once ("Variable " ^ name ^ ":set.")) term_names;
   let used_names = ref (prop_names @ term_names) in
   let emitted_names = ref [] in
+  let emitted_props = ref [] in
+  let emitted_var_sorts = ref [] in
   let checked = ref [] in
   let assumptions = ref [] in
   let bridge_assumptions = ref [] in
@@ -3419,6 +3475,16 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   let final_empty = ref None in
   let add_emitted id name =
     emitted_names := (id, name) :: !emitted_names
+  in
+  let add_emitted_prop id prop =
+    emitted_props := (id, prop) :: !emitted_props
+  in
+  let add_emitted_var_sorts id sorts =
+    emitted_var_sorts := (id, sorts) :: !emitted_var_sorts
+  in
+  let add_emitted_prop_and_sorts id prop sorts =
+    add_emitted_prop id prop;
+    add_emitted_var_sorts id sorts
   in
   let input_name id source =
     simple_fresh_name used_names ("src_" ^ simple_source_label source_map source ^ "__" ^ id)
@@ -3428,27 +3494,37 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     checked := (id, clause) :: !checked;
     if clause = [] then final_empty := Some id
   in
-  let add_bridge_claim ?(kind="native") id parent_id name target_prop =
-    let parent_name = lookup_simple_name !emitted_names parent_id in
-    let bridge_name = simple_fresh_name used_names ("bridge_" ^ kind ^ "__" ^ id) in
-    let source_prop =
-      match metadata_step_extra_field cert id kind "source" with
-      | Some source -> source
-      | None ->
-          begin match metadata_step_extra_field cert id "fool" "source" with
-          | Some source -> source
-          | None ->
-              begin match metadata_step_extra_field cert id "normal_form" "source" with
-              | Some source -> source
-              | None -> simple_parent_prop cert parent_id
-              end
-          end
-    in
-    bridge_assumptions :=
-      !bridge_assumptions @ [(bridge_name, "(" ^ source_prop ^ ") -> (" ^ target_prop ^ ")")];
-    claims := !claims @ [(name, target_prop, "exact (" ^ bridge_name ^ " " ^ parent_name ^ ").")]
+  let variable_sorts_for_ids ids =
+    ids
+    |> List.concat_map
+         (fun id ->
+            match List.assoc_opt id !emitted_var_sorts with
+            | Some sorts -> sorts
+            | None -> metadata_step_variable_sort_pairs cert id)
+    |> List.sort_uniq compare
+  in
+  let substitution_variable_sorts parent_id subst =
+    let parent_sorts = variable_sorts_for_ids [parent_id] in
+    subst
+    |> List.filter_map
+         (fun (source_name, target) ->
+            match target, List.assoc_opt source_name parent_sorts with
+            | TmH target_name, Some sort -> Some (target_name, sort)
+            | _ -> None)
+    |> List.sort_uniq compare
+  in
+  let clause_prop_and_sorts_for_ids ?(extra_sorts=[]) id parent_ids result =
+    simple_clause_prop_and_sorts_for_step
+      ~available_sorts:(extra_sorts @ variable_sorts_for_ids (id :: parent_ids))
+      cert id result
+  in
+  let formula_prop_and_sorts id =
+    (simple_formula_prop cert id, metadata_step_variable_sort_pairs cert id)
   in
   let emitted_parent_prop parent_id =
+    match List.assoc_opt parent_id !emitted_props with
+    | Some proposition -> proposition
+    | None ->
     match metadata_step_proposition cert parent_id with
     | Some proposition -> proposition
     | None ->
@@ -3456,9 +3532,18 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     | Some clause -> simple_clause_prop clause
     | None -> simple_parent_prop cert parent_id
   in
-  let add_clause_inference_bridge kind id parent_ids result =
+  let add_bridge_claim ?(kind="native") id parent_id name target_prop target_sorts =
+    let parent_name = lookup_simple_name !emitted_names parent_id in
+    let bridge_name = simple_fresh_name used_names ("bridge_" ^ kind ^ "__" ^ id) in
+    let source_prop = emitted_parent_prop parent_id in
+    bridge_assumptions :=
+      !bridge_assumptions @ [(bridge_name, "(" ^ source_prop ^ ") -> (" ^ target_prop ^ ")")];
+    add_emitted_prop_and_sorts id target_prop target_sorts;
+    claims := !claims @ [(name, target_prop, "exact (" ^ bridge_name ^ " " ^ parent_name ^ ").")]
+  in
+  let add_clause_inference_bridge ?(extra_sorts=[]) kind id parent_ids result =
     let name = derived_name id in
-    let target_prop = simple_clause_prop_for_step cert id result in
+    let target_prop, target_sorts = clause_prop_and_sorts_for_ids ~extra_sorts id parent_ids result in
     let parent_names = List.map (lookup_simple_name !emitted_names) parent_ids in
     let parent_props = List.map emitted_parent_prop parent_ids in
     let bridge_name = simple_fresh_name used_names ("bridge_" ^ kind ^ "__" ^ id) in
@@ -3471,11 +3556,13 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       | _ -> "(" ^ String.concat " " (bridge_name :: parent_names) ^ ")"
     in
     add_emitted id name;
+    add_emitted_prop_and_sorts id target_prop target_sorts;
     bridge_assumptions := !bridge_assumptions @ [(bridge_name, bridge_type)];
     claims := !claims @ [(name, target_prop, "exact " ^ bridge_application ^ ".")];
     add_checked id result
   in
   let add_formula_inference_bridge kind id parent_ids target_prop =
+    let target_sorts = metadata_step_variable_sort_pairs cert id in
     let name = derived_name id in
     let parent_names = List.map (lookup_simple_name !emitted_names) parent_ids in
     let parent_props = List.map emitted_parent_prop parent_ids in
@@ -3489,6 +3576,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       | _ -> "(" ^ String.concat " " (bridge_name :: parent_names) ^ ")"
     in
     add_emitted id name;
+    add_emitted_prop_and_sorts id target_prop target_sorts;
     bridge_assumptions := !bridge_assumptions @ [(bridge_name, bridge_type)];
     claims := !claims @ [(name, target_prop, "exact " ^ bridge_application ^ ".")]
   in
@@ -3496,108 +3584,146 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     (function
       | Input (id, source, clause) ->
           let name = input_name id source in
+          let prop, sorts = simple_clause_prop_and_sorts_for_step cert id clause in
           add_emitted id name;
-          assumptions := !assumptions @ [(name, simple_clause_prop_for_step cert id clause)];
+          add_emitted_prop_and_sorts id prop sorts;
+          assumptions := !assumptions @ [(name, prop)];
           add_checked id clause
       | FormulaInput (id, source, _) ->
           let name = input_name id source in
+          let prop, sorts = formula_prop_and_sorts id in
           add_emitted id name;
-          assumptions := !assumptions @ [(name, simple_formula_prop cert id)]
+          add_emitted_prop_and_sorts id prop sorts;
+          assumptions := !assumptions @ [(name, prop)]
       | FormulaTermInput (id, source, _) ->
           let name = input_name id source in
+          let prop, sorts = formula_prop_and_sorts id in
           add_emitted id name;
-          assumptions := !assumptions @ [(name, simple_formula_prop cert id)]
+          add_emitted_prop_and_sorts id prop sorts;
+          assumptions := !assumptions @ [(name, prop)]
       | FormulaTermCopy (id, parent_id, _) ->
           let name = derived_name id in
           let proof = lookup_simple_name !emitted_names parent_id in
-          add_emitted id name;
-          claims := !claims @ [(name, simple_formula_prop cert id, "exact " ^ proof ^ ".")]
+          let prop, sorts = formula_prop_and_sorts id in
+          if emitted_parent_prop parent_id = prop then begin
+            add_emitted id name;
+            add_emitted_prop_and_sorts id prop sorts;
+            claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")]
+          end else
+            add_formula_inference_bridge "formula_term_copy" id [parent_id] prop
       | RectifyFormula (id, parent_id, _, _) ->
           let name = derived_name id in
           let proof = lookup_simple_name !emitted_names parent_id in
-          add_emitted id name;
-          claims := !claims @ [(name, simple_formula_prop cert id, "exact " ^ proof ^ ".")]
+          let prop, sorts = formula_prop_and_sorts id in
+          if emitted_parent_prop parent_id = prop then begin
+            add_emitted id name;
+            add_emitted_prop_and_sorts id prop sorts;
+            claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")]
+          end else
+            add_formula_inference_bridge "rectify_formula" id [parent_id] prop
       | FormulaCopy (id, parent_id, _) ->
           let name = derived_name id in
           let proof = lookup_simple_name !emitted_names parent_id in
-          add_emitted id name;
-          claims := !claims @ [(name, simple_formula_prop cert id, "exact " ^ proof ^ ".")]
+          let prop, sorts = formula_prop_and_sorts id in
+          if emitted_parent_prop parent_id = prop then begin
+            add_emitted id name;
+            add_emitted_prop_and_sorts id prop sorts;
+            claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")]
+          end else
+            add_formula_inference_bridge "formula_copy" id [parent_id] prop
       | FoolFormula (id, parent_id, _) ->
           let name = derived_name id in
-          let target_prop = simple_formula_prop cert id in
+          let target_prop, target_sorts = formula_prop_and_sorts id in
           add_emitted id name;
-          add_bridge_claim ~kind:"fool" id parent_id name target_prop
+          add_bridge_claim ~kind:"fool" id parent_id name target_prop target_sorts
       | FoolBool (id, parent_id, result) ->
           let name = derived_name id in
-          let target_prop = simple_formula_prop cert id in
+          let target_prop, target_sorts = formula_prop_and_sorts id in
           add_emitted id name;
-          add_bridge_claim ~kind:"fool" id parent_id name target_prop
+          add_bridge_claim ~kind:"fool" id parent_id name target_prop target_sorts
       | EnnfFormula (id, parent_id, _) ->
           let name = derived_name id in
-          let target_prop = simple_formula_prop cert id in
+          let target_prop, target_sorts = formula_prop_and_sorts id in
           add_emitted id name;
-          add_bridge_claim ~kind:"normal_form" id parent_id name target_prop
+          add_bridge_claim ~kind:"normal_form" id parent_id name target_prop target_sorts
       | SkolemFormula (id, parent_id, _, _) ->
           add_formula_inference_bridge "skolem_formula" id [parent_id] (simple_formula_prop cert id)
       | SkolemFormulaComputed (id, parent_id, _) ->
           add_formula_inference_bridge "skolem_formula" id [parent_id] (simple_formula_prop cert id)
       | CnfLiteral (id, parent_id, result) ->
           let name = derived_name id in
-          let target_prop = simple_clause_prop_for_step cert id result in
+          let target_prop, target_sorts = clause_prop_and_sorts_for_ids id [parent_id] result in
           add_emitted id name;
-          add_bridge_claim ~kind:"cnf" id parent_id name target_prop;
+          add_bridge_claim ~kind:"cnf" id parent_id name target_prop target_sorts;
           add_checked id result
       | CnfFormulaClause (id, parent_id, _, result) ->
           let name = derived_name id in
-          let target_prop = simple_clause_prop_for_step cert id result in
+          let target_prop, target_sorts = clause_prop_and_sorts_for_ids id [parent_id] result in
           add_emitted id name;
-          add_bridge_claim ~kind:"cnf" id parent_id name target_prop;
+          add_bridge_claim ~kind:"cnf" id parent_id name target_prop target_sorts;
           add_checked id result
       | FoolExhaustiveness (id, result) ->
           let name = simple_fresh_name used_names ("theory_fool_exhaustiveness__" ^ id) in
+          let prop, sorts = simple_clause_prop_and_sorts_for_step cert id result in
           add_emitted id name;
-          assumptions := !assumptions @ [(name, simple_clause_prop_for_step cert id result)];
+          add_emitted_prop_and_sorts id prop sorts;
+          assumptions := !assumptions @ [(name, prop)];
           add_checked id result
       | FoolDistinctness (id, result) ->
           let name = simple_fresh_name used_names ("theory_fool_distinctness__" ^ id) in
+          let prop, sorts = simple_clause_prop_and_sorts_for_step cert id result in
           add_emitted id name;
-          assumptions := !assumptions @ [(name, simple_clause_prop_for_step cert id result)];
+          add_emitted_prop_and_sorts id prop sorts;
+          assumptions := !assumptions @ [(name, prop)];
           add_checked id result
       | PredicateDefinition (id, _, _) ->
           let name = simple_fresh_name used_names ("theory_predicate_definition__" ^ id) in
+          let prop, sorts = formula_prop_and_sorts id in
           add_emitted id name;
-          assumptions := !assumptions @ [(name, simple_formula_prop cert id)]
+          add_emitted_prop_and_sorts id prop sorts;
+          assumptions := !assumptions @ [(name, prop)]
       | PredicateDefinitionFold (id, source_id, definition_id, _) ->
           add_formula_inference_bridge "predicate_definition_fold" id [source_id; definition_id] (simple_formula_prop cert id)
       | PredicateDefinitionFoldChain (id, source_id, definition_ids, _) ->
           add_formula_inference_bridge "predicate_definition_fold_chain" id (source_id :: definition_ids) (simple_formula_prop cert id)
       | DefinitionInput (id, result) ->
           let name = simple_fresh_name used_names ("definition_input__" ^ id) in
+          let prop, sorts = simple_clause_prop_and_sorts_for_step cert id result in
           add_emitted id name;
-          assumptions := !assumptions @ [(name, simple_clause_prop_for_step cert id result)];
+          add_emitted_prop_and_sorts id prop sorts;
+          assumptions := !assumptions @ [(name, prop)];
           add_checked id result
       | AvatarComponent (id, result) ->
           let name = simple_fresh_name used_names ("avatar_component__" ^ id) in
+          let prop, sorts = simple_clause_prop_and_sorts_for_step cert id result in
           add_emitted id name;
-          assumptions := !assumptions @ [(name, simple_clause_prop_for_step cert id result)];
+          add_emitted_prop_and_sorts id prop sorts;
+          assumptions := !assumptions @ [(name, prop)];
           add_checked id result
       | AvatarRefutation (id, _, _, result) ->
           let name = simple_fresh_name used_names ("avatar_refutation__" ^ id) in
+          let prop, sorts = simple_clause_prop_and_sorts_for_step cert id result in
           add_emitted id name;
-          assumptions := !assumptions @ [(name, simple_clause_prop_for_step cert id result)];
+          add_emitted_prop_and_sorts id prop sorts;
+          assumptions := !assumptions @ [(name, prop)];
           add_checked id result
-      | Substitute (id, parent_id, _, result) ->
+      | Substitute (id, parent_id, subst, result) ->
           begin match
             try Some (simple_copy_proof id parent_id result !checked !emitted_names)
             with Error _ -> None
           with
           | Some proof ->
               let name = derived_name id in
+              let prop = emitted_parent_prop parent_id in
+              let sorts = variable_sorts_for_ids [parent_id] in
               add_emitted id name;
-              claims := !claims @ [(name, simple_clause_prop_for_step cert id result, "exact " ^ proof ^ ".")];
+              add_emitted_prop_and_sorts id prop sorts;
+              claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")];
               add_checked id result
           | None ->
-              add_clause_inference_bridge "substitute" id [parent_id] result
+              add_clause_inference_bridge
+                ~extra_sorts:(substitution_variable_sorts parent_id subst)
+                "substitute" id [parent_id] result
           end
       | Condensation (id, parent_id, subst, result) ->
           begin match
@@ -3606,25 +3732,19 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           with
           | Some proof ->
               let name = derived_name id in
+              let prop, sorts = clause_prop_and_sorts_for_ids id [parent_id] result in
               add_emitted id name;
-              claims := !claims @ [(name, simple_clause_prop_for_step cert id result, "exact " ^ proof ^ ".")];
+              add_emitted_prop_and_sorts id prop sorts;
+              claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")];
               add_checked id result
           | None ->
-              add_clause_inference_bridge "condensation" id [parent_id] result
+              add_clause_inference_bridge
+                ~extra_sorts:(substitution_variable_sorts parent_id subst)
+                "condensation" id [parent_id] result
           end
       | Resolve (id, left_id, right_id, left_index, right_index, result) ->
-          begin match
-            try Some (simple_resolution_proof id left_id right_id left_index right_index result !checked !emitted_names)
-            with Error _ -> None
-          with
-          | Some proof ->
-              let name = derived_name id in
-              add_emitted id name;
-              claims := !claims @ [(name, simple_clause_prop_for_step cert id result, "exact " ^ proof ^ ".")];
-              add_checked id result
-          | None ->
-              add_clause_inference_bridge "resolve" id [left_id; right_id] result
-          end
+          ignore (left_index, right_index);
+          add_clause_inference_bridge "resolve" id [left_id; right_id] result
       | Factor (id, parent_id, left_index, right_index, result) ->
           begin match
             try Some (simple_factor_proof id parent_id left_index right_index result !checked !emitted_names)
@@ -3632,8 +3752,10 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           with
           | Some proof ->
               let name = derived_name id in
+              let prop, sorts = clause_prop_and_sorts_for_ids id [parent_id] result in
               add_emitted id name;
-              claims := !claims @ [(name, simple_clause_prop_for_step cert id result, "exact " ^ proof ^ ".")];
+              add_emitted_prop_and_sorts id prop sorts;
+              claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")];
               add_checked id result
           | None ->
               add_clause_inference_bridge "factor" id [parent_id] result
@@ -3645,8 +3767,10 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           with
           | Some body ->
               let name = derived_name id in
+              let prop, sorts = clause_prop_and_sorts_for_ids id [parent_id] result in
               add_emitted id name;
-              claims := !claims @ [(name, simple_clause_prop_for_step cert id result, body)];
+              add_emitted_prop_and_sorts id prop sorts;
+              claims := !claims @ [(name, prop, body)];
               add_checked id result
           | None ->
               add_clause_inference_bridge "equality_symmetry" id [parent_id] result
@@ -3658,30 +3782,42 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           with
           | Some proof ->
               let name = derived_name id in
+              let prop, sorts = clause_prop_and_sorts_for_ids id [parent_id] result in
               add_emitted id name;
-              claims := !claims @ [(name, simple_clause_prop_for_step cert id result, "exact " ^ proof ^ ".")];
+              add_emitted_prop_and_sorts id prop sorts;
+              claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")];
               add_checked id result
           | None ->
               add_clause_inference_bridge "equality_resolution" id [parent_id] result
           end
       | UnitResultingResolution (id, parent_id, _, result) ->
           add_clause_inference_bridge "unit_resulting_resolution" id [parent_id] result
-      | SubsumptionResolution (id, left_id, right_id, _, _, _, result) ->
-          add_clause_inference_bridge "subsumption_resolution" id [left_id; right_id] result
+      | SubsumptionResolution (id, left_id, right_id, _, _, subst, result) ->
+          add_clause_inference_bridge
+            ~extra_sorts:(substitution_variable_sorts left_id subst)
+            "subsumption_resolution" id [left_id; right_id] result
       | EqualityResolutionConstraints (id, parent_id, _, _, _, result) ->
           add_clause_inference_bridge "equality_resolution_constraints" id [parent_id] result
-      | EqualityFactoring (id, parent_id, _, _, _, result) ->
-          add_clause_inference_bridge "equality_factoring" id [parent_id] result
-      | EqualityFactoringConstraints (id, parent_id, _, _, _, _, result) ->
-          add_clause_inference_bridge "equality_factoring_constraints" id [parent_id] result
+      | EqualityFactoring (id, parent_id, _, _, subst, result) ->
+          add_clause_inference_bridge
+            ~extra_sorts:(substitution_variable_sorts parent_id subst)
+            "equality_factoring" id [parent_id] result
+      | EqualityFactoringConstraints (id, parent_id, _, _, subst, _, result) ->
+          add_clause_inference_bridge
+            ~extra_sorts:(substitution_variable_sorts parent_id subst)
+            "equality_factoring_constraints" id [parent_id] result
       | TruthConflict (id, parent_id, _, result) ->
           add_clause_inference_bridge "truth_conflict" id [parent_id] result
       | BoolSimplify (id, parent_id, _, _, _, _, result) ->
           add_clause_inference_bridge "bool_simplify" id [parent_id] result
       | Paramodulate (id, equality_parent_id, target_parent_id, _, _, _, _, _, result) ->
           add_clause_inference_bridge "paramodulate" id [equality_parent_id; target_parent_id] result
-      | Superposition (id, target_parent_id, equality_parent_id, _, _, _, _, _, _, _, result) ->
-          add_clause_inference_bridge "superposition" id [target_parent_id; equality_parent_id] result
+      | Superposition (id, target_parent_id, equality_parent_id, _, _, target_subst, equality_subst, _, _, _, result) ->
+          add_clause_inference_bridge
+            ~extra_sorts:
+              (substitution_variable_sorts target_parent_id target_subst
+               @ substitution_variable_sorts equality_parent_id equality_subst)
+            "superposition" id [target_parent_id; equality_parent_id] result
       | DefinitionRewriteChain (id, parent_id, _, result) ->
           add_clause_inference_bridge "definition_rewrite" id [parent_id] result
       | InequalityNameIntro (id, result) ->
@@ -3695,6 +3831,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             emit_error (id ^ ": contradiction parent is not empty");
           let parent_name = lookup_simple_name !emitted_names parent_id in
           add_emitted id name;
+          add_emitted_prop_and_sorts id "False" [];
           claims := !claims @ [(name, "False", "exact " ^ parent_name ^ ".")];
           add_checked id []
       )
