@@ -5455,16 +5455,68 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   let add_line_once line =
     if not (List.mem line !lines) then lines := !lines @ [line]
   in
-  List.iter add_line_once cert.metadata.symbol_declarations;
+  let symbol_type_env = simple_symbol_type_env cert in
+  let function_definition_for_step id result =
+    match
+      metadata_step_extra_field cert id "function_definition" "introduced_symbol",
+      metadata_step_extra_field cert id "function_definition" "sort",
+      result
+    with
+    | Some introduced, Some sort, [Pos atom] when simple_strip_outer_parens sort = "set" ->
+        let introduced = megalodon_ident introduced in
+        begin match equality_sides atom with
+        | Some (left, TmH right)
+            when megalodon_ident right = introduced && not (simple_tm_has_db_name left) ->
+            Some
+              (introduced,
+               Printf.sprintf
+                 "Definition %s : %s := %s."
+                 introduced
+                 sort
+                 (simple_tm_expr_with_expected symbol_type_env (Some sort) left))
+        | Some (TmH left, right)
+            when megalodon_ident left = introduced && not (simple_tm_has_db_name right) ->
+            Some
+              (introduced,
+               Printf.sprintf
+                 "Definition %s : %s := %s."
+                 introduced
+                 sort
+                 (simple_tm_expr_with_expected symbol_type_env (Some sort) right))
+        | _ -> None
+        end
+    | _ -> None
+  in
+  let function_definitions =
+    cert.steps
+    |> List.filter_map
+         (function
+           | DefinitionInput (id, result) -> function_definition_for_step id result
+           | _ -> None)
+    |> List.sort_uniq compare
+  in
+  let function_definition_names = List.map fst function_definitions in
+  let add_symbol_declaration line =
+    match simple_declared_name line with
+    | Some name when List.mem (megalodon_ident name) function_definition_names ->
+        begin match List.assoc_opt (megalodon_ident name) function_definitions with
+        | Some definition -> add_line_once definition
+        | None -> ()
+        end
+    | _ -> add_line_once line
+  in
+  List.iter add_symbol_declaration cert.metadata.symbol_declarations;
   let higher_order_definition_db_names = metadata_higher_order_definition_db_names cert in
   List.iter
     (fun name ->
-       if not (is_db_ident name && List.mem name higher_order_definition_db_names) then
+       if not (List.mem (megalodon_ident name) function_definition_names)
+          && not (is_db_ident name && List.mem name higher_order_definition_db_names) then
          add_line_once ("Variable " ^ name ^ ":prop."))
     prop_names;
   List.iter
     (fun name ->
-       if not (is_db_ident name && List.mem name higher_order_definition_db_names) then
+       if not (List.mem (megalodon_ident name) function_definition_names)
+          && not (is_db_ident name && List.mem name higher_order_definition_db_names) then
          add_line_once ("Variable " ^ name ^ ":set."))
     term_names;
   let used_names = ref (prop_names @ term_names) in
@@ -5513,7 +5565,6 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             | None -> metadata_step_variable_sort_pairs cert id)
     |> simple_unique_variable_sorts
   in
-  let symbol_type_env = simple_symbol_type_env cert in
   let declared_symbol_names =
     metadata_declared_names cert
     |> List.map megalodon_ident
@@ -5943,7 +5994,12 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           let prop, sorts = clause_prop_and_sorts_for_ids id [] result in
           add_emitted id name;
           add_emitted_prop_and_sorts id prop sorts;
-          derived_assumptions := !derived_assumptions @ [(name, prop)];
+          begin match function_definition_for_step id result with
+          | Some _ ->
+              claims := !claims @ [(name, prop, "reflexivity.")]
+          | None ->
+              derived_assumptions := !derived_assumptions @ [(name, prop)]
+          end;
           add_checked id result
       | AvatarComponent (id, result) ->
           let name = simple_fresh_name used_names ("avatar_component__" ^ id) in

@@ -639,6 +639,36 @@ if ! rg -q 'Vampire certificate v1 checked 4 steps' "$WORK_DIR/native_cert_v1_de
 fi
 
 bin/megalodon \
+  -vampirecertv1closed \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_definition_input_function_closed.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_definition_input_function_closed.th0.p \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_definition_input_function_closed.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_definition_input_function_closed.log"
+
+if ! rg -q 'Vampire certificate v1 closed checked 4 steps' \
+    "$WORK_DIR/native_cert_v1_definition_input_function_closed.log"; then
+  echo "closed native certificate v1 checker did not accept a function-definition input" >&2
+  exit 1
+fi
+if rg -q 'assume definition_input__d1' \
+    "$WORK_DIR/native_cert_v1_definition_input_function_closed.mg"; then
+  echo "function-definition input was emitted as an assumption" >&2
+  exit 1
+fi
+if ! rg -Fq 'Definition b : set := a.' \
+    "$WORK_DIR/native_cert_v1_definition_input_function_closed.mg"; then
+  echo "function-definition input did not define the introduced symbol" >&2
+  exit 1
+fi
+if ! rg -Fq 'claim definition_input__d1: a = b.' \
+    "$WORK_DIR/native_cert_v1_definition_input_function_closed.mg"; then
+  echo "function-definition input did not emit a checked definition claim" >&2
+  exit 1
+fi
+bin/megalodon "$WORK_DIR/native_cert_v1_definition_input_function_closed.mg" \
+  >"$WORK_DIR/native_cert_v1_definition_input_function_closed.check.log"
+
+bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_avatar_component_valid.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_avatar_component_valid.log"
 

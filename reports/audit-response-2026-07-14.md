@@ -175,6 +175,41 @@ PASS 213
 /project/tmp/source_linked_slice_1_400_emit_source_bindings_101934
 ```
 
+This branch now also discharges one real closed blocker class instead of only
+classifying it. Vampire `function_definition` metadata for first-order
+`set`-sorted introduced symbols is used to emit a Megalodon `Definition` for
+the introduced symbol, and the corresponding `definition_input` equality is
+emitted as a checked `claim` proved by `reflexivity` rather than as a theorem
+premise. The implementation is deliberately guarded: if the native definition
+mentions Vampire `db*` aliases or is not an orientable first-order `set`
+definition, it remains a non-source premise and closed mode rejects the case.
+That is intentional; scoped Smolka-style transformations still need a real
+replay path.
+
+Validation for the guarded function-definition path:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_source_map_export_smoke.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+
+PASS 213
+/project/tmp/source_linked_slice_1_400_emit_definput_guarded_102853
+
+CLOSED_PASS 6
+EMIT_FAIL 207
+/project/tmp/source_linked_slice_1_400_closed_definput_guarded_102927
+```
+
+The additional closed cases are:
+
+```text
+hammer.11555.42.th0.p
+hammer.11572.88.th0.p
+hammer.11578.57.th0.p
+hammer.11706.270.th0.p
+```
+
 ## Remaining P0 Work
 
 Closed mode is necessary but not sufficient.
