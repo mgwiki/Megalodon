@@ -845,10 +845,14 @@ let lookup_formula checked id =
 let rec subst_tm subst tm =
   match tm with
   | DB _ -> tm
+  | TmH "=" -> tm
   | TmH h ->
-      begin
-        try List.assoc h subst with Not_found -> tm
-      end
+      let rec lookup = function
+        | [] -> tm
+        | (key, value) :: rest ->
+            if key = h then value else lookup rest
+      in
+      lookup subst
   | Prim _ -> tm
   | TpAp (m, a) -> TpAp (subst_tm subst m, a)
   | Ap (m, n) -> Ap (subst_tm subst m, subst_tm subst n)
@@ -1129,26 +1133,36 @@ let same_mod_vampire_var_renaming left right =
   | None -> false
 
 let add_scoped_vampire_var_renaming left right frames =
+  let rec assoc_opt key = function
+    | [] -> None
+    | (candidate, value) :: rest ->
+        if candidate = key then Some value else assoc_opt key rest
+  in
+  let mem_assoc key items = Option.is_some (assoc_opt key items) in
   if left = right then Some frames
   else if is_vampire_var_name left && is_vampire_var_name right then
     match frames with
     | [] -> None
     | (left_to_right, right_to_left) :: outer ->
-        let left_ok =
-          try List.assoc left left_to_right = right with Not_found -> true
-        in
-        let right_ok =
-          try List.assoc right right_to_left = left with Not_found -> true
-        in
-        if left_ok && right_ok then
-          let left_to_right =
-            if List.mem_assoc left left_to_right then left_to_right
+      let left_ok =
+          match assoc_opt left left_to_right with
+          | Some mapped -> mapped = right
+          | None -> true
+      in
+      let right_ok =
+          match assoc_opt right right_to_left with
+          | Some mapped -> mapped = left
+          | None -> true
+      in
+      if left_ok && right_ok then
+        let left_to_right =
+            if mem_assoc left left_to_right then left_to_right
             else (left, right) :: left_to_right
-          in
-          let right_to_left =
-            if List.mem_assoc right right_to_left then right_to_left
+        in
+        let right_to_left =
+            if mem_assoc right right_to_left then right_to_left
             else (right, left) :: right_to_left
-          in
+        in
           Some ((left_to_right, right_to_left) :: outer)
         else None
   else None
@@ -3550,17 +3564,19 @@ and simple_tm_expr tm =
 	      end
       end
 
-let simple_prop_equality_arg tm =
+let rec simple_prop_equality_arg tm =
   if is_vampire_bool_const tm then
     if is_vampire_false tm then "vampire_false" else "vampire_true"
   else
-    simple_tm_expr tm
+    match equality_sides tm with
+    | Some _ -> simple_atom_prop tm
+    | None -> simple_tm_expr tm
 
-let simple_prop_equality left right =
+and simple_prop_equality left right =
   "vampire_eq_prop (" ^ simple_prop_equality_arg left ^ ") ("
   ^ simple_prop_equality_arg right ^ ")"
 
-let simple_atom_prop = function
+and simple_atom_prop = function
   | TmH name -> simple_name_expr name
   | atom ->
       begin match equality_sides atom with
@@ -4743,6 +4759,17 @@ let rec simple_tm_expr_with_expected type_env expected tm =
   match simple_bool_const_prop tm with
   | Some name -> name
   | None ->
+      begin match expected, equality_sides tm with
+      | Some "prop", Some (left, right) ->
+          if is_vampire_bool_const left || is_vampire_bool_const right then
+            simple_prop_equality left right
+          else
+            let left_expected = simple_tm_sort type_env right in
+            let right_expected = simple_tm_sort type_env left in
+            let left_text = simple_tm_expr_with_expected type_env left_expected left in
+            let right_text = simple_tm_expr_with_expected type_env right_expected right in
+            left_text ^ " = " ^ right_text
+      | _ ->
       begin match tm with
       | Ap (TmH "vLAM", body) ->
           simple_vlam_expr_with_expected type_env expected body
@@ -4803,6 +4830,7 @@ let rec simple_tm_expr_with_expected type_env expected tm =
               fn_text ^ " " ^ arg_text
           end
       | _ -> simple_tm_expr tm
+      end
       end
 
 and simple_vlam_expr_with_expected type_env expected body =
@@ -6942,7 +6970,8 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     List.map (fun (name, _, _) -> name) function_definitions
   in
   let local_definition_names =
-    function_definition_names @ inequality_split_definition_names @ skolem_definition_names
+    function_definition_names @ inequality_split_definition_names
+    @ skolem_definition_names
   in
   let generated_prelude_names =
     [
@@ -8483,25 +8512,32 @@ let parse_source_map text =
       with Not_found | Invalid_argument _ -> None
     else None
   in
-  let decl_hashes = Hashtbl.create 101 in
-  let decl_formulas = Hashtbl.create 101 in
-  List.iter
-    (fun line ->
-      match thf_decl_hash_of_line line with
-      | Some (name, hash) -> Hashtbl.replace decl_hashes name hash
-      | None -> ())
-    lines;
-  List.iter
-    (fun line ->
-      match thf_decl_formula_of_line line with
-      | Some (name, formula) -> Hashtbl.replace decl_formulas name formula
-      | None -> ())
-    lines;
+  let replace_assoc key value entries =
+    (key, value) :: List.remove_assoc key entries
+  in
+  let decl_hashes =
+    List.fold_left
+      (fun acc line ->
+         match thf_decl_hash_of_line line with
+         | Some (name, hash) -> replace_assoc name hash acc
+         | None -> acc)
+      []
+      lines
+  in
+  let decl_formulas =
+    List.fold_left
+      (fun acc line ->
+         match thf_decl_formula_of_line line with
+         | Some (name, formula) -> replace_assoc name formula acc
+         | None -> acc)
+      []
+      lines
+  in
   let decl_hash name =
-    try Some (Hashtbl.find decl_hashes name) with Not_found -> None
+    List.assoc_opt name decl_hashes
   in
   let decl_formula name =
-    try Some (Hashtbl.find decl_formulas name) with Not_found -> None
+    List.assoc_opt name decl_formulas
   in
   List.fold_left
     (fun entries line ->

@@ -1334,3 +1334,59 @@ CLOSED_PASS 77
 EMIT_FAIL 136
 CHECK_FAIL 0
 ```
+
+## Follow-up: Equality Handling and Predicate-Definition Frontier
+
+The next investigation targeted a high-frequency remaining blocker:
+`theory_predicate_definition`, for example in `hammer.10157.86.th0.p`.
+That class is attractive because Vampire emits the defining formulas in the
+native certificate metadata and many blocked cases contain the same pattern.
+
+I tested a local-definition replay strategy for these predicate definitions,
+but deliberately did not enable or commit it. The native metadata currently
+does not give enough stable binder information for the generated predicate
+body: in the representative case the printed predicate-definition template
+reused variable names in a way that produced free or mis-scoped Megalodon
+variables, and the quick AST renderer guessed lambda/existential binders rather
+than receiving them explicitly from Vampire. That failed the Megalodon checker.
+Keeping it would have moved proof logic back into fragile reconstruction code,
+which is exactly what the audit warns against. The right next step is to export
+richer binding/type structure from Vampire for these definitions, then replay
+them as small checked Megalodon definitions/claims.
+
+The changes kept from this pass are narrower hardening changes needed by that
+frontier and by later Smolka-style transformation replay:
+
+- equality is treated as a logical constant during certificate substitution, so
+  `=` is not accidentally looked up as an ordinary symbol;
+- scoped Vampire-variable renaming now uses explicit option-valued association
+  lookup instead of exception-driven `List.assoc`, which made equality-related
+  failures easier to diagnose and avoids misleading control flow;
+- proposition-valued equality terms are rendered through the proposition
+  equality path, including nested equality arguments;
+- source-map declaration hashes/formulas are stored with explicit replacement
+  semantics instead of mutable hash tables, matching the surrounding functional
+  parser style.
+
+Validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_source_map_export_smoke.sh
+
+TMPDIR=/project/tmp \
+WORK_DIR=/project/tmp/closed_hardened_equality_154626 \
+PROBLEM_DIR=/project/tmp/source_linked_strict_100_corpus_fresh_041947 \
+JOBS=20 MIN_PASS=0 CLOSED_CERT_V1=1 EMIT_TIMEOUT=30 CHECK_TIMEOUT=45 \
+tests/vampire_certificate/run_native_emit_cached_parallel.sh \
+  /project/tmp/source_linked_slice_1_400_fresh_042040
+
+CLOSED_PASS 77
+EMIT_FAIL 136
+```
+
+The result is intentionally not counted as a closed-proof improvement. It
+preserves the strict zero-non-source guard while clarifying that the current
+predicate-definition route needs more Vampire-side detail, not more guessing in
+the Megalodon emitter.
