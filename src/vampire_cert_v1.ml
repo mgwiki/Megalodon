@@ -1925,6 +1925,25 @@ let string_find_substring needle value =
   in
   loop 0
 
+let is_ident_char = function
+  | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' | '\'' -> true
+  | _ -> false
+
+let string_find_identifier needle value =
+  let needle_len = String.length needle in
+  let value_len = String.length value in
+  let rec loop index =
+    if needle_len = 0 then Some 0
+    else if index + needle_len > value_len then None
+    else if String.sub value index needle_len = needle
+            && (index = 0 || not (is_ident_char value.[index - 1]))
+            && (index + needle_len = value_len
+                || not (is_ident_char value.[index + needle_len])) then
+      Some index
+    else loop (index + 1)
+  in
+  loop 0
+
 let split_literal_name = function
   | Pos (TmH name)
   | Neg (TmH name) ->
@@ -2193,13 +2212,16 @@ let bool_equality_vampire_var = function
       | _ -> None
       end
 
-let preferred_formula_binder_name sort body =
+let rec preferred_formula_binder_name sort body =
   if sort <> "prop" then None
   else
     match body with
     | Ap (Ap (TmH "vampire_or", _), right)
     | Ap (Ap (TmH "vampire_and", _), right) ->
-        bool_equality_vampire_var right
+        begin match preferred_formula_binder_name sort right with
+        | Some _ as found -> found
+        | None -> bool_equality_vampire_var right
+        end
     | Imp (left, _) ->
         bool_equality_vampire_var left
     | _ -> bool_equality_vampire_var body
@@ -5927,22 +5949,72 @@ let simple_cnf_clause_projection_proof
     try simple_clause_prop_with_type_env type_env target_clause
     with Error _ -> simple_clause_prop target_clause
   in
-  let rec formula_prop_text env = function
+  let cnf_binder_sorts =
+    parent_sorts @ target_sorts |> simple_unique_variable_sorts
+  in
+  let formula_text_binder used env sort body =
+    let metadata_candidate () =
+      cnf_binder_sorts
+      |> List.find_opt
+           (fun (name, known_sort) ->
+              let binder = megalodon_ident name in
+              known_sort = sort
+              && is_vampire_var_name binder
+              && not (List.mem binder used)
+              && tm_contains_symbol binder body)
+      |> Option.map (fun (name, _) -> megalodon_ident name)
+    in
+    match preferred_formula_binder_name sort body with
+    | Some name ->
+        let binder = megalodon_ident name in
+        if is_vampire_var_name binder
+           && not (List.mem binder used)
+           && tm_contains_symbol binder body
+           &&
+           (match List.assoc_opt binder (env @ cnf_binder_sorts) with
+            | Some known_sort -> known_sort = sort
+            | None -> true)
+        then binder
+        else
+          begin match metadata_candidate () with
+          | Some binder -> binder
+          | None ->
+              begin match first_unused_vampire_var_name_with_sort env used sort body with
+              | Some name -> megalodon_ident name
+              | None ->
+                  begin match first_unused_vampire_var_name used body with
+                  | Some name -> megalodon_ident name
+                  | None -> "Xcnf_text_" ^ string_of_int (List.length used)
+                  end
+              end
+          end
+    | None ->
+        begin match metadata_candidate () with
+        | Some binder -> binder
+        | None ->
+            begin match first_unused_vampire_var_name_with_sort env used sort body with
+            | Some name -> megalodon_ident name
+            | None ->
+                begin match first_unused_vampire_var_name used body with
+                | Some name -> megalodon_ident name
+                | None -> "Xcnf_text_" ^ string_of_int (List.length used)
+                end
+            end
+        end
+  in
+  let rec formula_prop_text used env = function
     | All (tp, body) ->
         let sort = simple_tp_expr tp in
-        let binder =
-          match max_vampire_var_name body with
-          | Some name -> megalodon_ident name
-          | None -> "Xcnf_text_" ^ string_of_int (List.length env)
-        in
+        let binder = formula_text_binder used env sort body in
         "forall " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ ", "
-        ^ formula_prop_text ((binder, sort) :: env) body
+        ^ simple_with_db_aliases [binder]
+            (fun () -> formula_prop_text (binder :: used) ((binder, sort) :: env) body)
     | Imp (left, right) ->
-        "(" ^ formula_prop_text env left ^ " -> " ^ formula_prop_text env right ^ ")"
+        "(" ^ formula_prop_text used env left ^ " -> " ^ formula_prop_text used env right ^ ")"
     | Ap (Ap (TmH "vampire_or", left), right) ->
-        "vampire_or (" ^ formula_prop_text env left ^ ") (" ^ formula_prop_text env right ^ ")"
+        "vampire_or (" ^ formula_prop_text used env left ^ ") (" ^ formula_prop_text used env right ^ ")"
     | Ap (Ap (TmH "vampire_and", left), right) ->
-        "vampire_and (" ^ formula_prop_text env left ^ ") (" ^ formula_prop_text env right ^ ")"
+        "vampire_and (" ^ formula_prop_text used env left ^ ") (" ^ formula_prop_text used env right ^ ")"
     | Ap (exists_head, Lam (tp, body))
         when exists_head = TmH "vampire_exists_prop"
              || exists_head = TmH "vampire_exists_set" ->
@@ -5956,13 +6028,11 @@ let simple_cnf_clause_projection_proof
           | "set->set->prop" -> "vampire_exists_set_set_prop"
           | _ -> "vampire_exists_set"
         in
-        let binder =
-          match max_vampire_var_name body with
-          | Some name -> megalodon_ident name
-          | None -> "Xcnf_exists_text_" ^ string_of_int (List.length env)
-        in
+        let binder = formula_text_binder used env sort body in
         exists_name ^ " (fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => "
-        ^ formula_prop_text ((binder, sort) :: env) body ^ ")"
+        ^ simple_with_db_aliases [binder]
+            (fun () -> formula_prop_text (binder :: used) ((binder, sort) :: env) body)
+        ^ ")"
     | atom ->
         begin match equality_sides atom with
         | Some _ -> simple_atom_prop_with_type_env env atom
@@ -5993,8 +6063,8 @@ let simple_cnf_clause_projection_proof
     | Ap (Ap (TmH "vampire_and", left), right) ->
         let left_name = "Hcnf_formula_and_left_" ^ string_of_int depth in
         let right_name = "Hcnf_formula_and_right_" ^ string_of_int depth in
-        let left_text = formula_prop_text env left in
-        let right_text = formula_prop_text env right in
+        let left_text = formula_prop_text used env left in
+        let right_text = formula_prop_text used env right in
         let use_left =
           cnf_clauses left
           |> List.exists clause_is_subset_of_target
@@ -6958,7 +7028,7 @@ let simple_avatar_refutation_proof cert id parent_ids sat_clauses checked names 
                         let position =
                           match split_literal_name lit with
                           | Some raw_name ->
-                              string_find_substring (megalodon_ident raw_name) parent_prop
+                              string_find_identifier (megalodon_ident raw_name) parent_prop
                           | None -> None
                         in
                         (index, position, lit))
@@ -7192,15 +7262,25 @@ let rec simple_formula_prop_text_with_used used type_env tm =
         | _ -> "vampire_exists_set"
       in
       let binder =
-        match
-          first_unused_vampire_var_name_with_sort
-            type_env used sort body
-        with
-        | Some name -> megalodon_ident name
-        | None ->
-            begin match first_unused_vampire_var_name used body with
+        match preferred_formula_binder_name sort body with
+        | Some name
+            when not (List.mem name used)
+                 &&
+                 (match List.assoc_opt name type_env with
+                  | Some known_sort -> known_sort = sort
+                  | None -> true) ->
+            megalodon_ident name
+        | _ ->
+            begin match
+              first_unused_vampire_var_name_with_sort
+                type_env used sort body
+            with
             | Some name -> megalodon_ident name
-            | None -> "Xformula"
+            | None ->
+                begin match first_unused_vampire_var_name used body with
+                | Some name -> megalodon_ident name
+                | None -> "Xformula"
+                end
             end
       in
       exists_name ^ " (fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => "
@@ -7263,9 +7343,13 @@ let rec simple_formula_prop_text type_env tm =
         | _ -> "vampire_exists_set"
       in
       let binder =
-        match max_vampire_var_name body with
+        match preferred_formula_binder_name sort body with
         | Some name -> megalodon_ident name
-        | None -> "Xformula"
+        | None ->
+            begin match max_vampire_var_name body with
+            | Some name -> megalodon_ident name
+            | None -> "Xformula"
+            end
       in
       exists_name ^ " (fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => "
       ^ simple_formula_prop_text ((binder, sort) :: type_env) body ^ ")"
@@ -7629,13 +7713,37 @@ let simple_skolem_formula_proof ?opened_witness
             && tm_contains_symbol binder body)
     |> Option.map (fun (name, _) -> megalodon_ident name)
   in
+  let known_binder_sort env binder =
+    match List.assoc_opt binder env with
+    | Some _ as found -> found
+    | None -> List.assoc_opt binder binder_sorts
+  in
+  let preferred_skolem_formula_binder bound env sort body =
+    match preferred_formula_binder_name sort body with
+    | Some name ->
+        let binder = megalodon_ident name in
+        if is_vampire_var_name binder
+           && not (List.mem binder bound)
+           && tm_contains_symbol binder body
+           &&
+           (match known_binder_sort env binder with
+            | Some known_sort -> known_sort = sort
+            | None -> true)
+        then Some binder
+        else None
+    | None -> None
+  in
   let formula_binder bound env sort body =
-    match metadata_formula_binder bound sort body with
+    match preferred_skolem_formula_binder bound env sort body with
     | Some binder -> binder
     | None ->
-        begin match inferred_formula_binder env sort body with
+        begin match metadata_formula_binder bound sort body with
         | Some binder -> binder
-        | None -> fallback_binder sort
+        | None ->
+            begin match inferred_formula_binder env sort body with
+            | Some binder -> binder
+            | None -> fallback_binder sort
+            end
         end
   in
   let rec formula_text bound env tm =
@@ -7672,9 +7780,16 @@ let simple_skolem_formula_proof ?opened_witness
               |> Option.map fst
         in
         let binder =
+          match preferred_skolem_formula_binder bound env sort body with
+          | Some binder -> binder
+          | None ->
           match raw_source_var with
           | Some source_var
-              when not (List.mem (megalodon_ident source_var) (List.map fst env)) ->
+              when not (List.mem (megalodon_ident source_var) (List.map fst env))
+                   &&
+                   (match known_binder_sort env (megalodon_ident source_var) with
+                    | Some known_sort -> known_sort = sort
+                    | None -> true) ->
               megalodon_ident source_var
           | Some _ | None ->
               begin match
@@ -7744,7 +7859,7 @@ let simple_skolem_formula_proof ?opened_witness
           let right_proof = transport bound env available_subst source_right target_right right_name in
           let target_intro =
             Printf.sprintf
-              "(fun vskolem_and_goal:prop => fun Hskolem_and:(%s) -> (%s) -> vskolem_and_goal => Hskolem_and %s %s)"
+              "(fun vskolem_and_goal:prop => fun Hskolem_and:((%s) -> (%s) -> vskolem_and_goal) => Hskolem_and %s %s)"
               target_left_text target_right_text left_proof right_proof
           in
           Printf.sprintf
@@ -8042,6 +8157,30 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
     name
   in
   let binder_for_body sort body =
+    let preferred =
+      match preferred_formula_binder_name sort body with
+      | Some name ->
+          let binder = megalodon_ident name in
+          if is_vampire_var_name binder && tm_contains_symbol binder body then
+            Some binder
+          else None
+      | None -> None
+    in
+    let use_preferred preferred =
+      let rec find_index i =
+        match List.nth_opt binder_sorts i with
+        | Some (name, known_sort) ->
+            let binder = megalodon_ident name in
+            if binder = preferred && known_sort = sort then Some i
+            else find_index (i + 1)
+        | None -> None
+      in
+      begin match find_index !binder_index with
+      | Some i -> binder_index := i + 1
+      | None -> ()
+      end;
+      preferred
+    in
     let rec find_from i =
       match List.nth_opt binder_sorts i with
       | Some (name, known_sort) ->
@@ -8055,6 +8194,9 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
             find_from (i + 1)
       | None -> None
     in
+    match preferred with
+    | Some binder -> use_preferred binder
+    | None ->
     match find_from !binder_index with
     | Some binder -> binder
     | None ->
@@ -8098,6 +8240,21 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
     let used = List.map fst local_env in
     let render_env = local_env @ type_env in
     let choose_formula_binder sort body =
+      let preferred =
+        match preferred_formula_binder_name sort body with
+        | Some name ->
+            let binder = megalodon_ident name in
+            if is_vampire_var_name binder
+               && not (List.mem binder used)
+               && tm_contains_symbol binder body
+               &&
+               (match List.assoc_opt binder (binder_sorts @ render_env) with
+                | Some known_sort -> known_sort = sort
+                | None -> true)
+            then Some binder
+            else None
+        | None -> None
+      in
       let candidates =
         binder_sorts
         |> List.filter
@@ -8107,26 +8264,29 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
                 && is_vampire_var_name binder
                 && not (List.mem binder used))
       in
-      match
-        List.find_opt
-          (fun (name, _) -> tm_contains_symbol (megalodon_ident name) body)
-          candidates
-      with
-      | Some (name, _) -> megalodon_ident name
+      match preferred with
+      | Some binder -> binder
       | None ->
-          begin match candidates with
-          | (name, _) :: _ -> megalodon_ident name
-          | [] ->
-              begin match first_unused_vampire_var_name used body with
-              | Some name -> megalodon_ident name
-              | None ->
-                  let rec fresh i =
-                    let candidate = "Xformula_" ^ string_of_int i in
-                    if List.mem candidate used then fresh (i + 1) else candidate
-                  in
-                  fresh (List.length used)
+          match
+            List.find_opt
+              (fun (name, _) -> tm_contains_symbol (megalodon_ident name) body)
+              candidates
+          with
+          | Some (name, _) -> megalodon_ident name
+          | None ->
+              begin match candidates with
+              | (name, _) :: _ -> megalodon_ident name
+              | [] ->
+                  begin match first_unused_vampire_var_name used body with
+                  | Some name -> megalodon_ident name
+                  | None ->
+                      let rec fresh i =
+                        let candidate = "Xformula_" ^ string_of_int i in
+                        if List.mem candidate used then fresh (i + 1) else candidate
+                      in
+                      fresh (List.length used)
+                  end
               end
-          end
     in
     match tm with
     | All (tp, body) ->
@@ -8195,7 +8355,7 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
           convert env (Imp (right, vampire_false)) target_right not_right_proof
         in
         Printf.sprintf
-          "(fun Hennf_goal:prop => fun Hennf_and:%s -> %s -> Hennf_goal => Hennf_and %s %s)"
+          "(fun Hennf_goal:prop => fun Hennf_and:((%s) -> (%s) -> Hennf_goal) => Hennf_and %s %s)"
           target_left_text target_right_text left_proof right_proof
     | Imp (source_quantified, false_tm), target_exists
         when is_vampire_false false_tm ->
@@ -8262,7 +8422,7 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
               let left_proof = convert env premise target_premise premise_name in
               let right_proof = target_witness env rest right in
               Printf.sprintf
-                "(fun %s:prop => fun %s:(%s) -> (%s) -> %s => %s %s %s)"
+                "(fun %s:prop => fun %s:((%s) -> (%s) -> %s) => %s %s %s)"
                 goal_name and_name left_text right_text goal_name
                 and_name left_proof right_proof
           | [], _ ->
@@ -10167,7 +10327,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                               let position =
                                 match split_literal_name lit with
                                 | Some raw_name ->
-                                    string_find_substring (megalodon_ident raw_name) prop
+                                    string_find_identifier (megalodon_ident raw_name) prop
                                 | None -> None
                               in
                               (index, position, lit))
