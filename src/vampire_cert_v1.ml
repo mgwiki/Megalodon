@@ -5521,8 +5521,17 @@ let simple_cnf_clause_projection_proof
         when exists_head = TmH "vampire_exists_prop"
              || exists_head = TmH "vampire_exists_set" ->
         let sort = simple_tp_expr tp in
+        let exists_name =
+          match sort with
+          | "set" -> "vampire_exists_set"
+          | "prop" -> "vampire_exists_prop"
+          | "set->prop" -> "vampire_exists_set_prop"
+          | "set->set" -> "vampire_exists_set_set"
+          | "set->set->prop" -> "vampire_exists_set_set_prop"
+          | _ -> "vampire_exists_set"
+        in
         let binder = "Xcnf_exists_text_" ^ string_of_int (List.length env) in
-        "vampire_exists_set (fun " ^ binder ^ ":" ^ sort ^ " => "
+        exists_name ^ " (fun " ^ binder ^ ":" ^ sort ^ " => "
         ^ formula_prop_text ((binder, sort) :: env) body ^ ")"
     | atom ->
         begin match equality_sides atom with
@@ -6018,12 +6027,21 @@ let rec simple_formula_prop_text type_env tm =
       when exists_head = TmH "vampire_exists_prop"
            || exists_head = TmH "vampire_exists_set" ->
       let sort = simple_tp_expr tp in
+      let exists_name =
+        match sort with
+        | "set" -> "vampire_exists_set"
+        | "prop" -> "vampire_exists_prop"
+        | "set->prop" -> "vampire_exists_set_prop"
+        | "set->set" -> "vampire_exists_set_set"
+        | "set->set->prop" -> "vampire_exists_set_set_prop"
+        | _ -> "vampire_exists_set"
+      in
       let binder =
         match max_vampire_var_name body with
         | Some name -> megalodon_ident name
         | None -> "Xformula"
       in
-      "vampire_exists_set (fun " ^ binder ^ ":" ^ sort ^ " => "
+      exists_name ^ " (fun " ^ binder ^ ":" ^ sort ^ " => "
       ^ simple_formula_prop_text ((binder, sort) :: type_env) body ^ ")"
   | atom ->
       begin match equality_sides atom with
@@ -6231,9 +6249,13 @@ let simple_skolem_formula_proof
             proof (simple_prop_arg target_text)
             left_name source_left_text left_intro
             right_name source_right_text right_intro
-      | Ap (exists_head, Lam (Set, body)), _
+      | Ap (exists_head, Lam (source_tp, body)), _
           when exists_head = TmH "vampire_exists_prop"
                || exists_head = TmH "vampire_exists_set" ->
+          let source_sort = simple_tp_expr source_tp in
+          if source_sort <> "set" then
+            emit_error
+              (id ^ ": skolem proof supports only set existential witnesses");
           let raw_source_var =
             match subst with
             | [(source_var, _)] -> source_var
@@ -6247,9 +6269,9 @@ let simple_skolem_formula_proof
           in
           let source_var = megalodon_ident raw_source_var in
           let skolem_tm = skolem_subst_for_var raw_source_var in
-          let predicate_env = (source_var, "set") :: env in
+          let predicate_env = (source_var, source_sort) :: env in
           let predicate_text =
-            "fun " ^ source_var ^ ":set => " ^ simple_formula_prop_text predicate_env body
+            "fun " ^ source_var ^ ":" ^ source_sort ^ " => " ^ simple_formula_prop_text predicate_env body
           in
           let choice_proof =
             Printf.sprintf
@@ -6352,12 +6374,21 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
           when exists_head = TmH "vampire_exists_prop"
                || exists_head = TmH "vampire_exists_set" ->
           let sort = simple_tp_expr tp in
+          let exists_name =
+            match sort with
+            | "set" -> "vampire_exists_set"
+            | "prop" -> "vampire_exists_prop"
+            | "set->prop" -> "vampire_exists_set_prop"
+            | "set->set" -> "vampire_exists_set_set"
+            | "set->set->prop" -> "vampire_exists_set_set_prop"
+            | _ -> "vampire_exists_set"
+          in
           let binder =
             match max_vampire_var_name body with
             | Some name -> megalodon_ident name
             | None -> "Xennf_exists_text_" ^ string_of_int (List.length env)
           in
-          "vampire_exists_set (fun " ^ binder ^ ":" ^ sort ^ " => "
+          exists_name ^ " (fun " ^ binder ^ ":" ^ sort ^ " => "
           ^ formula_text ((binder, sort) :: env) body ^ ")"
       | atom ->
           begin match equality_sides atom with
@@ -6434,7 +6465,13 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
             let source_premises, source_conclusion = implication_spine [] source_body in
             if source_premises = [] then
               emit_error (id ^ ": ENNF proof expected at least one universal implication premise");
-            if source_premises <> target_premises || source_conclusion <> target_conclusion then
+            if List.length source_premises <> List.length target_premises
+               || source_conclusion <> target_conclusion
+               || not (List.for_all2
+                         (fun source_premise target_premise ->
+                            ennf_pos source_premise = target_premise)
+                         source_premises
+                         target_premises) then
               emit_error (id ^ ": ENNF proof expected target body to mirror negated universal implication spine");
             let rec target_exists_binders acc tps target =
               match tps, target with
@@ -6455,14 +6492,21 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
             let premise_names =
               List.map (fun _ -> fresh_proof_var "Hennf_premise_") source_premises
             in
+            let target_premise_proofs =
+              List.map2
+                (fun (source_premise, target_premise) premise_name ->
+                   convert env source_premise target_premise premise_name)
+                (List.combine source_premises target_premises)
+                premise_names
+            in
             let conclusion_text = formula_text env source_conclusion in
             let not_conclusion_name = fresh_proof_var "Hennf_not_conclusion_" in
-            let rec target_and_intro names target =
-              match names, target with
+            let rec target_and_intro proofs target =
+              match proofs, target with
               | [], Imp (conclusion, target_false)
                   when conclusion = source_conclusion && is_vampire_false target_false ->
                   not_conclusion_name
-              | name :: rest, Ap (Ap (TmH "vampire_and", left), right) ->
+              | proof :: rest, Ap (Ap (TmH "vampire_and", left), right) ->
                   let goal_name = fresh_proof_var "Hennf_and_goal_" in
                   let and_name = fresh_proof_var "Hennf_and_" in
                   let left_text = formula_text env left in
@@ -6471,13 +6515,13 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
                   Printf.sprintf
                     "(fun %s:prop => fun %s:%s -> %s -> %s => %s %s %s)"
                     goal_name and_name left_text right_text goal_name
-                    and_name name right_proof
+                    and_name proof right_proof
               | _ ->
                   emit_error (id ^ ": ENNF proof could not build target conjunction witness")
             in
             let rec exists_intro env binders target =
               match binders, target with
-              | [], _ -> target_and_intro premise_names target
+              | [], _ -> target_and_intro target_premise_proofs target
               | (binder, sort) :: rest,
                 Ap (exists_head, Lam (tp, body))
                   when simple_tp_expr tp = sort
@@ -6858,9 +6902,11 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       | Imp (left, right) ->
           let generated_env, acc = collect left env generated_env acc in
           collect right env generated_env acc
-      | Ap (exists_head, Lam (Set, body))
+      | Ap (exists_head, Lam (source_tp, body))
           when exists_head = TmH "vampire_exists_prop"
                || exists_head = TmH "vampire_exists_set" ->
+          let source_sort = simple_tp_expr source_tp in
+          if source_sort <> "set" then (generated_env, acc) else
           begin match subst_for_current body with
           | Some (raw_source_var, skolem_tm) ->
               begin match skolem_head_and_args skolem_tm with
@@ -6868,21 +6914,21 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                   let source_var = megalodon_ident raw_source_var in
                   let arg_binders = List.mapi (binder_for_arg env) args in
                   let predicate_env =
-                    (source_var, "set") :: arg_binders @ generated_env @ base_symbol_type_env
+                    (source_var, source_sort) :: arg_binders @ generated_env @ base_symbol_type_env
                   in
                   let body_text = simple_formula_prop_text predicate_env body in
                   let sort =
                     List.fold_right
                       (fun (_, sort) acc -> simple_arrow_sort sort acc)
                       arg_binders
-                      "set"
+                      source_sort
                   in
                   let rhs =
                     List.fold_right
                       (fun (binder, sort) acc ->
                          "fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => " ^ acc)
                       arg_binders
-                      (Printf.sprintf "Eps_i (fun %s:set => %s)" source_var body_text)
+                      (Printf.sprintf "Eps_i (fun %s:%s => %s)" source_var source_sort body_text)
                   in
                   let definition =
                     (name, Printf.sprintf "Definition %s : %s := %s." name sort rhs, sort)
