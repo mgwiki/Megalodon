@@ -7768,31 +7768,36 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
     | Imp (Imp (left, right), false_tm),
       Ap (Ap (TmH "vampire_and", target_left), target_right)
         when is_vampire_false false_tm ->
-        begin match target_right with
-        | Imp (neg_right, target_false)
-            when target_left = left && neg_right = right && is_vampire_false target_false ->
-            let not_left_name = fresh_proof_var "Hennf_not_left_" in
-            let left_name = fresh_proof_var "Hennf_left_" in
-            let right_name = fresh_proof_var "Hennf_right_" in
-            let left_text = formula_text env left in
-            let right_text = formula_text env right in
-            let target_right_text = formula_text env target_right in
-            let left_proof =
-              Printf.sprintf
-                "(dneg (%s) (fun %s:(%s) -> False => %s (fun %s:%s => (%s %s) (%s))))"
-                left_text not_left_name left_text proof left_name left_text
-                not_left_name left_name right_text
-            in
-            let right_proof =
-              Printf.sprintf
-                "(fun %s:%s => %s (fun %s:%s => %s))"
-                right_name right_text proof left_name left_text right_name
-            in
-            Printf.sprintf
-              "(fun Hennf_goal:prop => fun Hennf_and:%s -> %s -> Hennf_goal => Hennf_and %s %s)"
-              left_text target_right_text left_proof right_proof
-        | _ -> emit_error (id ^ ": ENNF proof expected negated implication-to-and target")
-        end
+        if target_left <> ennf_pos left || target_right <> ennf_neg right then
+          emit_error (id ^ ": ENNF proof expected negated implication-to-and target");
+        let not_left_name = fresh_proof_var "Hennf_not_left_" in
+        let source_left_name = fresh_proof_var "Hennf_source_left_" in
+        let target_left_name = fresh_proof_var "Hennf_target_left_" in
+        let right_name = fresh_proof_var "Hennf_right_" in
+        let left_text = formula_text env left in
+        let target_left_text = formula_text env target_left in
+        let right_text = formula_text env right in
+        let target_right_text = formula_text env target_right in
+        let target_left_from_source =
+          convert env left target_left source_left_name
+        in
+        let left_proof =
+          Printf.sprintf
+            "(dneg (%s) (fun %s:(%s) -> False => %s (fun %s:%s => (%s %s) (%s))))"
+            target_left_text not_left_name target_left_text proof source_left_name left_text
+            not_left_name target_left_from_source right_text
+        in
+        let not_right_proof =
+          Printf.sprintf
+            "(fun %s:%s => %s (fun %s:%s => %s))"
+            right_name right_text proof target_left_name left_text right_name
+        in
+        let right_proof =
+          convert env (Imp (right, vampire_false)) target_right not_right_proof
+        in
+        Printf.sprintf
+          "(fun Hennf_goal:prop => fun Hennf_and:%s -> %s -> Hennf_goal => Hennf_and %s %s)"
+          target_left_text target_right_text left_proof right_proof
     | Imp (source_quantified, false_tm), target_exists
         when is_vampire_false false_tm ->
         let rec source_chain acc = function
@@ -9145,22 +9150,23 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                 add_emitted_prop_and_sorts id prop sorts;
                 claims := !claims @ [(name, prop, "exact " ^ prefix_proof ^ ".")]
             | None ->
-                let proof_target_formula = left_assoc_vampire_or_formula formula in
-                begin match
-                  try Some (simple_formula_orientation_proof type_env parent_formula proof_target_formula proof)
-                  with Error _ -> None
-                with
-                | Some orient_proof ->
-                    add_emitted id name;
-                    add_emitted_prop_and_sorts id prop sorts;
-                    claims := !claims @ [(name, prop, "exact " ^ orient_proof ^ ".")]
-                | None ->
-                    if same_mod_scoped_vampire_var_renaming parent_formula formula then begin
+                if same_mod_scoped_vampire_var_renaming parent_formula formula then begin
+                  add_emitted id name;
+                  add_emitted_prop_and_sorts id prop sorts;
+                  claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")]
+                end else begin
+                  let proof_target_formula = left_assoc_vampire_or_formula formula in
+                  begin match
+                    try Some (simple_formula_orientation_proof type_env parent_formula proof_target_formula proof)
+                    with Error _ -> None
+                  with
+                  | Some orient_proof ->
                       add_emitted id name;
                       add_emitted_prop_and_sorts id prop sorts;
-                      claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")]
-                    end else
+                      claims := !claims @ [(name, prop, "exact " ^ orient_proof ^ ".")]
+                  | None ->
                       add_formula_inference_bridge "rectify_formula" id [parent_id] prop
+                  end
                 end
             end
           end
@@ -11028,7 +11034,7 @@ let same_source_clause_multiset left right =
   in
   loop right left
 
-let source_step_matches_simple_tptp_formula step formula =
+let source_step_matches_simple_tptp_clause_formula step formula =
   match simple_tptp_clause formula with
   | None -> None
   | Some source_clause ->
@@ -11333,7 +11339,7 @@ let source_step_matches_simple_tptp_formula ?(negated=false) step formula =
              ~negated:true step atom)
     | _ -> None
   else
-    source_step_matches_simple_tptp_formula step formula
+    source_step_matches_simple_tptp_clause_formula step formula
 
 let source_step_matches_tptp_formula ?(negated=false) step formula =
   match source_step_matches_thf_formula ~negated step formula with
