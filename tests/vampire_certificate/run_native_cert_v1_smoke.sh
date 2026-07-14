@@ -144,19 +144,22 @@ fi
 bin/megalodon "$WORK_DIR/native_cert_v1_condensation_prop_valid_emit.mg" \
   >"$WORK_DIR/native_cert_v1_condensation_prop_valid_emit.check.log"
 
-if bin/megalodon \
+bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_substitute_prop_changed_unsupported.sexp \
-  -vampirecertv1emit "$WORK_DIR/native_cert_v1_substitute_prop_changed_unsupported.mg" \
-  "$dummy" >"$WORK_DIR/native_cert_v1_substitute_prop_changed_unsupported.out" \
-  2>"$WORK_DIR/native_cert_v1_substitute_prop_changed_unsupported.err"; then
-  echo "native certificate v1 simple emitter accepted a term-changing substitution" >&2
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_substitute_prop_changed_bridge.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_substitute_prop_changed_bridge.log"
+if rg -n '\badmit\b|\baby\b|-allowincompleteqed' \
+    "$WORK_DIR/native_cert_v1_substitute_prop_changed_bridge.mg"; then
+  echo "native certificate v1 term-changing substitution emitter generated an admission marker" >&2
   exit 1
 fi
-if ! rg -q 'simple Megalodon emitter.*exact clause copies' \
-    "$WORK_DIR/native_cert_v1_substitute_prop_changed_unsupported.err"; then
-  echo "native certificate v1 substitution failure did not explain exact-copy limitation" >&2
+if ! rg -q 'bridge_substitute__' \
+    "$WORK_DIR/native_cert_v1_substitute_prop_changed_bridge.mg"; then
+  echo "native certificate v1 term-changing substitution emitter did not expose a bridge obligation" >&2
   exit 1
 fi
+bin/megalodon "$WORK_DIR/native_cert_v1_substitute_prop_changed_bridge.mg" \
+  >"$WORK_DIR/native_cert_v1_substitute_prop_changed_bridge.check.log"
 
 bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_factor_equality_valid.sexp \
@@ -643,6 +646,26 @@ if ! rg -q 'Vampire certificate v1 checked 9 steps' "$WORK_DIR/native_cert_v1_fo
 fi
 
 bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_formula_cnf_valid.sexp \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_formula_cnf_valid_emit.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_formula_cnf_valid_emit.log"
+if rg -n '\badmit\b|\baby\b|-allowincompleteqed' \
+    "$WORK_DIR/native_cert_v1_formula_cnf_valid_emit.mg"; then
+  echo "native certificate v1 formula-CNF emitter generated an admission marker" >&2
+  exit 1
+fi
+if ! rg -q 'bridge_fool__f1' "$WORK_DIR/native_cert_v1_formula_cnf_valid_emit.mg"; then
+  echo "native certificate v1 formula-CNF emitter did not expose the FOOL bridge obligation" >&2
+  exit 1
+fi
+if ! rg -q 'bridge_cnf__c1' "$WORK_DIR/native_cert_v1_formula_cnf_valid_emit.mg"; then
+  echo "native certificate v1 formula-CNF emitter did not expose the CNF bridge obligation" >&2
+  exit 1
+fi
+bin/megalodon "$WORK_DIR/native_cert_v1_formula_cnf_valid_emit.mg" \
+  >"$WORK_DIR/native_cert_v1_formula_cnf_valid_emit.check.log"
+
+bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_formula_cnf_vampire_order_valid.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_formula_cnf_vampire_order_valid.log"
 
@@ -677,9 +700,9 @@ if bin/megalodon \
   echo "native certificate v1 simple emitter accepted unsupported formula transformation" >&2
   exit 1
 fi
-if ! rg -q 'unsupported rule cnf_literal at step c1; proposition: forall X1:prop, X1 = X2; variable_sorts: X1:prop' \
+if ! rg -q 'only named/application terms are supported in simple native emission' \
     "$WORK_DIR/native_cert_v1_rectify_scoped_equality_symmetry_unsupported.err"; then
-  echo "native certificate v1 simple emitter did not report formula metadata in unsupported-rule diagnostics" >&2
+  echo "native certificate v1 simple emitter did not report unsupported quantified-literal diagnostics" >&2
   exit 1
 fi
 

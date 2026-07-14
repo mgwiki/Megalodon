@@ -2839,6 +2839,26 @@ let metadata_step_variable_sorts cert id =
   | Some sorts -> sorts
   | None -> []
 
+let metadata_step_extra_fields cert id kind =
+  cert.metadata.step_extras
+  |> List.filter_map
+       (fun (step_id, step_kind, fields) ->
+          if step_id = id && step_kind = kind then Some fields else None)
+
+let metadata_step_extra_field cert id kind key =
+  let prefix = key ^ "=" in
+  let prefix_len = String.length prefix in
+  metadata_step_extra_fields cert id kind
+  |> List.find_map
+       (fun fields ->
+          List.find_map
+            (fun field ->
+               if String.length field >= prefix_len
+                  && String.sub field 0 prefix_len = prefix then
+                 Some (String.sub field prefix_len (String.length field - prefix_len))
+               else None)
+            fields)
+
 let simple_unsupported_step cert step =
   let id = step_id step in
   let base = "unsupported rule " ^ step_rule_name step ^ " at step " ^ id in
@@ -2857,6 +2877,39 @@ let simple_formula_prop cert id =
   | None ->
       emit_error
         ("formula step " ^ id ^ " has no step_proposition metadata; rebuild Vampire proof output with native metadata")
+
+let simple_parent_prop cert parent_id =
+  match metadata_step_proposition cert parent_id with
+  | Some proposition -> proposition
+  | None -> emit_error ("parent step " ^ parent_id ^ " has no step_proposition metadata")
+
+let simple_declared_name line =
+  let variable_prefix = "Variable " in
+  let prefix_len = String.length variable_prefix in
+  if String.length line > prefix_len
+     && String.sub line 0 prefix_len = variable_prefix then
+    match String.index_opt line ':' with
+    | Some colon when colon > prefix_len ->
+        Some (String.sub line prefix_len (colon - prefix_len))
+    | _ -> None
+  else None
+
+let metadata_declared_names cert =
+  cert.metadata.symbol_declarations
+  |> List.filter_map simple_declared_name
+
+let metadata_variable_sorts cert =
+  cert.metadata.step_variable_sorts
+  |> List.concat_map snd
+  |> List.filter_map
+       (fun sort ->
+          match String.index_opt sort ':' with
+          | Some colon when colon > 0 ->
+              Some
+                (String.sub sort 0 colon,
+                 String.sub sort (colon + 1) (String.length sort - colon - 1))
+          | _ -> None)
+  |> List.sort_uniq compare
 
 let megalodon_ident s =
   let n = String.length s in
@@ -2965,14 +3018,57 @@ let simple_term_name = function
   | TmH name -> megalodon_ident name
   | _ -> emit_error "only named set terms are supported in simple native emission"
 
+let is_vampire_bool_const = function
+  | TmH "f__true" | TmH "vampire_true" | TmH "f__false" | TmH "vampire_false" -> true
+  | _ -> false
+
+let simple_bool_const_prop = function
+  | TmH "f__true" | TmH "vampire_true" -> Some "vampire_true"
+  | TmH "f__false" | TmH "vampire_false" -> Some "vampire_false"
+  | _ -> None
+
+let rec flatten_application = function
+  | Ap (fn, arg) ->
+      let head, args = flatten_application fn in
+      (head, args @ [arg])
+  | tm -> (tm, [])
+
+let rec simple_tm_expr tm =
+  match simple_bool_const_prop tm with
+  | Some name -> name
+  | None ->
+      let head, args = flatten_application tm in
+      let head_text =
+        match head with
+        | TmH name -> megalodon_ident name
+        | DB i -> "db" ^ string_of_int i
+        | Imp _ | All _ | Lam _ | TpAp _ | Prim _ ->
+            emit_error "only named/application terms are supported in simple native emission"
+        | _ -> "(" ^ simple_tm_expr head ^ ")"
+      in
+      match args with
+      | [] -> head_text
+      | _ ->
+          let arg_text arg =
+            match arg with
+            | TmH _ | DB _ -> simple_tm_expr arg
+            | _ -> "(" ^ simple_tm_expr arg ^ ")"
+          in
+          String.concat " " (head_text :: List.map arg_text args)
+
+let simple_prop_equality left right =
+  "vampire_eq_prop (" ^ simple_tm_expr left ^ ") (" ^ simple_tm_expr right ^ ")"
+
 let simple_atom_prop = function
   | TmH name -> megalodon_ident name
   | atom ->
       begin match equality_sides atom with
+      | Some (left, right) when is_vampire_bool_const left || is_vampire_bool_const right ->
+          simple_prop_equality left right
       | Some (left, right) ->
-          simple_term_name left ^ " = " ^ simple_term_name right
+          simple_tm_expr left ^ " = " ^ simple_tm_expr right
       | None ->
-          emit_error "only proposition variables and named set equalities are supported in simple native emission"
+          simple_tm_expr atom
       end
 
 let simple_literal_prop = function
@@ -2984,25 +3080,73 @@ let rec simple_clause_prop = function
   | [lit] -> simple_literal_prop lit
   | lit :: rest -> "(" ^ simple_literal_prop lit ^ " \\/ " ^ simple_clause_prop rest ^ ")"
 
+let simple_prop_arg prop = "(" ^ prop ^ ")"
+
 let collect_simple_names cert =
+  let declared_names = metadata_declared_names cert in
+  let variable_sorts = metadata_variable_sorts cert in
+  let typed_variable_names = List.map fst variable_sorts in
+  let is_known name =
+    List.mem name declared_names
+    || List.mem name typed_variable_names
+    || List.mem name
+         [
+           "False"; "True"; "or"; "vampire_or"; "vampire_and"; "vampire_exists_set";
+           "vampire_exists_prop"; "vampire_false"; "vampire_true"; "vampire_eq_prop";
+           "vampire_eq_set_to_set"; "vampire_eq_set_to_prop";
+           "f__true"; "f__false"
+         ]
+  in
   let add_prop acc name =
     let name = megalodon_ident name in
     let props, terms = acc in
-    if List.mem name props then acc else (name :: props, terms)
+    if is_known name || List.mem name props then acc else (name :: props, terms)
   in
   let add_term acc term =
     let name = simple_term_name term in
     let props, terms = acc in
-    if List.mem name terms then acc else (props, name :: terms)
+    if is_known name || List.mem name terms then acc else (props, name :: terms)
   in
-  let add_atom acc = function
+  let rec add_term_expr acc = function
+    | TmH name when is_vampire_bool_const (TmH name) || is_known name -> acc
+    | TmH _ as term -> add_term acc term
+    | DB _ -> acc
+    | Ap (fn, arg) -> add_term_expr (add_term_expr acc fn) arg
+    | TpAp (fn, _) -> add_term_expr acc fn
+    | Lam (_, body) -> add_term_expr acc body
+    | Imp (left, right) -> add_prop_expr (add_prop_expr acc left) right
+    | All (_, body) -> add_prop_expr acc body
+    | Prim _ -> acc
+  and add_prop_expr acc = function
+    | TmH name when is_vampire_bool_const (TmH name) || is_known name -> acc
     | TmH name -> add_prop acc name
-    | atom ->
+    | Ap _ as atom ->
         begin match equality_sides atom with
-        | Some (left, right) -> add_term (add_term acc left) right
+        | Some (left, right) when is_vampire_bool_const left || is_vampire_bool_const right ->
+            add_prop_expr (add_prop_expr acc left) right
+        | Some (left, right) -> add_term_expr (add_term_expr acc left) right
         | None ->
-            emit_error "only proposition variables and named set equalities are supported in simple native emission"
+            let head, args = flatten_application atom in
+            let acc =
+              match head with
+              | TmH name when is_known name -> acc
+              | TmH _ -> add_prop_expr acc head
+              | _ -> add_prop_expr acc head
+            in
+            List.fold_left add_term_expr acc args
         end
+    | TpAp (fn, _) -> add_prop_expr acc fn
+    | Lam (_, body) -> add_prop_expr acc body
+    | Imp (left, right) -> add_prop_expr (add_prop_expr acc left) right
+    | All (_, body) -> add_prop_expr acc body
+    | DB _ | Prim _ -> acc
+  in
+  let add_atom acc atom =
+    match equality_sides atom with
+    | Some (left, right) when is_vampire_bool_const left || is_vampire_bool_const right ->
+        add_prop_expr (add_prop_expr acc left) right
+    | Some (left, right) -> add_term_expr (add_term_expr acc left) right
+    | None -> add_prop_expr acc atom
   in
   let add_literal acc = function
     | Pos atom | Neg atom -> add_atom acc atom
@@ -3025,14 +3169,60 @@ let collect_simple_names cert =
     | FormulaCopy (id, _, _) ->
         ignore (simple_formula_prop cert id);
         acc
+    | FoolFormula (id, _, _) ->
+        ignore (simple_formula_prop cert id);
+        acc
+    | FoolBool (id, _, lit) ->
+        ignore (simple_formula_prop cert id);
+        add_literal acc lit
+    | EnnfFormula (id, _, _) ->
+        ignore (simple_formula_prop cert id);
+        acc
+    | SkolemFormula (id, _, _, _) ->
+        ignore (simple_formula_prop cert id);
+        acc
+    | SkolemFormulaComputed (id, _, _) ->
+        ignore (simple_formula_prop cert id);
+        acc
+    | CnfLiteral (id, _, clause) ->
+        ignore (simple_formula_prop cert id);
+        add_clause acc clause
+    | CnfFormulaClause (id, _, _, clause) ->
+        ignore (simple_formula_prop cert id);
+        add_clause acc clause
+    | FoolExhaustiveness (_, clause) -> add_clause acc clause
+    | FoolDistinctness (_, clause) -> add_clause acc clause
+    | PredicateDefinition (id, _, _) ->
+        ignore (simple_formula_prop cert id);
+        acc
+    | PredicateDefinitionFold (id, _, _, _) ->
+        ignore (simple_formula_prop cert id);
+        acc
+    | PredicateDefinitionFoldChain (id, _, _, _) ->
+        ignore (simple_formula_prop cert id);
+        acc
+    | DefinitionInput (_, clause) -> add_clause acc clause
     | Substitute (_, _, _, clause) -> add_clause acc clause
     | Condensation (_, _, _, clause) -> add_clause acc clause
+    | UnitResultingResolution (_, _, _, clause) -> add_clause acc clause
+    | SubsumptionResolution (_, _, _, _, _, _, clause) -> add_clause acc clause
     | Resolve (_, _, _, _, _, clause) -> add_clause acc clause
     | Factor (_, _, _, _, clause) -> add_clause acc clause
     | EqualitySymmetry (_, _, _, clause) -> add_clause acc clause
     | EqualityResolution (_, _, _, clause) -> add_clause acc clause
+    | EqualityResolutionConstraints (_, _, _, _, _, clause) -> add_clause acc clause
+    | EqualityFactoring (_, _, _, _, _, clause) -> add_clause acc clause
+    | EqualityFactoringConstraints (_, _, _, _, _, _, clause) -> add_clause acc clause
+    | TruthConflict (_, _, _, clause) -> add_clause acc clause
+    | BoolSimplify (_, _, _, _, _, _, clause) -> add_clause acc clause
+    | Paramodulate (_, _, _, _, _, _, _, _, clause) -> add_clause acc clause
+    | Superposition (_, _, _, _, _, _, _, _, _, _, clause) -> add_clause acc clause
+    | DefinitionRewriteChain (_, _, _, clause) -> add_clause acc clause
+    | AvatarComponent (_, clause) -> add_clause acc clause
+    | AvatarRefutation (_, _, _, clause) -> add_clause acc clause
+    | InequalityNameIntro (_, clause) -> add_clause acc clause
+    | InequalitySplit (_, _, _, clause) -> add_clause acc clause
     | Contradiction _ -> acc
-    | step -> emit_error (simple_unsupported_step cert step)
   in
   let props, terms = List.fold_left add_step ([], []) cert.steps in
   let collisions = List.filter (fun name -> List.mem name terms) props in
@@ -3085,14 +3275,16 @@ let simple_resolution_proof id left_id right_id left_index right_index result ch
   match positive_rest, negative_rest, result with
   | [tail], [], [res] when tail = res ->
       let target = simple_literal_prop res in
+      let target_arg = simple_prop_arg target in
       Printf.sprintf
         "(%s %s (fun Hlit_0 => ((%s Hlit_0) %s)) (fun Htail_1 => Htail_1))"
-        positive_parent_name target negative_parent_name target
+        positive_parent_name target_arg negative_parent_name target_arg
   | [], [tail], [res] when tail = res ->
       let target = simple_literal_prop res in
+      let target_arg = simple_prop_arg target in
       Printf.sprintf
         "(%s %s (fun Hlit_0 => ((Hlit_0 %s) %s)) (fun Htail_1 => Htail_1))"
-        negative_parent_name target positive_parent_name target
+        negative_parent_name target_arg positive_parent_name target_arg
   | [], [], [] ->
       Printf.sprintf "((%s %s) False)" negative_parent_name positive_parent_name
   | _ ->
@@ -3116,10 +3308,11 @@ let simple_factor_proof id parent_id left_index right_index result checked names
   match parent_clause, result with
   | dup1 :: dup2 :: tail, _ when dup1 = dup2 && left_index = 0 && right_index = 1 && result = dup1 :: tail ->
       let target = simple_clause_prop result in
+      let target_arg = simple_prop_arg target in
       let parent_name = lookup_simple_name names parent_id in
       let left_branch = simple_clause_intro_proof result dup1 "Hlit_0" in
       Printf.sprintf "(%s %s (fun Hlit_0 => %s) (fun Htail_1 => Htail_1))"
-        parent_name target left_branch
+        parent_name target_arg left_branch
   | _ ->
       emit_error (id ^ ": simple emitter supports only duplicated head-literal factoring")
 
@@ -3131,9 +3324,10 @@ let simple_equality_resolution_proof id parent_id literal_index result checked n
       begin match equality_sides atom with
       | Some (left, right) when left = right ->
           let target = simple_literal_prop kept in
+          let target_arg = simple_prop_arg target in
           let parent_name = lookup_simple_name names parent_id in
           Printf.sprintf "(%s %s (fun Hkeep_0 => Hkeep_0) (fun Hneq_1 => ((Hneq_1 (fun Q H => H)) %s)))"
-            parent_name target target
+            parent_name target_arg target_arg
       | Some _ -> emit_error (id ^ ": equality-resolution equality is not reflexive")
       | None -> emit_error (id ^ ": equality-resolution literal is not an equality")
       end
@@ -3147,6 +3341,11 @@ let simple_copy_proof id parent_id result checked names =
     emit_error (id ^ ": simple emitter supports only exact clause copies for substitution");
   lookup_simple_name names parent_id
 
+let simple_clause_prop_for_step cert id clause =
+  match metadata_step_proposition cert id with
+  | Some proposition -> proposition
+  | None -> simple_clause_prop clause
+
 let simple_condensation_proof id parent_id subst result checked names =
   if subst <> [] then
     emit_error (id ^ ": simple emitter does not support term-changing condensation");
@@ -3154,9 +3353,10 @@ let simple_condensation_proof id parent_id subst result checked names =
   match parent_clause, result with
   | [a; b], [res] when a = b && a = res ->
       let target = simple_literal_prop res in
+      let target_arg = simple_prop_arg target in
       let parent_name = lookup_simple_name names parent_id in
       Printf.sprintf "(%s %s (fun Hlit_0 => Hlit_0) (fun Htail_1 => Htail_1))"
-        parent_name target
+        parent_name target_arg
   | _ ->
       emit_error (id ^ ": simple emitter supports only two-literal propositional condensation")
 
@@ -3185,19 +3385,25 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   let lines = ref
     [
       "Definition False : prop := forall p:prop, p.";
+      "Definition True : prop := forall p:prop, p -> p.";
+      "Definition vampire_false : prop := False.";
+      "Definition vampire_true : prop := True.";
       "Definition or : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> p) -> (B -> p) -> p.";
       "Infix \\/ 785 left := or.";
+      "Definition vampire_or : prop -> prop -> prop := or.";
+      "Definition vampire_and : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> B -> p) -> p.";
+      "Definition vampire_exists_set : (set -> prop) -> prop := fun P:set->prop => forall q:prop, (forall x:set, P x -> q) -> q.";
+      "Definition vampire_exists_prop : (prop -> prop) -> prop := fun P:prop->prop => forall q:prop, (forall x:prop, P x -> q) -> q.";
+      "Definition vampire_eq_prop : prop -> prop -> prop := fun A B:prop => forall Q:prop->prop, Q A -> Q B.";
+      "Section Eq.";
+      "Variable A:SType.";
+      "Definition eq : A->A->prop := fun x y:A => forall Q:A->A->prop, Q x y -> Q y x.";
+      "End Eq.";
+      "Infix = 502 := eq.";
+      "Definition vampire_eq_set_to_set : (set->set)->(set->set)->prop := fun x y:set->set => forall Q:(set->set)->(set->set)->prop, Q x y -> Q y x.";
+      "Definition vampire_eq_set_to_prop : (set->prop)->(set->prop)->prop := fun x y:set->prop => forall Q:(set->prop)->(set->prop)->prop, Q x y -> Q y x.";
     ]
   in
-  if term_names <> [] then
-    lines := !lines @
-      [
-        "Section Eq.";
-        "Variable A:SType.";
-        "Definition eq : A->A->prop := fun x y:A => forall Q:A->A->prop, Q x y -> Q y x.";
-        "End Eq.";
-        "Infix = 502 := eq.";
-      ];
   let add_line_once line =
     if not (List.mem line !lines) then lines := !lines @ [line]
   in
@@ -3208,6 +3414,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   let emitted_names = ref [] in
   let checked = ref [] in
   let assumptions = ref [] in
+  let bridge_assumptions = ref [] in
   let claims = ref [] in
   let final_empty = ref None in
   let add_emitted id name =
@@ -3221,12 +3428,76 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     checked := (id, clause) :: !checked;
     if clause = [] then final_empty := Some id
   in
+  let add_bridge_claim ?(kind="native") id parent_id name target_prop =
+    let parent_name = lookup_simple_name !emitted_names parent_id in
+    let bridge_name = simple_fresh_name used_names ("bridge_" ^ kind ^ "__" ^ id) in
+    let source_prop =
+      match metadata_step_extra_field cert id kind "source" with
+      | Some source -> source
+      | None ->
+          begin match metadata_step_extra_field cert id "fool" "source" with
+          | Some source -> source
+          | None ->
+              begin match metadata_step_extra_field cert id "normal_form" "source" with
+              | Some source -> source
+              | None -> simple_parent_prop cert parent_id
+              end
+          end
+    in
+    bridge_assumptions :=
+      !bridge_assumptions @ [(bridge_name, "(" ^ source_prop ^ ") -> (" ^ target_prop ^ ")")];
+    claims := !claims @ [(name, target_prop, "exact (" ^ bridge_name ^ " " ^ parent_name ^ ").")]
+  in
+  let emitted_parent_prop parent_id =
+    match metadata_step_proposition cert parent_id with
+    | Some proposition -> proposition
+    | None ->
+    match List.assoc_opt parent_id !checked with
+    | Some clause -> simple_clause_prop clause
+    | None -> simple_parent_prop cert parent_id
+  in
+  let add_clause_inference_bridge kind id parent_ids result =
+    let name = derived_name id in
+    let target_prop = simple_clause_prop_for_step cert id result in
+    let parent_names = List.map (lookup_simple_name !emitted_names) parent_ids in
+    let parent_props = List.map emitted_parent_prop parent_ids in
+    let bridge_name = simple_fresh_name used_names ("bridge_" ^ kind ^ "__" ^ id) in
+    let bridge_type =
+      String.concat " -> " (List.map (fun prop -> "(" ^ prop ^ ")") parent_props @ [target_prop])
+    in
+    let bridge_application =
+      match parent_names with
+      | [] -> bridge_name
+      | _ -> "(" ^ String.concat " " (bridge_name :: parent_names) ^ ")"
+    in
+    add_emitted id name;
+    bridge_assumptions := !bridge_assumptions @ [(bridge_name, bridge_type)];
+    claims := !claims @ [(name, target_prop, "exact " ^ bridge_application ^ ".")];
+    add_checked id result
+  in
+  let add_formula_inference_bridge kind id parent_ids target_prop =
+    let name = derived_name id in
+    let parent_names = List.map (lookup_simple_name !emitted_names) parent_ids in
+    let parent_props = List.map emitted_parent_prop parent_ids in
+    let bridge_name = simple_fresh_name used_names ("bridge_" ^ kind ^ "__" ^ id) in
+    let bridge_type =
+      String.concat " -> " (List.map (fun prop -> "(" ^ prop ^ ")") parent_props @ [target_prop])
+    in
+    let bridge_application =
+      match parent_names with
+      | [] -> bridge_name
+      | _ -> "(" ^ String.concat " " (bridge_name :: parent_names) ^ ")"
+    in
+    add_emitted id name;
+    bridge_assumptions := !bridge_assumptions @ [(bridge_name, bridge_type)];
+    claims := !claims @ [(name, target_prop, "exact " ^ bridge_application ^ ".")]
+  in
   List.iter
     (function
       | Input (id, source, clause) ->
           let name = input_name id source in
           add_emitted id name;
-          assumptions := !assumptions @ [(name, simple_clause_prop clause)];
+          assumptions := !assumptions @ [(name, simple_clause_prop_for_step cert id clause)];
           add_checked id clause
       | FormulaInput (id, source, _) ->
           let name = input_name id source in
@@ -3251,48 +3522,172 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           let proof = lookup_simple_name !emitted_names parent_id in
           add_emitted id name;
           claims := !claims @ [(name, simple_formula_prop cert id, "exact " ^ proof ^ ".")]
+      | FoolFormula (id, parent_id, _) ->
+          let name = derived_name id in
+          let target_prop = simple_formula_prop cert id in
+          add_emitted id name;
+          add_bridge_claim ~kind:"fool" id parent_id name target_prop
+      | FoolBool (id, parent_id, result) ->
+          let name = derived_name id in
+          let target_prop = simple_formula_prop cert id in
+          add_emitted id name;
+          add_bridge_claim ~kind:"fool" id parent_id name target_prop
+      | EnnfFormula (id, parent_id, _) ->
+          let name = derived_name id in
+          let target_prop = simple_formula_prop cert id in
+          add_emitted id name;
+          add_bridge_claim ~kind:"normal_form" id parent_id name target_prop
+      | SkolemFormula (id, parent_id, _, _) ->
+          add_formula_inference_bridge "skolem_formula" id [parent_id] (simple_formula_prop cert id)
+      | SkolemFormulaComputed (id, parent_id, _) ->
+          add_formula_inference_bridge "skolem_formula" id [parent_id] (simple_formula_prop cert id)
+      | CnfLiteral (id, parent_id, result) ->
+          let name = derived_name id in
+          let target_prop = simple_clause_prop_for_step cert id result in
+          add_emitted id name;
+          add_bridge_claim ~kind:"cnf" id parent_id name target_prop;
+          add_checked id result
+      | CnfFormulaClause (id, parent_id, _, result) ->
+          let name = derived_name id in
+          let target_prop = simple_clause_prop_for_step cert id result in
+          add_emitted id name;
+          add_bridge_claim ~kind:"cnf" id parent_id name target_prop;
+          add_checked id result
+      | FoolExhaustiveness (id, result) ->
+          let name = simple_fresh_name used_names ("theory_fool_exhaustiveness__" ^ id) in
+          add_emitted id name;
+          assumptions := !assumptions @ [(name, simple_clause_prop_for_step cert id result)];
+          add_checked id result
+      | FoolDistinctness (id, result) ->
+          let name = simple_fresh_name used_names ("theory_fool_distinctness__" ^ id) in
+          add_emitted id name;
+          assumptions := !assumptions @ [(name, simple_clause_prop_for_step cert id result)];
+          add_checked id result
+      | PredicateDefinition (id, _, _) ->
+          let name = simple_fresh_name used_names ("theory_predicate_definition__" ^ id) in
+          add_emitted id name;
+          assumptions := !assumptions @ [(name, simple_formula_prop cert id)]
+      | PredicateDefinitionFold (id, source_id, definition_id, _) ->
+          add_formula_inference_bridge "predicate_definition_fold" id [source_id; definition_id] (simple_formula_prop cert id)
+      | PredicateDefinitionFoldChain (id, source_id, definition_ids, _) ->
+          add_formula_inference_bridge "predicate_definition_fold_chain" id (source_id :: definition_ids) (simple_formula_prop cert id)
+      | DefinitionInput (id, result) ->
+          let name = simple_fresh_name used_names ("definition_input__" ^ id) in
+          add_emitted id name;
+          assumptions := !assumptions @ [(name, simple_clause_prop_for_step cert id result)];
+          add_checked id result
+      | AvatarComponent (id, result) ->
+          let name = simple_fresh_name used_names ("avatar_component__" ^ id) in
+          add_emitted id name;
+          assumptions := !assumptions @ [(name, simple_clause_prop_for_step cert id result)];
+          add_checked id result
+      | AvatarRefutation (id, _, _, result) ->
+          let name = simple_fresh_name used_names ("avatar_refutation__" ^ id) in
+          add_emitted id name;
+          assumptions := !assumptions @ [(name, simple_clause_prop_for_step cert id result)];
+          add_checked id result
       | Substitute (id, parent_id, _, result) ->
-          let name = derived_name id in
-          let proof = simple_copy_proof id parent_id result !checked !emitted_names in
-          add_emitted id name;
-          claims := !claims @ [(name, simple_clause_prop result, "exact " ^ proof ^ ".")];
-          add_checked id result
+          begin match
+            try Some (simple_copy_proof id parent_id result !checked !emitted_names)
+            with Error _ -> None
+          with
+          | Some proof ->
+              let name = derived_name id in
+              add_emitted id name;
+              claims := !claims @ [(name, simple_clause_prop_for_step cert id result, "exact " ^ proof ^ ".")];
+              add_checked id result
+          | None ->
+              add_clause_inference_bridge "substitute" id [parent_id] result
+          end
       | Condensation (id, parent_id, subst, result) ->
-          let name = derived_name id in
-          let proof = simple_condensation_proof id parent_id subst result !checked !emitted_names in
-          add_emitted id name;
-          claims := !claims @ [(name, simple_clause_prop result, "exact " ^ proof ^ ".")];
-          add_checked id result
+          begin match
+            try Some (simple_condensation_proof id parent_id subst result !checked !emitted_names)
+            with Error _ -> None
+          with
+          | Some proof ->
+              let name = derived_name id in
+              add_emitted id name;
+              claims := !claims @ [(name, simple_clause_prop_for_step cert id result, "exact " ^ proof ^ ".")];
+              add_checked id result
+          | None ->
+              add_clause_inference_bridge "condensation" id [parent_id] result
+          end
       | Resolve (id, left_id, right_id, left_index, right_index, result) ->
-          let name = derived_name id in
-          let proof =
-            simple_resolution_proof id left_id right_id left_index right_index result !checked !emitted_names
-          in
-          add_emitted id name;
-          claims := !claims @ [(name, simple_clause_prop result, "exact " ^ proof ^ ".")];
-          add_checked id result
+          begin match
+            try Some (simple_resolution_proof id left_id right_id left_index right_index result !checked !emitted_names)
+            with Error _ -> None
+          with
+          | Some proof ->
+              let name = derived_name id in
+              add_emitted id name;
+              claims := !claims @ [(name, simple_clause_prop_for_step cert id result, "exact " ^ proof ^ ".")];
+              add_checked id result
+          | None ->
+              add_clause_inference_bridge "resolve" id [left_id; right_id] result
+          end
       | Factor (id, parent_id, left_index, right_index, result) ->
-          let name = derived_name id in
-          let proof = simple_factor_proof id parent_id left_index right_index result !checked !emitted_names in
-          add_emitted id name;
-          claims := !claims @ [(name, simple_clause_prop result, "exact " ^ proof ^ ".")];
-          add_checked id result
+          begin match
+            try Some (simple_factor_proof id parent_id left_index right_index result !checked !emitted_names)
+            with Error _ -> None
+          with
+          | Some proof ->
+              let name = derived_name id in
+              add_emitted id name;
+              claims := !claims @ [(name, simple_clause_prop_for_step cert id result, "exact " ^ proof ^ ".")];
+              add_checked id result
+          | None ->
+              add_clause_inference_bridge "factor" id [parent_id] result
+          end
       | EqualitySymmetry (id, parent_id, literal_index, result) ->
-          let name = derived_name id in
-          let body =
-            simple_equality_symmetry_body id parent_id literal_index result !checked !emitted_names
-          in
-          add_emitted id name;
-          claims := !claims @ [(name, simple_clause_prop result, body)];
-          add_checked id result
+          begin match
+            try Some (simple_equality_symmetry_body id parent_id literal_index result !checked !emitted_names)
+            with Error _ -> None
+          with
+          | Some body ->
+              let name = derived_name id in
+              add_emitted id name;
+              claims := !claims @ [(name, simple_clause_prop_for_step cert id result, body)];
+              add_checked id result
+          | None ->
+              add_clause_inference_bridge "equality_symmetry" id [parent_id] result
+          end
       | EqualityResolution (id, parent_id, literal_index, result) ->
-          let name = derived_name id in
-          let proof =
-            simple_equality_resolution_proof id parent_id literal_index result !checked !emitted_names
-          in
-          add_emitted id name;
-          claims := !claims @ [(name, simple_clause_prop result, "exact " ^ proof ^ ".")];
-          add_checked id result
+          begin match
+            try Some (simple_equality_resolution_proof id parent_id literal_index result !checked !emitted_names)
+            with Error _ -> None
+          with
+          | Some proof ->
+              let name = derived_name id in
+              add_emitted id name;
+              claims := !claims @ [(name, simple_clause_prop_for_step cert id result, "exact " ^ proof ^ ".")];
+              add_checked id result
+          | None ->
+              add_clause_inference_bridge "equality_resolution" id [parent_id] result
+          end
+      | UnitResultingResolution (id, parent_id, _, result) ->
+          add_clause_inference_bridge "unit_resulting_resolution" id [parent_id] result
+      | SubsumptionResolution (id, left_id, right_id, _, _, _, result) ->
+          add_clause_inference_bridge "subsumption_resolution" id [left_id; right_id] result
+      | EqualityResolutionConstraints (id, parent_id, _, _, _, result) ->
+          add_clause_inference_bridge "equality_resolution_constraints" id [parent_id] result
+      | EqualityFactoring (id, parent_id, _, _, _, result) ->
+          add_clause_inference_bridge "equality_factoring" id [parent_id] result
+      | EqualityFactoringConstraints (id, parent_id, _, _, _, _, result) ->
+          add_clause_inference_bridge "equality_factoring_constraints" id [parent_id] result
+      | TruthConflict (id, parent_id, _, result) ->
+          add_clause_inference_bridge "truth_conflict" id [parent_id] result
+      | BoolSimplify (id, parent_id, _, _, _, _, result) ->
+          add_clause_inference_bridge "bool_simplify" id [parent_id] result
+      | Paramodulate (id, equality_parent_id, target_parent_id, _, _, _, _, _, result) ->
+          add_clause_inference_bridge "paramodulate" id [equality_parent_id; target_parent_id] result
+      | Superposition (id, target_parent_id, equality_parent_id, _, _, _, _, _, _, _, result) ->
+          add_clause_inference_bridge "superposition" id [target_parent_id; equality_parent_id] result
+      | DefinitionRewriteChain (id, parent_id, _, result) ->
+          add_clause_inference_bridge "definition_rewrite" id [parent_id] result
+      | InequalityNameIntro (id, result) ->
+          add_clause_inference_bridge "inequality_name_intro" id [] result
+      | InequalitySplit (id, parent_id, _, result) ->
+          add_clause_inference_bridge "inequality_split" id [parent_id] result
       | Contradiction (id, parent_id) ->
           let name = derived_name id in
           let parent_clause = lookup_simple_clause !checked parent_id in
@@ -3302,8 +3697,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           add_emitted id name;
           claims := !claims @ [(name, "False", "exact " ^ parent_name ^ ".")];
           add_checked id []
-      | step ->
-          emit_error (simple_unsupported_step cert step))
+      )
     cert.steps;
   let final =
     match !final_empty with
@@ -3312,13 +3706,13 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   in
   let theorem_type =
     String.concat " -> "
-      (List.map (fun (_, prop) -> "(" ^ prop ^ ")") !assumptions @ ["False"])
+      (List.map (fun (_, prop) -> "(" ^ prop ^ ")") (!assumptions @ !bridge_assumptions) @ ["False"])
   in
   lines := !lines @ [Printf.sprintf "Theorem %s : %s." (megalodon_ident theorem_name) theorem_type];
   List.iter
     (fun (name, prop) ->
        lines := !lines @ [Printf.sprintf "assume %s: %s." (megalodon_ident name) prop])
-    !assumptions;
+    (!assumptions @ !bridge_assumptions);
   List.iter
     (fun (name, prop, proof) ->
        lines := !lines @
