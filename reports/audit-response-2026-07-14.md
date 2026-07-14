@@ -730,6 +730,76 @@ TMPDIR=/project/tmp tests/vampire_certificate/run_source_map_export_smoke.sh
 Megalodon TH0 source-map export smoke passed
 ```
 
+## July 14 Increment: Existential ENNF and Skolem Replay
+
+The native emitter now replays the common classical transformation
+`~(forall x, A x -> B x)` to `exists x, A x /\ ~B x`, and it can replay the
+matching one-variable `skolem_formula` step when Vampire gives an explicit
+substitution from the existential variable to a fresh Skolem constant.
+
+The Skolem constant is emitted as a Megalodon definition using the existing
+library choice operator:
+
+```text
+Definition sK... : set := Eps_i (fun x:set => ...).
+```
+
+The generated proof uses the standard hashed `Eps_i` declaration and derives
+the local helper `vampire_exists_set_choice` from `Eps_i_ax`. This avoids the
+earlier local `vampire_choice_set` axiom experiment: Skolem replay now depends
+on Megalodon's existing classical choice primitive, which is already present in
+the original developments, rather than on a new unindexed axiom.
+
+This moved the cached source-linked closed frontier from 63 to 66 closed
+passes:
+
+```text
+TMPDIR=/project/tmp \
+PROBLEM_DIR=/project/tmp/source_linked_strict_100_corpus_fresh_041947 \
+WORK_DIR=/project/tmp/source_linked_slice_1_400_closed_skolem_131501 \
+JOBS=20 MIN_PASS=0 CLOSED_CERT_V1=1 EMIT_TIMEOUT=30 CHECK_TIMEOUT=45 \
+tests/vampire_certificate/run_native_emit_cached_parallel.sh \
+  /project/tmp/source_linked_slice_1_400_fresh_042040
+
+CLOSED_PASS 66
+EMIT_FAIL 147
+/project/tmp/source_linked_slice_1_400_closed_skolem_131501
+```
+
+The three new committed closed cases are:
+
+```text
+hammer.10699.43.th0.p
+hammer.1098.23.th0.p
+hammer.11374.48.th0.p
+```
+
+Validation for this increment:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+
+Direct focused checks for the two minimal Skolem blockers:
+hammer.10699.43.th0 CLOSED_PASS
+hammer.1098.23.th0 CLOSED_PASS
+/project/tmp/skolem_eps_focus_10699_131453
+/project/tmp/skolem_eps_focus_1098_131453
+
+Cached closed replay also closed:
+hammer.11374.48.th0 CLOSED_PASS
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh
+CLOSED_PASS 66
+/project/tmp/native_cert_v1_closed_corpus.KUn3ge
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+native certificate v1 smoke test passed
+/project/tmp/native_cert_v1.WAIHzB
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_source_map_export_smoke.sh
+Megalodon TH0 source-map export smoke passed
+```
+
 ## Remaining P0 Work
 
 Closed mode is necessary but not sufficient.
