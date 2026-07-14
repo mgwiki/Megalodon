@@ -257,6 +257,21 @@ The new closed case is:
 hammer.11203.25.th0.p
 ```
 
+The current seven real closed cases are now committed under
+`tests/vampire_certificate/closed_cases/`, together with
+`tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh`. This is still
+short of the requested 10-case milestone, but the existing frontier is no longer
+only a `/project/tmp` artifact.
+
+Validation for the committed closed corpus:
+
+```text
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh
+
+CLOSED_PASS 7
+/project/tmp/native_cert_v1_closed_corpus.e5Xqkc
+```
+
 ## Remaining P0 Work
 
 Closed mode is necessary but not sufficient.
