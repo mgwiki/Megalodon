@@ -106,8 +106,15 @@ type step =
   | Superposition of string * string * string * int * int * (string * tm) list * (string * tm) list * int list * tm * tm * clause
   | Contradiction of string * string
 
+type certificate_metadata = {
+  symbol_declarations : string list;
+  step_propositions : (string * string) list;
+  step_variable_sorts : (string * string list) list;
+}
+
 type certificate = {
   problem : string option;
+  metadata : certificate_metadata;
   steps : step list;
 }
 
@@ -702,11 +709,36 @@ let parse_problem = function
   | List [Atom "problem"; name] -> Some (atom name)
   | _ -> None
 
-let is_certificate_metadata = function
-  | List [Atom "symbol_declaration"; _] -> true
-  | List [Atom "step_proposition"; _; _] -> true
-  | List (Atom "step_variable_sorts" :: _) -> true
-  | _ -> false
+let empty_certificate_metadata = {
+  symbol_declarations = [];
+  step_propositions = [];
+  step_variable_sorts = [];
+}
+
+let parse_string_list = function
+  | List items -> List.map atom items
+  | _ -> error "expected a metadata string list"
+
+let parse_certificate_metadata metadata = function
+  | List [Atom "symbol_declaration"; decl] ->
+      Some {
+        metadata with
+        symbol_declarations = metadata.symbol_declarations @ [atom decl];
+      }
+  | List [Atom "step_proposition"; id; proposition] ->
+      Some {
+        metadata with
+        step_propositions = metadata.step_propositions @ [(atom id, atom proposition)];
+      }
+  | List [Atom "step_variable_sorts"; id; sorts] ->
+      Some {
+        metadata with
+        step_variable_sorts =
+          metadata.step_variable_sorts @ [(atom id, parse_string_list sorts)];
+      }
+  | List (Atom (("symbol_declaration" | "step_proposition" | "step_variable_sorts") as tag) :: _) ->
+      error ("malformed certificate metadata record " ^ tag)
+  | _ -> None
 
 let parse_certificate text =
   match parse_sexpr text with
@@ -720,13 +752,18 @@ let parse_certificate text =
             end
         | [] -> (None, [])
       in
-      let steps =
-        step_forms
-        |> List.filter (fun form -> not (is_certificate_metadata form))
-        |> List.map parse_step
+      let metadata, step_forms =
+        List.fold_left
+          (fun (metadata, steps) form ->
+             match parse_certificate_metadata metadata form with
+             | Some metadata -> (metadata, steps)
+             | None -> (metadata, steps @ [form]))
+          (empty_certificate_metadata, [])
+          step_forms
       in
+      let steps = List.map parse_step step_forms in
       check_duplicate_ids steps;
-      { problem; steps }
+      { problem; metadata; steps }
   | _ -> error "expected (certificate vampire-megalodon 1 ...)"
 
 let literal_atom = function
@@ -2786,6 +2823,26 @@ let check_certificate_strict cert =
 
 let emit_error msg = error ("simple Megalodon emitter: " ^ msg)
 
+let metadata_step_proposition cert id =
+  List.assoc_opt id cert.metadata.step_propositions
+
+let metadata_step_variable_sorts cert id =
+  match List.assoc_opt id cert.metadata.step_variable_sorts with
+  | Some sorts -> sorts
+  | None -> []
+
+let simple_unsupported_step cert step =
+  let id = step_id step in
+  let base = "unsupported rule " ^ step_rule_name step ^ " at step " ^ id in
+  let with_prop =
+    match metadata_step_proposition cert id with
+    | Some proposition -> base ^ "; proposition: " ^ proposition
+    | None -> base
+  in
+  match metadata_step_variable_sorts cert id with
+  | [] -> with_prop
+  | sorts -> with_prop ^ "; variable_sorts: " ^ String.concat ", " sorts
+
 let megalodon_ident s =
   let n = String.length s in
   if n = 0 then emit_error "empty identifier";
@@ -2945,7 +3002,7 @@ let collect_simple_names cert =
     | EqualitySymmetry (_, _, _, clause) -> add_clause acc clause
     | EqualityResolution (_, _, _, clause) -> add_clause acc clause
     | Contradiction _ -> acc
-    | step -> emit_error ("unsupported rule " ^ step_rule_name step ^ " at step " ^ step_id step)
+    | step -> emit_error (simple_unsupported_step cert step)
   in
   let props, terms = List.fold_left add_step ([], []) cert.steps in
   let collisions = List.filter (fun name -> List.mem name terms) props in
@@ -3189,7 +3246,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           claims := !claims @ [(name, "False", "exact " ^ parent_name ^ ".")];
           add_checked id []
       | step ->
-          emit_error ("unsupported rule " ^ step_rule_name step ^ " at step " ^ step_id step))
+          emit_error (simple_unsupported_step cert step))
     cert.steps;
   let final =
     match !final_empty with

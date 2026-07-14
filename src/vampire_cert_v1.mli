@@ -104,8 +104,15 @@ type step =
   | Superposition of string * string * string * int * int * (string * Syntax.tm) list * (string * Syntax.tm) list * int list * Syntax.tm * Syntax.tm * clause
   | Contradiction of string * string
 
+type certificate_metadata = {
+  symbol_declarations : string list;
+  step_propositions : (string * string) list;
+  step_variable_sorts : (string * string list) list;
+}
+
 type certificate = {
   problem : string option;
+  metadata : certificate_metadata;
   steps : step list;
 }
 

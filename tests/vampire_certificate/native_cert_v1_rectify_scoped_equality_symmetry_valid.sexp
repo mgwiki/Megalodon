@@ -1,5 +1,7 @@
 (certificate vampire-megalodon 1
   (problem "native-cert-v1-rectify-scoped-equality-symmetry-valid")
+  (step_proposition "f1" "forall X0:prop, X0 = X1")
+  (step_variable_sorts "f1" ("X0:prop"))
   (formula_term_input f1 (source axiom "a1")
     (formula
       (ALL (PROP)
