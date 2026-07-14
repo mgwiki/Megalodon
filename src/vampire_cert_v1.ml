@@ -3522,6 +3522,8 @@ let rec simple_clause_prop = function
 
 let simple_prop_arg prop = "(" ^ prop ^ ")"
 
+let simple_true_proof = "(fun p:prop => fun H:p => H)"
+
 let collect_simple_names cert =
   let declared_names = metadata_declared_names cert in
   let variable_sorts = metadata_variable_sorts cert in
@@ -4893,6 +4895,66 @@ let simple_equality_symmetry_clause_proof
   in
   simple_wrap_forall_intro result_sorts proof
 
+let simple_prop_term_expr type_env source_atom tm =
+  if tm = source_atom then simple_atom_prop_with_type_env type_env source_atom
+  else simple_tm_expr_with_expected type_env (Some "prop") tm
+
+let simple_fool_bool_proof
+    type_env parent_sorts result_sorts id parent_literal result_literal names parent_id =
+  let parent_name =
+    simple_apply_forall_vars (lookup_simple_name names parent_id) parent_sorts
+  in
+  let source_atom, source_negative =
+    match parent_literal with
+    | Pos atom -> atom, false
+    | Neg atom -> atom, true
+  in
+  let target_atom, target_negative =
+    match result_literal with
+    | Pos atom -> atom, false
+    | Neg atom -> atom, true
+  in
+  if source_negative <> target_negative then
+    emit_error (id ^ ": FOOL bool replay expected matching literal polarity");
+  let left, right =
+    match equality_sides target_atom with
+    | Some (left, right) -> left, right
+    | None -> emit_error (id ^ ": FOOL bool target is not equality-to-true")
+  in
+  let left_is_source = left = source_atom in
+  let right_is_source = right = source_atom in
+  let left_is_true = is_vampire_bool_const left && not (is_vampire_false left) in
+  let right_is_true = is_vampire_bool_const right && not (is_vampire_false right) in
+  if not ((left_is_source && right_is_true) || (left_is_true && right_is_source)) then
+    emit_error (id ^ ": FOOL bool target does not wrap the parent atom with true");
+  let left_text = simple_prop_term_expr type_env source_atom left in
+  let right_text = simple_prop_term_expr type_env source_atom right in
+  let source_text = simple_atom_prop_with_type_env type_env source_atom in
+  let eq_text = simple_atom_prop_with_type_env type_env target_atom in
+  let proof =
+    if not source_negative then
+      let left_to_right, right_to_left =
+        if left_is_source then
+          (Printf.sprintf "(fun H:%s => %s)" source_text simple_true_proof,
+           Printf.sprintf "(fun H:%s => %s)" right_text parent_name)
+        else
+          (Printf.sprintf "(fun H:%s => %s)" left_text parent_name,
+           Printf.sprintf "(fun H:%s => %s)" source_text simple_true_proof)
+      in
+      Printf.sprintf "(vampire_eq_prop_ext (%s) (%s) %s %s)"
+        left_text right_text left_to_right right_to_left
+    else
+      let source_from_eq =
+        if left_is_source then
+          Printf.sprintf "((vampire_eq_prop_sym (%s) (%s) Heq_fool) (fun Z:prop => Z) %s)"
+            left_text right_text simple_true_proof
+        else
+          Printf.sprintf "(Heq_fool (fun Z:prop => Z) %s)" simple_true_proof
+      in
+      Printf.sprintf "(fun Heq_fool:%s => %s %s)" eq_text parent_name source_from_eq
+  in
+  simple_wrap_forall_intro result_sorts proof
+
 let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_map=[]) cert =
   ignore (check_certificate cert);
   simple_lambda_sort_env := metadata_lambda_sort_env cert;
@@ -4972,6 +5034,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   let assumptions = ref [] in
   let bridge_assumptions = ref [] in
   let claims = ref [] in
+  let uses_vampire_eq_prop_ext = ref false in
   let final_empty = ref None in
   let add_emitted id name =
     emitted_names := (id, name) :: !emitted_names
@@ -5222,8 +5285,58 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       | FoolBool (id, parent_id, result) ->
           let name = derived_name id in
           let target_prop, target_sorts = formula_literal_prop_and_sorts id result in
-          add_emitted id name;
-          add_bridge_claim ~kind:"fool" id parent_id name target_prop target_sorts
+          let parent_sorts = variable_sorts_for_ids [parent_id] in
+          let type_env =
+            simple_type_env_with_variables
+              (parent_sorts @ target_sorts |> simple_unique_variable_sorts)
+              symbol_type_env
+          in
+          let literal_prop literal =
+            try simple_literal_prop_with_type_env type_env literal
+            with Error _ -> simple_literal_prop literal
+          in
+          let parent_literal_from_result =
+            let target_atom, negative =
+              match result with
+              | Pos atom -> atom, false
+              | Neg atom -> atom, true
+            in
+            match equality_sides target_atom with
+            | Some (left, right) ->
+                let source =
+                  match is_vampire_bool_const left, is_vampire_bool_const right with
+                  | true, false when not (is_vampire_false left) -> Some right
+                  | false, true when not (is_vampire_false right) -> Some left
+                  | _ -> None
+                in
+                begin match source with
+                | Some atom -> if negative then Neg atom else Pos atom
+                | None -> result
+                end
+            | None -> result
+          in
+          let parent_prop = simple_quantify_prop parent_sorts (literal_prop parent_literal_from_result) in
+          let structural_target_prop =
+            simple_quantify_prop target_sorts (literal_prop result)
+          in
+          begin match
+            if emitted_parent_prop parent_id <> parent_prop
+               || target_prop <> structural_target_prop then None
+            else
+              try Some (simple_fool_bool_proof
+                          type_env parent_sorts target_sorts id
+                          parent_literal_from_result result !emitted_names parent_id)
+              with Error _ -> None
+          with
+          | Some proof ->
+              uses_vampire_eq_prop_ext := true;
+              add_emitted id name;
+              add_emitted_prop_and_sorts id target_prop target_sorts;
+              claims := !claims @ [(name, target_prop, "exact " ^ proof ^ ".")]
+          | None ->
+              add_emitted id name;
+              add_bridge_claim ~kind:"fool" id parent_id name target_prop target_sorts
+          end
       | EnnfFormula (id, parent_id, formula) ->
           let name = derived_name id in
           let target_prop, target_sorts = formula_tm_prop_and_sorts id formula in
@@ -5719,15 +5832,22 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     | Some id -> id
     | None -> emit_error "certificate has no empty clause"
   in
+  let proof_assumptions =
+    if !uses_vampire_eq_prop_ext then
+      [("vampire_eq_prop_ext",
+        "forall p q:prop, (p -> q) -> (q -> p) -> vampire_eq_prop p q")]
+    else []
+  in
+  let theorem_assumptions = proof_assumptions @ !assumptions @ !bridge_assumptions in
   let theorem_type =
     String.concat " -> "
-      (List.map (fun (_, prop) -> "(" ^ prop ^ ")") (!assumptions @ !bridge_assumptions) @ ["False"])
+      (List.map (fun (_, prop) -> "(" ^ prop ^ ")") theorem_assumptions @ ["False"])
   in
   lines := !lines @ [Printf.sprintf "Theorem %s : %s." (megalodon_ident theorem_name) theorem_type];
   List.iter
     (fun (name, prop) ->
        lines := !lines @ [Printf.sprintf "assume %s: %s." (megalodon_ident name) prop])
-    (!assumptions @ !bridge_assumptions);
+    theorem_assumptions;
   List.iter
     (fun (name, prop, proof) ->
        lines := !lines @
