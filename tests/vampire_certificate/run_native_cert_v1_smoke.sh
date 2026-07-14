@@ -824,8 +824,32 @@ bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_avatar_refutation_traced_valid.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_avatar_refutation_traced_strict.log"
 
-if ! rg -q 'Vampire certificate v1 strict checked 2 steps' "$WORK_DIR/native_cert_v1_avatar_refutation_traced_strict.log"; then
+if ! rg -q 'Vampire certificate v1 strict checked 4 steps' "$WORK_DIR/native_cert_v1_avatar_refutation_traced_strict.log"; then
   echo "strict native certificate v1 checker did not accept traced AVATAR refutation" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_avatar_refutation_traced_unparented_bad.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_avatar_refutation_traced_unparented_bad.log" 2>&1; then
+  echo "strict native certificate v1 checker accepted an AVATAR refutation without parent links" >&2
+  exit 1
+fi
+
+if ! rg -q 'strict certificate v1 requires AVATAR refutation parent links' \
+  "$WORK_DIR/native_cert_v1_avatar_refutation_traced_unparented_bad.log"; then
+  echo "strict native certificate v1 checker rejected unparented AVATAR refutation with the wrong error" >&2
+  exit 1
+fi
+
+bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_avatar_sat_clauses_valid.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_avatar_sat_clauses_valid.log"
+
+if ! rg -q 'Vampire certificate v1 strict checked 5 steps' "$WORK_DIR/native_cert_v1_avatar_sat_clauses_valid.log"; then
+  echo "strict native certificate v1 checker did not accept AVATAR SAT clause parents" >&2
   exit 1
 fi
 

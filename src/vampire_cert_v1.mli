@@ -61,6 +61,7 @@ type rectify_renaming = {
 type checked_item =
   | CheckedClause of clause
   | CheckedFormula of Syntax.tm
+  | CheckedSatClauseRecord
 
 type step =
   | Input of string * source * clause
@@ -82,7 +83,9 @@ type step =
   | DefinitionInput of string * clause
   | DefinitionRewriteChain of string * string * definition_rewrite list * clause
   | AvatarComponent of string * clause
-  | AvatarRefutation of string * sat_clause list * sat_proof_step list option * clause
+  | AvatarSplit of string * string list * clause
+  | AvatarContradiction of string * string list * clause
+  | AvatarRefutation of string * string list * sat_clause list * sat_proof_step list option * clause
   | FoolExhaustiveness of string * clause
   | FoolDistinctness of string * clause
   | InequalityNameIntro of string * clause

@@ -63,6 +63,7 @@ type rectify_renaming = {
 type checked_item =
   | CheckedClause of clause
   | CheckedFormula of tm
+  | CheckedSatClauseRecord
 
 type step =
   | Input of string * source * clause
@@ -84,7 +85,9 @@ type step =
   | DefinitionInput of string * clause
   | DefinitionRewriteChain of string * string * definition_rewrite list * clause
   | AvatarComponent of string * clause
-  | AvatarRefutation of string * sat_clause list * sat_proof_step list option * clause
+  | AvatarSplit of string * string list * clause
+  | AvatarContradiction of string * string list * clause
+  | AvatarRefutation of string * string list * sat_clause list * sat_proof_step list option * clause
   | FoolExhaustiveness of string * clause
   | FoolDistinctness of string * clause
   | InequalityNameIntro of string * clause
@@ -276,6 +279,10 @@ let parse_sat_clause = function
 let parse_sat_clauses = function
   | List (Atom "sat_clauses" :: clauses) -> List.map parse_sat_clause clauses
   | _ -> error "expected SAT clause list"
+
+let parse_parent_id_list = function
+  | List (Atom "parents" :: parents) -> List.map atom parents
+  | _ -> error "expected parent id list"
 
 let parse_sat_parents = function
   | List (Atom "parents" :: parents) -> List.map int_atom parents
@@ -512,10 +519,33 @@ let parse_step = function
       DefinitionRewriteChain (atom id, parse_parent parent, parse_definition_rewrites rewrites, parse_result result)
   | List [Atom "avatar_component"; id; result] ->
       AvatarComponent (atom id, parse_result result)
-  | List [Atom "avatar_refutation"; id; sat_clauses; result] ->
-      AvatarRefutation (atom id, parse_sat_clauses sat_clauses, None, parse_result result)
-  | List [Atom "avatar_refutation"; id; sat_clauses; sat_proof; result] ->
-      AvatarRefutation (atom id, parse_sat_clauses sat_clauses, Some (parse_sat_proof sat_proof), parse_result result)
+  | List [Atom "avatar_split"; id; parents; result] ->
+      AvatarSplit (atom id, parse_parent_id_list parents, parse_result result)
+  | List [Atom "avatar_contradiction"; id; parents; result] ->
+      AvatarContradiction (atom id, parse_parent_id_list parents, parse_result result)
+  | List (Atom "avatar_refutation" :: id :: fields) ->
+      begin match fields with
+      | [List (Atom "sat_clauses" :: _) as sat_clauses; result] ->
+          AvatarRefutation
+            (atom id, [], parse_sat_clauses sat_clauses, None, parse_result result)
+      | [List (Atom "sat_clauses" :: _) as sat_clauses;
+         List (Atom "sat_proof" :: _) as sat_proof;
+         result] ->
+          AvatarRefutation
+            (atom id, [], parse_sat_clauses sat_clauses, Some (parse_sat_proof sat_proof), parse_result result)
+      | [List (Atom "parents" :: _) as parents;
+         List (Atom "sat_clauses" :: _) as sat_clauses;
+         result] ->
+          AvatarRefutation
+            (atom id, parse_parent_id_list parents, parse_sat_clauses sat_clauses, None, parse_result result)
+      | [List (Atom "parents" :: _) as parents;
+         List (Atom "sat_clauses" :: _) as sat_clauses;
+         List (Atom "sat_proof" :: _) as sat_proof;
+         result] ->
+          AvatarRefutation
+            (atom id, parse_parent_id_list parents, parse_sat_clauses sat_clauses, Some (parse_sat_proof sat_proof), parse_result result)
+      | _ -> error "malformed avatar_refutation step"
+      end
   | List [Atom "fool_exhaustiveness"; id; result] ->
       FoolExhaustiveness (atom id, parse_result result)
   | List [Atom "fool_distinctness"; id; result] ->
@@ -641,7 +671,9 @@ let step_id = function
   | DefinitionInput (id, _) -> id
   | DefinitionRewriteChain (id, _, _, _) -> id
   | AvatarComponent (id, _) -> id
-  | AvatarRefutation (id, _, _, _) -> id
+  | AvatarSplit (id, _, _) -> id
+  | AvatarContradiction (id, _, _) -> id
+  | AvatarRefutation (id, _, _, _, _) -> id
   | FoolExhaustiveness (id, _) -> id
   | FoolDistinctness (id, _) -> id
   | InequalityNameIntro (id, _) -> id
@@ -683,6 +715,8 @@ let step_rule_name = function
   | DefinitionInput _ -> "definition_input"
   | DefinitionRewriteChain _ -> "definition_rewrite_chain"
   | AvatarComponent _ -> "avatar_component"
+  | AvatarSplit _ -> "avatar_split"
+  | AvatarContradiction _ -> "avatar_contradiction"
   | AvatarRefutation _ -> "avatar_refutation"
   | FoolExhaustiveness _ -> "fool_exhaustiveness"
   | FoolDistinctness _ -> "fool_distinctness"
@@ -836,11 +870,18 @@ let lookup_clause checked id =
   match (try List.assoc id checked with Not_found -> error ("unknown certificate parent " ^ id)) with
   | CheckedClause clause -> clause
   | CheckedFormula _ -> error (id ^ " is a formula parent, but a clause parent was expected")
+  | CheckedSatClauseRecord -> error (id ^ " is an AVATAR SAT clause record, but a clause parent was expected")
 
 let lookup_formula checked id =
   match (try List.assoc id checked with Not_found -> error ("unknown certificate parent " ^ id)) with
   | CheckedFormula formula -> formula
   | CheckedClause _ -> error (id ^ " is a clause parent, but a formula parent was expected")
+  | CheckedSatClauseRecord -> error (id ^ " is an AVATAR SAT clause record, but a formula parent was expected")
+
+let lookup_avatar_refutation_parent checked id =
+  match (try List.assoc id checked with Not_found -> error ("unknown certificate parent " ^ id)) with
+  | CheckedClause _ | CheckedSatClauseRecord -> ()
+  | CheckedFormula _ -> error (id ^ " is a formula parent, but an AVATAR SAT clause parent was expected")
 
 let rec subst_tm subst tm =
   match tm with
@@ -1591,6 +1632,8 @@ let check_cnf_literal checked id parent_id result =
         | [_] -> parent_clause
         | _ -> error (id ^ ": cnf_literal parent is not a literal formula")
         end
+    | CheckedSatClauseRecord ->
+        error (parent_id ^ " is an AVATAR SAT clause record, but a formula or clause parent was expected")
   in
   if not (same_clause_multiset parent_clause result) then
     error (id ^ ": cnf_literal result does not match source literal")
@@ -1726,12 +1769,16 @@ let check_formula_copy checked id parent_id result =
       let expected = literal_of_formula_tm parent_formula in
       if expected <> result then
         error (id ^ ": formula_copy result does not match formula parent")
+  | CheckedSatClauseRecord ->
+      error (parent_id ^ " is an AVATAR SAT clause record, but a formula or clause parent was expected")
 
 let check_fool_bool checked id parent_id result =
   let parent_clause =
     match (try List.assoc parent_id checked with Not_found -> error ("unknown certificate parent " ^ parent_id)) with
     | CheckedClause clause -> clause
     | CheckedFormula formula -> [literal_of_formula_tm formula]
+    | CheckedSatClauseRecord ->
+        error (parent_id ^ " is an AVATAR SAT clause record, but a formula or clause parent was expected")
   in
   let expected =
     match parent_clause with
@@ -2039,8 +2086,13 @@ let check_sat_proof id sat_clauses proof =
   | _ -> error (id ^ ": SAT proof final step is not the empty clause")
   end
 
-let check_avatar_refutation id sat_clauses proof result =
+let check_avatar_refutation checked id parent_ids sat_clauses proof result =
   validate_sat_clauses id sat_clauses;
+  if parent_ids <> [] then begin
+    if List.length parent_ids <> List.length sat_clauses then
+      error (id ^ ": avatar_refutation parent count does not match SAT input clause count");
+    List.iter (lookup_avatar_refutation_parent checked) parent_ids
+  end;
   if result <> [] then error (id ^ ": avatar_refutation result must be the empty clause");
   begin match proof with
   | Some proof -> check_sat_proof id sat_clauses proof
@@ -2048,6 +2100,10 @@ let check_avatar_refutation id sat_clauses proof result =
       if sat_satisfiable sat_clauses then
         error (id ^ ": avatar_refutation SAT clauses are satisfiable")
   end
+
+let check_avatar_sat_clause checked id parent_ids result =
+  if result = [] then error (id ^ ": AVATAR SAT clause result must be non-empty");
+  List.iter (fun parent_id -> ignore (lookup_clause checked parent_id)) parent_ids
 
 let rec head_symbol = function
   | TmH h -> Some h
@@ -2871,8 +2927,14 @@ let check_step checked = function
   | AvatarComponent (id, clause) ->
       check_avatar_component id clause;
       (id, CheckedClause clause) :: checked
-  | AvatarRefutation (id, sat_clauses, proof, result) ->
-      check_avatar_refutation id sat_clauses proof result;
+  | AvatarSplit (id, parent_ids, clause) ->
+      check_avatar_sat_clause checked id parent_ids clause;
+      (id, CheckedClause clause) :: checked
+  | AvatarContradiction (id, parent_ids, clause) ->
+      check_avatar_sat_clause checked id parent_ids clause;
+      (id, CheckedClause clause) :: checked
+  | AvatarRefutation (id, parent_ids, sat_clauses, proof, result) ->
+      check_avatar_refutation checked id parent_ids sat_clauses proof result;
       (id, CheckedClause result) :: checked
   | FoolExhaustiveness (id, clause) ->
       check_fool_exhaustiveness id clause;
@@ -2940,19 +3002,31 @@ let check_step_strict checked = function
   | AvatarComponent (id, clause) ->
       check_avatar_component_strict id clause;
       check_step checked (AvatarComponent (id, clause))
-  | AvatarRefutation (id, _, None, _) ->
+  | AvatarRefutation (id, _, _, None, _) ->
       error (id ^ ": strict certificate v1 requires SAT proof traces for AVATAR refutations")
+  | AvatarRefutation (id, [], _, _, _) ->
+      error (id ^ ": strict certificate v1 requires AVATAR refutation parent links")
   | AvatarRefutation _ as step -> check_step checked step
   | SkolemFormulaComputed (id, _, _) ->
       error (id ^ ": strict certificate v1 rejects computed skolem formulas without explicit Vampire results")
   | step -> check_step checked step
 
 let check_certificate_with step_checker cert =
-  let checked = List.fold_left step_checker [] cert.steps in
+  let metadata_sat_clause_records =
+    cert.metadata.step_extras
+    |> List.filter_map
+         (fun (id, kind, fields) ->
+            if kind = "raw" && List.mem "sat_clause_recorded" fields then
+              Some (id, CheckedSatClauseRecord)
+            else None)
+    |> List.sort_uniq compare
+  in
+  let checked = List.fold_left step_checker metadata_sat_clause_records cert.steps in
   begin match checked with
   | (_, CheckedClause []) :: _ -> ()
   | (id, CheckedClause _) :: _ -> error (id ^ ": final certificate step is not the empty clause")
   | (id, CheckedFormula _) :: _ -> error (id ^ ": final certificate step is a formula, not the empty clause")
+  | (id, CheckedSatClauseRecord) :: _ -> error (id ^ ": final certificate step is an AVATAR SAT clause record, not the empty clause")
   | [] -> error "certificate contains no steps"
   end;
   List.rev checked
@@ -4018,7 +4092,9 @@ let collect_simple_names cert =
     | Superposition (_, _, _, _, _, _, _, _, _, _, clause) -> add_clause acc clause
     | DefinitionRewriteChain (_, _, _, clause) -> add_clause acc clause
     | AvatarComponent (_, clause) -> add_clause acc clause
-    | AvatarRefutation (_, _, _, clause) -> add_clause acc clause
+    | AvatarSplit (_, _, clause) -> add_clause acc clause
+    | AvatarContradiction (_, _, clause) -> add_clause acc clause
+    | AvatarRefutation (_, _, _, _, clause) -> add_clause acc clause
     | InequalityNameIntro (_, clause) -> add_clause acc clause
     | InequalitySplit (_, _, _, clause) -> add_clause acc clause
     | Contradiction _ -> acc
@@ -8668,7 +8744,21 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
               derived_assumptions := !derived_assumptions @ [(name, prop)]
           end;
           add_checked id result
-      | AvatarRefutation (id, _, _, result) ->
+      | AvatarSplit (id, _, result) ->
+          let name = simple_fresh_name used_names ("avatar_split__" ^ id) in
+          let prop, sorts = simple_clause_prop_and_sorts_for_step cert id result in
+          add_emitted id name;
+          add_emitted_prop_and_sorts id prop sorts;
+          derived_assumptions := !derived_assumptions @ [(name, prop)];
+          add_checked id result
+      | AvatarContradiction (id, _, result) ->
+          let name = simple_fresh_name used_names ("avatar_contradiction__" ^ id) in
+          let prop, sorts = simple_clause_prop_and_sorts_for_step cert id result in
+          add_emitted id name;
+          add_emitted_prop_and_sorts id prop sorts;
+          derived_assumptions := !derived_assumptions @ [(name, prop)];
+          add_checked id result
+      | AvatarRefutation (id, _, _, _, result) ->
           let name = simple_fresh_name used_names ("avatar_refutation__" ^ id) in
           let prop, sorts = simple_clause_prop_and_sorts_for_step cert id result in
           add_emitted id name;

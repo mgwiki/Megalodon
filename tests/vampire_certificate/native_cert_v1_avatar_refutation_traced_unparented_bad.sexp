@@ -1,17 +1,6 @@
 (certificate vampire-megalodon 1
-  (problem "native-cert-v1-avatar-refutation-traced-valid")
-  (avatar_component p1
-    (result
-      (clause
-        (pos (TMH "p"))
-        (neg (TMH "split_1")))))
-  (avatar_component p2
-    (result
-      (clause
-        (neg (TMH "p"))
-        (pos (TMH "split_1")))))
+  (problem "native-cert-v1-avatar-refutation-traced-unparented-bad")
   (avatar_refutation r0
-    (parents p1 p2)
     (sat_clauses
       (sat_clause (lit 1 true))
       (sat_clause (lit 1 false)))
