@@ -3775,7 +3775,100 @@ let simple_resolution_proof
   | _ ->
       emit_error (id ^ ": simple emitter supports only unit resolution and binary-tail unit resolution")
 
-let rec simple_clause_intro_proof clause lit proof =
+let rec simple_resolution_clause_proof
+    clause_body_prop parent_sorts_of result_sorts id left_id right_id left_index right_index result checked names =
+  let left_clause = lookup_simple_clause checked left_id in
+  let right_clause = lookup_simple_clause checked right_id in
+  let left_pivot = simple_clause_nth id "left" left_index left_clause in
+  let right_pivot = simple_clause_nth id "right" right_index right_clause in
+  if not (complementary left_pivot right_pivot) then
+    emit_error (id ^ ": pivots are not complementary");
+  let left_rest = simple_remove_index id "left" left_index left_clause in
+  let right_rest = simple_remove_index id "right" right_index right_clause in
+  let expected = left_rest @ right_rest in
+  if not (same_clause_multiset expected result) then
+    emit_error (id ^ ": simple resolution proof expects parent rests as result");
+  let positive_parent, negative_parent, positive_index, negative_index =
+    match left_pivot, right_pivot with
+    | Pos _, Neg _ -> left_id, right_id, left_index, right_index
+    | Neg _, Pos _ -> right_id, left_id, right_index, left_index
+    | _ -> emit_error (id ^ ": pivots are not complementary")
+  in
+  let positive_clause = lookup_simple_clause checked positive_parent in
+  let negative_clause = lookup_simple_clause checked negative_parent in
+  let positive_parent_name =
+    simple_apply_forall_vars (lookup_simple_name names positive_parent) (parent_sorts_of positive_parent)
+  in
+  let negative_parent_name =
+    simple_apply_forall_vars (lookup_simple_name names negative_parent) (parent_sorts_of negative_parent)
+  in
+  let target_prop = clause_body_prop result in
+  let target_arg = simple_prop_arg target_prop in
+  let negative_pivot_branch neg_proof pos_proof =
+    Printf.sprintf "((%s %s) %s)" neg_proof pos_proof target_arg
+  in
+  let rec consume_negative selected_index source_clause source_proof pos_proof depth =
+    match source_clause with
+    | [] -> emit_error "cannot resolve against the empty negative clause"
+    | [lit] ->
+        begin match selected_index with
+        | Some 0 -> negative_pivot_branch source_proof pos_proof
+        | Some _ -> emit_error "resolution negative pivot index is out of bounds"
+        | None -> simple_clause_intro_proof result lit source_proof
+        end
+    | lit :: rest ->
+        let head_name = "Hres_neg_lit_" ^ string_of_int depth in
+        let tail_name = "Hres_neg_tail_" ^ string_of_int depth in
+        let head_branch =
+          match selected_index with
+          | Some 0 -> negative_pivot_branch head_name pos_proof
+          | _ -> simple_clause_intro_proof result lit head_name
+        in
+        let rest_selected =
+          match selected_index with
+          | Some 0 -> None
+          | Some n -> Some (n - 1)
+          | None -> None
+        in
+        let tail_branch = consume_negative rest_selected rest tail_name pos_proof (depth + 1) in
+        Printf.sprintf "(%s %s (fun %s => %s) (fun %s => %s))"
+          source_proof target_arg
+          head_name head_branch
+          tail_name tail_branch
+  in
+  let rec consume_positive selected_index source_clause source_proof depth =
+    match source_clause with
+    | [] -> emit_error "cannot resolve from the empty positive clause"
+    | [lit] ->
+        begin match selected_index with
+        | Some 0 -> consume_negative (Some negative_index) negative_clause negative_parent_name source_proof 0
+        | Some _ -> emit_error "resolution positive pivot index is out of bounds"
+        | None -> simple_clause_intro_proof result lit source_proof
+        end
+    | lit :: rest ->
+        let head_name = "Hres_pos_lit_" ^ string_of_int depth in
+        let tail_name = "Hres_pos_tail_" ^ string_of_int depth in
+        let head_branch =
+          match selected_index with
+          | Some 0 -> consume_negative (Some negative_index) negative_clause negative_parent_name head_name 0
+          | _ -> simple_clause_intro_proof result lit head_name
+        in
+        let rest_selected =
+          match selected_index with
+          | Some 0 -> None
+          | Some n -> Some (n - 1)
+          | None -> None
+        in
+        let tail_branch = consume_positive rest_selected rest tail_name (depth + 1) in
+        Printf.sprintf "(%s %s (fun %s => %s) (fun %s => %s))"
+          source_proof target_arg
+          head_name head_branch
+          tail_name tail_branch
+  in
+  simple_wrap_forall_intro result_sorts
+    (consume_positive (Some positive_index) positive_clause positive_parent_name 0)
+
+and simple_clause_intro_proof clause lit proof =
   match clause with
   | [] -> emit_error "cannot introduce a literal into the empty clause"
   | [single] when single = lit -> proof
@@ -5344,15 +5437,25 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           begin match
             if not structurally_safe then None
             else
-              try Some (simple_resolution_proof
-                          literal_prop
-                          (fun parent_id ->
-                             if parent_id = left_id then left_sorts
-                             else if parent_id = right_id then right_sorts
-                             else variable_sorts_for_ids [parent_id])
-                          sorts id left_id right_id left_index right_index result
-                          !checked !emitted_names)
-              with Error _ -> None
+              let parent_sorts_of parent_id =
+                if parent_id = left_id then left_sorts
+                else if parent_id = right_id then right_sorts
+                else variable_sorts_for_ids [parent_id]
+              in
+              match
+                try Some (simple_resolution_clause_proof
+                            clause_body_prop parent_sorts_of sorts
+                            id left_id right_id left_index right_index result
+                            !checked !emitted_names)
+                with Error _ -> None
+              with
+              | Some proof -> Some proof
+              | None ->
+                  try Some (simple_resolution_proof
+                              literal_prop parent_sorts_of
+                              sorts id left_id right_id left_index right_index result
+                              !checked !emitted_names)
+                  with Error _ -> None
           with
           | Some proof ->
               let name = derived_name id in
