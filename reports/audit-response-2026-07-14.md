@@ -800,6 +800,56 @@ TMPDIR=/project/tmp tests/vampire_certificate/run_source_map_export_smoke.sh
 Megalodon TH0 source-map export smoke passed
 ```
 
+## Increment: Nested ENNF And Skolem Choice Replay
+
+The next update extends the native certificate checker for two more
+Smolka-style transformations that appear in the cached Hammer proofs:
+
+- negated universal formulas with more than one universally quantified binder
+  and more than one implication premise, replayed as nested
+  `vampire_exists_set` terms with nested `vampire_and` witnesses;
+- Skolemization of nested set-valued existentials, replayed by defining each
+  introduced Skolem symbol as an `Eps_i` choice term under the substitutions for
+  the earlier Skolem symbols.
+
+This is still implemented in `src/vampire_cert_v1.ml`, i.e. in the native
+Vampire-certificate-to-Megalodon replay path. It is not a Python-side recovery
+heuristic. The implementation also generalizes CNF projection from nested
+conjunctions such as `A /\ (B /\ C)`.
+
+Focused checks that previously required bridge assumptions now close:
+
+```text
+hammer.11602.25.th0 CLOSED_PASS
+/project/tmp/ennf_multi_11602_132415
+
+hammer.10609.51.th0 CLOSED_PASS
+/project/tmp/nested_skolem_10609_132947
+```
+
+Cached parallel replay over the same source-linked frontier, without rerunning
+Vampire:
+
+```text
+TMPDIR=/project/tmp \
+PROBLEM_DIR=/project/tmp/source_linked_strict_100_corpus_fresh_041947 \
+WORK_DIR=/project/tmp/source_linked_slice_1_400_closed_nested_skolem_132955 \
+JOBS=20 MIN_PASS=0 CLOSED_CERT_V1=1 EMIT_TIMEOUT=30 CHECK_TIMEOUT=45 \
+tests/vampire_certificate/run_native_emit_cached_parallel.sh \
+  /project/tmp/source_linked_slice_1_400_fresh_042040
+
+CLOSED_PASS 68
+EMIT_FAIL 145
+/project/tmp/source_linked_slice_1_400_closed_nested_skolem_132955
+```
+
+The two new committed closed cases are:
+
+```text
+hammer.10609.51.th0.p
+hammer.11602.25.th0.p
+```
+
 ## Remaining P0 Work
 
 Closed mode is necessary but not sufficient.
