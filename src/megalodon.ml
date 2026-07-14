@@ -507,6 +507,27 @@ let rec string_contains_at s needle i =
 
 let string_contains_sub s needle = string_contains_at s needle 0
 
+let native_certificate_start_marker = "megalodon_certificate_native_sexpr_start."
+let native_certificate_end_marker = "megalodon_certificate_native_sexpr_end."
+
+let native_certificate_payload output =
+  let lines = String.split_on_char '\n' output in
+  let rec scan collecting acc = function
+    | [] -> None
+    | line :: rest ->
+        let trimmed = String.trim line in
+        if trimmed = native_certificate_start_marker then
+          scan true [] rest
+        else if trimmed = native_certificate_end_marker then
+          if collecting then Some (String.concat "\n" (List.rev acc) ^ "\n")
+          else scan false [] rest
+        else if collecting then
+          scan true (line :: acc) rest
+        else
+          scan false acc rest
+  in
+  scan false [] lines
+
 let rec read_process_lines ch b =
   try
     Buffer.add_string b (input_line ch);
@@ -526,6 +547,11 @@ let vampire_output_proved s =
   || string_contains_sub s "SZS status Unsatisfiable"
   || string_contains_sub s "SZS status ContradictoryAxioms"
 
+let vampire_output_has_native_certificate s =
+  match native_certificate_payload s with
+  | Some _ -> true
+  | None -> false
+
 let vampire_output_has_proof_payload s =
   string_contains_sub s "inference("
   || string_contains_sub s "SZS output start Proof"
@@ -533,6 +559,8 @@ let vampire_output_has_proof_payload s =
   || string_contains_sub s "end vamproof"
   || string_contains_sub s "theorem fullProof"
   || string_contains_sub s "theorem full_proof"
+  || (string_contains_sub s native_certificate_start_marker
+      && string_contains_sub s native_certificate_end_marker)
   || (string_contains_sub s "megalodon_reconstruction_start."
       && string_contains_sub s "megalodon_step("
       && string_contains_sub s "megalodon_final_step("
@@ -549,6 +577,41 @@ let status_to_string status =
   | Unix.WEXITED n -> Printf.sprintf "exit %d" n
   | Unix.WSIGNALED n -> Printf.sprintf "signal %d" n
   | Unix.WSTOPPED n -> Printf.sprintf "stopped %d" n
+
+let check_vampire_aby_native_certificate content output proof_file =
+  if !vampireabyproof = "megalodon" then
+    match native_certificate_payload output with
+    | None ->
+        raise
+          (Failure
+             (Printf.sprintf
+                "Vampire megalodon proof output %s has no native certificate block"
+                proof_file))
+    | Some payload ->
+        try
+          let cert = Vampire_cert_v1.parse_certificate payload in
+          let checked = Vampire_cert_v1.check_certificate_strict cert in
+          let source_map = Vampire_cert_v1.parse_source_map content in
+          let source_count = Vampire_cert_v1.validate_certificate_sources source_map cert in
+          if !verbosity > 8 then
+            begin
+              Printf.printf
+                "Vampire native certificate checked %d step%s and %d source%s at line %d char %d.\n"
+                (List.length checked)
+                (if List.length checked = 1 then "" else "s")
+                source_count
+                (if source_count = 1 then "" else "s")
+                !lineno
+                !charno;
+              flush stdout
+            end
+        with Vampire_cert_v1.Error msg ->
+          raise
+            (Failure
+               (Printf.sprintf
+                  "Vampire megalodon proof output %s failed native certificate check: %s"
+                  proof_file
+                  msg))
 
 let run_vampire_aby_certificate content =
   match !vampireaby with
@@ -569,15 +632,18 @@ let run_vampire_aby_certificate content =
          (Filename.quote !vampireabyschedule)
          !vampireabytimeout
          (Filename.quote !vampireabyproof)
-         (vampire_proof_options !vampireabyproof)
+         ("--output_axiom_names on " ^ vampire_proof_options !vampireabyproof)
          (Filename.quote problem_file)
      in
      let (out,status) = run_command_capture cmd in
      let ch = open_out proof_file in
      Printf.fprintf ch "%s" out;
      close_out ch;
-     if vampire_output_proved out && vampire_output_has_proof_payload out then
+     if (vampire_output_proved out
+         || (!vampireabyproof = "megalodon" && vampire_output_has_native_certificate out))
+        && vampire_output_has_proof_payload out then
        begin
+         check_vampire_aby_native_certificate content out proof_file;
          if !verbosity > 2 then
            Printf.printf "Vampire certified aby at line %d char %d (%s)\n" !lineno !charno digest;
          flush stdout

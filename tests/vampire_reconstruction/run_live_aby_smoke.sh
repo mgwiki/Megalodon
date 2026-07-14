@@ -30,11 +30,13 @@ sed -n '1,169p' examples/hammer/100thms_12_h.mg > "$tmp_mg"
   -vampireabyproof "$proof_mode" \
   "$tmp_mg"
 
-grep -q 'SZS status \(Theorem\|Unsatisfiable\|ContradictoryAxioms\)' "$tmp_out"/*.out
 if [ "$proof_mode" = "megalodon" ]; then
+  grep -q 'megalodon_certificate_native_sexpr_start' "$tmp_out"/*.out
   grep -q 'megalodon_reconstruction_start' "$tmp_out"/*.out
   grep -q 'megalodon_step(' "$tmp_out"/*.out
   grep -q 'megalodon_reconstruction_end' "$tmp_out"/*.out
+  grep -q 'megalodon_certificate_native_sexpr_end' "$tmp_out"/*.out
 else
+  grep -q 'SZS status \(Theorem\|Unsatisfiable\|ContradictoryAxioms\)' "$tmp_out"/*.out
   grep -q 'SZS output start\|inference(' "$tmp_out"/*.out
 fi
