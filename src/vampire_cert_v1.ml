@@ -3524,6 +3524,74 @@ let simple_prop_arg prop = "(" ^ prop ^ ")"
 
 let simple_true_proof = "(fun p:prop => fun H:p => H)"
 
+let simple_prop_equal_mod_app_parens left right =
+  let has_reserved_syntax text =
+    let contains needle =
+      let len = String.length text in
+      let needle_len = String.length needle in
+      let rec loop i =
+        i + needle_len <= len
+        && (String.sub text i needle_len = needle || loop (i + 1))
+      in
+      needle_len = 0 || loop 0
+    in
+    contains "forall "
+    || contains " -> "
+    || contains "\\/"
+    || contains "="
+    || contains "=>"
+    || contains ":"
+  in
+  let ident_start = function
+    | 'A'..'Z' | 'a'..'z' | '_' -> true
+    | _ -> false
+  in
+  let removable_inner text =
+    let text = String.trim text in
+    text <> "" && ident_start text.[0] && not (has_reserved_syntax text)
+  in
+  let normalize_once text =
+    let len = String.length text in
+    let buffer = Buffer.create len in
+    let rec find_close depth i =
+      if i >= len then None
+      else
+        match text.[i] with
+        | '(' -> find_close (depth + 1) (i + 1)
+        | ')' ->
+            if depth = 0 then Some i else find_close (depth - 1) (i + 1)
+        | _ -> find_close depth (i + 1)
+    in
+    let rec loop changed i =
+      if i >= len then changed
+      else if text.[i] = '(' then
+        match find_close 0 (i + 1) with
+        | Some close ->
+            let inner = String.sub text (i + 1) (close - i - 1) in
+            if removable_inner inner then begin
+              Buffer.add_string buffer inner;
+              loop true (close + 1)
+            end else begin
+              Buffer.add_char buffer text.[i];
+              loop changed (i + 1)
+            end
+        | None ->
+            Buffer.add_char buffer text.[i];
+            loop changed (i + 1)
+      else begin
+        Buffer.add_char buffer text.[i];
+        loop changed (i + 1)
+      end
+    in
+    let changed = loop false 0 in
+    (changed, Buffer.contents buffer)
+  in
+  let rec normalize text =
+    let changed, text = normalize_once text in
+    if changed then normalize text else text
+  in
+  normalize left = normalize right
+
 let collect_simple_names cert =
   let declared_names = metadata_declared_names cert in
   let variable_sorts = metadata_variable_sorts cert in
@@ -5350,7 +5418,8 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       | CnfLiteral (id, parent_id, result) ->
           let name = derived_name id in
           let target_prop, target_sorts = clause_prop_and_sorts_for_ids id [parent_id] result in
-          if emitted_parent_prop parent_id = target_prop then begin
+          if emitted_parent_prop parent_id = target_prop
+             || simple_prop_equal_mod_app_parens (emitted_parent_prop parent_id) target_prop then begin
             add_emitted id name;
             add_emitted_prop_and_sorts id target_prop target_sorts;
             claims := !claims @
@@ -5363,7 +5432,8 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       | CnfFormulaClause (id, parent_id, _, result) ->
           let name = derived_name id in
           let target_prop, target_sorts = clause_prop_and_sorts_for_ids id [parent_id] result in
-          if emitted_parent_prop parent_id = target_prop then begin
+          if emitted_parent_prop parent_id = target_prop
+             || simple_prop_equal_mod_app_parens (emitted_parent_prop parent_id) target_prop then begin
             add_emitted id name;
             add_emitted_prop_and_sorts id target_prop target_sorts;
             claims := !claims @
