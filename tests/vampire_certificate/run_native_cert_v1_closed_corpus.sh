@@ -61,7 +61,13 @@ run_one() {
     return 0
   fi
 
-  if ! "$MEGALODON" "$case_dir/out.mg" > "$case_dir/check.out" 2> "$case_dir/check.err"; then
+  local proof_check_args=()
+  if rg -q '^Axiom prop_ext :' "$case_dir/out.mg"; then
+    proof_check_args+=(-hf)
+  fi
+
+  if ! "$MEGALODON" "${proof_check_args[@]}" "$case_dir/out.mg" \
+      > "$case_dir/check.out" 2> "$case_dir/check.err"; then
     local err
     err=$(tail -1 "$case_dir/check.err" | tr '\t' ' ')
     printf '%s\tCHECK_FAIL\t%s\n' "$base" "$err" > "$case_dir/result.tsv"

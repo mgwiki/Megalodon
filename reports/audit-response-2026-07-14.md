@@ -304,6 +304,54 @@ new ones. The current committed corpus should be treated as fixed reproducible
 certificate fixtures until Vampire-side deterministic regeneration is repaired
 or a current build reproduces them under the agreed limits.
 
+The branch now also closes the small FOOL Boolean-lifting class that previously
+blocked cases such as `hammer.1032.16`. The generated proof prelude defines
+`vampire_eq_prop` as Megalodon's equality on `prop`, emits the library-shaped
+`prop_ext` axiom before problem-local symbols, and checks generated scripts with
+`-hf` so that this axiom is trusted by the indexed HF hash rather than by a local
+unindexed assumption. The FOOL replay then proves `A -> A = True` and extracts
+`A` from `A = True` using ordinary Megalodon equality eliminators.
+
+This is a real closed-proof improvement, not a bridge-count-only change. The
+cached source-linked closed replay over the first 213 previously solvable
+certificates moved from 7 to 11 closed passes:
+
+```text
+TMPDIR=/project/tmp \
+PROBLEM_DIR=/project/tmp/source_linked_strict_100_corpus_fresh_041947 \
+WORK_DIR=/project/tmp/source_linked_slice_1_400_closed_fool_prop_ext_111720 \
+JOBS=20 MIN_PASS=0 CLOSED_CERT_V1=1 EMIT_TIMEOUT=30 CHECK_TIMEOUT=45 \
+tests/vampire_certificate/run_native_emit_cached_parallel.sh \
+  /project/tmp/source_linked_slice_1_400_fresh_042040
+
+CLOSED_PASS 11
+EMIT_FAIL 202
+/project/tmp/source_linked_slice_1_400_closed_fool_prop_ext_111720
+```
+
+The four new closed cases are committed in the closed corpus:
+
+```text
+hammer.1032.16.th0.p
+hammer.1049.20.th0.p
+hammer.10809.92.th0.p
+hammer.11696.239.th0.p
+```
+
+Validation for the 11-case committed corpus and smoke gates:
+
+```text
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh
+CLOSED_PASS 11
+/project/tmp/native_cert_v1_closed_corpus.B8KYWJ
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+native certificate v1 smoke test passed
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_source_map_export_smoke.sh
+Megalodon TH0 source-map export smoke passed
+```
+
 ## Remaining P0 Work
 
 Closed mode is necessary but not sufficient.

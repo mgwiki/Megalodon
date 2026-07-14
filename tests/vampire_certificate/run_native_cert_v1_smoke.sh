@@ -42,7 +42,7 @@ if rg -n '\badmit\b|\baby\b|-allowincompleteqed' "$WORK_DIR/native_cert_v1_valid
   echo "native certificate v1 simple emitter generated an admission marker" >&2
   exit 1
 fi
-bin/megalodon "$WORK_DIR/native_cert_v1_valid_emit.mg" \
+bin/megalodon -hf "$WORK_DIR/native_cert_v1_valid_emit.mg" \
   >"$WORK_DIR/native_cert_v1_valid_emit.check.log"
 if ! rg -q 'assume src_axiom_a1__c1:' "$WORK_DIR/native_cert_v1_valid_emit.mg"; then
   echo "native certificate v1 simple emitter did not preserve source axiom a1 in the proof script" >&2
@@ -88,7 +88,7 @@ if ! rg -q 'assume src_axiom_Not_x2Fp__c2:' \
   echo "native certificate v1 simple emitter did not sanitize the original Not/p source name" >&2
   exit 1
 fi
-bin/megalodon "$WORK_DIR/native_cert_v1_source_name_mangled_valid_emit.mg" \
+bin/megalodon -hf "$WORK_DIR/native_cert_v1_source_name_mangled_valid_emit.mg" \
   >"$WORK_DIR/native_cert_v1_source_name_mangled_valid_emit.check.log"
 
 bin/megalodon \
@@ -105,7 +105,7 @@ if rg -n '\badmit\b|\baby\b|-allowincompleteqed' \
   echo "native certificate v1 mirrored resolution emitter generated an admission marker" >&2
   exit 1
 fi
-bin/megalodon "$WORK_DIR/native_cert_v1_resolution_mirrored_valid_emit.mg" \
+bin/megalodon -hf "$WORK_DIR/native_cert_v1_resolution_mirrored_valid_emit.mg" \
   >"$WORK_DIR/native_cert_v1_resolution_mirrored_valid_emit.check.log"
 
 bin/megalodon \
@@ -122,7 +122,7 @@ if rg -n '\badmit\b|\baby\b|-allowincompleteqed' \
   echo "native certificate v1 propositional factor emitter generated an admission marker" >&2
   exit 1
 fi
-bin/megalodon "$WORK_DIR/native_cert_v1_factor_prop_valid_emit.mg" \
+bin/megalodon -hf "$WORK_DIR/native_cert_v1_factor_prop_valid_emit.mg" \
   >"$WORK_DIR/native_cert_v1_factor_prop_valid_emit.check.log"
 
 bin/megalodon \
@@ -139,7 +139,7 @@ if rg -n '\badmit\b|\baby\b|-allowincompleteqed' \
   echo "native certificate v1 no-op substitute emitter generated an admission marker" >&2
   exit 1
 fi
-bin/megalodon "$WORK_DIR/native_cert_v1_substitute_prop_noop_valid_emit.mg" \
+bin/megalodon -hf "$WORK_DIR/native_cert_v1_substitute_prop_noop_valid_emit.mg" \
   >"$WORK_DIR/native_cert_v1_substitute_prop_noop_valid_emit.check.log"
 
 bin/megalodon \
@@ -156,7 +156,7 @@ if rg -n '\badmit\b|\baby\b|-allowincompleteqed' \
   echo "native certificate v1 propositional condensation emitter generated an admission marker" >&2
   exit 1
 fi
-bin/megalodon "$WORK_DIR/native_cert_v1_condensation_prop_valid_emit.mg" \
+bin/megalodon -hf "$WORK_DIR/native_cert_v1_condensation_prop_valid_emit.mg" \
   >"$WORK_DIR/native_cert_v1_condensation_prop_valid_emit.check.log"
 
 bin/megalodon \
@@ -173,7 +173,7 @@ if ! rg -q 'bridge_substitute__' \
   echo "native certificate v1 term-changing substitution emitter did not expose a bridge obligation" >&2
   exit 1
 fi
-bin/megalodon "$WORK_DIR/native_cert_v1_substitute_prop_changed_bridge.mg" \
+bin/megalodon -hf "$WORK_DIR/native_cert_v1_substitute_prop_changed_bridge.mg" \
   >"$WORK_DIR/native_cert_v1_substitute_prop_changed_bridge.check.log"
 
 if bin/megalodon \
@@ -201,7 +201,7 @@ if rg -n '\badmit\b|\baby\b|-allowincompleteqed' \
   echo "native certificate v1 factor/equality emitter generated an admission marker" >&2
   exit 1
 fi
-bin/megalodon "$WORK_DIR/native_cert_v1_factor_equality_valid_emit.mg" \
+bin/megalodon -hf "$WORK_DIR/native_cert_v1_factor_equality_valid_emit.mg" \
   >"$WORK_DIR/native_cert_v1_factor_equality_valid_emit.check.log"
 
 if bin/megalodon \
@@ -363,7 +363,7 @@ if rg -q 'bridge_' "$WORK_DIR/native_cert_v1_closed_source_map_valid.mg"; then
   echo "closed native certificate v1 emitter generated a bridge premise for a closed fixture" >&2
   exit 1
 fi
-bin/megalodon "$WORK_DIR/native_cert_v1_closed_source_map_valid.mg" \
+bin/megalodon -hf "$WORK_DIR/native_cert_v1_closed_source_map_valid.mg" \
   >"$WORK_DIR/native_cert_v1_closed_source_map_valid.check.log"
 
 if bin/megalodon \
@@ -693,7 +693,7 @@ if ! rg -Fq 'claim definition_input__d1: a = b.' \
   echo "function-definition input did not emit a checked definition claim" >&2
   exit 1
 fi
-bin/megalodon "$WORK_DIR/native_cert_v1_definition_input_function_closed.mg" \
+bin/megalodon -hf "$WORK_DIR/native_cert_v1_definition_input_function_closed.mg" \
   >"$WORK_DIR/native_cert_v1_definition_input_function_closed.check.log"
 
 bin/megalodon \
@@ -723,7 +723,7 @@ if ! rg -Fq 'claim definition_input__d1: vampire_eq_set_to_set f g.' \
   echo "closed native certificate v1 arrow-valued definition input did not emit a checked claim" >&2
   exit 1
 fi
-bin/megalodon "$WORK_DIR/native_cert_v1_definition_input_arrow_function_closed.mg" \
+bin/megalodon -hf "$WORK_DIR/native_cert_v1_definition_input_arrow_function_closed.mg" \
   >"$WORK_DIR/native_cert_v1_definition_input_arrow_function_closed.check.log"
 
 bin/megalodon \
@@ -822,7 +822,7 @@ if ! rg -Fq 'exact (vampire_eq_set_sym (a) (b) src_axiom_eq_forward__p1).' \
   echo "native certificate v1 equality-symmetry emitter did not replay symmetry directly" >&2
   exit 1
 fi
-bin/megalodon "$WORK_DIR/native_cert_v1_equality_symmetry_valid_emit.mg" \
+bin/megalodon -hf "$WORK_DIR/native_cert_v1_equality_symmetry_valid_emit.mg" \
   >"$WORK_DIR/native_cert_v1_equality_symmetry_valid_emit.check.log"
 
 bin/megalodon \
@@ -876,7 +876,7 @@ if ! rg -q 'bridge_normal_form__f2' "$WORK_DIR/native_cert_v1_formula_cnf_valid_
   echo "native certificate v1 formula-CNF emitter did not expose the normal-form bridge obligation" >&2
   exit 1
 fi
-bin/megalodon "$WORK_DIR/native_cert_v1_formula_cnf_valid_emit.mg" \
+bin/megalodon -hf "$WORK_DIR/native_cert_v1_formula_cnf_valid_emit.mg" \
   >"$WORK_DIR/native_cert_v1_formula_cnf_valid_emit.check.log"
 
 if bin/megalodon \

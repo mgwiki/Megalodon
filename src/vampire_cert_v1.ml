@@ -951,7 +951,7 @@ let rec app2_name = function
   | _ -> None
 
 let is_vampire_false = function
-  | TmH "vampire_false" -> true
+  | TmH "f__false" | TmH "vampire_false" -> true
   | _ -> false
 
 let neg_formula tm =
@@ -3508,8 +3508,15 @@ and simple_tm_expr tm =
 	      end
       end
 
+let simple_prop_equality_arg tm =
+  if is_vampire_bool_const tm then
+    if is_vampire_false tm then "vampire_false" else "vampire_true"
+  else
+    simple_tm_expr tm
+
 let simple_prop_equality left right =
-  "vampire_eq_prop (" ^ simple_tm_expr left ^ ") (" ^ simple_tm_expr right ^ ")"
+  "vampire_eq_prop (" ^ simple_prop_equality_arg left ^ ") ("
+  ^ simple_prop_equality_arg right ^ ")"
 
 let simple_atom_prop = function
   | TmH name -> simple_name_expr name
@@ -5364,10 +5371,11 @@ let simple_fool_bool_proof
     else
       let source_from_eq =
         if left_is_source then
-          Printf.sprintf "((vampire_eq_prop_sym (%s) (%s) Heq_fool) (fun Z:prop => Z) %s)"
-            left_text right_text simple_true_proof
+          Printf.sprintf "(Heq_fool (fun X Y:prop => Y) %s)"
+            simple_true_proof
         else
-          Printf.sprintf "(Heq_fool (fun Z:prop => Z) %s)" simple_true_proof
+          Printf.sprintf "(Heq_fool (fun X Y:prop => X) %s)"
+            simple_true_proof
       in
       Printf.sprintf "(fun Heq_fool:%s => %s %s)" eq_text parent_name source_from_eq
   in
@@ -5379,31 +5387,37 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   let prop_names, term_names = collect_simple_names cert in
   let lines = ref
     [
-      "Definition False : prop := forall p:prop, p.";
       "Definition True : prop := forall p:prop, p -> p.";
-      "Definition vampire_false : prop := False.";
-      "Definition vampire_true : prop := True.";
-      "Definition or : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> p) -> (B -> p) -> p.";
-      "Infix \\/ 785 left := or.";
-      "Definition vampire_or : prop -> prop -> prop := or.";
-      "Definition vampire_and : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> B -> p) -> p.";
-      "Definition vampire_exists_set : (set -> prop) -> prop := fun P:set->prop => forall q:prop, (forall x:set, P x -> q) -> q.";
-      "Definition vampire_exists_prop : (prop -> prop) -> prop := fun P:prop->prop => forall q:prop, (forall x:prop, P x -> q) -> q.";
-      "Definition vampire_exists_set_prop : ((set->prop) -> prop) -> prop := fun P:(set->prop)->prop => forall q:prop, (forall x:set->prop, P x -> q) -> q.";
-      "Definition vampire_exists_set_set : ((set->set) -> prop) -> prop := fun P:(set->set)->prop => forall q:prop, (forall x:set->set, P x -> q) -> q.";
-      "Definition vampire_exists_set_set_prop : ((set->set->prop) -> prop) -> prop := fun P:(set->set->prop)->prop => forall q:prop, (forall x:set->set->prop, P x -> q) -> q.";
-      "Definition vampire_eq_prop : prop -> prop -> prop := fun A B:prop => forall Q:prop->prop, Q A -> Q B.";
+      "Definition False : prop := forall p:prop, p.";
+      "Definition and : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> B -> p) -> p.";
+      "Definition iff : prop -> prop -> prop := fun A B:prop => and (A -> B) (B -> A).";
       "Section Eq.";
       "Variable A:SType.";
       "Definition eq : A->A->prop := fun x y:A => forall Q:A->A->prop, Q x y -> Q y x.";
       "End Eq.";
       "Infix = 502 := eq.";
+      "Axiom prop_ext : forall p q:prop, iff p q -> p = q.";
+      "Definition vampire_false : prop := False.";
+      "Definition vampire_true : prop := True.";
+      "Definition or : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> p) -> (B -> p) -> p.";
+      "Infix \\/ 785 left := or.";
+      "Definition vampire_or : prop -> prop -> prop := or.";
+      "Definition vampire_and : prop -> prop -> prop := and.";
+      "Definition vampire_exists_set : (set -> prop) -> prop := fun P:set->prop => forall q:prop, (forall x:set, P x -> q) -> q.";
+      "Definition vampire_exists_prop : (prop -> prop) -> prop := fun P:prop->prop => forall q:prop, (forall x:prop, P x -> q) -> q.";
+      "Definition vampire_exists_set_prop : ((set->prop) -> prop) -> prop := fun P:(set->prop)->prop => forall q:prop, (forall x:set->prop, P x -> q) -> q.";
+      "Definition vampire_exists_set_set : ((set->set) -> prop) -> prop := fun P:(set->set)->prop => forall q:prop, (forall x:set->set, P x -> q) -> q.";
+      "Definition vampire_exists_set_set_prop : ((set->set->prop) -> prop) -> prop := fun P:(set->set->prop)->prop => forall q:prop, (forall x:set->set->prop, P x -> q) -> q.";
+      "Definition vampire_eq_prop : prop -> prop -> prop := eq prop.";
+      "Theorem vampire_eq_prop_ext : forall p q:prop, (p -> q) -> (q -> p) -> vampire_eq_prop p q.";
+      "exact (fun p q Hpq Hqp => prop_ext p q (fun R H => H Hpq Hqp)).";
+      "Qed.";
       "Theorem vampire_eq_prop_sym : forall A:prop, forall B:prop, vampire_eq_prop A B -> vampire_eq_prop B A.";
       "let A B.";
       "assume H.";
       "let Q.";
       "assume HQ.";
-      "exact H (fun Z:prop => Q Z -> Q A) (fun HA => HA) HQ.";
+      "exact H (fun a b:prop => Q b a) HQ.";
       "Qed.";
       "Theorem vampire_eq_set_sym : forall x:set, forall y:set, x = y -> y = x.";
       "let x y.";
@@ -5890,14 +5904,56 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           let structural_target_prop =
             simple_quantify_prop target_sorts (literal_prop result)
           in
+          let rendered_prop_equiv left right =
+            let replace_substring needle replacement text =
+              let needle_len = String.length needle in
+              let text_len = String.length text in
+              let buffer = Buffer.create text_len in
+              let rec loop i =
+                if i >= text_len then ()
+                else if i + needle_len <= text_len
+                        && String.sub text i needle_len = needle then
+                  (Buffer.add_string buffer replacement; loop (i + needle_len))
+                else
+                  (Buffer.add_char buffer text.[i]; loop (i + 1))
+              in
+              loop 0;
+              Buffer.contents buffer
+            in
+            let normalize text =
+              text
+              |> replace_substring "vampire_true" "True"
+              |> replace_substring "vampire_false" "False"
+              |> String.to_seq
+              |> Seq.filter
+                   (function
+                     | ' ' | '\n' | '\t' | '\r' | '(' | ')' -> false
+                     | _ -> true)
+              |> String.of_seq
+            in
+            normalize left = normalize right
+          in
           begin match
-            if emitted_parent_prop parent_id <> parent_prop
-               || target_prop <> structural_target_prop then None
+            if not (rendered_prop_equiv (emitted_parent_prop parent_id) parent_prop) then
+              if closed then
+                emit_error
+                  (id ^ ": FOOL bool parent proposition mismatch: emitted "
+                   ^ emitted_parent_prop parent_id ^ " but reconstructed "
+                   ^ parent_prop)
+              else None
+            else if not (rendered_prop_equiv target_prop structural_target_prop) then
+              if closed then
+                emit_error
+                  (id ^ ": FOOL bool target proposition mismatch: metadata "
+                   ^ target_prop ^ " but reconstructed "
+                   ^ structural_target_prop)
+              else None
             else
               try Some (simple_fool_bool_proof
                           type_env parent_sorts target_sorts id
                           parent_literal_from_result result !emitted_names parent_id)
-              with Error _ -> None
+              with Error msg ->
+                if closed then emit_error msg else None
           with
           | Some proof ->
               uses_vampire_eq_prop_ext := true;
@@ -6527,12 +6583,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     | Some id -> id
     | None -> emit_error "certificate has no empty clause"
   in
-  let proof_assumptions =
-    if !uses_vampire_eq_prop_ext then
-      [("vampire_eq_prop_ext",
-        "forall p q:prop, (p -> q) -> (q -> p) -> vampire_eq_prop p q")]
-    else []
-  in
+  let proof_assumptions = [] in
   if closed then begin
     let non_source_premises =
       List.map (fun (name, _) -> "proof:" ^ name) proof_assumptions
@@ -6617,10 +6668,10 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
          "exact (fun A:prop => fun HA:A => vampire_eq_prop_ext vampire_true A (fun H:True => HA) (fun H:A => (fun p:prop => fun H:p => H))).");
         ("vampire_fool_eq_true_to_prop",
          "forall A:prop, vampire_eq_prop A vampire_true -> A",
-         "exact (fun A:prop => fun HE:vampire_eq_prop A vampire_true => (vampire_eq_prop_sym A vampire_true HE) (fun Z:prop => Z) (fun p:prop => fun H:p => H)).");
+         "exact (fun A:prop => fun HE:vampire_eq_prop A vampire_true => HE (fun X Y:prop => Y) (fun p:prop => fun H:p => H)).");
         ("vampire_fool_true_eq_to_prop",
          "forall A:prop, vampire_eq_prop vampire_true A -> A",
-         "exact (fun A:prop => fun HE:vampire_eq_prop vampire_true A => HE (fun Z:prop => Z) (fun p:prop => fun H:p => H)).");
+         "exact (fun A:prop => fun HE:vampire_eq_prop vampire_true A => HE (fun X Y:prop => X) (fun p:prop => fun H:p => H)).");
       ] @ !claims;
   List.iter
     (fun (name, prop, proof) ->
