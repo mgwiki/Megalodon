@@ -5160,6 +5160,32 @@ let rec simple_fool_prefix_imp_shape source target =
       not (simple_tm_contains_all source || simple_tm_contains_all target)
       && Option.is_some (simple_fool_eq_to_true source target)
 
+let simple_cnf_and_projection_proof
+    type_env parent_sorts target_sorts source target_clause parent_name =
+  let source = strip_forall source in
+  let target_prop =
+    try simple_clause_prop_with_type_env type_env target_clause
+    with Error _ -> simple_clause_prop target_clause
+  in
+  match source with
+  | Ap (Ap (TmH "vampire_and", left), right) ->
+      let source_proof = simple_apply_forall_vars parent_name parent_sorts in
+      let left_lit = literal_of_formula_tm left in
+      let right_lit = literal_of_formula_tm right in
+      let branch =
+        if List.exists ((=) left_lit) target_clause then
+          simple_clause_intro_proof target_clause left_lit "Hcnf_left"
+        else if List.exists ((=) right_lit) target_clause then
+          simple_clause_intro_proof target_clause right_lit "Hcnf_right"
+        else
+          emit_error "CNF conjunction projection target is not a direct conjunct"
+      in
+      simple_wrap_forall_intro target_sorts
+        (Printf.sprintf "(%s %s (fun Hcnf_left Hcnf_right => %s))"
+           source_proof (simple_prop_arg target_prop) branch)
+  | _ ->
+      emit_error "CNF conjunction projection supports only vampire_and parents"
+
 let simple_fool_formula_proof type_env id parent_sorts result_sorts source target parent_name =
   let binder_sorts =
     parent_sorts @ result_sorts |> simple_unique_variable_sorts
@@ -5751,7 +5777,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             add_bridge_claim ~kind:"cnf" id parent_id name target_prop target_sorts
           end;
           add_checked id result
-      | CnfFormulaClause (id, parent_id, _, result) ->
+      | CnfFormulaClause (id, parent_id, index, result) ->
           let name = derived_name id in
           let target_prop, target_sorts = clause_prop_and_sorts_for_ids id [parent_id] result in
           let parent_prop = emitted_parent_prop parent_id in
@@ -5767,8 +5793,33 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             claims := !claims @
               [(name, target_prop, "exact " ^ lookup_simple_name !emitted_names parent_id ^ ".")]
           end else begin
-            add_emitted id name;
-            add_bridge_claim ~kind:"cnf" id parent_id name target_prop target_sorts
+            let parent_sorts = variable_sorts_for_ids [parent_id] in
+            let type_env =
+              simple_type_env_with_variables
+                (parent_sorts @ target_sorts |> simple_unique_variable_sorts)
+                symbol_type_env
+            in
+            begin match
+              try
+                let parent_formula = lookup_formula checked_certificate parent_id in
+                let expected = nth index (cnf_clauses parent_formula) (id ^ " CNF clause") in
+                if not (same_clause_multiset expected result) then None
+                else if not (simple_sorts_subset parent_sorts target_sorts) then None
+                else
+                  Some
+                    (simple_cnf_and_projection_proof
+                       type_env parent_sorts target_sorts parent_formula result
+                       (lookup_simple_name !emitted_names parent_id))
+              with Error _ -> None
+            with
+            | Some proof ->
+                add_emitted id name;
+                add_emitted_prop_and_sorts id target_prop target_sorts;
+                claims := !claims @ [(name, target_prop, "exact " ^ proof ^ ".")]
+            | None ->
+                add_emitted id name;
+                add_bridge_claim ~kind:"cnf" id parent_id name target_prop target_sorts
+            end
           end;
           add_checked id result
       | FoolExhaustiveness (id, result) ->
