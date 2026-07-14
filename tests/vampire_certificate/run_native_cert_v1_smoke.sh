@@ -600,6 +600,23 @@ if ! rg -q 'Vampire certificate v1 checked 5 steps' "$WORK_DIR/native_cert_v1_eq
 fi
 
 bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_equality_symmetry_valid.sexp \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_equality_symmetry_valid_emit.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_equality_symmetry_valid_emit.log"
+if rg -n '\badmit\b|\baby\b|-allowincompleteqed' \
+    "$WORK_DIR/native_cert_v1_equality_symmetry_valid_emit.mg"; then
+  echo "native certificate v1 equality-symmetry emitter generated an admission marker" >&2
+  exit 1
+fi
+if ! rg -q 'symmetry\. exact src_axiom_eq_forward__p1\.' \
+    "$WORK_DIR/native_cert_v1_equality_symmetry_valid_emit.mg"; then
+  echo "native certificate v1 equality-symmetry emitter did not generate a Megalodon symmetry proof" >&2
+  exit 1
+fi
+bin/megalodon "$WORK_DIR/native_cert_v1_equality_symmetry_valid_emit.mg" \
+  >"$WORK_DIR/native_cert_v1_equality_symmetry_valid_emit.check.log"
+
+bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_exhaustiveness_valid.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_fool_exhaustiveness_valid.log"
 

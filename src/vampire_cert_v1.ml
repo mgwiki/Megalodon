@@ -2837,26 +2837,51 @@ let simple_fresh_name used base =
   in
   choose 0
 
-let simple_atom_name = function
+let simple_term_name = function
   | TmH name -> megalodon_ident name
-  | _ -> emit_error "only proposition variables are supported in simple native emission"
+  | _ -> emit_error "only named set terms are supported in simple native emission"
+
+let simple_atom_prop = function
+  | TmH name -> megalodon_ident name
+  | atom ->
+      begin match equality_sides atom with
+      | Some (left, right) ->
+          simple_term_name left ^ " = " ^ simple_term_name right
+      | None ->
+          emit_error "only proposition variables and named set equalities are supported in simple native emission"
+      end
 
 let simple_literal_prop = function
-  | Pos atom -> simple_atom_name atom
-  | Neg atom -> "(" ^ simple_atom_name atom ^ " -> False)"
+  | Pos atom -> simple_atom_prop atom
+  | Neg atom -> "(" ^ simple_atom_prop atom ^ " -> False)"
 
 let rec simple_clause_prop = function
   | [] -> "False"
   | [lit] -> simple_literal_prop lit
   | lit :: rest -> "(" ^ simple_literal_prop lit ^ " \\/ " ^ simple_clause_prop rest ^ ")"
 
-let collect_simple_prop_names cert =
+let collect_simple_names cert =
+  let add_prop acc name =
+    let name = megalodon_ident name in
+    let props, terms = acc in
+    if List.mem name props then acc else (name :: props, terms)
+  in
+  let add_term acc term =
+    let name = simple_term_name term in
+    let props, terms = acc in
+    if List.mem name terms then acc else (props, name :: terms)
+  in
+  let add_atom acc = function
+    | TmH name -> add_prop acc name
+    | atom ->
+        begin match equality_sides atom with
+        | Some (left, right) -> add_term (add_term acc left) right
+        | None ->
+            emit_error "only proposition variables and named set equalities are supported in simple native emission"
+        end
+  in
   let add_literal acc = function
-    | Pos (TmH name) | Neg (TmH name) ->
-        let name = megalodon_ident name in
-        if List.mem name acc then acc else name :: acc
-    | Pos _ | Neg _ ->
-        emit_error "only proposition variables are supported in simple native emission"
+    | Pos atom | Neg atom -> add_atom acc atom
   in
   let add_clause acc clause = List.fold_left add_literal acc clause in
   let add_step acc = function
@@ -2865,10 +2890,18 @@ let collect_simple_prop_names cert =
     | Condensation (_, _, _, clause) -> add_clause acc clause
     | Resolve (_, _, _, _, _, clause) -> add_clause acc clause
     | Factor (_, _, _, _, clause) -> add_clause acc clause
+    | EqualitySymmetry (_, _, _, clause) -> add_clause acc clause
     | Contradiction _ -> acc
     | step -> emit_error ("unsupported rule " ^ step_id step)
   in
-  List.sort String.compare (List.fold_left add_step [] cert.steps)
+  let props, terms = List.fold_left add_step ([], []) cert.steps in
+  let collisions = List.filter (fun name -> List.mem name terms) props in
+  begin match collisions with
+  | [] -> ()
+  | name :: _ ->
+      emit_error ("identifier " ^ name ^ " is used both as a proposition and a set term")
+  end;
+  (List.sort String.compare props, List.sort String.compare terms)
 
 let lookup_simple_clause checked id =
   match List.assoc_opt id checked with
@@ -2958,9 +2991,28 @@ let simple_condensation_proof id parent_id subst result checked names =
   | _ ->
       emit_error (id ^ ": simple emitter supports only two-literal propositional condensation")
 
+let simple_equality_symmetry_body id parent_id literal_index result checked names =
+  let parent_clause = lookup_simple_clause checked parent_id in
+  let literal = simple_clause_nth id "equality-symmetry" literal_index parent_clause in
+  let swapped =
+    match swap_literal_equality literal with
+    | Some swapped -> swapped
+    | None -> emit_error (id ^ ": equality-symmetry literal is not an equality")
+  in
+  begin match parent_clause, literal, result with
+  | [Pos atom], Pos _, [res] when res = swapped ->
+      begin match equality_sides atom with
+      | Some _ ->
+          "symmetry. exact " ^ lookup_simple_name names parent_id ^ "."
+      | None -> emit_error (id ^ ": equality-symmetry literal is not an equality")
+      end
+  | _ ->
+      emit_error (id ^ ": simple emitter supports only unit positive equality symmetry")
+  end
+
 let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_map=[]) cert =
   ignore (check_certificate cert);
-  let prop_names = collect_simple_prop_names cert in
+  let prop_names, term_names = collect_simple_names cert in
   let lines = ref
     [
       "Definition False : prop := forall p:prop, p.";
@@ -2968,8 +3020,18 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       "Infix \\/ 785 left := or.";
     ]
   in
+  if term_names <> [] then
+    lines := !lines @
+      [
+        "Section Eq.";
+        "Variable A:SType.";
+        "Definition eq : A->A->prop := fun x y:A => forall Q:A->A->prop, Q x y -> Q y x.";
+        "End Eq.";
+        "Infix = 502 := eq.";
+      ];
   List.iter (fun name -> lines := !lines @ ["Variable " ^ name ^ ":prop."]) prop_names;
-  let used_names = ref prop_names in
+  List.iter (fun name -> lines := !lines @ ["Variable " ^ name ^ ":set."]) term_names;
+  let used_names = ref (prop_names @ term_names) in
   let emitted_names = ref [] in
   let checked = ref [] in
   let assumptions = ref [] in
@@ -2997,13 +3059,13 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           let name = derived_name id in
           let proof = simple_copy_proof id parent_id result !checked !emitted_names in
           add_emitted id name;
-          claims := !claims @ [(name, simple_clause_prop result, proof)];
+          claims := !claims @ [(name, simple_clause_prop result, "exact " ^ proof ^ ".")];
           add_checked id result
       | Condensation (id, parent_id, subst, result) ->
           let name = derived_name id in
           let proof = simple_condensation_proof id parent_id subst result !checked !emitted_names in
           add_emitted id name;
-          claims := !claims @ [(name, simple_clause_prop result, proof)];
+          claims := !claims @ [(name, simple_clause_prop result, "exact " ^ proof ^ ".")];
           add_checked id result
       | Resolve (id, left_id, right_id, left_index, right_index, result) ->
           let name = derived_name id in
@@ -3011,13 +3073,21 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             simple_resolution_proof id left_id right_id left_index right_index result !checked !emitted_names
           in
           add_emitted id name;
-          claims := !claims @ [(name, simple_clause_prop result, proof)];
+          claims := !claims @ [(name, simple_clause_prop result, "exact " ^ proof ^ ".")];
           add_checked id result
       | Factor (id, parent_id, left_index, right_index, result) ->
           let name = derived_name id in
           let proof = simple_factor_proof id parent_id left_index right_index result !checked !emitted_names in
           add_emitted id name;
-          claims := !claims @ [(name, simple_clause_prop result, proof)];
+          claims := !claims @ [(name, simple_clause_prop result, "exact " ^ proof ^ ".")];
+          add_checked id result
+      | EqualitySymmetry (id, parent_id, literal_index, result) ->
+          let name = derived_name id in
+          let body =
+            simple_equality_symmetry_body id parent_id literal_index result !checked !emitted_names
+          in
+          add_emitted id name;
+          claims := !claims @ [(name, simple_clause_prop result, body)];
           add_checked id result
       | Contradiction (id, parent_id) ->
           let name = derived_name id in
@@ -3026,7 +3096,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             emit_error (id ^ ": contradiction parent is not empty");
           let parent_name = lookup_simple_name !emitted_names parent_id in
           add_emitted id name;
-          claims := !claims @ [(name, "False", parent_name)];
+          claims := !claims @ [(name, "False", "exact " ^ parent_name ^ ".")];
           add_checked id []
       | step ->
           emit_error ("unsupported rule " ^ step_id step))
@@ -3050,7 +3120,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
        lines := !lines @
          [
            Printf.sprintf "claim %s: %s." (megalodon_ident name) prop;
-           Printf.sprintf "{ exact %s. }" proof;
+           Printf.sprintf "{ %s }" proof;
          ])
     !claims;
   let final_name = lookup_simple_name !emitted_names final in
