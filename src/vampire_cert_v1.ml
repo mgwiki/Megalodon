@@ -3383,6 +3383,14 @@ let simple_variable_sorts_for_names names available_sorts =
           else acc @ [(name, sort)])
        []
 
+let simple_unique_variable_sorts sorts =
+  List.fold_left
+    (fun acc (name, sort) ->
+       if List.exists (fun (existing, _) -> existing = name) acc then acc
+       else acc @ [(name, sort)])
+    []
+    sorts
+
 let simple_clause_prop_and_sorts_for_step ?(available_sorts=[]) cert id clause =
   match metadata_step_proposition cert id with
   | Some proposition -> (proposition, metadata_step_variable_sort_pairs cert id)
@@ -3394,6 +3402,141 @@ let simple_clause_prop_and_sorts_for_step ?(available_sorts=[]) cert id clause =
 
 let simple_clause_prop_for_step ?(available_sorts=[]) cert id clause =
   fst (simple_clause_prop_and_sorts_for_step ~available_sorts cert id clause)
+
+let simple_strip_outer_parens typ =
+  let rec loop typ =
+    let typ = String.trim typ in
+    let len = String.length typ in
+    if len >= 2 && typ.[0] = '(' && typ.[len - 1] = ')' then begin
+      let depth = ref 0 in
+      let balanced_outer = ref true in
+      for i = 0 to len - 1 do
+        begin match typ.[i] with
+        | '(' -> incr depth
+        | ')' ->
+            decr depth;
+            if !depth = 0 && i < len - 1 then balanced_outer := false
+        | _ -> ()
+        end
+      done;
+      if !balanced_outer && !depth = 0 then
+        loop (String.sub typ 1 (len - 2))
+      else typ
+    end else typ
+  in
+  loop typ
+
+let simple_split_arrow_type typ =
+  let typ = simple_strip_outer_parens typ in
+  let len = String.length typ in
+  let depth = ref 0 in
+  let found = ref None in
+  let i = ref 0 in
+  while !i + 1 < len && !found = None do
+    begin match typ.[!i] with
+    | '(' -> incr depth
+    | ')' -> decr depth
+    | '-' when !depth = 0 && typ.[!i + 1] = '>' -> found := Some !i
+    | _ -> ()
+    end;
+    incr i
+  done;
+  match !found with
+  | None -> None
+  | Some pos ->
+      let left = String.sub typ 0 pos |> simple_strip_outer_parens in
+      let right =
+        String.sub typ (pos + 2) (len - pos - 2)
+        |> simple_strip_outer_parens
+      in
+      Some (left, right)
+
+let simple_symbol_type_env cert =
+  let builtins =
+    [
+      ("False", "prop"); ("True", "prop"); ("or", "prop->prop->prop");
+      ("vampire_or", "prop->prop->prop"); ("vampire_and", "prop->prop->prop");
+      ("vampire_exists_set", "(set->prop)->prop");
+      ("vampire_exists_prop", "(prop->prop)->prop");
+      ("vampire_exists_set_prop", "((set->prop)->prop)->prop");
+      ("vampire_exists_set_set", "((set->set)->prop)->prop");
+      ("vampire_false", "prop"); ("vampire_true", "prop");
+      ("vampire_eq_prop", "prop->prop->prop");
+      ("vampire_eq_prop_to_set", "(prop->set)->(prop->set)->prop");
+      ("vampire_eq_set_to_set", "(set->set)->(set->set)->prop");
+      ("vampire_eq_set_to_prop", "(set->prop)->(set->prop)->prop");
+      ("f__true", "prop"); ("f__false", "prop")
+    ]
+  in
+  let parse_decl decl =
+    let line = String.trim decl in
+    if not (string_starts_with "Variable " line) then None
+    else
+      let body =
+        String.sub line 9 (String.length line - 9)
+        |> String.trim
+      in
+      match String.index_opt body ':' with
+      | None -> None
+      | Some colon ->
+          let name = String.sub body 0 colon |> String.trim |> megalodon_ident in
+          let typ =
+            String.sub body (colon + 1) (String.length body - colon - 1)
+            |> String.trim
+          in
+          let typ =
+            if String.length typ > 0 && typ.[String.length typ - 1] = '.' then
+              String.sub typ 0 (String.length typ - 1)
+            else typ
+          in
+          Some (name, simple_strip_outer_parens typ)
+  in
+  cert.metadata.symbol_declarations
+  |> List.filter_map parse_decl
+  |> List.rev_append builtins
+  |> List.sort_uniq compare
+
+let simple_add_inferred_sort type_env acc name sort =
+  let name = megalodon_ident name in
+  if List.mem_assoc name type_env then acc
+  else if List.exists (fun (existing, existing_sort) -> existing = name && existing_sort = sort) acc then acc
+  else acc @ [(name, sort)]
+
+let simple_infer_tm_variable_sorts ?expected type_env tm =
+  let rec infer expected acc = function
+    | TmH name ->
+        let name = megalodon_ident name in
+        let known = List.assoc_opt name type_env in
+        let sort = match known with Some sort -> Some sort | None -> expected in
+        let acc =
+          match expected, known with
+          | Some sort, None -> simple_add_inferred_sort type_env acc name sort
+          | _ -> acc
+        in
+        (sort, acc)
+    | DB _ | Prim _ -> (expected, acc)
+    | TpAp (fn, _) -> infer expected acc fn
+    | Ap (fn, arg) ->
+        let fn_sort, acc = infer None acc fn in
+        let domain, codomain =
+          match Option.bind fn_sort simple_split_arrow_type with
+          | Some (domain, codomain) -> (Some domain, Some codomain)
+          | None -> (None, None)
+        in
+        let _, acc = infer domain acc arg in
+        (codomain, acc)
+    | Lam (_, body) ->
+        let _, acc = infer None acc body in
+        (expected, acc)
+    | Imp (left, right) ->
+        let _, acc = infer (Some "prop") acc left in
+        let _, acc = infer (Some "prop") acc right in
+        (Some "prop", acc)
+    | All (_, body) ->
+        let _, acc = infer (Some "prop") acc body in
+        (Some "prop", acc)
+  in
+  snd (infer expected [] tm)
 
 let simple_condensation_proof id parent_id subst result checked names =
   if subst <> [] then
@@ -3501,17 +3644,25 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             match List.assoc_opt id !emitted_var_sorts with
             | Some sorts -> sorts
             | None -> metadata_step_variable_sort_pairs cert id)
-    |> List.sort_uniq compare
+    |> simple_unique_variable_sorts
   in
+  let symbol_type_env = simple_symbol_type_env cert in
   let substitution_variable_sorts parent_id subst =
     let parent_sorts = variable_sorts_for_ids [parent_id] in
     subst
-    |> List.filter_map
+    |> List.concat_map
          (fun (source_name, target) ->
-            match target, List.assoc_opt source_name parent_sorts with
-            | TmH target_name, Some sort -> Some (target_name, sort)
-            | _ -> None)
-    |> List.sort_uniq compare
+            let source_sort = List.assoc_opt source_name parent_sorts in
+            let direct =
+              match target, source_sort with
+              | TmH target_name, Some sort -> [(megalodon_ident target_name, sort)]
+              | _ -> []
+            in
+            let inferred =
+              simple_infer_tm_variable_sorts ?expected:source_sort symbol_type_env target
+            in
+            direct @ inferred)
+    |> simple_unique_variable_sorts
   in
   let clause_prop_and_sorts_for_ids ?(extra_sorts=[]) id parent_ids result =
     simple_clause_prop_and_sorts_for_step
@@ -3746,20 +3897,8 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           ignore (left_index, right_index);
           add_clause_inference_bridge "resolve" id [left_id; right_id] result
       | Factor (id, parent_id, left_index, right_index, result) ->
-          begin match
-            try Some (simple_factor_proof id parent_id left_index right_index result !checked !emitted_names)
-            with Error _ -> None
-          with
-          | Some proof ->
-              let name = derived_name id in
-              let prop, sorts = clause_prop_and_sorts_for_ids id [parent_id] result in
-              add_emitted id name;
-              add_emitted_prop_and_sorts id prop sorts;
-              claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")];
-              add_checked id result
-          | None ->
-              add_clause_inference_bridge "factor" id [parent_id] result
-          end
+          ignore (left_index, right_index);
+          add_clause_inference_bridge "factor" id [parent_id] result
       | EqualitySymmetry (id, parent_id, literal_index, result) ->
           begin match
             try Some (simple_equality_symmetry_body id parent_id literal_index result !checked !emitted_names)
