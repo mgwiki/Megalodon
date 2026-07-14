@@ -24,6 +24,22 @@ that mode accepts shape-checked AVATAR component bridge clauses and traced
 AVATAR SAT refutations. Legacy AVATAR refutations without `(sat_proof ...)`
 remain rejected in strict mode.
 
+The native checker also has an initial proof-emission path:
+
+```sh
+bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
+  -vampirecertv1emit /project/tmp/native_cert_v1_valid_emit.mg \
+  /project/tmp/empty.mg
+```
+
+This currently emits a no-admit Megalodon proof only for the simplest
+propositional input/resolve/contradiction fragment. Unsupported rules and
+non-propositional literals fail closed with a `simple Megalodon emitter` error.
+The path is intentionally small: it is the seed of native proof-term/text
+elaboration from the OCaml certificate checker, not a replacement for the
+strict certificate gate over larger live corpora.
+
 The default smoke command is native-only:
 
 ```sh

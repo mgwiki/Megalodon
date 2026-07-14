@@ -24,6 +24,30 @@ if ! rg -q 'Vampire certificate v1 checked 6 steps' "$WORK_DIR/native_cert_v1_va
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_valid_emit.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_valid_emit.log"
+if rg -n '\badmit\b|\baby\b|-allowincompleteqed' "$WORK_DIR/native_cert_v1_valid_emit.mg"; then
+  echo "native certificate v1 simple emitter generated an admission marker" >&2
+  exit 1
+fi
+bin/megalodon "$WORK_DIR/native_cert_v1_valid_emit.mg" \
+  >"$WORK_DIR/native_cert_v1_valid_emit.check.log"
+
+if bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_factor_equality_valid.sexp \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_factor_equality_unsupported.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_factor_equality_unsupported.out" \
+  2>"$WORK_DIR/native_cert_v1_factor_equality_unsupported.err"; then
+  echo "native certificate v1 simple emitter accepted an unsupported factor/equality certificate" >&2
+  exit 1
+fi
+if ! rg -q 'simple Megalodon emitter' "$WORK_DIR/native_cert_v1_factor_equality_unsupported.err"; then
+  echo "native certificate v1 simple emitter unsupported-rule failure was not explicit" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1strict \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \

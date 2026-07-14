@@ -2732,6 +2732,154 @@ let check_certificate cert =
 let check_certificate_strict cert =
   check_certificate_with check_step_strict cert
 
+let emit_error msg = error ("simple Megalodon emitter: " ^ msg)
+
+let megalodon_ident s =
+  let n = String.length s in
+  if n = 0 then emit_error "empty identifier";
+  let is_alpha c =
+    ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || c = '_'
+  in
+  let is_ident c = is_alpha c || ('0' <= c && c <= '9') || c = '\'' in
+  if not (is_alpha s.[0]) then emit_error ("unsupported identifier " ^ s);
+  String.iter
+    (fun c ->
+       if not (is_ident c) then emit_error ("unsupported identifier " ^ s))
+    s;
+  s
+
+let simple_atom_name = function
+  | TmH name -> megalodon_ident name
+  | _ -> emit_error "only proposition variables are supported in simple native emission"
+
+let simple_literal_prop = function
+  | Pos atom -> simple_atom_name atom
+  | Neg atom -> "(" ^ simple_atom_name atom ^ " -> False)"
+
+let rec simple_clause_prop = function
+  | [] -> "False"
+  | [lit] -> simple_literal_prop lit
+  | lit :: rest -> "(" ^ simple_literal_prop lit ^ " \\/ " ^ simple_clause_prop rest ^ ")"
+
+let collect_simple_prop_names cert =
+  let add_literal acc = function
+    | Pos (TmH name) | Neg (TmH name) ->
+        let name = megalodon_ident name in
+        if List.mem name acc then acc else name :: acc
+    | Pos _ | Neg _ ->
+        emit_error "only proposition variables are supported in simple native emission"
+  in
+  let add_clause acc clause = List.fold_left add_literal acc clause in
+  let add_step acc = function
+    | Input (_, _, clause) -> add_clause acc clause
+    | Resolve (_, _, _, _, _, clause) -> add_clause acc clause
+    | Contradiction _ -> acc
+    | step -> emit_error ("unsupported rule " ^ step_id step)
+  in
+  List.sort String.compare (List.fold_left add_step [] cert.steps)
+
+let lookup_simple_clause checked id =
+  match List.assoc_opt id checked with
+  | Some clause -> clause
+  | None -> emit_error ("missing parent " ^ id)
+
+let simple_remove_index id label index clause =
+  if index < 0 || index >= List.length clause then
+    emit_error (id ^ ": " ^ label ^ " index is out of bounds");
+  List.mapi (fun i lit -> (i, lit)) clause
+  |> List.filter (fun (i, _) -> i <> index)
+  |> List.map snd
+
+let simple_resolution_proof id left_id right_id left_index right_index result checked =
+  let left_clause = lookup_simple_clause checked left_id in
+  let right_clause = lookup_simple_clause checked right_id in
+  let left_pivot = List.nth left_clause left_index in
+  let right_pivot = List.nth right_clause right_index in
+  if not (complementary left_pivot right_pivot) then
+    emit_error (id ^ ": pivots are not complementary");
+  let left_rest = simple_remove_index id "left" left_index left_clause in
+  let right_rest = simple_remove_index id "right" right_index right_clause in
+  let positive_parent, negative_parent, positive_rest, negative_rest =
+    match left_pivot, right_pivot with
+    | Pos _, Neg _ -> left_id, right_id, left_rest, right_rest
+    | Neg _, Pos _ -> right_id, left_id, right_rest, left_rest
+    | _ -> emit_error (id ^ ": pivots are not complementary")
+  in
+  match positive_rest, negative_rest, result with
+  | [tail], [], [res] when tail = res ->
+      let target = simple_literal_prop res in
+      Printf.sprintf
+        "(%s %s (fun Hlit_0 => ((%s Hlit_0) %s)) (fun Htail_1 => Htail_1))"
+        positive_parent target negative_parent target
+  | [], [], [] ->
+      Printf.sprintf "((%s %s) False)" negative_parent positive_parent
+  | _ ->
+      emit_error (id ^ ": simple emitter supports only unit resolution and binary-positive-tail resolution")
+
+let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") cert =
+  ignore (check_certificate cert);
+  let prop_names = collect_simple_prop_names cert in
+  let lines = ref
+    [
+      "Definition False : prop := forall p:prop, p.";
+      "Definition or : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> p) -> (B -> p) -> p.";
+      "Infix \\/ 785 left := or.";
+    ]
+  in
+  List.iter (fun name -> lines := !lines @ ["Variable " ^ name ^ ":prop."]) prop_names;
+  let checked = ref [] in
+  let assumptions = ref [] in
+  let claims = ref [] in
+  let final_empty = ref None in
+  let add_checked id clause =
+    checked := (id, clause) :: !checked;
+    if clause = [] then final_empty := Some id
+  in
+  List.iter
+    (function
+      | Input (id, _, clause) ->
+          assumptions := !assumptions @ [(id, simple_clause_prop clause)];
+          add_checked id clause
+      | Resolve (id, left_id, right_id, left_index, right_index, result) ->
+          let proof =
+            simple_resolution_proof id left_id right_id left_index right_index result !checked
+          in
+          claims := !claims @ [(id, simple_clause_prop result, proof)];
+          add_checked id result
+      | Contradiction (id, parent_id) ->
+          let parent_clause = lookup_simple_clause !checked parent_id in
+          if parent_clause <> [] then
+            emit_error (id ^ ": contradiction parent is not empty");
+          claims := !claims @ [(id, "False", parent_id)];
+          add_checked id []
+      | step ->
+          emit_error ("unsupported rule " ^ step_id step))
+    cert.steps;
+  let final =
+    match !final_empty with
+    | Some id -> id
+    | None -> emit_error "certificate has no empty clause"
+  in
+  let theorem_type =
+    String.concat " -> "
+      (List.map (fun (_, prop) -> "(" ^ prop ^ ")") !assumptions @ ["False"])
+  in
+  lines := !lines @ [Printf.sprintf "Theorem %s : %s." (megalodon_ident theorem_name) theorem_type];
+  List.iter
+    (fun (name, prop) ->
+       lines := !lines @ [Printf.sprintf "assume %s: %s." (megalodon_ident name) prop])
+    !assumptions;
+  List.iter
+    (fun (name, prop, proof) ->
+       lines := !lines @
+         [
+           Printf.sprintf "claim %s: %s." (megalodon_ident name) prop;
+           Printf.sprintf "{ exact %s. }" proof;
+         ])
+    !claims;
+  lines := !lines @ [Printf.sprintf "exact %s." (megalodon_ident final); "Qed."];
+  String.concat "\n" !lines ^ "\n"
+
 let source_map_prefix = "% megalodon_source_map "
 
 let source_map_entry_of_sexpr = function

@@ -30,6 +30,7 @@ let vampireabynativestrict : bool ref = ref false;;
 let vampirecertv1 : string option ref = ref None;;
 let vampirecertv1source : string option ref = ref None;;
 let vampirecertv1strict : bool ref = ref false;;
+let vampirecertv1emit : string option ref = ref None;;
 let bushy = ref false;;
 let bushykdeps : (string,unit) Hashtbl.t = Hashtbl.create 10;;
 let bushyhdeps : (int,unit) Hashtbl.t = Hashtbl.create 10;;
@@ -6995,7 +6996,16 @@ let check_vampire_cert_v1_file fn =
     Printf.printf "Vampire certificate v1%s checked %d step%s.\n"
       (if !vampirecertv1strict then " strict" else "")
       (List.length checked)
-      (if List.length checked = 1 then "" else "s")
+      (if List.length checked = 1 then "" else "s");
+    begin match !vampirecertv1emit with
+    | None -> ()
+    | Some out_fn ->
+        let content = Vampire_cert_v1.emit_simple_megalodon cert in
+        let ch = open_out out_fn in
+        output_string ch content;
+        close_out ch;
+        Printf.printf "Vampire certificate v1 emitted simple Megalodon proof to %s.\n" out_fn
+    end
   with Vampire_cert_v1.Error msg ->
     raise (Failure ("Vampire certificate v1 check failed: " ^ msg))
 
@@ -7238,6 +7248,16 @@ let _ =
 	      end
 	    else
 	      raise (Failure("Expected -vampirecertv1source <problem.th0.p>"))
+          end
+        else if Sys.argv.(!j) = "-vampirecertv1emit" then
+          begin
+	    if !j < i-2 then
+	      begin
+		incr j;
+                vampirecertv1emit := Some(Sys.argv.(!j))
+	      end
+	    else
+	      raise (Failure("Expected -vampirecertv1emit <out.mg>"))
           end
         else if Sys.argv.(!j) = "-fofallsubgoals" then
           begin
