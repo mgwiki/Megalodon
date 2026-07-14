@@ -1450,6 +1450,18 @@ let rec strip_forall = function
   | All (_, body) -> strip_forall body
   | tm -> tm
 
+let rec prefix_forall_count = function
+  | All (_, body) -> 1 + prefix_forall_count body
+  | _ -> 0
+
+let take_prefix n xs =
+  let rec loop n acc = function
+    | _ when n <= 0 -> List.rev acc
+    | [] -> List.rev acc
+    | x :: xs -> loop (n - 1) (x :: acc) xs
+  in
+  loop n [] xs
+
 let literal_of_formula_tm tm =
   match tm with
   | Imp (atom, false_tm) when is_vampire_false false_tm -> Neg atom
@@ -5255,13 +5267,42 @@ let simple_cnf_clause_projection_proof
   in
   if not (same_clause_multiset source_clause target_clause) then
     emit_error "CNF clause projection target is not the source clause multiset";
-  let source_proof = simple_apply_forall_vars parent_name parent_sorts in
+  let source_prefix_sorts = take_prefix (prefix_forall_count source) parent_sorts in
+  let source_proof = simple_apply_forall_vars parent_name source_prefix_sorts in
   let target_prop =
     try simple_clause_prop_with_type_env type_env target_clause
     with Error _ -> simple_clause_prop target_clause
   in
+  let choose_binder sort body =
+    let candidates =
+      target_sorts
+      |> List.filter
+           (fun (name, known_sort) ->
+              known_sort = sort && tm_contains_symbol (megalodon_ident name) body)
+    in
+    match candidates with
+    | (name, _) :: _ -> megalodon_ident name
+    | [] -> emit_error "CNF clause projection could not find a target binder for nested forall"
+  in
+  let rec project_formula depth formula proof =
+    match formula with
+    | All (tp, body) ->
+        let binder = choose_binder (simple_tp_expr tp) body in
+        project_formula (depth + 1) body ("(" ^ proof ^ " " ^ binder ^ ")")
+    | Ap (Ap (TmH "vampire_or", left), right) ->
+        let left_name = "Hcnf_formula_left_" ^ string_of_int depth in
+        let right_name = "Hcnf_formula_right_" ^ string_of_int depth in
+        let left_branch = project_formula (depth + 1) left left_name in
+        let right_branch = project_formula (depth + 1) right right_name in
+        Printf.sprintf "(%s %s (fun %s => %s) (fun %s => %s))"
+          proof (simple_prop_arg target_prop)
+          left_name left_branch
+          right_name right_branch
+    | atom ->
+        simple_clause_intro_proof target_clause (literal_of_formula_tm atom) proof
+  in
   simple_wrap_forall_intro target_sorts
-    (simple_clause_projection_proof target_prop target_clause source_clause source_proof 0)
+    (project_formula 0 (strip_forall source) source_proof)
 
 let simple_fool_formula_proof type_env id parent_sorts result_sorts source target parent_name =
   let binder_sorts =
@@ -5522,6 +5563,21 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
   let rec convert env source target proof =
     let rec formula_text env tm =
       match tm with
+      | All (tp, body) ->
+          let sort = simple_tp_expr tp in
+          let binder =
+            let candidates =
+              binder_sorts
+              |> List.filter
+                   (fun (name, known_sort) ->
+                      known_sort = sort && tm_contains_symbol (megalodon_ident name) body)
+            in
+            match List.rev candidates with
+            | (name, _) :: _ -> megalodon_ident name
+            | [] -> "Xennf_text_" ^ string_of_int (List.length env)
+          in
+          "forall " ^ binder ^ ":" ^ sort ^ ", "
+          ^ formula_text ((binder, sort) :: env) body
       | Imp (left, right) ->
           "(" ^ formula_text env left ^ " -> " ^ formula_text env right ^ ")"
       | Ap (Ap (TmH "vampire_or", left), right) ->
@@ -5582,12 +5638,12 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
             let right_proof = convert env right target_right ("(" ^ proof ^ " " ^ pos_name ^ ")") in
             let left_intro =
               Printf.sprintf
-                "(fun vennf_goal:prop => fun Hleft:%s -> vennf_goal => fun Hright:%s -> vennf_goal => Hleft %s)"
+                "(fun vennf_goal:prop => fun Hleft:%s -> vennf_goal => fun Hright:(%s) -> vennf_goal => Hleft %s)"
                 neg_left_text target_right_text neg_name
             in
             let right_intro =
               Printf.sprintf
-                "(fun vennf_goal:prop => fun Hleft:%s -> vennf_goal => fun Hright:%s -> vennf_goal => Hright %s)"
+                "(fun vennf_goal:prop => fun Hleft:%s -> vennf_goal => fun Hright:(%s) -> vennf_goal => Hright %s)"
                 neg_left_text target_right_text right_proof
             in
             Printf.sprintf
@@ -6086,7 +6142,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
               simple_vlam_name_counter := saved_vlam_counter;
               Some
                 proof
-            with Error msg -> if closed then emit_error msg else None
+            with Error _ -> None
           with
           | Some proof ->
               uses_vampire_eq_prop_ext := true;

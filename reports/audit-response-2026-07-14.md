@@ -560,6 +560,59 @@ CLOSED_PASS 60
 /project/tmp/native_cert_v1_closed_corpus.wPRsO6
 ```
 
+## July 14 Increment: Nested Forall CNF Projection
+
+The native emitter now handles the next CNF projection shape where Vampire's
+ENNF target contains nested universal binders under the right side of an
+implication-to-disjunction transformation. The ENNF target-text renderer can
+print nested `forall` formulas when they occur inside generated disjunction
+branches, and CNF clause projection now applies only the source formula's
+prefix universal binders before recursively instantiating nested binders under
+`vampire_or`.
+
+This is still a guarded replay for a simple, single-clause projection class; it
+does not attempt a general Smolka/CNF proof object yet. It does remove one more
+bridge assumption from a real cached Vampire proof.
+
+The cached source-linked closed frontier moved from 60 to 61 closed passes:
+
+```text
+TMPDIR=/project/tmp \
+PROBLEM_DIR=/project/tmp/source_linked_strict_100_corpus_fresh_041947 \
+WORK_DIR=/project/tmp/source_linked_slice_1_400_closed_nested_forall_cnf_final_123524 \
+JOBS=20 MIN_PASS=0 CLOSED_CERT_V1=1 EMIT_TIMEOUT=30 CHECK_TIMEOUT=45 \
+tests/vampire_certificate/run_native_emit_cached_parallel.sh \
+  /project/tmp/source_linked_slice_1_400_fresh_042040
+
+CLOSED_PASS 61
+EMIT_FAIL 151
+CHECK_FAIL 1
+/project/tmp/source_linked_slice_1_400_closed_nested_forall_cnf_final_123524
+```
+
+The new committed closed case is:
+
+```text
+hammer.10795.33.th0.p
+```
+
+Validation for this increment:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+native certificate v1 smoke test passed
+/project/tmp/native_cert_v1.1a8CTl
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_source_map_export_smoke.sh
+Megalodon TH0 source-map export smoke passed
+
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh
+CLOSED_PASS 61
+/project/tmp/native_cert_v1_closed_corpus.3iMfeo
+```
+
 ## Remaining P0 Work
 
 Closed mode is necessary but not sufficient.
