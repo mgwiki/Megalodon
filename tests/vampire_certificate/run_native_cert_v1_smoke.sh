@@ -34,6 +34,14 @@ if rg -n '\badmit\b|\baby\b|-allowincompleteqed' "$WORK_DIR/native_cert_v1_valid
 fi
 bin/megalodon "$WORK_DIR/native_cert_v1_valid_emit.mg" \
   >"$WORK_DIR/native_cert_v1_valid_emit.check.log"
+if ! rg -q 'assume src_axiom_a1__c1:' "$WORK_DIR/native_cert_v1_valid_emit.mg"; then
+  echo "native certificate v1 simple emitter did not preserve source axiom a1 in the proof script" >&2
+  exit 1
+fi
+if ! rg -q 'assume src_axiom_a2__c2:' "$WORK_DIR/native_cert_v1_valid_emit.mg"; then
+  echo "native certificate v1 simple emitter did not preserve source axiom a2 in the proof script" >&2
+  exit 1
+fi
 
 bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_resolution_mirrored_valid.sexp \

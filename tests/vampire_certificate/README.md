@@ -38,7 +38,10 @@ fragment: input assumptions, unit/binary-tail resolution, two-literal
 propositional factoring/condensation, exact no-op substitution copies, and
 contradiction. Unsupported rules, non-propositional literals, and
 term-changing substitutions fail closed with a `simple Megalodon emitter`
-error.
+error. Input assumptions are named from their original certificate source, for
+example `src_axiom_<source>__<step>`, so the generated proof skeleton remains
+connected to the original Megalodon/TPTP lemma or conjecture name instead of
+only exposing Vampire unit ids.
 The path is intentionally small: it is the seed of native proof-term/text
 elaboration from the OCaml certificate checker, not a replacement for the
 strict certificate gate over larger live corpora.

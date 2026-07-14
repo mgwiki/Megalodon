@@ -2748,6 +2748,44 @@ let megalodon_ident s =
     s;
   s
 
+let megalodon_safe_ident prefix s =
+  let is_alpha c =
+    ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || c = '_'
+  in
+  let is_ident c = is_alpha c || ('0' <= c && c <= '9') || c = '\'' in
+  let buf = Buffer.create (String.length prefix + String.length s + 8) in
+  Buffer.add_string buf prefix;
+  String.iter
+    (fun c ->
+       if is_ident c then Buffer.add_char buf c
+       else Buffer.add_string buf (Printf.sprintf "_x%02X" (Char.code c)))
+    s;
+  let result = Buffer.contents buf in
+  if result = "" then "x"
+  else if is_alpha result.[0] then result
+  else "x_" ^ result
+
+let simple_source_label = function
+  | SourceAxiom name -> "axiom_" ^ name
+  | SourceConjecture name -> "conjecture_" ^ name
+  | SourceNegatedConjecture name -> "negated_conjecture_" ^ name
+  | SourceDefinition name -> "definition_" ^ name
+  | SourceSetReflexivity name -> "set_reflexivity_" ^ name
+
+let simple_fresh_name used base =
+  let base = megalodon_safe_ident "" base in
+  let rec choose n =
+    let candidate =
+      if n = 0 then base else base ^ "_" ^ string_of_int n
+    in
+    if List.mem candidate !used then choose (n + 1)
+    else begin
+      used := candidate :: !used;
+      candidate
+    end
+  in
+  choose 0
+
 let simple_atom_name = function
   | TmH name -> megalodon_ident name
   | _ -> emit_error "only proposition variables are supported in simple native emission"
@@ -2786,6 +2824,11 @@ let lookup_simple_clause checked id =
   | Some clause -> clause
   | None -> emit_error ("missing parent " ^ id)
 
+let lookup_simple_name names id =
+  match List.assoc_opt id names with
+  | Some name -> name
+  | None -> emit_error ("missing emitted parent name " ^ id)
+
 let simple_clause_nth id label index clause =
   if index < 0 || index >= List.length clause then
     emit_error (id ^ ": " ^ label ^ " index is out of bounds");
@@ -2798,7 +2841,7 @@ let simple_remove_index id label index clause =
   |> List.filter (fun (i, _) -> i <> index)
   |> List.map snd
 
-let simple_resolution_proof id left_id right_id left_index right_index result checked =
+let simple_resolution_proof id left_id right_id left_index right_index result checked names =
   let left_clause = lookup_simple_clause checked left_id in
   let right_clause = lookup_simple_clause checked right_id in
   let left_pivot = simple_clause_nth id "left" left_index left_clause in
@@ -2813,23 +2856,25 @@ let simple_resolution_proof id left_id right_id left_index right_index result ch
     | Neg _, Pos _ -> right_id, left_id, right_rest, left_rest
     | _ -> emit_error (id ^ ": pivots are not complementary")
   in
+  let positive_parent_name = lookup_simple_name names positive_parent in
+  let negative_parent_name = lookup_simple_name names negative_parent in
   match positive_rest, negative_rest, result with
   | [tail], [], [res] when tail = res ->
       let target = simple_literal_prop res in
       Printf.sprintf
         "(%s %s (fun Hlit_0 => ((%s Hlit_0) %s)) (fun Htail_1 => Htail_1))"
-        positive_parent target negative_parent target
+        positive_parent_name target negative_parent_name target
   | [], [tail], [res] when tail = res ->
       let target = simple_literal_prop res in
       Printf.sprintf
         "(%s %s (fun Hlit_0 => ((Hlit_0 %s) %s)) (fun Htail_1 => Htail_1))"
-        negative_parent target positive_parent target
+        negative_parent_name target positive_parent_name target
   | [], [], [] ->
-      Printf.sprintf "((%s %s) False)" negative_parent positive_parent
+      Printf.sprintf "((%s %s) False)" negative_parent_name positive_parent_name
   | _ ->
       emit_error (id ^ ": simple emitter supports only unit resolution and binary-tail unit resolution")
 
-let simple_factor_proof id parent_id left_index right_index result checked =
+let simple_factor_proof id parent_id left_index right_index result checked names =
   let parent_clause = lookup_simple_clause checked parent_id in
   let left = simple_clause_nth id "left" left_index parent_clause in
   let right = simple_clause_nth id "right" right_index parent_clause in
@@ -2837,26 +2882,28 @@ let simple_factor_proof id parent_id left_index right_index result checked =
   match parent_clause, result with
   | [a; b], [res] when a = b && a = res ->
       let target = simple_literal_prop res in
+      let parent_name = lookup_simple_name names parent_id in
       Printf.sprintf "(%s %s (fun Hlit_0 => Hlit_0) (fun Htail_1 => Htail_1))"
-        parent_id target
+        parent_name target
   | _ ->
       emit_error (id ^ ": simple emitter supports only two-literal propositional factoring")
 
-let simple_copy_proof id parent_id result checked =
+let simple_copy_proof id parent_id result checked names =
   let parent_clause = lookup_simple_clause checked parent_id in
   if parent_clause <> result then
     emit_error (id ^ ": simple emitter supports only exact clause copies for substitution");
-  parent_id
+  lookup_simple_name names parent_id
 
-let simple_condensation_proof id parent_id subst result checked =
+let simple_condensation_proof id parent_id subst result checked names =
   if subst <> [] then
     emit_error (id ^ ": simple emitter does not support term-changing condensation");
   let parent_clause = lookup_simple_clause checked parent_id in
   match parent_clause, result with
   | [a; b], [res] when a = b && a = res ->
       let target = simple_literal_prop res in
+      let parent_name = lookup_simple_name names parent_id in
       Printf.sprintf "(%s %s (fun Hlit_0 => Hlit_0) (fun Htail_1 => Htail_1))"
-        parent_id target
+        parent_name target
   | _ ->
       emit_error (id ^ ": simple emitter supports only two-literal propositional condensation")
 
@@ -2871,42 +2918,64 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") cert =
     ]
   in
   List.iter (fun name -> lines := !lines @ ["Variable " ^ name ^ ":prop."]) prop_names;
+  let used_names = ref prop_names in
+  let emitted_names = ref [] in
   let checked = ref [] in
   let assumptions = ref [] in
   let claims = ref [] in
   let final_empty = ref None in
+  let add_emitted id name =
+    emitted_names := (id, name) :: !emitted_names
+  in
+  let input_name id source =
+    simple_fresh_name used_names ("src_" ^ simple_source_label source ^ "__" ^ id)
+  in
+  let derived_name id = simple_fresh_name used_names id in
   let add_checked id clause =
     checked := (id, clause) :: !checked;
     if clause = [] then final_empty := Some id
   in
   List.iter
     (function
-      | Input (id, _, clause) ->
-          assumptions := !assumptions @ [(id, simple_clause_prop clause)];
+      | Input (id, source, clause) ->
+          let name = input_name id source in
+          add_emitted id name;
+          assumptions := !assumptions @ [(name, simple_clause_prop clause)];
           add_checked id clause
       | Substitute (id, parent_id, _, result) ->
-          let proof = simple_copy_proof id parent_id result !checked in
-          claims := !claims @ [(id, simple_clause_prop result, proof)];
+          let name = derived_name id in
+          let proof = simple_copy_proof id parent_id result !checked !emitted_names in
+          add_emitted id name;
+          claims := !claims @ [(name, simple_clause_prop result, proof)];
           add_checked id result
       | Condensation (id, parent_id, subst, result) ->
-          let proof = simple_condensation_proof id parent_id subst result !checked in
-          claims := !claims @ [(id, simple_clause_prop result, proof)];
+          let name = derived_name id in
+          let proof = simple_condensation_proof id parent_id subst result !checked !emitted_names in
+          add_emitted id name;
+          claims := !claims @ [(name, simple_clause_prop result, proof)];
           add_checked id result
       | Resolve (id, left_id, right_id, left_index, right_index, result) ->
+          let name = derived_name id in
           let proof =
-            simple_resolution_proof id left_id right_id left_index right_index result !checked
+            simple_resolution_proof id left_id right_id left_index right_index result !checked !emitted_names
           in
-          claims := !claims @ [(id, simple_clause_prop result, proof)];
+          add_emitted id name;
+          claims := !claims @ [(name, simple_clause_prop result, proof)];
           add_checked id result
       | Factor (id, parent_id, left_index, right_index, result) ->
-          let proof = simple_factor_proof id parent_id left_index right_index result !checked in
-          claims := !claims @ [(id, simple_clause_prop result, proof)];
+          let name = derived_name id in
+          let proof = simple_factor_proof id parent_id left_index right_index result !checked !emitted_names in
+          add_emitted id name;
+          claims := !claims @ [(name, simple_clause_prop result, proof)];
           add_checked id result
       | Contradiction (id, parent_id) ->
+          let name = derived_name id in
           let parent_clause = lookup_simple_clause !checked parent_id in
           if parent_clause <> [] then
             emit_error (id ^ ": contradiction parent is not empty");
-          claims := !claims @ [(id, "False", parent_id)];
+          let parent_name = lookup_simple_name !emitted_names parent_id in
+          add_emitted id name;
+          claims := !claims @ [(name, "False", parent_name)];
           add_checked id []
       | step ->
           emit_error ("unsupported rule " ^ step_id step))
@@ -2933,7 +3002,8 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") cert =
            Printf.sprintf "{ exact %s. }" proof;
          ])
     !claims;
-  lines := !lines @ [Printf.sprintf "exact %s." (megalodon_ident final); "Qed."];
+  let final_name = lookup_simple_name !emitted_names final in
+  lines := !lines @ [Printf.sprintf "exact %s." (megalodon_ident final_name); "Qed."];
   String.concat "\n" !lines ^ "\n"
 
 let source_map_prefix = "% megalodon_source_map "
