@@ -4460,6 +4460,104 @@ let rec simple_clause_prop_with_type_env type_env = function
       ^ simple_clause_prop_with_type_env type_env rest
       ^ ")"
 
+let simple_paramodulate_unit_proof
+    type_env id equality_parent_id target_parent_id equality_index target_index position
+    from_tm to_tm result equality_sorts target_sorts result_sorts checked names =
+  let equality_clause = lookup_simple_clause checked equality_parent_id in
+  let target_clause = lookup_simple_clause checked target_parent_id in
+  let equality_literal = simple_clause_nth id "paramodulation equality" equality_index equality_clause in
+  let target_literal = simple_clause_nth id "paramodulation target" target_index target_clause in
+  let equality_rest = simple_remove_index id "paramodulation equality" equality_index equality_clause in
+  let target_rest = simple_remove_index id "paramodulation target" target_index target_clause in
+  if equality_rest <> [] || target_rest <> [] then
+    emit_error (id ^ ": simple paramodulation proof supports only unit equality and target parents");
+  let equality_atom =
+    match equality_literal with
+    | Pos atom -> atom
+    | Neg _ -> emit_error (id ^ ": paramodulation equality literal is not positive")
+  in
+  let left, right =
+    match equality_sides equality_atom with
+    | Some sides -> sides
+    | None -> emit_error (id ^ ": paramodulation equality literal is not an equality")
+  in
+  let target_atom = literal_atom target_literal in
+  let rewrite_position =
+    let rec select = function
+      | [] -> emit_error (id ^ ": paramodulation position does not contain from term")
+      | candidate :: rest ->
+          begin match try_tm_at_position target_atom candidate with
+          | Some found when found = from_tm -> candidate
+          | _ -> select rest
+          end
+    in
+    select (paramodulation_position_candidates target_atom position)
+  in
+  let rewritten_atom = replace_tm_at_position target_atom rewrite_position to_tm (id ^ " target") in
+  let rewritten_literal = replace_literal_atom target_literal rewritten_atom in
+  if result <> [rewritten_literal] then
+    emit_error (id ^ ": simple paramodulation proof supports only the direct rewritten unit result");
+  let sort =
+    match simple_tm_sort type_env from_tm, simple_tm_sort type_env to_tm with
+    | Some sort, _ | _, Some sort -> simple_strip_outer_parens sort
+    | None, None -> emit_error (id ^ ": cannot infer paramodulation rewrite sort")
+  in
+  let equality_expr =
+    simple_apply_forall_vars (lookup_simple_name names equality_parent_id) equality_sorts
+  in
+  let target_expr =
+    simple_apply_forall_vars (lookup_simple_name names target_parent_id) target_sorts
+  in
+  let render_tm ?expected tm =
+    simple_tm_expr_with_expected type_env expected tm
+  in
+  let result_body =
+    if sort = "prop" then begin
+      let var_name = "vpm_z" in
+      let var_tm = TmH var_name in
+      let ctx_atom = replace_tm_at_position target_atom rewrite_position var_tm (id ^ " context") in
+      let ctx_literal = replace_literal_atom target_literal ctx_atom in
+      let ctx_type_env = (var_name, "prop") :: type_env in
+      let ctx_prop = simple_literal_prop_with_type_env ctx_type_env ctx_literal in
+      let ctx = "(fun " ^ var_name ^ ":prop => " ^ ctx_prop ^ ")" in
+      if left = from_tm && right = to_tm then
+        Printf.sprintf "(%s %s %s)" equality_expr ctx target_expr
+      else if right = from_tm && left = to_tm then
+        let prop_arg tm =
+          let text = render_tm ~expected:"prop" tm in
+          match tm with
+          | TmH _ | DB _ -> text
+          | _ -> "(" ^ text ^ ")"
+        in
+        let left_text = prop_arg left in
+        let right_text = prop_arg right in
+        Printf.sprintf "((vampire_eq_prop_sym %s %s %s) %s %s)"
+          left_text right_text equality_expr ctx target_expr
+      else
+        emit_error (id ^ ": paramodulation from/to terms do not match equality literal")
+    end else begin
+      let left_is_from = left = from_tm && right = to_tm in
+      let right_is_from = right = from_tm && left = to_tm in
+      if not (left_is_from || right_is_from) then
+        emit_error (id ^ ": paramodulation from/to terms do not match equality literal");
+      let left_var = "vpm_left" in
+      let right_var = "vpm_right" in
+      let replacement = TmH (if left_is_from then left_var else right_var) in
+      let ctx_atom = replace_tm_at_position target_atom rewrite_position replacement (id ^ " context") in
+      let ctx_literal = replace_literal_atom target_literal ctx_atom in
+      let ctx_type_env = (left_var, sort) :: (right_var, sort) :: type_env in
+      let ctx_prop = simple_literal_prop_with_type_env ctx_type_env ctx_literal in
+      let binder_sort = simple_binder_sort_expr sort in
+      let ctx =
+        "(fun " ^ left_var ^ ":" ^ binder_sort
+        ^ " => fun " ^ right_var ^ ":" ^ binder_sort
+        ^ " => " ^ ctx_prop ^ ")"
+      in
+      Printf.sprintf "(%s %s %s)" equality_expr ctx target_expr
+    end
+  in
+  simple_wrap_forall_intro result_sorts result_body
+
 let simple_substitute_proof
     clause_body_prop type_env id parent_id subst result parent_sorts result_sorts checked names =
   let parent_clause = lookup_simple_clause checked parent_id in
@@ -5413,8 +5511,48 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           end
       | BoolSimplify (id, parent_id, _, _, _, _, result) ->
           add_clause_inference_bridge "bool_simplify" id [parent_id] result
-      | Paramodulate (id, equality_parent_id, target_parent_id, _, _, _, _, _, result) ->
-          add_clause_inference_bridge "paramodulate" id [equality_parent_id; target_parent_id] result
+      | Paramodulate (id, equality_parent_id, target_parent_id, equality_index, target_index, position, from_tm, to_tm, result) ->
+          let prop, sorts = clause_prop_and_sorts_for_ids id [equality_parent_id; target_parent_id] result in
+          let equality_sorts = variable_sorts_for_ids [equality_parent_id] in
+          let target_sorts = variable_sorts_for_ids [target_parent_id] in
+          let equality_clause = lookup_simple_clause !checked equality_parent_id in
+          let target_clause = lookup_simple_clause !checked target_parent_id in
+          let type_env =
+            simple_type_env_with_variables
+              (equality_sorts @ target_sorts @ sorts |> simple_unique_variable_sorts)
+              symbol_type_env
+          in
+          let clause_body_prop clause =
+            try simple_clause_prop_with_type_env type_env clause
+            with Error _ -> simple_clause_prop clause
+          in
+          let structural_clause_prop sorts clause =
+            simple_quantify_prop sorts (clause_body_prop clause)
+          in
+          let structurally_safe =
+            simple_sorts_subset equality_sorts sorts
+            && simple_sorts_subset target_sorts sorts
+            && emitted_parent_prop equality_parent_id = structural_clause_prop equality_sorts equality_clause
+            && emitted_parent_prop target_parent_id = structural_clause_prop target_sorts target_clause
+            && prop = structural_clause_prop sorts result
+          in
+          begin match
+            if not structurally_safe then None
+            else
+              try Some (simple_paramodulate_unit_proof
+                          type_env id equality_parent_id target_parent_id equality_index target_index position
+                          from_tm to_tm result equality_sorts target_sorts sorts !checked !emitted_names)
+              with Error _ -> None
+          with
+          | Some proof ->
+              let name = derived_name id in
+              add_emitted id name;
+              add_emitted_prop_and_sorts id prop sorts;
+              claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")];
+              add_checked id result
+          | None ->
+              add_clause_inference_bridge "paramodulate" id [equality_parent_id; target_parent_id] result
+          end
       | Superposition (id, target_parent_id, equality_parent_id, _, _, target_subst, equality_subst, _, _, _, result) ->
           add_clause_inference_bridge
             ~extra_sorts:
