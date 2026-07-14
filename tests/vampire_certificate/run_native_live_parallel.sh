@@ -26,6 +26,7 @@ VAMPIRE_SECONDS=${VAMPIRE_SECONDS:-10}
 WALL_SECONDS=${WALL_SECONDS:-15}
 MIN_PASS=${MIN_PASS:-100}
 CHECK_SOURCE_MAP=${CHECK_SOURCE_MAP:-0}
+REQUIRE_SOURCE_ORIGIN=${REQUIRE_SOURCE_ORIGIN:-0}
 STRICT_CERT_V1=${STRICT_CERT_V1:-0}
 VAMPIRE_PROOF_ARGS=${VAMPIRE_PROOF_ARGS:-"--proof_extra lean --skolemization syntactic --shuffle_input off"}
 VAMPIRE_EXTRA_ARGS=${VAMPIRE_EXTRA_ARGS:-}
@@ -92,6 +93,11 @@ run_one() {
     printf '%s\tMISSING_PROBLEM\n' "$name" > "$case_dir/result.tsv"
     return 0
   fi
+  if [[ "$REQUIRE_SOURCE_ORIGIN" == "1" ]] \
+      && ! rg -q '^% megalodon_origin ' "$problem"; then
+    printf '%s\tMISSING_ORIGIN\n' "$name" > "$case_dir/result.tsv"
+    return 0
+  fi
 
   local timed_out=0
   local proof_args=()
@@ -151,7 +157,7 @@ run_one() {
   fi
 }
 
-export ROOT TMPDIR MEGALODON VAMPIRE PROBLEM_DIR WORK_DIR VAMPIRE_SECONDS WALL_SECONDS CHECK_SOURCE_MAP STRICT_CERT_V1 VAMPIRE_PROOF_ARGS VAMPIRE_EXTRA_ARGS
+export ROOT TMPDIR MEGALODON VAMPIRE PROBLEM_DIR WORK_DIR VAMPIRE_SECONDS WALL_SECONDS CHECK_SOURCE_MAP REQUIRE_SOURCE_ORIGIN STRICT_CERT_V1 VAMPIRE_PROOF_ARGS VAMPIRE_EXTRA_ARGS
 export -f run_with_wall_timeout run_one
 
 xargs -a "$WORK_DIR/problems.txt" -n1 -P "$JOBS" bash -c 'run_one "$0"'

@@ -5428,6 +5428,11 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   begin match source_origin with
   | None -> ()
   | Some origin ->
+      let origin_kind_text =
+        match origin.source_origin_kind with
+        | "aby" -> "source obligation"
+        | kind -> kind
+      in
       let pos =
         match origin.source_origin_line, origin.source_origin_char with
         | Some line, Some chr -> Printf.sprintf " line %d char %d" line chr
@@ -5440,7 +5445,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
            "// Vampire certificate source origin: %s%s (%s)."
            origin.source_origin_file
            pos
-           origin.source_origin_kind)
+           origin_kind_text)
         :: !lines
   end;
   let add_line_once line =

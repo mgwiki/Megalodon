@@ -140,6 +140,20 @@ PASS 213
 /project/tmp/source_linked_slice_1_400_emit_origin_metadata_101311
 ```
 
+The parallel harnesses now also have a `REQUIRE_SOURCE_ORIGIN=1` gate. Fresh
+source-linked corpus runs enable it by default, so origin metadata cannot
+silently disappear between export, Vampire proof generation, and cached
+Megalodon emit/check replay. A small fresh validation run exercised both stages:
+
+```text
+PASS 1
+TIMEOUT 4
+/project/tmp/source_origin_gate_live_101553
+
+PASS 1
+/project/tmp/source_origin_gate_emit_retry_101639
+```
+
 ## Remaining P0 Work
 
 Closed mode is necessary but not sufficient.

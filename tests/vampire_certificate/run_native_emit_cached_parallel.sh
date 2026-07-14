@@ -9,6 +9,7 @@ MEGALODON=${MEGALODON:-"$ROOT/bin/megalodon"}
 PROBLEM_DIR=${PROBLEM_DIR:-"$ROOT/examples/hammer"}
 JOBS=${JOBS:-20}
 CHECK_SOURCE_MAP=${CHECK_SOURCE_MAP:-1}
+REQUIRE_SOURCE_ORIGIN=${REQUIRE_SOURCE_ORIGIN:-0}
 STRICT_CERT_V1=${STRICT_CERT_V1:-1}
 CLOSED_CERT_V1=${CLOSED_CERT_V1:-0}
 EMIT_TIMEOUT=${EMIT_TIMEOUT:-30}
@@ -68,6 +69,11 @@ run_one() {
     printf '%s\tMISSING_SOURCE\n' "$name" > "$case_dir/result.tsv"
     return 0
   fi
+  if [[ "$REQUIRE_SOURCE_ORIGIN" == "1" ]] \
+      && ! rg -q '^% megalodon_origin ' "$source"; then
+    printf '%s\tMISSING_ORIGIN\n' "$name" > "$case_dir/result.tsv"
+    return 0
+  fi
 
   local check_args=()
   if [[ "$CLOSED_CERT_V1" == "1" ]]; then
@@ -112,7 +118,7 @@ run_one() {
   fi
 }
 
-export MEGALODON PROBLEM_DIR WORK_DIR CHECK_SOURCE_MAP STRICT_CERT_V1 CLOSED_CERT_V1 EMIT_TIMEOUT CHECK_TIMEOUT
+export MEGALODON PROBLEM_DIR WORK_DIR CHECK_SOURCE_MAP REQUIRE_SOURCE_ORIGIN STRICT_CERT_V1 CLOSED_CERT_V1 EMIT_TIMEOUT CHECK_TIMEOUT
 export -f run_one
 
 xargs -a "$WORK_DIR/pass_cases.tsv" -n2 -P "$JOBS" bash -c 'run_one "$0" "$1"'
