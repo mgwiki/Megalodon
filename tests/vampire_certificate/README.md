@@ -20,9 +20,9 @@ This is the primary certificate smoke test. It checks the OCaml
 `-vampirecertv1` importer against native S-expression fixtures and should be the
 first test used for counted reconstruction work.
 Use `-vampirecertv1strict` with `-vampirecertv1` for the stricter counted gate;
-that mode accepts only shape-checked AVATAR component bridge clauses and still
-rejects AVATAR SAT refutation macros until they are expanded into primitive
-certificate steps.
+that mode accepts shape-checked AVATAR component bridge clauses and traced
+AVATAR SAT refutations. Legacy AVATAR refutations without `(sat_proof ...)`
+remain rejected in strict mode.
 
 The default smoke command is native-only:
 
@@ -49,9 +49,8 @@ fresh source-mapped corpus. The script also writes `rule_counts.txt` under the
 work directory so broad runs show which native certificate constructors were
 actually exercised.
 Set `STRICT_CERT_V1=1` to run the live certificates through
-`-vampirecertv1strict`; these stricter runs currently reject AVATAR SAT
-refutation macro steps and should be reported separately from compatibility
-coverage.
+`-vampirecertv1strict`; these stricter runs require source maps and traced SAT
+proofs for AVATAR refutations.
 
 For repeatable non-overlapping corpus slices, use:
 
@@ -62,9 +61,9 @@ tests/vampire_certificate/run_native_corpus_slice.sh
 Set `PROBLEM_DIR`, `SLICE_START`, `SLICE_SIZE` or `SLICE_END`, `WORK_DIR`,
 `JOBS`, `VAMPIRE_SECONDS`, `WALL_SECONDS`, and `MIN_PASS` to control the run.
 The defaults use `/project/tmp`, `JOBS=20`, `VAMPIRE_SECONDS=10`,
-`CHECK_SOURCE_MAP=1`, `STRICT_CERT_V1=1`, and `--avatar off`. The wrapper writes
-the selected filename list to `/project/tmp/native_slice_START_END.list` and
-then delegates to `run_native_live_parallel.sh`.
+`CHECK_SOURCE_MAP=1`, and `STRICT_CERT_V1=1`. The wrapper writes the selected
+filename list to `/project/tmp/native_slice_START_END.list` and then delegates
+to `run_native_live_parallel.sh`.
 
 To export a Megalodon development once and then check the resulting source-mapped
 TH0 corpus in parallel, use:

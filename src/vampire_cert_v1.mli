@@ -24,6 +24,10 @@ type sat_lit = int * bool
 
 type sat_clause = sat_lit list
 
+type sat_proof_step =
+  | SatInput of int * sat_clause
+  | SatRup of int * int list * sat_clause
+
 type inequality_split = {
   split_name_parent : string;
   split_source : literal;
@@ -78,7 +82,7 @@ type step =
   | DefinitionInput of string * clause
   | DefinitionRewriteChain of string * string * definition_rewrite list * clause
   | AvatarComponent of string * clause
-  | AvatarRefutation of string * sat_clause list * clause
+  | AvatarRefutation of string * sat_clause list * sat_proof_step list option * clause
   | FoolExhaustiveness of string * clause
   | FoolDistinctness of string * clause
   | InequalityNameIntro of string * clause

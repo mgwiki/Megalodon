@@ -26,6 +26,10 @@ type sat_lit = int * bool
 
 type sat_clause = sat_lit list
 
+type sat_proof_step =
+  | SatInput of int * sat_clause
+  | SatRup of int * int list * sat_clause
+
 type inequality_split = {
   split_name_parent : string;
   split_source : literal;
@@ -80,7 +84,7 @@ type step =
   | DefinitionInput of string * clause
   | DefinitionRewriteChain of string * string * definition_rewrite list * clause
   | AvatarComponent of string * clause
-  | AvatarRefutation of string * sat_clause list * clause
+  | AvatarRefutation of string * sat_clause list * sat_proof_step list option * clause
   | FoolExhaustiveness of string * clause
   | FoolDistinctness of string * clause
   | InequalityNameIntro of string * clause
@@ -255,6 +259,25 @@ let parse_sat_clause = function
 let parse_sat_clauses = function
   | List (Atom "sat_clauses" :: clauses) -> List.map parse_sat_clause clauses
   | _ -> error "expected SAT clause list"
+
+let parse_sat_parents = function
+  | List (Atom "parents" :: parents) -> List.map int_atom parents
+  | _ -> error "expected SAT parent list"
+
+let parse_sat_result = function
+  | List [Atom "result"; clause] -> parse_sat_clause clause
+  | _ -> error "expected SAT result"
+
+let parse_sat_proof_step = function
+  | List [Atom "sat_input"; id; clause] ->
+      SatInput (int_atom id, parse_sat_clause clause)
+  | List [Atom "sat_rup"; id; parents; result] ->
+      SatRup (int_atom id, parse_sat_parents parents, parse_sat_result result)
+  | _ -> error "expected SAT proof step"
+
+let parse_sat_proof = function
+  | List (Atom "sat_proof" :: steps) -> List.map parse_sat_proof_step steps
+  | _ -> error "expected SAT proof"
 
 let parse_pivot = function
   | List [Atom "pivot"; a; b] -> (int_atom a, int_atom b)
@@ -467,7 +490,9 @@ let parse_step = function
   | List [Atom "avatar_component"; id; result] ->
       AvatarComponent (atom id, parse_result result)
   | List [Atom "avatar_refutation"; id; sat_clauses; result] ->
-      AvatarRefutation (atom id, parse_sat_clauses sat_clauses, parse_result result)
+      AvatarRefutation (atom id, parse_sat_clauses sat_clauses, None, parse_result result)
+  | List [Atom "avatar_refutation"; id; sat_clauses; sat_proof; result] ->
+      AvatarRefutation (atom id, parse_sat_clauses sat_clauses, Some (parse_sat_proof sat_proof), parse_result result)
   | List [Atom "fool_exhaustiveness"; id; result] ->
       FoolExhaustiveness (atom id, parse_result result)
   | List [Atom "fool_distinctness"; id; result] ->
@@ -593,7 +618,7 @@ let step_id = function
   | DefinitionInput (id, _) -> id
   | DefinitionRewriteChain (id, _, _, _) -> id
   | AvatarComponent (id, _) -> id
-  | AvatarRefutation (id, _, _) -> id
+  | AvatarRefutation (id, _, _, _) -> id
   | FoolExhaustiveness (id, _) -> id
   | FoolDistinctness (id, _) -> id
   | InequalityNameIntro (id, _) -> id
@@ -1703,11 +1728,111 @@ let rec sat_satisfiable clauses =
     in
     sat_satisfiable (simplify true clauses) || sat_satisfiable (simplify false clauses)
 
-let check_avatar_refutation id sat_clauses result =
+let normalize_sat_clause clause =
+  List.sort compare clause
+
+let normalize_sat_clauses clauses =
+  List.sort compare (List.map normalize_sat_clause clauses)
+
+let sat_assign id assignments (var, value) =
+  match List.assoc_opt var assignments with
+  | Some existing when existing = value -> Some assignments
+  | Some _ -> None
+  | None -> Some ((var, value) :: assignments)
+
+type sat_clause_eval =
+  | SatSatisfied
+  | SatConflict
+  | SatUnit of sat_lit
+  | SatUndetermined
+
+let eval_sat_clause assignments clause =
+  let rec loop unassigned = function
+    | [] ->
+        begin match unassigned with
+        | [] -> SatConflict
+        | [lit] -> SatUnit lit
+        | _ -> SatUndetermined
+        end
+    | ((var, value) as lit) :: rest ->
+        begin match List.assoc_opt var assignments with
+        | Some assigned when assigned = value -> SatSatisfied
+        | Some _ -> loop unassigned rest
+        | None -> loop (lit :: unassigned) rest
+        end
+  in
+  loop [] clause
+
+let sat_rup_holds antecedents derived =
+  let clauses =
+    antecedents @ List.map (fun lit -> [lit]) (List.map (fun (var, polarity) -> (var, not polarity)) derived)
+  in
+  let rec propagate assignments =
+    let rec find_unit = function
+      | [] -> `NoUnit
+      | clause :: rest ->
+          begin match eval_sat_clause assignments clause with
+          | SatSatisfied -> find_unit rest
+          | SatConflict -> `Conflict
+          | SatUnit lit -> `Unit lit
+          | SatUndetermined -> find_unit rest
+          end
+    in
+    match find_unit clauses with
+    | `Conflict -> true
+    | `NoUnit -> false
+    | `Unit lit ->
+        begin match sat_assign "sat_rup" assignments lit with
+        | Some assignments' -> propagate assignments'
+        | None -> true
+        end
+  in
+  propagate []
+
+let check_sat_proof id sat_clauses proof =
+  if proof = [] then error (id ^ ": avatar_refutation SAT proof must be non-empty");
+  let rec add checked input_clauses = function
+    | [] -> (checked, input_clauses)
+    | step :: rest ->
+        begin match step with
+        | SatInput (sid, clause) ->
+            if sid <= 0 then error (id ^ ": SAT proof step ids must be positive");
+            if List.mem_assoc sid checked then error (id ^ ": duplicate SAT proof step id");
+            add ((sid, clause) :: checked) (clause :: input_clauses) rest
+        | SatRup (sid, parents, clause) ->
+            if sid <= 0 then error (id ^ ": SAT proof step ids must be positive");
+            if List.mem_assoc sid checked then error (id ^ ": duplicate SAT proof step id");
+            if parents = [] then error (id ^ ": SAT RUP step must have parents");
+            let antecedents =
+              List.map
+                (fun parent ->
+                  match List.assoc_opt parent checked with
+                  | Some clause -> clause
+                  | None -> error (id ^ ": SAT RUP parent is not an earlier proof step"))
+                parents
+            in
+            if not (sat_rup_holds antecedents clause) then
+              error (id ^ ": SAT RUP step does not follow from its parents");
+            add ((sid, clause) :: checked) input_clauses rest
+        end
+  in
+  let checked, input_clauses = add [] [] proof in
+  if normalize_sat_clauses input_clauses <> normalize_sat_clauses sat_clauses then
+    error (id ^ ": SAT proof inputs do not match avatar_refutation SAT clauses");
+  begin match checked with
+  | (_, []) :: _ -> ()
+  | _ -> error (id ^ ": SAT proof final step is not the empty clause")
+  end
+
+let check_avatar_refutation id sat_clauses proof result =
   validate_sat_clauses id sat_clauses;
   if result <> [] then error (id ^ ": avatar_refutation result must be the empty clause");
-  if sat_satisfiable sat_clauses then
-    error (id ^ ": avatar_refutation SAT clauses are satisfiable")
+  begin match proof with
+  | Some proof -> check_sat_proof id sat_clauses proof
+  | None ->
+      if sat_satisfiable sat_clauses then
+        error (id ^ ": avatar_refutation SAT clauses are satisfiable")
+  end
 
 let rec head_symbol = function
   | TmH h -> Some h
@@ -2503,8 +2628,8 @@ let check_step checked = function
   | AvatarComponent (id, clause) ->
       check_avatar_component id clause;
       (id, CheckedClause clause) :: checked
-  | AvatarRefutation (id, sat_clauses, result) ->
-      check_avatar_refutation id sat_clauses result;
+  | AvatarRefutation (id, sat_clauses, proof, result) ->
+      check_avatar_refutation id sat_clauses proof result;
       (id, CheckedClause result) :: checked
   | FoolExhaustiveness (id, clause) ->
       check_fool_exhaustiveness id clause;
@@ -2572,8 +2697,9 @@ let check_step_strict checked = function
   | AvatarComponent (id, clause) ->
       check_avatar_component_strict id clause;
       check_step checked (AvatarComponent (id, clause))
-  | AvatarRefutation (id, _, _) ->
-      error (id ^ ": strict certificate v1 rejects AVATAR refutation macros")
+  | AvatarRefutation (id, _, None, _) ->
+      error (id ^ ": strict certificate v1 requires SAT proof traces for AVATAR refutations")
+  | AvatarRefutation _ as step -> check_step checked step
   | SkolemFormulaComputed (id, _, _) ->
       error (id ^ ": strict certificate v1 rejects computed skolem formulas without explicit Vampire results")
   | step -> check_step checked step
