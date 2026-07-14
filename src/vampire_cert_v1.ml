@@ -5610,6 +5610,16 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           let structural_clause_prop sorts clause =
             simple_quantify_prop sorts (clause_body_prop clause)
           in
+          let formula_clause_prop sorts clause =
+            let body =
+              try simple_clause_formula_prop_with_type_env type_env clause
+              with Error _ -> simple_clause_prop clause
+            in
+            simple_quantify_prop sorts body
+          in
+          let parent_prop = emitted_parent_prop parent_id in
+          let parent_structural_prop = structural_clause_prop parent_sorts parent_clause in
+          let parent_formula_prop = formula_clause_prop parent_sorts parent_clause in
           let substituted_parent = subst_clause subst parent_clause in
           let substituted_sources = List.map fst subst in
           let remaining_parent_sorts =
@@ -5622,7 +5632,10 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           let structurally_safe =
             same_clause_multiset substituted_parent result
             && simple_sorts_subset needed_sorts sorts
-            && emitted_parent_prop parent_id = structural_clause_prop parent_sorts parent_clause
+            && (parent_prop = parent_structural_prop
+                || parent_prop = parent_formula_prop
+                || simple_prop_equal_mod_app_parens parent_prop parent_structural_prop
+                || simple_prop_equal_mod_app_parens parent_prop parent_formula_prop)
             && prop = structural_clause_prop sorts result
           in
           begin match
