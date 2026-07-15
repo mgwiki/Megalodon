@@ -7,22 +7,16 @@ export TMPDIR
 
 MEGALODON=${MEGALODON:-"$ROOT/bin/megalodon"}
 DEFAULT_VAMPIRE=$(
-  for pattern in 'megalodon3_*' 'megalodon*_*'; do
-    candidate=$(
-      find /project/vampire-leancheck/vampire_rel_vampire \
-        -maxdepth 1 \
-        -type f \
-        -executable \
-        -name "$pattern" \
-        2>/dev/null \
-        | sort -V \
-        | tail -n 1
-    )
-    if [[ -n "$candidate" ]]; then
-      printf '%s\n' "$candidate"
-      break
-    fi
-  done
+  find /project/vampire-leancheck/vampire_rel_vampire \
+    -maxdepth 1 \
+    -type f \
+    -executable \
+    -name 'megalodon*_*' \
+    -printf '%T@ %p\n' \
+    2>/dev/null \
+    | sort -n \
+    | tail -n 1 \
+    | cut -d' ' -f2-
 )
 VAMPIRE=${VAMPIRE:-"$DEFAULT_VAMPIRE"}
 PROBLEM_DIR=${PROBLEM_DIR:-"$ROOT/examples/hammer"}
