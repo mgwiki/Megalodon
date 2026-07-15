@@ -16,10 +16,11 @@ ln -sfn "$WORK_DIR" "$TMPDIR/latest_native_cert_v1_preprocess_closed_audit"
 
 # This gate tracks the certified THF preprocessing layer above the clausal core.
 # It permits formula-input/copy, rectification, FOOL elimination, ENNF and CNF
-# projection plus the core clause rules.  It deliberately excludes Skolemization,
-# AVATAR, introduced definitions, theory facts, inequality splitting and other
-# broader macro steps.  A selected case must contain at least one preprocessing
-# rule, so the clausal core seed corpus cannot satisfy this gate by itself.
+# projection, the classical FOOL exhaustiveness axiom, plus the core clause
+# rules.  It deliberately excludes Skolemization, AVATAR, introduced
+# definitions, inequality splitting and other broader macro steps.  A selected
+# case must contain at least one preprocessing rule, so the clausal core seed
+# corpus cannot satisfy this gate by itself.
 allowed_rules=$(
   cat <<'RULES'
 input
@@ -30,6 +31,7 @@ formula_copy
 rectify_formula
 fool_formula
 fool_bool
+fool_exhaustiveness
 ennf_formula
 cnf_formula_clause
 cnf_literal
@@ -50,6 +52,7 @@ preprocess_rules=$(
 rectify_formula
 fool_formula
 fool_bool
+fool_exhaustiveness
 ennf_formula
 cnf_formula_clause
 cnf_literal
