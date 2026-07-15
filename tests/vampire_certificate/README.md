@@ -350,6 +350,21 @@ The same eligible case list is also checked with `-vampirecertv1corepfcheck`,
 so the counted core corpus cannot silently drift away from the native
 `Syntax.pf` proof-term path.
 
+For the non-identity substitution frontier, use:
+
+```sh
+tests/vampire_certificate/run_native_substitution_frontier_audit.sh
+```
+
+This scans native certificates for non-identity `substitute` steps and checks
+that every substituted parent variable that actually occurs in the parent step
+has an explicit sort in the parent `step_variable_sorts` metadata.  Extra
+replay bindings for variables absent from the parent are reported separately as
+vacuous bindings; they are an emitter-cleanup target, not a typed-instantiation
+blocker.  The audit does not make those substitutions core; it identifies
+whether fresh Vampire output contains enough typed instantiation data for the
+next small-kernel proof-term extension.
+
 For the next layer above the clausal core, use:
 
 ```sh
