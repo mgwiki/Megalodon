@@ -781,6 +781,22 @@ if ! rg -q 'requires a fool_atom_lift primitive step with prefix f1' \
   exit 1
 fi
 
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_primitive_contract_missing_bad.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_fool_primitive_expansion_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_fool_primitive_contract_missing_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_fool_primitive_contract_missing_bad.err"; then
+  echo "strict native certificate v1 checker accepted FOOL formula metadata without a primitive-expansion contract" >&2
+  exit 1
+fi
+
+if ! rg -q 'requires primitive_expansion=prefix for kernel rule fool_formula' \
+    "$WORK_DIR/native_cert_v1_fool_primitive_contract_missing_bad.err"; then
+  echo "strict native certificate v1 FOOL primitive-contract failure did not explain the missing contract" >&2
+  exit 1
+fi
+
 MIN_REWRITE_POSITION=0 \
   tests/vampire_certificate/run_kernel_v1_metadata_audit.sh \
   tests/vampire_certificate/native_cert_v1_kernel_instantiation_valid.sexp \
