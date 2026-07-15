@@ -748,6 +748,34 @@ if ! rg -q 'Vampire certificate v1 strict checked 6 steps' \
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_primitive_expansion_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_fool_primitive_expansion_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_fool_primitive_expansion_valid.log"
+
+if ! rg -q 'Vampire certificate v1 strict checked 7 steps' \
+    "$WORK_DIR/native_cert_v1_fool_primitive_expansion_valid.log"; then
+  echo "strict native certificate v1 checker did not accept FOOL primitive-expansion metadata" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_primitive_expansion_missing_bad.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_fool_primitive_expansion_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_fool_primitive_expansion_missing_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_fool_primitive_expansion_missing_bad.err"; then
+  echo "strict native certificate v1 checker accepted FOOL primitive-expansion metadata without the primitive step" >&2
+  exit 1
+fi
+
+if ! rg -q 'requires a fool_atom_lift primitive step with prefix f1' \
+    "$WORK_DIR/native_cert_v1_fool_primitive_expansion_missing_bad.err"; then
+  echo "strict native certificate v1 FOOL primitive-expansion failure did not explain the missing primitive" >&2
+  exit 1
+fi
+
 MIN_REWRITE_POSITION=0 \
   tests/vampire_certificate/run_kernel_v1_metadata_audit.sh \
   tests/vampire_certificate/native_cert_v1_kernel_instantiation_valid.sexp \

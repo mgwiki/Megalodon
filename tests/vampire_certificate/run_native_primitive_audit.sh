@@ -11,6 +11,7 @@ MIN_EQUALITY_SYMMETRY=${MIN_EQUALITY_SYMMETRY:-1}
 MIN_EQUALITY_RESOLUTION=${MIN_EQUALITY_RESOLUTION:-1}
 MIN_RESOLVE=${MIN_RESOLVE:-1}
 MIN_FACTOR=${MIN_FACTOR:-1}
+MIN_FOOL_ATOM_LIFT=${MIN_FOOL_ATOM_LIFT:-0}
 
 mkdir -p "$WORK_DIR"
 ln -sfn "$WORK_DIR" "$TMPDIR/latest_native_primitive_audit"
@@ -144,6 +145,7 @@ collect_rule equality_symmetry "$WORK_DIR/equality_symmetry.tsv"
 collect_rule equality_resolution "$WORK_DIR/equality_resolution.tsv"
 collect_rule resolve "$WORK_DIR/resolve.tsv"
 collect_rule factor "$WORK_DIR/factor.tsv"
+collect_rule fool_atom_lift "$WORK_DIR/fool_atom_lift.tsv"
 
 require_min substitute "$WORK_DIR/substitute.tsv" "$MIN_SUBSTITUTE"
 require_fields substitute "$WORK_DIR/substitute.tsv" \
@@ -183,6 +185,12 @@ require_fields factor "$WORK_DIR/factor.tsv" \
   '(parent "' \
   '(literals ' \
   '(result (clause'
+
+require_min fool_atom_lift "$WORK_DIR/fool_atom_lift.tsv" "$MIN_FOOL_ATOM_LIFT"
+require_fields fool_atom_lift "$WORK_DIR/fool_atom_lift.tsv" \
+  '(source (formula ' \
+  '(target (formula ' \
+  '(path '
 
 parent_errors="$WORK_DIR/primitive_parent_reference_errors.tsv"
 : > "$parent_errors"

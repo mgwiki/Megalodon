@@ -69,6 +69,7 @@ type step =
   | FormulaTermInput of string * source * Syntax.tm
   | FormulaTermCopy of string * string * Syntax.tm
   | RectifyFormula of string * string * rectify_renaming list * Syntax.tm
+  | FoolAtomLift of string * Syntax.tm * Syntax.tm * string
   | FoolFormula of string * string * Syntax.tm
   | EnnfFormula of string * string * Syntax.tm
   | SkolemFormula of string * string * (string * Syntax.tm) list * Syntax.tm

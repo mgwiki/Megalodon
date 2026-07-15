@@ -79,6 +79,7 @@ type step =
   | FormulaTermInput of string * source * tm
   | FormulaTermCopy of string * string * tm
   | RectifyFormula of string * string * rectify_renaming list * tm
+  | FoolAtomLift of string * tm * tm * string
   | FoolFormula of string * string * tm
   | EnnfFormula of string * string * tm
   | SkolemFormula of string * string * (string * tm) list * tm
@@ -514,6 +515,15 @@ let parse_step = function
   | List [Atom "rectify_formula"; id; parent; renamings; result] ->
       RectifyFormula
         (atom id, parse_parent parent, parse_rectify_renamings renamings, parse_formula_result result)
+  | List [Atom "fool_atom_lift"; id; source; target; path] ->
+      let path =
+        match path with
+        | List [Atom "path"; Str value] -> value
+        | List [Atom "path"; Atom value] -> value
+        | _ -> error "expected fool_atom_lift path"
+      in
+      FoolAtomLift
+        (atom id, parse_formula_field "source" source, parse_formula_field "target" target, path)
   | List [Atom "fool_formula"; id; parent; result] ->
       FoolFormula (atom id, parse_parent parent, parse_formula_result result)
   | List [Atom "ennf_formula"; id; parent; result] ->
@@ -682,6 +692,7 @@ let step_id = function
   | FormulaTermInput (id, _, _) -> id
   | FormulaTermCopy (id, _, _) -> id
   | RectifyFormula (id, _, _, _) -> id
+  | FoolAtomLift (id, _, _, _) -> id
   | FoolFormula (id, _, _) -> id
   | EnnfFormula (id, _, _) -> id
   | SkolemFormula (id, _, _, _) -> id
@@ -726,6 +737,7 @@ let step_rule_name = function
   | FormulaTermInput _ -> "formula_term_input"
   | FormulaTermCopy _ -> "formula_term_copy"
   | RectifyFormula _ -> "rectify_formula"
+  | FoolAtomLift _ -> "fool_atom_lift"
   | FoolFormula _ -> "fool_formula"
   | EnnfFormula _ -> "ennf_formula"
   | SkolemFormula _ -> "skolem_formula"
@@ -1767,6 +1779,16 @@ let check_fool_formula checked id parent_id result =
     error (id ^ ": fool_formula result does not match recursive FOOL Boolean lifting")
     end
   end
+
+let check_fool_atom_lift id source target path =
+  if path = "" then
+    error (id ^ ": fool_atom_lift path is empty");
+  let expected = fool_formula_tm source in
+  if expected <> target
+    && normalize_bool_equality_orientation expected <> normalize_bool_equality_orientation target
+    && normalize_equality_orientation expected <> normalize_equality_orientation target
+    && normalize_fool_formula_shape expected <> normalize_fool_formula_shape target then
+    error (id ^ ": fool_atom_lift target does not match the explicit FOOL Boolean lift")
 
 let check_ennf_formula checked id parent_id result =
   let parent_formula = lookup_formula checked parent_id in
@@ -3011,6 +3033,9 @@ let check_step checked = function
   | RectifyFormula (id, parent_id, renamings, result) ->
       check_rectify_formula checked id parent_id renamings result;
       (id, CheckedFormula result) :: checked
+  | FoolAtomLift (id, source, target, path) ->
+      check_fool_atom_lift id source target path;
+      (id, CheckedFormula target) :: checked
   | FoolFormula (id, parent_id, result) ->
       check_fool_formula checked id parent_id result;
       (id, CheckedFormula result) :: checked
@@ -3300,6 +3325,7 @@ let validate_kernel_v1_metadata_contracts cert =
     | FormulaTermInput _
     | FormulaTermCopy _
     | RectifyFormula _
+    | FoolAtomLift _
     | FoolFormula _
     | EnnfFormula _
     | SkolemFormula _
@@ -3436,6 +3462,39 @@ let validate_primitive_expansion_contracts cert =
          step_rule_name step = primitive && has_id_prefix (step_id step) prefix)
       steps
   in
+  let validate_contract id kernel_rule primitive_required fields =
+    let fail message =
+      error (id ^ ": strict certificate v1 " ^ message)
+    in
+    begin match field_value "primitive_expansion" fields with
+    | Some "prefix" -> ()
+    | Some other ->
+        fail ("rejects unsupported primitive_expansion " ^ other)
+    | None ->
+        fail ("requires primitive_expansion=prefix for kernel rule " ^ kernel_rule)
+    end;
+    let prefix =
+      match field_value "primitive_expansion_prefix" fields with
+      | Some prefix when prefix = id -> prefix
+      | Some prefix ->
+          fail ("primitive_expansion_prefix " ^ prefix ^ " does not match step id " ^ id)
+      | None ->
+          fail ("requires primitive_expansion_prefix for kernel rule " ^ kernel_rule)
+    in
+    begin match field_value "primitive_expansion_requires" fields with
+    | Some required when required = primitive_required -> ()
+    | Some required ->
+        fail
+          ("primitive_expansion_requires " ^ required ^ " but "
+           ^ primitive_required ^ " is required for " ^ kernel_rule)
+    | None ->
+        fail ("requires primitive_expansion_requires=" ^ primitive_required ^ " for kernel rule " ^ kernel_rule)
+    end;
+    if not (has_step_id id) then
+      fail "requires a final certificate step with the kernel unit id";
+    if not (has_prefixed_primitive prefix primitive_required) then
+      fail ("requires a " ^ primitive_required ^ " primitive step with prefix " ^ prefix)
+  in
   List.iter
     (fun (id, kind, fields) ->
        if kind = "kernel_v1" then
@@ -3443,37 +3502,13 @@ let validate_primitive_expansion_contracts cert =
          | None -> ()
          | Some kernel_rule ->
              begin match required_primitive_for_kernel_rule kernel_rule with
-             | None -> ()
              | Some primitive ->
-                 let fail message =
-                   error (id ^ ": strict certificate v1 " ^ message)
-                 in
-                 begin match field_value "primitive_expansion" fields with
-                 | Some "prefix" -> ()
-                 | Some other ->
-                     fail ("rejects unsupported primitive_expansion " ^ other)
-                 | None ->
-                     fail ("requires primitive_expansion=prefix for kernel rule " ^ kernel_rule)
-                 end;
-                 let prefix =
-                   match field_value "primitive_expansion_prefix" fields with
-                   | Some prefix when prefix = id -> prefix
-                   | Some prefix ->
-                       fail ("primitive_expansion_prefix " ^ prefix ^ " does not match step id " ^ id)
-                   | None ->
-                       fail ("requires primitive_expansion_prefix for kernel rule " ^ kernel_rule)
-                 in
+                 validate_contract id kernel_rule primitive fields
+             | None ->
                  begin match field_value "primitive_expansion_requires" fields with
-                 | Some required when required = primitive -> ()
-                 | Some required ->
-                     fail ("primitive_expansion_requires " ^ required ^ " but " ^ primitive ^ " is required for " ^ kernel_rule)
-                 | None ->
-                     fail ("requires primitive_expansion_requires=" ^ primitive ^ " for kernel rule " ^ kernel_rule)
-                 end;
-                 if not (has_step_id id) then
-                   fail "requires a final certificate step with the kernel unit id";
-                 if not (has_prefixed_primitive prefix primitive) then
-                   fail ("requires a " ^ primitive ^ " primitive step with prefix " ^ prefix)
+                 | Some primitive -> validate_contract id kernel_rule primitive fields
+                 | None -> ()
+                 end
              end)
     cert.metadata.step_extras
 
@@ -6174,6 +6209,9 @@ let collect_simple_names cert =
         ignore (simple_formula_prop cert id);
         acc
     | RectifyFormula (id, _, _, _) ->
+        ignore (simple_formula_prop cert id);
+        acc
+    | FoolAtomLift (id, _, _, _) ->
         ignore (simple_formula_prop cert id);
         acc
     | FormulaCopy (id, _, _) ->
@@ -13870,6 +13908,8 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                 end
             end
           end
+      | FoolAtomLift _ ->
+          ()
       | FormulaCopy (id, parent_id, literal) ->
           let name = derived_name id in
           let proof = lookup_simple_name !emitted_names parent_id in
