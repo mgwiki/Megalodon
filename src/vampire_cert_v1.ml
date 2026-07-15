@@ -4281,6 +4281,9 @@ let native_core_reflexive_eq_proof = function
 let native_core_prop_ext_hash =
   "d8c32d0ac70c5760222c9adf1a3ca90f3cb6b5182b0f70a5d82cb9000abc77ef"
 
+let native_core_dneg_hash =
+  "e4b03c310442ae760be9945e176494db51515dfb952ee60fbd42e05527752af0"
+
 let native_core_eq_prop left right =
   Ap (Ap (TpAp (TmH megalodon_eq_poly_hash, Prop), left), right)
 
@@ -4295,13 +4298,47 @@ let native_core_prop_ext_prop =
              (Imp (DB 0, DB 1),
               native_core_expand_eq_atom (native_core_eq_prop (DB 1) (DB 0))))))
 
+let native_core_dneg_prop =
+  All
+    (Prop,
+     Imp
+       (Imp (Imp (DB 0, native_core_false), native_core_false),
+        DB 0))
+
 let native_core_approved_sgdelta () =
-  let sgdelta = Hashtbl.create 1 in
+  let sgdelta = Hashtbl.create 2 in
   Hashtbl.add sgdelta native_core_prop_ext_hash (0, native_core_prop_ext_prop);
+  Hashtbl.add sgdelta native_core_dneg_hash (0, native_core_dneg_prop);
   sgdelta
+
+let approved_native_sgdelta () =
+  native_core_approved_sgdelta ()
 
 let native_core_true_proof =
   TLam (Prop, PLam (DB 0, Hyp 0))
+
+let native_core_xm_proof prop =
+  let shifted_prop = tmshift 0 1 prop in
+  let q = DB 0 in
+  let not_prop = Imp (shifted_prop, native_core_false) in
+  let hleft_prop = Imp (shifted_prop, q) in
+  let hright_prop = Imp (not_prop, q) in
+  let not_prop_proof =
+    PLam
+      (shifted_prop,
+       PPfAp (Hyp 1, PPfAp (Hyp 3, Hyp 0)))
+  in
+  let q_proof = PPfAp (Hyp 1, not_prop_proof) in
+  let false_proof = PPfAp (Hyp 0, q_proof) in
+  TLam
+    (Prop,
+     PLam
+       (hleft_prop,
+        PLam
+          (hright_prop,
+           PPfAp
+             (PTmAp (Known native_core_dneg_hash, q),
+              PLam (Imp (q, native_core_false), false_proof)))))
 
 let native_core_prop_ext_eq left right left_to_right right_to_left =
   PPfAp
@@ -4408,6 +4445,176 @@ let native_core_fool_formula_proof id variables step_variables source target pro
   in
   body_proof
 
+let native_core_ennf_formula_proof id variables step_variables source target proof =
+  let source = native_core_close_tm (variables @ step_variables) source in
+  let target = native_core_close_tm (variables @ step_variables) target in
+  let rec convert source target proof =
+    if native_core_formula_prop source = native_core_formula_prop target then proof
+    else
+      match source, target with
+      | All (source_tp, source_body), All (target_tp, target_body)
+          when source_tp = target_tp ->
+          TLam
+            (source_tp,
+             convert
+               source_body
+               target_body
+               (PTmAp (pftmshift 0 1 proof, DB 0)))
+      | Imp (source_left, source_right),
+        Ap (Ap (TmH "vampire_or", target_left), target_right) ->
+          let source_left_prop = native_core_formula_prop source_left in
+          let target_left_prop = native_core_formula_prop target_left in
+          let target_right_prop = native_core_formula_prop target_right in
+          if target_left_prop <> Imp (source_left_prop, native_core_false) then
+            error
+              (id ^ ": native preprocess proof-term ennf_formula expected a negated left premise");
+          let target_prop = native_core_or target_left_prop target_right_prop in
+          let right_case =
+            let source_right_proof =
+              PPfAp (pfshift 0 1 proof, Hyp 0)
+            in
+            let target_right_proof =
+              convert source_right target_right source_right_proof
+            in
+            PLam
+              (source_left_prop,
+               native_core_or_intro_right
+                 target_left_prop
+                 target_right_prop
+                 target_right_proof)
+          in
+          let left_case =
+            PLam
+              (target_left_prop,
+               native_core_or_intro_left
+                 target_left_prop
+                 target_right_prop
+                 (Hyp 0))
+          in
+          PPfAp
+            (PPfAp
+               (PTmAp (native_core_xm_proof source_left_prop, target_prop),
+                right_case),
+             left_case)
+      | _ ->
+          error
+            (id ^ ": native preprocess proof-term ennf_formula supports only universal implication-to-or transformations")
+  in
+  let rec introduce variables proof =
+    match variables with
+    | [] -> convert source target proof
+    | (_, tp) :: rest ->
+        TLam
+          (tp,
+           introduce rest (PTmAp (pftmshift 0 1 proof, DB 0)))
+  in
+  introduce step_variables proof
+
+let native_core_cnf_formula_clause_proof
+    id variables parent_step_variables result_step_variables parent_formula result proof =
+  let parent_formula =
+    native_core_close_tm (variables @ parent_step_variables) parent_formula
+  in
+  let result_prop =
+    native_core_close_tm
+      (variables @ result_step_variables)
+      (native_core_clause_prop id result)
+    |> native_core_normalize_bool_constants
+  in
+  let rec eliminate formula proof =
+    let formula_prop =
+      native_core_formula_prop formula
+      |> native_core_normalize_bool_constants
+    in
+    if formula_prop = result_prop then proof
+    else
+      match formula with
+      | All (_, body) ->
+          eliminate (tmsubst body 0 (DB 0)) (PTmAp (proof, DB 0))
+      | _ ->
+          error
+            (id ^ ": native preprocess proof-term cnf_formula_clause cannot instantiate parent formula to result clause")
+  in
+  let rec introduce parent_variables result_variables proof =
+    match parent_variables, result_variables with
+    | [], [] -> eliminate parent_formula proof
+    | (_, parent_tp) :: parent_rest, (_, result_tp) :: result_rest
+        when parent_tp = result_tp ->
+        TLam
+          (result_tp,
+           introduce
+             parent_rest
+             result_rest
+             (PTmAp (pftmshift 0 1 proof, DB 0)))
+    | [], (_, result_tp) :: result_rest ->
+        TLam
+          (result_tp,
+           introduce [] result_rest (pftmshift 0 1 proof))
+    | _ ->
+        error
+          (id ^ ": native preprocess proof-term cnf_formula_clause parent/result variable sorts do not align")
+  in
+  introduce parent_step_variables result_step_variables proof
+
+let native_core_fool_exhaustiveness_proof id result =
+  let eq_atom = function
+    | Pos atom -> megalodon_eq_poly_sides atom
+    | Neg _ -> None
+  in
+  match result with
+  | [left_literal; right_literal] ->
+      begin match eq_atom left_literal, eq_atom right_literal with
+      | Some (Prop, left_true, left_prop), Some (Prop, left_false, right_prop)
+          when native_core_normalize_bool_constants left_true = native_core_true
+               && native_core_normalize_bool_constants left_false = native_core_false
+               && left_prop = right_prop ->
+          let p = DB 0 in
+          let eq_true_p =
+            native_core_expand_eq_atom (native_core_eq_prop native_core_true p)
+          in
+          let eq_false_p =
+            native_core_expand_eq_atom (native_core_eq_prop native_core_false p)
+          in
+          let target_prop = native_core_or eq_true_p eq_false_p in
+          let true_eq_p =
+            native_core_prop_ext_eq
+              native_core_true
+              p
+              (PLam (native_core_true, Hyp 1))
+              (PLam (p, native_core_true_proof))
+          in
+          let false_eq_p =
+            native_core_prop_ext_eq
+              native_core_false
+              p
+              (PLam (native_core_false, PTmAp (Hyp 0, p)))
+              (PLam (p, PPfAp (Hyp 1, Hyp 0)))
+          in
+          let positive_case =
+            PLam
+              (p,
+               native_core_or_intro_left eq_true_p eq_false_p true_eq_p)
+          in
+          let negative_case =
+            PLam
+              (Imp (p, native_core_false),
+               native_core_or_intro_right eq_true_p eq_false_p false_eq_p)
+          in
+          TLam
+            (Prop,
+             PPfAp
+               (PPfAp
+                  (PTmAp (native_core_xm_proof p, target_prop),
+                   positive_case),
+                negative_case))
+      | _ ->
+          error
+            (id ^ ": native preprocess proof-term fool_exhaustiveness expected true/false equality literals")
+      end
+  | _ ->
+      error
+        (id ^ ": native preprocess proof-term fool_exhaustiveness expected two literals")
+
 let native_core_fool_bool_proof id variables parent_formula parent_proof result =
   let close = native_core_close_tm variables in
   match parent_formula, result with
@@ -4486,6 +4693,77 @@ let native_core_eq_symmetry_proof id literal proof =
       | None ->
           error (id ^ ": native core proof-term equality-symmetry requires typed Megalodon equality")
       end
+
+let native_core_truth_conflict_false_proof id literal proof =
+  let is_true = function
+    | TmH "f__true" | TmH "vampire_true" -> true
+    | tm when tm = native_core_true -> true
+    | _ -> false
+  in
+  let is_false = function
+    | TmH "f__false" | TmH "vampire_false" -> true
+    | tm when tm = native_core_false -> true
+    | _ -> false
+  in
+  let motive_left = Lam (Prop, Lam (Prop, DB 1)) in
+  let motive_right = Lam (Prop, Lam (Prop, DB 0)) in
+  match literal with
+  | Pos atom ->
+      begin match megalodon_eq_poly_sides atom with
+      | Some (_, left, right) when is_true left && is_false right ->
+          PPfAp (PTmAp (proof, motive_left), native_core_true_proof)
+      | Some (_, left, right) when is_false left && is_true right ->
+          PPfAp (PTmAp (proof, motive_right), native_core_true_proof)
+      | Some _ ->
+          error (id ^ ": native core proof-term truth-conflict equality is not true = false")
+      | None ->
+          error (id ^ ": native core proof-term truth-conflict literal is not typed Megalodon equality")
+      end
+  | Neg _ ->
+      error (id ^ ": native core proof-term truth-conflict literal must be positive")
+
+let native_core_truth_conflict id parent_clause parent_proof literal_index result =
+  let selected = nth literal_index parent_clause (id ^ " native truth-conflict literal") in
+  let expected = remove_at literal_index parent_clause (id ^ " native truth-conflict literal") in
+  if not (same_clause_multiset expected result) then
+    error (id ^ ": native core proof-term truth-conflict result does not remove selected literal");
+  let target_prop = native_core_clause_prop id result in
+  let selected_branch proof =
+    PTmAp (native_core_truth_conflict_false_proof id selected proof, target_prop)
+  in
+  let rec consume selected_index clause proof =
+    match clause, selected_index with
+    | [], _ -> error (id ^ ": native core proof-term truth-conflict index is out of bounds")
+    | [literal], Some 0 when literal = selected -> selected_branch proof
+    | [literal], Some _ ->
+        error (id ^ ": native core proof-term truth-conflict index is out of bounds")
+    | [literal], None ->
+        native_core_prove_literal_to_clause id result literal proof
+    | literal :: rest, selected_index ->
+        let literal_prop = native_core_literal_prop literal in
+        let rest_prop = native_core_clause_prop id rest in
+        let head_branch =
+          PLam
+            (literal_prop,
+             match selected_index with
+             | Some 0 when literal = selected -> selected_branch (Hyp 0)
+             | Some 0 ->
+                 error (id ^ ": native core proof-term truth-conflict selected literal mismatch")
+             | _ ->
+                 native_core_prove_literal_to_clause id result literal (Hyp 0))
+        in
+        let tail_selected =
+          match selected_index with
+          | Some 0 -> None
+          | Some n -> Some (n - 1)
+          | None -> None
+        in
+        let tail_branch =
+          PLam (rest_prop, consume tail_selected rest (Hyp 0))
+        in
+        PPfAp (PPfAp (PTmAp (proof, target_prop), head_branch), tail_branch)
+  in
+  consume (Some literal_index) parent_clause parent_proof
 
 let native_core_equality_resolution id parent_clause parent_proof literal_index result =
   let selected = nth literal_index parent_clause (id ^ " native equality-resolution literal") in
@@ -4790,50 +5068,91 @@ let native_core_paramodulate_literal_transport
 
 let native_core_paramodulate_unit id equality_clause equality_proof target_clause target_proof equality_index target_index position from_tm to_tm result =
   let equality_atom =
-    match equality_clause, equality_index with
-    | [Pos equality_atom], 0 -> equality_atom
-    | [Neg _], 0 -> error (id ^ ": native core proof-term paramodulation equality literal must be positive")
-    | [_], _ -> error (id ^ ": native core proof-term paramodulation equality index is out of bounds")
-    | _ -> error (id ^ ": native core proof-term paramodulation currently supports only unit equality parents")
+    match nth equality_index equality_clause (id ^ " native paramodulation equality literal") with
+    | Pos equality_atom -> equality_atom
+    | Neg _ -> error (id ^ ": native core proof-term paramodulation equality literal must be positive")
   in
   let selected =
     nth target_index target_clause (id ^ " native paramodulation target literal")
   in
-  let target_rest =
-    remove_at target_index target_clause (id ^ " native paramodulation target literal")
-  in
-  let result_literal =
-    let candidates =
-      List.filter
-        (fun literal ->
-           try
-             ignore
-               (native_core_paramodulate_literal_transport
-                  id equality_atom equality_proof selected position from_tm to_tm literal (Hyp 0));
-             same_clause_multiset (target_rest @ [literal]) result
-           with Error _ -> false)
-        result
-    in
+	  let _target_rest =
+	    remove_at target_index target_clause (id ^ " native paramodulation target literal")
+	  in
+	  let _equality_rest =
+	    remove_at equality_index equality_clause (id ^ " native paramodulation equality literal")
+	  in
+	  let transport_to_result_literal result_literal proof =
+	    try
+	      native_core_paramodulate_literal_transport
+	        id equality_atom equality_proof selected position from_tm to_tm result_literal proof
+	    with Error _ ->
+	      begin match native_core_swapped_eq_literal result_literal with
+	      | Some direct_literal ->
+	          let direct_proof =
+	            native_core_paramodulate_literal_transport
+	              id equality_atom equality_proof selected position from_tm to_tm direct_literal proof
+	          in
+	          native_core_eq_symmetry_proof id direct_literal direct_proof
+	      | None ->
+	          error
+	            (id ^ ": native core proof-term paramodulation result does not contain the rewritten target literal")
+	      end
+	  in
+	  let result_literal =
+	    let candidates =
+	      List.filter
+	        (fun literal ->
+	           try
+	            ignore (transport_to_result_literal literal (Hyp 0));
+	            true
+	           with Error _ -> false)
+	        result
+	    in
     match candidates with
     | literal :: _ -> literal
     | [] ->
         error (id ^ ": native core proof-term paramodulation result does not contain the rewritten target literal")
   in
-  let target_prop = native_core_clause_prop id result in
-  let selected_transport equality_proof proof =
-    native_core_paramodulate_literal_transport
-      id equality_atom equality_proof selected position from_tm to_tm result_literal proof
-  in
-  let rec consume equality_proof selected_index clause proof =
+	  let target_prop = native_core_clause_prop id result in
+	  let prove_side_literal literal proof =
+	    try native_core_prove_literal_to_clause id result literal proof
+	    with Error _ ->
+	      begin match native_core_swapped_eq_literal literal with
+	      | Some swapped ->
+	          native_core_prove_literal_to_clause
+	            id result swapped (native_core_eq_symmetry_proof id literal proof)
+	      | None ->
+	          error
+	            (id ^ ": native core proof-term paramodulation side literal is not present in result")
+	      end
+	  in
+	  let selected_transport equality_proof proof =
+	    try
+	      native_core_paramodulate_literal_transport
+	        id equality_atom equality_proof selected position from_tm to_tm result_literal proof
+	    with Error _ ->
+	      begin match native_core_swapped_eq_literal result_literal with
+	      | Some direct_literal ->
+	          let direct_proof =
+	            native_core_paramodulate_literal_transport
+	              id equality_atom equality_proof selected position from_tm to_tm direct_literal proof
+	          in
+	          native_core_eq_symmetry_proof id direct_literal direct_proof
+	      | None ->
+	          error
+	            (id ^ ": native core proof-term paramodulation result does not contain the rewritten target literal")
+	      end
+	  in
+  let rec consume_target equality_proof selected_index clause proof =
     match clause, selected_index with
     | [], _ -> error (id ^ ": native core proof-term paramodulation target index is out of bounds")
     | [literal], Some 0 when literal = selected ->
         let transported = selected_transport equality_proof proof in
         native_core_prove_literal_to_clause id result result_literal transported
-    | [literal], Some _ ->
-        error (id ^ ": native core proof-term paramodulation target index is out of bounds")
-    | [literal], None ->
-        native_core_prove_literal_to_clause id result literal proof
+	    | [literal], Some _ ->
+	        error (id ^ ": native core proof-term paramodulation target index is out of bounds")
+	    | [literal], None ->
+	        prove_side_literal literal proof
     | literal :: rest, selected_index ->
         let literal_prop = native_core_literal_prop literal in
         let rest_prop = native_core_clause_prop id rest in
@@ -4844,10 +5163,10 @@ let native_core_paramodulate_unit id equality_clause equality_proof target_claus
              | Some 0 when literal = selected ->
                  let transported = selected_transport (pfshift 0 1 equality_proof) (Hyp 0) in
                  native_core_prove_literal_to_clause id result result_literal transported
-             | Some 0 ->
-                 error (id ^ ": native core proof-term paramodulation selected literal mismatch")
-             | _ ->
-                 native_core_prove_literal_to_clause id result literal (Hyp 0))
+	             | Some 0 ->
+	                 error (id ^ ": native core proof-term paramodulation selected literal mismatch")
+	             | _ ->
+	                 prove_side_literal literal (Hyp 0))
         in
         let tail_selected =
           match selected_index with
@@ -4858,11 +5177,51 @@ let native_core_paramodulate_unit id equality_clause equality_proof target_claus
         let tail_branch =
           PLam
             (rest_prop,
-             consume (pfshift 0 1 equality_proof) tail_selected rest (Hyp 0))
+             consume_target (pfshift 0 1 equality_proof) tail_selected rest (Hyp 0))
         in
         PPfAp (PPfAp (PTmAp (proof, target_prop), head_branch), tail_branch)
   in
-  consume equality_proof (Some target_index) target_clause target_proof
+  let rec consume_equality selected_index clause proof target_proof =
+    match clause, selected_index with
+    | [], _ -> error (id ^ ": native core proof-term paramodulation equality index is out of bounds")
+    | [literal], Some 0 when literal = Pos equality_atom ->
+        consume_target proof (Some target_index) target_clause target_proof
+	    | [literal], Some _ ->
+	        error (id ^ ": native core proof-term paramodulation equality index is out of bounds")
+	    | [literal], None ->
+	        prove_side_literal literal proof
+    | literal :: rest, selected_index ->
+        let literal_prop = native_core_literal_prop literal in
+        let rest_prop = native_core_clause_prop id rest in
+        let head_branch =
+          PLam
+            (literal_prop,
+             match selected_index with
+             | Some 0 when literal = Pos equality_atom ->
+                 consume_target (Hyp 0) (Some target_index) target_clause (pfshift 0 1 target_proof)
+	             | Some 0 ->
+	                 error (id ^ ": native core proof-term paramodulation selected equality mismatch")
+	             | _ ->
+	                 prove_side_literal literal (Hyp 0))
+        in
+        let tail_selected =
+          match selected_index with
+          | Some 0 -> None
+          | Some n -> Some (n - 1)
+          | None -> None
+        in
+        let tail_branch =
+          PLam
+            (rest_prop,
+             consume_equality
+               tail_selected
+               rest
+               (Hyp 0)
+               (pfshift 0 1 target_proof))
+        in
+        PPfAp (PPfAp (PTmAp (proof, target_prop), head_branch), tail_branch)
+  in
+  consume_equality (Some equality_index) equality_clause equality_proof target_proof
 
 let native_core_source_kind_and_tptp_name = function
   | SourceAxiom name -> ("axiom", name)
@@ -5062,15 +5421,21 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
             native_core_equality_resolution id parent_clause parent_proof literal_index result
           in
           store id result proof
-      | EqualitySymmetry (id, parent_id, literal_index, result) ->
-          let parent_clause, parent_proof = lookup parent_id in
-          let proof =
-            native_core_equality_symmetry id parent_clause parent_proof literal_index result
-          in
-          store id result proof
-      | SubsumptionResolution (id, main_parent_id, side_parent_id, selected, side_pivot, side_subst, result) ->
-          let main_clause, main_proof = lookup main_parent_id in
-          let side_clause, side_proof = lookup side_parent_id in
+	      | EqualitySymmetry (id, parent_id, literal_index, result) ->
+	          let parent_clause, parent_proof = lookup parent_id in
+	          let proof =
+	            native_core_equality_symmetry id parent_clause parent_proof literal_index result
+	          in
+	          store id result proof
+	      | TruthConflict (id, parent_id, literal_index, result) ->
+	          let parent_clause, parent_proof = lookup parent_id in
+	          let proof =
+	            native_core_truth_conflict id parent_clause parent_proof literal_index result
+	          in
+	          store id result proof
+	      | SubsumptionResolution (id, main_parent_id, side_parent_id, selected, side_pivot, side_subst, result) ->
+	          let main_clause, main_proof = lookup main_parent_id in
+	          let side_clause, side_proof = lookup side_parent_id in
           let side_clause = subst_clause side_subst side_clause in
           let side_pivot = subst_literal side_subst side_pivot in
           let side_proof =
@@ -5268,12 +5633,46 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           let step_variables = native_core_step_variables cert parent_id in
           store_formula id result
             (native_core_fool_formula_proof id variables step_variables parent_formula result parent_proof)
+      | EnnfFormula (id, parent_id, _source, _pairs, result) ->
+          let parent_formula, parent_proof = lookup_formula parent_id in
+          let expected = ennf_pos parent_formula in
+          if expected <> result then
+            error (id ^ ": ennf_formula result does not match deterministic ENNF transformation");
+          let step_variables = native_core_step_variables cert parent_id in
+          store_formula id result
+            (native_core_ennf_formula_proof id variables step_variables parent_formula result parent_proof)
       | FormulaCopy (id, parent_id, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
           if native_core_normalize_bool_constants (native_core_literal_prop result)
              <> native_core_normalize_bool_constants (native_core_formula_prop parent_formula) then
             error (id ^ ": native preprocess proof-term formula_copy result is not the parent formula");
+          store_formula id (formula_tm_of_literal result) parent_proof;
           store_clause id [result] parent_proof
+      | CnfLiteral (id, parent_id, result) ->
+          let parent_formula, parent_proof = lookup_formula parent_id in
+          let parent_prop =
+            native_core_normalize_bool_constants
+              (native_core_formula_prop parent_formula)
+          in
+          let result_prop =
+            native_core_normalize_bool_constants
+              (native_core_clause_prop id result)
+          in
+          if parent_prop <> result_prop then
+            error
+              (id ^ ": native preprocess proof-term cnf_literal result is not propositionally identical to the parent formula");
+          store_clause id result parent_proof
+      | CnfFormulaClause (id, parent_id, _index, result) ->
+          let parent_formula, parent_proof = lookup_formula parent_id in
+          let parent_step_variables = native_core_step_variables cert parent_id in
+          let result_step_variables = native_core_step_variables cert id in
+          store_clause id result
+            (native_core_cnf_formula_clause_proof
+               id variables parent_step_variables result_step_variables
+               parent_formula result parent_proof)
+      | FoolExhaustiveness (id, result) ->
+          store_clause id result
+            (native_core_fool_exhaustiveness_proof id result)
       | Substitute (id, parent_id, [], result) ->
           let parent_clause, parent_proof = lookup_clause parent_id in
           if result <> parent_clause then
@@ -5334,13 +5733,17 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           let parent_clause, parent_proof = lookup_clause parent_id in
           store_clause id result
             (native_core_equality_resolution id parent_clause parent_proof literal_index result)
-      | EqualitySymmetry (id, parent_id, literal_index, result) ->
-          let parent_clause, parent_proof = lookup_clause parent_id in
-          store_clause id result
-            (native_core_equality_symmetry id parent_clause parent_proof literal_index result)
-      | SubsumptionResolution (id, main_parent_id, side_parent_id, selected, side_pivot, side_subst, result) ->
-          let main_clause, main_proof = lookup_clause main_parent_id in
-          let side_clause, side_proof = lookup_clause side_parent_id in
+	      | EqualitySymmetry (id, parent_id, literal_index, result) ->
+	          let parent_clause, parent_proof = lookup_clause parent_id in
+	          store_clause id result
+	            (native_core_equality_symmetry id parent_clause parent_proof literal_index result)
+	      | TruthConflict (id, parent_id, literal_index, result) ->
+	          let parent_clause, parent_proof = lookup_clause parent_id in
+	          store_clause id result
+	            (native_core_truth_conflict id parent_clause parent_proof literal_index result)
+	      | SubsumptionResolution (id, main_parent_id, side_parent_id, selected, side_pivot, side_subst, result) ->
+	          let main_clause, main_proof = lookup_clause main_parent_id in
+	          let side_clause, side_proof = lookup_clause side_parent_id in
           let side_clause = subst_clause side_subst side_clause in
           let side_pivot = subst_literal side_subst side_pivot in
           let side_proof =

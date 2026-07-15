@@ -178,6 +178,7 @@ val validate_certificate_sources : ?require_formula_match:bool -> source_map_ent
 val check_certificate : certificate -> (string * checked_item) list
 val check_certificate_strict : certificate -> (string * checked_item) list
 val validate_certificate_core_fragment : certificate -> int
+val approved_native_sgdelta : unit -> (string, int * Syntax.tm) Hashtbl.t
 val elaborate_core_resolution_refutation_native : ?source_map:source_map_entry list -> certificate -> core_native_proof
 val elaborate_preprocess_refutation_native : ?source_map:source_map_entry list -> certificate -> core_native_proof
 val emit_simple_megalodon :
