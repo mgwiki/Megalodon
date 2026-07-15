@@ -11960,7 +11960,9 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                 Some
                   (simple_cnf_literal_proof
                      parent_sorts sorts parent_formula [literal] proof)
-              with Error _ -> None
+              with Error msg ->
+                debug_emit_error ("formula_copy " ^ id) msg;
+                None
             with
             | Some copy_proof ->
                 add_emitted id name;
@@ -12000,7 +12002,9 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           begin match
             match
               try redundant_parent_application ()
-              with Error _ -> None
+              with Error msg ->
+                debug_emit_error ("fool_formula " ^ id) msg;
+                None
             with
             | Some proof -> Some proof
             | None ->
@@ -12135,7 +12139,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           end
       | SkolemFormula (id, parent_id, subst, formula) ->
           let name = derived_name id in
-          let proof_formula = formula in
+          let proof_formula = left_assoc_vampire_or_formula formula in
           let target_prop, target_sorts = formula_tm_prop_and_sorts id formula in
           let skolem_sorts =
             metadata_step_variable_sort_pairs cert id @ target_sorts
@@ -12257,7 +12261,9 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                   (simple_skolem_formula_proof
                      type_env id parent_id subst proof_parent_formula proof_formula
                      parent_sorts target_sorts names)
-              with Error _ -> None
+              with Error msg ->
+                debug_emit_error ("skolem_formula " ^ id) msg;
+                None
           with
           | Some proof ->
               let proof_type_env =
@@ -12302,7 +12308,9 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           | None ->
               begin match
                 try opened_higher_order_skolem ()
-                with Error _ -> None
+                with Error msg ->
+                  debug_emit_error ("skolem_formula " ^ id ^ " opened") msg;
+                  None
               with
               | Some (skolem_name, source_sort, witness_name, witness_prop, proof) ->
                   let parent_name = lookup_simple_name !emitted_names parent_id in
