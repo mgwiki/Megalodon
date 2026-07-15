@@ -439,6 +439,21 @@ checked cases is `AVATAR_CLOSED_PASS`.  It also writes
 `cases_by_first_blocker/*.list` under
 `/project/tmp/latest_native_cert_v1_avatar_closed_audit`.
 
+For the two terminal edge-case layers currently present in the committed
+closed corpus, use:
+
+```sh
+tests/vampire_certificate/run_native_cert_v1_inequality_closed_audit.sh
+tests/vampire_certificate/run_native_cert_v1_definition_rewrite_closed_audit.sh
+```
+
+The inequality gate permits the AVATAR layer plus `inequality_name_intro` and
+`inequality_split`; the definition-rewrite gate permits the AVATAR layer plus
+`definition_rewrite_chain`.  Each default minimum is one because the committed
+corpus currently contains one closed case of each kind.  These gates are not
+broad milestone evidence; they prevent the final known tracked edge cases from
+falling out of closed validation while larger live corpora are expanded.
+
 To export a Megalodon development once and then check the resulting source-mapped
 TH0 corpus in parallel, use:
 
