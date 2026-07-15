@@ -16,6 +16,11 @@ MIN_ENNF_FORMULA=${MIN_ENNF_FORMULA:-0}
 MIN_SKOLEM_FORMULA=${MIN_SKOLEM_FORMULA:-0}
 MIN_CNF_LITERAL=${MIN_CNF_LITERAL:-0}
 MIN_CNF_FORMULA_CLAUSE=${MIN_CNF_FORMULA_CLAUSE:-0}
+MIN_FORMULA_COPY=${MIN_FORMULA_COPY:-0}
+MIN_FORMULA_TERM_COPY=${MIN_FORMULA_TERM_COPY:-0}
+MIN_RECTIFY_FORMULA=${MIN_RECTIFY_FORMULA:-0}
+MIN_FOOL_EXHAUSTIVENESS=${MIN_FOOL_EXHAUSTIVENESS:-0}
+MIN_TRUTH_CONFLICT=${MIN_TRUTH_CONFLICT:-0}
 
 mkdir -p "$WORK_DIR"
 ln -sfn "$WORK_DIR" "$TMPDIR/latest_native_primitive_audit"
@@ -154,6 +159,11 @@ collect_rule ennf_formula "$WORK_DIR/ennf_formula.tsv"
 collect_rule skolem_formula "$WORK_DIR/skolem_formula.tsv"
 collect_rule cnf_literal "$WORK_DIR/cnf_literal.tsv"
 collect_rule cnf_formula_clause "$WORK_DIR/cnf_formula_clause.tsv"
+collect_rule formula_copy "$WORK_DIR/formula_copy.tsv"
+collect_rule formula_term_copy "$WORK_DIR/formula_term_copy.tsv"
+collect_rule rectify_formula "$WORK_DIR/rectify_formula.tsv"
+collect_rule fool_exhaustiveness "$WORK_DIR/fool_exhaustiveness.tsv"
+collect_rule truth_conflict "$WORK_DIR/truth_conflict.tsv"
 
 require_min substitute "$WORK_DIR/substitute.tsv" "$MIN_SUBSTITUTE"
 require_fields substitute "$WORK_DIR/substitute.tsv" \
@@ -222,6 +232,31 @@ require_fields cnf_formula_clause "$WORK_DIR/cnf_formula_clause.tsv" \
   '(index ' \
   '(result (clause'
 
+require_min formula_copy "$WORK_DIR/formula_copy.tsv" "$MIN_FORMULA_COPY"
+require_fields formula_copy "$WORK_DIR/formula_copy.tsv" \
+  '(parent "' \
+  '(result '
+
+require_min formula_term_copy "$WORK_DIR/formula_term_copy.tsv" "$MIN_FORMULA_TERM_COPY"
+require_fields formula_term_copy "$WORK_DIR/formula_term_copy.tsv" \
+  '(parent "' \
+  '(result (formula '
+
+require_min rectify_formula "$WORK_DIR/rectify_formula.tsv" "$MIN_RECTIFY_FORMULA"
+require_fields rectify_formula "$WORK_DIR/rectify_formula.tsv" \
+  '(parent "' \
+  '(result '
+
+require_min fool_exhaustiveness "$WORK_DIR/fool_exhaustiveness.tsv" "$MIN_FOOL_EXHAUSTIVENESS"
+require_fields fool_exhaustiveness "$WORK_DIR/fool_exhaustiveness.tsv" \
+  '(result (clause'
+
+require_min truth_conflict "$WORK_DIR/truth_conflict.tsv" "$MIN_TRUTH_CONFLICT"
+require_fields truth_conflict "$WORK_DIR/truth_conflict.tsv" \
+  '(parent "' \
+  '(literal ' \
+  '(result (clause'
+
 parent_errors="$WORK_DIR/primitive_parent_reference_errors.tsv"
 : > "$parent_errors"
 while IFS= read -r native_file; do
@@ -247,7 +282,11 @@ while IFS= read -r native_file; do
             rule == "ennf_formula" ||
             rule == "skolem_formula" ||
             rule == "cnf_literal" ||
-            rule == "cnf_formula_clause") {
+            rule == "cnf_formula_clause" ||
+            rule == "formula_copy" ||
+            rule == "formula_term_copy" ||
+            rule == "rectify_formula" ||
+            rule == "truth_conflict") {
           if (match(line, /\(parent "([^"]+)"/, ref)) {
             report("parent", ref[1], line)
           }
@@ -304,6 +343,11 @@ while IFS= read -r native_file; do
       }
       if (rule == "skolemize") {
         return "skolem_formula"
+      }
+      if (rule == "rectify_formula" ||
+          rule == "fool_exhaustiveness" ||
+          rule == "truth_conflict") {
+        return rule
       }
       if (rule == "superposition" || rule == "rewrite") {
         return "paramodulate"

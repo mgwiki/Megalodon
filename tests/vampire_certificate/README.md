@@ -239,22 +239,27 @@ tests/vampire_certificate/run_native_primitive_audit.sh \
 This checks the explicit native records for the frequent clausal small-kernel
 steps: `substitute`, `paramodulate`, `equality_symmetry`,
 `equality_resolution`, `resolve`, `factor`, `fool_atom_lift`, `ennf_formula`,
-`skolem_formula`, and `cnf_formula_clause`. The gate requires each present rule
-family to expose the fields Megalodon should replay mechanically: parent ids,
-substitutions, equality/target parents, rewrite positions, literal or pivot
-indices, source and target formulas, paths, introduced Skolem symbols, CNF
-clause indices, and result clauses. It also rejects primitive references to
-missing or later proof steps, while allowing `step_proposition`,
-`step_variable_sorts`, and `step_extra` to reuse ids as metadata. It is
-intentionally separate from the `kernel_v1` metadata audit because these are
-first-class certificate steps, not `step_extra` annotations.
+`skolem_formula`, `cnf_literal`, `cnf_formula_clause`, `formula_copy`,
+`formula_term_copy`, `rectify_formula`, `fool_exhaustiveness`, and
+`truth_conflict`. The gate requires each present rule family to expose the
+fields Megalodon should replay
+mechanically: parent ids, substitutions, equality/target parents, rewrite
+positions, literal or pivot indices, source and target formulas, paths,
+introduced Skolem symbols, CNF clause indices, truth-conflict literals, and
+result clauses. It also rejects primitive references to missing or later proof
+steps, while allowing `step_proposition`, `step_variable_sorts`, and
+`step_extra` to reuse ids as metadata. It is intentionally separate from the
+`kernel_v1` metadata audit because these are first-class certificate steps, not
+`step_extra` annotations.
 For any `kernel_v1` macro record with a primitive-expansion contract, this
 audit also verifies that the certificate contains a final proof step with the
 kernel unit id and at least one required primitive step sharing that unit
 prefix. Clausal decompositions often use suffixed ids such as
 `u123_paramodulate`, `u123_resolve0`, or `u123_fool_atom_0`; preprocessing
-steps such as `ennf_formula`, `skolem_formula`, and `cnf_formula_clause` may
-reuse the kernel unit id exactly.
+steps such as `ennf_formula`, `skolem_formula`, `cnf_formula_clause`,
+`formula_copy`, `formula_term_copy`, `rectify_formula`,
+`fool_exhaustiveness`, and `truth_conflict` may reuse the kernel unit id
+exactly.
 
 `run_native_live_parallel.sh` runs this primitive audit and the `kernel_v1`
 metadata audit by default after a successful live run. Set

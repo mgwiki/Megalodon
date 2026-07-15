@@ -279,6 +279,10 @@ require_primitive_expansion_contract factoring factor
 require_primitive_expansion_contract formula_normalize ennf_formula
 require_primitive_expansion_contract skolemize skolem_formula
 require_primitive_expansion_contract_any cnf_clause cnf_literal cnf_formula_clause
+require_primitive_expansion_contract_any formula_copy formula_copy formula_term_copy
+require_primitive_expansion_contract rectify_formula rectify_formula
+require_primitive_expansion_contract fool_exhaustiveness fool_exhaustiveness
+require_primitive_expansion_contract truth_conflict truth_conflict
 
 grep -F 'rule=instantiation' "$WORK_DIR/kernel_v1.tsv" \
   > "$WORK_DIR/instantiation.tsv" || true
