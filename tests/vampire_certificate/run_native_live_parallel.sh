@@ -36,6 +36,7 @@ MIN_PASS=${MIN_PASS:-100}
 CHECK_SOURCE_MAP=${CHECK_SOURCE_MAP:-0}
 REQUIRE_SOURCE_ORIGIN=${REQUIRE_SOURCE_ORIGIN:-0}
 STRICT_CERT_V1=${STRICT_CERT_V1:-0}
+AUDIT_NATIVE_PRIMITIVES=${AUDIT_NATIVE_PRIMITIVES:-1}
 VAMPIRE_PROOF_ARGS=${VAMPIRE_PROOF_ARGS:-"--proof_extra lean --skolemization syntactic --shuffle_input off"}
 VAMPIRE_EXTRA_ARGS=${VAMPIRE_EXTRA_ARGS:-}
 WORK_DIR=${WORK_DIR:-"$TMPDIR/megalodon_native_live_${LIMIT}"}
@@ -211,4 +212,12 @@ fi
 if (( passes < MIN_PASS )); then
   echo "native live validation passed $passes certificates, below MIN_PASS=$MIN_PASS" >&2
   exit 1
+fi
+
+if [[ "$AUDIT_NATIVE_PRIMITIVES" == "1" ]]; then
+  live_work_dir=$WORK_DIR
+  (
+    unset WORK_DIR
+    "$ROOT/tests/vampire_certificate/run_native_primitive_audit.sh" "$live_work_dir"
+  )
 fi
