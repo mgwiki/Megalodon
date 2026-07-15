@@ -206,6 +206,10 @@ awk '
     if (match($0, /"parent_count=([0-9]+)/, parent_count_match)) {
       parent_count = parent_count_match[1] + 0
       for (parent_index = 0; parent_index < parent_count; ++parent_index) {
+        clause_field = "parent_" parent_index "_clause="
+        if (index($0, clause_field) == 0) {
+          print clause_field "\t" $0
+        }
         literal_count_field = "parent_" parent_index "_literal_count="
         if (index($0, literal_count_field) == 0) {
           print literal_count_field "\t" $0

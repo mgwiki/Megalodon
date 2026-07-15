@@ -145,9 +145,10 @@ the referenced unit has already appeared earlier in that certificate; only
 `conclusion_unit` may name the unit produced by the current kernel record.
 For every clausal kernel record with a `conclusion_clause`, it requires
 Vampire's explicit `result_literal_count` and `result_literal_i` conclusion map.
-For every reported parent, it also requires `parent_i_literal_count` and
-`parent_i_literal_j` fields so replay does not have to re-parse the parent
-clause string to recover literal positions.
+For every reported parent, it also requires `parent_i_clause`,
+`parent_i_literal_count`, and `parent_i_literal_j` fields so replay does not
+have to re-parse incomplete parent metadata to recover clause and literal
+positions.
 Whenever Vampire reports a `parent_i_substitution`, it also requires
 `parent_i_substituted_literal_count` and `parent_i_substituted_literal_j` fields
 rendered after applying that substitution.
