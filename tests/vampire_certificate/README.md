@@ -135,11 +135,12 @@ tests/vampire_certificate/run_kernel_v1_metadata_audit.sh \
 
 This checks the `step_extra ... kernel_v1` records emitted by Vampire. It
 requires the `schema=prover9-small-kernel-v1` marker plus parent/conclusion
-clause fields on every record, and requires rewrite-position records to carry
-the explicit `from`, `to`, substituted target/equality, and rewritten target
-fields. The point of this gate is to keep new work on the Prover9/Ivy-style
-certificate path: Vampire must emit primitive replay data, rather than leaving
-Megalodon to recover it by broad OCaml-side reconstruction.
+clause fields on every record, requires selected/other literals to include
+their substituted forms, and requires rewrite-position records to carry the
+explicit `from`, `to`, substituted target/equality, and rewritten target fields.
+The point of this gate is to keep new work on the Prover9/Ivy-style certificate
+path: Vampire must emit primitive replay data, rather than leaving Megalodon to
+recover it by broad OCaml-side reconstruction.
 
 Set `CLOSED_CERT_V1=1` on the cached emitter harness to request
 `-vampirecertv1closed`. In that mode a case passes only when emission introduces

@@ -65,6 +65,22 @@ if [[ -s "$WORK_DIR/missing_required.tsv" ]]; then
   exit 1
 fi
 
+awk 'index($0, "selected=") != 0 && index($0, "selected_substituted=") == 0 {print}' \
+  "$WORK_DIR/kernel_v1.tsv" > "$WORK_DIR/missing_selected_substituted.tsv"
+if [[ -s "$WORK_DIR/missing_selected_substituted.tsv" ]]; then
+  echo "kernel_v1 metadata audit found selected literals without substituted forms" >&2
+  sed -n '1,40p' "$WORK_DIR/missing_selected_substituted.tsv" >&2
+  exit 1
+fi
+
+awk 'index($0, "other=") != 0 && index($0, "other_substituted=") == 0 {print}' \
+  "$WORK_DIR/kernel_v1.tsv" > "$WORK_DIR/missing_other_substituted.tsv"
+if [[ -s "$WORK_DIR/missing_other_substituted.tsv" ]]; then
+  echo "kernel_v1 metadata audit found other literals without substituted forms" >&2
+  sed -n '1,40p' "$WORK_DIR/missing_other_substituted.tsv" >&2
+  exit 1
+fi
+
 awk '
   /rule=resolution/ || /rule=subsumption_resolution/ || /rule=factoring/ ||
   /rule=equality_resolution/ || /rule=superposition/ ||
