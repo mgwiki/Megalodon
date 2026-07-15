@@ -134,6 +134,16 @@ type core_native_proof = {
   core_native_proposition : tm;
   core_native_proof : pf;
   core_native_steps : int;
+  core_native_source_bindings : core_native_source_binding list;
+}
+
+and core_native_source_binding = {
+  core_native_source_step : string;
+  core_native_certificate_source_kind : string;
+  core_native_tptp_name : string;
+  core_native_source_name : string;
+  core_native_source_map_kind : string;
+  core_native_source_hash : string;
 }
 
 type source_map_entry = {
@@ -3460,21 +3470,59 @@ let native_core_factor_binary id parent_clause parent_proof left_index right_ind
       error
         (id ^ ": native core proof-term checker currently supports only factoring duplicate binary clauses")
 
-let elaborate_core_resolution_refutation_native cert =
+let native_core_source_kind_and_tptp_name = function
+  | SourceAxiom name -> ("axiom", name)
+  | SourceConjecture name -> ("conjecture", name)
+  | SourceNegatedConjecture name -> ("negated_conjecture", name)
+  | SourceDefinition name -> ("definition", name)
+  | SourceSetReflexivity name -> ("set_reflexivity", name)
+
+let native_core_source_binding source_map id source =
+  let source_kind, tptp_name = native_core_source_kind_and_tptp_name source in
+  let entry =
+    List.find_opt
+      (fun entry -> entry.source_map_tptp_name = tptp_name)
+      source_map
+  in
+  {
+    core_native_source_step = id;
+    core_native_certificate_source_kind = source_kind;
+    core_native_tptp_name = tptp_name;
+    core_native_source_name =
+      begin match entry with
+      | Some entry when entry.source_map_source_name <> "" -> entry.source_map_source_name
+      | _ -> tptp_name
+      end;
+    core_native_source_map_kind =
+      begin match entry with
+      | Some entry -> entry.source_map_kind
+      | None -> ""
+      end;
+    core_native_source_hash =
+      begin match entry with
+      | Some entry -> entry.source_map_hash
+      | None -> ""
+      end;
+  }
+
+let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
   let core_steps = validate_certificate_core_fragment cert in
   ignore (check_certificate_strict cert);
   let source_inputs = ref [] in
   List.iter
     (function
-      | Input (id, _, clause) ->
-          source_inputs := !source_inputs @ [(id, native_core_clause_prop id clause)]
+      | Input (id, source, clause) ->
+          source_inputs :=
+            !source_inputs
+            @ [(id, native_core_clause_prop id clause,
+                native_core_source_binding source_map id source)]
       | _ -> ())
     cert.steps;
   let source_count = List.length !source_inputs in
   let source_hyp_index id =
     let rec find index = function
       | [] -> None
-      | (input_id, _) :: rest ->
+    | (input_id, _, _) :: rest ->
           if input_id = id then Some (source_count - index - 1)
           else find (index + 1) rest
     in
@@ -3486,7 +3534,7 @@ let elaborate_core_resolution_refutation_native cert =
   let variable_types = List.map snd variables in
   let closed_source_context =
     !source_inputs
-    |> List.map (fun (_, prop) -> native_core_close_tm variables prop)
+    |> List.map (fun (_, prop, _) -> native_core_close_tm variables prop)
     |> List.rev
   in
   let check_step_proof id clause proof =
@@ -3585,13 +3633,13 @@ let elaborate_core_resolution_refutation_native cert =
   in
   let body_prop =
     List.fold_right
-      (fun (_, assumption) target -> Imp (assumption, target))
+      (fun (_, assumption, _) target -> Imp (assumption, target))
       !source_inputs
       native_core_false
   in
   let body_proof =
     List.fold_right
-      (fun (_, assumption) proof -> PLam (assumption, proof))
+      (fun (_, assumption, _) proof -> PLam (assumption, proof))
       !source_inputs
       proof
   in
@@ -3603,6 +3651,8 @@ let elaborate_core_resolution_refutation_native cert =
     core_native_proof =
       List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) variables closed_proof;
     core_native_steps = core_steps;
+    core_native_source_bindings =
+      List.map (fun (_, _, binding) -> binding) !source_inputs;
   }
 
 let emit_error msg =

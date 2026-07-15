@@ -7070,7 +7070,11 @@ let check_vampire_cert_v1_file fn =
       (List.length checked)
       (if List.length checked = 1 then "" else "s");
     begin if !vampirecertv1corepfcheck then
-      let native_core = Vampire_cert_v1.elaborate_core_resolution_refutation_native cert in
+      let native_core =
+        Vampire_cert_v1.elaborate_core_resolution_refutation_native
+          ~source_map:!source_map_for_emit
+          cert
+      in
       match
         check_propofpf sigdelta sigtmof [] []
           native_core.Vampire_cert_v1.core_native_proof
@@ -7081,7 +7085,11 @@ let check_vampire_cert_v1_file fn =
           Printf.printf
             "Vampire certificate v1 native core proof term checked %d step%s.\n"
             native_core.Vampire_cert_v1.core_native_steps
-            (if native_core.Vampire_cert_v1.core_native_steps = 1 then "" else "s")
+            (if native_core.Vampire_cert_v1.core_native_steps = 1 then "" else "s");
+          Printf.printf
+            "Vampire certificate v1 native core source bindings checked %d assumption%s.\n"
+            (List.length native_core.Vampire_cert_v1.core_native_source_bindings)
+            (if List.length native_core.Vampire_cert_v1.core_native_source_bindings = 1 then "" else "s")
       | None ->
           raise (Vampire_cert_v1.Error "native core proof term does not prove its proposition")
     end;

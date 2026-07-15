@@ -124,6 +124,16 @@ type core_native_proof = {
   core_native_proposition : Syntax.tm;
   core_native_proof : Syntax.pf;
   core_native_steps : int;
+  core_native_source_bindings : core_native_source_binding list;
+}
+
+and core_native_source_binding = {
+  core_native_source_step : string;
+  core_native_certificate_source_kind : string;
+  core_native_tptp_name : string;
+  core_native_source_name : string;
+  core_native_source_map_kind : string;
+  core_native_source_hash : string;
 }
 
 type source_map_entry = {
@@ -152,7 +162,7 @@ val validate_certificate_sources : ?require_formula_match:bool -> source_map_ent
 val check_certificate : certificate -> (string * checked_item) list
 val check_certificate_strict : certificate -> (string * checked_item) list
 val validate_certificate_core_fragment : certificate -> int
-val elaborate_core_resolution_refutation_native : certificate -> core_native_proof
+val elaborate_core_resolution_refutation_native : ?source_map:source_map_entry list -> certificate -> core_native_proof
 val emit_simple_megalodon :
   ?theorem_name:string ->
   ?source_map:source_map_entry list ->

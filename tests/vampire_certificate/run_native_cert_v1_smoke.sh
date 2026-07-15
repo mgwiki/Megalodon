@@ -346,6 +346,11 @@ if ! rg -q 'Vampire certificate v1 native core proof term checked 3 steps' \
   echo "native core proof-term checker did not validate the unit resolution seed" >&2
   exit 1
 fi
+if ! rg -q 'Vampire certificate v1 native core source bindings checked 2 assumptions' \
+    "$WORK_DIR/native_cert_v1_core_pf_unit.log"; then
+  echo "native core proof-term checker did not bind source assumptions for the unit seed" >&2
+  exit 1
+fi
 if ! rg -q 'Vampire certificate v1 source origin core_seed_core\.cnf\.2\.mg line 1 char 1 \(generated_core_seed\)' \
     "$WORK_DIR/native_cert_v1_core_pf_unit.log"; then
   echo "native core proof-term checker did not require/report original-origin metadata" >&2
