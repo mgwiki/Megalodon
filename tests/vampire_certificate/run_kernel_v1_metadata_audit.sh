@@ -572,6 +572,44 @@ if [[ -s "$WORK_DIR/avatar_refutation.tsv" ]]; then
 
   awk '
     {
+      if (match($0, /sat_input_count=([0-9]+)/, input_count_match)) {
+        input_count = input_count_match[1] + 0
+        for (input_index = 0; input_index < input_count; ++input_index) {
+          input_prefix = "sat_input_" input_index
+          if (index($0, input_prefix "_clause=") == 0) {
+            print input_prefix "_clause=\t" $0
+          }
+          if (index($0, input_prefix "_origin_unit=") == 0) {
+            print input_prefix "_origin_unit=\t" $0
+          }
+        }
+      }
+      if (match($0, /sat_proof_step_count=([0-9]+)/, step_count_match)) {
+        step_count = step_count_match[1] + 0
+        for (step_index = 0; step_index < step_count; ++step_index) {
+          step_prefix = "sat_proof_step_" step_index
+          if (index($0, step_prefix "_id=") == 0) {
+            print step_prefix "_id=\t" $0
+          }
+          if (index($0, step_prefix "_kind=") == 0) {
+            print step_prefix "_kind=\t" $0
+          }
+          if (index($0, step_prefix "_clause=") == 0) {
+            print step_prefix "_clause=\t" $0
+          }
+        }
+      }
+    }
+  ' "$WORK_DIR/avatar_refutation.tsv" > "$WORK_DIR/missing_sat_map_fields.tsv"
+
+  if [[ -s "$WORK_DIR/missing_sat_map_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found AVATAR SAT maps with missing indexed fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_sat_map_fields.tsv" >&2
+    exit 1
+  fi
+
+  awk '
+    {
       delete proof_ids
       if (!match($0, /sat_proof_step_count=([0-9]+)/, step_count_match)) {
         next

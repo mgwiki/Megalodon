@@ -175,8 +175,10 @@ For non-identity formula normalization, it requires source/result formulas,
 Vampire's underlying normal-form rule, and explicit source/target/path
 transformation pairs computed by the Vampire normal-form traversal.
 For AVATAR refutations, it requires the emitted SAT input map and SAT proof
-data. Every RUP SAT step must include its parent count, parent ids, parent
-clauses, and parent ids that resolve to earlier proof steps in the same record.
+data. `sat_input_count` and `sat_proof_step_count` must enumerate complete
+indexed maps. Every RUP SAT step must include its parent count, parent ids,
+parent clauses, and parent ids that resolve to earlier proof steps in the same
+record.
 For FOOL formula elimination, it requires source/result formulas and explicit
 source/target/path transformation pairs computed by Vampire while it still has
 the pre- and post-elimination formula trees.
