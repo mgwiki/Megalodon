@@ -138,9 +138,8 @@ requires the `schema=prover9-small-kernel-v1` marker plus parent/conclusion
 clause fields on every record, requires selected/other literals to include
 their substituted forms, and requires rewrite-position records to carry the
 explicit `from`, `to`, substituted target/equality, and rewritten target fields.
-For clausal primitive kernel records such as resolution, factoring, equality
-resolution, and subsumption resolution, it requires Vampire's explicit
-`result_literal_count` and `result_literal_i` conclusion map.
+For every clausal kernel record with a `conclusion_clause`, it requires
+Vampire's explicit `result_literal_count` and `result_literal_i` conclusion map.
 For unit-resulting resolution, it also requires Vampire's trace main parent,
 unit parent, selected/substituted selected literal, substituted unit literal,
 and remaining clause state after each pivot.

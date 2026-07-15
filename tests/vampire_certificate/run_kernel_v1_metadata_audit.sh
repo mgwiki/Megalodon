@@ -117,8 +117,8 @@ if [[ -s "$WORK_DIR/unknown_rules.tsv" ]]; then
   exit 1
 fi
 
-grep -E 'rule=(resolution|factoring|equality_resolution|subsumption_resolution)' "$WORK_DIR/kernel_v1.tsv" \
-  > "$WORK_DIR/clausal_kernel.tsv" || true
+awk 'index($0, "conclusion_clause=") != 0 {print}' "$WORK_DIR/kernel_v1.tsv" \
+  > "$WORK_DIR/clausal_kernel.tsv"
 
 if [[ -s "$WORK_DIR/clausal_kernel.tsv" ]]; then
   : > "$WORK_DIR/missing_clausal_kernel_fields.tsv"
