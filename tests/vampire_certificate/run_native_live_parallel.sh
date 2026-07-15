@@ -39,6 +39,7 @@ STRICT_CERT_V1=${STRICT_CERT_V1:-0}
 AUDIT_NATIVE_PRIMITIVES=${AUDIT_NATIVE_PRIMITIVES:-1}
 AUDIT_KERNEL_V1_METADATA=${AUDIT_KERNEL_V1_METADATA:-1}
 VAMPIRE_PROOF_ARGS=${VAMPIRE_PROOF_ARGS:-"--proof_extra lean --skolemization syntactic --shuffle_input off"}
+VAMPIRE_OUTPUT_AXIOM_NAMES=${VAMPIRE_OUTPUT_AXIOM_NAMES:-on}
 VAMPIRE_EXTRA_ARGS=${VAMPIRE_EXTRA_ARGS:-}
 WORK_DIR=${WORK_DIR:-"$TMPDIR/megalodon_native_live_${LIMIT}"}
 
@@ -118,13 +119,17 @@ run_one() {
   if [[ -n "$VAMPIRE_EXTRA_ARGS" ]]; then
     read -r -a extra_args <<< "$VAMPIRE_EXTRA_ARGS"
   fi
+  local axiom_name_args=()
+  if [[ -n "$VAMPIRE_OUTPUT_AXIOM_NAMES" ]]; then
+    axiom_name_args=(--output_axiom_names "$VAMPIRE_OUTPUT_AXIOM_NAMES")
+  fi
   if ! run_with_wall_timeout "$case_dir" \
       "$VAMPIRE" \
       --input_syntax tptp \
       --mode casc \
       -t "$VAMPIRE_SECONDS" \
       --proof megalodon \
-      --output_axiom_names on \
+      "${axiom_name_args[@]}" \
       "${proof_args[@]}" \
       "${extra_args[@]}" \
       "$problem"; then
@@ -167,7 +172,7 @@ run_one() {
   fi
 }
 
-export ROOT TMPDIR MEGALODON VAMPIRE PROBLEM_DIR WORK_DIR VAMPIRE_SECONDS WALL_SECONDS CHECK_SOURCE_MAP REQUIRE_SOURCE_ORIGIN STRICT_CERT_V1 VAMPIRE_PROOF_ARGS VAMPIRE_EXTRA_ARGS
+export ROOT TMPDIR MEGALODON VAMPIRE PROBLEM_DIR WORK_DIR VAMPIRE_SECONDS WALL_SECONDS CHECK_SOURCE_MAP REQUIRE_SOURCE_ORIGIN STRICT_CERT_V1 VAMPIRE_PROOF_ARGS VAMPIRE_OUTPUT_AXIOM_NAMES VAMPIRE_EXTRA_ARGS
 export -f run_with_wall_timeout run_one
 
 xargs -a "$WORK_DIR/problems.txt" -n1 -P "$JOBS" bash -c 'run_one "$0"'
