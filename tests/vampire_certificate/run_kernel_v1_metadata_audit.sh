@@ -85,7 +85,7 @@ awk '
   /rule=resolution/ || /rule=subsumption_resolution/ || /rule=factoring/ ||
   /rule=equality_resolution/ || /rule=superposition/ ||
   /rule=equality_factoring/ || /rule=rewrite/ ||
-  /rule=unit_resulting_resolution/ {
+  /rule=unit_resulting_resolution/ || /rule=cnf_clause/ {
     next
   }
   { print }
@@ -118,6 +118,32 @@ if [[ -s "$WORK_DIR/unit_resulting_resolution.tsv" ]]; then
   if [[ -s "$WORK_DIR/missing_urr_fields.tsv" ]]; then
     echo "kernel_v1 metadata audit found unit-resulting-resolution records missing trace fields" >&2
     sed -n '1,40p' "$WORK_DIR/missing_urr_fields.tsv" >&2
+    exit 1
+  fi
+fi
+
+grep -F 'rule=cnf_clause' "$WORK_DIR/kernel_v1.tsv" \
+  > "$WORK_DIR/cnf_clause.tsv" || true
+
+if [[ -s "$WORK_DIR/cnf_clause.tsv" ]]; then
+  : > "$WORK_DIR/missing_cnf_clause_fields.tsv"
+  for pattern in \
+    'source_unit=' \
+    'source_kind=' \
+    'result_clause=' \
+    'clause_parent_unit=' \
+    'clause_index=' \
+    'clause_count='; do
+    awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
+      "$WORK_DIR/cnf_clause.tsv" >> "$WORK_DIR/missing_cnf_clause_fields.tsv"
+  done
+
+  awk 'index($0, "source_formula=") == 0 && index($0, "source_clause=") == 0 {print "source_formula_or_clause=\t" $0}' \
+    "$WORK_DIR/cnf_clause.tsv" >> "$WORK_DIR/missing_cnf_clause_fields.tsv"
+
+  if [[ -s "$WORK_DIR/missing_cnf_clause_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found cnf-clause records missing source/result fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_cnf_clause_fields.tsv" >&2
     exit 1
   fi
 fi
