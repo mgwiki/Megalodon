@@ -454,6 +454,22 @@ corpus currently contains one closed case of each kind.  These gates are not
 broad milestone evidence; they prevent the final known tracked edge cases from
 falling out of closed validation while larger live corpora are expanded.
 
+To run every staged closed gate and prove that the selected layer lists form a
+disjoint cover of the committed `closed_cases` corpus, use:
+
+```sh
+tests/vampire_certificate/run_native_cert_v1_layered_closed_audit.sh
+```
+
+This aggregate gate runs the core, preprocessing, Skolemization, definition,
+AVATAR, inequality, and definition-rewrite audits, then compares their selected
+case lists with all tracked `*.native.sexp` closed fixtures.  It fails if any
+tracked closed case is missing from the layer partition, appears in more than
+one layer, or if a layer selects a case outside the committed corpus.  This is
+the preferred one-command regression check for the current 169-case closed
+certificate suite; it is still not a substitute for fresh live larger-library
+evaluation.
+
 To export a Megalodon development once and then check the resulting source-mapped
 TH0 corpus in parallel, use:
 
