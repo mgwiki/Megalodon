@@ -9,6 +9,7 @@ CASES_DIR=${CASES_DIR:-"$ROOT/tests/vampire_certificate/closed_cases"}
 WORK_DIR=${WORK_DIR:-"$(mktemp -d "$TMPDIR/native_cert_v1_core_closed_audit.XXXXXX")"}
 MIN_CORE=${MIN_CORE:-10}
 RUN_CORE_CASES=${RUN_CORE_CASES:-1}
+RUN_CORE_PF_CASES=${RUN_CORE_PF_CASES:-1}
 JOBS=${JOBS:-7}
 
 mkdir -p "$WORK_DIR"
@@ -114,4 +115,12 @@ if [[ "$RUN_CORE_CASES" == "1" ]]; then
     "$WORK_DIR/core_summary.tsv" \
     | sort > "$WORK_DIR/core_counts.txt"
   cat "$WORK_DIR/core_counts.txt"
+fi
+
+if [[ "$RUN_CORE_PF_CASES" == "1" ]]; then
+  CASE_LIST="$WORK_DIR/core_closed_cases.list" \
+  WORK_DIR="$WORK_DIR/core_pf_check" \
+  JOBS="$JOBS" \
+  MIN_CORE_PF="$MIN_CORE" \
+    "$ROOT/tests/vampire_certificate/run_native_cert_v1_core_pf_audit.sh"
 fi

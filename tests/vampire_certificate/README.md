@@ -313,13 +313,13 @@ use:
 tests/vampire_certificate/run_native_cert_v1_core_pf_audit.sh
 ```
 
-This gate runs `-vampirecertv1corepfcheck` over the tracked `core.cnf.*`
-closed fixtures and requires all selected cases to report `CORE_PF_PASS`,
-including source-origin reporting for every checked proof term.  A rule is
-eligible for `coreclosed` only when it is intended to have native proof-term
-support; structurally checked macro rules such as `equality_factoring` stay
-outside this gate until they are elaborated as explicit small-kernel proof
-steps.
+This gate runs `-vampirecertv1corepfcheck` over either an explicit
+`CASE_LIST` or the tracked `core.cnf.*` closed fixtures and requires all
+selected cases to report `CORE_PF_PASS`, including source-origin reporting for
+every checked proof term.  A rule is eligible for `coreclosed` only when it is
+intended to have native proof-term support; structurally checked macro rules
+such as `equality_factoring` stay outside this gate until they are elaborated
+as explicit small-kernel proof steps.
 
 For the audit-recommended restricted milestone, use:
 
@@ -330,7 +330,8 @@ tests/vampire_certificate/run_native_cert_v1_core_closed_audit.sh
 This is intentionally stricter than the broad closed corpus. It first filters
 tracked closed fixtures to certificates using only the small core clause-proof
 constructors (`input`, substitution, resolution, subsumption resolution,
-factoring, equality resolution/factoring, paramodulation, and contradiction).
+factoring, equality resolution, equality symmetry, paramodulation, and
+contradiction).
 It excludes preprocessing-heavy rules such as formula inputs/copies, FOOL,
 ENNF, CNF,
 Skolemization, AVATAR, predicate definitions, theory FOOL clauses, and
@@ -345,6 +346,9 @@ so the next reconstruction work can target the largest repeated blocking
 classes instead of isolated examples.
 Selected cases are checked with `-vampirecertv1coreclosed`, not only with the
 broader `-vampirecertv1closed` mode.
+The same eligible case list is also checked with `-vampirecertv1corepfcheck`,
+so the counted core corpus cannot silently drift away from the native
+`Syntax.pf` proof-term path.
 
 For the next layer above the clausal core, use:
 

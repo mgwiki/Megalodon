@@ -7,6 +7,7 @@ export TMPDIR
 
 MEGALODON=${MEGALODON:-"$ROOT/bin/megalodon"}
 CASES_DIR=${CASES_DIR:-"$ROOT/tests/vampire_certificate/closed_cases"}
+CASE_LIST=${CASE_LIST:-}
 WORK_DIR=${WORK_DIR:-"$(mktemp -d "$TMPDIR/native_cert_v1_core_pf_audit.XXXXXX")"}
 JOBS=${JOBS:-10}
 MIN_CORE_PF=${MIN_CORE_PF:-10}
@@ -15,7 +16,36 @@ mkdir -p "$WORK_DIR/cases"
 ln -sfn "$WORK_DIR" "$TMPDIR/latest_native_cert_v1_core_pf_audit"
 
 case_list="$WORK_DIR/core_pf_cases.list"
-find "$CASES_DIR" -maxdepth 1 -type f -name 'core.cnf.*.native.sexp' | sort > "$case_list"
+: > "$case_list"
+if [[ -n "$CASE_LIST" ]]; then
+  while IFS= read -r raw || [[ -n "$raw" ]]; do
+    raw="${raw%%#*}"
+    raw="${raw#"${raw%%[![:space:]]*}"}"
+    raw="${raw%"${raw##*[![:space:]]}"}"
+    [[ -z "$raw" ]] && continue
+    if [[ "$raw" = /* ]]; then
+      native="$raw"
+    elif [[ "$raw" == *.native.sexp ]]; then
+      native="$CASES_DIR/$raw"
+    elif [[ "$raw" == *.th0.p ]]; then
+      native="$CASES_DIR/${raw%.th0.p}.native.sexp"
+    else
+      native="$CASES_DIR/$raw.native.sexp"
+    fi
+    if [[ ! -s "$native" ]]; then
+      echo "listed native core proof-term certificate does not exist: $raw" >&2
+      exit 2
+    fi
+    printf '%s\n' "$native" >> "$case_list"
+  done < "$CASE_LIST"
+else
+  find "$CASES_DIR" -maxdepth 1 -type f -name 'core.cnf.*.native.sexp' | sort > "$case_list"
+fi
+
+if [[ ! -s "$case_list" ]]; then
+  echo "no native core proof-term cases selected" >&2
+  exit 2
+fi
 
 run_one() {
   local native=$1
