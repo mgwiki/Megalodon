@@ -296,15 +296,27 @@ parent_errors="$WORK_DIR/primitive_parent_reference_errors.tsv"
 : > "$parent_errors"
 while IFS= read -r native_file; do
   awk -v source="$native_file" '
-    function report(kind, ref, line) {
+    function paren_delta(text,    i, c, delta) {
+      delta = 0
+      for (i = 1; i <= length(text); ++i) {
+        c = substr(text, i, 1)
+        if (c == "(") {
+          ++delta
+        } else if (c == ")") {
+          --delta
+        }
+      }
+      return delta
+    }
+
+    function report(kind, ref, line, record_line) {
       if (!(ref in seen)) {
-        print source ":" FNR "\t" kind "\t" ref "\t" line
+        print source ":" record_line "\t" kind "\t" ref "\t" line
       }
     }
 
-    /^  \([[:alnum:]_]+ "[^"]+"/ {
-      line = $0
-      if (match(line, /^  \(([[:alnum:]_]+) "([^"]+)"/, step)) {
+    function process_record(line, record_line,    step, rule, id, ref) {
+      if (match(line, /^[[:space:]]*\(([[:alnum:]_]+) "([^"]+)"/, step)) {
         rule = step[1]
         id = step[2]
 
@@ -326,20 +338,20 @@ while IFS= read -r native_file; do
             rule == "avatar_refutation" ||
             rule == "split_dependency") {
           if (match(line, /\(parent "([^"]+)"/, ref)) {
-            report("parent", ref[1], line)
+            report("parent", ref[1], line, record_line)
           }
           if (match(line, /\(parents "([^"]+)" "([^"]+)"/, ref)) {
-            report("parents", ref[1], line)
-            report("parents", ref[2], line)
+            report("parents", ref[1], line, record_line)
+            report("parents", ref[2], line, record_line)
           }
           if (match(line, /\(equality "([^"]+)"/, ref)) {
-            report("equality", ref[1], line)
+            report("equality", ref[1], line, record_line)
           }
           if (match(line, /\(target "([^"]+)"/, ref)) {
-            report("target", ref[1], line)
+            report("target", ref[1], line, record_line)
           }
           if (match(line, /\(owner "([^"]+)"/, ref)) {
-            report("owner", ref[1], line)
+            report("owner", ref[1], line, record_line)
           }
         }
 
@@ -348,10 +360,46 @@ while IFS= read -r native_file; do
             rule != "step_variable_sorts" &&
             rule != "step_extra") {
           if (id in proof_step) {
-            print source ":" FNR "\tduplicate-proof-step-id\t" id "\t" line
+            print source ":" record_line "\tduplicate-proof-step-id\t" id "\t" line
           }
           proof_step[id] = rule
         }
+      }
+    }
+
+    /^  \([[:alnum:]_]+ "[^"]+"/ {
+      if (collecting) {
+        gsub(/[[:space:]]+/, " ", record)
+        process_record(record, start_line)
+      }
+      collecting = 1
+      start_line = FNR
+      record = $0
+      depth = paren_delta($0)
+      if (depth <= 0) {
+        gsub(/[[:space:]]+/, " ", record)
+        process_record(record, start_line)
+        collecting = 0
+        record = ""
+      }
+      next
+    }
+
+    collecting {
+      record = record " " $0
+      depth += paren_delta($0)
+      if (depth <= 0) {
+        gsub(/[[:space:]]+/, " ", record)
+        process_record(record, start_line)
+        collecting = 0
+        record = ""
+      }
+    }
+
+    END {
+      if (collecting) {
+        gsub(/[[:space:]]+/, " ", record)
+        process_record(record, start_line)
       }
     }
   ' "$native_file" >> "$parent_errors"
@@ -367,6 +415,19 @@ macro_expansion_errors="$WORK_DIR/macro_expansion_errors.tsv"
 : > "$macro_expansion_errors"
 while IFS= read -r native_file; do
   awk -v source="$native_file" '
+    function paren_delta(text,    i, c, delta) {
+      delta = 0
+      for (i = 1; i <= length(text); ++i) {
+        c = substr(text, i, 1)
+        if (c == "(") {
+          ++delta
+        } else if (c == ")") {
+          --delta
+        }
+      }
+      return delta
+    }
+
     function proof_id_prefix(id, out) {
       if (match(id, /^u[0-9]+/)) {
         out = substr(id, RSTART, RLENGTH)
@@ -378,6 +439,10 @@ while IFS= read -r native_file; do
     function required_primitive(rule) {
       if (rule == "fool_formula") {
         return "fool_atom_lift"
+      }
+      if (rule == "cnf_clause" ||
+          rule == "formula_copy") {
+        return ""
       }
       if (rule == "formula_normalize") {
         return "ennf_formula"
@@ -411,9 +476,48 @@ while IFS= read -r native_file; do
       return ""
     }
 
-    /^  \([[:alnum:]_]+ "[^"]+"/ {
-      line = $0
-      if (match(line, /^  \(([[:alnum:]_]+) "([^"]+)"/, step)) {
+    function allowed_required_primitive(rule, primitive) {
+      if (rule == "cnf_clause") {
+        return primitive == "cnf_literal" || primitive == "cnf_formula_clause"
+      }
+      if (rule == "formula_copy") {
+        return primitive == "formula_copy" || primitive == "formula_term_copy"
+      }
+      if (rule == "fool_formula") {
+        return primitive == "fool_atom_lift"
+      }
+      if (rule == "formula_normalize") {
+        return primitive == "ennf_formula"
+      }
+      if (rule == "skolemize") {
+        return primitive == "skolem_formula"
+      }
+      if (rule == "rectify_formula" ||
+          rule == "fool_exhaustiveness" ||
+          rule == "truth_conflict" ||
+          rule == "avatar_definition" ||
+          rule == "split_dependency") {
+        return primitive == rule
+      }
+      if (rule == "instantiation") {
+        return primitive == "substitute"
+      }
+      if (rule == "superposition" || rule == "rewrite") {
+        return primitive == "paramodulate"
+      }
+      if (rule == "subsumption_resolution" ||
+          rule == "unit_resulting_resolution" ||
+          rule == "resolution") {
+        return primitive == "resolve"
+      }
+      if (rule == "factoring") {
+        return primitive == "factor"
+      }
+      return 1
+    }
+
+    function process_record(line, record_line,    step, rule, id, prefix, owner, unit, rule_match, kernel_rule, required_match, primitive, has_required) {
+      if (match(line, /^[[:space:]]*\(([[:alnum:]_]+) "([^"]+)"/, step)) {
         rule = step[1]
         id = step[2]
         if (rule != "step_proposition" &&
@@ -426,13 +530,17 @@ while IFS= read -r native_file; do
           }
         }
       }
-      if (match(line, /^  \(step_extra "(u[0-9]+)" "kernel_v1"/, owner) &&
+      if (match(line, /^[[:space:]]*\(step_extra "(u[0-9]+)" "kernel_v1"/, owner) &&
           match(line, /"rule=([^"]+)"/, rule_match)) {
         unit = owner[1]
         kernel_rule = rule_match[1]
         primitive = required_primitive(kernel_rule)
-        if (primitive == "" &&
-            match(line, /primitive_expansion_requires=([^"]+)/, required_match)) {
+        has_required = match(line, /primitive_expansion_requires=([^"]+)/, required_match)
+        if (has_required &&
+            !allowed_required_primitive(kernel_rule, required_match[1])) {
+          print source ":" record_line "\tunsupported-expansion-primitive\t" unit "\t" kernel_rule "\t" required_match[1] "\t" line
+        }
+        if (primitive == "" && has_required) {
           primitive = required_match[1]
         }
         if (primitive != "") {
@@ -450,7 +558,40 @@ while IFS= read -r native_file; do
       }
     }
 
+    /^  \([[:alnum:]_]+ "[^"]+"/ {
+      if (collecting) {
+        gsub(/[[:space:]]+/, " ", record)
+        process_record(record, start_line)
+      }
+      collecting = 1
+      start_line = FNR
+      record = $0
+      depth = paren_delta($0)
+      if (depth <= 0) {
+        gsub(/[[:space:]]+/, " ", record)
+        process_record(record, start_line)
+        collecting = 0
+        record = ""
+      }
+      next
+    }
+
+    collecting {
+      record = record " " $0
+      depth += paren_delta($0)
+      if (depth <= 0) {
+        gsub(/[[:space:]]+/, " ", record)
+        process_record(record, start_line)
+        collecting = 0
+        record = ""
+      }
+    }
+
     END {
+      if (collecting) {
+        gsub(/[[:space:]]+/, " ", record)
+        process_record(record, start_line)
+      }
       for (macro_index = 1; macro_index <= macro_count; ++macro_index) {
         unit = macro_unit[macro_index]
         primitive = macro_primitive[macro_index]
