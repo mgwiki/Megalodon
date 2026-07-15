@@ -674,6 +674,34 @@ if ! rg -q 'Vampire certificate v1 strict checked 6 steps' "$WORK_DIR/native_cer
 fi
 
 bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_primitive_expansion_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_primitive_expansion_valid.log"
+
+if ! rg -q 'Vampire certificate v1 strict checked 6 steps' \
+    "$WORK_DIR/native_cert_v1_primitive_expansion_valid.log"; then
+  echo "strict native certificate v1 checker did not accept primitive-expansion contract metadata" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_primitive_expansion_missing_bad.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_primitive_expansion_missing_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_primitive_expansion_missing_bad.err"; then
+  echo "strict native certificate v1 checker accepted kernel macro metadata without a primitive-expansion contract" >&2
+  exit 1
+fi
+
+if ! rg -q 'requires primitive_expansion=prefix for kernel rule unit_resulting_resolution' \
+    "$WORK_DIR/native_cert_v1_primitive_expansion_missing_bad.err"; then
+  echo "strict native certificate v1 primitive-expansion failure did not explain the missing contract" >&2
+  exit 1
+fi
+
+bin/megalodon \
   -vampirecertv1closed \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_valid.th0.p \

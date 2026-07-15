@@ -3160,7 +3160,88 @@ let check_certificate_with step_checker cert =
 let check_certificate cert =
   check_certificate_with check_step cert
 
+let field_value key fields =
+  let prefix = key ^ "=" in
+  let prefix_len = String.length prefix in
+  List.find_map
+    (fun field ->
+       if String.length field >= prefix_len
+          && String.sub field 0 prefix_len = prefix then
+         Some (String.sub field prefix_len (String.length field - prefix_len))
+       else None)
+    fields
+
+let required_primitive_for_kernel_rule = function
+  | "superposition"
+  | "rewrite" -> Some "paramodulate"
+  | "subsumption_resolution"
+  | "unit_resulting_resolution"
+  | "resolution" -> Some "resolve"
+  | "factoring" -> Some "factor"
+  | _ -> None
+
+let has_id_prefix id prefix =
+  id = prefix
+  ||
+  let prefix_with_sep = prefix ^ "_" in
+  let prefix_len = String.length prefix_with_sep in
+  String.length id >= prefix_len
+  && String.sub id 0 prefix_len = prefix_with_sep
+
+let validate_primitive_expansion_contracts cert =
+  let steps = cert.steps in
+  let has_step_id id =
+    List.exists (fun step -> step_id step = id) steps
+  in
+  let has_prefixed_primitive prefix primitive =
+    List.exists
+      (fun step ->
+         step_rule_name step = primitive && has_id_prefix (step_id step) prefix)
+      steps
+  in
+  List.iter
+    (fun (id, kind, fields) ->
+       if kind = "kernel_v1" then
+         match field_value "rule" fields with
+         | None -> ()
+         | Some kernel_rule ->
+             begin match required_primitive_for_kernel_rule kernel_rule with
+             | None -> ()
+             | Some primitive ->
+                 let fail message =
+                   error (id ^ ": strict certificate v1 " ^ message)
+                 in
+                 begin match field_value "primitive_expansion" fields with
+                 | Some "prefix" -> ()
+                 | Some other ->
+                     fail ("rejects unsupported primitive_expansion " ^ other)
+                 | None ->
+                     fail ("requires primitive_expansion=prefix for kernel rule " ^ kernel_rule)
+                 end;
+                 let prefix =
+                   match field_value "primitive_expansion_prefix" fields with
+                   | Some prefix when prefix = id -> prefix
+                   | Some prefix ->
+                       fail ("primitive_expansion_prefix " ^ prefix ^ " does not match step id " ^ id)
+                   | None ->
+                       fail ("requires primitive_expansion_prefix for kernel rule " ^ kernel_rule)
+                 in
+                 begin match field_value "primitive_expansion_requires" fields with
+                 | Some required when required = primitive -> ()
+                 | Some required ->
+                     fail ("primitive_expansion_requires " ^ required ^ " but " ^ primitive ^ " is required for " ^ kernel_rule)
+                 | None ->
+                     fail ("requires primitive_expansion_requires=" ^ primitive ^ " for kernel rule " ^ kernel_rule)
+                 end;
+                 if not (has_step_id id) then
+                   fail "requires a final certificate step with the kernel unit id";
+                 if not (has_prefixed_primitive prefix primitive) then
+                   fail ("requires a " ^ primitive ^ " primitive step with prefix " ^ prefix)
+             end)
+    cert.metadata.step_extras
+
 let check_certificate_strict cert =
+  validate_primitive_expansion_contracts cert;
   check_certificate_with check_step_strict cert
 
 let validate_certificate_core_fragment cert =
