@@ -8705,7 +8705,16 @@ let simple_predicate_definition_fold_proof type_env id result_sorts source targe
   let atom_replacement_proof env proof target_atom =
     if target_atom = definiendum then proof
     else
-      try simple_fool_atom_forward_proof (env @ type_env) definiendum target_atom proof
+      try
+        match equality_sides target_atom with
+        | Some (left, right) when simple_bool_true_tm left && right = definiendum ->
+            let body_text = formula_text env body in
+            Printf.sprintf "(vampire_fool_prop_to_true_eq (%s) %s)" body_text proof
+        | Some (left, right) when left = definiendum && simple_bool_true_tm right ->
+            let body_text = formula_text env body in
+            Printf.sprintf "(vampire_fool_prop_to_eq_true (%s) %s)" body_text proof
+        | _ ->
+            simple_fool_atom_forward_proof (env @ type_env) definiendum target_atom proof
       with Error msg ->
         emit_error (id ^ ": predicate-definition fold replacement is unsupported: " ^ msg)
   in
@@ -9958,18 +9967,42 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             binders @ metadata_step_variable_sort_pairs cert id @ symbol_type_env
             |> List.sort_uniq compare
           in
-          let body_text =
+          let rendered_body_text =
             simple_formula_prop_text_with_used
               (List.map fst binders) definition_env body
           in
-          let rhs =
-            List.fold_right
-              (fun (binder, sort) acc ->
-                 "fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => " ^ acc)
-              binders
-              body_text
+          let body_text_opt =
+            match metadata_step_extra_field cert id "predicate_definition" "formula" with
+            | Some formula_text ->
+                let metadata_body_text = simple_fix_known_higher_order_binders formula_text in
+                let starts_with prefix text =
+                  let text = String.trim text in
+                  let prefix_len = String.length prefix in
+                  String.length text >= prefix_len
+                  && String.sub text 0 prefix_len = prefix
+                in
+                if simple_rendered_prop_equiv rendered_body_text metadata_body_text
+                   || (starts_with "forall " rendered_body_text
+                       && starts_with "forall " metadata_body_text)
+                   || (starts_with "vampire_exists" rendered_body_text
+                       && starts_with "vampire_exists" metadata_body_text) then
+                  Some metadata_body_text
+                else
+                  None
+            | None -> Some rendered_body_text
           in
-          Some (name, Printf.sprintf "Definition %s : %s := %s." name declared_sort rhs, declared_sort)
+          begin match body_text_opt with
+          | Some body_text ->
+              let rhs =
+                List.fold_right
+                  (fun (binder, sort) acc ->
+                     "fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => " ^ acc)
+                  binders
+                  body_text
+              in
+              Some (name, Printf.sprintf "Definition %s : %s := %s." name declared_sort rhs, declared_sort)
+          | None -> None
+          end
       | _ -> None
     with Error _ -> None
   in
@@ -9984,6 +10017,15 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   in
   let predicate_definition_names =
     List.map (fun (name, _, _) -> name) predicate_definitions
+  in
+  let has_transparent_predicate_definition formula =
+    try
+      let _, atom, _ = predicate_definition_parts "" formula in
+      let definiendum = predicate_definition_definiendum_term atom in
+      match flatten_value_application definiendum with
+      | TmH raw_name, _ -> List.mem (megalodon_ident raw_name) predicate_definition_names
+      | _ -> false
+    with Error _ -> false
   in
   let avatar_split_definition_for_component id result =
     let split_literals, component_literals =
@@ -10981,6 +11023,8 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           let prop, sorts = formula_tm_prop_and_sorts id formula in
           begin match
             try
+              if not (has_transparent_predicate_definition formula) then
+                emit_error (id ^ ": predicate definition has no compatible transparent Megalodon definition");
               let type_env =
                 simple_type_env_with_variables
                   (sorts |> simple_unique_variable_sorts)
@@ -11025,6 +11069,9 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
               try
                 let source = lookup_formula checked_certificate source_id in
                 let definition = lookup_formula checked_certificate definition_id in
+                if not (has_transparent_predicate_definition definition) then
+                  emit_error
+                    (id ^ ": predicate-definition fold has no compatible transparent Megalodon definition");
                 let _, atom, body = predicate_definition_parts definition_id definition in
                 let type_env =
                   simple_type_env_with_variables
@@ -11044,12 +11091,13 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                   with Error _ -> simple_atom_prop_with_type_env type_env formula
                 in
                 let final_name = derived_name id in
-                if replay_target_prop = target_prop then
-                  Some
-                    (final_name, target_prop,
-                     [(final_name, target_prop, "exact " ^ fold_proof ^ ".")])
-                else
-                  None
+                let final_prop =
+                  if replay_target_prop = target_prop then target_prop
+                  else replay_target_prop
+                in
+                Some
+                  (final_name, final_prop,
+                   [(final_name, final_prop, "exact " ^ fold_proof ^ ".")])
               with Error _ -> None
             with
             | Some (name, prop, new_claims) ->

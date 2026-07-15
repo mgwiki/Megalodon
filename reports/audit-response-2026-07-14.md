@@ -2076,3 +2076,92 @@ CHECK_TIMEOUT 1
 
 The single timeout remains `hammer.10847.41.th0.p`, previously shown to pass
 with a 180-second local check. No `CHECK_FAIL` rows remain in this replay.
+
+## July 15 Follow-up: Transparent Predicate Definitions
+
+The next adjustment follows the audit's closed-proof discipline: predicate
+definition replay may use a transparent Megalodon `Definition` only when that
+definition is compatible with the native certificate's predicate-definition
+body. Vampire's native metadata sometimes provides a useful rendered body that
+avoids binder-capture bugs in the text emitter; however, it is not always the
+same body as the checked native predicate-definition theorem. Some `sP*`
+definitions carry a transformed existential metadata body while the certificate
+theorem and fold step use a universal body.
+
+The emitter now:
+
+- uses `predicate_definition/formula` as a Megalodon definition body only when
+  its outer shape agrees with the rendered native certificate body;
+- refuses to replay predicate-definition theorem and fold steps when there is
+  no compatible transparent Megalodon definition for the introduced predicate;
+- emits the parsed native target proposition for successful fold proofs, so
+  metadata pretty-printing differences such as `vampire_or` association are not
+  mistaken for proof obligations;
+- leaves incompatible cases as closed-mode `derived:theory_predicate_definition`
+  or `bridge:bridge_predicate_definition_fold` failures instead of emitting an
+  invalid script.
+
+Focused validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+
+native certificate v1 smoke test passed
+
+hammer.10890.4.th0:
+  closed emit: succeeds with no bridge/admit/aby
+  -hf check: fails earlier in the generated ENNF/skolem proof:
+             Unknown term X7
+
+hammer.10894.19.th0:
+  closed emit: rejected
+  reason: derived:theory_predicate_definition__u225,
+          bridge:bridge_predicate_definition_fold__u226
+```
+
+Cached 20-way replay over the same existing native certificates, without
+rerunning Vampire:
+
+```text
+WORK_DIR=/project/tmp/megalodon3_predfold_transparent_gate_033843
+TMPDIR=/project/tmp \
+PROBLEM_DIR=/project/tmp/source_linked_strict_100_corpus_fresh_041947 \
+JOBS=20 MIN_PASS=0 CLOSED_CERT_V1=1 CHECK_SOURCE_MAP=1 STRICT_CERT_V1=1 \
+EMIT_TIMEOUT=30 CHECK_TIMEOUT=45 \
+tests/vampire_certificate/run_native_emit_cached_parallel.sh \
+  /project/tmp/megalodon3_native_live_current_noorigin_003131
+
+CLOSED_PASS 143
+EMIT_FAIL 67
+CHECK_FAIL 3
+```
+
+Relative to `/project/tmp/megalodon3_skolem_guard_exists_order_031857`, this is
+a net increase from 141 to 143 checked closed passes. Three cases became new
+checked closed passes:
+
+```text
+hammer.11475.33.th0.p
+hammer.11505.69.th0.p
+hammer.11535.43.th0.p
+```
+
+One previous pass, `hammer.10794.63.th0.p`, is no longer counted because the
+stricter path exposes a checker failure:
+
+```text
+Failure at line 108 char 359: Unknown term X0
+```
+
+The remaining `CHECK_FAIL` cases are not counted as closed proofs:
+
+```text
+hammer.10794.63.th0.p
+hammer.10890.4.th0.p
+hammer.10909.19.th0.p
+```
+
+This is intentionally not reported as a broad bridge-count milestone. It is a
+small closed-mode correction: two net new checked closed proofs, and stricter
+rejection of incompatible transparent predicate definitions.
