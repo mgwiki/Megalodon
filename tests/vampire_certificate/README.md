@@ -273,7 +273,8 @@ implies `-vampirecertv1coreclosed`, then constructs and kernel-checks a
 unit/unit, binary/unit, and binary/binary resolution, binary/unit
 subsumption-resolution with empty side substitution, duplicate binary factoring,
 identity substitution, and equality resolution over reflexive disequalities
-encoded with Megalodon's actual polymorphic equality, plus unit/unit
+encoded with Megalodon's actual polymorphic equality, equality symmetry over
+typed Megalodon equality literals in unit and binary clauses, plus unit/unit
 paramodulation into positive and negative targets, and unit-equality
 paramodulation into larger target clauses, using explicit Vampire
 position/from/to data. Clauses are represented by native recursive

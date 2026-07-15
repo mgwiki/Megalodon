@@ -1873,14 +1873,24 @@ let check_factor checked id parent_id left_index right_index result =
 
 let swap_literal_equality = function
   | Pos atom ->
+      begin match megalodon_eq_poly_sides atom with
+      | Some (tp, left, right) ->
+          Some (Pos (Ap (Ap (TpAp (TmH megalodon_eq_poly_hash, tp), right), left)))
+      | None ->
       begin match equality_sides atom with
       | Some (left, right) -> Some (Pos (Ap (Ap (TmH "=", right), left)))
       | None -> None
       end
+      end
   | Neg atom ->
+      begin match megalodon_eq_poly_sides atom with
+      | Some (tp, left, right) ->
+          Some (Neg (Ap (Ap (TpAp (TmH megalodon_eq_poly_hash, tp), right), left)))
+      | None ->
       begin match equality_sides atom with
       | Some (left, right) -> Some (Neg (Ap (Ap (TmH "=", right), left)))
       | None -> None
+      end
       end
 
 let check_definition_input id clause =
@@ -3161,6 +3171,7 @@ let validate_certificate_core_fragment cert =
     | SubsumptionResolution _
     | Factor _
     | EqualityResolution _
+    | EqualitySymmetry _
     | EqualityFactoring _
     | Paramodulate _
     | Contradiction _ -> true
@@ -3559,6 +3570,61 @@ let native_core_reflexive_eq_proof = function
                Hyp 0)))
   | _ -> None
 
+let native_core_swapped_eq_literal = function
+  | Pos atom ->
+      begin match megalodon_eq_poly_sides atom with
+      | Some (tp, left, right) ->
+          Some (Pos (Ap (Ap (TpAp (TmH megalodon_eq_poly_hash, tp), right), left)))
+      | None -> None
+      end
+  | Neg atom ->
+      begin match megalodon_eq_poly_sides atom with
+      | Some (tp, left, right) ->
+          Some (Neg (Ap (Ap (TpAp (TmH megalodon_eq_poly_hash, tp), right), left)))
+      | None -> None
+      end
+
+let native_core_positive_eq_symmetry tp left right proof =
+  let predicate_sort = Ar (tp, Ar (tp, Prop)) in
+  let premise =
+    Ap (Ap (DB 0, tmshift 0 1 right), tmshift 0 1 left)
+  in
+  let motive =
+    Lam (tp, Lam (tp, Ap (Ap (DB 2, DB 0), DB 1)))
+  in
+  TLam
+    (predicate_sort,
+     PLam
+       (premise,
+        PPfAp
+          (PTmAp (pfshift 0 1 (pftmshift 0 1 proof), motive),
+           Hyp 0)))
+
+let native_core_eq_symmetry_proof id literal proof =
+  match literal with
+  | Pos atom ->
+      begin match megalodon_eq_poly_sides atom with
+      | Some (tp, left, right) ->
+          native_core_positive_eq_symmetry tp left right proof
+      | None ->
+          error (id ^ ": native core proof-term equality-symmetry requires typed Megalodon equality")
+      end
+  | Neg atom ->
+      begin match megalodon_eq_poly_sides atom with
+      | Some (tp, left, right) ->
+          let swapped_atom =
+            Ap (Ap (TpAp (TmH megalodon_eq_poly_hash, tp), right), left)
+          in
+          let source_eq =
+            native_core_positive_eq_symmetry tp right left (Hyp 0)
+          in
+          PLam
+            (native_core_expand_eq_atom swapped_atom,
+             PPfAp (pfshift 0 1 proof, source_eq))
+      | None ->
+          error (id ^ ": native core proof-term equality-symmetry requires typed Megalodon equality")
+      end
+
 let native_core_equality_resolution id parent_clause parent_proof literal_index result =
   let selected = nth literal_index parent_clause (id ^ " native equality-resolution literal") in
   let expected = remove_at literal_index parent_clause (id ^ " native equality-resolution literal") in
@@ -3612,6 +3678,59 @@ let native_core_equality_resolution id parent_clause parent_proof literal_index 
   | Neg _, _, _ ->
       error
         (id ^ ": native core proof-term equality-resolution currently supports only unit or binary parents")
+
+let native_core_equality_symmetry id parent_clause parent_proof literal_index result =
+  let selected = nth literal_index parent_clause (id ^ " native equality-symmetry literal") in
+  let swapped =
+    match native_core_swapped_eq_literal selected with
+    | Some literal -> literal
+    | None -> error (id ^ ": native core proof-term equality-symmetry requires typed Megalodon equality")
+  in
+  let expected =
+    remove_at literal_index parent_clause (id ^ " native equality-symmetry literal") @ [swapped]
+  in
+  if not (same_clause_multiset expected result) then
+    error (id ^ ": native core proof-term equality-symmetry result does not match the swapped selected literal");
+  let target_prop = native_core_clause_prop id result in
+  let rec consume selected_index clause proof =
+    match clause, selected_index with
+    | [], _ -> error (id ^ ": native core proof-term equality-symmetry selected index is out of bounds")
+    | [literal], Some 0 when literal = selected ->
+        let transported = native_core_eq_symmetry_proof id selected proof in
+        native_core_prove_literal_to_clause id result swapped transported
+    | [literal], Some _ ->
+        error (id ^ ": native core proof-term equality-symmetry selected index is out of bounds")
+    | [literal], None ->
+        native_core_prove_literal_to_clause id result literal proof
+    | literal :: rest, selected_index ->
+        let literal_prop = native_core_literal_prop literal in
+        let rest_prop = native_core_clause_prop id rest in
+        let head_branch =
+          PLam
+            (literal_prop,
+             match selected_index with
+             | Some 0 when literal = selected ->
+                 let transported = native_core_eq_symmetry_proof id selected (Hyp 0) in
+                 native_core_prove_literal_to_clause id result swapped transported
+             | Some 0 ->
+                 error (id ^ ": native core proof-term equality-symmetry selected literal mismatch")
+             | _ ->
+                 native_core_prove_literal_to_clause id result literal (Hyp 0))
+        in
+        let tail_selected =
+          match selected_index with
+          | Some 0 -> None
+          | Some n -> Some (n - 1)
+          | None -> None
+        in
+        let tail_branch =
+          PLam
+            (rest_prop,
+             consume tail_selected rest (Hyp 0))
+        in
+        PPfAp (PPfAp (PTmAp (proof, target_prop), head_branch), tail_branch)
+  in
+  consume (Some literal_index) parent_clause parent_proof
 
 let native_core_literal_index id rule selected clause =
   let rec find index = function
@@ -3971,6 +4090,12 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
           let parent_clause, parent_proof = lookup parent_id in
           let proof =
             native_core_equality_resolution id parent_clause parent_proof literal_index result
+          in
+          store id result proof
+      | EqualitySymmetry (id, parent_id, literal_index, result) ->
+          let parent_clause, parent_proof = lookup parent_id in
+          let proof =
+            native_core_equality_symmetry id parent_clause parent_proof literal_index result
           in
           store id result proof
       | SubsumptionResolution (id, main_parent_id, side_parent_id, selected, side_pivot, side_subst, result) ->

@@ -1,0 +1,31 @@
+(certificate vampire-megalodon 1
+  (problem "core-equality-symmetry-binary")
+  (step_proposition "u1" "vampire_or (p) (a = b)")
+  (step_proposition "u2" "vampire_or (p) (b = a)")
+  (step_proposition "u3" "(p) -> vampire_false")
+  (step_proposition "u4" "b = a")
+  (step_proposition "u5" "(b = a) -> vampire_false")
+  (step_proposition "u6" "vampire_false")
+  (symbol_declaration "Variable a:set.")
+  (symbol_declaration "Variable b:set.")
+  (symbol_declaration "Variable p:prop.")
+  (input "u1" (source axiom "a1")
+    (clause
+      (pos (TMH "p"))
+      (pos (AP (AP (TPAP (TMH "5a6af35fb6d6bea477dd0f822b8e01ca0d57cc50dfd41744307bc94597fdaa4a") (SET)) (TMH "a")) (TMH "b")))))
+  (equality_symmetry "u2" (parent "u1") (literal 1)
+    (result
+      (clause
+        (pos (TMH "p"))
+        (pos (AP (AP (TPAP (TMH "5a6af35fb6d6bea477dd0f822b8e01ca0d57cc50dfd41744307bc94597fdaa4a") (SET)) (TMH "b")) (TMH "a"))))))
+  (input "u3" (source axiom "a2") (clause (neg (TMH "p"))))
+  (resolve "u4" (parents "u2" "u3") (pivot 0 0)
+    (result
+      (clause
+        (pos (AP (AP (TPAP (TMH "5a6af35fb6d6bea477dd0f822b8e01ca0d57cc50dfd41744307bc94597fdaa4a") (SET)) (TMH "b")) (TMH "a"))))))
+  (input "u5" (source axiom "a3")
+    (clause
+      (neg (AP (AP (TPAP (TMH "5a6af35fb6d6bea477dd0f822b8e01ca0d57cc50dfd41744307bc94597fdaa4a") (SET)) (TMH "b")) (TMH "a")))))
+  (resolve "u6" (parents "u4" "u5") (pivot 0 0) (result (clause)))
+  (contradiction "u7" "u6")
+)
