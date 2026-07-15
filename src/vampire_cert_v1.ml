@@ -3188,6 +3188,67 @@ let has_id_prefix id prefix =
   String.length id >= prefix_len
   && String.sub id 0 prefix_len = prefix_with_sep
 
+let is_metadata_step_id_like value =
+  let len = String.length value in
+  len > 0
+  &&
+  let rec loop index =
+    if index >= len then true
+    else
+      match value.[index] with
+      | 'a'..'z' | 'A'..'Z' | '0'..'9' | '_' | '\'' -> loop (index + 1)
+      | _ -> false
+  in
+  loop 0
+
+let field_key_value field =
+  match String.index_opt field '=' with
+  | None -> None
+  | Some eq ->
+      Some
+        (String.sub field 0 eq,
+         String.sub field (eq + 1) (String.length field - eq - 1))
+
+let validate_kernel_v1_metadata_contracts cert =
+  let step_indices = Hashtbl.create 97 in
+  List.iteri
+    (fun index step -> Hashtbl.add step_indices (step_id step) index)
+    cert.steps;
+  let field_required id fields key =
+    match field_value key fields with
+    | Some value -> value
+    | None -> error (id ^ ": strict certificate v1 kernel_v1 metadata requires " ^ key)
+  in
+  List.iter
+    (fun (id, kind, fields) ->
+       if kind = "kernel_v1" then
+         let owner_index = Hashtbl.find_opt step_indices id in
+         let schema = field_required id fields "schema" in
+         if schema <> "prover9-small-kernel-v1" then
+           error (id ^ ": strict certificate v1 rejects unsupported kernel_v1 schema " ^ schema);
+         ignore (field_required id fields "rule");
+         let conclusion_unit = field_required id fields "conclusion_unit" in
+         if conclusion_unit <> id then
+          error
+             (id ^ ": strict certificate v1 kernel_v1 conclusion_unit "
+              ^ conclusion_unit ^ " does not match metadata step id");
+         List.iter
+           (fun field ->
+              match field_key_value field with
+              | Some (key, value)
+                   when key <> "conclusion_unit"
+                        && string_find_substring "unit" key <> None
+                        && is_metadata_step_id_like value ->
+                  begin match Hashtbl.find_opt step_indices value, owner_index with
+                  | Some ref_index, Some owner_index when ref_index >= owner_index ->
+                      error
+                        (id ^ ": strict certificate v1 kernel_v1 metadata references non-earlier premise unit " ^ value)
+                  | _ -> ()
+                  end
+              | _ -> ())
+           fields)
+    cert.metadata.step_extras
+
 let validate_primitive_expansion_contracts cert =
   let steps = cert.steps in
   let has_step_id id =
@@ -3241,6 +3302,7 @@ let validate_primitive_expansion_contracts cert =
     cert.metadata.step_extras
 
 let check_certificate_strict cert =
+  validate_kernel_v1_metadata_contracts cert;
   validate_primitive_expansion_contracts cert;
   check_certificate_with check_step_strict cert
 

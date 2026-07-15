@@ -2,7 +2,8 @@
   (problem "native-cert-v1-primitive-expansion-missing-bad")
   (step_extra c3 "kernel_v1"
     ("schema=prover9-small-kernel-v1"
-     "rule=unit_resulting_resolution"))
+     "rule=unit_resulting_resolution"
+     "conclusion_unit=c3"))
   (input c1 (source axiom "a1")
     (clause
       (pos (TMH "p"))

@@ -701,6 +701,22 @@ if ! rg -q 'requires primitive_expansion=prefix for kernel rule unit_resulting_r
   exit 1
 fi
 
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_kernel_future_unit_bad.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_kernel_future_unit_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_kernel_future_unit_bad.err"; then
+  echo "strict native certificate v1 checker accepted kernel metadata with a future premise unit" >&2
+  exit 1
+fi
+
+if ! rg -q 'kernel_v1 metadata references non-earlier premise unit c4' \
+    "$WORK_DIR/native_cert_v1_kernel_future_unit_bad.err"; then
+  echo "strict native certificate v1 future-unit failure did not explain the non-earlier reference" >&2
+  exit 1
+fi
+
 bin/megalodon \
   -vampirecertv1closed \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \

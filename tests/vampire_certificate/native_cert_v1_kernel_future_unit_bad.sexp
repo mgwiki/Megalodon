@@ -1,12 +1,10 @@
 (certificate vampire-megalodon 1
-  (problem "native-cert-v1-primitive-expansion-valid")
+  (problem "native-cert-v1-kernel-future-unit-bad")
   (step_extra c3 "kernel_v1"
     ("schema=prover9-small-kernel-v1"
-     "rule=unit_resulting_resolution"
+     "rule=cnf_clause"
      "conclusion_unit=c3"
-     "primitive_expansion=prefix"
-     "primitive_expansion_prefix=c3"
-     "primitive_expansion_requires=resolve"))
+     "parent_0_unit=c4"))
   (input c1 (source axiom "a1")
     (clause
       (pos (TMH "p"))
