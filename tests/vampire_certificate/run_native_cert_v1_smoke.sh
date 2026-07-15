@@ -736,6 +736,16 @@ if ! rg -q 'Vampire certificate v1 strict checked 6 steps' \
   exit 1
 fi
 
+MIN_REWRITE_POSITION=0 \
+  tests/vampire_certificate/run_kernel_v1_metadata_audit.sh \
+  tests/vampire_certificate/native_cert_v1_kernel_instantiation_valid.sexp \
+  >"$WORK_DIR/native_cert_v1_kernel_instantiation_valid.log"
+
+if ! rg -q 'instantiation 1' "$WORK_DIR/native_cert_v1_kernel_instantiation_valid.log"; then
+  echo "kernel_v1 metadata audit did not accept instantiation metadata" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1strict \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_primitive_expansion_missing_bad.sexp \

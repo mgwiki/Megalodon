@@ -157,6 +157,12 @@ positions.
 Whenever Vampire reports a `parent_i_substitution`, it also requires
 `parent_i_substituted_literal_count` and `parent_i_substituted_literal_j` fields
 rendered after applying that substitution.
+For first-class substitution steps, Vampire may also emit a `kernel_v1`
+`rule=instantiation` record.  The metadata audit requires the parent unit,
+parent clause, explicit substitution, result clause, and substituted parent
+literals.  This is the Prover9/Ivy-style replacement target for opaque
+non-identity `substitute` replay: the checker should receive typed
+instantiation data from Vampire rather than reconstructing it heuristically.
 For macro kernel rules currently expanded into first-class certificate steps
 (`superposition`, demodulation `rewrite`, `unit_resulting_resolution`,
 `subsumption_resolution`, `resolution`, and `factoring`), it requires the

@@ -195,7 +195,8 @@ awk '
   /rule=avatar_refutation/ || /rule=truth_conflict/ ||
   /rule=predicate_definition/ || /rule=predicate_definition_fold/ ||
   /rule=predicate_definition_fold_chain/ ||
-  /rule=avatar_definition/ || /rule=split_dependency/ {
+  /rule=avatar_definition/ || /rule=split_dependency/ ||
+  /rule=instantiation/ {
     next
   }
   { print }
@@ -239,6 +240,30 @@ require_primitive_expansion_contract unit_resulting_resolution resolve
 require_primitive_expansion_contract subsumption_resolution resolve
 require_primitive_expansion_contract resolution resolve
 require_primitive_expansion_contract factoring factor
+
+grep -F 'rule=instantiation' "$WORK_DIR/kernel_v1.tsv" \
+  > "$WORK_DIR/instantiation.tsv" || true
+
+if [[ -s "$WORK_DIR/instantiation.tsv" ]]; then
+  : > "$WORK_DIR/missing_instantiation_fields.tsv"
+  for pattern in \
+    'substitution=' \
+    'parent_count=1' \
+    'parent_0_unit=' \
+    'parent_0_clause=' \
+    'parent_0_substitution=' \
+    'parent_0_substituted_literal_count=' \
+    'result_clause='; do
+    awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
+      "$WORK_DIR/instantiation.tsv" >> "$WORK_DIR/missing_instantiation_fields.tsv"
+  done
+
+  if [[ -s "$WORK_DIR/missing_instantiation_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found instantiation records missing substitution fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_instantiation_fields.tsv" >&2
+    exit 1
+  fi
+fi
 
 grep -F 'rule=resolution' "$WORK_DIR/kernel_v1.tsv" \
   > "$WORK_DIR/resolution.tsv" || true
