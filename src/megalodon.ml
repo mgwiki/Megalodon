@@ -698,6 +698,18 @@ let tptp_origin_comment kind =
         !charno
         (tptp_source_map_quote kind)
 
+let stable_aby_obligation_name () =
+  let base =
+    match !current_input_file with
+    | Some file -> Filename.basename file
+    | None -> "megalodon"
+  in
+  let stem =
+    try Filename.remove_extension base
+    with Invalid_argument _ -> base
+  in
+  Printf.sprintf "%s_line%d_char%d" stem !lineno !charno
+
 let th0_aby_problem_content claimtm cxtm cxpf xl conjn =
   Buffer.clear sb;
   Buffer.add_string sb (tptp_origin_comment "aby");
@@ -5637,7 +5649,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                  | Some(c) ->
                     try
                       let z = fof_prop_str claimtm (tptpizecxtm cxtm) 0 in (** only if the conclusion is FO **)
-                      let conjn = if !abyproblemscached then "" else Printf.sprintf "%s_%d_%d" c !lineno !charno in
+                      let conjn = stable_aby_obligation_name () in
                       Buffer.clear sb;
                       let xfound : (string,unit) Hashtbl.t = Hashtbl.create 10 in
                       List.iter
@@ -5681,7 +5693,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                  match !th0 with
                  | None -> ()
                  | Some(c) ->
-                    let conjn = if !abyproblemscached then "" else Printf.sprintf "%s_%d_%d" c !lineno !charno in
+                    let conjn = stable_aby_obligation_name () in
                     let content = th0_aby_problem_content claimtm cxtm cxpf xl conjn in
                     if !abyproblemscached then
                       let fn = "cache/" ^ Hash.hashval_hexstring (Hash.sha256 content) ^ ".thf.p" in
@@ -5711,7 +5723,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                match !vampireaby with
                | None -> ()
                | Some(_) ->
-                  let conjn = Printf.sprintf "vampireaby_%d_%d" !lineno !charno in
+                  let conjn = stable_aby_obligation_name () in
                   let content = th0_aby_problem_content claimtm cxtm cxpf xl conjn in
                   try
                     run_vampire_aby_certificate content

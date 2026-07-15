@@ -62,6 +62,36 @@ if ! rg -q '^% megalodon_origin \(\(file "examples/hammer/100thms_12_h\.mg"\) \(
   exit 1
 fi
 
+origin_line=$(sed -n 's/^% megalodon_origin .* (line "\([0-9][0-9]*\)").*/\1/p' "$problem" | head -1)
+origin_char=$(sed -n 's/^% megalodon_origin .* (char "\([0-9][0-9]*\)").*/\1/p' "$problem" | head -1)
+if [[ -z "$origin_line" || -z "$origin_char" ]]; then
+  echo "TH0 origin comment does not expose a numeric source line and character" >&2
+  exit 1
+fi
+
+expected_conjecture_source="100thms_12_h_line${origin_line}_char${origin_char}"
+if ! rg -q '^% megalodon_source_map \(conjecture "[^"]+" "'"$expected_conjecture_source"'" ""\)' "$problem"; then
+  echo "TH0 conjecture source-map entry does not use the original Megalodon obligation label" >&2
+  exit 1
+fi
+
+if awk '/^% megalodon_source_map \(conjecture / {
+    source_name = $0
+    sub(/^% megalodon_source_map \(conjecture "[^"]+" "/, "", source_name)
+    sub(/" ""\).*$/, "", source_name)
+    if (source_name ~ /\// || source_name ~ /(^|_)tmp(_|$)/ || source_name ~ /^hammer[._]/) {
+      print source_name
+      bad = 1
+    }
+  }
+  END { exit bad }' "$problem" >"$WORK_DIR/bad_conjecture_source_names.txt"; then
+  :
+else
+  echo "TH0 conjecture source-map uses a temporary or output-prefix name:" >&2
+  cat "$WORK_DIR/bad_conjecture_source_names.txt" >&2
+  exit 1
+fi
+
 if awk '/^% megalodon_source_map / {
     if (match($0, /"[^"]+"/)) {
       name = substr($0, RSTART + 1, RLENGTH - 2)
