@@ -117,6 +117,25 @@ if [[ -s "$WORK_DIR/unknown_rules.tsv" ]]; then
   exit 1
 fi
 
+grep -E 'rule=(resolution|factoring|equality_resolution|subsumption_resolution)' "$WORK_DIR/kernel_v1.tsv" \
+  > "$WORK_DIR/clausal_kernel.tsv" || true
+
+if [[ -s "$WORK_DIR/clausal_kernel.tsv" ]]; then
+  : > "$WORK_DIR/missing_clausal_kernel_fields.tsv"
+  awk 'index($0, "result_literal_count=") == 0 {print "result_literal_count=\t" $0}' \
+    "$WORK_DIR/clausal_kernel.tsv" >> "$WORK_DIR/missing_clausal_kernel_fields.tsv"
+  awk 'index($0, "result_literal_count=0") == 0 && index($0, "result_literal_0=") == 0 {print "result_literal_0=\t" $0}' \
+    "$WORK_DIR/clausal_kernel.tsv" >> "$WORK_DIR/missing_clausal_kernel_fields.tsv"
+  awk 'index($0, "result_literal_count=0") != 0 && index($0, "conclusion_clause=(clause)") == 0 {print "nonempty_conclusion_literal_count\t" $0}' \
+    "$WORK_DIR/clausal_kernel.tsv" >> "$WORK_DIR/missing_clausal_kernel_fields.tsv"
+
+  if [[ -s "$WORK_DIR/missing_clausal_kernel_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found clausal primitive records missing result literal fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_clausal_kernel_fields.tsv" >&2
+    exit 1
+  fi
+fi
+
 grep -F 'rule=unit_resulting_resolution' "$WORK_DIR/kernel_v1.tsv" \
   > "$WORK_DIR/unit_resulting_resolution.tsv" || true
 
