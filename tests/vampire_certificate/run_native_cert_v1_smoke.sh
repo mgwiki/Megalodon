@@ -598,6 +598,36 @@ fi
 bin/megalodon -hf "$WORK_DIR/native_cert_v1_metadata_binder_substitute_closed.mg" \
   >"$WORK_DIR/native_cert_v1_metadata_binder_substitute_closed.check.log"
 
+bin/megalodon \
+  -vampirecertv1closed \
+  -vampirecertv1 tests/vampire_certificate/closed_cases/hammer.10644.15.native.sexp \
+  -vampirecertv1source tests/vampire_certificate/closed_cases/hammer.10644.15.th0.p \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_vlam_metadata_sort_closed.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_vlam_metadata_sort_closed.log"
+
+if rg -q 'u203 \(Eps_i' "$WORK_DIR/native_cert_v1_vlam_metadata_sort_closed.mg"; then
+  echo "closed native certificate v1 vLAM FOOL replay applied a stale metadata binder" >&2
+  exit 1
+fi
+
+bin/megalodon -hf "$WORK_DIR/native_cert_v1_vlam_metadata_sort_closed.mg" \
+  >"$WORK_DIR/native_cert_v1_vlam_metadata_sort_closed.check.log"
+
+bin/megalodon \
+  -vampirecertv1closed \
+  -vampirecertv1 tests/vampire_certificate/closed_cases/hammer.11428.35.native.sexp \
+  -vampirecertv1source tests/vampire_certificate/closed_cases/hammer.11428.35.th0.p \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_paramod_annotation_closed.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_paramod_annotation_closed.log"
+
+if rg -q 'fun Hparamod_eq:eps_' "$WORK_DIR/native_cert_v1_paramod_annotation_closed.mg"; then
+  echo "closed native certificate v1 paramodulation emitted an unparenthesized equality annotation" >&2
+  exit 1
+fi
+
+bin/megalodon -hf "$WORK_DIR/native_cert_v1_paramod_annotation_closed.mg" \
+  >"$WORK_DIR/native_cert_v1_paramod_annotation_closed.check.log"
+
 if bin/megalodon \
     -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_local_fact_negated.sexp \
     -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_local_fact_negated.th0.p \

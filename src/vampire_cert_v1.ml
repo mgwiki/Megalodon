@@ -6284,7 +6284,7 @@ let simple_paramodulate_unit_split_proof
               consume_target "Hparamod_eq" (Some target_index) target_clause target_expr 0
         in
         simple_wrap_forall_intro result_sorts
-          ("(fun Hparamod_eq:" ^ equality_literal_prop ^ " => "
+          ("(fun Hparamod_eq:" ^ simple_prop_arg equality_literal_prop ^ " => "
            ^ target_body
            ^ ")")
   in
@@ -11576,12 +11576,24 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           (simple_fix_known_higher_order_binders (simple_quantify_prop variable_sorts prop), variable_sorts)
   in
   let formula_literal_prop_and_sorts id literal =
-    let sorts = metadata_step_variable_sort_pairs cert id in
-    let literal_type_env =
-      simple_type_env_with_variable_overrides sorts symbol_type_env
-    in
+    let raw_sorts = metadata_step_variable_sort_pairs cert id in
     let vlam_bound_names =
       simple_clause_vlam_bound_names [literal]
+    in
+    let literal_names =
+      simple_tm_names (literal_atom literal)
+      |> List.filter_map optional_megalodon_ident
+    in
+    let sorts =
+      if simple_literal_contains_vlam literal then
+        raw_sorts
+        |> filter_internal_inferred_sorts vlam_bound_names
+        |> List.filter (fun (name, _) -> List.mem (megalodon_ident name) literal_names)
+      else
+        raw_sorts
+    in
+    let literal_type_env =
+      simple_type_env_with_variable_overrides sorts symbol_type_env
     in
     let inferred_sorts =
       simple_infer_literal_variable_sorts literal_type_env literal
@@ -11622,12 +11634,24 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
         (simple_quantify_prop inferred_sorts prop, all_sorts)
   in
   let formula_tm_prop_and_sorts id formula =
-    let sorts = metadata_step_variable_sort_pairs cert id in
-    let formula_type_env =
-      simple_type_env_with_variable_overrides sorts symbol_type_env
-    in
+    let raw_sorts = metadata_step_variable_sort_pairs cert id in
     let vlam_bound_names =
       simple_tm_vlam_bound_names formula
+    in
+    let formula_names =
+      simple_tm_names formula
+      |> List.filter_map optional_megalodon_ident
+    in
+    let sorts =
+      if simple_tm_contains_vlam formula then
+        raw_sorts
+        |> filter_internal_inferred_sorts vlam_bound_names
+        |> List.filter (fun (name, _) -> List.mem (megalodon_ident name) formula_names)
+      else
+        raw_sorts
+    in
+    let formula_type_env =
+      simple_type_env_with_variable_overrides sorts symbol_type_env
     in
     let inferred_sorts =
       simple_infer_tm_variable_sorts formula_type_env formula
@@ -11885,7 +11909,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       | FoolFormula (id, parent_id, formula) ->
           let name = derived_name id in
           let target_prop, target_sorts = formula_tm_prop_and_sorts id formula in
-          let parent_sorts = metadata_step_variable_sort_pairs cert parent_id in
+          let parent_sorts = variable_sorts_for_ids [parent_id] in
           let type_env =
             simple_type_env_with_variables
               (parent_sorts @ target_sorts |> simple_unique_variable_sorts)
