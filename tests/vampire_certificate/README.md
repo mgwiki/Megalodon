@@ -315,7 +315,11 @@ tests/vampire_certificate/run_native_cert_v1_core_pf_audit.sh
 
 This gate runs `-vampirecertv1corepfcheck` over the tracked `core.cnf.*`
 closed fixtures and requires all selected cases to report `CORE_PF_PASS`,
-including source-origin reporting for every checked proof term.
+including source-origin reporting for every checked proof term.  A rule is
+eligible for `coreclosed` only when it is intended to have native proof-term
+support; structurally checked macro rules such as `equality_factoring` stay
+outside this gate until they are elaborated as explicit small-kernel proof
+steps.
 
 For the audit-recommended restricted milestone, use:
 

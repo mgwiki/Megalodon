@@ -3352,7 +3352,6 @@ let validate_certificate_core_fragment cert =
     | Factor _
     | EqualityResolution _
     | EqualitySymmetry _
-    | EqualityFactoring _
     | Paramodulate _
     | Contradiction _ -> true
     | _ -> false

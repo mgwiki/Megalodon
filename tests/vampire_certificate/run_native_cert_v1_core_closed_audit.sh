@@ -28,7 +28,6 @@ subsumption_resolution
 factor
 equality_resolution
 equality_symmetry
-equality_factoring
 paramodulate
 contradiction
 RULES
