@@ -9667,11 +9667,7 @@ let simple_predicate_definition_fold_proof type_env id result_sorts source targe
      || contains_unsupported_exists atom then
     emit_error (id ^ ": predicate-definition fold proof does not yet support this existential context");
   let is_supported_true_left_formula tm =
-    match flatten_value_application tm with
-    | TmH name, [] when List.assoc_opt (megalodon_ident name) (result_sorts @ type_env) = Some "prop" ->
-        true
-    | TmH name, _ -> String.length name >= 2 && String.sub name 0 2 = "sP"
-    | _ -> false
+    simple_tm_sort (result_sorts @ type_env) tm = Some "prop"
   in
   let rec contains_unsupported_formula_shape tm =
     if tm = definiendum then false
@@ -11214,6 +11210,13 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                   simple_fix_known_higher_order_binders formula_text
                   |> string_map_identifiers metadata_body_variable_renamings
                 in
+                let metadata_names_defined_predicate =
+                  match metadata_step_extra_field cert id "predicate_definition" "introduced_symbol" with
+                  | Some introduced ->
+                      megalodon_ident introduced = name
+                      || megalodon_ident introduced = megalodon_ident defined
+                  | None -> false
+                in
                 let starts_with prefix text =
                   let text = String.trim text in
                   let prefix_len = String.length prefix in
@@ -11221,11 +11224,14 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                   && String.sub text 0 prefix_len = prefix
                 in
                 if simple_rendered_prop_equiv rendered_body_text metadata_body_text
-                   || (starts_with "forall " rendered_body_text
-                       && starts_with "forall " metadata_body_text)
-                   || (starts_with "vampire_exists" rendered_body_text
-                       && starts_with "vampire_exists" metadata_body_text) then
+                   || (metadata_names_defined_predicate
+                       && ((starts_with "forall " rendered_body_text
+                            && starts_with "forall " metadata_body_text)
+                           || (starts_with "vampire_exists" rendered_body_text
+                               && starts_with "vampire_exists" metadata_body_text))) then
                   Some metadata_body_text
+                else if formula_text <> "" then
+                  Some rendered_body_text
                 else
                   None
             | None -> Some rendered_body_text
@@ -12499,11 +12505,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                   symbol_type_env
               in
               let is_supported_true_left_formula tm =
-                match flatten_value_application tm with
-                | TmH name, [] when List.assoc_opt (megalodon_ident name) guard_type_env = Some "prop" ->
-                    true
-                | TmH name, _ -> String.length name >= 2 && String.sub name 0 2 = "sP"
-                | _ -> false
+                simple_tm_sort guard_type_env tm = Some "prop"
               in
               let rec contains_unsupported_fold_chain_shape = function
                 | All (tp, body)
