@@ -154,6 +154,9 @@ reported.
 For formula copies, it requires source/result formulas and the
 `copy_kind=formula_term_identity` marker that Vampire emits only after comparing
 the formula-term S-expressions.
+For non-identity formula normalization, it requires source/result formulas,
+Vampire's underlying normal-form rule, and explicit source/target/path
+transformation pairs computed by the Vampire normal-form traversal.
 The point of this gate is to keep new work on the Prover9/Ivy-style certificate
 path: Vampire must emit primitive replay data, rather than leaving Megalodon to
 recover it by broad OCaml-side reconstruction.
