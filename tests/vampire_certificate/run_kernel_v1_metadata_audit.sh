@@ -191,6 +191,19 @@ if [[ -s "$WORK_DIR/clausal_kernel.tsv" ]]; then
     "$WORK_DIR/clausal_kernel.tsv" >> "$WORK_DIR/missing_clausal_kernel_fields.tsv"
   awk 'index($0, "result_literal_count=") == 0 {print "result_literal_count=\t" $0}' \
     "$WORK_DIR/clausal_kernel.tsv" >> "$WORK_DIR/missing_clausal_kernel_fields.tsv"
+  awk '
+    {
+      if (match($0, /result_literal_count=([0-9]+)/, count_match)) {
+        literal_count = count_match[1] + 0
+        for (literal_index = 0; literal_index < literal_count; ++literal_index) {
+          literal_field = "result_literal_" literal_index "="
+          if (index($0, literal_field) == 0) {
+            print literal_field "\t" $0
+          }
+        }
+      }
+    }
+  ' "$WORK_DIR/clausal_kernel.tsv" >> "$WORK_DIR/missing_clausal_kernel_fields.tsv"
   awk 'index($0, "result_literal_count=0") == 0 && index($0, "result_literal_0=") == 0 {print "result_literal_0=\t" $0}' \
     "$WORK_DIR/clausal_kernel.tsv" >> "$WORK_DIR/missing_clausal_kernel_fields.tsv"
   awk 'index($0, "result_literal_count=0") != 0 && index($0, "conclusion_clause=(clause)") == 0 {print "nonempty_conclusion_literal_count\t" $0}' \
@@ -217,10 +230,14 @@ awk '
           print literal_count_field "\t" $0
           continue
         }
-        literal_zero_count = "parent_" parent_index "_literal_count=0"
-        literal_zero_field = "parent_" parent_index "_literal_0="
-        if (index($0, literal_zero_count) == 0 && index($0, literal_zero_field) == 0) {
-          print literal_zero_field "\t" $0
+        if (match($0, literal_count_field "([0-9]+)", literal_count_match)) {
+          literal_count = literal_count_match[1] + 0
+          for (literal_index = 0; literal_index < literal_count; ++literal_index) {
+            literal_field = "parent_" parent_index "_literal_" literal_index "="
+            if (index($0, literal_field) == 0) {
+              print literal_field "\t" $0
+            }
+          }
         }
       }
     }
@@ -247,10 +264,14 @@ awk '
           print literal_count_field "\t" $0
           continue
         }
-        literal_zero_count = "parent_" parent_index "_substituted_literal_count=0"
-        literal_zero_field = "parent_" parent_index "_substituted_literal_0="
-        if (index($0, literal_zero_count) == 0 && index($0, literal_zero_field) == 0) {
-          print literal_zero_field "\t" $0
+        if (match($0, literal_count_field "([0-9]+)", literal_count_match)) {
+          literal_count = literal_count_match[1] + 0
+          for (literal_index = 0; literal_index < literal_count; ++literal_index) {
+            literal_field = "parent_" parent_index "_substituted_literal_" literal_index "="
+            if (index($0, literal_field) == 0) {
+              print literal_field "\t" $0
+            }
+          }
         }
       }
     }
