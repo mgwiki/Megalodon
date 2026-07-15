@@ -138,6 +138,9 @@ requires the `schema=prover9-small-kernel-v1` marker plus parent/conclusion
 clause fields on every record, requires selected/other literals to include
 their substituted forms, and requires rewrite-position records to carry the
 explicit `from`, `to`, substituted target/equality, and rewritten target fields.
+For unit-resulting resolution, it also requires Vampire's trace main parent,
+unit parent, selected/substituted selected literal, substituted unit literal,
+and remaining clause state after each pivot.
 The point of this gate is to keep new work on the Prover9/Ivy-style certificate
 path: Vampire must emit primitive replay data, rather than leaving Megalodon to
 recover it by broad OCaml-side reconstruction.

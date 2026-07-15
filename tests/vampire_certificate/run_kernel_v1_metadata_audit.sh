@@ -84,7 +84,8 @@ fi
 awk '
   /rule=resolution/ || /rule=subsumption_resolution/ || /rule=factoring/ ||
   /rule=equality_resolution/ || /rule=superposition/ ||
-  /rule=equality_factoring/ || /rule=rewrite/ {
+  /rule=equality_factoring/ || /rule=rewrite/ ||
+  /rule=unit_resulting_resolution/ {
     next
   }
   { print }
@@ -94,6 +95,31 @@ if [[ -s "$WORK_DIR/unknown_rules.tsv" ]]; then
   echo "kernel_v1 metadata audit found unexpected rule names" >&2
   sed -n '1,40p' "$WORK_DIR/unknown_rules.tsv" >&2
   exit 1
+fi
+
+grep -F 'rule=unit_resulting_resolution' "$WORK_DIR/kernel_v1.tsv" \
+  > "$WORK_DIR/unit_resulting_resolution.tsv" || true
+
+if [[ -s "$WORK_DIR/unit_resulting_resolution.tsv" ]]; then
+  : > "$WORK_DIR/missing_urr_fields.tsv"
+  for pattern in \
+    'trace_main_parent_unit=' \
+    'trace_step_count=' \
+    'trace_step_0_unit_parent=' \
+    'trace_step_0_selected=' \
+    'trace_step_0_selected_substituted=' \
+    'trace_step_0_unit_substituted=' \
+    'trace_step_0_remaining_after=' \
+    'trace_remaining='; do
+    awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
+      "$WORK_DIR/unit_resulting_resolution.tsv" >> "$WORK_DIR/missing_urr_fields.tsv"
+  done
+
+  if [[ -s "$WORK_DIR/missing_urr_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found unit-resulting-resolution records missing trace fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_urr_fields.tsv" >&2
+    exit 1
+  fi
 fi
 
 grep -F 'rewrite_position=' "$WORK_DIR/kernel_v1.tsv" \
