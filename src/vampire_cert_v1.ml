@@ -4279,6 +4279,13 @@ let native_core_and left right =
        (Imp (tmshift 0 1 left, Imp (tmshift 0 1 right, DB 0)),
         DB 0))
 
+let native_core_exists tp body =
+  All
+    (Prop,
+     Imp
+       (All (tp, Imp (tmshift 1 1 body, DB 1)),
+        DB 0))
+
 let native_core_expand_eq_atom = function
   | Ap (Ap (TpAp (TmH h, tp), left), right)
       when h = megalodon_eq_poly_hash ->
@@ -4297,6 +4304,8 @@ let rec native_core_formula_prop = function
       native_core_or (native_core_formula_prop left) (native_core_formula_prop right)
   | Ap (Ap (TmH "vampire_and", left), right) ->
       native_core_and (native_core_formula_prop left) (native_core_formula_prop right)
+  | Ap (TmH "vampire_exists_prop", Lam (tp, body)) ->
+      native_core_exists tp (native_core_formula_prop body)
   | tm -> native_core_expand_eq_atom tm
 
 let native_core_literal_prop = function
@@ -4684,6 +4693,14 @@ let native_core_prop_ext_hash =
 let native_core_dneg_hash =
   "e4b03c310442ae760be9945e176494db51515dfb952ee60fbd42e05527752af0"
 
+let native_core_not_forall_exists_hash = function
+  | Set -> "vampire_not_forall_exists_set"
+  | Prop -> "vampire_not_forall_exists_prop"
+  | Ar (Set, Prop) -> "vampire_not_forall_exists_set_prop"
+  | Ar (Set, Set) -> "vampire_not_forall_exists_set_set"
+  | Ar (Set, Ar (Set, Prop)) -> "vampire_not_forall_exists_set_set_prop"
+  | _ -> "vampire_not_forall_exists_unsupported"
+
 let native_core_eq_prop left right =
   Ap (Ap (TpAp (TmH megalodon_eq_poly_hash, Prop), left), right)
 
@@ -4705,10 +4722,32 @@ let native_core_dneg_prop =
        (Imp (Imp (DB 0, native_core_false), native_core_false),
         DB 0))
 
+let native_core_not_forall_exists_prop tp =
+  All
+    (Ar (tp, Prop),
+     All
+       (Ar (tp, Prop),
+        Imp
+          (All
+             (tp,
+              Imp
+                (Imp (Ap (DB 2, DB 0), native_core_false),
+                 Ap (DB 1, DB 0))),
+           Imp
+             (Imp (All (tp, Ap (DB 2, DB 0)), native_core_false),
+              native_core_exists tp (Ap (DB 1, DB 0))))))
+
 let native_core_approved_sgdelta () =
   let sgdelta = Hashtbl.create 2 in
   Hashtbl.add sgdelta native_core_prop_ext_hash (0, native_core_prop_ext_prop);
   Hashtbl.add sgdelta native_core_dneg_hash (0, native_core_dneg_prop);
+  List.iter
+    (fun tp ->
+       Hashtbl.add
+         sgdelta
+         (native_core_not_forall_exists_hash tp)
+         (0, native_core_not_forall_exists_prop tp))
+    [Set; Prop; Ar (Set, Prop); Ar (Set, Set); Ar (Set, Ar (Set, Prop))];
   sgdelta
 
 let native_core_certificate_sgdelta cert symbol_table =
@@ -5145,11 +5184,70 @@ let native_core_ennf_formula_proof id variables step_variables source target pro
             native_core_formula_prop target_right
             |> native_core_normalize_bool_constants
           in
-          if target_left_prop <> source_left_prop
-             || target_right_prop <> Imp (source_right_prop, native_core_false) then
+          if target_left_prop <> source_left_prop then
             error
               (id ^ ": native preprocess proof-term ennf_formula expected not-implication to conjunction");
-          native_core_ennf_not_imp_to_and source_left_prop source_right_prop proof
+          let left_proof =
+            PPfAp
+              (PTmAp (Known native_core_dneg_hash, source_left_prop),
+               PLam
+                 (Imp (source_left_prop, native_core_false),
+                  let imp_proof =
+                    PLam
+                      (source_left_prop,
+                       PTmAp (PPfAp (Hyp 1, Hyp 0), source_right_prop))
+                  in
+                  PPfAp (pfshift 0 1 proof, imp_proof)))
+          in
+          let not_right_proof =
+            PLam
+              (source_right_prop,
+               let imp_proof = PLam (source_left_prop, Hyp 1) in
+               PPfAp (pfshift 0 1 proof, imp_proof))
+          in
+          let right_proof =
+            if target_right_prop = Imp (source_right_prop, native_core_false) then
+              not_right_proof
+            else
+              convert
+                (Imp (source_right, native_core_false))
+                target_right
+                not_right_proof
+          in
+          native_core_and_intro
+            source_left_prop target_right_prop left_proof right_proof
+      | Imp (All (source_tp, source_body), source_false),
+        Ap (TmH "vampire_exists_prop", Lam (target_tp, target_body))
+          when source_false = native_core_false && source_tp = target_tp ->
+          let source_body_prop =
+            native_core_formula_prop source_body
+            |> native_core_normalize_bool_constants
+          in
+          let target_body_prop =
+            native_core_formula_prop target_body
+            |> native_core_normalize_bool_constants
+          in
+          let source_predicate = Lam (source_tp, source_body_prop) in
+          let target_predicate = Lam (target_tp, target_body_prop) in
+          let pointwise_proof =
+            TLam
+              (source_tp,
+               PLam
+                 (Imp (source_body_prop, native_core_false),
+                  convert
+                    (Imp (source_body, native_core_false))
+                    target_body
+                    (Hyp 0)))
+          in
+          PPfAp
+            (PPfAp
+               (PTmAp
+                  (PTmAp
+                     (Known (native_core_not_forall_exists_hash source_tp),
+                      source_predicate),
+                   target_predicate),
+                pointwise_proof),
+             proof)
       | Imp (source_left, source_right),
         Ap (Ap (TmH "vampire_or", target_left), target_right) ->
           let source_left_prop = native_core_formula_prop source_left in
