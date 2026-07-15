@@ -338,6 +338,21 @@ falling back to textual replay. The focused audit is:
 tests/vampire_certificate/run_native_cert_v1_preprocess_pf_audit.sh
 ```
 
+To measure how far that native proof-term path is from the broader
+preprocessing-closed corpus, use:
+
+```sh
+tests/vampire_certificate/run_native_cert_v1_preprocess_pf_frontier.sh
+```
+
+This first selects the `run_native_cert_v1_preprocess_closed_audit.sh`
+eligible cases, then runs `-vampirecertv1preprocesspfcheck` over them in
+parallel. Passing cases are already on the native `Syntax.pf` path; failures
+are classified by the first missing proof-term rule or proof-term checker
+failure. This is the preferred small-kernel frontier report for preprocessing
+work: it identifies the next repeated constructor to elaborate natively instead
+of adding more broad textual replay logic.
+
 For the audit-recommended restricted milestone, use:
 
 ```sh
