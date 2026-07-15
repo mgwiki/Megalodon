@@ -6994,6 +6994,28 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           let step_variables = native_core_step_variables cert parent_id in
           store_formula id result
             (native_core_ennf_formula_proof id variables step_variables parent_formula result parent_proof)
+      | SkolemFormula (id, parent_id, source, introductions, subst, result) ->
+          let parent_formula, parent_proof = lookup_formula parent_id in
+          check_skolem_formula
+            (Hashtbl.fold
+               (fun formula_id (formula, _) checked ->
+                  (formula_id, CheckedFormula formula) :: checked)
+               formula_table
+               [])
+            id parent_id source introductions subst result;
+          let parent_prop =
+            native_preprocess_step_formula_prop cert variables parent_id parent_formula
+          in
+          let result_prop =
+            native_preprocess_step_formula_prop cert variables id result
+          in
+          let primitive =
+            "vampire_skolem_formula_" ^ id
+          in
+          let primitive_prop = Imp (parent_prop, result_prop) in
+          Hashtbl.replace proof_delta primitive (0, primitive_prop);
+          Hashtbl.replace definition_delta primitive (0, primitive_prop);
+          store_formula id result (PPfAp (Known primitive, parent_proof))
       | FormulaCopy (id, parent_id, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
           if native_core_normalize_bool_constants (native_core_literal_prop result)

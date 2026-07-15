@@ -1,4 +1,5 @@
-% megalodon_source_map (local_fact "exists_applied_head" "exists_applied_head" "")
-thf(exists_applied_head,axiom,? [X0:$i>$i] : ! [X1:$i] : ((X0 @ X1) = $true)).
-% megalodon_source_map (local_fact "neg_applied_head" "neg_applied_head" "")
-thf(neg_applied_head,axiom,~((sk @ X1) = $true)).
+% megalodon_origin ((file "native_cert_v1_kernel_skolemize_valid.mg") (line "1") (char "1") (kind "synthetic_skolem_kernel"))
+% megalodon_source_map (local_fact "exists_p" "exists_p" "")
+thf(exists_p,axiom,? [X0:$i] : (p @ X0)).
+% megalodon_source_map (local_fact "not_p_sk" "not_p_sk" "")
+thf(not_p_sk,axiom,~(p @ sk)).
