@@ -4658,7 +4658,31 @@ and simple_clause_intro_proof clause lit proof =
       let tail_proof = simple_clause_intro_proof tail lit proof in
       Printf.sprintf "(fun vclause_goal Hhead Htail => Htail %s)" tail_proof
 
+and simple_clause_suffix_intro_proof clause suffix proof =
+  if clause = suffix then proof
+  else
+    match clause with
+    | [] -> emit_error "cannot introduce a suffix into the empty clause"
+    | _ :: tail ->
+        let tail_proof = simple_clause_suffix_intro_proof tail suffix proof in
+        Printf.sprintf "(fun vclause_goal Hhead Htail => Htail %s)" tail_proof
+
 let rec simple_clause_projection_proof target_prop target_clause source_clause source_proof depth =
+  let literal_prop = simple_literal_prop in
+  let fast_projection () =
+    match source_clause, target_clause with
+    | [a; b; c; d; e; f; g], [g'; b'; c'; d'; e'; f'; a']
+        when a = a' && b = b' && c = c' && d = d' && e = e' && f = f' && g = g' ->
+        Some
+          (Printf.sprintf
+             "(vampire_or_rotate_last_first7 (%s) (%s) (%s) (%s) (%s) (%s) (%s) %s)"
+             (literal_prop a) (literal_prop b) (literal_prop c) (literal_prop d)
+             (literal_prop e) (literal_prop f) (literal_prop g) source_proof)
+    | _ -> None
+  in
+  match fast_projection () with
+  | Some proof -> proof
+  | None ->
   match source_clause with
   | [] -> emit_error "cannot project from the empty clause"
   | [lit] -> simple_clause_intro_proof target_clause lit source_proof
@@ -4676,6 +4700,7 @@ let rec simple_clause_projection_proof target_prop target_clause source_clause s
 
 let rec simple_clause_remove_reflexive_disequality_proof
     target_prop target_clause selected_index source_clause source_proof depth =
+  let literal_prop = simple_literal_prop in
   let selected_branch lit proof =
     match lit with
     | Neg atom ->
@@ -4690,6 +4715,32 @@ let rec simple_clause_remove_reflexive_disequality_proof
     | Pos _ ->
         emit_error "equality-resolution selected literal is not negative"
   in
+  let fast_drop_head () =
+    match selected_index, source_clause, target_clause with
+    | Some 0, [a; b; c; d; e; f; g], [b'; c'; d'; e'; f'; g']
+        when b = b' && c = c' && d = d' && e = e' && f = f' && g = g' ->
+        begin match a with
+        | Neg atom ->
+            begin match equality_sides atom with
+            | Some (left, right) when left = right ->
+                let selected_prop = literal_prop a in
+                Some
+                  (Printf.sprintf
+                     "(vampire_or_drop_head7 (%s) (%s) (%s) (%s) (%s) (%s) (%s) (fun Hdrop_head:%s => ((Hdrop_head (fun Q H => H)) %s)) %s)"
+                     selected_prop
+                     (literal_prop b) (literal_prop c) (literal_prop d)
+                     (literal_prop e) (literal_prop f) (literal_prop g)
+                     selected_prop (simple_prop_arg target_prop) source_proof)
+            | Some _ -> emit_error "equality-resolution equality is not reflexive"
+            | None -> emit_error "equality-resolution literal is not an equality"
+            end
+        | Pos _ -> emit_error "equality-resolution selected literal is not negative"
+        end
+    | _ -> None
+  in
+  match fast_drop_head () with
+  | Some proof -> proof
+  | None ->
   match source_clause with
   | [] -> emit_error "cannot remove a literal from the empty clause"
   | [lit] ->
@@ -5398,6 +5449,90 @@ let rec simple_clause_prop_with_type_env type_env = function
       ^ simple_clause_prop_with_type_env type_env rest
       ^ ")"
 
+let simple_clause_map_selected_literal_proof
+    type_env selected_index source_clause target_clause source_proof map_selected =
+  let prop lit = simple_literal_prop_with_type_env type_env lit in
+  match source_clause, target_clause, selected_index with
+  | [a; b; c; d; e; f; g], [a'; b'; c'; d'; e2; f'; g'], 4
+      when a = a' && b = b' && c = c' && d = d' && f = f' && g = g' ->
+      begin match e, e2 with
+      | Pos source_atom, Pos target_atom ->
+          begin match equality_sides source_atom, equality_sides target_atom with
+          | Some (left, right), Some (target_left, target_right)
+              when target_left = right && target_right = left
+                   && not (is_vampire_bool_const left)
+                   && not (is_vampire_bool_const right)
+                   &&
+                   (match simple_tm_sort type_env left, simple_tm_sort type_env right with
+                    | Some sort, _ | _, Some sort -> simple_strip_outer_parens sort = "set"
+                    | None, None -> true) ->
+              let left_text = simple_tm_expr_with_expected type_env (Some "set") left in
+              let right_text = simple_tm_expr_with_expected type_env (Some "set") right in
+              Printf.sprintf
+                "(vampire_or_eqsym5_7_set (%s) (%s) (%s) (%s) (%s) (%s) (%s) (%s) %s)"
+                (prop a) (prop b) (prop c) (prop d) (prop f) (prop g)
+                left_text right_text source_proof
+          | _ ->
+              let selected_name = "Hmap_selected_4" in
+              Printf.sprintf
+                "(vampire_or_map5_7 (%s) (%s) (%s) (%s) (%s) (%s) (%s) (%s) (fun %s:%s => %s) %s)"
+                (prop a) (prop b) (prop c) (prop d) (prop e) (prop f) (prop g) (prop e2)
+                selected_name (prop e)
+                (map_selected e e2 selected_name)
+                source_proof
+          end
+      | _ ->
+          let selected_name = "Hmap_selected_4" in
+          Printf.sprintf
+            "(vampire_or_map5_7 (%s) (%s) (%s) (%s) (%s) (%s) (%s) (%s) (fun %s:%s => %s) %s)"
+            (prop a) (prop b) (prop c) (prop d) (prop e) (prop f) (prop g) (prop e2)
+            selected_name (prop e)
+            (map_selected e e2 selected_name)
+            source_proof
+      end
+  | _ ->
+  let rec go index source target proof =
+    match source, target with
+    | [], [] -> emit_error "cannot map a selected literal in an empty clause"
+    | [src], [tgt] ->
+        if index = selected_index then map_selected src tgt proof
+        else if src = tgt then proof
+        else emit_error "clause literal map found a non-selected mismatch"
+    | src :: source_rest, tgt :: target_rest ->
+        let src_text = simple_literal_prop_with_type_env type_env src in
+        let source_rest_text = simple_clause_prop_with_type_env type_env source_rest in
+        let tgt_text = simple_literal_prop_with_type_env type_env tgt in
+        let target_rest_text = simple_clause_prop_with_type_env type_env target_rest in
+        let head_name = "Hmap_lit_" ^ string_of_int index in
+        let tail_name = "Hmap_tail_" ^ string_of_int index in
+        let head_map =
+          if index = selected_index then
+            Printf.sprintf "(fun %s:%s => %s)"
+              head_name src_text (map_selected src tgt head_name)
+          else if src = tgt then
+            Printf.sprintf "(fun %s:%s => %s)" head_name src_text head_name
+          else
+            emit_error "clause literal map found a non-selected head mismatch"
+        in
+        let tail_map =
+          if selected_index > index then
+            Printf.sprintf "(fun %s:%s => %s)"
+              tail_name source_rest_text
+              (go (index + 1) source_rest target_rest tail_name)
+          else if source_rest = target_rest then
+            Printf.sprintf "(fun %s:%s => %s)"
+              tail_name source_rest_text tail_name
+          else
+            emit_error "clause literal map found a non-selected tail mismatch"
+        in
+        Printf.sprintf "(vampire_or_map (%s) (%s) (%s) (%s) %s %s %s)"
+          src_text source_rest_text tgt_text target_rest_text
+          head_map tail_map proof
+    | _ ->
+        emit_error "clause literal map source and target lengths differ"
+  in
+  go 0 source_clause target_clause source_proof
+
 let rec simple_clause_formula_tm = function
   | [] -> vampire_false
   | [lit] -> formula_tm_of_literal lit
@@ -5637,6 +5772,264 @@ let simple_paramodulate_unit_proof
 	  simple_wrap_forall_intro result_sorts
 	    (consume_equality (Some equality_index) equality_clause equality_expr 0)
 
+let simple_paramodulate_unit_split_proof
+    clause_body_prop type_env id helper_name equality_parent_id target_parent_id equality_index target_index position
+    from_tm to_tm result equality_sorts target_sorts result_sorts checked names =
+  let equality_clause = lookup_simple_clause checked equality_parent_id in
+  let target_clause = lookup_simple_clause checked target_parent_id in
+  let equality_literal = simple_clause_nth id "paramodulation equality" equality_index equality_clause in
+  let target_literal = simple_clause_nth id "paramodulation target" target_index target_clause in
+  let equality_rest = simple_remove_index id "paramodulation equality" equality_index equality_clause in
+  let target_rest = simple_remove_index id "paramodulation target" target_index target_clause in
+  let equality_atom =
+    match equality_literal with
+    | Pos atom -> atom
+    | Neg _ -> emit_error (id ^ ": paramodulation equality literal is not positive")
+  in
+  let left, right =
+    match equality_sides equality_atom with
+    | Some sides -> sides
+    | None -> emit_error (id ^ ": paramodulation equality literal is not an equality")
+  in
+  let target_atom = literal_atom target_literal in
+  let rewrite_position =
+    let rec select = function
+      | [] -> emit_error (id ^ ": paramodulation position does not contain from term")
+      | candidate :: rest ->
+          begin match try_tm_at_position target_atom candidate with
+          | Some found when found = from_tm -> candidate
+          | _ -> select rest
+          end
+    in
+    select (paramodulation_position_candidates target_atom position)
+  in
+  let rewritten_atom = replace_tm_at_position target_atom rewrite_position to_tm (id ^ " target") in
+  let rewritten_literal = replace_literal_atom target_literal rewritten_atom in
+  let result_literal, result_literal_needs_symmetry, result_layout =
+    let suffix lit = equality_rest @ target_rest @ [lit] in
+    let head lit = [lit] @ target_rest @ equality_rest in
+    if suffix rewritten_literal = result then
+      rewritten_literal, false, `Suffix
+    else if head rewritten_literal = result then
+      rewritten_literal, false, `Head
+    else
+      match swap_literal_equality rewritten_literal with
+      | Some swapped_literal when suffix swapped_literal = result ->
+          swapped_literal, true, `Suffix
+      | Some swapped_literal when head swapped_literal = result ->
+          swapped_literal, true, `Head
+      | _ ->
+          emit_error
+            (id ^ ": split paramodulation requires a supported result order")
+  in
+  let target_result_clause = target_rest @ [result_literal] in
+  begin match result_layout with
+  | `Suffix ->
+      if result <> equality_rest @ target_result_clause then
+        emit_error (id ^ ": split paramodulation target result is not a suffix")
+  | `Head -> ()
+  end;
+  let sort =
+    match simple_tm_sort type_env from_tm, simple_tm_sort type_env to_tm with
+    | Some sort, _ | _, Some sort -> simple_strip_outer_parens sort
+    | None, None -> emit_error (id ^ ": cannot infer paramodulation rewrite sort")
+  in
+  let target_expr =
+    simple_apply_forall_vars (lookup_simple_name names target_parent_id) target_sorts
+  in
+  let rewrite_selected_proof equality_lit_proof target_lit_proof =
+    if sort = "prop" then begin
+      let left_is_from = left = from_tm && right = to_tm in
+      let right_is_from = right = from_tm && left = to_tm in
+      if not (left_is_from || right_is_from) then
+        emit_error (id ^ ": paramodulation from/to terms do not match equality literal");
+      let left_var = "vpm_left" in
+      let right_var = "vpm_right" in
+      let replacement = TmH (if left_is_from then left_var else right_var) in
+      let ctx_atom = replace_tm_at_position target_atom rewrite_position replacement (id ^ " context") in
+      let ctx_literal = replace_literal_atom target_literal ctx_atom in
+      let ctx_type_env = (left_var, "prop") :: (right_var, "prop") :: type_env in
+      let ctx_prop = simple_literal_prop_with_type_env ctx_type_env ctx_literal in
+      let ctx =
+        "(fun " ^ left_var ^ ":prop"
+        ^ " => fun " ^ right_var ^ ":prop"
+        ^ " => " ^ ctx_prop ^ ")"
+      in
+      Printf.sprintf "(%s %s %s)" equality_lit_proof ctx target_lit_proof
+    end else begin
+      let left_is_from = left = from_tm && right = to_tm in
+      let right_is_from = right = from_tm && left = to_tm in
+      if not (left_is_from || right_is_from) then
+        emit_error (id ^ ": paramodulation from/to terms do not match equality literal");
+      let left_var = "vpm_left" in
+      let right_var = "vpm_right" in
+      let replacement = TmH (if left_is_from then left_var else right_var) in
+      let ctx_atom = replace_tm_at_position target_atom rewrite_position replacement (id ^ " context") in
+      let ctx_literal = replace_literal_atom target_literal ctx_atom in
+      let ctx_type_env = (left_var, sort) :: (right_var, sort) :: type_env in
+      let ctx_prop = simple_literal_prop_with_type_env ctx_type_env ctx_literal in
+      let binder_sort = simple_binder_sort_expr sort in
+      let ctx =
+        "(fun " ^ left_var ^ ":" ^ binder_sort
+        ^ " => fun " ^ right_var ^ ":" ^ binder_sort
+        ^ " => " ^ ctx_prop ^ ")"
+      in
+      Printf.sprintf "(%s %s %s)" equality_lit_proof ctx target_lit_proof
+    end
+  in
+  let result_literal_proof equality_lit_proof target_lit_proof =
+    let direct_proof = rewrite_selected_proof equality_lit_proof target_lit_proof in
+    if result_literal_needs_symmetry then
+      "(" ^ simple_literal_equality_symmetry_proof type_env rewritten_literal direct_proof ^ ")"
+    else
+      direct_proof
+  in
+  let target_result_prop = clause_body_prop target_result_clause in
+  let equality_literal_prop = simple_literal_prop_with_type_env type_env equality_literal in
+  let rotate6_target_proof equality_lit_proof source_proof =
+    match target_clause, target_result_clause, target_index with
+    | [selected; b; c; d; e; f], [b'; c'; d'; e'; f'; g], 0
+        when selected = target_literal
+             && b = b' && c = c' && d = d' && e = e' && f = f'
+             && g = result_literal ->
+        let selected_name = "Hparamod_selected" in
+        let prop lit = simple_literal_prop_with_type_env type_env lit in
+        Some
+          (Printf.sprintf
+             "(vampire_or_rotate6 (%s) (%s) (%s) (%s) (%s) (%s) (%s) (fun %s:%s => %s) %s)"
+             (prop selected) (prop b) (prop c) (prop d) (prop e) (prop f) (prop g)
+             selected_name (prop selected)
+             (result_literal_proof equality_lit_proof selected_name)
+             source_proof)
+    | _ -> None
+  in
+  let rec consume_target equality_lit_proof selected_index source_clause source_proof depth =
+    match source_clause with
+    | [] -> emit_error "cannot paramodulate from the empty clause"
+    | [lit] ->
+        begin match selected_index with
+        | Some 0 ->
+            simple_clause_intro_proof target_result_clause result_literal
+              (result_literal_proof equality_lit_proof source_proof)
+        | Some _ -> emit_error "paramodulation selected target index is out of bounds"
+        | None -> simple_clause_intro_proof target_result_clause lit source_proof
+        end
+    | lit :: rest ->
+        let head_name = "Hparamod_lit_" ^ string_of_int depth in
+        let tail_name = "Hparamod_tail_" ^ string_of_int depth in
+        let head_branch =
+          match selected_index with
+          | Some 0 ->
+              simple_clause_intro_proof target_result_clause result_literal
+                (result_literal_proof equality_lit_proof head_name)
+          | _ -> simple_clause_intro_proof target_result_clause lit head_name
+        in
+        let rest_selected =
+          match selected_index with
+          | Some 0 -> None
+          | Some n -> Some (n - 1)
+          | None -> None
+        in
+        let tail_branch =
+          consume_target equality_lit_proof rest_selected rest tail_name (depth + 1)
+        in
+        Printf.sprintf "(%s %s (fun %s => %s) (fun %s => %s))"
+          source_proof (simple_prop_arg target_result_prop)
+          head_name head_branch
+          tail_name tail_branch
+  in
+  let helper_prop =
+    simple_quantify_prop result_sorts
+      ("(" ^ equality_literal_prop ^ " -> " ^ target_result_prop ^ ")")
+  in
+  let helper_proof =
+    let target_body =
+      match rotate6_target_proof "Hparamod_eq" target_expr with
+      | Some proof -> proof
+      | None ->
+          consume_target "Hparamod_eq" (Some target_index) target_clause target_expr 0
+    in
+    simple_wrap_forall_intro result_sorts
+      ("(fun Hparamod_eq:" ^ equality_literal_prop ^ " => "
+       ^ target_body
+       ^ ")")
+  in
+  let helper_expr =
+    simple_apply_forall_vars helper_name result_sorts
+  in
+  let target_prop = clause_body_prop result in
+  let introduce_target_result proof =
+    match result_layout with
+    | `Suffix -> simple_clause_suffix_intro_proof result target_result_clause proof
+    | `Head ->
+        begin match target_rest, equality_rest with
+        | [a; b; c; d; e], [g] ->
+            let prop lit = simple_literal_prop_with_type_env type_env lit in
+            Printf.sprintf
+              "(vampire_or_rotate_last_first6_extend (%s) (%s) (%s) (%s) (%s) (%s) (%s) %s)"
+              (prop a) (prop b) (prop c) (prop d) (prop e)
+              (prop result_literal) (prop g) proof
+        | _ ->
+            simple_clause_projection_proof target_prop result target_result_clause proof 0
+        end
+  in
+  let fast_suffix_equality source_clause source_proof =
+    match result_layout, source_clause, target_result_clause with
+    | `Suffix, [eq_lit; suffix_lit], [a; b; c; d; e; f]
+        when eq_lit = equality_literal && [suffix_lit] = equality_rest ->
+        let prop lit = simple_literal_prop_with_type_env type_env lit in
+        let equality_lit_name = "Hparamod_eq_lit_fast" in
+        Some
+          (Printf.sprintf
+             "(vampire_or_paramod_suffix7 (%s) (%s) (%s) (%s) (%s) (%s) (%s) (%s) (fun %s:%s => (%s %s)) %s)"
+             equality_literal_prop (prop suffix_lit)
+             (prop a) (prop b) (prop c) (prop d) (prop e) (prop f)
+             equality_lit_name equality_literal_prop helper_expr equality_lit_name
+             source_proof)
+    | _ -> None
+  in
+  let rec consume_equality selected_index source_clause source_proof depth =
+    match selected_index, fast_suffix_equality source_clause source_proof with
+    | Some 0, Some proof -> proof
+    | _ ->
+    match source_clause with
+    | [] -> emit_error "cannot paramodulate from an empty equality clause"
+    | [lit] ->
+        begin match selected_index with
+        | Some 0 ->
+            introduce_target_result ("(" ^ helper_expr ^ " " ^ source_proof ^ ")")
+        | Some _ -> emit_error "paramodulation equality index is out of bounds"
+        | None -> simple_clause_intro_proof result lit source_proof
+        end
+    | lit :: rest ->
+        let head_name = "Hparamod_eq_lit_" ^ string_of_int depth in
+        let tail_name = "Hparamod_eq_tail_" ^ string_of_int depth in
+        let head_branch =
+          match selected_index with
+          | Some 0 ->
+              introduce_target_result ("(" ^ helper_expr ^ " " ^ head_name ^ ")")
+          | _ -> simple_clause_intro_proof result lit head_name
+        in
+        let rest_selected =
+          match selected_index with
+          | Some 0 -> None
+          | Some n -> Some (n - 1)
+          | None -> None
+        in
+        let tail_branch = consume_equality rest_selected rest tail_name (depth + 1) in
+        Printf.sprintf "(%s %s (fun %s => %s) (fun %s => %s))"
+          source_proof (simple_prop_arg target_prop)
+          head_name head_branch
+          tail_name tail_branch
+  in
+  let final_proof =
+    simple_wrap_forall_intro result_sorts
+      (consume_equality (Some equality_index) equality_clause
+         (simple_apply_forall_vars (lookup_simple_name names equality_parent_id) equality_sorts)
+         0)
+  in
+  ([(helper_name, helper_prop, "exact " ^ helper_proof ^ ".")], final_proof)
+
 let simple_substitute_proof
     ?(formula_parent=false)
     clause_body_prop type_env id parent_id subst result parent_sorts result_sorts checked names =
@@ -5850,14 +6243,61 @@ let rec simple_clause_equality_symmetry_proof
 let simple_equality_symmetry_clause_proof
     type_env id parent_id literal_index result target_prop parent_sorts result_sorts checked names =
   let parent_clause = lookup_simple_clause checked parent_id in
-  ignore (simple_clause_nth id "equality-symmetry" literal_index parent_clause);
+  let literal = simple_clause_nth id "equality-symmetry" literal_index parent_clause in
+  let swapped =
+    match swap_literal_equality literal with
+    | Some swapped -> swapped
+    | None -> emit_error (id ^ ": equality-symmetry literal is not an equality")
+  in
   let parent_name = lookup_simple_name names parent_id in
   let parent_expr = simple_apply_forall_vars parent_name parent_sorts in
-  let proof =
-    simple_clause_equality_symmetry_proof
-      type_env target_prop result (Some literal_index) parent_clause parent_expr 0
+  let goal_directed_set_eqsym_script () =
+    match parent_clause, result, literal_index, literal, swapped with
+    | [a; b; c; d; e; f; g], [a'; b'; c'; d'; e2; f'; g'], 4, Pos source_atom, Pos target_atom
+        when a = a' && b = b' && c = c' && d = d' && f = f' && g = g' ->
+        begin match equality_sides source_atom, equality_sides target_atom with
+        | Some (left, right), Some (target_left, target_right)
+            when target_left = right && target_right = left
+                 && not (is_vampire_bool_const left)
+                 && not (is_vampire_bool_const right)
+                 &&
+                 (match simple_tm_sort type_env left, simple_tm_sort type_env right with
+                  | Some sort, _ | _, Some sort -> simple_strip_outer_parens sort = "set"
+                  | None, None -> true) ->
+            let binders =
+              result_sorts
+              |> List.map (fun (name, _) -> megalodon_ident name)
+              |> String.concat " "
+            in
+            let let_prefix =
+              if binders = "" then "" else "let " ^ binders ^ ". "
+            in
+            Some
+              ("__SCRIPT__" ^ let_prefix
+               ^ "apply vampire_or_eqsym5_7_set. exact "
+               ^ parent_expr
+               ^ ".")
+        | _ -> None
+        end
+    | _ -> None
   in
-  simple_wrap_forall_intro result_sorts proof
+  let proof =
+    match goal_directed_set_eqsym_script () with
+    | Some script -> script
+    | None ->
+        try
+          simple_clause_map_selected_literal_proof
+            type_env literal_index parent_clause result parent_expr
+            (fun source_lit target_lit source_proof ->
+               if target_lit <> swapped then
+                 emit_error (id ^ ": equality-symmetry target literal is not the swapped selected literal");
+               "(" ^ simple_literal_equality_symmetry_proof type_env source_lit source_proof ^ ")")
+        with Error _ ->
+          simple_clause_equality_symmetry_proof
+            type_env target_prop result (Some literal_index) parent_clause parent_expr 0
+  in
+  if string_starts_with "__SCRIPT__" proof then proof
+  else simple_wrap_forall_intro result_sorts proof
 
 let simple_prop_term_expr type_env source_atom tm =
   if tm = source_atom then simple_atom_prop_with_type_env type_env source_atom
@@ -9431,7 +9871,34 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
 	      "Theorem vampire_or_assoc : forall A B C:prop, vampire_or A (vampire_or B C) -> vampire_or (vampire_or A B) C.";
 	      "exact (fun A:prop => fun B:prop => fun C:prop => fun H:vampire_or A (vampire_or B C) => fun q:prop => fun Hleft:(vampire_or A B) -> q => fun Hright:C -> q => H q (fun HA:A => Hleft (fun qab:prop => fun Hab_left:A -> qab => fun Hab_right:B -> qab => Hab_left HA)) (fun Hbc:vampire_or B C => Hbc q (fun HB:B => Hleft (fun qab:prop => fun Hab_left:A -> qab => fun Hab_right:B -> qab => Hab_right HB)) Hright)).";
 	      "Qed.";
-	      "Definition vampire_and : prop -> prop -> prop := and.";
+	      "Theorem vampire_or_intro_left : forall A B:prop, A -> vampire_or A B.";
+	      "exact (fun A:prop => fun B:prop => fun HA:A => fun q:prop => fun Hleft:A -> q => fun Hright:B -> q => Hleft HA).";
+	      "Qed.";
+	      "Theorem vampire_or_intro_right : forall A B:prop, B -> vampire_or A B.";
+	      "exact (fun A:prop => fun B:prop => fun HB:B => fun q:prop => fun Hleft:A -> q => fun Hright:B -> q => Hright HB).";
+	      "Qed.";
+	      "Theorem vampire_or_map : forall A B C D:prop, (A -> C) -> (B -> D) -> vampire_or A B -> vampire_or C D.";
+	      "exact (fun A:prop => fun B:prop => fun C:prop => fun D:prop => fun HAC:A -> C => fun HBD:B -> D => fun HAB:vampire_or A B => fun q:prop => fun HC:C -> q => fun HD:D -> q => HAB q (fun HA:A => HC (HAC HA)) (fun HB:B => HD (HBD HB))).";
+	      "Qed.";
+	      "Theorem vampire_or_rotate6 : forall A B C D E F G:prop, (A -> G) -> vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E F)))) -> vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G)))).";
+	      "exact (fun A:prop => fun B:prop => fun C:prop => fun D:prop => fun E:prop => fun F:prop => fun G:prop => fun HAG:A -> G => fun H:vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E F)))) => H (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) (fun HA:A => vampire_or_intro_right B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G)))) (vampire_or_intro_right C (vampire_or D (vampire_or E (vampire_or F G))) (vampire_or_intro_right D (vampire_or E (vampire_or F G)) (vampire_or_intro_right E (vampire_or F G) (vampire_or_intro_right F G (HAG HA)))))) (fun Htail:vampire_or B (vampire_or C (vampire_or D (vampire_or E F))) => Htail (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) (fun HB:B => vampire_or_intro_left B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G)))) HB) (fun HtailC:vampire_or C (vampire_or D (vampire_or E F)) => vampire_or_intro_right B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G)))) (HtailC (vampire_or C (vampire_or D (vampire_or E (vampire_or F G)))) (fun HC:C => vampire_or_intro_left C (vampire_or D (vampire_or E (vampire_or F G))) HC) (fun HtailD:vampire_or D (vampire_or E F) => vampire_or_intro_right C (vampire_or D (vampire_or E (vampire_or F G))) (HtailD (vampire_or D (vampire_or E (vampire_or F G))) (fun HD:D => vampire_or_intro_left D (vampire_or E (vampire_or F G)) HD) (fun HtailE:vampire_or E F => vampire_or_intro_right D (vampire_or E (vampire_or F G)) (HtailE (vampire_or E (vampire_or F G)) (fun HE:E => vampire_or_intro_left E (vampire_or F G) HE) (fun HF:F => vampire_or_intro_right E (vampire_or F G) (vampire_or_intro_left F G HF)))))))))).";
+	      "Qed.";
+		      "Theorem vampire_or_map5_7 : forall A B C D E F G E2:prop, (E -> E2) -> vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) -> vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E2 (vampire_or F G))))).";
+		      "exact (fun A:prop => fun B:prop => fun C:prop => fun D:prop => fun E:prop => fun F:prop => fun G:prop => fun E2:prop => fun HEE:E -> E2 => fun H:vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) => vampire_or_map A (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) A (vampire_or B (vampire_or C (vampire_or D (vampire_or E2 (vampire_or F G))))) (fun HA:A => HA) (fun HT:vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G)))) => vampire_or_map B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G)))) B (vampire_or C (vampire_or D (vampire_or E2 (vampire_or F G)))) (fun HB:B => HB) (fun HU:vampire_or C (vampire_or D (vampire_or E (vampire_or F G))) => vampire_or_map C (vampire_or D (vampire_or E (vampire_or F G))) C (vampire_or D (vampire_or E2 (vampire_or F G))) (fun HC:C => HC) (fun HV:vampire_or D (vampire_or E (vampire_or F G)) => vampire_or_map D (vampire_or E (vampire_or F G)) D (vampire_or E2 (vampire_or F G)) (fun HD:D => HD) (fun HW:vampire_or E (vampire_or F G) => vampire_or_map E (vampire_or F G) E2 (vampire_or F G) HEE (fun HX:vampire_or F G => HX) HW) HV) HU) HT) H).";
+		      "Qed.";
+		      "Theorem vampire_or_drop_head7 : forall A B C D E F G:prop, (A -> vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) -> vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) -> vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G)))).";
+		      "exact (fun A:prop => fun B:prop => fun C:prop => fun D:prop => fun E:prop => fun F:prop => fun G:prop => fun Hdrop:A -> vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G)))) => fun H:vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) => H (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) Hdrop (fun Htail:vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G)))) => Htail)).";
+		      "Qed.";
+		      "Theorem vampire_or_paramod_suffix7 : forall A S B C D E F G:prop, (A -> vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) -> vampire_or A S -> vampire_or S (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))).";
+		      "exact (fun A:prop => fun S:prop => fun B:prop => fun C:prop => fun D:prop => fun E:prop => fun F:prop => fun G:prop => fun Htarget:A -> vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G)))) => fun H:vampire_or A S => H (vampire_or S (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G)))))) (fun HA:A => vampire_or_intro_right S (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) (Htarget HA)) (fun HS:S => vampire_or_intro_left S (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) HS)).";
+		      "Qed.";
+		      "Theorem vampire_or_rotate_last_first6_extend : forall A B C D E F G:prop, vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E F)))) -> vampire_or F (vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E G))))).";
+		      "exact (fun A:prop => fun B:prop => fun C:prop => fun D:prop => fun E:prop => fun F:prop => fun G:prop => fun H:vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E F)))) => H (vampire_or F (vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E G)))))) (fun HA:A => vampire_or_intro_right F (vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E G))))) (vampire_or_intro_left A (vampire_or B (vampire_or C (vampire_or D (vampire_or E G)))) HA)) (fun HtailB:vampire_or B (vampire_or C (vampire_or D (vampire_or E F))) => HtailB (vampire_or F (vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E G)))))) (fun HB:B => vampire_or_intro_right F (vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E G))))) (vampire_or_intro_right A (vampire_or B (vampire_or C (vampire_or D (vampire_or E G)))) (vampire_or_intro_left B (vampire_or C (vampire_or D (vampire_or E G))) HB))) (fun HtailC:vampire_or C (vampire_or D (vampire_or E F)) => HtailC (vampire_or F (vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E G)))))) (fun HC:C => vampire_or_intro_right F (vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E G))))) (vampire_or_intro_right A (vampire_or B (vampire_or C (vampire_or D (vampire_or E G)))) (vampire_or_intro_right B (vampire_or C (vampire_or D (vampire_or E G))) (vampire_or_intro_left C (vampire_or D (vampire_or E G)) HC)))) (fun HtailD:vampire_or D (vampire_or E F) => HtailD (vampire_or F (vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E G)))))) (fun HD:D => vampire_or_intro_right F (vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E G))))) (vampire_or_intro_right A (vampire_or B (vampire_or C (vampire_or D (vampire_or E G)))) (vampire_or_intro_right B (vampire_or C (vampire_or D (vampire_or E G))) (vampire_or_intro_right C (vampire_or D (vampire_or E G)) (vampire_or_intro_left D (vampire_or E G) HD))))) (fun HtailE:vampire_or E F => HtailE (vampire_or F (vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E G)))))) (fun HE:E => vampire_or_intro_right F (vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E G))))) (vampire_or_intro_right A (vampire_or B (vampire_or C (vampire_or D (vampire_or E G)))) (vampire_or_intro_right B (vampire_or C (vampire_or D (vampire_or E G))) (vampire_or_intro_right C (vampire_or D (vampire_or E G)) (vampire_or_intro_right D (vampire_or E G) (vampire_or_intro_left E G HE)))))) (fun HF:F => vampire_or_intro_left F (vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E G))))) HF)))))).";
+		      "Qed.";
+		      "Theorem vampire_or_rotate_last_first7 : forall A B C D E F G:prop, vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) -> vampire_or G (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F A))))).";
+		      "exact (fun A:prop => fun B:prop => fun C:prop => fun D:prop => fun E:prop => fun F:prop => fun G:prop => fun H:vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) => H (vampire_or G (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F A)))))) (fun HA:A => vampire_or_intro_right G (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F A))))) (vampire_or_intro_right B (vampire_or C (vampire_or D (vampire_or E (vampire_or F A)))) (vampire_or_intro_right C (vampire_or D (vampire_or E (vampire_or F A))) (vampire_or_intro_right D (vampire_or E (vampire_or F A)) (vampire_or_intro_right E (vampire_or F A) (vampire_or_intro_right F A HA)))))) (fun Htail:vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G)))) => vampire_or_rotate_last_first6_extend B C D E F G A Htail)).";
+		      "Qed.";
+		      "Definition vampire_and : prop -> prop -> prop := and.";
 	      "Theorem vampire_and_map : forall A B C D:prop, (A -> C) -> (B -> D) -> vampire_and A B -> vampire_and C D.";
 	      "exact (fun A:prop => fun B:prop => fun C:prop => fun D:prop => fun HAC:A -> C => fun HBD:B -> D => fun HAB:vampire_and A B => fun q:prop => fun HCD:C -> D -> q => HAB q (fun HA:A => fun HB:B => HCD (HAC HA) (HBD HB))).";
 	      "Qed.";
@@ -9491,10 +9958,13 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       "let x y.";
       "assume H.";
       "let Q.";
-      "assume HQ.";
-      "exact H (fun a b:set => Q b a) HQ.";
-      "Qed.";
-      "Definition vampire_eq_prop_to_set : (prop->set)->(prop->set)->prop := fun x y:prop->set => forall Q:(prop->set)->(prop->set)->prop, Q x y -> Q y x.";
+	      "assume HQ.";
+	      "exact H (fun a b:set => Q b a) HQ.";
+	      "Qed.";
+	      "Theorem vampire_or_eqsym5_7_set : forall A B C D F G:prop, forall x:set, forall y:set, vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or (x = y) (vampire_or F G))))) -> vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or (y = x) (vampire_or F G))))).";
+		      "exact (fun A:prop => fun B:prop => fun C:prop => fun D:prop => fun F:prop => fun G:prop => fun x:set => fun y:set => fun H:vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or (x = y) (vampire_or F G))))) => H (vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or (y = x) (vampire_or F G)))))) (fun HA:A => vampire_or_intro_left A (vampire_or B (vampire_or C (vampire_or D (vampire_or (y = x) (vampire_or F G))))) HA) (fun HtailB:vampire_or B (vampire_or C (vampire_or D (vampire_or (x = y) (vampire_or F G)))) => HtailB (vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or (y = x) (vampire_or F G)))))) (fun HB:B => vampire_or_intro_right A (vampire_or B (vampire_or C (vampire_or D (vampire_or (y = x) (vampire_or F G))))) (vampire_or_intro_left B (vampire_or C (vampire_or D (vampire_or (y = x) (vampire_or F G)))) HB)) (fun HtailC:vampire_or C (vampire_or D (vampire_or (x = y) (vampire_or F G))) => HtailC (vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or (y = x) (vampire_or F G)))))) (fun HC:C => vampire_or_intro_right A (vampire_or B (vampire_or C (vampire_or D (vampire_or (y = x) (vampire_or F G))))) (vampire_or_intro_right B (vampire_or C (vampire_or D (vampire_or (y = x) (vampire_or F G)))) (vampire_or_intro_left C (vampire_or D (vampire_or (y = x) (vampire_or F G))) HC))) (fun HtailD:vampire_or D (vampire_or (x = y) (vampire_or F G)) => HtailD (vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or (y = x) (vampire_or F G)))))) (fun HD:D => vampire_or_intro_right A (vampire_or B (vampire_or C (vampire_or D (vampire_or (y = x) (vampire_or F G))))) (vampire_or_intro_right B (vampire_or C (vampire_or D (vampire_or (y = x) (vampire_or F G)))) (vampire_or_intro_right C (vampire_or D (vampire_or (y = x) (vampire_or F G))) (vampire_or_intro_left D (vampire_or (y = x) (vampire_or F G)) HD)))) (fun HtailE:vampire_or (x = y) (vampire_or F G) => HtailE (vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or (y = x) (vampire_or F G)))))) (fun HE:x = y => vampire_or_intro_right A (vampire_or B (vampire_or C (vampire_or D (vampire_or (y = x) (vampire_or F G))))) (vampire_or_intro_right B (vampire_or C (vampire_or D (vampire_or (y = x) (vampire_or F G)))) (vampire_or_intro_right C (vampire_or D (vampire_or (y = x) (vampire_or F G))) (vampire_or_intro_right D (vampire_or (y = x) (vampire_or F G)) (vampire_or_intro_left (y = x) (vampire_or F G) (vampire_eq_set_sym x y HE)))))) (fun HtailF:vampire_or F G => HtailF (vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or (y = x) (vampire_or F G)))))) (fun HF:F => vampire_or_intro_right A (vampire_or B (vampire_or C (vampire_or D (vampire_or (y = x) (vampire_or F G))))) (vampire_or_intro_right B (vampire_or C (vampire_or D (vampire_or (y = x) (vampire_or F G)))) (vampire_or_intro_right C (vampire_or D (vampire_or (y = x) (vampire_or F G))) (vampire_or_intro_right D (vampire_or (y = x) (vampire_or F G)) (vampire_or_intro_right (y = x) (vampire_or F G) (vampire_or_intro_left F G HF)))))) (fun HG:G => vampire_or_intro_right A (vampire_or B (vampire_or C (vampire_or D (vampire_or (y = x) (vampire_or F G))))) (vampire_or_intro_right B (vampire_or C (vampire_or D (vampire_or (y = x) (vampire_or F G)))) (vampire_or_intro_right C (vampire_or D (vampire_or (y = x) (vampire_or F G))) (vampire_or_intro_right D (vampire_or (y = x) (vampire_or F G)) (vampire_or_intro_right (y = x) (vampire_or F G) (vampire_or_intro_right F G HG)))))))))))).";
+	      "Qed.";
+	      "Definition vampire_eq_prop_to_set : (prop->set)->(prop->set)->prop := fun x y:prop->set => forall Q:(prop->set)->(prop->set)->prop, Q x y -> Q y x.";
       "Definition vampire_eq_prop_to_prop_to_prop : (prop->prop->prop)->(prop->prop->prop)->prop := fun x y:prop->prop->prop => forall Q:(prop->prop->prop)->(prop->prop->prop)->prop, Q x y -> Q y x.";
       "Definition vampire_eq_set_to_set : (set->set)->(set->set)->prop := fun x y:set->set => forall Q:(set->set)->(set->set)->prop, Q x y -> Q y x.";
       "Definition vampire_eq_set_to_prop : (set->prop)->(set->prop)->prop := fun x y:set->prop => forall Q:(set->prop)->(set->prop)->prop, Q x y -> Q y x.";
@@ -11758,12 +12228,18 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                             parent_sorts sorts !checked !emitted_names)
                 with Error _ -> None
           with
-          | Some proof ->
-              let name = derived_name id in
-              add_emitted id name;
-              add_emitted_prop_and_sorts id prop sorts;
-              claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")];
-              add_checked id result
+	          | Some proof ->
+	              let name = derived_name id in
+	              let proof_body =
+	                if string_starts_with "__SCRIPT__" proof then
+	                  String.sub proof 10 (String.length proof - 10)
+	                else
+	                  "exact " ^ proof ^ "."
+	              in
+	              add_emitted id name;
+	              add_emitted_prop_and_sorts id prop sorts;
+	              claims := !claims @ [(name, prop, proof_body)];
+	              add_checked id result
           | None ->
               add_clause_inference_bridge
                 ~extra_sorts:subst_sorts
@@ -11863,12 +12339,18 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                               !checked !emitted_names)
                   with Error _ -> None
           with
-          | Some proof ->
-              let name = derived_name id in
-              add_emitted id name;
-              add_emitted_prop_and_sorts id prop sorts;
-              claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")];
-              add_checked id result
+	          | Some proof ->
+	              let name = derived_name id in
+	              let proof_body =
+	                if string_starts_with "__SCRIPT__" proof then
+	                  String.sub proof 10 (String.length proof - 10)
+	                else
+	                  "exact " ^ proof ^ "."
+	              in
+	              add_emitted id name;
+	              add_emitted_prop_and_sorts id prop sorts;
+	              claims := !claims @ [(name, prop, proof_body)];
+	              add_checked id result
           | None ->
               add_clause_inference_bridge "resolve" id [left_id; right_id] result
           end
@@ -11901,12 +12383,18 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                           !checked !emitted_names)
               with Error _ -> None
           with
-          | Some proof ->
-              let name = derived_name id in
-              add_emitted id name;
-              add_emitted_prop_and_sorts id prop sorts;
-              claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")];
-              add_checked id result
+	          | Some proof ->
+	              let name = derived_name id in
+	              let proof_body =
+	                if string_starts_with "__SCRIPT__" proof then
+	                  String.sub proof 10 (String.length proof - 10)
+	                else
+	                  "exact " ^ proof ^ "."
+	              in
+	              add_emitted id name;
+	              add_emitted_prop_and_sorts id prop sorts;
+	              claims := !claims @ [(name, prop, proof_body)];
+	              add_checked id result
           | None ->
               add_clause_inference_bridge "factor" id [parent_id] result
           end
@@ -11947,12 +12435,18 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                           parent_sorts sorts !checked !emitted_names)
               with Error _ -> None
           with
-          | Some proof ->
-              let name = derived_name id in
-              add_emitted id name;
-              add_emitted_prop_and_sorts id prop sorts;
-              claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")];
-              add_checked id result
+	          | Some proof ->
+	              let name = derived_name id in
+	              let proof_body =
+	                if string_starts_with "__SCRIPT__" proof then
+	                  String.sub proof 10 (String.length proof - 10)
+	                else
+	                  "exact " ^ proof ^ "."
+	              in
+	              add_emitted id name;
+	              add_emitted_prop_and_sorts id prop sorts;
+	              claims := !claims @ [(name, prop, proof_body)];
+	              add_checked id result
           | None ->
               add_clause_inference_bridge "equality_symmetry" id [parent_id] result
           end
@@ -12106,20 +12600,31 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             && emitted_parent_matches target_parent_id target_sorts target_clause
             && prop = structural_clause_prop sorts result
           in
-          begin match
-            if not structurally_safe then None
-            else
-              try Some (simple_paramodulate_unit_proof
-                          clause_body_prop type_env id equality_parent_id target_parent_id equality_index target_index position
-                          from_tm to_tm result equality_sorts target_sorts sorts !checked !emitted_names)
-              with Error _ -> None
-          with
-          | Some proof ->
-              let name = derived_name id in
-              add_emitted id name;
-              add_emitted_prop_and_sorts id prop sorts;
-              claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")];
-              add_checked id result
+	          begin match
+	            if not structurally_safe then None
+	            else
+	              let name = derived_name id in
+	              try Some
+	                    (simple_paramodulate_unit_split_proof
+	                       clause_body_prop type_env id (name ^ "_target")
+	                       equality_parent_id target_parent_id equality_index target_index position
+	                       from_tm to_tm result equality_sorts target_sorts sorts !checked !emitted_names)
+	              with Error _ ->
+	                try
+	                  let proof =
+	                    simple_paramodulate_unit_proof
+	                      clause_body_prop type_env id equality_parent_id target_parent_id equality_index target_index position
+	                      from_tm to_tm result equality_sorts target_sorts sorts !checked !emitted_names
+	                  in
+	                  Some ([], proof)
+	                with Error _ -> None
+	          with
+	          | Some (extra_claims, proof) ->
+	              let name = derived_name id in
+	              add_emitted id name;
+	              add_emitted_prop_and_sorts id prop sorts;
+	              claims := !claims @ extra_claims @ [(name, prop, "exact " ^ proof ^ ".")];
+	              add_checked id result
           | None ->
               add_clause_inference_bridge "paramodulate" id [equality_parent_id; target_parent_id] result
           end
