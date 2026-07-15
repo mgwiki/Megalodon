@@ -662,11 +662,43 @@ if [[ -s "$WORK_DIR/avatar_split.tsv" ]]; then
     'sat_literal_0_var=' \
     'sat_literal_0_positive=' \
     'component_parent_count=' \
+    'component_parent_ref_count=' \
     'literal_class_count=' \
     'parent_var_binding_count='; do
     awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
       "$WORK_DIR/avatar_split.tsv" >> "$WORK_DIR/missing_avatar_split_fields.tsv"
   done
+
+  awk '
+    {
+      if (match($0, /component_parent_ref_count=([0-9]+)/, ref_count_match)) {
+        ref_count = ref_count_match[1] + 0
+        for (ref_index = 0; ref_index < ref_count; ++ref_index) {
+          prefix = "component_parent_ref_" ref_index
+          unit_field = prefix "_unit=u"
+          split_level_field = prefix "_split_level="
+          split_var_field = prefix "_split_var="
+          split_positive_field = prefix "_split_positive="
+          clause_field = prefix "_clause="
+          if (index($0, unit_field) == 0) {
+            print unit_field "\t" $0
+          }
+          if (index($0, split_level_field) == 0) {
+            print split_level_field "\t" $0
+          }
+          if (index($0, split_var_field) == 0) {
+            print split_var_field "\t" $0
+          }
+          if (index($0, split_positive_field) == 0) {
+            print split_positive_field "\t" $0
+          }
+          if (index($0, clause_field) == 0) {
+            print clause_field "\t" $0
+          }
+        }
+      }
+    }
+  ' "$WORK_DIR/avatar_split.tsv" >> "$WORK_DIR/missing_avatar_split_fields.tsv"
 
   awk '
     index($0, "result_clause=") == 0 &&
