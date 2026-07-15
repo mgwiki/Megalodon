@@ -185,6 +185,89 @@ if [[ -s "$parent_errors" ]]; then
   exit 1
 fi
 
+macro_expansion_errors="$WORK_DIR/macro_expansion_errors.tsv"
+: > "$macro_expansion_errors"
+while IFS= read -r native_file; do
+  awk -v source="$native_file" '
+    function proof_id_prefix(id, out) {
+      if (match(id, /^u[0-9]+/)) {
+        out = substr(id, RSTART, RLENGTH)
+        return out
+      }
+      return ""
+    }
+
+    function required_primitive(rule) {
+      if (rule == "superposition" || rule == "rewrite") {
+        return "paramodulate"
+      }
+      if (rule == "subsumption_resolution" ||
+          rule == "unit_resulting_resolution" ||
+          rule == "resolution") {
+        return "resolve"
+      }
+      if (rule == "factoring") {
+        return "factor"
+      }
+      return ""
+    }
+
+    /^  \([[:alnum:]_]+ "[^"]+"/ {
+      line = $0
+      if (match(line, /^  \(([[:alnum:]_]+) "([^"]+)"/, step)) {
+        rule = step[1]
+        id = step[2]
+        if (rule != "step_proposition" &&
+            rule != "step_variable_sorts" &&
+            rule != "step_extra") {
+          proof_step[id] = rule
+          prefix = proof_id_prefix(id)
+          if (prefix != "") {
+            primitive_for_prefix[prefix "\034" rule] = 1
+          }
+        }
+      }
+      if (match(line, /^  \(step_extra "(u[0-9]+)" "kernel_v1"/, owner) &&
+          match(line, /"rule=([^"]+)"/, rule_match)) {
+        unit = owner[1]
+        kernel_rule = rule_match[1]
+        primitive = required_primitive(kernel_rule)
+        if (primitive != "") {
+          macro_count++
+          macro_unit[macro_count] = unit
+          macro_rule[macro_count] = kernel_rule
+          macro_primitive[macro_count] = primitive
+          macro_line[macro_count] = line
+          if (index(line, "primitive_expansion=prefix") == 0 ||
+              index(line, "primitive_expansion_prefix=" unit) == 0 ||
+              index(line, "primitive_expansion_requires=" primitive) == 0) {
+            print source ":" FNR "\tmissing-expansion-contract\t" unit "\t" kernel_rule "\t" primitive "\t" line
+          }
+        }
+      }
+    }
+
+    END {
+      for (macro_index = 1; macro_index <= macro_count; ++macro_index) {
+        unit = macro_unit[macro_index]
+        primitive = macro_primitive[macro_index]
+        if (!(unit in proof_step)) {
+          print source "\tmissing-final-primitive-step\t" unit "\t" macro_rule[macro_index] "\t" macro_line[macro_index]
+        }
+        if (!((unit "\034" primitive) in primitive_for_prefix)) {
+          print source "\tmissing-required-primitive-prefix\t" unit "\t" macro_rule[macro_index] "\t" primitive "\t" macro_line[macro_index]
+        }
+      }
+    }
+  ' "$native_file" >> "$macro_expansion_errors"
+done < "$WORK_DIR/native_files.txt"
+
+if [[ -s "$macro_expansion_errors" ]]; then
+  echo "native primitive audit found kernel macro records without matching primitive expansion steps" >&2
+  sed -n '1,40p' "$macro_expansion_errors" >&2
+  exit 1
+fi
+
 sort -k1,1 "$WORK_DIR/rule_counts.txt" -o "$WORK_DIR/rule_counts.txt"
 
 echo "native primitive records:"

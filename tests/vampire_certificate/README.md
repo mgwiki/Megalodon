@@ -157,6 +157,13 @@ positions.
 Whenever Vampire reports a `parent_i_substitution`, it also requires
 `parent_i_substituted_literal_count` and `parent_i_substituted_literal_j` fields
 rendered after applying that substitution.
+For macro kernel rules currently expanded into first-class certificate steps
+(`superposition`, demodulation `rewrite`, `unit_resulting_resolution`,
+`subsumption_resolution`, `resolution`, and `factoring`), it requires the
+Vampire-emitted `primitive_expansion=prefix`,
+`primitive_expansion_prefix=uN`, and `primitive_expansion_requires=...`
+contract. This keeps the broad Vampire rule record tied to an explicit
+Prover9/Ivy-style primitive expansion instead of an opaque reconstruction hint.
 For formula transformation records with `proof_parent_count`, it requires
 `source_unit`, `result_formula`, and every `parent_i_unit`/`parent_i_formula`.
 For unit-resulting resolution, it also requires Vampire's trace main parent,
@@ -233,6 +240,10 @@ missing or later proof steps, while allowing `step_proposition`,
 `step_variable_sorts`, and `step_extra` to reuse ids as metadata. It is
 intentionally separate from the `kernel_v1` metadata audit because these are
 first-class certificate steps, not `step_extra` annotations.
+For any `kernel_v1` macro record with a `primitive_expansion` contract, this
+audit also verifies that the certificate contains a final proof step with the
+kernel unit id and at least one required primitive step sharing that unit prefix
+such as `u123_paramodulate` or `u123_resolve0`.
 
 `run_native_live_parallel.sh` runs this primitive audit and the `kernel_v1`
 metadata audit by default after a successful live run. Set

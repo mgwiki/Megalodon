@@ -207,6 +207,39 @@ if [[ -s "$WORK_DIR/unknown_rules.tsv" ]]; then
   exit 1
 fi
 
+require_primitive_expansion_contract() {
+  local rule=$1
+  local primitive=$2
+  local file="$WORK_DIR/${rule}_primitive_expansion.tsv"
+  grep -F "\"rule=${rule}\"" "$WORK_DIR/kernel_v1.tsv" > "$file" || true
+  if [[ ! -s "$file" ]]; then
+    return 0
+  fi
+
+  local missing="$WORK_DIR/missing_${rule}_primitive_expansion.tsv"
+  : > "$missing"
+  for pattern in \
+    'primitive_expansion=prefix' \
+    'primitive_expansion_prefix=' \
+    "primitive_expansion_requires=${primitive}"; do
+    awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
+      "$file" >> "$missing"
+  done
+
+  if [[ -s "$missing" ]]; then
+    echo "kernel_v1 metadata audit found ${rule} records missing primitive-expansion contract fields" >&2
+    sed -n '1,40p' "$missing" >&2
+    exit 1
+  fi
+}
+
+require_primitive_expansion_contract superposition paramodulate
+require_primitive_expansion_contract rewrite paramodulate
+require_primitive_expansion_contract unit_resulting_resolution resolve
+require_primitive_expansion_contract subsumption_resolution resolve
+require_primitive_expansion_contract resolution resolve
+require_primitive_expansion_contract factoring factor
+
 awk 'index($0, "conclusion_clause=") != 0 {print}' "$WORK_DIR/kernel_v1.tsv" \
   > "$WORK_DIR/clausal_kernel.tsv"
 
