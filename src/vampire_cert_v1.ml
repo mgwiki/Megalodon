@@ -16944,7 +16944,8 @@ let validate_certificate_sources ?(require_formula_match=false) source_map cert 
           | Some formula ->
               let negated =
                 match source with
-                | SourceNegatedConjecture _ -> true
+                | SourceNegatedConjecture _ ->
+                    entry.source_map_kind <> "negated_conjecture"
                 | _ -> false
               in
               begin match source_step_matches_tptp_formula_checked ~negated step formula with

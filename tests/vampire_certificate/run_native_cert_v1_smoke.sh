@@ -1138,6 +1138,34 @@ if ! rg -q 'Vampire certificate v1 source map checked 2 sources' "$WORK_DIR/nati
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_negated_conjecture_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_negated_conjecture_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_negated_conjecture_valid.log"
+
+if ! rg -q 'Vampire certificate v1 strict checked 5 steps' \
+    "$WORK_DIR/native_cert_v1_source_map_negated_conjecture_valid.log"; then
+  echo "strict native certificate v1 source-map checker did not accept already-negated conjecture declarations" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_negated_conjecture_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_negated_conjecture_mismatch_bad.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_negated_conjecture_mismatch_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_source_map_negated_conjecture_mismatch_bad.err"; then
+  echo "strict native certificate v1 source-map checker accepted mismatched already-negated conjecture declarations" >&2
+  exit 1
+fi
+
+if ! rg -q 'source ng does not match the THF declaration formula' \
+    "$WORK_DIR/native_cert_v1_source_map_negated_conjecture_mismatch_bad.err"; then
+  echo "strict native certificate v1 negated-conjecture mismatch failure did not explain the semantic mismatch" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_axiom_conjecture_bad.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_axiom_conjecture_bad.th0.p \
