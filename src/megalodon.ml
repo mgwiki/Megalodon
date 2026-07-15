@@ -7089,6 +7089,15 @@ let check_vampire_cert_v1_file fn =
           Printf.printf
             "Vampire certificate v1 native core source bindings checked %d assumption%s.\n"
             (List.length native_core.Vampire_cert_v1.core_native_source_bindings)
+            (if List.length native_core.Vampire_cert_v1.core_native_source_bindings = 1 then "" else "s");
+          Printf.printf
+            "Vampire certificate v1 native core source propositions recorded %d assumption%s.\n"
+            (List.length
+               (List.filter
+                  (fun binding ->
+                     binding.Vampire_cert_v1.core_native_source_proposition
+                     <> TmH "")
+                  native_core.Vampire_cert_v1.core_native_source_bindings))
             (if List.length native_core.Vampire_cert_v1.core_native_source_bindings = 1 then "" else "s")
       | None ->
           raise (Vampire_cert_v1.Error "native core proof term does not prove its proposition")

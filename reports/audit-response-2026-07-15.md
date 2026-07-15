@@ -55,10 +55,11 @@ The native proof-term seed now also refuses source-less evidence:
 `megalodon_origin` comment in that source file.  This is not full Tier 1
 original-context replay, but it makes the native path provenance-bound and
 prevents origin-free exported THF files from being counted as native progress.
-The returned native core proof object now carries the source-map binding for
-each proof-lambda assumption as well, so later original-context replay can
-replace those assumptions by the corresponding original lemma, local fact,
-definition, set-reflexivity proof, or conjecture edge.
+The returned native core proof object now carries the source-map binding and
+the exact source-assumption proposition for each proof-lambda assumption as
+well, so later original-context replay can replace those assumptions by the
+corresponding original lemma, local fact, definition, set-reflexivity proof, or
+conjecture edge.
 
 ## Accepted Audit Criticisms
 

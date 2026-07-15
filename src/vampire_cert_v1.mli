@@ -134,6 +134,7 @@ and core_native_source_binding = {
   core_native_source_name : string;
   core_native_source_map_kind : string;
   core_native_source_hash : string;
+  core_native_source_proposition : Syntax.tm;
 }
 
 type source_map_entry = {

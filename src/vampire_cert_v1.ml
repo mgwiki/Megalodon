@@ -144,6 +144,7 @@ and core_native_source_binding = {
   core_native_source_name : string;
   core_native_source_map_kind : string;
   core_native_source_hash : string;
+  core_native_source_proposition : tm;
 }
 
 type source_map_entry = {
@@ -3477,12 +3478,26 @@ let native_core_source_kind_and_tptp_name = function
   | SourceDefinition name -> ("definition", name)
   | SourceSetReflexivity name -> ("set_reflexivity", name)
 
-let native_core_source_binding source_map id source =
+let native_core_source_binding source_map id source proposition =
   let source_kind, tptp_name = native_core_source_kind_and_tptp_name source in
   let entry =
-    List.find_opt
-      (fun entry -> entry.source_map_tptp_name = tptp_name)
-      source_map
+    match
+      List.find_opt
+        (fun entry -> entry.source_map_tptp_name = tptp_name)
+        source_map
+    with
+    | Some entry -> Some entry
+    | None ->
+        begin match source with
+        | SourceConjecture alias ->
+            List.find_opt
+              (fun entry ->
+                 entry.source_map_kind = "conjecture"
+                 && ("conj_" ^ entry.source_map_tptp_name = alias
+                     || "conj_" ^ entry.source_map_source_name = alias))
+              source_map
+        | _ -> None
+        end
   in
   {
     core_native_source_step = id;
@@ -3503,6 +3518,7 @@ let native_core_source_binding source_map id source =
       | Some entry -> entry.source_map_hash
       | None -> ""
       end;
+    core_native_source_proposition = proposition;
   }
 
 let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
@@ -3512,10 +3528,11 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
   List.iter
     (function
       | Input (id, source, clause) ->
+          let proposition = native_core_clause_prop id clause in
           source_inputs :=
             !source_inputs
-            @ [(id, native_core_clause_prop id clause,
-                native_core_source_binding source_map id source)]
+            @ [(id, proposition,
+                native_core_source_binding source_map id source proposition)]
       | _ -> ())
     cert.steps;
   let source_count = List.length !source_inputs in

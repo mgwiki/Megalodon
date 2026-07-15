@@ -166,9 +166,10 @@ elaborator; it is the initial checked entrypoint for replacing the broad
 `-vampirecertv1source` to contain `megalodon_origin` metadata, so native
 proof-term evidence is tied at least to a specific exported Megalodon source
 obligation instead of to a source-less THF artifact. The native proof result
-also carries the source binding for each proof-lambda assumption, in assumption
-order, so the checked proof term can be audited against the source map rather
-than only against internal certificate step IDs.
+also carries the source binding and exact source-assumption proposition for
+each proof-lambda assumption, in assumption order, so the checked proof term can
+be audited against the source map rather than only against internal certificate
+step IDs.
 
 To run the committed synthetic core seed through that native proof-term path,
 use:

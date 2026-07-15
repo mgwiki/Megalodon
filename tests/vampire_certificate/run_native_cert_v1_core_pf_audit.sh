@@ -52,6 +52,11 @@ run_one() {
     return 0
   fi
 
+  if ! rg -q 'Vampire certificate v1 native core source propositions recorded ' "$case_dir/check.out"; then
+    printf '%s\tCORE_PF_MISSING_SOURCE_PROPOSITIONS\n' "$base" > "$case_dir/result.tsv"
+    return 0
+  fi
+
   printf '%s\tCORE_PF_PASS\n' "$base" > "$case_dir/result.tsv"
 }
 
