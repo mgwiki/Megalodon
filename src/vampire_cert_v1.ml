@@ -3293,6 +3293,7 @@ let field_value key fields =
 
 let required_primitive_for_kernel_rule = function
   | "fool_formula" -> Some "fool_atom_lift"
+  | "rectify_formula" -> Some "rectify_formula"
   | "superposition"
   | "rewrite" -> Some "paramodulate"
   | "subsumption_resolution"
