@@ -98,7 +98,7 @@ awk '
   /rule=equality_resolution/ || /rule=superposition/ ||
   /rule=equality_factoring/ || /rule=rewrite/ ||
   /rule=unit_resulting_resolution/ || /rule=cnf_clause/ ||
-  /rule=skolemize/ {
+  /rule=skolemize/ || /rule=rectify_formula/ {
     next
   }
   { print }
@@ -154,6 +154,35 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
   if [[ -s "$WORK_DIR/missing_skolemize_fields.tsv" ]]; then
     echo "kernel_v1 metadata audit found skolemization records missing transformation fields" >&2
     sed -n '1,40p' "$WORK_DIR/missing_skolemize_fields.tsv" >&2
+    exit 1
+  fi
+fi
+
+grep -F 'rule=rectify_formula' "$WORK_DIR/kernel_v1.tsv" \
+  > "$WORK_DIR/rectify_formula.tsv" || true
+
+if [[ -s "$WORK_DIR/rectify_formula.tsv" ]]; then
+  : > "$WORK_DIR/missing_rectify_formula_fields.tsv"
+  for pattern in \
+    'source_unit=' \
+    'proof_parent_count=' \
+    'source_formula=' \
+    'result_formula=' \
+    'renaming_count='; do
+    awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
+      "$WORK_DIR/rectify_formula.tsv" >> "$WORK_DIR/missing_rectify_formula_fields.tsv"
+  done
+
+  awk 'index($0, "renaming_count=0") == 0 && index($0, "renaming_0_source=") == 0 {print "renaming_0_source=\t" $0}' \
+    "$WORK_DIR/rectify_formula.tsv" >> "$WORK_DIR/missing_rectify_formula_fields.tsv"
+  awk 'index($0, "renaming_count=0") == 0 && index($0, "renaming_0_target=") == 0 {print "renaming_0_target=\t" $0}' \
+    "$WORK_DIR/rectify_formula.tsv" >> "$WORK_DIR/missing_rectify_formula_fields.tsv"
+  awk 'index($0, "renaming_count=0") == 0 && index($0, "renaming_0_substitution=") == 0 {print "renaming_0_substitution=\t" $0}' \
+    "$WORK_DIR/rectify_formula.tsv" >> "$WORK_DIR/missing_rectify_formula_fields.tsv"
+
+  if [[ -s "$WORK_DIR/missing_rectify_formula_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found rectification records missing transformation fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_rectify_formula_fields.tsv" >&2
     exit 1
   fi
 fi
