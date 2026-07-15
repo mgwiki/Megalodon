@@ -1517,6 +1517,15 @@ if ! rg -q 'Vampire certificate v1 checked 9 steps' "$WORK_DIR/native_cert_v1_fo
 fi
 
 bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_bool_typed_eq_valid.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_fool_bool_typed_eq_valid.log"
+
+if ! rg -q 'Vampire certificate v1 checked 9 steps' "$WORK_DIR/native_cert_v1_fool_bool_typed_eq_valid.log"; then
+  echo "native certificate v1 checker did not accept the typed-equality FOOL Boolean fixture" >&2
+  exit 1
+fi
+
+bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_lambda_not_valid.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_fool_lambda_not_valid.log"
 

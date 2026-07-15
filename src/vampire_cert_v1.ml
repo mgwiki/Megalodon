@@ -1065,6 +1065,9 @@ let megalodon_eq_poly_sides = function
 let equality_to_true atom =
   Ap (Ap (TmH "=", atom), TmH "f__true")
 
+let typed_prop_equality_to_true atom =
+  Ap (Ap (TpAp (TmH megalodon_eq_poly_hash, Prop), atom), TmH "f__true")
+
 let paramodulation_position_candidates target_atom position =
   let base = [position] in
   match equality_sides target_atom, position with
@@ -1885,11 +1888,11 @@ let check_fool_bool checked id parent_id result =
   in
   let expected =
     match parent_clause with
-    | [Pos atom] -> Pos (equality_to_true atom)
-    | [Neg atom] -> Neg (equality_to_true atom)
+    | [Pos atom] -> [Pos (equality_to_true atom); Pos (typed_prop_equality_to_true atom)]
+    | [Neg atom] -> [Neg (equality_to_true atom); Neg (typed_prop_equality_to_true atom)]
     | _ -> error (id ^ ": fool_bool parent is not a singleton formula")
   in
-  if not (same_clause_multiset [expected] [result]) then
+  if not (List.exists (fun candidate -> same_clause_multiset [candidate] [result]) expected) then
     error (id ^ ": fool_bool result is not the Boolean-term equality to true")
 
 let check_resolution checked id left_id right_id left_index right_index result =
