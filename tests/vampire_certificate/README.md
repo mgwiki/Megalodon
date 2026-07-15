@@ -169,6 +169,8 @@ For AVATAR split clauses, it requires the source clause, result clause or
 formula, SAT literals, previous split count, component-parent count,
 literal-class count, and parent variable binding count that Vampire computes
 during split reconstruction.
+For AVATAR refutations, it requires the empty result clause, SAT input clauses,
+input origin units, and SAT proof steps emitted by Vampire.
 The point of this gate is to keep new work on the Prover9/Ivy-style certificate
 path: Vampire must emit primitive replay data, rather than leaving Megalodon to
 recover it by broad OCaml-side reconstruction.

@@ -101,7 +101,8 @@ awk '
   /rule=skolemize/ || /rule=rectify_formula/ ||
   /rule=formula_copy/ || /rule=formula_normalize/ ||
   /rule=fool_formula/ || /rule=fool_exhaustiveness/ ||
-  /rule=avatar_component/ || /rule=avatar_split/ {
+  /rule=avatar_component/ || /rule=avatar_split/ ||
+  /rule=avatar_refutation/ {
     next
   }
   { print }
@@ -341,6 +342,31 @@ if [[ -s "$WORK_DIR/avatar_split.tsv" ]]; then
   if [[ -s "$WORK_DIR/missing_avatar_split_fields.tsv" ]]; then
     echo "kernel_v1 metadata audit found AVATAR split records missing split fields" >&2
     sed -n '1,40p' "$WORK_DIR/missing_avatar_split_fields.tsv" >&2
+    exit 1
+  fi
+fi
+
+grep -F 'rule=avatar_refutation' "$WORK_DIR/kernel_v1.tsv" \
+  > "$WORK_DIR/avatar_refutation.tsv" || true
+
+if [[ -s "$WORK_DIR/avatar_refutation.tsv" ]]; then
+  : > "$WORK_DIR/missing_avatar_refutation_fields.tsv"
+  for pattern in \
+    'result_clause=' \
+    'sat_input_count=' \
+    'sat_input_0_clause=' \
+    'sat_input_0_origin_unit=' \
+    'sat_proof_step_count=' \
+    'sat_proof_step_0_id=' \
+    'sat_proof_step_0_kind=' \
+    'sat_proof_step_0_clause='; do
+    awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
+      "$WORK_DIR/avatar_refutation.tsv" >> "$WORK_DIR/missing_avatar_refutation_fields.tsv"
+  done
+
+  if [[ -s "$WORK_DIR/missing_avatar_refutation_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found AVATAR refutation records missing SAT proof fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_avatar_refutation_fields.tsv" >&2
     exit 1
   fi
 fi
