@@ -196,9 +196,11 @@ steps: `substitute`, `paramodulate`, `equality_symmetry`,
 `equality_resolution`, `resolve`, and `factor`. The gate requires each present
 rule family to expose the fields Megalodon should replay mechanically: parent
 ids, substitutions, equality/target parents, rewrite positions, literal or
-pivot indices, and result clauses. It is intentionally separate from the
-`kernel_v1` metadata audit because these are first-class certificate steps, not
-`step_extra` annotations.
+pivot indices, and result clauses. It also rejects primitive references to
+missing or later proof steps, while allowing `step_proposition`,
+`step_variable_sorts`, and `step_extra` to reuse ids as metadata. It is
+intentionally separate from the `kernel_v1` metadata audit because these are
+first-class certificate steps, not `step_extra` annotations.
 
 Set `CLOSED_CERT_V1=1` on the cached emitter harness to request
 `-vampirecertv1closed`. In that mode a case passes only when emission introduces

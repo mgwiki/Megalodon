@@ -128,6 +128,63 @@ require_fields factor "$WORK_DIR/factor.tsv" \
   '(literals ' \
   '(result (clause'
 
+parent_errors="$WORK_DIR/primitive_parent_reference_errors.tsv"
+: > "$parent_errors"
+while IFS= read -r native_file; do
+  awk -v source="$native_file" '
+    function report(kind, ref, line) {
+      if (!(ref in seen)) {
+        print source ":" FNR "\t" kind "\t" ref "\t" line
+      }
+    }
+
+    /^  \([[:alnum:]_]+ "[^"]+"/ {
+      line = $0
+      if (match(line, /^  \(([[:alnum:]_]+) "([^"]+)"/, step)) {
+        rule = step[1]
+        id = step[2]
+
+        if (rule == "substitute" ||
+            rule == "paramodulate" ||
+            rule == "equality_symmetry" ||
+            rule == "equality_resolution" ||
+            rule == "resolve" ||
+            rule == "factor") {
+          if (match(line, /\(parent "([^"]+)"/, ref)) {
+            report("parent", ref[1], line)
+          }
+          if (match(line, /\(parents "([^"]+)" "([^"]+)"/, ref)) {
+            report("parents", ref[1], line)
+            report("parents", ref[2], line)
+          }
+          if (match(line, /\(equality "([^"]+)"/, ref)) {
+            report("equality", ref[1], line)
+          }
+          if (match(line, /\(target "([^"]+)"/, ref)) {
+            report("target", ref[1], line)
+          }
+        }
+
+        seen[id] = 1
+        if (rule != "step_proposition" &&
+            rule != "step_variable_sorts" &&
+            rule != "step_extra") {
+          if (id in proof_step) {
+            print source ":" FNR "\tduplicate-proof-step-id\t" id "\t" line
+          }
+          proof_step[id] = rule
+        }
+      }
+    }
+  ' "$native_file" >> "$parent_errors"
+done < "$WORK_DIR/native_files.txt"
+
+if [[ -s "$parent_errors" ]]; then
+  echo "native primitive audit found dangling, duplicate, or forward primitive parent references" >&2
+  sed -n '1,40p' "$parent_errors" >&2
+  exit 1
+fi
+
 sort -k1,1 "$WORK_DIR/rule_counts.txt" -o "$WORK_DIR/rule_counts.txt"
 
 echo "native primitive records:"
