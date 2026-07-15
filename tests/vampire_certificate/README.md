@@ -382,12 +382,12 @@ tests/vampire_certificate/run_native_cert_v1_preprocess_closed_audit.sh
 
 This gate permits the certified THF preprocessing fragment: formula
 inputs/copies, rectification, FOOL elimination, classical FOOL exhaustiveness,
-ENNF/CNF projection, and the same core clause rules. It still excludes
-Skolemization, AVATAR, introduced definitions, inequality splitting, and other
-broad macro steps. A selected case must contain at least one preprocessing
-rule, so the clausal core corpus alone cannot satisfy it. The summary status
-for selected and checked cases is `PREPROCESS_CLOSED_PASS`.  Like the core
-audit, it writes
+true/false truth conflicts, ENNF/CNF projection, and the same core clause
+rules. It still excludes Skolemization, AVATAR, introduced definitions,
+inequality splitting, and other broad macro steps. A selected case must contain
+at least one preprocessing rule, so the clausal core corpus alone cannot
+satisfy it. The summary status for selected and checked cases is
+`PREPROCESS_CLOSED_PASS`.  Like the core audit, it writes
 `first_excluded.tsv`, `first_excluded_rule_counts.txt`, and
 `cases_by_first_blocker/*.list` under
 `/project/tmp/latest_native_cert_v1_preprocess_closed_audit`; those files are
