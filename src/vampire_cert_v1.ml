@@ -148,6 +148,7 @@ type certificate = {
 type core_native_proof = {
   core_native_proposition : tm;
   core_native_proof : pf;
+  core_native_delta_table : (string, int * tm) Hashtbl.t;
   core_native_symbol_table : (string, int * tp) Hashtbl.t;
   core_native_steps : int;
   core_native_source_bindings : core_native_source_binding list;
@@ -3903,6 +3904,14 @@ let native_core_declared_variables cert =
   |> List.filter_map parse_decl
   |> List.sort_uniq compare
 
+let native_core_has_function_definitions cert =
+  List.exists
+    (fun (_, kind, _) -> kind = "function_definition")
+    cert.metadata.step_extras
+
+let native_core_proof_variables cert =
+  if native_core_has_function_definitions cert then [] else native_core_declared_variables cert
+
 let native_core_step_variables cert id =
   let variable_sort_pair sort =
     match String.index_opt sort ':' with
@@ -3921,6 +3930,25 @@ let native_core_step_variables cert id =
            (fun (name, sort) ->
               (native_core_ident name,
                native_sort_of_simple_sort (native_core_strip_outer_parens sort)))
+
+let native_core_metadata_step_extra_field cert id kind key =
+  let prefix = key ^ "=" in
+  let prefix_len = String.length prefix in
+  let rec find_field = function
+    | [] -> None
+    | field :: rest ->
+        if String.length field >= prefix_len
+           && String.sub field 0 prefix_len = prefix then
+          Some (String.sub field prefix_len (String.length field - prefix_len))
+        else find_field rest
+  in
+  let rec find_extra = function
+    | [] -> None
+    | (extra_id, extra_kind, fields) :: rest ->
+        if extra_id = id && extra_kind = kind then find_field fields
+        else find_extra rest
+  in
+  find_extra cert.metadata.step_extras
 
 let native_core_symbol_table cert =
   let symbols = Hashtbl.create 257 in
@@ -3967,6 +3995,127 @@ let native_core_symbol_table cert =
   in
   List.iter parse_decl cert.metadata.symbol_declarations;
   symbols
+
+let rec native_core_arrow_parts = function
+  | Ar (left, right) ->
+      let args, result = native_core_arrow_parts right in
+      (left :: args, result)
+  | tp -> ([], tp)
+
+let rec native_core_take_prefix n xs =
+  if n <= 0 then []
+  else
+    match xs with
+    | [] -> []
+    | x :: rest -> x :: native_core_take_prefix (n - 1) rest
+
+let rec native_core_flatten_value_application = function
+  | Ap (TmH "vLAM", _) as tm -> (tm, [])
+  | Ap (fn, arg) ->
+      let head, args = native_core_flatten_value_application fn in
+      (head, args @ [arg])
+  | tm -> (tm, [])
+
+let native_core_symbol_type symbol_table name =
+  try
+    let arity, tp = Hashtbl.find symbol_table name in
+    if arity <> 0 then
+      error
+        ("native core proof-term checker cannot make a term definition for type-polymorphic symbol " ^ name);
+    tp
+  with Not_found ->
+    error
+      ("native core proof-term checker cannot find declared type for generated definition symbol " ^ name)
+
+let native_core_abstract_named_arguments args body =
+  let count = List.length args in
+  let rec index_of name index = function
+    | [] -> None
+    | arg :: rest ->
+        if arg = name then Some (count - index - 1)
+        else index_of name (index + 1) rest
+  in
+  let rec abstract depth = function
+    | DB i -> if i >= depth then DB (i + count) else DB i
+    | TmH h ->
+        begin match index_of h 0 args with
+        | Some index -> DB (depth + index)
+        | None -> TmH h
+        end
+    | Prim _ as tm -> tm
+    | TpAp (tm, tp) -> TpAp (abstract depth tm, tp)
+    | Ap (left, right) -> Ap (abstract depth left, abstract depth right)
+    | Lam (tp, body) -> Lam (tp, abstract (depth + 1) body)
+    | Imp (left, right) -> Imp (abstract depth left, abstract depth right)
+    | All (tp, body) -> All (tp, abstract (depth + 1) body)
+  in
+  abstract 0 body
+
+let native_core_definition_body symbol_table introduced application body =
+  let symbol_tp = native_core_symbol_type symbol_table introduced in
+  let arg_tps, _ = native_core_arrow_parts symbol_tp in
+  let head, args = native_core_flatten_value_application application in
+  match head with
+  | TmH head when native_core_ident head = introduced ->
+      let arg_names =
+        args
+        |> List.map
+             (function
+               | TmH name -> native_core_ident name
+               | _ ->
+                   error
+                     ("native core proof-term checker only supports generated definition arguments that are variables for " ^ introduced))
+      in
+      if List.length (List.sort_uniq compare arg_names) <> List.length arg_names then
+        error
+          ("native core proof-term checker found repeated generated definition argument for " ^ introduced);
+      if List.length arg_names > List.length arg_tps then
+        error
+          ("native core proof-term checker found too many generated definition arguments for " ^ introduced);
+      let used_arg_tps = native_core_take_prefix (List.length arg_names) arg_tps in
+      let abstracted = native_core_abstract_named_arguments arg_names body in
+      List.fold_right (fun tp tm -> Lam (tp, tm)) used_arg_tps abstracted
+  | _ ->
+      error
+        ("native core proof-term checker expected generated definition headed by " ^ introduced)
+
+let native_core_definition_delta_table cert symbol_table =
+  let definitions = Hashtbl.create 31 in
+  let add_definition id clause =
+    match
+      native_core_metadata_step_extra_field cert id "function_definition" "introduced_symbol",
+      clause
+    with
+    | Some introduced, [Pos atom] ->
+        let introduced = native_core_ident introduced in
+        begin match equality_sides atom with
+        | Some (left, right) ->
+            let body =
+              let right_head, _ = native_core_flatten_value_application right in
+              match right_head with
+              | TmH head when native_core_ident head = introduced ->
+                  native_core_definition_body symbol_table introduced right left
+              | _ ->
+                  let left_head, _ = native_core_flatten_value_application left in
+                  begin match left_head with
+                  | TmH head when native_core_ident head = introduced ->
+                      native_core_definition_body symbol_table introduced left right
+                  | _ ->
+                      error
+                        (id ^ ": function definition equality does not mention its introduced symbol")
+                  end
+            in
+            Hashtbl.replace definitions introduced (0, tm_beta_eta_norm body)
+        | None -> ()
+        end
+    | _ -> ()
+  in
+  List.iter
+    (function
+      | DefinitionInput (id, clause) -> add_definition id clause
+      | _ -> ())
+    cert.steps;
+  definitions
 
 let native_core_true =
   All (Prop, Imp (DB 0, DB 0))
@@ -4346,6 +4495,34 @@ let native_core_reflexive_eq_proof = function
            Hyp 0)))
   | _ -> None
 
+let native_core_definition_input_proof sgdelta id clause =
+  match clause with
+  | [Pos atom] ->
+      begin match megalodon_eq_poly_sides atom with
+      | Some (tp, left, right) ->
+          begin match conv left right sgdelta [] with
+          | Some _ ->
+              begin match
+                native_core_reflexive_eq_proof
+                  (Ap (Ap (TpAp (TmH megalodon_eq_poly_hash, tp), left), left))
+              with
+              | Some proof -> proof
+              | None ->
+                  error
+                    (id ^ ": native preprocess proof-term definition_input cannot build reflexivity proof")
+              end
+          | None ->
+              error
+                (id ^ ": native preprocess proof-term definition_input equality is not convertible under generated definitions")
+          end
+      | None ->
+          error
+            (id ^ ": native preprocess proof-term definition_input supports only Megalodon polymorphic equality")
+      end
+  | _ ->
+      error
+        (id ^ ": native preprocess proof-term definition_input expects a singleton positive equality")
+
 let native_core_prop_ext_hash =
   "d8c32d0ac70c5760222c9adf1a3ca90f3cb6b5182b0f70a5d82cb9000abc77ef"
 
@@ -4378,6 +4555,14 @@ let native_core_approved_sgdelta () =
   Hashtbl.add sgdelta native_core_prop_ext_hash (0, native_core_prop_ext_prop);
   Hashtbl.add sgdelta native_core_dneg_hash (0, native_core_dneg_prop);
   sgdelta
+
+let native_core_certificate_sgdelta cert symbol_table =
+  let sgdelta = native_core_approved_sgdelta () in
+  let definitions = native_core_definition_delta_table cert symbol_table in
+  Hashtbl.iter
+    (fun h v -> Hashtbl.replace sgdelta h v)
+    definitions;
+  sgdelta, definitions
 
 let approved_native_sgdelta () =
   native_core_approved_sgdelta ()
@@ -5669,7 +5854,7 @@ let native_core_source_binding source_map id source proposition =
 let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
   let core_steps = validate_certificate_core_fragment cert in
   ignore (check_certificate_strict cert);
-  let variables = native_core_declared_variables cert in
+  let variables = native_core_proof_variables cert in
   let source_inputs = ref [] in
   List.iter
     (function
@@ -5700,6 +5885,7 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
     |> List.rev
   in
   let symbol_table = native_core_symbol_table cert in
+  let proof_delta, definition_delta = native_core_certificate_sgdelta cert symbol_table in
   let check_step_proof id clause proof =
     let step_variables = native_core_step_variables cert id in
     let prop = native_core_step_clause_prop cert variables id clause in
@@ -5711,9 +5897,8 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
         prerr_endline ("native core proof: " ^ pf_to_str proof)
       end
     in
-    let empty_delta = native_core_approved_sgdelta () in
     try
-      match check_propofpf empty_delta symbol_table variable_types closed_source_context proof prop [] with
+      match check_propofpf proof_delta symbol_table variable_types closed_source_context proof prop [] with
       | Some _ -> ()
       | None ->
           debug_failure "wrong proposition";
@@ -5882,6 +6067,7 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
       List.fold_right (fun (_, tp) prop -> All (tp, prop)) variables closed_prop;
     core_native_proof =
       List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) variables closed_proof;
+    core_native_delta_table = definition_delta;
     core_native_symbol_table = symbol_table;
     core_native_steps = core_steps;
     core_native_source_bindings =
@@ -5899,7 +6085,7 @@ let native_preprocess_step_formula_prop cert variables id formula =
 
 let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
   ignore (check_certificate_strict cert);
-  let variables = native_core_declared_variables cert in
+  let variables = native_core_proof_variables cert in
   let source_inputs = ref [] in
   List.iter
     (function
@@ -5946,6 +6132,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
     |> List.rev
   in
   let symbol_table = native_core_symbol_table cert in
+  let proof_delta, definition_delta = native_core_certificate_sgdelta cert symbol_table in
   let check_step_proof id prop proof =
     let step_variables = native_core_step_variables cert id in
     let proof = native_core_close_pf (variables @ step_variables) proof in
@@ -5956,9 +6143,8 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
         prerr_endline ("native preprocess proof: " ^ pf_to_str proof)
       end
     in
-    let empty_delta = native_core_approved_sgdelta () in
     try
-      match check_propofpf empty_delta symbol_table variable_types closed_source_context proof prop [] with
+      match check_propofpf proof_delta symbol_table variable_types closed_source_context proof prop [] with
       | Some _ -> ()
       | None ->
           debug_failure "wrong proposition";
@@ -6077,6 +6263,9 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
             (native_core_cnf_formula_clause_proof
                id variables parent_step_variables result_step_variables
                parent_formula result parent_proof)
+      | DefinitionInput (id, result) ->
+          store_clause id result
+            (native_core_definition_input_proof proof_delta id result)
       | FoolExhaustiveness (id, result) ->
           store_clause id result
             (native_core_fool_exhaustiveness_proof id result)
@@ -6203,6 +6392,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
       List.fold_right (fun (_, tp) prop -> All (tp, prop)) variables closed_prop;
     core_native_proof =
       List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) variables closed_proof;
+    core_native_delta_table = definition_delta;
     core_native_symbol_table = symbol_table;
     core_native_steps = List.length cert.steps;
     core_native_source_bindings =
