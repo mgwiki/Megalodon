@@ -38,9 +38,16 @@ fi
 
 classify_error() {
   local err_file=$1
+  local native_file=$2
   local msg
   msg=$(tail -1 "$err_file" | tr '\t' ' ')
-  if [[ "$msg" =~ no\ proof-term\ rule\ for\ ([a-z_]+) ]]; then
+  if [[ "$msg" =~ no\ proof-term\ rule\ for\ fool_bool ]] \
+      && rg -q 'TMH "="' "$native_file"; then
+    printf 'FOOL_BOOL_NEEDS_TYPED_EQUALITY'
+  elif [[ "$msg" =~ no\ proof-term\ rule\ for\ fool_formula ]] \
+      && rg -q 'TMH "="' "$native_file"; then
+    printf 'FOOL_FORMULA_NEEDS_TYPED_EQUALITY'
+  elif [[ "$msg" =~ no\ proof-term\ rule\ for\ ([a-z_]+) ]]; then
     printf 'UNSUPPORTED_RULE_%s' "${BASH_REMATCH[1]}"
   elif [[ "$msg" =~ references\ unknown\ formula\ parent ]]; then
     printf 'UNKNOWN_FORMULA_PARENT'
@@ -90,7 +97,7 @@ run_one() {
   fi
 
   local status err
-  status=$(classify_error "$case_dir/check.err")
+  status=$(classify_error "$case_dir/check.err" "$native")
   err=$(tail -1 "$case_dir/check.err" | tr '\t' ' ')
   printf '%s\t%s\t%s\n' "$base" "$status" "$err" > "$case_dir/result.tsv"
 }
