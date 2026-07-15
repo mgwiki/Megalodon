@@ -410,6 +410,20 @@ audits, it writes `first_excluded.tsv`, `first_excluded_rule_counts.txt`, and
 `/project/tmp/latest_native_cert_v1_skolem_closed_audit`, making the next
 unsupported layer explicit instead of hiding it in broad closed-corpus counts.
 
+For the source/definition fact layer above Skolemization, use:
+
+```sh
+tests/vampire_certificate/run_native_cert_v1_definition_closed_audit.sh
+```
+
+This gate permits the Skolemization layer plus `definition_input` facts that
+closed mode can justify without adding non-source premises.  It still excludes
+AVATAR, definition rewrite chains, inequality splitting, and broader macros.
+The summary status for selected and checked cases is `DEFINITION_CLOSED_PASS`.
+As with the lower staged gates, it writes `first_excluded.tsv`,
+`first_excluded_rule_counts.txt`, and `cases_by_first_blocker/*.list` under
+`/project/tmp/latest_native_cert_v1_definition_closed_audit`.
+
 To export a Megalodon development once and then check the resulting source-mapped
 TH0 corpus in parallel, use:
 
