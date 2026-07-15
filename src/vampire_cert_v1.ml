@@ -7074,6 +7074,246 @@ let simple_avatar_refutation_proof cert id parent_ids sat_clauses checked names 
   in
   cases [] vars
 
+let simple_literal_of_sat_lit (var, polarity) =
+  let atom = TmH ("split_" ^ string_of_int var) in
+  if polarity then Pos atom else Neg atom
+
+let simple_clause_of_sat_clause clause =
+  List.map simple_literal_of_sat_lit clause
+
+let simple_sat_clause_prop clause =
+  simple_clause_prop (simple_clause_of_sat_clause clause)
+
+let simple_sat_lit_prop lit =
+  simple_literal_prop (simple_literal_of_sat_lit lit)
+
+let simple_avatar_refutation_sat_proof
+    cert id parent_ids sat_clauses proof checked names fresh_name =
+  if parent_ids = [] || List.length parent_ids <> List.length sat_clauses then
+    emit_error (id ^ ": avatar SAT proof expects one parent per SAT input");
+  let input_parents = List.combine parent_ids sat_clauses in
+  let normalized clause = normalize_sat_clause clause in
+  let parent_for_input clause =
+    let key = normalized clause in
+    match
+      input_parents
+      |> List.find_opt (fun (_, parent_clause) -> normalized parent_clause = key)
+    with
+    | Some (parent_id, parent_clause) -> parent_id, parent_clause
+    | None -> emit_error (id ^ ": SAT proof input clause has no AVATAR parent")
+  in
+  let parent_clause_in_emitted_order parent_id fallback_clause =
+    let clause =
+      try lookup_simple_clause checked parent_id
+      with Error _ -> fallback_clause
+    in
+    match metadata_step_proposition cert parent_id with
+    | None -> clause
+    | Some parent_prop ->
+        let indexed =
+          clause
+          |> List.mapi
+               (fun index lit ->
+                  let position =
+                    match split_literal_name lit with
+                    | Some raw_name ->
+                        string_find_identifier (megalodon_ident raw_name) parent_prop
+                    | None -> None
+                  in
+                  (index, position, lit))
+        in
+        if List.for_all (fun (_, position, _) -> Option.is_some position) indexed then
+          indexed
+          |> List.sort
+               (fun (left_index, left_pos, _) (right_index, right_pos, _) ->
+                  match left_pos, right_pos with
+                  | Some left_pos, Some right_pos ->
+                      let cmp = compare left_pos right_pos in
+                      if cmp = 0 then compare left_index right_index else cmp
+                  | _ -> compare left_index right_index)
+          |> List.map (fun (_, _, lit) -> lit)
+        else
+          clause
+  in
+  let step_name sid =
+    fresh_name ("avatar_sat__" ^ id ^ "_" ^ string_of_int sid)
+  in
+  let literal_contradiction assignments lit proof =
+    let var, polarity = lit in
+    match List.assoc_opt var assignments with
+    | Some (assigned_polarity, assigned_proof) when assigned_polarity <> polarity ->
+        if polarity then
+          Some (Printf.sprintf "(%s %s)" assigned_proof proof)
+        else
+          Some (Printf.sprintf "(%s %s)" proof assigned_proof)
+    | _ -> None
+  in
+  let add_assignment lit proof assignments =
+    let var, polarity = lit in
+    match List.assoc_opt var assignments with
+    | Some (existing, _) when existing = polarity -> assignments
+    | Some _ -> emit_error (id ^ ": inconsistent SAT unit replay assignment")
+    | None -> (var, (polarity, proof)) :: assignments
+  in
+  let clause_eval assignments clause =
+    let rec loop unassigned = function
+      | [] ->
+          let unique_unassigned =
+            unassigned |> List.sort_uniq compare
+          in
+          begin match unique_unassigned with
+          | [] -> `Conflict
+          | [lit] -> `Unit lit
+          | _ -> `Undetermined
+          end
+      | ((var, polarity) as lit) :: rest ->
+          begin match List.assoc_opt var assignments with
+          | Some (assigned_polarity, _) when assigned_polarity = polarity -> `Satisfied
+          | Some _ -> loop unassigned rest
+          | None -> loop (lit :: unassigned) rest
+          end
+    in
+    loop [] clause
+  in
+  let prove_unit assignments clause proof lit =
+    let target_clause = [simple_literal_of_sat_lit lit] in
+    let target_prop = simple_sat_lit_prop lit in
+    let source_clause = simple_clause_of_sat_clause clause in
+    let eliminator source_lit source_proof =
+      match split_literal_number source_lit with
+      | Some var ->
+          let polarity =
+            match source_lit with
+            | Pos _ -> true
+            | Neg _ -> false
+          in
+          literal_contradiction assignments (var, polarity) source_proof
+      | None -> None
+    in
+    simple_clause_projection_with_eliminators
+      target_prop target_clause source_clause proof eliminator
+  in
+  let prove_conflict assignments clause proof =
+    let source_clause = simple_clause_of_sat_clause clause in
+    let eliminator source_lit source_proof =
+      match split_literal_number source_lit with
+      | Some var ->
+          let polarity =
+            match source_lit with
+            | Pos _ -> true
+            | Neg _ -> false
+          in
+          literal_contradiction assignments (var, polarity) source_proof
+      | None -> None
+    in
+    simple_clause_projection_with_eliminators
+      "False" [] source_clause proof eliminator
+  in
+  let prove_rup checked_steps parent_step_ids result_clause =
+    let antecedents =
+      List.map
+        (fun parent ->
+          match List.assoc_opt parent checked_steps with
+          | Some item -> item
+          | None -> emit_error (id ^ ": SAT proof parent is not available for replay"))
+        parent_step_ids
+    in
+    let rec derive_false assignments =
+      let rec find_conflict_or_unit = function
+        | [] -> None
+        | (clause, proof_name) :: rest ->
+            begin match clause_eval assignments clause with
+            | `Satisfied -> find_conflict_or_unit rest
+            | `Undetermined -> find_conflict_or_unit rest
+            | `Conflict -> Some (`Conflict (clause, proof_name))
+            | `Unit lit -> Some (`Unit (clause, proof_name, lit))
+            end
+      in
+      match find_conflict_or_unit antecedents with
+      | Some (`Conflict (clause, proof_name)) ->
+          prove_conflict assignments clause proof_name
+      | Some (`Unit (clause, proof_name, lit)) ->
+          let lit_proof = prove_unit assignments clause proof_name lit in
+          derive_false (add_assignment lit lit_proof assignments)
+      | None ->
+          emit_error (id ^ ": SAT RUP replay did not reach a conflict")
+    in
+    let target_clause = simple_clause_of_sat_clause result_clause in
+    let target_prop = simple_clause_prop target_clause in
+    if result_clause = [] then
+      derive_false []
+    else
+      let not_clause_name = "Hsat_rup_not_clause" in
+      let assignments =
+        result_clause
+        |> List.mapi
+             (fun index ((var, polarity) as lit) ->
+                let split_prop = "split_" ^ string_of_int var in
+                let lit_proof_name = "Hsat_rup_clause_lit_" ^ string_of_int index in
+                let lit_intro =
+                  simple_clause_intro_proof
+                    target_clause (simple_literal_of_sat_lit lit) lit_proof_name
+                in
+                if polarity then
+                  let proof =
+                    Printf.sprintf
+                      "(fun %s:%s => (%s %s))"
+                      lit_proof_name split_prop not_clause_name lit_intro
+                  in
+                  (var, (false, proof))
+                else
+                  let proof =
+                    Printf.sprintf
+                      "(dneg %s (fun %s:%s -> False => (%s %s)))"
+                      split_prop lit_proof_name split_prop not_clause_name lit_intro
+                  in
+                  (var, (true, proof)))
+      in
+      let contradiction = derive_false assignments in
+      Printf.sprintf
+        "(dneg %s (fun %s:%s -> False => %s))"
+        target_prop not_clause_name target_prop contradiction
+  in
+  let claims_rev, checked_steps =
+    List.fold_left
+      (fun (claims_rev, checked_steps) step ->
+         match step with
+         | SatInput (sid, clause) ->
+             let parent_id, parent_clause = parent_for_input clause in
+             let parent_name = lookup_simple_name names parent_id in
+             let source_clause =
+               parent_clause_in_emitted_order parent_id (simple_clause_of_sat_clause parent_clause)
+             in
+             let name = step_name sid in
+             let prop = simple_sat_clause_prop clause in
+             let proof =
+               let source_formula =
+                 source_clause
+                 |> simple_clause_formula_tm
+                 |> left_assoc_vampire_or_formula
+               in
+               simple_formula_projection_with_eliminators
+                 prop
+                 (simple_clause_of_sat_clause clause)
+                 source_formula
+                 parent_name
+                 (fun _ _ -> None)
+             in
+             ((name, prop, "exact " ^ proof ^ ".") :: claims_rev,
+              (sid, (clause, name)) :: checked_steps)
+         | SatRup (sid, parents, clause) ->
+             let name = step_name sid in
+             let prop = simple_sat_clause_prop clause in
+             let proof = prove_rup checked_steps parents clause in
+             ((name, prop, "exact " ^ proof ^ ".") :: claims_rev,
+              (sid, (clause, name)) :: checked_steps))
+      ([], [])
+      proof
+  in
+  match checked_steps with
+  | (_, ([], final_name)) :: _ -> (List.rev claims_rev, final_name)
+  | _ -> emit_error (id ^ ": SAT proof final replay step is not empty")
+
 let simple_inequality_name_intro_proof type_env result_sorts id result =
   let literal, named =
     match result with
@@ -10371,7 +10611,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           add_emitted_prop_and_sorts id prop sorts;
           derived_assumptions := !derived_assumptions @ [(name, prop)];
           add_checked id result
-      | AvatarRefutation (id, parent_ids, sat_clauses, _, result) ->
+      | AvatarRefutation (id, parent_ids, sat_clauses, sat_proof, result) ->
           let name = simple_fresh_name used_names ("avatar_refutation__" ^ id) in
           let prop, sorts = simple_clause_prop_and_sorts_for_step cert id result in
           add_emitted id name;
@@ -10380,9 +10620,20 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             try
               if result <> [] then None
               else
-                Some
-                  (simple_avatar_refutation_proof
-                     cert id parent_ids sat_clauses !checked !emitted_names)
+                begin match sat_proof with
+                | Some proof ->
+                    let sat_claims, final_proof =
+                      simple_avatar_refutation_sat_proof
+                        cert id parent_ids sat_clauses proof !checked !emitted_names
+                        (simple_fresh_name used_names)
+                    in
+                    claims := !claims @ sat_claims;
+                    Some final_proof
+                | None ->
+                    Some
+                      (simple_avatar_refutation_proof
+                         cert id parent_ids sat_clauses !checked !emitted_names)
+                end
             with Error _ -> None
           with
           | Some proof ->
