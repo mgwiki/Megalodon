@@ -386,7 +386,12 @@ same core clause rules. It still excludes Skolemization, AVATAR, introduced
 definitions, FOOL theory facts, inequality splitting, and other broad macro
 steps. A selected case must contain at least one preprocessing rule, so the
 clausal core corpus alone cannot satisfy it. The summary status for selected
-and checked cases is `PREPROCESS_CLOSED_PASS`.
+and checked cases is `PREPROCESS_CLOSED_PASS`.  Like the core audit, it writes
+`first_excluded.tsv`, `first_excluded_rule_counts.txt`, and
+`cases_by_first_blocker/*.list` under
+`/project/tmp/latest_native_cert_v1_preprocess_closed_audit`; those files are
+the preferred guide for the next preprocessing certificate primitive because
+they identify the first unsupported transformation in certificate order.
 
 To export a Megalodon development once and then check the resulting source-mapped
 TH0 corpus in parallel, use:
