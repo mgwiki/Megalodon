@@ -238,18 +238,19 @@ tests/vampire_certificate/run_native_primitive_audit.sh \
 
 This checks the explicit native records for the frequent clausal small-kernel
 steps: `substitute`, `paramodulate`, `equality_symmetry`,
-`equality_resolution`, `resolve`, and `factor`. The gate requires each present
-rule family to expose the fields Megalodon should replay mechanically: parent
-ids, substitutions, equality/target parents, rewrite positions, literal or
-pivot indices, and result clauses. It also rejects primitive references to
-missing or later proof steps, while allowing `step_proposition`,
-`step_variable_sorts`, and `step_extra` to reuse ids as metadata. It is
-intentionally separate from the `kernel_v1` metadata audit because these are
-first-class certificate steps, not `step_extra` annotations.
-For any `kernel_v1` macro record with a `primitive_expansion` contract, this
+`equality_resolution`, `resolve`, `factor`, and `fool_atom_lift`. The gate
+requires each present rule family to expose the fields Megalodon should replay
+mechanically: parent ids, substitutions, equality/target parents, rewrite
+positions, literal or pivot indices, source and target formulas, paths, and
+result clauses. It also rejects primitive references to missing or later proof
+steps, while allowing `step_proposition`, `step_variable_sorts`, and
+`step_extra` to reuse ids as metadata. It is intentionally separate from the
+`kernel_v1` metadata audit because these are first-class certificate steps, not
+`step_extra` annotations.
+For any `kernel_v1` macro record with a primitive-expansion contract, this
 audit also verifies that the certificate contains a final proof step with the
 kernel unit id and at least one required primitive step sharing that unit prefix
-such as `u123_paramodulate` or `u123_resolve0`.
+such as `u123_paramodulate`, `u123_resolve0`, or `u123_fool_atom_0`.
 
 `run_native_live_parallel.sh` runs this primitive audit and the `kernel_v1`
 metadata audit by default after a successful live run. Set

@@ -262,6 +262,9 @@ while IFS= read -r native_file; do
     }
 
     function required_primitive(rule) {
+      if (rule == "fool_formula") {
+        return "fool_atom_lift"
+      }
       if (rule == "superposition" || rule == "rewrite") {
         return "paramodulate"
       }
