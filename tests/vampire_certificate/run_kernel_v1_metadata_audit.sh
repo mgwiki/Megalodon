@@ -408,9 +408,26 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
       if (match($0, /introduced_count=([0-9]+)/, introduced_count_match)) {
         introduced_count = introduced_count_match[1] + 0
         for (introduced_index = 0; introduced_index < introduced_count; ++introduced_index) {
+          prefix = "introduced_" introduced_index
+          kind_field = prefix "_kind="
+          raw_symbol_field = prefix "_raw_symbol="
           symbol_field = "introduced_" introduced_index "_symbol="
+          replaced_var_field = prefix "_replaced_var="
+          declaration_field = prefix "_declaration="
+          if (index($0, kind_field) == 0) {
+            print kind_field "\t" $0
+          }
+          if (index($0, raw_symbol_field) == 0) {
+            print raw_symbol_field "\t" $0
+          }
           if (index($0, symbol_field) == 0) {
             print symbol_field "\t" $0
+          }
+          if (index($0, replaced_var_field) == 0) {
+            print replaced_var_field "\t" $0
+          }
+          if (index($0, declaration_field) == 0) {
+            print declaration_field "\t" $0
           }
         }
       }
