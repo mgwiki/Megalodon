@@ -78,6 +78,14 @@ position/from/to fields emitted by the certificate and Megalodon's Leibniz
 equality as the transport principle.  Larger paramodulation clauses still fail
 closed until they are decomposed into similarly explicit primitive data.
 
+The next core rule added in the same style is binary/unit
+subsumption-resolution with an empty side substitution.  The checker validates
+the explicit selected literal, side pivot, and result clause before reusing the
+same native disjunction-elimination proof term as binary/unit resolution.
+Subsumption-resolution steps with non-empty side substitutions still fail closed
+until Vampire exports primitive instantiation evidence that can be checked
+natively.
+
 ## Accepted Audit Criticisms
 
 The following criticisms should be treated as controlling for the next

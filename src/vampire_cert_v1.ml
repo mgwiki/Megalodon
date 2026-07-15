@@ -3558,6 +3558,41 @@ let native_core_equality_resolution id parent_clause parent_proof literal_index 
       error
         (id ^ ": native core proof-term equality-resolution currently supports only unit or binary parents")
 
+let native_core_literal_index id rule selected clause =
+  let rec find index = function
+    | [] -> error (id ^ ": native core proof-term " ^ rule ^ " selected literal is not in the main parent")
+    | literal :: rest ->
+        if literal = selected then index else find (index + 1) rest
+  in
+  find 0 clause
+
+let native_core_subsumption_resolution_unit id main_clause main_proof side_clause side_proof selected side_pivot side_subst result =
+  if side_subst <> [] then
+    error (id ^ ": native core proof-term subsumption-resolution needs explicit proof data for non-empty side substitutions");
+  match side_clause with
+  | [side_literal] ->
+      if side_literal <> side_pivot then
+        error (id ^ ": native core proof-term subsumption-resolution side pivot does not match the unit side parent");
+      if not (native_core_complement selected side_pivot) then
+        error (id ^ ": native core proof-term subsumption-resolution side pivot does not complement the selected literal");
+      let selected_index =
+        native_core_literal_index id "subsumption-resolution" selected main_clause
+      in
+      let expected =
+        remove_at selected_index main_clause (id ^ " native subsumption-resolution selected literal")
+      in
+      if expected <> result then
+        error (id ^ ": native core proof-term subsumption-resolution result does not remove the selected literal");
+      begin match main_clause, result with
+      | [_; _], [_] ->
+          native_core_resolve_binary_unit
+            id main_clause main_proof selected_index side_clause side_proof 0 result
+      | _ ->
+          error (id ^ ": native core proof-term subsumption-resolution currently supports only binary main clauses with unit side parents")
+      end
+  | _ ->
+      error (id ^ ": native core proof-term subsumption-resolution currently supports only unit side parents")
+
 let native_core_paramodulate_unit id equality_clause equality_proof target_clause target_proof equality_index target_index position from_tm to_tm result =
   match equality_clause, target_clause, result, equality_index, target_index with
   | [Pos equality_atom], [Pos target_atom], [Pos result_atom], 0, 0 ->
@@ -3825,6 +3860,14 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
           let parent_clause, parent_proof = lookup parent_id in
           let proof =
             native_core_equality_resolution id parent_clause parent_proof literal_index result
+          in
+          store id result proof
+      | SubsumptionResolution (id, main_parent_id, side_parent_id, selected, side_pivot, side_subst, result) ->
+          let main_clause, main_proof = lookup main_parent_id in
+          let side_clause, side_proof = lookup side_parent_id in
+          let proof =
+            native_core_subsumption_resolution_unit
+              id main_clause main_proof side_clause side_proof selected side_pivot side_subst result
           in
           store id result proof
       | Paramodulate (id, equality_parent_id, target_parent_id, equality_index, target_index, position, from_tm, to_tm, result) ->
@@ -5216,6 +5259,13 @@ let simple_clause_nth id label index clause =
     emit_error (id ^ ": " ^ label ^ " index is out of bounds");
   List.nth clause index
 
+let simple_literal_index id label selected clause =
+  let rec find index = function
+    | [] -> emit_error (id ^ ": " ^ label ^ " literal is not present")
+    | literal :: rest -> if literal = selected then index else find (index + 1) rest
+  in
+  find 0 clause
+
 let simple_remove_index id label index clause =
   if index < 0 || index >= List.length clause then
     emit_error (id ^ ": " ^ label ^ " index is out of bounds");
@@ -5445,6 +5495,24 @@ let simple_resolution_proof
       wrap (Printf.sprintf "((%s %s) False)" negative_parent_name positive_parent_name)
   | _ ->
       emit_error (id ^ ": simple emitter supports only unit resolution and binary-tail unit resolution")
+
+let simple_subsumption_resolution_proof
+    literal_prop parent_sorts_of result_sorts id main_parent_id side_parent_id selected side_pivot side_subst result checked names =
+  if side_subst <> [] then
+    emit_error (id ^ ": simple subsumption-resolution proof supports only empty side substitutions");
+  let main_clause = lookup_simple_clause checked main_parent_id in
+  let side_clause = lookup_simple_clause checked side_parent_id in
+  begin match side_clause with
+  | [literal] when literal = side_pivot -> ()
+  | [_] -> emit_error (id ^ ": side pivot does not match the unit side parent")
+  | _ -> emit_error (id ^ ": simple subsumption-resolution proof supports only unit side parents")
+  end;
+  let selected_index =
+    simple_literal_index id "subsumption-resolution selected" selected main_clause
+  in
+  simple_resolution_proof
+    literal_prop parent_sorts_of result_sorts id
+    main_parent_id side_parent_id selected_index 0 result checked names
 
 let rec simple_resolution_clause_proof
     clause_body_prop parent_sorts_of result_sorts id left_id right_id left_index right_index result checked names =
@@ -14125,10 +14193,28 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           end
       | UnitResultingResolution (id, parent_id, _, result) ->
           add_clause_inference_bridge "unit_resulting_resolution" id [parent_id] result
-      | SubsumptionResolution (id, left_id, right_id, _, _, subst, result) ->
-          add_clause_inference_bridge
-            ~extra_sorts:(substitution_variable_sorts left_id subst)
-            "subsumption_resolution" id [left_id; right_id] result
+      | SubsumptionResolution (id, left_id, right_id, selected, side_pivot, subst, result) ->
+          let prop, sorts = clause_prop_and_sorts_for_ids id [left_id; right_id] result in
+          let parent_sorts_of parent_id = variable_sorts_for_ids [parent_id] in
+          begin match
+            try Some
+                  (simple_subsumption_resolution_proof
+                     simple_literal_prop parent_sorts_of sorts id
+                     left_id right_id selected side_pivot subst result
+                     !checked !emitted_names)
+            with Error _ -> None
+          with
+          | Some proof ->
+              let name = derived_name id in
+              add_emitted id name;
+              add_emitted_prop_and_sorts id prop sorts;
+              claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")];
+              add_checked id result
+          | None ->
+              add_clause_inference_bridge
+                ~extra_sorts:(substitution_variable_sorts left_id subst)
+                "subsumption_resolution" id [left_id; right_id] result
+          end
       | EqualityResolutionConstraints (id, parent_id, _, _, _, result) ->
           add_clause_inference_bridge "equality_resolution_constraints" id [parent_id] result
       | EqualityFactoring (id, parent_id, _, _, subst, result) ->
