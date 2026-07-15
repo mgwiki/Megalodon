@@ -3595,6 +3595,15 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
       | Input (id, _, clause) ->
           let _ = native_core_clause_prop id clause in
           store id clause (Hyp (source_hyp_index id))
+      | Substitute (id, parent_id, [], result) ->
+          let parent_clause, parent_proof = lookup parent_id in
+          if result <> parent_clause then
+            error
+              (id ^ ": native core proof-term checker supports only identity substitution when the result clause is unchanged");
+          store id result parent_proof
+      | Substitute (id, _, _, _) ->
+          error
+            (id ^ ": native core proof-term checker needs explicit instantiation proof data for non-identity substitution")
       | Resolve (id, left_id, right_id, left_index, right_index, result) ->
           let left_clause, left_proof = lookup left_id in
           let right_clause, right_proof = lookup right_id in

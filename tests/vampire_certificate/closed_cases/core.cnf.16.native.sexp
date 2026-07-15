@@ -1,0 +1,13 @@
+(certificate vampire-megalodon 1
+  (problem "core-identity-substitution")
+  (step_proposition "u1" "p")
+  (step_proposition "u2" "p")
+  (step_proposition "u3" "(p) -> vampire_false")
+  (step_proposition "u4" "vampire_false")
+  (symbol_declaration "Variable p:prop.")
+  (input "u1" (source axiom "a1") (clause (pos (TMH "p"))))
+  (substitute "u2" (parent "u1") (subst) (result (clause (pos (TMH "p")))))
+  (input "u3" (source axiom "a2") (clause (neg (TMH "p"))))
+  (resolve "u4" (parents "u2" "u3") (pivot 0 0) (result (clause)))
+  (contradiction "u5" "u4")
+)

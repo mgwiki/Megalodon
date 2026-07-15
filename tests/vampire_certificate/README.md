@@ -157,11 +157,12 @@ Use `-vampirecertv1corepfcheck` for the first native proof-term seed. This
 implies `-vampirecertv1coreclosed`, then constructs and kernel-checks a
 `Syntax.pf` proof term for the currently supported propositional core seed:
 unit/unit, binary/unit, and binary/binary resolution plus duplicate binary
-factoring, with clauses represented by native impredicative false and
-disjunction terms. It deliberately rejects unsupported core rules instead of
-falling back to textual replay. This is not yet the full nine-rule core
-elaborator; it is the initial checked entrypoint for replacing the broad
-`certificate -> string` path with a native
+factoring and identity substitution, with clauses represented by native
+impredicative false and disjunction terms. It deliberately rejects unsupported
+core rules, including non-identity substitution, instead of falling back to
+textual replay. This is not yet the full nine-rule core elaborator; it is the
+initial checked entrypoint for replacing the broad `certificate -> string` path
+with a native
 `certificate -> Syntax.tm * Syntax.pf` path. This mode also requires
 `-vampirecertv1source` to contain `megalodon_origin` metadata, so native
 proof-term evidence is tied at least to a specific exported Megalodon source

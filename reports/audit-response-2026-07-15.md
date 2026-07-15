@@ -61,6 +61,12 @@ well, so later original-context replay can replace those assumptions by the
 corresponding original lemma, local fact, definition, set-reflexivity proof, or
 conjecture edge.
 
+The native proof-term seed has also been extended to replay identity
+substitution directly.  Non-empty or term-changing substitution still fails
+explicitly until Vampire emits enough primitive instantiation data for a native
+proof, but no-op substitution steps no longer force the native core path back to
+textual replay.
+
 ## Accepted Audit Criticisms
 
 The following criticisms should be treated as controlling for the next
