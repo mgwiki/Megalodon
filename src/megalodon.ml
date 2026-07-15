@@ -7090,6 +7090,14 @@ let check_vampire_cert_v1_file fn =
         (Vampire_cert_v1.approved_native_sgdelta ());
       merged
     in
+    let native_certificate_sgtmof native =
+      let merged = Hashtbl.copy sigtmof in
+      Hashtbl.iter
+        (fun h v ->
+           if not (Hashtbl.mem merged h) then Hashtbl.add merged h v)
+        native.Vampire_cert_v1.core_native_symbol_table;
+      merged
+    in
     begin if !vampirecertv1corepfcheck then
       let native_core =
         Vampire_cert_v1.elaborate_core_resolution_refutation_native
@@ -7097,7 +7105,7 @@ let check_vampire_cert_v1_file fn =
           cert
       in
       match
-        check_propofpf native_certificate_sgdelta sigtmof [] []
+        check_propofpf native_certificate_sgdelta (native_certificate_sgtmof native_core) [] []
           native_core.Vampire_cert_v1.core_native_proof
           native_core.Vampire_cert_v1.core_native_proposition
           []
@@ -7130,7 +7138,7 @@ let check_vampire_cert_v1_file fn =
           cert
       in
       match
-        check_propofpf native_certificate_sgdelta sigtmof [] []
+        check_propofpf native_certificate_sgdelta (native_certificate_sgtmof native_preprocess) [] []
           native_preprocess.Vampire_cert_v1.core_native_proof
           native_preprocess.Vampire_cert_v1.core_native_proposition
           []

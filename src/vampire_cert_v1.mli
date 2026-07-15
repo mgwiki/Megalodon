@@ -138,6 +138,7 @@ type certificate = {
 type core_native_proof = {
   core_native_proposition : Syntax.tm;
   core_native_proof : Syntax.pf;
+  core_native_symbol_table : (string, int * Syntax.tp) Hashtbl.t;
   core_native_steps : int;
   core_native_source_bindings : core_native_source_binding list;
 }

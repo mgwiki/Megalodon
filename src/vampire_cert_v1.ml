@@ -148,6 +148,7 @@ type certificate = {
 type core_native_proof = {
   core_native_proposition : tm;
   core_native_proof : pf;
+  core_native_symbol_table : (string, int * tp) Hashtbl.t;
   core_native_steps : int;
   core_native_source_bindings : core_native_source_binding list;
 }
@@ -5061,59 +5062,125 @@ let native_core_truth_conflict id parent_clause parent_proof literal_index resul
   in
   consume (Some literal_index) parent_clause parent_proof
 
+let native_core_instantiate_step_proof_body_in_result_context
+    cert id variables parent_id subst proof =
+  let parent_step_variables = native_core_step_variables cert parent_id in
+  let result_step_variables = native_core_step_variables cert id in
+  let result_variable_count = List.length result_step_variables in
+  let db_for_result_variable name tp =
+    let rec find index = function
+      | [] -> None
+      | (candidate_name, candidate_tp) :: rest ->
+          if candidate_name = name && candidate_tp = tp then
+            Some (DB (result_variable_count - index - 1))
+          else find (index + 1) rest
+    in
+    find 0 result_step_variables
+  in
+  let close_witness tm =
+    native_core_close_tm (variables @ result_step_variables) tm
+  in
+  List.fold_left
+    (fun proof (name, tp) ->
+       let witness =
+         match List.assoc_opt name subst with
+         | Some tm -> close_witness tm
+         | None ->
+             begin match db_for_result_variable name tp with
+             | Some tm -> tm
+             | None ->
+                 error
+                   (id ^ ": native core proof-term substitute cannot instantiate retained parent variable " ^ name)
+             end
+       in
+       PTmAp (proof, witness))
+    (pftmshift 0 result_variable_count proof)
+    parent_step_variables
+
+let native_core_instantiate_step_proof_in_result_context
+    cert id variables parent_id subst proof =
+  let result_step_variables = native_core_step_variables cert id in
+  let body_proof =
+    native_core_instantiate_step_proof_body_in_result_context
+      cert id variables parent_id subst proof
+  in
+  List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
+
 let native_core_equality_resolution id parent_clause parent_proof literal_index result =
   let selected = nth literal_index parent_clause (id ^ " native equality-resolution literal") in
   let expected = remove_at literal_index parent_clause (id ^ " native equality-resolution literal") in
-  if expected <> result then
+  if not (same_clause_multiset expected result) then
     error (id ^ ": native core proof-term equality-resolution result does not remove the selected literal");
-  match selected, parent_clause, result with
-  | Neg atom, [Neg selected_atom], [] when atom = selected_atom ->
-      begin match native_core_reflexive_eq_proof atom with
-      | Some refl -> PPfAp (parent_proof, refl)
-      | None ->
-          error
-            (id ^ ": native core proof-term equality-resolution requires a reflexive Megalodon equality literal")
-      end
-  | Neg atom, [_; _], [_] ->
-      begin match native_core_reflexive_eq_proof atom with
-      | None ->
-          error
-            (id ^ ": native core proof-term equality-resolution requires a reflexive Megalodon equality literal")
-      | Some refl ->
-          let target_prop = native_core_clause_prop id result in
-          let selected_prop = native_core_literal_prop selected in
-          let selected_branch =
-            PLam
-              (selected_prop,
-               PTmAp (PPfAp (Hyp 0, refl), target_prop))
-          in
-          let remaining =
-            match result with
-            | [literal] -> literal
-            | _ -> error (id ^ ": native core proof-term equality-resolution expected a unit result")
-          in
-          let remaining_branch =
-            PLam
-              (native_core_literal_prop remaining,
-               native_core_prove_literal_to_clause id result remaining (Hyp 0))
-          in
-          let left_branch, right_branch =
-            if literal_index = 0 then
-              (selected_branch, remaining_branch)
-            else if literal_index = 1 then
-              (remaining_branch, selected_branch)
-            else
-              error (id ^ ": native core proof-term equality-resolution literal index is out of range")
-          in
-          PPfAp
-            (PPfAp (PTmAp (parent_proof, target_prop), left_branch),
-             right_branch)
-      end
-  | Pos _, _, _ ->
-      error (id ^ ": native core proof-term equality-resolution selected literal is positive")
-  | Neg _, _, _ ->
-      error
-        (id ^ ": native core proof-term equality-resolution currently supports only unit or binary parents")
+  let atom =
+    match selected with
+    | Neg atom -> atom
+    | Pos _ ->
+        error (id ^ ": native core proof-term equality-resolution selected literal is positive")
+  in
+  let refl =
+    match native_core_reflexive_eq_proof atom with
+    | Some refl -> refl
+    | None ->
+        error
+          (id ^ ": native core proof-term equality-resolution requires a reflexive Megalodon equality literal")
+  in
+  let target_prop = native_core_clause_prop id result in
+  let rec consume selected_index clause proof =
+    match clause, selected_index with
+    | [], _ -> error (id ^ ": native core proof-term equality-resolution literal index is out of bounds")
+    | [literal], Some 0 when literal = selected ->
+        PTmAp (PPfAp (proof, refl), target_prop)
+    | [literal], Some _ ->
+        error (id ^ ": native core proof-term equality-resolution literal index is out of bounds")
+    | [literal], None ->
+        native_core_prove_literal_to_clause id result literal proof
+    | literal :: rest, selected_index ->
+        let literal_prop = native_core_literal_prop literal in
+        let rest_prop = native_core_clause_prop id rest in
+        let head_branch =
+          PLam
+            (literal_prop,
+             match selected_index with
+             | Some 0 when literal = selected ->
+                 PTmAp (PPfAp (Hyp 0, refl), target_prop)
+             | Some 0 ->
+                 error (id ^ ": native core proof-term equality-resolution selected literal mismatch")
+             | _ ->
+                 native_core_prove_literal_to_clause id result literal (Hyp 0))
+        in
+        let tail_selected =
+          match selected_index with
+          | Some 0 -> None
+          | Some n -> Some (n - 1)
+          | None -> None
+        in
+        let tail_branch =
+          PLam
+            (rest_prop,
+             consume tail_selected rest (Hyp 0))
+        in
+        PPfAp (PPfAp (PTmAp (proof, target_prop), head_branch), tail_branch)
+  in
+  consume (Some literal_index) parent_clause parent_proof
+
+let native_core_equality_resolution_in_result_context
+    cert id variables parent_id parent_clause parent_proof literal_index result =
+  let result_step_variables = native_core_step_variables cert id in
+  let close_tm tm = native_core_close_tm (variables @ result_step_variables) tm in
+  let close_literal = function
+    | Pos atom -> Pos (close_tm atom)
+    | Neg atom -> Neg (close_tm atom)
+  in
+  let parent_clause = List.map close_literal parent_clause in
+  let result = List.map close_literal result in
+  let parent_proof =
+    native_core_instantiate_step_proof_body_in_result_context
+      cert id variables parent_id [] parent_proof
+  in
+  let body_proof =
+    native_core_equality_resolution id parent_clause parent_proof literal_index result
+  in
+  List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
 
 let native_core_equality_symmetry id parent_clause parent_proof literal_index result =
   let selected = nth literal_index parent_clause (id ^ " native equality-symmetry literal") in
@@ -5519,6 +5586,36 @@ let native_core_paramodulate_unit id equality_clause equality_proof target_claus
   in
   consume_equality (Some equality_index) equality_clause equality_proof target_proof
 
+let native_core_paramodulate_unit_in_result_context
+    cert id variables equality_parent_id equality_clause equality_proof
+    target_parent_id target_clause target_proof equality_index target_index
+    position from_tm to_tm result =
+  let result_step_variables = native_core_step_variables cert id in
+  let close_tm tm = native_core_close_tm (variables @ result_step_variables) tm in
+  let close_literal = function
+    | Pos atom -> Pos (close_tm atom)
+    | Neg atom -> Neg (close_tm atom)
+  in
+  let equality_clause = List.map close_literal equality_clause in
+  let target_clause = List.map close_literal target_clause in
+  let result = List.map close_literal result in
+  let from_tm = close_tm from_tm in
+  let to_tm = close_tm to_tm in
+  let equality_proof =
+    native_core_instantiate_step_proof_body_in_result_context
+      cert id variables equality_parent_id [] equality_proof
+  in
+  let target_proof =
+    native_core_instantiate_step_proof_body_in_result_context
+      cert id variables target_parent_id [] target_proof
+  in
+  let body_proof =
+    native_core_paramodulate_unit
+      id equality_clause equality_proof target_clause target_proof
+      equality_index target_index position from_tm to_tm result
+  in
+  List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
+
 let native_core_source_kind_and_tptp_name = function
   | SourceAxiom name -> ("axiom", name)
   | SourceConjecture name -> ("conjecture", name)
@@ -5662,17 +5759,9 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
           if not (same_clause_multiset expected result) then
             error
               (id ^ ": native core proof-term checker instantiation substitution does not produce result clause");
-          let parent_variables = native_core_step_variables cert parent_id in
           let proof =
-            List.fold_left
-              (fun proof (name, _) ->
-                 match List.assoc_opt name subst with
-                 | Some tm -> PTmAp (proof, tm)
-                 | None ->
-                     error
-                       (id ^ ": native core proof-term checker instantiation needs an explicit term for parent variable " ^ name))
-              parent_proof
-              parent_variables
+            native_core_instantiate_step_proof_in_result_context
+              cert id variables parent_id subst parent_proof
           in
           store id result proof
       | Resolve (id, left_id, right_id, left_index, right_index, result) ->
@@ -5720,7 +5809,8 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
       | EqualityResolution (id, parent_id, literal_index, result) ->
           let parent_clause, parent_proof = lookup parent_id in
           let proof =
-            native_core_equality_resolution id parent_clause parent_proof literal_index result
+            native_core_equality_resolution_in_result_context
+              cert id variables parent_id parent_clause parent_proof literal_index result
           in
           store id result proof
 	      | EqualitySymmetry (id, parent_id, literal_index, result) ->
@@ -5752,8 +5842,9 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
           let equality_clause, equality_proof = lookup equality_parent_id in
           let target_clause, target_proof = lookup target_parent_id in
           let proof =
-            native_core_paramodulate_unit
-              id equality_clause equality_proof target_clause target_proof
+            native_core_paramodulate_unit_in_result_context
+              cert id variables equality_parent_id equality_clause equality_proof
+              target_parent_id target_clause target_proof
               equality_index target_index position from_tm to_tm result
           in
           store id result proof
@@ -5791,6 +5882,7 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
       List.fold_right (fun (_, tp) prop -> All (tp, prop)) variables closed_prop;
     core_native_proof =
       List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) variables closed_proof;
+    core_native_symbol_table = symbol_table;
     core_native_steps = core_steps;
     core_native_source_bindings =
       List.map (fun (_, _, binding) -> binding) !source_inputs;
@@ -6001,7 +6093,8 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
             error
               (id ^ ": native preprocess proof-term checker instantiation substitution does not produce result clause");
           let proof =
-            native_core_instantiate_step_proof cert parent_id subst parent_proof
+            native_core_instantiate_step_proof_in_result_context
+              cert id variables parent_id subst parent_proof
           in
           store_clause id result proof
       | Resolve (id, left_id, right_id, left_index, right_index, result) ->
@@ -6047,7 +6140,8 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
       | EqualityResolution (id, parent_id, literal_index, result) ->
           let parent_clause, parent_proof = lookup_clause parent_id in
           store_clause id result
-            (native_core_equality_resolution id parent_clause parent_proof literal_index result)
+            (native_core_equality_resolution_in_result_context
+               cert id variables parent_id parent_clause parent_proof literal_index result)
 	      | EqualitySymmetry (id, parent_id, literal_index, result) ->
 	          let parent_clause, parent_proof = lookup_clause parent_id in
 	          store_clause id result
@@ -6071,8 +6165,9 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           let equality_clause, equality_proof = lookup_clause equality_parent_id in
           let target_clause, target_proof = lookup_clause target_parent_id in
           store_clause id result
-            (native_core_paramodulate_unit
-               id equality_clause equality_proof target_clause target_proof
+            (native_core_paramodulate_unit_in_result_context
+               cert id variables equality_parent_id equality_clause equality_proof
+               target_parent_id target_clause target_proof
                equality_index target_index position from_tm to_tm result)
       | Contradiction (id, parent_id) ->
           let parent_clause, parent_proof = lookup_clause parent_id in
@@ -6108,6 +6203,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
       List.fold_right (fun (_, tp) prop -> All (tp, prop)) variables closed_prop;
     core_native_proof =
       List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) variables closed_proof;
+    core_native_symbol_table = symbol_table;
     core_native_steps = List.length cert.steps;
     core_native_source_bindings =
       List.map (fun (_, _, binding) -> binding) !source_inputs;
