@@ -557,7 +557,7 @@ if [[ -s "$WORK_DIR/avatar_refutation.tsv" ]]; then
       for (step_index = 0; step_index < step_count; ++step_index) {
         step_prefix = "sat_proof_step_" step_index
         if (match($0, step_prefix "_id=([0-9]+)", step_id_match)) {
-          proof_ids[step_id_match[1]] = 1
+          proof_ids[step_id_match[1]] = step_index
         }
       }
       for (step_index = 0; step_index < step_count; ++step_index) {
@@ -578,6 +578,8 @@ if [[ -s "$WORK_DIR/avatar_refutation.tsv" ]]; then
           }
           if (!(parent_id_match[1] in proof_ids)) {
             print parent_prefix "_id_unknown\t" parent_id_match[1] "\t" $0
+          } else if (proof_ids[parent_id_match[1]] >= step_index) {
+            print parent_prefix "_id_not_earlier\t" parent_id_match[1] "\t" $0
           }
           if (index($0, parent_prefix "_clause=") == 0) {
             print parent_prefix "_clause=\t" $0
