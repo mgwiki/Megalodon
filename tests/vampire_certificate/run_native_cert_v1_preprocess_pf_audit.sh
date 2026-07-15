@@ -56,6 +56,11 @@ run_one() {
   mkdir -p "$case_dir"
   : > "$case_dir/dummy.mg"
 
+  if [[ ! -s "$source" ]]; then
+    printf '%s\tPREPROCESS_PF_MISSING_SOURCE\n' "$base" > "$case_dir/result.tsv"
+    return 0
+  fi
+
   if ! "$MEGALODON" \
       -vampirecertv1preprocesspfcheck \
       -vampirecertv1 "$native" \
@@ -79,6 +84,11 @@ run_one() {
 
   if ! rg -q 'Vampire certificate v1 native preprocess source bindings checked ' "$case_dir/check.out"; then
     printf '%s\tPREPROCESS_PF_MISSING_SOURCE_BINDINGS\n' "$base" > "$case_dir/result.tsv"
+    return 0
+  fi
+
+  if ! rg -q 'Vampire certificate v1 native preprocess source propositions recorded ' "$case_dir/check.out"; then
+    printf '%s\tPREPROCESS_PF_MISSING_SOURCE_PROPOSITIONS\n' "$base" > "$case_dir/result.tsv"
     return 0
   fi
 
