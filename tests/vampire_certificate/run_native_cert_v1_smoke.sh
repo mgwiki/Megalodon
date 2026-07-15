@@ -746,6 +746,34 @@ if ! rg -q 'instantiation 1' "$WORK_DIR/native_cert_v1_kernel_instantiation_vali
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_kernel_instantiation_refutation_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_kernel_instantiation_refutation_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_kernel_instantiation_strict_valid.log"
+
+if ! rg -q 'Vampire certificate v1 strict checked 5 steps' \
+    "$WORK_DIR/native_cert_v1_kernel_instantiation_strict_valid.log"; then
+  echo "strict native certificate v1 checker did not accept instantiation metadata" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_kernel_instantiation_missing_substitution_bad.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_kernel_instantiation_refutation_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_kernel_instantiation_missing_substitution_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_kernel_instantiation_missing_substitution_bad.err"; then
+  echo "strict native certificate v1 checker accepted instantiation metadata without a substitution" >&2
+  exit 1
+fi
+
+if ! rg -q 'kernel_v1 metadata requires substitution' \
+    "$WORK_DIR/native_cert_v1_kernel_instantiation_missing_substitution_bad.err"; then
+  echo "strict native certificate v1 instantiation failure did not explain the missing substitution" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1strict \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_primitive_expansion_missing_bad.sexp \

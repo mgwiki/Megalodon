@@ -3211,8 +3211,11 @@ let field_key_value field =
 
 let validate_kernel_v1_metadata_contracts cert =
   let step_indices = Hashtbl.create 97 in
+  let step_by_id = Hashtbl.create 97 in
   List.iteri
-    (fun index step -> Hashtbl.add step_indices (step_id step) index)
+    (fun index step ->
+       Hashtbl.add step_indices (step_id step) index;
+       Hashtbl.replace step_by_id (step_id step) step)
     cert.steps;
   let field_required id fields key =
     match field_value key fields with
@@ -3225,6 +3228,87 @@ let validate_kernel_v1_metadata_contracts cert =
          ignore (field_required id fields key : string))
       keys;
     ignore kernel_rule
+  in
+  let field_int id fields key =
+    let value = field_required id fields key in
+    try int_of_string value with Failure _ ->
+      error
+        (id ^ ": strict certificate v1 kernel_v1 metadata field "
+         ^ key ^ " is not an integer")
+  in
+  let require_field_int id fields key expected =
+    let actual = field_int id fields key in
+    if actual <> expected then
+      error
+        (Printf.sprintf
+           "%s: strict certificate v1 kernel_v1 metadata field %s expected %d but got %d"
+           id key expected actual)
+  in
+  let parse_field id fields key parser =
+    let value = field_required id fields key in
+    try parser (parse_sexpr value) with
+    | Error msg ->
+        error
+          (id ^ ": strict certificate v1 kernel_v1 metadata field "
+           ^ key ^ " is malformed: " ^ msg)
+  in
+  let require_field_clause id fields key expected =
+    let actual = parse_field id fields key parse_clause in
+    if not (same_clause_multiset actual expected) then
+      error
+        (id ^ ": strict certificate v1 kernel_v1 metadata field "
+         ^ key ^ " does not match the certificate clause")
+  in
+  let require_field_substitution id fields key expected =
+    let actual = parse_field id fields key parse_substitution in
+    if actual <> expected then
+      error
+        (id ^ ": strict certificate v1 kernel_v1 metadata field "
+         ^ key ^ " does not match the certificate substitution")
+  in
+  let step_clause_opt = function
+    | Input (_, _, clause)
+    | CnfFormulaClause (_, _, _, clause)
+    | CnfLiteral (_, _, clause)
+    | DefinitionInput (_, clause)
+    | DefinitionRewriteChain (_, _, _, clause)
+    | AvatarComponent (_, clause)
+    | AvatarSplit (_, _, clause)
+    | AvatarContradiction (_, _, clause)
+    | AvatarRefutation (_, _, _, _, clause)
+    | FoolExhaustiveness (_, clause)
+    | FoolDistinctness (_, clause)
+    | InequalityNameIntro (_, clause)
+    | InequalitySplit (_, _, _, clause)
+    | Substitute (_, _, _, clause)
+    | Condensation (_, _, _, clause)
+    | UnitResultingResolution (_, _, _, clause)
+    | Resolve (_, _, _, _, _, clause)
+    | SubsumptionResolution (_, _, _, _, _, _, clause)
+    | Factor (_, _, _, _, clause)
+    | EqualityResolution (_, _, _, clause)
+    | EqualityResolutionConstraints (_, _, _, _, _, clause)
+    | EqualityFactoring (_, _, _, _, _, clause)
+    | EqualityFactoringConstraints (_, _, _, _, _, _, clause)
+    | TruthConflict (_, _, _, clause)
+    | EqualitySymmetry (_, _, _, clause)
+    | BoolSimplify (_, _, _, _, _, _, clause)
+    | Paramodulate (_, _, _, _, _, _, _, _, clause)
+    | Superposition (_, _, _, _, _, _, _, _, _, _, clause) -> Some clause
+    | Contradiction (_, _) -> Some []
+    | FormulaInput _
+    | FormulaTermInput _
+    | FormulaTermCopy _
+    | RectifyFormula _
+    | FoolFormula _
+    | EnnfFormula _
+    | SkolemFormula _
+    | SkolemFormulaComputed _
+    | FormulaCopy _
+    | FoolBool _
+    | PredicateDefinition _
+    | PredicateDefinitionFold _
+    | PredicateDefinitionFoldChain _ -> None
   in
   List.iter
     (fun (id, kind, fields) ->
@@ -3254,6 +3338,61 @@ let validate_kernel_v1_metadata_contracts cert =
                 "other_parent_unit";
                 "primitive_parent_0_substitution";
                 "primitive_parent_1_substitution"]
+         | "instantiation" ->
+             require_rule_fields id fields kernel_rule
+               ["substitution";
+                "parent_count";
+                "parent_0_unit";
+                "parent_0_clause";
+                "parent_0_literal_count";
+                "parent_0_substitution";
+                "parent_0_substituted_literal_count";
+                "result_clause";
+                "result_literal_count"];
+             require_field_int id fields "parent_count" 1;
+             begin match Hashtbl.find_opt step_by_id id with
+             | Some (Substitute (_, parent_id, subst, result)) ->
+                 let parent_unit = field_required id fields "parent_0_unit" in
+                 if parent_unit <> parent_id then
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 instantiation parent_0_unit "
+                      ^ parent_unit ^ " does not match substitute parent " ^ parent_id);
+                 require_field_substitution id fields "substitution" subst;
+                 require_field_substitution id fields "parent_0_substitution" subst;
+                 require_field_clause id fields "result_clause" result;
+                 begin match field_value "conclusion_clause" fields with
+                 | Some _ -> require_field_clause id fields "conclusion_clause" result
+                 | None -> ()
+                 end;
+                 require_field_int id fields "result_literal_count" (List.length result);
+                 require_field_int id fields "parent_0_substituted_literal_count" (List.length result);
+                 begin match Hashtbl.find_opt step_by_id parent_id with
+                 | Some parent_step ->
+                     begin match step_clause_opt parent_step with
+                     | Some parent_clause ->
+                         require_field_clause id fields "parent_0_clause" parent_clause;
+                         require_field_int id fields "parent_0_literal_count" (List.length parent_clause);
+                         let expected_result = subst_clause subst parent_clause in
+                         if not (same_clause_multiset expected_result result) then
+                           error
+                             (id ^ ": strict certificate v1 kernel_v1 instantiation substitution does not produce result clause")
+                     | None ->
+                         error
+                           (id ^ ": strict certificate v1 kernel_v1 instantiation parent "
+                            ^ parent_id ^ " is not a clause-bearing step")
+                     end
+                 | None ->
+                     error
+                       (id ^ ": strict certificate v1 kernel_v1 instantiation references missing parent "
+                        ^ parent_id)
+                 end
+             | Some _ ->
+                 error
+                   (id ^ ": strict certificate v1 kernel_v1 instantiation metadata must annotate a substitute step")
+             | None ->
+                 error
+                   (id ^ ": strict certificate v1 kernel_v1 instantiation metadata has no matching certificate step")
+             end
          | "factoring" ->
              require_rule_fields id fields kernel_rule
                ["selected";
