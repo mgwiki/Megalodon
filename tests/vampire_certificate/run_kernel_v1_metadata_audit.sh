@@ -100,7 +100,7 @@ awk '
   /rule=unit_resulting_resolution/ || /rule=cnf_clause/ ||
   /rule=skolemize/ || /rule=rectify_formula/ ||
   /rule=formula_copy/ || /rule=formula_normalize/ ||
-  /rule=fool_formula/ {
+  /rule=fool_formula/ || /rule=fool_exhaustiveness/ {
     next
   }
   { print }
@@ -258,6 +258,30 @@ if [[ -s "$WORK_DIR/fool_formula.tsv" ]]; then
   if [[ -s "$WORK_DIR/missing_fool_formula_fields.tsv" ]]; then
     echo "kernel_v1 metadata audit found FOOL formula records missing transformation fields" >&2
     sed -n '1,40p' "$WORK_DIR/missing_fool_formula_fields.tsv" >&2
+    exit 1
+  fi
+fi
+
+grep -F 'rule=fool_exhaustiveness' "$WORK_DIR/kernel_v1.tsv" \
+  > "$WORK_DIR/fool_exhaustiveness.tsv" || true
+
+if [[ -s "$WORK_DIR/fool_exhaustiveness.tsv" ]]; then
+  : > "$WORK_DIR/missing_fool_exhaustiveness_fields.tsv"
+  for pattern in \
+    'axiom_kind=all_is_true_or_false' \
+    'parent_count=0' \
+    'conclusion_clause=' \
+    'result_clause=' \
+    'literal_count=2' \
+    'literal_0=' \
+    'literal_1='; do
+    awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
+      "$WORK_DIR/fool_exhaustiveness.tsv" >> "$WORK_DIR/missing_fool_exhaustiveness_fields.tsv"
+  done
+
+  if [[ -s "$WORK_DIR/missing_fool_exhaustiveness_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found FOOL exhaustiveness records missing axiom fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_fool_exhaustiveness_fields.tsv" >&2
     exit 1
   fi
 fi

@@ -160,6 +160,9 @@ transformation pairs computed by the Vampire normal-form traversal.
 For FOOL formula elimination, it requires source/result formulas and explicit
 source/target/path transformation pairs computed by Vampire while it still has
 the pre- and post-elimination formula trees.
+For FOOL exhaustiveness, it requires a parentless
+`axiom_kind=all_is_true_or_false` kernel record with the result clause and both
+literal fields rendered by Vampire.
 The point of this gate is to keep new work on the Prover9/Ivy-style certificate
 path: Vampire must emit primitive replay data, rather than leaving Megalodon to
 recover it by broad OCaml-side reconstruction.
