@@ -34,6 +34,7 @@ let vampirecertv1strict : bool ref = ref false;;
 let vampirecertv1closed : bool ref = ref false;;
 let vampirecertv1coreclosed : bool ref = ref false;;
 let vampirecertv1corepfcheck : bool ref = ref false;;
+let vampirecertv1preprocesspfcheck : bool ref = ref false;;
 let vampirecertv1emit : string option ref = ref None;;
 let bushy = ref false;;
 let bushykdeps : (string,unit) Hashtbl.t = Hashtbl.create 10;;
@@ -7021,10 +7022,10 @@ let check_vampire_cert_v1_file fn =
     let source_origin_for_emit = ref None in
     begin match !vampirecertv1source with
     | None ->
-        if !vampirecertv1corepfcheck then
+        if !vampirecertv1corepfcheck || !vampirecertv1preprocesspfcheck then
           raise
             (Vampire_cert_v1.Error
-               "native core proof-term checking requires -vampirecertv1source with Megalodon origin metadata");
+               "native proof-term checking requires -vampirecertv1source with Megalodon origin metadata");
         if (!vampirecertv1strict || !vampirecertv1closed)
            && Vampire_cert_v1.certificate_source_count cert > 0 then
           raise (Vampire_cert_v1.Error "strict certificate v1 requires -vampirecertv1source for source-backed inputs")
@@ -7046,10 +7047,10 @@ let check_vampire_cert_v1_file fn =
               pos
               origin.Vampire_cert_v1.source_origin_kind
         | None ->
-            if !vampirecertv1corepfcheck then
+            if !vampirecertv1corepfcheck || !vampirecertv1preprocesspfcheck then
               raise
                 (Vampire_cert_v1.Error
-                   "native core proof-term checking requires Megalodon origin metadata in -vampirecertv1source")
+                   "native proof-term checking requires Megalodon origin metadata in -vampirecertv1source")
         end;
         source_map_for_emit := source_map;
         let source_count =
@@ -7101,6 +7102,39 @@ let check_vampire_cert_v1_file fn =
             (if List.length native_core.Vampire_cert_v1.core_native_source_bindings = 1 then "" else "s")
       | None ->
           raise (Vampire_cert_v1.Error "native core proof term does not prove its proposition")
+    end;
+    begin if !vampirecertv1preprocesspfcheck then
+      let native_preprocess =
+        Vampire_cert_v1.elaborate_preprocess_refutation_native
+          ~source_map:!source_map_for_emit
+          cert
+      in
+      match
+        check_propofpf sigdelta sigtmof [] []
+          native_preprocess.Vampire_cert_v1.core_native_proof
+          native_preprocess.Vampire_cert_v1.core_native_proposition
+          []
+      with
+      | Some _ ->
+          Printf.printf
+            "Vampire certificate v1 native preprocess proof term checked %d step%s.\n"
+            native_preprocess.Vampire_cert_v1.core_native_steps
+            (if native_preprocess.Vampire_cert_v1.core_native_steps = 1 then "" else "s");
+          Printf.printf
+            "Vampire certificate v1 native preprocess source bindings checked %d assumption%s.\n"
+            (List.length native_preprocess.Vampire_cert_v1.core_native_source_bindings)
+            (if List.length native_preprocess.Vampire_cert_v1.core_native_source_bindings = 1 then "" else "s");
+          Printf.printf
+            "Vampire certificate v1 native preprocess source propositions recorded %d assumption%s.\n"
+            (List.length
+               (List.filter
+                  (fun binding ->
+                     binding.Vampire_cert_v1.core_native_source_proposition
+                     <> TmH "")
+                  native_preprocess.Vampire_cert_v1.core_native_source_bindings))
+            (if List.length native_preprocess.Vampire_cert_v1.core_native_source_bindings = 1 then "" else "s")
+      | None ->
+          raise (Vampire_cert_v1.Error "native preprocess proof term does not prove its proposition")
     end;
     begin match !vampirecertv1emit with
     | None -> ()
@@ -7367,6 +7401,12 @@ let _ =
             vampirecertv1closed := true;
             vampirecertv1coreclosed := true;
             vampirecertv1corepfcheck := true
+          end
+        else if Sys.argv.(!j) = "-vampirecertv1preprocesspfcheck" then
+          begin
+            vampirecertv1strict := true;
+            vampirecertv1closed := true;
+            vampirecertv1preprocesspfcheck := true
           end
         else if Sys.argv.(!j) = "-vampirecertv1source" then
           begin

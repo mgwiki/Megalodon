@@ -4678,6 +4678,246 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
       List.map (fun (_, _, binding) -> binding) !source_inputs;
   }
 
+let native_preprocess_step_formula_prop cert variables id formula =
+  let step_variables = native_core_step_variables cert id in
+  let prop = native_core_close_tm (variables @ step_variables) formula in
+  List.fold_right (fun (_, tp) prop -> All (tp, prop)) step_variables prop
+
+let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
+  ignore (check_certificate_strict cert);
+  let variables = native_core_declared_variables cert in
+  let source_inputs = ref [] in
+  List.iter
+    (function
+      | Input (id, source, clause) ->
+          let proposition = native_core_step_clause_prop cert variables id clause in
+          source_inputs :=
+            !source_inputs
+            @ [(id, proposition,
+                native_core_source_binding source_map id source proposition)]
+      | FormulaInput (id, source, literal) ->
+          let proposition =
+            native_core_step_clause_prop cert variables id [literal]
+          in
+          source_inputs :=
+            !source_inputs
+            @ [(id, proposition,
+                native_core_source_binding source_map id source proposition)]
+      | FormulaTermInput (id, source, formula) ->
+          let proposition =
+            native_preprocess_step_formula_prop cert variables id formula
+          in
+          source_inputs :=
+            !source_inputs
+            @ [(id, proposition,
+                native_core_source_binding source_map id source proposition)]
+      | _ -> ())
+    cert.steps;
+  let source_count = List.length !source_inputs in
+  let source_hyp_index id =
+    let rec find index = function
+      | [] -> None
+      | (input_id, _, _) :: rest ->
+          if input_id = id then Some (source_count - index - 1)
+          else find (index + 1) rest
+    in
+    match find 0 !source_inputs with
+    | Some index -> index
+    | None -> error (id ^ ": native preprocess proof-term checker lost source hypothesis")
+  in
+  let variable_types = List.rev (List.map snd variables) in
+  let closed_source_context =
+    !source_inputs
+    |> List.map (fun (_, prop, _) -> prop)
+    |> List.rev
+  in
+  let check_step_proof id prop proof =
+    let step_variables = native_core_step_variables cert id in
+    let proof = native_core_close_pf (variables @ step_variables) proof in
+    let debug_failure msg =
+      if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+        prerr_endline ("native preprocess proof-term debug step " ^ id ^ ": " ^ msg);
+        prerr_endline ("native preprocess proposition: " ^ tm_to_str prop);
+        prerr_endline ("native preprocess proof: " ^ pf_to_str proof)
+      end
+    in
+    let empty_delta = Hashtbl.create 0 in
+    let empty_tms = Hashtbl.create 0 in
+    try
+      match check_propofpf empty_delta empty_tms variable_types closed_source_context proof prop [] with
+      | Some _ -> ()
+      | None ->
+          debug_failure "wrong proposition";
+          error
+            (id ^ ": native preprocess proof-term checker built a proof of the wrong proposition")
+    with Failure msg ->
+      debug_failure msg;
+      error
+        (id ^ ": native preprocess proof-term checker built an ill-formed proof term: " ^ msg)
+  in
+  let clause_table = Hashtbl.create 101 in
+  let formula_table = Hashtbl.create 101 in
+  let final_proof = ref None in
+  let store_clause id clause proof =
+    let prop = native_core_step_clause_prop cert variables id clause in
+    check_step_proof id prop proof;
+    Hashtbl.replace clause_table id (clause, proof);
+    if clause = [] then final_proof := Some proof
+  in
+  let store_formula id formula proof =
+    let prop = native_preprocess_step_formula_prop cert variables id formula in
+    check_step_proof id prop proof;
+    Hashtbl.replace formula_table id (formula, proof)
+  in
+  let lookup_clause id =
+    try Hashtbl.find clause_table id
+    with Not_found ->
+      error (id ^ ": native preprocess proof-term checker references unknown clause parent")
+  in
+  let lookup_formula id =
+    try Hashtbl.find formula_table id
+    with Not_found ->
+      error (id ^ ": native preprocess proof-term checker references unknown formula parent")
+  in
+  List.iter
+    (function
+      | Input (id, _, clause) ->
+          store_clause id clause (Hyp (source_hyp_index id))
+      | FormulaInput (id, _, literal) ->
+          store_clause id [literal] (Hyp (source_hyp_index id))
+      | FormulaTermInput (id, _, formula) ->
+          store_formula id formula (Hyp (source_hyp_index id))
+      | FormulaTermCopy (id, parent_id, result) ->
+          let parent_formula, parent_proof = lookup_formula parent_id in
+          if parent_formula <> result then
+            error (id ^ ": native preprocess proof-term formula_term_copy is not an identity copy");
+          store_formula id result parent_proof
+      | FormulaCopy (id, parent_id, result) ->
+          let parent_formula, parent_proof = lookup_formula parent_id in
+          if native_core_literal_prop result <> parent_formula then
+            error (id ^ ": native preprocess proof-term formula_copy result is not the parent formula");
+          store_clause id [result] parent_proof
+      | Substitute (id, parent_id, [], result) ->
+          let parent_clause, parent_proof = lookup_clause parent_id in
+          if result <> parent_clause then
+            error
+              (id ^ ": native preprocess proof-term checker supports only identity substitution when the result clause is unchanged");
+          store_clause id result parent_proof
+      | Substitute (id, parent_id, subst, result) ->
+          let parent_clause, parent_proof = lookup_clause parent_id in
+          let expected = subst_clause subst parent_clause in
+          if not (same_clause_multiset expected result) then
+            error
+              (id ^ ": native preprocess proof-term checker instantiation substitution does not produce result clause");
+          let proof =
+            native_core_instantiate_step_proof cert parent_id subst parent_proof
+          in
+          store_clause id result proof
+      | Resolve (id, left_id, right_id, left_index, right_index, result) ->
+          let left_clause, left_proof = lookup_clause left_id in
+          let right_clause, right_proof = lookup_clause right_id in
+          begin match left_clause, right_clause, result, left_index, right_index with
+          | [Pos left_atom], [Neg right_atom], [], 0, 0
+            when native_core_same_atom left_atom right_atom ->
+              store_clause id result (PPfAp (right_proof, left_proof))
+          | [Neg left_atom], [Pos right_atom], [], 0, 0
+            when native_core_same_atom left_atom right_atom ->
+              store_clause id result (PPfAp (left_proof, right_proof))
+          | _, [_], _, _, 0
+              when List.length left_clause >= 1
+                   && List.length result + 1 = List.length left_clause ->
+              let proof =
+                native_core_resolve_clause_unit
+                  id left_clause left_proof left_index right_clause right_proof right_index result
+              in
+              store_clause id result proof
+          | [_], _, _, 0, _
+              when List.length right_clause >= 1
+                   && List.length result + 1 = List.length right_clause ->
+              let proof =
+                native_core_resolve_clause_unit
+                  id right_clause right_proof right_index left_clause left_proof left_index result
+              in
+              store_clause id result proof
+          | [_; _], [_; _], [_; _], _, _ ->
+              let proof =
+                native_core_resolve_binary_binary
+                  id left_clause left_proof left_index right_clause right_proof right_index result
+              in
+              store_clause id result proof
+          | _ ->
+              error
+                (id ^ ": native preprocess proof-term checker currently supports only native core resolution shapes")
+          end
+      | Factor (id, parent_id, left_index, right_index, result) ->
+          let parent_clause, parent_proof = lookup_clause parent_id in
+          store_clause id result
+            (native_core_factor id parent_clause parent_proof left_index right_index result)
+      | EqualityResolution (id, parent_id, literal_index, result) ->
+          let parent_clause, parent_proof = lookup_clause parent_id in
+          store_clause id result
+            (native_core_equality_resolution id parent_clause parent_proof literal_index result)
+      | EqualitySymmetry (id, parent_id, literal_index, result) ->
+          let parent_clause, parent_proof = lookup_clause parent_id in
+          store_clause id result
+            (native_core_equality_symmetry id parent_clause parent_proof literal_index result)
+      | SubsumptionResolution (id, main_parent_id, side_parent_id, selected, side_pivot, side_subst, result) ->
+          let main_clause, main_proof = lookup_clause main_parent_id in
+          let side_clause, side_proof = lookup_clause side_parent_id in
+          let side_clause = subst_clause side_subst side_clause in
+          let side_pivot = subst_literal side_subst side_pivot in
+          let side_proof =
+            native_core_instantiate_step_proof cert side_parent_id side_subst side_proof
+          in
+          store_clause id result
+            (native_core_subsumption_resolution_unit
+               id main_clause main_proof side_clause side_proof selected side_pivot result)
+      | Paramodulate (id, equality_parent_id, target_parent_id, equality_index, target_index, position, from_tm, to_tm, result) ->
+          let equality_clause, equality_proof = lookup_clause equality_parent_id in
+          let target_clause, target_proof = lookup_clause target_parent_id in
+          store_clause id result
+            (native_core_paramodulate_unit
+               id equality_clause equality_proof target_clause target_proof
+               equality_index target_index position from_tm to_tm result)
+      | Contradiction (id, parent_id) ->
+          let parent_clause, parent_proof = lookup_clause parent_id in
+          if parent_clause <> [] then
+            error (id ^ ": native preprocess proof-term contradiction parent is not empty");
+          store_clause id [] parent_proof
+      | step ->
+          error
+            (step_id step ^ ": native preprocess proof-term checker has no proof-term rule for "
+             ^ step_rule_name step))
+    cert.steps;
+  let proof =
+    match !final_proof with
+    | Some proof -> proof
+    | None -> error "native preprocess proof-term checker found no empty-clause proof"
+  in
+  let body_prop =
+    List.fold_right
+      (fun (_, assumption, _) target -> Imp (assumption, target))
+      !source_inputs
+      native_core_false
+  in
+  let body_proof =
+    List.fold_right
+      (fun (_, assumption, _) proof -> PLam (assumption, proof))
+      !source_inputs
+      proof
+  in
+  let closed_prop = native_core_close_tm variables body_prop in
+  let closed_proof = native_core_close_pf variables body_proof in
+  {
+    core_native_proposition =
+      List.fold_right (fun (_, tp) prop -> All (tp, prop)) variables closed_prop;
+    core_native_proof =
+      List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) variables closed_proof;
+    core_native_steps = List.length cert.steps;
+    core_native_source_bindings =
+      List.map (fun (_, _, binding) -> binding) !source_inputs;
+  }
+
 let emit_error msg =
   let msg =
     if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then

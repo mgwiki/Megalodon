@@ -164,6 +164,7 @@ val check_certificate : certificate -> (string * checked_item) list
 val check_certificate_strict : certificate -> (string * checked_item) list
 val validate_certificate_core_fragment : certificate -> int
 val elaborate_core_resolution_refutation_native : ?source_map:source_map_entry list -> certificate -> core_native_proof
+val elaborate_preprocess_refutation_native : ?source_map:source_map_entry list -> certificate -> core_native_proof
 val emit_simple_megalodon :
   ?theorem_name:string ->
   ?source_map:source_map_entry list ->

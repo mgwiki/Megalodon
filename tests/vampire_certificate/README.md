@@ -288,19 +288,18 @@ Use `-vampirecertv1corepfcheck` for the first native proof-term seed. This
 implies `-vampirecertv1coreclosed`, then constructs and kernel-checks a
 `Syntax.pf` proof term for the currently supported core seed:
 unit/unit, binary/unit, and binary/binary resolution, binary/unit
-subsumption-resolution with empty side substitution including binary side
+subsumption-resolution with explicit side substitution including binary side
 remainders already present in the result, duplicate literal factoring in
 larger clauses,
-identity substitution only, and equality resolution over reflexive disequalities
+explicit instantiation/substitution, and equality resolution over reflexive disequalities
 encoded with Megalodon's actual polymorphic equality, equality symmetry over
 typed Megalodon equality literals in unit and binary clauses, plus unit/unit
 paramodulation into positive and negative targets, and unit-equality
 paramodulation into larger target clauses, using explicit Vampire
 position/from/to data. Clauses are represented by native recursive
 impredicative false and disjunction terms. It deliberately rejects unsupported
-core rules, including non-identity substitution, subsumption-resolution with
-non-empty side substitution, non-unit equality parents for paramodulation, and
-untyped `TMH "="` equality, instead of falling back to textual replay. This is
+core rules, including non-unit equality parents for paramodulation and untyped
+`TMH "="` equality, instead of falling back to textual replay. This is
 not yet the full nine-rule core elaborator; it is the initial checked
 entrypoint for replacing the broad `certificate -> string` path with a native
 `certificate -> Syntax.tm * Syntax.pf` path. This mode also requires
@@ -326,6 +325,18 @@ every checked proof term.  A rule is eligible for `coreclosed` only when it is
 intended to have native proof-term support; structurally checked macro rules
 such as `equality_factoring` stay outside this gate until they are elaborated
 as explicit small-kernel proof steps.
+
+Use `-vampirecertv1preprocesspfcheck` for the first native preprocessing
+proof-term seed. This mode does not claim the full Smolka-style preprocessing
+layer. It currently checks source-linked formula-term inputs, identity
+formula-term copies, formula-copy into a matching unit clause, and then the
+native clausal proof-term fragment above. Unsupported transformations such as
+FOOL, ENNF, CNF projection, Skolemization, and AVATAR still fail instead of
+falling back to textual replay. The focused audit is:
+
+```sh
+tests/vampire_certificate/run_native_cert_v1_preprocess_pf_audit.sh
+```
 
 For the audit-recommended restricted milestone, use:
 
