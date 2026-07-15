@@ -424,6 +424,21 @@ As with the lower staged gates, it writes `first_excluded.tsv`,
 `first_excluded_rule_counts.txt`, and `cases_by_first_blocker/*.list` under
 `/project/tmp/latest_native_cert_v1_definition_closed_audit`.
 
+For the AVATAR layer above definition inputs, use:
+
+```sh
+tests/vampire_certificate/run_native_cert_v1_avatar_closed_audit.sh
+```
+
+This gate permits the definition layer plus AVATAR component, split,
+contradiction, and refutation records that closed mode can validate without
+adding non-source premises.  It still excludes inequality splitting, definition
+rewrite chains, and broader macros.  The summary status for selected and
+checked cases is `AVATAR_CLOSED_PASS`.  It also writes
+`first_excluded.tsv`, `first_excluded_rule_counts.txt`, and
+`cases_by_first_blocker/*.list` under
+`/project/tmp/latest_native_cert_v1_avatar_closed_audit`.
+
 To export a Megalodon development once and then check the resulting source-mapped
 TH0 corpus in parallel, use:
 
