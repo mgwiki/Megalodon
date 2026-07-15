@@ -476,6 +476,9 @@ while IFS= read -r native_file; do
       if (rule == "factoring") {
         return "factor"
       }
+      if (rule == "equality_resolution" || rule == "equality_factoring") {
+        return ""
+      }
       return ""
     }
 
@@ -518,6 +521,12 @@ while IFS= read -r native_file; do
       }
       if (rule == "factoring") {
         return primitive == "factor"
+      }
+      if (rule == "equality_resolution") {
+        return primitive == "equality_resolution" || primitive == "equality_resolution_constraints"
+      }
+      if (rule == "equality_factoring") {
+        return primitive == "equality_factoring" || primitive == "equality_factoring_constraints"
       }
       return 1
     }

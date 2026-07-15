@@ -3546,6 +3546,8 @@ let required_primitives_for_kernel_rule = function
   | "formula_copy" -> ["formula_copy"; "formula_term_copy"]
   | "fool_exhaustiveness" -> ["fool_exhaustiveness"]
   | "truth_conflict" -> ["truth_conflict"]
+  | "equality_resolution" -> ["equality_resolution"; "equality_resolution_constraints"]
+  | "equality_factoring" -> ["equality_factoring"; "equality_factoring_constraints"]
   | "avatar_component" -> ["avatar_component"]
   | "avatar_split" -> ["avatar_split"]
   | "avatar_refutation" -> ["avatar_refutation"]

@@ -817,6 +817,29 @@ if ! rg -q 'Vampire certificate v1 strict checked 6 steps' \
 fi
 
 bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_equality_resolution_kernel_valid.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_equality_resolution_kernel_valid.log"
+
+if ! rg -q 'Vampire certificate v1 checked 3 steps' \
+    "$WORK_DIR/native_cert_v1_equality_resolution_kernel_valid.log"; then
+  echo "native certificate v1 checker did not accept equality-resolution kernel metadata" >&2
+  exit 1
+fi
+
+TMPDIR="$TMPDIR" \
+WORK_DIR="$WORK_DIR/equality_resolution_kernel_metadata_audit" \
+MIN_REWRITE_POSITION=0 \
+  tests/vampire_certificate/run_kernel_v1_metadata_audit.sh \
+    tests/vampire_certificate/native_cert_v1_equality_resolution_kernel_valid.sexp \
+  >"$WORK_DIR/native_cert_v1_equality_resolution_kernel_metadata_audit.log"
+
+if ! rg -q '^equality_resolution 1$' \
+    "$WORK_DIR/native_cert_v1_equality_resolution_kernel_metadata_audit.log"; then
+  echo "kernel_v1 metadata audit did not accept equality-resolution primitive contract" >&2
+  exit 1
+fi
+
+bin/megalodon \
   -vampirecertv1strict \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_primitive_expansion_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_fool_primitive_expansion_valid.th0.p \

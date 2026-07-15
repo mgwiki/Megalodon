@@ -166,7 +166,8 @@ replay: the checker should receive typed instantiation data from Vampire rather
 than reconstructing it heuristically.
 For macro kernel rules currently expanded into first-class certificate steps
 (`superposition`, demodulation `rewrite`, `unit_resulting_resolution`,
-`subsumption_resolution`, `resolution`, and `factoring`), it requires the
+`subsumption_resolution`, `resolution`, `factoring`, `equality_resolution`,
+and `equality_factoring`), it requires the
 Vampire-emitted `primitive_expansion=prefix`,
 `primitive_expansion_prefix=uN`, and `primitive_expansion_requires=...`
 contract. This keeps the broad Vampire rule record tied to an explicit
@@ -239,10 +240,11 @@ tests/vampire_certificate/run_native_primitive_audit.sh \
 
 This checks the explicit native records for the frequent clausal small-kernel
 steps: `substitute`, `paramodulate`, `equality_symmetry`,
-`equality_resolution`, `resolve`, `factor`, `fool_atom_lift`, `ennf_formula`,
-`skolem_formula`, `cnf_literal`, `cnf_formula_clause`, `formula_copy`,
-`formula_term_copy`, `rectify_formula`, `fool_exhaustiveness`, and
-`truth_conflict`, plus the first-class AVATAR records `avatar_component`,
+`equality_resolution`, `equality_resolution_constraints`, `resolve`, `factor`,
+`equality_factoring`, `equality_factoring_constraints`, `fool_atom_lift`,
+`ennf_formula`, `skolem_formula`, `cnf_literal`, `cnf_formula_clause`,
+`formula_copy`, `formula_term_copy`, `rectify_formula`,
+`fool_exhaustiveness`, and `truth_conflict`, plus the first-class AVATAR records `avatar_component`,
 `avatar_definition`, `avatar_split`, `avatar_refutation`, and
 `split_dependency`. The gate requires each present rule family to expose the
 fields Megalodon should replay
@@ -345,9 +347,10 @@ as explicit small-kernel proof steps.
 Use `-vampirecertv1preprocesspfcheck` for the first native preprocessing
 proof-term seed. This mode does not claim the full Smolka-style preprocessing
 layer. It currently checks source-linked formula-term inputs, identity
-formula-term copies, formula-copy into a matching unit clause, and then the
-native clausal proof-term fragment above. Unsupported transformations such as
-FOOL, ENNF, CNF projection, Skolemization, and AVATAR still fail instead of
+formula-term copies, formula-copy into a matching unit clause, selected ENNF
+and Skolemization primitives, and then the native clausal proof-term fragment
+above. Unsupported transformations such as
+FOOL, CNF projection, and AVATAR still fail instead of
 falling back to textual replay. The focused audit is:
 
 ```sh
