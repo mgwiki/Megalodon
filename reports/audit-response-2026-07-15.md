@@ -81,6 +81,9 @@ That support has been generalized to binary target clauses when the equality
 parent is still unit: the selected target literal is transported natively, and
 the unmodified target literal is reintroduced through the native disjunction
 encoding.
+The native clause encoding is now recursive rather than binary-only, and the
+same unit-equality paramodulation path has a three-literal regression fixture
+that rewrites the selected head literal and projects the remaining target tail.
 
 The next core rule added in the same style is binary/unit
 subsumption-resolution with an empty side substitution.  The checker validates

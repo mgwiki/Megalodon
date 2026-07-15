@@ -3315,11 +3315,11 @@ let native_core_literal_prop = function
   | Pos tm -> native_core_expand_eq_atom tm
   | Neg tm -> Imp (native_core_expand_eq_atom tm, native_core_false)
 
-let native_core_clause_prop id = function
+let rec native_core_clause_prop id = function
   | [] -> native_core_false
   | [literal] -> native_core_literal_prop literal
-  | [left; right] -> native_core_or (native_core_literal_prop left) (native_core_literal_prop right)
-  | _ -> error (id ^ ": native core proof-term checker currently supports only clauses of length at most two")
+  | literal :: rest ->
+      native_core_or (native_core_literal_prop literal) (native_core_clause_prop id rest)
 
 let native_core_same_atom left right =
   left = right
@@ -3349,20 +3349,20 @@ let native_core_or_intro_right left_prop right_prop proof =
           (Imp (tmshift 0 1 right_prop, DB 0),
            PPfAp (Hyp 0, pfshift 0 2 (pftmshift 0 1 proof)))))
 
-let native_core_prove_literal_to_clause id target_clause literal proof =
+let rec native_core_prove_literal_to_clause id target_clause literal proof =
   match target_clause with
   | [target_literal] when target_literal = literal -> proof
-  | [left; right] ->
+  | left :: rest ->
       let left_prop = native_core_literal_prop left in
-      let right_prop = native_core_literal_prop right in
+      let right_prop = native_core_clause_prop id rest in
       if literal = left then
         native_core_or_intro_left left_prop right_prop proof
-      else if literal = right then
-        native_core_or_intro_right left_prop right_prop proof
       else
-        error
-          (id ^ ": native core proof-term checker cannot inject literal into result clause")
-  | _ ->
+        let rest_proof =
+          native_core_prove_literal_to_clause id rest literal proof
+        in
+        native_core_or_intro_right left_prop right_prop rest_proof
+  | [] ->
       error
         (id ^ ": native core proof-term checker cannot inject literal into result clause")
 
@@ -3411,6 +3411,61 @@ let native_core_resolve_binary_unit id binary_clause binary_proof binary_index u
           (id ^ ": native core proof-term checker supports binary/unit resolution only when the result is the remaining literal")
   | _ ->
       error (id ^ ": native core proof-term checker expected binary/unit resolution")
+
+let native_core_resolve_clause_unit id clause clause_proof clause_index unit_clause unit_proof unit_index result =
+  match unit_clause, unit_index with
+  | [unit_literal], 0 ->
+      let selected = nth clause_index clause (id ^ " native clause/unit resolution pivot") in
+      if not (native_core_complement selected unit_literal) then
+        error (id ^ ": native core proof-term checker expected complementary clause/unit pivots");
+      let expected =
+        remove_at clause_index clause (id ^ " native clause/unit resolution pivot")
+      in
+      if expected <> result then
+        error (id ^ ": native core proof-term clause/unit resolution result does not remove the selected literal");
+      let target_prop = native_core_clause_prop id result in
+      let rec consume unit_proof selected_index clause proof =
+        match clause, selected_index with
+        | [], _ -> error (id ^ ": native core proof-term clause/unit resolution pivot index is out of bounds")
+        | [literal], Some 0 when literal = selected ->
+            native_core_branch_from_complement target_prop unit_proof unit_literal literal
+        | [literal], Some _ ->
+            error (id ^ ": native core proof-term clause/unit resolution pivot index is out of bounds")
+        | [literal], None ->
+            native_core_prove_literal_to_clause id result literal proof
+        | literal :: rest, selected_index ->
+            let literal_prop = native_core_literal_prop literal in
+            let rest_prop = native_core_clause_prop id rest in
+            let head_branch =
+              PLam
+                (literal_prop,
+                 match selected_index with
+                 | Some 0 when literal = selected ->
+                     native_core_branch_from_complement
+                       target_prop unit_proof unit_literal literal
+                 | Some 0 ->
+                     error (id ^ ": native core proof-term clause/unit resolution selected literal mismatch")
+                 | _ ->
+                     native_core_prove_literal_to_clause id result literal (Hyp 0))
+            in
+            let tail_selected =
+              match selected_index with
+              | Some 0 -> None
+              | Some n -> Some (n - 1)
+              | None -> None
+            in
+            let tail_branch =
+              PLam
+                (rest_prop,
+                 consume (pfshift 0 1 unit_proof) tail_selected rest (Hyp 0))
+            in
+            PPfAp (PPfAp (PTmAp (proof, target_prop), head_branch), tail_branch)
+      in
+      consume unit_proof (Some clause_index) clause clause_proof
+  | [_], _ ->
+      error (id ^ ": native core proof-term clause/unit resolution unit index is out of bounds")
+  | _ ->
+      error (id ^ ": native core proof-term clause/unit resolution expected a unit side clause")
 
 let native_core_false_from_two_pivots main_pivot side_pivot =
   match main_pivot, side_pivot with
@@ -3692,44 +3747,50 @@ let native_core_paramodulate_unit id equality_clause equality_proof target_claus
     | [] ->
         error (id ^ ": native core proof-term paramodulation result does not contain the rewritten target literal")
   in
-  match target_clause, result with
-  | [_], [_] ->
-      native_core_paramodulate_literal_transport
-        id equality_atom equality_proof selected position from_tm to_tm result_literal target_proof
-  | [_; _], [_; _] ->
-      let target_prop = native_core_clause_prop id result in
-      let selected_branch =
-        PLam
-          (native_core_literal_prop selected,
-           let transported =
-             native_core_paramodulate_literal_transport
-               id equality_atom (pfshift 0 1 equality_proof) selected position from_tm to_tm result_literal (Hyp 0)
-           in
-           native_core_prove_literal_to_clause id result result_literal transported)
-      in
-      let rest_literal =
-        match target_rest with
-        | [literal] -> literal
-        | _ -> error (id ^ ": native core proof-term paramodulation expected one unmodified target literal")
-      in
-      let rest_branch =
-        PLam
-          (native_core_literal_prop rest_literal,
-           native_core_prove_literal_to_clause id result rest_literal (Hyp 0))
-      in
-      let left_branch, right_branch =
-        if target_index = 0 then
-          (selected_branch, rest_branch)
-        else if target_index = 1 then
-          (rest_branch, selected_branch)
-        else
-          error (id ^ ": native core proof-term paramodulation target index is out of bounds")
-      in
-      PPfAp
-        (PPfAp (PTmAp (target_proof, target_prop), left_branch),
-         right_branch)
-  | _ ->
-      error (id ^ ": native core proof-term paramodulation currently supports only unit or binary target clauses")
+  let target_prop = native_core_clause_prop id result in
+  let selected_transport equality_proof proof =
+    native_core_paramodulate_literal_transport
+      id equality_atom equality_proof selected position from_tm to_tm result_literal proof
+  in
+  let rec consume equality_proof selected_index clause proof =
+    match clause, selected_index with
+    | [], _ -> error (id ^ ": native core proof-term paramodulation target index is out of bounds")
+    | [literal], Some 0 when literal = selected ->
+        let transported = selected_transport equality_proof proof in
+        native_core_prove_literal_to_clause id result result_literal transported
+    | [literal], Some _ ->
+        error (id ^ ": native core proof-term paramodulation target index is out of bounds")
+    | [literal], None ->
+        native_core_prove_literal_to_clause id result literal proof
+    | literal :: rest, selected_index ->
+        let literal_prop = native_core_literal_prop literal in
+        let rest_prop = native_core_clause_prop id rest in
+        let head_branch =
+          PLam
+            (literal_prop,
+             match selected_index with
+             | Some 0 when literal = selected ->
+                 let transported = selected_transport (pfshift 0 1 equality_proof) (Hyp 0) in
+                 native_core_prove_literal_to_clause id result result_literal transported
+             | Some 0 ->
+                 error (id ^ ": native core proof-term paramodulation selected literal mismatch")
+             | _ ->
+                 native_core_prove_literal_to_clause id result literal (Hyp 0))
+        in
+        let tail_selected =
+          match selected_index with
+          | Some 0 -> None
+          | Some n -> Some (n - 1)
+          | None -> None
+        in
+        let tail_branch =
+          PLam
+            (rest_prop,
+             consume (pfshift 0 1 equality_proof) tail_selected rest (Hyp 0))
+        in
+        PPfAp (PPfAp (PTmAp (proof, target_prop), head_branch), tail_branch)
+  in
+  consume equality_proof (Some target_index) target_clause target_proof
 
 let native_core_source_kind_and_tptp_name = function
   | SourceAxiom name -> ("axiom", name)
@@ -3874,15 +3935,19 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
           | [Neg left_atom], [Pos right_atom], [], 0, 0
             when native_core_same_atom left_atom right_atom ->
               store id result (PPfAp (left_proof, right_proof))
-          | [_; _], [_], [_], _, 0 ->
+          | _, [_], _, _, 0
+              when List.length left_clause >= 1
+                   && List.length result + 1 = List.length left_clause ->
               let proof =
-                native_core_resolve_binary_unit
+                native_core_resolve_clause_unit
                   id left_clause left_proof left_index right_clause right_proof right_index result
               in
               store id result proof
-          | [_], [_; _], [_], 0, _ ->
+          | [_], _, _, 0, _
+              when List.length right_clause >= 1
+                   && List.length result + 1 = List.length right_clause ->
               let proof =
-                native_core_resolve_binary_unit
+                native_core_resolve_clause_unit
                   id right_clause right_proof right_index left_clause left_proof left_index result
               in
               store id result proof
