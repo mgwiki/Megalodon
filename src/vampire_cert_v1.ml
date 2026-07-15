@@ -5570,8 +5570,9 @@ let simple_equality_prop_with_type_env type_env left right =
   | None, None -> left_text ^ " = " ^ right_text
 
 let rec simple_formula_like_prop_with_type_env type_env tm =
-  match tm with
-  | All (tp, body) ->
+  let rec render used type_env tm =
+    match tm with
+    | All (tp, body) ->
       let sort = simple_tp_expr tp in
       let binder =
         let candidates =
@@ -5580,32 +5581,36 @@ let rec simple_formula_like_prop_with_type_env type_env tm =
                (fun (name, known_sort) ->
                   known_sort = sort
                   && is_vampire_var_name name
+                  && not (List.mem name used)
                   && tm_contains_symbol name body)
         in
         match candidates with
         | (name, _) :: _ -> megalodon_ident name
         | [] ->
             match preferred_formula_binder_name sort body with
-            | Some name when List.assoc_opt name type_env = Some sort ->
+            | Some name
+                when not (List.mem name used)
+                     && List.assoc_opt name type_env = Some sort ->
                 megalodon_ident name
             | _ ->
             begin match max_vampire_var_name body with
-            | Some name -> megalodon_ident name
+            | Some name when not (List.mem (megalodon_ident name) used) ->
+                megalodon_ident name
             | None -> "Xformula"
+            | Some _ -> "Xformula"
             end
       in
       "forall " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ ", "
-      ^ simple_formula_like_prop_with_type_env ((binder, sort) :: type_env) body
-  | Imp (left, right) ->
-      "(" ^ simple_formula_like_prop_with_type_env type_env left ^ " -> "
-      ^ simple_formula_like_prop_with_type_env type_env right ^ ")"
-  | Ap (Ap (TmH "vampire_and", left), right) ->
-      "vampire_and (" ^ simple_formula_like_prop_with_type_env type_env left ^ ") ("
-      ^ simple_formula_like_prop_with_type_env type_env right ^ ")"
-  | Ap (Ap (TmH "vampire_or", left), right) ->
-      "vampire_or (" ^ simple_formula_like_prop_with_type_env type_env left ^ ") ("
-      ^ simple_formula_like_prop_with_type_env type_env right ^ ")"
-  | Ap (exists_head, Lam (tp, body))
+      ^ render (binder :: used) ((binder, sort) :: type_env) body
+    | Imp (left, right) ->
+      "(" ^ render used type_env left ^ " -> " ^ render used type_env right ^ ")"
+    | Ap (Ap (TmH "vampire_and", left), right) ->
+      "vampire_and (" ^ render used type_env left ^ ") ("
+      ^ render used type_env right ^ ")"
+    | Ap (Ap (TmH "vampire_or", left), right) ->
+      "vampire_or (" ^ render used type_env left ^ ") ("
+      ^ render used type_env right ^ ")"
+    | Ap (exists_head, Lam (tp, body))
       when exists_head = TmH "vampire_exists_prop"
            || exists_head = TmH "vampire_exists_set" ->
       let sort = simple_tp_expr tp in
@@ -5625,23 +5630,30 @@ let rec simple_formula_like_prop_with_type_env type_env tm =
                (fun (name, known_sort) ->
                   known_sort = sort
                   && is_vampire_var_name name
+                  && not (List.mem name used)
                   && tm_contains_symbol name body)
         in
         match candidates with
         | (name, _) :: _ -> megalodon_ident name
         | [] ->
             match preferred_formula_binder_name sort body with
-            | Some name when List.assoc_opt name type_env = Some sort ->
+            | Some name
+                when not (List.mem name used)
+                     && List.assoc_opt name type_env = Some sort ->
                 megalodon_ident name
             | _ ->
             begin match max_vampire_var_name body with
-            | Some name -> megalodon_ident name
+            | Some name when not (List.mem (megalodon_ident name) used) ->
+                megalodon_ident name
             | None -> "Xformula"
+            | Some _ -> "Xformula"
             end
       in
       exists_name ^ " (fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => "
-      ^ simple_formula_like_prop_with_type_env ((binder, sort) :: type_env) body ^ ")"
-  | atom -> simple_atom_prop_with_type_env type_env atom
+      ^ render (binder :: used) ((binder, sort) :: type_env) body ^ ")"
+    | atom -> simple_atom_prop_with_type_env type_env atom
+  in
+  render [] type_env tm
 
 and simple_atom_prop_with_type_env type_env atom =
   match equality_sides atom with
@@ -11436,15 +11448,6 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     checked := (id, clause) :: !checked;
     if clause = [] then final_empty := Some id
   in
-  let step_is_source_input step_id =
-    List.exists
-      (function
-        | Input (id, _, _)
-        | FormulaInput (id, _, _)
-        | FormulaTermInput (id, _, _) -> id = step_id
-        | _ -> false)
-      cert.steps
-  in
   let variable_sorts_for_ids ids =
     ids
     |> List.concat_map
@@ -11515,6 +11518,19 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
               inferred)
     |> simple_unique_variable_sorts
   in
+  let filter_internal_inferred_sorts vlam_bound_names sorts =
+    sorts
+    |> List.filter
+         (fun (name, _) ->
+            let ident = megalodon_ident name in
+            ident <> "vLAM"
+            && ident <> "vPI"
+            && not (is_db_ident ident)
+            && not (List.mem ident vlam_bound_names)
+            && not (List.mem_assoc ident symbol_type_env)
+            && not (List.mem ident collected_global_names)
+            && not (List.mem ident declared_symbol_names))
+  in
   let clause_prop_and_sorts_for_ids ?(extra_sorts=[]) ?(prefer_metadata=false) id parent_ids result =
     let vlam_bound_names = simple_clause_vlam_bound_names result in
     let available_sorts =
@@ -11531,8 +11547,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     | Some prop
         when (parent_ids = [] || prefer_metadata)
              && not (simple_clause_contains_function_alias result)
-             && (not (simple_clause_contains_vlam result)
-                 || not (step_is_source_input id)) ->
+             && not (simple_clause_contains_vlam result) ->
         let metadata_sorts = metadata_step_variable_sort_pairs cert id in
         let definition_sorts = metadata_definition_lhs_sort_pairs cert id in
         let metadata_sorts =
@@ -11564,9 +11579,13 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     let literal_type_env =
       simple_type_env_with_variable_overrides sorts symbol_type_env
     in
+    let vlam_bound_names =
+      simple_clause_vlam_bound_names [literal]
+    in
     let inferred_sorts =
       simple_infer_literal_variable_sorts literal_type_env literal
       |> List.filter (fun (name, _) -> not (List.mem_assoc name sorts))
+      |> filter_internal_inferred_sorts vlam_bound_names
     in
     let all_sorts = sorts @ inferred_sorts |> simple_unique_variable_sorts in
     let render_type_env =
@@ -11580,8 +11599,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     match metadata_step_proposition cert id with
     | Some prop
         when not (simple_literal_contains_function_alias literal)
-             && (not (simple_literal_contains_vlam literal)
-                 || not (step_is_source_input id)) ->
+             && not (simple_literal_contains_vlam literal) ->
         let prop =
           if inferred_sorts = [] then simple_fix_known_higher_order_binders prop
           else rendered_literal_prop ()
@@ -11590,18 +11608,14 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     | None ->
         let prop =
           try
-            match literal with
-            | Pos atom -> simple_atom_prop_with_type_env symbol_type_env atom
-            | Neg atom -> "(" ^ simple_atom_prop_with_type_env symbol_type_env atom ^ " -> False)"
+            rendered_literal_prop ()
           with Error _ -> simple_formula_prop cert id
         in
         (prop, all_sorts)
     | Some _ ->
         let prop =
           try
-            match literal with
-            | Pos atom -> simple_atom_prop_with_type_env symbol_type_env atom
-            | Neg atom -> "(" ^ simple_atom_prop_with_type_env symbol_type_env atom ^ " -> False)"
+            rendered_literal_prop ()
           with Error _ -> simple_formula_prop cert id
         in
         (simple_quantify_prop inferred_sorts prop, all_sorts)
@@ -11611,9 +11625,13 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     let formula_type_env =
       simple_type_env_with_variable_overrides sorts symbol_type_env
     in
+    let vlam_bound_names =
+      simple_tm_vlam_bound_names formula
+    in
     let inferred_sorts =
       simple_infer_tm_variable_sorts formula_type_env formula
       |> List.filter (fun (name, _) -> not (List.mem_assoc name sorts))
+      |> filter_internal_inferred_sorts vlam_bound_names
     in
     let all_sorts = sorts @ inferred_sorts |> simple_unique_variable_sorts in
     let render_type_env =
@@ -11625,8 +11643,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     match metadata_step_proposition cert id with
     | Some prop
         when not (simple_tm_contains_function_alias formula)
-             && (not (simple_tm_contains_vlam formula)
-                 || not (step_is_source_input id)) ->
+             && not (simple_tm_contains_vlam formula) ->
         let prop =
           if inferred_sorts = [] then simple_fix_known_higher_order_binders prop
           else rendered_formula_prop ()
@@ -11634,13 +11651,13 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
         (simple_quantify_prop inferred_sorts prop, all_sorts)
     | None ->
         let prop =
-          try simple_atom_prop_with_type_env symbol_type_env formula
+          try rendered_formula_prop ()
           with Error _ -> simple_formula_prop cert id
         in
         (prop, all_sorts)
     | Some _ ->
         let prop =
-          try simple_atom_prop_with_type_env symbol_type_env formula
+          try rendered_formula_prop ()
           with Error _ -> simple_formula_prop cert id
         in
         (simple_quantify_prop inferred_sorts prop, all_sorts)

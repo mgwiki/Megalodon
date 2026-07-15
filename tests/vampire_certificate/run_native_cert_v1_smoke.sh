@@ -543,11 +543,38 @@ if rg -q 'assume src_axiom_LxLy.*forall X0:set, \(\(In X0\) Lx -> forall X0:set'
   exit 1
 fi
 
-if ! rg -q 'assume src_axiom_LxLy.*forall X2:set, forall X0:set, In X0 Lx -> forall X1:set' \
+if ! rg -q 'assume src_axiom_LxLy.*forall X0:set, .*In X0.*Lx.*forall X1:set, .*In X1.*Ly' \
     "$WORK_DIR/native_cert_v1_vlam_source_metadata_emit.mg"; then
   echo "native certificate v1 emitter did not render the vLAM source proposition with distinct binders" >&2
   exit 1
 fi
+
+bin/megalodon \
+  -vampirecertv1closed \
+  -vampirecertv1 tests/vampire_certificate/closed_cases/hammer.10208.46.native.sexp \
+  -vampirecertv1source tests/vampire_certificate/closed_cases/hammer.10208.46.th0.p \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_vlam_fool_closed.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_vlam_fool_closed.log"
+
+if rg -q 'bridge_fool__(u229|u231|u233)' "$WORK_DIR/native_cert_v1_vlam_fool_closed.mg"; then
+  echo "closed native certificate v1 vLAM FOOL replay generated a bridge premise" >&2
+  exit 1
+fi
+
+if rg -q 'claim u231: forall db0:set|claim u231: .*forall vLAM:' \
+    "$WORK_DIR/native_cert_v1_vlam_fool_closed.mg"; then
+  echo "closed native certificate v1 vLAM FOOL replay quantified an internal encoding name" >&2
+  exit 1
+fi
+
+if ! rg -q 'claim u231: forall X0:set, .*forall X1:set' \
+    "$WORK_DIR/native_cert_v1_vlam_fool_closed.mg"; then
+  echo "closed native certificate v1 vLAM FOOL replay reused or lost nested binders" >&2
+  exit 1
+fi
+
+bin/megalodon -hf "$WORK_DIR/native_cert_v1_vlam_fool_closed.mg" \
+  >"$WORK_DIR/native_cert_v1_vlam_fool_closed.check.log"
 
 if bin/megalodon \
     -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_local_fact_negated.sexp \
