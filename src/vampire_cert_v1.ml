@@ -3127,6 +3127,46 @@ let check_certificate cert =
 let check_certificate_strict cert =
   check_certificate_with check_step_strict cert
 
+let validate_certificate_core_fragment cert =
+  let allowed = function
+    | Input _
+    | Substitute _
+    | Resolve _
+    | SubsumptionResolution _
+    | Factor _
+    | EqualityResolution _
+    | EqualityFactoring _
+    | Paramodulate _
+    | Contradiction _ -> true
+    | _ -> false
+  in
+  let accepted = ref 0 in
+  let rejected = ref [] in
+  List.iter
+    (fun step ->
+       if allowed step then incr accepted
+       else rejected := !rejected @ [step_id step ^ ":" ^ step_rule_name step])
+    cert.steps;
+  begin match !rejected with
+  | [] -> !accepted
+  | _ ->
+      let rec take n items =
+        if n <= 0 then [] else
+        match items with
+        | [] -> []
+        | head :: tail -> head :: take (n - 1) tail
+      in
+      let shown = take 12 !rejected in
+      let suffix =
+        let remaining = List.length !rejected - List.length shown in
+        if remaining > 0 then Printf.sprintf " and %d more" remaining else ""
+      in
+      error
+        ("core closed certificate v1 permits only the clausal MVP fragment; rejected "
+         ^ String.concat ", " shown
+         ^ suffix)
+  end
+
 let emit_error msg =
   let msg =
     if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then

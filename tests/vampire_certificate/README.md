@@ -139,6 +139,12 @@ axiom can count only when Megalodon recognizes it as an indexed library fact
 such as the HF `prop_ext` theorem. Other premises must be replayed as Megalodon
 claims before the case can count.
 
+Use `-vampirecertv1coreclosed` for the audit/MVP clausal fragment. This implies
+strict and closed checking, then rejects every certificate constructor outside
+the core clause proof language before emission. The shell audit below still
+pre-filters fixtures for reporting, but the final guard is now enforced by
+Megalodon itself.
+
 For the audit-recommended restricted milestone, use:
 
 ```sh
@@ -161,6 +167,8 @@ The audit run also writes `rule_counts.txt`, `excluded_rule_counts.txt`, and
 `cases_by_rule/*.list` under `/project/tmp/latest_native_cert_v1_core_closed_audit`
 so the next reconstruction work can target the largest repeated blocking
 classes instead of isolated examples.
+Selected cases are checked with `-vampirecertv1coreclosed`, not only with the
+broader `-vampirecertv1closed` mode.
 
 For the next layer above the clausal core, use:
 

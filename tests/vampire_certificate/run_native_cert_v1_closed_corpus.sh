@@ -10,6 +10,7 @@ CASES_DIR=${CASES_DIR:-"$ROOT/tests/vampire_certificate/closed_cases"}
 CASE_LIST=${CASE_LIST:-}
 JOBS=${JOBS:-7}
 WORK_DIR=${WORK_DIR:-"$(mktemp -d "$TMPDIR/native_cert_v1_closed_corpus.XXXXXX")"}
+CORE_CERT_V1=${CORE_CERT_V1:-0}
 
 mkdir -p "$WORK_DIR/cases"
 ln -sfn "$WORK_DIR" "$TMPDIR/latest_native_cert_v1_closed_corpus"
@@ -32,8 +33,13 @@ run_one() {
     return 0
   fi
 
+  local cert_mode_arg=-vampirecertv1closed
+  if [[ "$CORE_CERT_V1" == "1" ]]; then
+    cert_mode_arg=-vampirecertv1coreclosed
+  fi
+
   if ! "$MEGALODON" \
-      -vampirecertv1closed \
+      "$cert_mode_arg" \
       -vampirecertv1 "$native" \
       -vampirecertv1source "$source" \
       -vampirecertv1emit "$case_dir/out.mg" \
@@ -95,7 +101,7 @@ run_one() {
   printf '%s\tCLOSED_PASS\n' "$base" > "$case_dir/result.tsv"
 }
 
-export MEGALODON CASES_DIR WORK_DIR
+export MEGALODON CASES_DIR WORK_DIR CORE_CERT_V1
 export -f run_one
 
 selected_cases="$WORK_DIR/selected_native_cases.list"

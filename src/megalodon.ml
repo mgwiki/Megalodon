@@ -32,6 +32,7 @@ let vampirecertv1 : string option ref = ref None;;
 let vampirecertv1source : string option ref = ref None;;
 let vampirecertv1strict : bool ref = ref false;;
 let vampirecertv1closed : bool ref = ref false;;
+let vampirecertv1coreclosed : bool ref = ref false;;
 let vampirecertv1emit : string option ref = ref None;;
 let bushy = ref false;;
 let bushykdeps : (string,unit) Hashtbl.t = Hashtbl.create 10;;
@@ -7005,6 +7006,12 @@ let read_all fn =
 let check_vampire_cert_v1_file fn =
   try
     let cert = Vampire_cert_v1.parse_certificate (read_all fn) in
+    begin if !vampirecertv1coreclosed then
+      let core_count = Vampire_cert_v1.validate_certificate_core_fragment cert in
+      Printf.printf "Vampire certificate v1 core fragment checked %d step%s.\n"
+        core_count
+        (if core_count = 1 then "" else "s")
+    end;
     let checked =
       if !vampirecertv1strict || !vampirecertv1closed then Vampire_cert_v1.check_certificate_strict cert
       else Vampire_cert_v1.check_certificate cert
@@ -7044,7 +7051,8 @@ let check_vampire_cert_v1_file fn =
           (if source_count = 1 then "" else "s")
     end;
     Printf.printf "Vampire certificate v1%s checked %d step%s.\n"
-      (if !vampirecertv1closed then " closed"
+      (if !vampirecertv1coreclosed then " core closed"
+       else if !vampirecertv1closed then " closed"
        else if !vampirecertv1strict then " strict"
        else "")
       (List.length checked)
@@ -7305,6 +7313,12 @@ let _ =
           begin
             vampirecertv1strict := true;
             vampirecertv1closed := true
+          end
+        else if Sys.argv.(!j) = "-vampirecertv1coreclosed" then
+          begin
+            vampirecertv1strict := true;
+            vampirecertv1closed := true;
+            vampirecertv1coreclosed := true
           end
         else if Sys.argv.(!j) = "-vampirecertv1source" then
           begin

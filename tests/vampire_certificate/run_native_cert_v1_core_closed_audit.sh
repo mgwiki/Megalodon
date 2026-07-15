@@ -106,6 +106,7 @@ if [[ "$RUN_CORE_CASES" == "1" ]]; then
   CASE_LIST="$WORK_DIR/core_closed_cases.list" \
   WORK_DIR="$WORK_DIR/closed_check" \
   JOBS="$JOBS" \
+  CORE_CERT_V1=1 \
     "$ROOT/tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh"
   sed 's/\tCLOSED_PASS$/\tCORE_CLOSED_PASS/' \
     "$WORK_DIR/closed_check/summary.tsv" > "$WORK_DIR/core_summary.tsv"

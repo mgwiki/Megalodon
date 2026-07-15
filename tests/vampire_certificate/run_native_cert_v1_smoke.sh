@@ -280,6 +280,36 @@ if rg -q 'bridge_' "$WORK_DIR/native_cert_v1_source_map_synthetic_closed.mg"; th
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1coreclosed \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_synthetic_valid.th0.p \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_source_map_synthetic_core_closed.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_synthetic_core_closed.log"
+
+if ! rg -q 'Vampire certificate v1 core fragment checked 6 steps' \
+    "$WORK_DIR/native_cert_v1_source_map_synthetic_core_closed.log"; then
+  echo "core closed native certificate v1 checker did not report the clausal core fragment" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1coreclosed \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_formula_cnf_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_formula_cnf_valid.th0.p \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_formula_cnf_core_closed_bad.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_formula_cnf_core_closed_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_formula_cnf_core_closed_bad.err"; then
+  echo "core closed native certificate v1 checker accepted a preprocessing certificate" >&2
+  exit 1
+fi
+
+if ! rg -q 'core closed certificate v1 permits only the clausal MVP fragment' \
+    "$WORK_DIR/native_cert_v1_formula_cnf_core_closed_bad.err"; then
+  echo "core closed native certificate v1 preprocessing rejection did not explain the MVP fragment boundary" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_true_mismatch_bad.th0.p \
