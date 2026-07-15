@@ -3900,6 +3900,52 @@ let native_core_step_variables cert id =
               (native_core_ident name,
                native_sort_of_simple_sort (native_core_strip_outer_parens sort)))
 
+let native_core_symbol_table cert =
+  let symbols = Hashtbl.create 257 in
+  let add name arity typ = Hashtbl.replace symbols name (arity, typ) in
+  let add_simple name typ = add name 0 (native_sort_of_simple_sort typ) in
+  add megalodon_eq_poly_hash 1 (Ar (TpVar 0, Ar (TpVar 0, Prop)));
+  List.iter
+    (fun (name, typ) -> add_simple name typ)
+    [
+      ("False", "prop"); ("True", "prop");
+      ("f__true", "prop"); ("f__false", "prop");
+      ("vampire_true", "prop"); ("vampire_false", "prop");
+      ("vampire_or", "prop->prop->prop");
+      ("vampire_and", "prop->prop->prop");
+      ("vampire_eq_prop", "prop->prop->prop");
+      ("vPI", "(set->prop)->prop");
+      ("vLAM", "set->set->set");
+    ];
+  for i = 0 to 31 do
+    add_simple ("db" ^ string_of_int i) "set"
+  done;
+  let parse_decl decl =
+    let line = String.trim decl in
+    if not (string_starts_with "Variable " line) then ()
+    else
+      let body =
+        String.sub line 9 (String.length line - 9)
+        |> String.trim
+      in
+      match String.index_opt body ':' with
+      | None -> ()
+      | Some colon ->
+          let name = String.sub body 0 colon |> String.trim in
+          let typ =
+            String.sub body (colon + 1) (String.length body - colon - 1)
+            |> String.trim
+          in
+          let typ =
+            if String.length typ > 0 && typ.[String.length typ - 1] = '.' then
+              String.sub typ 0 (String.length typ - 1)
+            else typ
+          in
+          add_simple name typ
+  in
+  List.iter parse_decl cert.metadata.symbol_declarations;
+  symbols
+
 let native_core_true =
   All (Prop, Imp (DB 0, DB 0))
 
@@ -4509,6 +4555,34 @@ let native_core_ennf_formula_proof id variables step_variables source target pro
            introduce rest (PTmAp (pftmshift 0 1 proof, DB 0)))
   in
   introduce step_variables proof
+
+let native_core_rectify_formula_proof
+    id parent_step_variables result_step_variables proof =
+  let rec introduce pending_parent_variables result_variables proof =
+    match pending_parent_variables, result_variables with
+    | [], [] -> proof
+    | [], (_, result_tp) :: result_rest ->
+        TLam
+          (result_tp,
+           introduce [] result_rest (pftmshift 0 1 proof))
+    | (parent_name, parent_tp) :: parent_rest,
+      (result_name, result_tp) :: result_rest
+        when parent_name = result_name && parent_tp = result_tp ->
+        TLam
+          (result_tp,
+           introduce
+             parent_rest
+             result_rest
+             (PTmAp (pftmshift 0 1 proof, DB 0)))
+    | _, (_, result_tp) :: result_rest ->
+        TLam
+          (result_tp,
+           introduce pending_parent_variables result_rest (pftmshift 0 1 proof))
+    | _ :: _, [] ->
+        error
+          (id ^ ": native preprocess proof-term rectify_formula could not match every parent variable in the result variables")
+  in
+  introduce parent_step_variables result_step_variables proof
 
 let native_core_cnf_formula_clause_proof
     id variables parent_step_variables result_step_variables parent_formula result proof =
@@ -5306,6 +5380,7 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
     |> List.map (fun (_, prop, _) -> prop)
     |> List.rev
   in
+  let symbol_table = native_core_symbol_table cert in
   let check_step_proof id clause proof =
     let step_variables = native_core_step_variables cert id in
     let prop = native_core_step_clause_prop cert variables id clause in
@@ -5318,9 +5393,8 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
       end
     in
     let empty_delta = native_core_approved_sgdelta () in
-    let empty_tms = Hashtbl.create 0 in
     try
-      match check_propofpf empty_delta empty_tms variable_types closed_source_context proof prop [] with
+      match check_propofpf empty_delta symbol_table variable_types closed_source_context proof prop [] with
       | Some _ -> ()
       | None ->
           debug_failure "wrong proposition";
@@ -5330,6 +5404,12 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
       debug_failure msg;
       error
         (id ^ ": native core proof-term checker built an ill-formed proof term: " ^ msg)
+    | Error _ as exn -> raise exn
+    | exn ->
+        let msg = Printexc.to_string exn in
+        debug_failure msg;
+        error
+          (id ^ ": native core proof-term checker built an ill-formed proof term: " ^ msg)
   in
   let table = Hashtbl.create 101 in
   let final_proof = ref None in
@@ -5551,6 +5631,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
     |> List.map (fun (_, prop, _) -> prop)
     |> List.rev
   in
+  let symbol_table = native_core_symbol_table cert in
   let check_step_proof id prop proof =
     let step_variables = native_core_step_variables cert id in
     let proof = native_core_close_pf (variables @ step_variables) proof in
@@ -5562,9 +5643,8 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
       end
     in
     let empty_delta = native_core_approved_sgdelta () in
-    let empty_tms = Hashtbl.create 0 in
     try
-      match check_propofpf empty_delta empty_tms variable_types closed_source_context proof prop [] with
+      match check_propofpf empty_delta symbol_table variable_types closed_source_context proof prop [] with
       | Some _ -> ()
       | None ->
           debug_failure "wrong proposition";
@@ -5574,6 +5654,12 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
       debug_failure msg;
       error
         (id ^ ": native preprocess proof-term checker built an ill-formed proof term: " ^ msg)
+    | Error _ as exn -> raise exn
+    | exn ->
+        let msg = Printexc.to_string exn in
+        debug_failure msg;
+        error
+          (id ^ ": native preprocess proof-term checker built an ill-formed proof term: " ^ msg)
   in
   let clause_table = Hashtbl.create 101 in
   let formula_table = Hashtbl.create 101 in
@@ -5618,7 +5704,11 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           let parent_formula, parent_proof = lookup_formula parent_id in
           if parent_formula <> result then
             error (id ^ ": native preprocess proof-term rectify_formula is not an identity copy");
-          store_formula id result parent_proof
+          let parent_step_variables = native_core_step_variables cert parent_id in
+          let result_step_variables = native_core_step_variables cert id in
+          store_formula id result
+            (native_core_rectify_formula_proof
+               id parent_step_variables result_step_variables parent_proof)
       | FoolBool (id, parent_id, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
           store_formula id (formula_tm_of_literal result)
