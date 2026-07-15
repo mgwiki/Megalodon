@@ -356,6 +356,49 @@ if [[ -s "$WORK_DIR/missing_formula_parent_fields.tsv" ]]; then
   exit 1
 fi
 
+grep -F '"rule=superposition"' "$WORK_DIR/kernel_v1.tsv" \
+  > "$WORK_DIR/superposition.tsv" || true
+
+if [[ -s "$WORK_DIR/superposition.tsv" ]]; then
+  : > "$WORK_DIR/missing_superposition_fields.tsv"
+  for pattern in \
+    'selected=' \
+    'selected_substituted=' \
+    'selected_parent_index=' \
+    'selected_literal_index=' \
+    'selected_parent_unit=' \
+    'other=' \
+    'other_substituted=' \
+    'other_parent_index=' \
+    'other_literal_index=' \
+    'other_parent_unit=' \
+    'rewrite_lhs=' \
+    'rewrite_redex=' \
+    'target_substituted=' \
+    'equality_substituted=' \
+    'target_parent_index=' \
+    'target_literal_index=' \
+    'equality_parent_index=' \
+    'equality_literal_index=' \
+    'rewrite_direction=' \
+    'rewrite_position=' \
+    'from=' \
+    'to=' \
+    'rewritten_target=' \
+    'primitive_parent_0_substitution=' \
+    'primitive_parent_1_substitution=' \
+    'result_clause='; do
+    awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
+      "$WORK_DIR/superposition.tsv" >> "$WORK_DIR/missing_superposition_fields.tsv"
+  done
+
+  if [[ -s "$WORK_DIR/missing_superposition_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found superposition records missing rewrite fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_superposition_fields.tsv" >&2
+    exit 1
+  fi
+fi
+
 grep -F 'rule=subsumption_resolution' "$WORK_DIR/kernel_v1.tsv" \
   > "$WORK_DIR/subsumption_resolution.tsv" || true
 
