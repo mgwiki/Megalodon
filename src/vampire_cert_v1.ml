@@ -3842,6 +3842,18 @@ let simple_function_alias_env : (string * ((string * string) list * tm)) list re
 let simple_alias_binder_sort_expr sort =
   if String.contains sort '-' then "(" ^ sort ^ ")" else sort
 
+let rec simple_source_tp_expr = function
+  | Prop -> "prop"
+  | Set -> "set"
+  | TpVar _ -> emit_error "type variables are not supported in source-term rendering"
+  | Ar (left, right) ->
+      let left_text =
+        match left with
+        | Ar _ -> "(" ^ simple_source_tp_expr left ^ ")"
+        | _ -> simple_source_tp_expr left
+      in
+      left_text ^ "->" ^ simple_source_tp_expr right
+
 let rec simple_tm_contains_function_alias = function
   | TmH name -> List.mem_assoc name !simple_function_alias_env
   | DB _ | Prim _ -> false
@@ -3878,13 +3890,28 @@ let rec simple_source_tm_expr tm =
   | Ap _ ->
       let head, args = flatten_value_application tm in
       String.concat " " (simple_source_tm_expr head :: List.map render_arg args)
-  | Lam _ | All _ | Imp _ ->
-      emit_error "logical terms are not supported in source-term rendering"
+  | Imp (left, right) ->
+      simple_source_tm_expr left ^ " -> " ^ simple_source_tm_expr right
+  | All (tp, body) ->
+      let binder = "db0" in
+      "forall " ^ binder ^ ":" ^ simple_source_tp_expr tp ^ ", "
+      ^ simple_with_db_aliases [binder] (fun () -> simple_source_tm_expr body)
+  | Lam (tp, body) ->
+      let binder = "db0" in
+      "(fun " ^ binder ^ ":" ^ simple_source_tp_expr tp ^ " => "
+      ^ simple_with_db_aliases [binder] (fun () -> simple_source_tm_expr body)
+      ^ ")"
 
 let simple_lambda_sort tm =
   match tm with
   | Ap (TmH "vLAM", _) ->
-      List.assoc_opt (simple_source_tm_expr tm) !simple_lambda_sort_env
+      begin match
+        try Some (simple_source_tm_expr tm)
+        with Error _ -> None
+      with
+      | Some key -> List.assoc_opt key !simple_lambda_sort_env
+      | None -> None
+      end
   | _ -> None
 
 let rec simple_tp_expr = function
