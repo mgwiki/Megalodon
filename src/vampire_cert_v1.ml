@@ -4251,6 +4251,8 @@ let rec native_core_formula_prop = function
   | All (tp, body) -> All (tp, native_core_formula_prop body)
   | Ap (Ap (TmH "vampire_or", left), right) ->
       native_core_or (native_core_formula_prop left) (native_core_formula_prop right)
+  | Ap (Ap (TmH "vampire_and", left), right) ->
+      native_core_and (native_core_formula_prop left) (native_core_formula_prop right)
   | tm -> native_core_expand_eq_atom tm
 
 let native_core_literal_prop = function
@@ -4843,6 +4845,29 @@ let native_core_avatar_refutation_proof id parent_ids result clause_table =
       error
         (id ^ ": native preprocess proof-term avatar_refutation supports only two SAT unit parents")
 
+let native_core_ennf_not_imp_to_and left_prop right_prop proof =
+  let not_left_prop = Imp (left_prop, native_core_false) in
+  let not_right_prop = Imp (right_prop, native_core_false) in
+  let left_proof =
+    PPfAp
+      (PTmAp (Known native_core_dneg_hash, left_prop),
+       PLam
+         (not_left_prop,
+          let imp_proof =
+            PLam
+              (left_prop,
+               PTmAp (PPfAp (Hyp 1, Hyp 0), right_prop))
+          in
+          PPfAp (pfshift 0 1 proof, imp_proof)))
+  in
+  let not_right_proof =
+    PLam
+      (right_prop,
+       let imp_proof = PLam (left_prop, Hyp 1) in
+       PPfAp (pfshift 0 1 proof, imp_proof))
+  in
+  native_core_and_intro left_prop not_right_prop left_proof not_right_proof
+
 let native_core_prop_ext_eq left right left_to_right right_to_left =
   PPfAp
     (PPfAp
@@ -5057,6 +5082,30 @@ let native_core_ennf_formula_proof id variables step_variables source target pro
                source_body
                target_body
                (PTmAp (pftmshift 0 1 proof, DB 0)))
+      | Imp (Imp (source_left, source_right), source_false),
+        Ap (Ap (TmH "vampire_and", target_left), target_right)
+          when source_false = native_core_false ->
+          let source_left_prop =
+            native_core_formula_prop source_left
+            |> native_core_normalize_bool_constants
+          in
+          let source_right_prop =
+            native_core_formula_prop source_right
+            |> native_core_normalize_bool_constants
+          in
+          let target_left_prop =
+            native_core_formula_prop target_left
+            |> native_core_normalize_bool_constants
+          in
+          let target_right_prop =
+            native_core_formula_prop target_right
+            |> native_core_normalize_bool_constants
+          in
+          if target_left_prop <> source_left_prop
+             || target_right_prop <> Imp (source_right_prop, native_core_false) then
+            error
+              (id ^ ": native preprocess proof-term ennf_formula expected not-implication to conjunction");
+          native_core_ennf_not_imp_to_and source_left_prop source_right_prop proof
       | Imp (source_left, source_right),
         Ap (Ap (TmH "vampire_or", target_left), target_right) ->
           let source_left_prop = native_core_formula_prop source_left in
@@ -5261,6 +5310,29 @@ let native_core_cnf_formula_clause_proof
             PLam (right_prop, eliminate pending right (Hyp 0))
           in
           PPfAp (PPfAp (PTmAp (proof, result_prop), left_branch), right_branch)
+      | Ap (Ap (TmH "vampire_and", left), right) ->
+          let left_prop =
+            native_core_formula_prop left
+            |> native_core_normalize_bool_constants
+          in
+          let right_prop =
+            native_core_formula_prop right
+            |> native_core_normalize_bool_constants
+          in
+          let left_proof =
+            PPfAp
+              (PTmAp (proof, left_prop),
+               PLam (left_prop, PLam (right_prop, Hyp 1)))
+          in
+          let right_proof =
+            PPfAp
+              (PTmAp (proof, right_prop),
+               PLam (left_prop, PLam (right_prop, Hyp 0)))
+          in
+          begin
+            try eliminate pending left left_proof
+            with Error _ -> eliminate pending right right_proof
+          end
       | _ ->
           let literal = literal_of_formula_tm formula in
           if List.exists ((=) literal) result then
