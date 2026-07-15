@@ -155,11 +155,24 @@ Megalodon itself.
 
 Use `-vampirecertv1corepfcheck` for the first native proof-term seed. This
 implies `-vampirecertv1coreclosed`, then constructs and kernel-checks a
-`Syntax.pf` proof term for the currently supported unit-resolution refutation
-fragment. It deliberately rejects non-unit core proofs instead of falling back
-to textual replay. This is not yet the full nine-rule core elaborator; it is
-the initial checked entrypoint for replacing the broad `certificate -> string`
-path with a native `certificate -> Syntax.tm * Syntax.pf` path.
+`Syntax.pf` proof term for the currently supported propositional core seed:
+unit/unit, binary/unit, and binary/binary resolution plus duplicate binary
+factoring, with clauses represented by native impredicative false and
+disjunction terms. It deliberately rejects unsupported core rules instead of
+falling back to textual replay. This is not yet the full nine-rule core
+elaborator; it is the initial checked entrypoint for replacing the broad
+`certificate -> string` path with a native
+`certificate -> Syntax.tm * Syntax.pf` path.
+
+To run the committed synthetic core seed through that native proof-term path,
+use:
+
+```sh
+tests/vampire_certificate/run_native_cert_v1_core_pf_audit.sh
+```
+
+This gate runs `-vampirecertv1corepfcheck` over the tracked `core.cnf.*`
+closed fixtures and requires all selected cases to report `CORE_PF_PASS`.
 
 For the audit-recommended restricted milestone, use:
 

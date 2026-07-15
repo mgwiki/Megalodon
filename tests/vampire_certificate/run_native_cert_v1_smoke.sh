@@ -347,19 +347,27 @@ if ! rg -q 'Vampire certificate v1 native core proof term checked 3 steps' \
   exit 1
 fi
 
-if bin/megalodon \
+bin/megalodon \
   -vampirecertv1corepfcheck \
   -vampirecertv1 tests/vampire_certificate/closed_cases/core.cnf.1.native.sexp \
   -vampirecertv1source tests/vampire_certificate/closed_cases/core.cnf.1.th0.p \
-  "$dummy" >"$WORK_DIR/native_cert_v1_core_pf_non_unit_bad.out" \
-  2>"$WORK_DIR/native_cert_v1_core_pf_non_unit_bad.err"; then
-  echo "native core proof-term checker accepted an unsupported non-unit core proof" >&2
+  "$dummy" >"$WORK_DIR/native_cert_v1_core_pf_binary_unit.log"
+
+if ! rg -q 'Vampire certificate v1 native core proof term checked 5 steps' \
+    "$WORK_DIR/native_cert_v1_core_pf_binary_unit.log"; then
+  echo "native core proof-term checker did not validate the binary/unit resolution seed" >&2
   exit 1
 fi
 
-if ! rg -q 'native core proof-term checker currently supports only unit' \
-    "$WORK_DIR/native_cert_v1_core_pf_non_unit_bad.err"; then
-  echo "native core proof-term non-unit rejection did not explain the supported fragment" >&2
+bin/megalodon \
+  -vampirecertv1corepfcheck \
+  -vampirecertv1 tests/vampire_certificate/closed_cases/core.cnf.9.native.sexp \
+  -vampirecertv1source tests/vampire_certificate/closed_cases/core.cnf.9.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_core_pf_factor.log"
+
+if ! rg -q 'Vampire certificate v1 native core proof term checked 6 steps' \
+    "$WORK_DIR/native_cert_v1_core_pf_factor.log"; then
+  echo "native core proof-term checker did not validate the factor seed" >&2
   exit 1
 fi
 

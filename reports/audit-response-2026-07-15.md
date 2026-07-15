@@ -44,10 +44,11 @@ concern from a shell-enforced convention into the importer itself.
 The next concrete adjustment is the first native proof-term seed:
 `-vampirecertv1corepfcheck`.  This mode implies `-vampirecertv1coreclosed`,
 constructs a `Syntax.tm * Syntax.pf` result for the currently supported
-unit-resolution refutation fragment, and checks it with
-`Syntax.check_propofpf`.  Unsupported non-unit core proofs fail explicitly
-instead of falling back to textual replay.  This is intentionally small, but it
-creates the native elaboration entrypoint that the audit asked for.
+unit/unit, binary/unit, and binary/binary resolution fragment plus duplicate
+binary factoring, and checks it with `Syntax.check_propofpf`.  Unsupported core
+rules fail explicitly instead of falling back to textual replay.  This is still
+small, but it creates the native elaboration entrypoint that the audit asked
+for and covers the committed synthetic clausal-core seed corpus.
 
 ## Accepted Audit Criticisms
 

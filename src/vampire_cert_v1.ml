@@ -3230,7 +3230,7 @@ let native_core_declared_variables cert =
   |> List.filter_map parse_decl
   |> List.sort_uniq compare
 
-let native_core_close_tm variables tm =
+let native_core_close_tm ?(depth=0) variables tm =
   let variable_count = List.length variables in
   let rec variable_index index = function
     | [] -> None
@@ -3251,39 +3251,223 @@ let native_core_close_tm variables tm =
     | All (a, body) -> All (a, close (depth + 1) body)
     | tm -> tm
   in
-  close 0 tm
+  close depth tm
 
-let rec native_core_close_pf variables = function
-  | Hyp i -> Hyp i
-  | Known h -> Known h
-  | PTpAp (proof, tp) -> PTpAp (native_core_close_pf variables proof, tp)
-  | PTmAp (proof, tm) ->
-      PTmAp (native_core_close_pf variables proof, native_core_close_tm variables tm)
-  | PPfAp (left, right) ->
-      PPfAp (native_core_close_pf variables left, native_core_close_pf variables right)
-  | PLam (prop, proof) ->
-      PLam (native_core_close_tm variables prop, native_core_close_pf variables proof)
-  | TLam (tp, proof) -> TLam (tp, native_core_close_pf variables proof)
+let native_core_close_pf variables proof =
+  let rec close depth = function
+    | Hyp i -> Hyp i
+    | Known h -> Known h
+    | PTpAp (proof, tp) -> PTpAp (close depth proof, tp)
+    | PTmAp (proof, tm) ->
+        PTmAp (close depth proof, native_core_close_tm ~depth variables tm)
+    | PPfAp (left, right) ->
+        PPfAp (close depth left, close depth right)
+    | PLam (prop, proof) ->
+        PLam (native_core_close_tm ~depth variables prop, close depth proof)
+    | TLam (tp, proof) -> TLam (tp, close (depth + 1) proof)
+  in
+  close 0 proof
+
+let native_core_false =
+  All (Prop, DB 0)
+
+let native_core_or left right =
+  All
+    (Prop,
+     Imp
+       (Imp (tmshift 0 1 left, DB 0),
+        Imp (Imp (tmshift 0 1 right, DB 0), DB 0)))
 
 let native_core_literal_prop = function
   | Pos tm -> tm
-  | Neg tm -> Imp (tm, TmH "vampire_false")
+  | Neg tm -> Imp (tm, native_core_false)
 
-let native_core_unit_prop id = function
+let native_core_clause_prop id = function
+  | [] -> native_core_false
   | [literal] -> native_core_literal_prop literal
-  | _ -> error (id ^ ": native core proof-term checker currently supports only unit clauses")
+  | [left; right] -> native_core_or (native_core_literal_prop left) (native_core_literal_prop right)
+  | _ -> error (id ^ ": native core proof-term checker currently supports only clauses of length at most two")
 
 let native_core_same_atom left right =
   left = right
 
-let elaborate_core_unit_refutation_native cert =
+let native_core_complement left right =
+  match left, right with
+  | Pos left_atom, Neg right_atom
+  | Neg right_atom, Pos left_atom
+      when native_core_same_atom left_atom right_atom -> true
+  | _ -> false
+
+let native_core_or_intro_left left_prop right_prop proof =
+  TLam
+    (Prop,
+     PLam
+       (Imp (tmshift 0 1 left_prop, DB 0),
+        PLam
+          (Imp (tmshift 0 1 right_prop, DB 0),
+           PPfAp (Hyp 1, pfshift 0 2 (pftmshift 0 1 proof)))))
+
+let native_core_or_intro_right left_prop right_prop proof =
+  TLam
+    (Prop,
+     PLam
+       (Imp (tmshift 0 1 left_prop, DB 0),
+        PLam
+          (Imp (tmshift 0 1 right_prop, DB 0),
+           PPfAp (Hyp 0, pfshift 0 2 (pftmshift 0 1 proof)))))
+
+let native_core_prove_literal_to_clause id target_clause literal proof =
+  match target_clause with
+  | [target_literal] when target_literal = literal -> proof
+  | [left; right] ->
+      let left_prop = native_core_literal_prop left in
+      let right_prop = native_core_literal_prop right in
+      if literal = left then
+        native_core_or_intro_left left_prop right_prop proof
+      else if literal = right then
+        native_core_or_intro_right left_prop right_prop proof
+      else
+        error
+          (id ^ ": native core proof-term checker cannot inject literal into result clause")
+  | _ ->
+      error
+        (id ^ ": native core proof-term checker cannot inject literal into result clause")
+
+let native_core_false_from_complement shifted_unit_proof pivot_literal branch_literal =
+  match branch_literal, pivot_literal with
+  | Pos branch_atom, Neg pivot_atom when native_core_same_atom branch_atom pivot_atom ->
+      PPfAp (shifted_unit_proof, Hyp 0)
+  | Neg branch_atom, Pos pivot_atom when native_core_same_atom branch_atom pivot_atom ->
+      PPfAp (Hyp 0, shifted_unit_proof)
+  | _ -> error "native core proof-term checker received non-complementary branch"
+
+let native_core_branch_from_complement target_prop unit_proof pivot_literal branch_literal =
+  let shifted_unit_proof = pfshift 0 1 unit_proof in
+  PTmAp
+    (native_core_false_from_complement shifted_unit_proof pivot_literal branch_literal,
+     target_prop)
+
+let native_core_resolve_binary_unit id binary_clause binary_proof binary_index unit_clause unit_proof unit_index result =
+  match binary_clause, unit_clause, result, unit_index with
+  | [left_literal; right_literal], [unit_literal], [result_literal], 0 ->
+      let target_prop = native_core_clause_prop id result in
+      let left_prop = native_core_literal_prop left_literal in
+      let right_prop = native_core_literal_prop right_literal in
+      if binary_index = 0
+         && native_core_complement left_literal unit_literal
+         && result_literal = right_literal then
+        let left_branch =
+          PLam
+            (left_prop,
+             native_core_branch_from_complement target_prop unit_proof unit_literal left_literal)
+        in
+        let right_branch = PLam (right_prop, Hyp 0) in
+        PPfAp (PPfAp (PTmAp (binary_proof, target_prop), left_branch), right_branch)
+      else if binary_index = 1
+              && native_core_complement right_literal unit_literal
+              && result_literal = left_literal then
+        let left_branch = PLam (left_prop, Hyp 0) in
+        let right_branch =
+          PLam
+            (right_prop,
+             native_core_branch_from_complement target_prop unit_proof unit_literal right_literal)
+        in
+        PPfAp (PPfAp (PTmAp (binary_proof, target_prop), left_branch), right_branch)
+      else
+        error
+          (id ^ ": native core proof-term checker supports binary/unit resolution only when the result is the remaining literal")
+  | _ ->
+      error (id ^ ": native core proof-term checker expected binary/unit resolution")
+
+let native_core_false_from_two_pivots main_pivot side_pivot =
+  match main_pivot, side_pivot with
+  | Pos main_atom, Neg side_atom when native_core_same_atom main_atom side_atom ->
+      PPfAp (Hyp 0, Hyp 1)
+  | Neg main_atom, Pos side_atom when native_core_same_atom main_atom side_atom ->
+      PPfAp (Hyp 1, Hyp 0)
+  | _ -> error "native core proof-term checker expected complementary binary pivots"
+
+let native_core_resolve_binary_binary id main_clause main_proof main_index side_clause side_proof side_index result =
+  match main_clause, side_clause, result with
+  | [main_left; main_right], [side_left; side_right], [_; _] ->
+      let target_prop = native_core_clause_prop id result in
+      let main_pivot, main_remaining =
+        match main_index with
+        | 0 -> (main_left, main_right)
+        | 1 -> (main_right, main_left)
+        | _ -> error (id ^ ": native core proof-term checker got bad binary pivot index")
+      in
+      let side_pivot, side_remaining =
+        match side_index with
+        | 0 -> (side_left, side_right)
+        | 1 -> (side_right, side_left)
+        | _ -> error (id ^ ": native core proof-term checker got bad binary pivot index")
+      in
+      if not (native_core_complement main_pivot side_pivot) then
+        error (id ^ ": native core proof-term checker expected complementary binary pivots");
+      let side_pivot_prop = native_core_literal_prop side_pivot in
+      let side_remaining_prop = native_core_literal_prop side_remaining in
+      let main_pivot_branch =
+        let side_pivot_branch =
+          PLam
+            (side_pivot_prop,
+             PTmAp (native_core_false_from_two_pivots main_pivot side_pivot, target_prop))
+        in
+        let side_remaining_branch =
+          PLam
+            (side_remaining_prop,
+             native_core_prove_literal_to_clause id result side_remaining (Hyp 0))
+        in
+        let side_left_branch, side_right_branch =
+          if side_index = 0 then
+            (side_pivot_branch, side_remaining_branch)
+          else
+            (side_remaining_branch, side_pivot_branch)
+        in
+        PLam
+          (native_core_literal_prop main_pivot,
+           PPfAp
+             (PPfAp (PTmAp (pfshift 0 1 side_proof, target_prop), side_left_branch),
+              side_right_branch))
+      in
+      let main_remaining_branch =
+        PLam
+          (native_core_literal_prop main_remaining,
+           native_core_prove_literal_to_clause id result main_remaining (Hyp 0))
+      in
+      let main_left_branch, main_right_branch =
+        if main_index = 0 then
+          (main_pivot_branch, main_remaining_branch)
+        else
+          (main_remaining_branch, main_pivot_branch)
+      in
+      PPfAp
+        (PPfAp (PTmAp (main_proof, target_prop), main_left_branch),
+         main_right_branch)
+  | _ -> error (id ^ ": native core proof-term checker expected binary/binary resolution")
+
+let native_core_factor_binary id parent_clause parent_proof left_index right_index result =
+  match parent_clause, result, left_index, right_index with
+  | [left; right], [result_literal], 0, 1 when left = right && result_literal = left ->
+      let target_prop = native_core_clause_prop id result in
+      let literal_prop = native_core_literal_prop result_literal in
+      PPfAp
+        (PPfAp
+           (PTmAp (parent_proof, target_prop),
+            PLam (literal_prop, Hyp 0)),
+         PLam (literal_prop, Hyp 0))
+  | _ ->
+      error
+        (id ^ ": native core proof-term checker currently supports only factoring duplicate binary clauses")
+
+let elaborate_core_resolution_refutation_native cert =
   let core_steps = validate_certificate_core_fragment cert in
   ignore (check_certificate_strict cert);
   let source_inputs = ref [] in
   List.iter
     (function
       | Input (id, _, clause) ->
-          source_inputs := !source_inputs @ [(id, native_core_unit_prop id clause)]
+          source_inputs := !source_inputs @ [(id, native_core_clause_prop id clause)]
       | _ -> ())
     cert.steps;
   let source_count = List.length !source_inputs in
@@ -3298,9 +3482,41 @@ let elaborate_core_unit_refutation_native cert =
     | Some index -> index
     | None -> error (id ^ ": native core proof-term checker lost source hypothesis")
   in
+  let variables = native_core_declared_variables cert in
+  let variable_types = List.map snd variables in
+  let closed_source_context =
+    !source_inputs
+    |> List.map (fun (_, prop) -> native_core_close_tm variables prop)
+    |> List.rev
+  in
+  let check_step_proof id clause proof =
+    let prop = native_core_close_tm variables (native_core_clause_prop id clause) in
+    let proof = native_core_close_pf variables proof in
+    let debug_failure msg =
+      if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+        prerr_endline ("native core proof-term debug step " ^ id ^ ": " ^ msg);
+        prerr_endline ("native core proposition: " ^ tm_to_str prop);
+        prerr_endline ("native core proof: " ^ pf_to_str proof)
+      end
+    in
+    let empty_delta = Hashtbl.create 0 in
+    let empty_tms = Hashtbl.create 0 in
+    try
+      match check_propofpf empty_delta empty_tms variable_types closed_source_context proof prop [] with
+      | Some _ -> ()
+      | None ->
+          debug_failure "wrong proposition";
+          error
+            (id ^ ": native core proof-term checker built a proof of the wrong proposition")
+    with Failure msg ->
+      debug_failure msg;
+      error
+        (id ^ ": native core proof-term checker built an ill-formed proof term: " ^ msg)
+  in
   let table = Hashtbl.create 101 in
   let final_proof = ref None in
   let store id clause proof =
+    check_step_proof id clause proof;
     Hashtbl.replace table id (clause, proof);
     if clause = [] then final_proof := Some proof
   in
@@ -3312,7 +3528,7 @@ let elaborate_core_unit_refutation_native cert =
   List.iter
     (function
       | Input (id, _, clause) ->
-          let _ = native_core_unit_prop id clause in
+          let _ = native_core_clause_prop id clause in
           store id clause (Hyp (source_hyp_index id))
       | Resolve (id, left_id, right_id, left_index, right_index, result) ->
           let left_clause, left_proof = lookup left_id in
@@ -3324,10 +3540,34 @@ let elaborate_core_unit_refutation_native cert =
           | [Neg left_atom], [Pos right_atom], [], 0, 0
             when native_core_same_atom left_atom right_atom ->
               store id result (PPfAp (left_proof, right_proof))
+          | [_; _], [_], [_], _, 0 ->
+              let proof =
+                native_core_resolve_binary_unit
+                  id left_clause left_proof left_index right_clause right_proof right_index result
+              in
+              store id result proof
+          | [_], [_; _], [_], 0, _ ->
+              let proof =
+                native_core_resolve_binary_unit
+                  id right_clause right_proof right_index left_clause left_proof left_index result
+              in
+              store id result proof
+          | [_; _], [_; _], [_; _], _, _ ->
+              let proof =
+                native_core_resolve_binary_binary
+                  id left_clause left_proof left_index right_clause right_proof right_index result
+              in
+              store id result proof
           | _ ->
               error
-                (id ^ ": native core proof-term checker currently supports only unit complementary resolution")
+                (id ^ ": native core proof-term checker currently supports only unit/unit, binary/unit, and binary/binary complementary resolution")
           end
+      | Factor (id, parent_id, left_index, right_index, result) ->
+          let parent_clause, parent_proof = lookup parent_id in
+          let proof =
+            native_core_factor_binary id parent_clause parent_proof left_index right_index result
+          in
+          store id result proof
       | Contradiction (id, parent_id) ->
           let parent_clause, parent_proof = lookup parent_id in
           if parent_clause <> [] then
@@ -3347,7 +3587,7 @@ let elaborate_core_unit_refutation_native cert =
     List.fold_right
       (fun (_, assumption) target -> Imp (assumption, target))
       !source_inputs
-      (TmH "vampire_false")
+      native_core_false
   in
   let body_proof =
     List.fold_right
@@ -3355,7 +3595,6 @@ let elaborate_core_unit_refutation_native cert =
       !source_inputs
       proof
   in
-  let variables = native_core_declared_variables cert in
   let closed_prop = native_core_close_tm variables body_prop in
   let closed_proof = native_core_close_pf variables body_proof in
   {

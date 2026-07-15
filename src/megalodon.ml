@@ -7059,7 +7059,7 @@ let check_vampire_cert_v1_file fn =
       (List.length checked)
       (if List.length checked = 1 then "" else "s");
     begin if !vampirecertv1corepfcheck then
-      let native_core = Vampire_cert_v1.elaborate_core_unit_refutation_native cert in
+      let native_core = Vampire_cert_v1.elaborate_core_resolution_refutation_native cert in
       match
         check_propofpf sigdelta sigtmof [] []
           native_core.Vampire_cert_v1.core_native_proof
