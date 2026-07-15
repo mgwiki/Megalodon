@@ -7,14 +7,22 @@ TMPDIR="${TMPDIR:-/project/tmp}"
 WORK_DIR="${WORK_DIR:-"$TMPDIR/vampire_source_map_export"}"
 MEGALODON="${MEGALODON:-bin/megalodon}"
 DEFAULT_VAMPIRE=$(
-  find /project/vampire-leancheck/vampire_rel_vampire \
-    -maxdepth 1 \
-    -type f \
-    -executable \
-    -name 'megalodon*_*' \
-    2>/dev/null \
-    | sort -V \
-    | tail -n 1
+  for pattern in 'megalodon3_*' 'megalodon*_*'; do
+    candidate=$(
+      find /project/vampire-leancheck/vampire_rel_vampire \
+        -maxdepth 1 \
+        -type f \
+        -executable \
+        -name "$pattern" \
+        2>/dev/null \
+        | sort -V \
+        | tail -n 1
+    )
+    if [[ -n "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      break
+    fi
+  done
 )
 VAMPIRE="${VAMPIRE:-"$DEFAULT_VAMPIRE"}"
 

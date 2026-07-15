@@ -13,11 +13,24 @@ if [[ -z "${VAMPIRE_BIN:-}" ]]; then
 fi
 
 if [[ -z "${VAMPIRE_BIN:-}" ]]; then
-  VAMPIRE_BIN="$(find /project/vampire-leancheck/vampire_rel_vampire -maxdepth 1 -type f -perm -111 -name 'megalodon1_*' 2>/dev/null | sort | tail -n 1 || true)"
-fi
-
-if [[ -z "${VAMPIRE_BIN:-}" ]]; then
-  VAMPIRE_BIN="$(find /project/vampire-leancheck/vampire_rel_vampire -maxdepth 1 -type f -perm -111 2>/dev/null | sort | tail -n 1 || true)"
+  VAMPIRE_BIN="$(
+    for pattern in 'megalodon3_*' 'megalodon*_*' '*'; do
+      candidate=$(
+        find /project/vampire-leancheck/vampire_rel_vampire \
+          -maxdepth 1 \
+          -type f \
+          -perm -111 \
+          -name "$pattern" \
+          2>/dev/null \
+          | sort -V \
+          | tail -n 1
+      )
+      if [[ -n "$candidate" ]]; then
+        printf '%s\n' "$candidate"
+        break
+      fi
+    done
+  )"
 fi
 
 if [[ -z "$VAMPIRE_BIN" || ! -x "$VAMPIRE_BIN" ]]; then
