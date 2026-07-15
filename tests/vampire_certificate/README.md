@@ -241,8 +241,9 @@ steps: `substitute`, `paramodulate`, `equality_symmetry`,
 `equality_resolution`, `resolve`, `factor`, `fool_atom_lift`, `ennf_formula`,
 `skolem_formula`, `cnf_literal`, `cnf_formula_clause`, `formula_copy`,
 `formula_term_copy`, `rectify_formula`, `fool_exhaustiveness`, and
-`truth_conflict`. The gate requires each present rule family to expose the
-fields Megalodon should replay
+`truth_conflict`, plus the first-class AVATAR records `avatar_component`,
+`avatar_split`, and `avatar_refutation`. The gate requires each present rule
+family to expose the fields Megalodon should replay
 mechanically: parent ids, substitutions, equality/target parents, rewrite
 positions, literal or pivot indices, source and target formulas, paths,
 introduced Skolem symbols, CNF clause indices, truth-conflict literals, and
@@ -258,8 +259,8 @@ prefix. Clausal decompositions often use suffixed ids such as
 `u123_paramodulate`, `u123_resolve0`, or `u123_fool_atom_0`; preprocessing
 steps such as `ennf_formula`, `skolem_formula`, `cnf_formula_clause`,
 `formula_copy`, `formula_term_copy`, `rectify_formula`,
-`fool_exhaustiveness`, and `truth_conflict` may reuse the kernel unit id
-exactly.
+`fool_exhaustiveness`, `truth_conflict`, `avatar_component`, `avatar_split`,
+and `avatar_refutation` may reuse the kernel unit id exactly.
 
 `run_native_live_parallel.sh` runs this primitive audit and the `kernel_v1`
 metadata audit by default after a successful live run. Set

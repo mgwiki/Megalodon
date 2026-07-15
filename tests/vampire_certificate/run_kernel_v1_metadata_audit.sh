@@ -283,6 +283,9 @@ require_primitive_expansion_contract_any formula_copy formula_copy formula_term_
 require_primitive_expansion_contract rectify_formula rectify_formula
 require_primitive_expansion_contract fool_exhaustiveness fool_exhaustiveness
 require_primitive_expansion_contract truth_conflict truth_conflict
+require_primitive_expansion_contract avatar_component avatar_component
+require_primitive_expansion_contract avatar_split avatar_split
+require_primitive_expansion_contract avatar_refutation avatar_refutation
 
 grep -F 'rule=instantiation' "$WORK_DIR/kernel_v1.tsv" \
   > "$WORK_DIR/instantiation.tsv" || true
