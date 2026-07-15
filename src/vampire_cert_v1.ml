@@ -9753,15 +9753,15 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
             find_from (i + 1)
       | None -> None
     in
+    match find_from !binder_index with
+    | Some binder -> binder
+    | None ->
     match preferred with
     | Some binder -> use_preferred binder
     | None ->
     match first_unused_vampire_var_name_with_sort
             (env @ binder_sorts @ type_env) used sort body with
     | Some name -> use_preferred (megalodon_ident name)
-    | None ->
-    match find_from !binder_index with
-    | Some binder -> binder
     | None ->
         let candidates =
           binder_sorts
