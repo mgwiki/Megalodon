@@ -67,6 +67,11 @@ explicitly until Vampire emits enough primitive instantiation data for a native
 proof, but no-op substitution steps no longer force the native core path back to
 textual replay.
 
+The next native rule is equality resolution for reflexive disequality literals
+encoded with Megalodon's real polymorphic equality.  This intentionally does not
+prove clauses headed by the old untyped `TMH "="` placeholder; those certificates
+must be fixed at the Vampire/export level to carry typed Megalodon equality.
+
 ## Accepted Audit Criticisms
 
 The following criticisms should be treated as controlling for the next

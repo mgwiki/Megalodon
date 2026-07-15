@@ -990,8 +990,12 @@ let rec rewrite_tm_all_once from_tm to_tm tm =
 let rewrite_literal_all_once from_tm to_tm literal =
   replace_literal_atom literal (rewrite_tm_all_once from_tm to_tm (literal_atom literal))
 
+let megalodon_eq_poly_hash =
+  "5a6af35fb6d6bea477dd0f822b8e01ca0d57cc50dfd41744307bc94597fdaa4a"
+
 let equality_sides = function
   | Ap (Ap (TmH h, left), right) when h = "=" || h = "eq" -> Some (left, right)
+  | Ap (Ap (TpAp (TmH h, _), left), right) when h = megalodon_eq_poly_hash -> Some (left, right)
   | _ -> None
 
 let equality_to_true atom =
@@ -3205,6 +3209,9 @@ let native_core_ident s =
     s;
   s
 
+let native_core_ident_opt s =
+  try Some (native_core_ident s) with Error _ -> None
+
 let native_core_strip_outer_parens text =
   let text = String.trim text in
   if String.length text >= 2
@@ -3251,7 +3258,7 @@ let native_core_close_tm ?(depth=0) variables tm =
   in
   let rec close depth = function
     | TmH name ->
-        begin match variable_index (native_core_ident name) variables with
+        begin match Option.bind (native_core_ident_opt name) (fun name -> variable_index name variables) with
         | Some outer_index -> DB (depth + variable_count - outer_index - 1)
         | None -> TmH name
         end
@@ -3289,9 +3296,19 @@ let native_core_or left right =
        (Imp (tmshift 0 1 left, DB 0),
         Imp (Imp (tmshift 0 1 right, DB 0), DB 0)))
 
+let native_core_expand_eq_atom = function
+  | Ap (Ap (TpAp (TmH h, tp), left), right)
+      when h = megalodon_eq_poly_hash ->
+      All
+        (Ar (tp, Ar (tp, Prop)),
+         Imp
+           (Ap (Ap (DB 0, tmshift 0 1 left), tmshift 0 1 right),
+            Ap (Ap (DB 0, tmshift 0 1 right), tmshift 0 1 left)))
+  | tm -> tm
+
 let native_core_literal_prop = function
-  | Pos tm -> tm
-  | Neg tm -> Imp (tm, native_core_false)
+  | Pos tm -> native_core_expand_eq_atom tm
+  | Neg tm -> Imp (native_core_expand_eq_atom tm, native_core_false)
 
 let native_core_clause_prop id = function
   | [] -> native_core_false
@@ -3471,6 +3488,71 @@ let native_core_factor_binary id parent_clause parent_proof left_index right_ind
       error
         (id ^ ": native core proof-term checker currently supports only factoring duplicate binary clauses")
 
+let native_core_reflexive_eq_proof = function
+  | Ap (Ap (TpAp (TmH h, tp), left), right)
+      when h = megalodon_eq_poly_hash && left = right ->
+      Some
+        (TLam
+           (Ar (tp, Ar (tp, Prop)),
+            PLam
+              (Ap (Ap (DB 0, tmshift 0 1 left), tmshift 0 1 left),
+               Hyp 0)))
+  | _ -> None
+
+let native_core_equality_resolution id parent_clause parent_proof literal_index result =
+  let selected = nth literal_index parent_clause (id ^ " native equality-resolution literal") in
+  let expected = remove_at literal_index parent_clause (id ^ " native equality-resolution literal") in
+  if expected <> result then
+    error (id ^ ": native core proof-term equality-resolution result does not remove the selected literal");
+  match selected, parent_clause, result with
+  | Neg atom, [Neg selected_atom], [] when atom = selected_atom ->
+      begin match native_core_reflexive_eq_proof atom with
+      | Some refl -> PPfAp (parent_proof, refl)
+      | None ->
+          error
+            (id ^ ": native core proof-term equality-resolution requires a reflexive Megalodon equality literal")
+      end
+  | Neg atom, [_; _], [_] ->
+      begin match native_core_reflexive_eq_proof atom with
+      | None ->
+          error
+            (id ^ ": native core proof-term equality-resolution requires a reflexive Megalodon equality literal")
+      | Some refl ->
+          let target_prop = native_core_clause_prop id result in
+          let selected_prop = native_core_literal_prop selected in
+          let selected_branch =
+            PLam
+              (selected_prop,
+               PTmAp (PPfAp (Hyp 0, refl), target_prop))
+          in
+          let remaining =
+            match result with
+            | [literal] -> literal
+            | _ -> error (id ^ ": native core proof-term equality-resolution expected a unit result")
+          in
+          let remaining_branch =
+            PLam
+              (native_core_literal_prop remaining,
+               native_core_prove_literal_to_clause id result remaining (Hyp 0))
+          in
+          let left_branch, right_branch =
+            if literal_index = 0 then
+              (selected_branch, remaining_branch)
+            else if literal_index = 1 then
+              (remaining_branch, selected_branch)
+            else
+              error (id ^ ": native core proof-term equality-resolution literal index is out of range")
+          in
+          PPfAp
+            (PPfAp (PTmAp (parent_proof, target_prop), left_branch),
+             right_branch)
+      end
+  | Pos _, _, _ ->
+      error (id ^ ": native core proof-term equality-resolution selected literal is positive")
+  | Neg _, _, _ ->
+      error
+        (id ^ ": native core proof-term equality-resolution currently supports only unit or binary parents")
+
 let native_core_source_kind_and_tptp_name = function
   | SourceAxiom name -> ("axiom", name)
   | SourceConjecture name -> ("conjecture", name)
@@ -3548,7 +3630,7 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
     | None -> error (id ^ ": native core proof-term checker lost source hypothesis")
   in
   let variables = native_core_declared_variables cert in
-  let variable_types = List.map snd variables in
+  let variable_types = List.rev (List.map snd variables) in
   let closed_source_context =
     !source_inputs
     |> List.map (fun (_, prop, _) -> native_core_close_tm variables prop)
@@ -3640,6 +3722,12 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
           let parent_clause, parent_proof = lookup parent_id in
           let proof =
             native_core_factor_binary id parent_clause parent_proof left_index right_index result
+          in
+          store id result proof
+      | EqualityResolution (id, parent_id, literal_index, result) ->
+          let parent_clause, parent_proof = lookup parent_id in
+          let proof =
+            native_core_equality_resolution id parent_clause parent_proof literal_index result
           in
           store id result proof
       | Contradiction (id, parent_id) ->
@@ -4586,6 +4674,12 @@ and simple_tm_expr tm =
   match simple_bool_const_prop tm with
   | Some name -> name
   | None ->
+      begin match equality_sides tm with
+      | Some (left, right) when is_vampire_bool_const left || is_vampire_bool_const right ->
+          "vampire_eq_prop (" ^ simple_tm_expr left ^ ") (" ^ simple_tm_expr right ^ ")"
+      | Some (left, right) ->
+          simple_tm_expr left ^ " = " ^ simple_tm_expr right
+      | None ->
       begin match tm with
       | Lam (tp, body) -> simple_lam_expr tp body
       | _ ->
@@ -4652,6 +4746,7 @@ and simple_tm_expr tm =
           | [] -> head_text
           | _ -> String.concat " " (head_text :: List.map arg_text args)
 	      end
+      end
       end
 
 let rec simple_prop_equality_arg tm =
@@ -5572,26 +5667,14 @@ let simple_factor_proof clause_body_prop parent_sorts result_sorts id parent_id 
 
 let simple_equality_resolution_proof id parent_id literal_index result parent_sorts result_sorts checked names =
   let parent_clause = lookup_simple_clause checked parent_id in
-  let literal = simple_clause_nth id "equality-resolution" literal_index parent_clause in
-  begin match parent_clause, literal, result with
-  | [kept; Neg atom], Neg _, [res] when literal_index = 1 && kept = res ->
-      begin match equality_sides atom with
-      | Some (left, right) when left = right ->
-          let target = simple_literal_prop kept in
-          let target_arg = simple_prop_arg target in
-          let parent_name = lookup_simple_name names parent_id in
-          let parent_expr = simple_apply_forall_vars parent_name parent_sorts in
-          let proof =
-            Printf.sprintf "(%s %s (fun Hkeep_0 => Hkeep_0) (fun Hneq_1 => ((Hneq_1 (fun Q H => H)) %s)))"
-              parent_expr target_arg target_arg
-          in
-          simple_wrap_forall_intro result_sorts proof
-      | Some _ -> emit_error (id ^ ": equality-resolution equality is not reflexive")
-      | None -> emit_error (id ^ ": equality-resolution literal is not an equality")
-      end
-  | _ ->
-      emit_error (id ^ ": simple emitter supports only binary clauses ending in a reflexive disequality")
-  end
+  ignore (simple_clause_nth id "equality-resolution" literal_index parent_clause);
+  let target = simple_clause_prop result in
+  let parent_name =
+    simple_apply_forall_vars (lookup_simple_name names parent_id) parent_sorts
+  in
+  simple_wrap_forall_intro result_sorts
+    (simple_clause_remove_reflexive_disequality_proof
+       target result (Some literal_index) parent_clause parent_name 0)
 
 let simple_equality_resolution_clause_proof
     clause_body_prop id parent_id literal_index result parent_sorts result_sorts checked names =
@@ -14899,7 +14982,18 @@ let rec source_tm_equiv left right =
            || (List.mem left_name ["$false"; "vampire_false"; "f__false"]
                && List.mem right_name ["$false"; "vampire_false"; "f__false"]) ->
       true
-  | Ap (Ap (TmH "=", left_a), left_b), Ap (Ap (TmH "=", right_a), right_b) ->
+  | left_tm, right_tm
+      when equality_sides left_tm <> None && equality_sides right_tm <> None ->
+      let left_a, left_b =
+        match equality_sides left_tm with
+        | Some sides -> sides
+        | None -> assert false
+      in
+      let right_a, right_b =
+        match equality_sides right_tm with
+        | Some sides -> sides
+        | None -> assert false
+      in
       (source_tm_equiv left_a right_a && source_tm_equiv left_b right_b)
       || (source_tm_equiv left_a right_b && source_tm_equiv left_b right_a)
   | TpAp (left_m, left_a), TpAp (right_m, right_a) ->
