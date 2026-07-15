@@ -143,6 +143,9 @@ Vampire's explicit `result_literal_count` and `result_literal_i` conclusion map.
 For every reported parent, it also requires `parent_i_literal_count` and
 `parent_i_literal_j` fields so replay does not have to re-parse the parent
 clause string to recover literal positions.
+Whenever Vampire reports a `parent_i_substitution`, it also requires
+`parent_i_substituted_literal_count` and `parent_i_substituted_literal_j` fields
+rendered after applying that substitution.
 For unit-resulting resolution, it also requires Vampire's trace main parent,
 unit parent, selected/substituted selected literal, substituted unit literal,
 and remaining clause state after each pivot.

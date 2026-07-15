@@ -162,6 +162,36 @@ if [[ -s "$WORK_DIR/missing_parent_literal_fields.tsv" ]]; then
   exit 1
 fi
 
+awk '
+  {
+    if (match($0, /"parent_count=([0-9]+)/, parent_count_match)) {
+      parent_count = parent_count_match[1] + 0
+      for (parent_index = 0; parent_index < parent_count; ++parent_index) {
+        substitution_field = "parent_" parent_index "_substitution="
+        if (index($0, substitution_field) == 0) {
+          continue
+        }
+        literal_count_field = "parent_" parent_index "_substituted_literal_count="
+        if (index($0, literal_count_field) == 0) {
+          print literal_count_field "\t" $0
+          continue
+        }
+        literal_zero_count = "parent_" parent_index "_substituted_literal_count=0"
+        literal_zero_field = "parent_" parent_index "_substituted_literal_0="
+        if (index($0, literal_zero_count) == 0 && index($0, literal_zero_field) == 0) {
+          print literal_zero_field "\t" $0
+        }
+      }
+    }
+  }
+' "$WORK_DIR/kernel_v1.tsv" > "$WORK_DIR/missing_parent_substituted_literal_fields.tsv"
+
+if [[ -s "$WORK_DIR/missing_parent_substituted_literal_fields.tsv" ]]; then
+  echo "kernel_v1 metadata audit found records missing substituted parent literal fields" >&2
+  sed -n '1,40p' "$WORK_DIR/missing_parent_substituted_literal_fields.tsv" >&2
+  exit 1
+fi
+
 grep -F 'rule=unit_resulting_resolution' "$WORK_DIR/kernel_v1.tsv" \
   > "$WORK_DIR/unit_resulting_resolution.tsv" || true
 
