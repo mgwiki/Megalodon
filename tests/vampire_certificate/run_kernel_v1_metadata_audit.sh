@@ -100,7 +100,8 @@ awk '
   /rule=unit_resulting_resolution/ || /rule=cnf_clause/ ||
   /rule=skolemize/ || /rule=rectify_formula/ ||
   /rule=formula_copy/ || /rule=formula_normalize/ ||
-  /rule=fool_formula/ || /rule=fool_exhaustiveness/ {
+  /rule=fool_formula/ || /rule=fool_exhaustiveness/ ||
+  /rule=avatar_component/ {
     next
   }
   { print }
@@ -282,6 +283,31 @@ if [[ -s "$WORK_DIR/fool_exhaustiveness.tsv" ]]; then
   if [[ -s "$WORK_DIR/missing_fool_exhaustiveness_fields.tsv" ]]; then
     echo "kernel_v1 metadata audit found FOOL exhaustiveness records missing axiom fields" >&2
     sed -n '1,40p' "$WORK_DIR/missing_fool_exhaustiveness_fields.tsv" >&2
+    exit 1
+  fi
+fi
+
+grep -F 'rule=avatar_component' "$WORK_DIR/kernel_v1.tsv" \
+  > "$WORK_DIR/avatar_component.tsv" || true
+
+if [[ -s "$WORK_DIR/avatar_component.tsv" ]]; then
+  : > "$WORK_DIR/missing_avatar_component_fields.tsv"
+  for pattern in \
+    'conclusion_clause=' \
+    'result_clause=' \
+    'literal_count=' \
+    'literal_0=' \
+    'split_count=' \
+    'split_0_level=' \
+    'split_0_var=' \
+    'split_0_positive='; do
+    awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
+      "$WORK_DIR/avatar_component.tsv" >> "$WORK_DIR/missing_avatar_component_fields.tsv"
+  done
+
+  if [[ -s "$WORK_DIR/missing_avatar_component_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found AVATAR component records missing split fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_avatar_component_fields.tsv" >&2
     exit 1
   fi
 fi
