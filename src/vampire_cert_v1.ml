@@ -8489,17 +8489,22 @@ let simple_predicate_definition_fold_proof type_env id result_sorts source targe
      || contains_unsupported_exists body
      || contains_unsupported_exists atom then
     emit_error (id ^ ": predicate-definition fold proof does not yet support this existential context");
-  let is_definition_predicate_application tm =
+  let is_supported_true_left_formula tm =
     match flatten_value_application tm with
+    | TmH name, [] when List.assoc_opt (megalodon_ident name) (result_sorts @ type_env) = Some "prop" ->
+        true
     | TmH name, _ -> String.length name >= 2 && String.sub name 0 2 = "sP"
     | _ -> false
   in
-  let rec contains_unsupported_formula_shape = function
+  let rec contains_unsupported_formula_shape tm =
+    if tm = definiendum then false
+    else match tm with
     | All (tp, body)
     | Lam (tp, body) ->
-        simple_tp_expr tp = "prop" || contains_unsupported_formula_shape body
+        ignore tp;
+        contains_unsupported_formula_shape body
     | Ap (Ap (TmH ("=" | "vampire_eq_prop"), TmH ("f__true" | "vampire_true")), other)
-        when not (is_definition_predicate_application other) ->
+        when not (is_supported_true_left_formula other) ->
         true
     | TpAp (tm, _) -> contains_unsupported_formula_shape tm
     | Ap (left, right)
@@ -10825,8 +10830,10 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           end
       | PredicateDefinitionFold (id, source_id, definition_id, formula) ->
           let target_prop, target_sorts = formula_tm_prop_and_sorts id formula in
+          let source_prop = emitted_parent_prop source_id in
           let can_use_transparent_definition =
-            try
+            simple_rendered_prop_equiv source_prop target_prop
+            && try
               let definition = lookup_formula checked_certificate definition_id in
               let _, atom, _ = predicate_definition_parts definition_id definition in
               let definiendum = predicate_definition_definiendum_term atom in
@@ -10843,32 +10850,43 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             add_emitted_prop_and_sorts id target_prop target_sorts;
             claims := !claims @ [(name, target_prop, "exact " ^ source_name ^ ".")]
           end else
-	            begin match
-	              try
-	                let source = lookup_formula checked_certificate source_id in
-	                let definition = lookup_formula checked_certificate definition_id in
-	                let _, atom, body = predicate_definition_parts definition_id definition in
-	                let type_env =
-	                  simple_type_env_with_variables
-	                    (target_sorts
-	                     @ metadata_step_variable_sort_pairs cert source_id
-	                     @ metadata_step_variable_sort_pairs cert definition_id
-	                     |> simple_unique_variable_sorts)
-	                    symbol_type_env
-	                in
-	                let source_name = lookup_simple_name !emitted_names source_id in
-	                Some
-	                  (simple_predicate_definition_fold_proof
-	                     type_env id target_sorts source formula body atom source_name)
-	              with Error _ -> None
-	            with
-	            | Some proof ->
-	                let name = derived_name id in
-	                ignore (lookup_simple_name !emitted_names definition_id);
-	                uses_vampire_eq_prop_ext := true;
-	                add_emitted id name;
-	                add_emitted_prop_and_sorts id target_prop target_sorts;
-	                claims := !claims @ [(name, target_prop, "exact " ^ proof ^ ".")]
+            begin match
+              try
+                let source = lookup_formula checked_certificate source_id in
+                let definition = lookup_formula checked_certificate definition_id in
+                let _, atom, body = predicate_definition_parts definition_id definition in
+                let type_env =
+                  simple_type_env_with_variables
+                    (target_sorts
+                     @ metadata_step_variable_sort_pairs cert source_id
+                     @ metadata_step_variable_sort_pairs cert definition_id
+                     |> simple_unique_variable_sorts)
+                    symbol_type_env
+                in
+                let source_name = lookup_simple_name !emitted_names source_id in
+                let fold_proof =
+                  simple_predicate_definition_fold_proof
+                    type_env id target_sorts source formula body atom source_name
+                in
+                let replay_target_prop =
+                  try simple_formula_prop_text_with_used [] type_env formula
+                  with Error _ -> simple_atom_prop_with_type_env type_env formula
+                in
+                let final_name = derived_name id in
+                if replay_target_prop = target_prop then
+                  Some
+                    (final_name, target_prop,
+                     [(final_name, target_prop, "exact " ^ fold_proof ^ ".")])
+                else
+                  None
+              with Error _ -> None
+            with
+            | Some (name, prop, new_claims) ->
+                ignore (lookup_simple_name !emitted_names definition_id);
+                uses_vampire_eq_prop_ext := true;
+                add_emitted id name;
+                add_emitted_prop_and_sorts id prop target_sorts;
+                claims := !claims @ new_claims
             | None ->
                 add_formula_inference_bridge "predicate_definition_fold" id [source_id; definition_id] target_prop
             end
@@ -10895,19 +10913,32 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                      (definition_id, atom, body))
                   definition_ids
               in
-              let is_definition_predicate_application tm =
+              let guard_type_env =
+                simple_type_env_with_variables
+                  (target_sorts
+                   @ metadata_step_variable_sort_pairs cert source_id
+                   @ List.concat_map
+                       (fun definition_id ->
+                          metadata_step_variable_sort_pairs cert definition_id)
+                       definition_ids
+                   |> simple_unique_variable_sorts)
+                  symbol_type_env
+              in
+              let is_supported_true_left_formula tm =
                 match flatten_value_application tm with
+                | TmH name, [] when List.assoc_opt (megalodon_ident name) guard_type_env = Some "prop" ->
+                    true
                 | TmH name, _ -> String.length name >= 2 && String.sub name 0 2 = "sP"
                 | _ -> false
               in
               let rec contains_unsupported_fold_chain_shape = function
                 | All (tp, body)
                 | Lam (tp, body) ->
-                    simple_tp_expr tp = "prop"
-                    || contains_unsupported_fold_chain_shape body
+                    ignore tp;
+                    contains_unsupported_fold_chain_shape body
                 | Ap (Ap (TmH ("=" | "vampire_eq_prop"),
                           TmH ("f__true" | "vampire_true")), other)
-                    when not (is_definition_predicate_application other) ->
+                    when not (is_supported_true_left_formula other) ->
                     true
                 | Ap (left, right)
                 | Imp (left, right) ->
