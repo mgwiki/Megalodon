@@ -3968,6 +3968,52 @@ let validate_kernel_v1_metadata_contracts cert =
                 "other_literal_index";
                 "other_parent_unit";
                 "primitive_parent_0_substitution"]
+         | "equality_factoring" ->
+             require_rule_fields id fields kernel_rule
+               ["selected";
+                "selected_substituted";
+                "selected_parent_index";
+                "selected_literal_index";
+                "selected_parent_unit";
+                "other";
+                "other_substituted";
+                "other_parent_index";
+                "other_literal_index";
+                "other_parent_unit";
+                "primitive_parent_0_substitution";
+                "result_clause";
+                "result_literal_count"];
+             begin match Hashtbl.find_opt step_by_id id with
+             | Some (EqualityFactoring (_, parent_id, selected_index, other_index, subst, result))
+             | Some (EqualityFactoringConstraints (_, parent_id, selected_index, other_index, subst, _, result)) ->
+                 require_field_int id fields "selected_parent_index" 0;
+                 require_field_int id fields "other_parent_index" 0;
+                 require_field_int id fields "selected_literal_index" selected_index;
+                 require_field_int id fields "other_literal_index" other_index;
+                 let selected_parent_unit = field_required id fields "selected_parent_unit" in
+                 if selected_parent_unit <> parent_id then
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 equality_factoring selected_parent_unit "
+                      ^ selected_parent_unit ^ " does not match certificate parent " ^ parent_id);
+                 let other_parent_unit = field_required id fields "other_parent_unit" in
+                 if other_parent_unit <> parent_id then
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 equality_factoring other_parent_unit "
+                      ^ other_parent_unit ^ " does not match certificate parent " ^ parent_id);
+                 require_field_substitution id fields "primitive_parent_0_substitution" subst;
+                 require_field_clause id fields "result_clause" result;
+                 begin match field_value "conclusion_clause" fields with
+                 | Some _ -> require_field_clause id fields "conclusion_clause" result
+                 | None -> ()
+                 end;
+                 require_field_int id fields "result_literal_count" (List.length result)
+             | Some _ ->
+                 error
+                   (id ^ ": strict certificate v1 kernel_v1 equality_factoring metadata must annotate an equality_factoring step")
+             | None ->
+                 error
+                   (id ^ ": strict certificate v1 kernel_v1 equality_factoring metadata has no matching certificate step")
+             end
          | _ -> ()
          end;
          List.iter
