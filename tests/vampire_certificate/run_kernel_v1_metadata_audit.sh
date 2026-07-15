@@ -546,6 +546,52 @@ if [[ -s "$WORK_DIR/avatar_refutation.tsv" ]]; then
     sed -n '1,40p' "$WORK_DIR/missing_avatar_refutation_fields.tsv" >&2
     exit 1
   fi
+
+  awk '
+    {
+      delete proof_ids
+      if (!match($0, /sat_proof_step_count=([0-9]+)/, step_count_match)) {
+        next
+      }
+      step_count = step_count_match[1] + 0
+      for (step_index = 0; step_index < step_count; ++step_index) {
+        step_prefix = "sat_proof_step_" step_index
+        if (match($0, step_prefix "_id=([0-9]+)", step_id_match)) {
+          proof_ids[step_id_match[1]] = 1
+        }
+      }
+      for (step_index = 0; step_index < step_count; ++step_index) {
+        step_prefix = "sat_proof_step_" step_index
+        if (index($0, step_prefix "_kind=rup") == 0) {
+          continue
+        }
+        if (!match($0, step_prefix "_parent_count=([0-9]+)", parent_count_match)) {
+          print step_prefix "_parent_count=\t" $0
+          continue
+        }
+        parent_count = parent_count_match[1] + 0
+        for (parent_index = 0; parent_index < parent_count; ++parent_index) {
+          parent_prefix = step_prefix "_parent_" parent_index
+          if (!match($0, parent_prefix "_id=([0-9]+)", parent_id_match)) {
+            print parent_prefix "_id=\t" $0
+            continue
+          }
+          if (!(parent_id_match[1] in proof_ids)) {
+            print parent_prefix "_id_unknown\t" parent_id_match[1] "\t" $0
+          }
+          if (index($0, parent_prefix "_clause=") == 0) {
+            print parent_prefix "_clause=\t" $0
+          }
+        }
+      }
+    }
+  ' "$WORK_DIR/avatar_refutation.tsv" > "$WORK_DIR/missing_sat_proof_parent_fields.tsv"
+
+  if [[ -s "$WORK_DIR/missing_sat_proof_parent_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found AVATAR SAT proof records missing parent proof fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_sat_proof_parent_fields.tsv" >&2
+    exit 1
+  fi
 fi
 
 grep -F 'rule=truth_conflict' "$WORK_DIR/kernel_v1.tsv" \
