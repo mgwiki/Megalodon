@@ -946,6 +946,39 @@ if ! rg -q 'unsupported-expansion-primitive.*cnf_clause.*bogus_primitive' \
   exit 1
 fi
 
+cat >"$WORK_DIR/native_cert_v1_primitive_audit_avatar_bad_requires.sexp" <<'EOF'
+(certificate vampire-megalodon 1
+  (problem "native-cert-v1-primitive-audit-avatar-bad-requires")
+  (step_extra "u1" "kernel_v1"
+    ("schema=prover9-small-kernel-v1"
+     "rule=avatar_component"
+     "primitive_expansion=prefix"
+     "primitive_expansion_prefix=u1"
+     "primitive_expansion_requires=bogus_primitive"))
+  (bogus_primitive "u1"
+    (result
+      (clause))))
+EOF
+if MIN_SUBSTITUTE=0 \
+    MIN_PARAMODULATE=0 \
+    MIN_EQUALITY_SYMMETRY=0 \
+    MIN_EQUALITY_RESOLUTION=0 \
+    MIN_RESOLVE=0 \
+    MIN_FACTOR=0 \
+    tests/vampire_certificate/run_native_primitive_audit.sh \
+      "$WORK_DIR/native_cert_v1_primitive_audit_avatar_bad_requires.sexp" \
+      >"$WORK_DIR/native_cert_v1_primitive_audit_avatar_bad_requires.out" \
+      2>"$WORK_DIR/native_cert_v1_primitive_audit_avatar_bad_requires.err"; then
+  echo "native primitive audit accepted an unsupported AVATAR-component primitive expansion" >&2
+  exit 1
+fi
+
+if ! rg -q 'unsupported-expansion-primitive.*avatar_component.*bogus_primitive' \
+    "$WORK_DIR/native_cert_v1_primitive_audit_avatar_bad_requires.err"; then
+  echo "native primitive audit did not explain the unsupported AVATAR-component primitive expansion" >&2
+  exit 1
+fi
+
 MIN_REWRITE_POSITION=0 \
   tests/vampire_certificate/run_kernel_v1_metadata_audit.sh \
   tests/vampire_certificate/native_cert_v1_kernel_instantiation_valid.sexp \

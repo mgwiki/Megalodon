@@ -458,7 +458,10 @@ while IFS= read -r native_file; do
       if (rule == "instantiation") {
         return "substitute"
       }
-      if (rule == "avatar_definition" ||
+      if (rule == "avatar_component" ||
+          rule == "avatar_split" ||
+          rule == "avatar_refutation" ||
+          rule == "avatar_definition" ||
           rule == "split_dependency") {
         return rule
       }
@@ -495,6 +498,9 @@ while IFS= read -r native_file; do
       if (rule == "rectify_formula" ||
           rule == "fool_exhaustiveness" ||
           rule == "truth_conflict" ||
+          rule == "avatar_component" ||
+          rule == "avatar_split" ||
+          rule == "avatar_refutation" ||
           rule == "avatar_definition" ||
           rule == "split_dependency") {
         return primitive == rule
@@ -552,7 +558,7 @@ while IFS= read -r native_file; do
           if (index(line, "primitive_expansion=prefix") == 0 ||
               index(line, "primitive_expansion_prefix=" unit) == 0 ||
               index(line, "primitive_expansion_requires=" primitive) == 0) {
-            print source ":" FNR "\tmissing-expansion-contract\t" unit "\t" kernel_rule "\t" primitive "\t" line
+            print source ":" record_line "\tmissing-expansion-contract\t" unit "\t" kernel_rule "\t" primitive "\t" line
           }
         }
       }
