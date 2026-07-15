@@ -1,0 +1,11 @@
+(certificate vampire-megalodon 1
+  (problem "vampire-native-certificate")
+  (step_proposition "u1" "p")
+  (step_proposition "u2" "(p) -> vampire_false")
+  (step_proposition "u3" "vampire_false")
+  (step_extra "u3" "two_literal" ("selected=~p" "other=p" "selected_parent_index=0" "selected_literal_index=0" "selected_parent_unit=2" "selected_substituted=~p" "selected_substituted_db_indices=~p" "selected_substituted_proposition=(p) -> vampire_false" "other_parent_index=1" "other_literal_index=0" "other_parent_unit=1" "other_substituted=p" "other_substituted_db_indices=p" "other_substituted_proposition=p" "parent_0_substitution=[0 -> X0]" "parent_0_substituted_clause=cnf(u2_subst,axiom,\n    ~p).\n" "parent_0_substituted_clause_db_indices=cnf(u2_subst,axiom,\n    ~p).\n" "parent_1_substitution=[0 -> X1]" "parent_1_substituted_clause=cnf(u1_subst,axiom,\n    p).\n" "parent_1_substituted_clause_db_indices=cnf(u1_subst,axiom,\n    p).\n"))
+  (symbol_declaration "Variable p:prop.")
+  (input "u1" (source axiom "a1") (clause (pos (TMH "p"))))
+  (input "u2" (source axiom "a2") (clause (neg (TMH "p"))))
+  (resolve "u3" (parents "u2" "u1") (pivot 0 0) (result (clause)))
+)
