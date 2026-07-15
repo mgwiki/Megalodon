@@ -8273,27 +8273,53 @@ let simple_skolem_formula_proof ?opened_witness
 
 let simple_predicate_definition_proof type_env id formula =
   let _, atom, body = predicate_definition_parts id formula in
+  let definition_parameter_binders =
+    let _, args = flatten_value_application (predicate_definition_definiendum_term atom) in
+    args
+    |> List.filter_map
+         (function
+           | TmH name when is_vampire_var_name (megalodon_ident name) ->
+               Some (megalodon_ident name)
+           | _ -> None)
+    |> List.rev
+    |> ref
+  in
   let rec collect_binders env used = function
     | All (tp, body) ->
         let sort = simple_tp_expr tp in
         let binder =
-          match
-            type_env
-            |> List.filter
-                 (fun (name, known_sort) ->
-                    let binder = megalodon_ident name in
-                    known_sort = sort
-                    && is_vampire_var_name binder
-                    && not (List.mem binder used)
-                    && tm_contains_symbol binder body)
-          with
-          | (name, _) :: _ -> megalodon_ident name
-          | [] ->
-              begin match max_vampire_var_name body with
-              | Some name when not (List.mem (megalodon_ident name) used) ->
+          match !definition_parameter_binders with
+          | candidate :: rest
+              when not (List.mem candidate used)
+                   && tm_contains_symbol candidate body
+                   && List.assoc_opt candidate type_env = Some sort ->
+              definition_parameter_binders := rest;
+              candidate
+          | _ ->
+              match preferred_formula_binder_name sort body with
+              | Some name
+                  when not (List.mem name used)
+                       && List.assoc_opt name type_env = Some sort ->
                   megalodon_ident name
-              | _ -> "Xpred_def_" ^ string_of_int (List.length used)
-              end
+              | _ ->
+                  begin match
+                    type_env
+                    |> List.filter
+                         (fun (name, known_sort) ->
+                            let binder = megalodon_ident name in
+                            known_sort = sort
+                            && is_vampire_var_name binder
+                            && not (List.mem binder used)
+                            && tm_contains_symbol binder body)
+                  with
+                  | (name, _) :: _ -> megalodon_ident name
+                  | [] ->
+                      begin match max_vampire_var_name body with
+                      | Some name when not (List.mem (megalodon_ident name) used) ->
+                          megalodon_ident name
+                      | _ -> "Xpred_def_" ^ string_of_int (List.length used)
+                      end
+                  end
         in
         let env = (binder, sort) :: env in
         let body_proof = collect_binders env (binder :: used) body in
@@ -8323,13 +8349,13 @@ let simple_predicate_definition_proof type_env id formula =
         let atom_to_body proof_name =
           match equality_sides atom with
           | Some (TmH h, _) when h = "f__true" ->
-              Printf.sprintf "(vampire_true_eq_to_prop (%s) %s)" body_text proof_name
+              Printf.sprintf "(vampire_fool_true_eq_to_prop (%s) %s)" body_text proof_name
           | Some (_, TmH h) when h = "f__true" ->
-              Printf.sprintf "(vampire_eq_to_true_to_prop (%s) %s)" body_text proof_name
+              Printf.sprintf "(vampire_fool_eq_true_to_prop (%s) %s)" body_text proof_name
           | Some (TmH h, _) when h = "vampire_true" ->
-              Printf.sprintf "(vampire_true_eq_to_prop (%s) %s)" body_text proof_name
+              Printf.sprintf "(vampire_fool_true_eq_to_prop (%s) %s)" body_text proof_name
           | Some (_, TmH h) when h = "vampire_true" ->
-              Printf.sprintf "(vampire_eq_to_true_to_prop (%s) %s)" body_text proof_name
+              Printf.sprintf "(vampire_fool_eq_true_to_prop (%s) %s)" body_text proof_name
           | _ -> proof_name
         in
         let body_name = "Hpredicate_definition_body" in
@@ -8337,19 +8363,19 @@ let simple_predicate_definition_proof type_env id formula =
         let eq_name = "Hpredicate_definition_eq" in
         let neg_proof =
           Printf.sprintf
-            "(fun %s:%s => %s (%s))"
+            "(fun %s:(%s) => %s (%s))"
             eq_name atom_text not_name (atom_to_body eq_name)
         in
         let left_intro proof =
           Printf.sprintf
-            "(fun vpred_def_goal:prop => fun Hleft:%s -> vpred_def_goal => fun Hright:%s -> vpred_def_goal => Hleft %s)"
+            "(fun vpred_def_goal:prop => fun Hleft:(%s) -> vpred_def_goal => fun Hright:(%s) -> vpred_def_goal => Hleft %s)"
             (simple_formula_prop_text_with_used used env left)
             (simple_formula_prop_text_with_used used env right)
             proof
         in
         let right_intro proof =
           Printf.sprintf
-            "(fun vpred_def_goal:prop => fun Hleft:%s -> vpred_def_goal => fun Hright:%s -> vpred_def_goal => Hright %s)"
+            "(fun vpred_def_goal:prop => fun Hleft:(%s) -> vpred_def_goal => fun Hright:(%s) -> vpred_def_goal => Hright %s)"
             (simple_formula_prop_text_with_used used env left)
             (simple_formula_prop_text_with_used used env right)
             proof
@@ -8361,7 +8387,7 @@ let simple_predicate_definition_proof type_env id formula =
           if body_is_left then right_intro neg_proof else left_intro neg_proof
         in
         Printf.sprintf
-          "((vampire_xm (%s)) %s (fun %s:%s => %s) (fun %s:%s -> False => %s))"
+          "((vampire_xm (%s)) %s (fun %s:(%s) => %s) (fun %s:(%s) -> False => %s))"
           body_text (simple_prop_arg target_text)
           body_name body_text positive_branch
           not_name body_text negative_branch
@@ -8370,6 +8396,227 @@ let simple_predicate_definition_proof type_env id formula =
           (id ^ ": predicate definition proof supports only universal definitional disjunctions")
   in
   collect_binders type_env [] formula
+
+let simple_predicate_definition_fold_proof type_env id result_sorts source target body atom parent_name =
+  let definiendum = predicate_definition_definiendum_term atom in
+  let rec contains_unsupported_exists = function
+    | Ap (TmH ("vampire_exists_set_prop"
+              | "vampire_exists_set_set"
+              | "vampire_exists_set_set_prop"), _) -> true
+    | Ap (TmH "vampire_exists_prop", Lam (tp, body)) ->
+        let sort = simple_tp_expr tp in
+        sort <> "set" || contains_unsupported_exists body
+    | TpAp (tm, _) -> contains_unsupported_exists tm
+    | Ap (left, right)
+    | Imp (left, right) -> contains_unsupported_exists left || contains_unsupported_exists right
+    | Lam (_, body)
+    | All (_, body) -> contains_unsupported_exists body
+    | DB _ | TmH _ | Prim _ -> false
+  in
+  if contains_unsupported_exists source
+     || contains_unsupported_exists target
+     || contains_unsupported_exists body
+     || contains_unsupported_exists atom then
+    emit_error (id ^ ": predicate-definition fold proof does not yet support this existential context");
+  let binder_index = ref 0 in
+  let proof_index = ref 0 in
+  let is_exists_head = function
+    | TmH ("vampire_exists_prop" | "vampire_exists_set"
+          | "vampire_exists_set_prop" | "vampire_exists_set_set"
+          | "vampire_exists_set_set_prop") -> true
+    | _ -> false
+  in
+  let exists_name_for_sort = function
+    | "set" -> "vampire_exists_set"
+    | "prop" -> "vampire_exists_prop"
+    | "set->prop" -> "vampire_exists_set_prop"
+    | "set->set" -> "vampire_exists_set_set"
+    | "set->set->prop" -> "vampire_exists_set_set_prop"
+    | sort -> emit_error (id ^ ": predicate-definition fold has unsupported existential sort " ^ sort)
+  in
+  let exists_intro_name_for_sort = function
+    | "set" -> "vampire_exists_set_intro"
+    | "prop" -> "vampire_exists_prop_intro"
+    | "set->prop" -> "vampire_exists_set_prop_intro"
+    | "set->set" -> "vampire_exists_set_set_intro"
+    | "set->set->prop" -> "vampire_exists_set_set_prop_intro"
+    | sort -> emit_error (id ^ ": predicate-definition fold has unsupported existential witness sort " ^ sort)
+  in
+  let fresh prefix =
+    let name = prefix ^ string_of_int !proof_index in
+    incr proof_index;
+    name
+  in
+  let binder_for_body used sort body =
+    let rec find_from index =
+      match List.nth_opt result_sorts index with
+      | Some (name, known_sort) ->
+          let next = index + 1 in
+          let binder = megalodon_ident name in
+          if known_sort = sort
+             && is_vampire_var_name binder
+             && not (List.mem binder used)
+             && tm_contains_symbol binder body then Some binder
+          else find_from next
+      | None -> None
+    in
+    match preferred_formula_binder_name sort body with
+    | Some name
+        when not (List.mem name used)
+             && List.assoc_opt name (result_sorts @ type_env) = Some sort ->
+        megalodon_ident name
+    | _ ->
+    match find_from !binder_index with
+    | Some binder ->
+        let rec binder_result_index index = function
+          | [] -> None
+          | (name, _) :: rest ->
+              if megalodon_ident name = binder then Some index
+              else binder_result_index (index + 1) rest
+        in
+        begin match binder_result_index 0 result_sorts with
+        | Some index -> binder_index := max !binder_index (index + 1)
+        | None -> ()
+        end;
+        binder
+    | None ->
+        begin match first_unused_vampire_var_name_with_sort (result_sorts @ type_env) used sort body with
+        | Some name -> megalodon_ident name
+        | None ->
+        begin match first_unused_vampire_var_name used body with
+        | Some name when
+            let binder = megalodon_ident name in
+            not (List.mem binder used)
+            &&
+            (match List.assoc_opt binder (result_sorts @ type_env) with
+             | Some known_sort -> known_sort = sort
+             | None -> true) ->
+            megalodon_ident name
+        | _ ->
+            let name = "Xpredicate_fold_" ^ string_of_int !binder_index in
+            incr binder_index;
+            name
+        end
+        end
+  in
+  let rec formula_text env tm =
+    let render_env = env @ type_env in
+    match tm with
+    | All (tp, body) ->
+        let sort = simple_tp_expr tp in
+        let binder = binder_for_body (List.map fst env) sort body in
+        "forall " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ ", "
+        ^ simple_with_db_aliases [binder]
+            (fun () -> formula_text ((binder, sort) :: env) body)
+    | Imp (left, right) ->
+        "((" ^ formula_text env left ^ ") -> (" ^ formula_text env right ^ "))"
+    | Ap (Ap (TmH "vampire_and", left), right) ->
+        "vampire_and (" ^ formula_text env left ^ ") (" ^ formula_text env right ^ ")"
+    | Ap (Ap (TmH "vampire_or", left), right) ->
+        "vampire_or (" ^ formula_text env left ^ ") (" ^ formula_text env right ^ ")"
+    | Ap (exists_head, Lam (tp, exists_body)) when is_exists_head exists_head ->
+        let sort = simple_tp_expr tp in
+        let binder = binder_for_body (List.map fst env) sort exists_body in
+        exists_name_for_sort sort ^ " (fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => "
+        ^ simple_with_db_aliases [binder]
+            (fun () -> formula_text ((binder, sort) :: env) exists_body)
+        ^ ")"
+    | atom ->
+        begin match equality_sides atom with
+        | Some _ -> simple_atom_prop_with_type_env render_env atom
+        | None -> simple_tm_expr_with_expected render_env (Some "prop") atom
+        end
+  in
+  let atom_replacement_proof env proof target_atom =
+    if target_atom = definiendum then proof
+    else
+      try simple_fool_atom_forward_proof (env @ type_env) definiendum target_atom proof
+      with Error msg ->
+        emit_error (id ^ ": predicate-definition fold replacement is unsupported: " ^ msg)
+  in
+  let rec convert env source target proof =
+    if source = target then proof
+    else if source = body then atom_replacement_proof env proof target
+    else
+      match source, target with
+      | All (source_tp, source_body), All (target_tp, target_body) when source_tp = target_tp ->
+          let sort = simple_tp_expr source_tp in
+          let binder = binder_for_body (List.map fst env) sort target_body in
+          let env = (binder, sort) :: env in
+          let body_proof = convert env source_body target_body ("(" ^ proof ^ " " ^ binder ^ ")") in
+          "(fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => " ^ body_proof ^ ")"
+      | Imp (source_left, source_right), Imp (target_left, target_right)
+          when source_left = target_left ->
+          let arg = fresh "Hpredicate_fold_imp_" in
+          let right_proof = convert env source_right target_right ("(" ^ proof ^ " " ^ arg ^ ")") in
+          "(fun " ^ arg ^ ":(" ^ formula_text env target_left ^ ") => " ^ right_proof ^ ")"
+      | Ap (Ap (TmH "vampire_or", source_left), source_right),
+        Ap (Ap (TmH "vampire_or", target_left), target_right) ->
+          let goal = fresh "Hpredicate_fold_or_goal_" in
+          let left_name = fresh "Hpredicate_fold_or_left_" in
+          let right_name = fresh "Hpredicate_fold_or_right_" in
+          let source_left_text = formula_text env source_left in
+          let source_right_text = formula_text env source_right in
+          let target_left_text = formula_text env target_left in
+          let target_right_text = formula_text env target_right in
+          let target_text = formula_text env target in
+          let left_proof = convert env source_left target_left left_name in
+          let right_proof = convert env source_right target_right right_name in
+          let left_intro =
+            Printf.sprintf
+              "(fun %s:prop => fun Hleft:(%s) -> %s => fun Hright:(%s) -> %s => Hleft %s)"
+              goal target_left_text goal target_right_text goal left_proof
+          in
+          let right_intro =
+            Printf.sprintf
+              "(fun %s:prop => fun Hleft:(%s) -> %s => fun Hright:(%s) -> %s => Hright %s)"
+              goal target_left_text goal target_right_text goal right_proof
+          in
+          Printf.sprintf
+            "(%s %s (fun %s:%s => %s) (fun %s:%s => %s))"
+            proof (simple_prop_arg target_text)
+            left_name source_left_text left_intro
+            right_name source_right_text right_intro
+      | Ap (Ap (TmH "vampire_and", source_left), source_right),
+        Ap (Ap (TmH "vampire_and", target_left), target_right) ->
+          let goal = fresh "Hpredicate_fold_and_goal_" in
+          let and_name = fresh "Hpredicate_fold_and_" in
+          let left_name = fresh "Hpredicate_fold_and_left_" in
+          let right_name = fresh "Hpredicate_fold_and_right_" in
+          let source_left_text = formula_text env source_left in
+          let source_right_text = formula_text env source_right in
+          let target_left_text = formula_text env target_left in
+          let target_right_text = formula_text env target_right in
+          let left_proof = convert env source_left target_left left_name in
+          let right_proof = convert env source_right target_right right_name in
+          Printf.sprintf
+            "(fun %s:prop => fun %s:(%s) -> (%s) -> %s => %s %s (fun %s:(%s) => fun %s:(%s) => %s %s %s))"
+            goal and_name target_left_text target_right_text goal
+            proof goal left_name source_left_text right_name source_right_text
+            and_name left_proof right_proof
+      | Ap (source_exists, Lam (source_tp, source_body)),
+        Ap (target_exists, Lam (target_tp, target_body))
+          when source_tp = target_tp && is_exists_head source_exists && is_exists_head target_exists ->
+          let sort = simple_tp_expr source_tp in
+          let binder = binder_for_body (List.map fst env) sort target_body in
+          let env = (binder, sort) :: env in
+          let source_body_text = formula_text env source_body in
+          let target_body_text = formula_text env target_body in
+          let body_name = fresh "Hpredicate_fold_exists_body_" in
+          let body_proof = convert env source_body target_body body_name in
+          let target_text = formula_text (List.tl env) target in
+          Printf.sprintf
+            "(%s %s (fun %s:%s => fun %s:(%s) => (%s (fun %s:%s => %s) %s %s)))"
+            proof (simple_prop_arg target_text)
+            binder (simple_binder_sort_expr sort)
+            body_name source_body_text
+            (exists_intro_name_for_sort sort)
+            binder (simple_binder_sort_expr sort)
+            target_body_text binder body_proof
+      | _ ->
+          emit_error (id ^ ": predicate-definition fold proof does not support this formula context")
+  in
+  convert [] source target parent_name
 
 let simple_ennf_formula_proof type_env id parent_sorts result_sorts source target parent_name =
   let binder_sorts =
@@ -10503,7 +10750,35 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             add_emitted_prop_and_sorts id target_prop target_sorts;
             claims := !claims @ [(name, target_prop, "exact " ^ source_name ^ ".")]
           end else
-            add_formula_inference_bridge "predicate_definition_fold" id [source_id; definition_id] target_prop
+            begin match
+              try
+                let source = lookup_formula checked_certificate source_id in
+                let definition = lookup_formula checked_certificate definition_id in
+                let _, atom, body = predicate_definition_parts definition_id definition in
+                let type_env =
+                  simple_type_env_with_variables
+                    (target_sorts
+                     @ metadata_step_variable_sort_pairs cert source_id
+                     @ metadata_step_variable_sort_pairs cert definition_id
+                     |> simple_unique_variable_sorts)
+                    symbol_type_env
+	                in
+	                let source_name = lookup_simple_name !emitted_names source_id in
+	                Some
+	                  (simple_predicate_definition_fold_proof
+	                     type_env id target_sorts source formula body atom source_name)
+	              with Error _ -> None
+            with
+            | Some proof ->
+                let name = derived_name id in
+                ignore (lookup_simple_name !emitted_names definition_id);
+                uses_vampire_eq_prop_ext := true;
+                add_emitted id name;
+                add_emitted_prop_and_sorts id target_prop target_sorts;
+                claims := !claims @ [(name, target_prop, "exact " ^ proof ^ ".")]
+            | None ->
+                add_formula_inference_bridge "predicate_definition_fold" id [source_id; definition_id] target_prop
+            end
       | PredicateDefinitionFoldChain (id, source_id, definition_ids, formula) ->
           let target_prop, _ = formula_tm_prop_and_sorts id formula in
           add_formula_inference_bridge "predicate_definition_fold_chain" id (source_id :: definition_ids) target_prop
