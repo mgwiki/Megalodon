@@ -24,6 +24,34 @@ check_no_unindexed_axioms() {
   fi
 }
 
+run_focused_primitive_audit() {
+  MIN_SUBSTITUTE=0 \
+  MIN_PARAMODULATE=0 \
+  MIN_EQUALITY_SYMMETRY=0 \
+  MIN_EQUALITY_RESOLUTION=0 \
+  MIN_EQUALITY_RESOLUTION_CONSTRAINTS=0 \
+  MIN_EQUALITY_FACTORING=${MIN_EQUALITY_FACTORING:-0} \
+  MIN_EQUALITY_FACTORING_CONSTRAINTS=${MIN_EQUALITY_FACTORING_CONSTRAINTS:-0} \
+  MIN_RESOLVE=0 \
+  MIN_FACTOR=0 \
+  MIN_FOOL_ATOM_LIFT=0 \
+  MIN_ENNF_FORMULA=0 \
+  MIN_SKOLEM_FORMULA=0 \
+  MIN_CNF_LITERAL=0 \
+  MIN_CNF_FORMULA_CLAUSE=0 \
+  MIN_FORMULA_COPY=0 \
+  MIN_FORMULA_TERM_COPY=0 \
+  MIN_RECTIFY_FORMULA=0 \
+  MIN_FOOL_EXHAUSTIVENESS=0 \
+  MIN_TRUTH_CONFLICT=0 \
+  MIN_AVATAR_COMPONENT=0 \
+  MIN_AVATAR_DEFINITION=0 \
+  MIN_AVATAR_SPLIT=0 \
+  MIN_AVATAR_REFUTATION=0 \
+  MIN_SPLIT_DEPENDENCY=0 \
+  tests/vampire_certificate/run_native_primitive_audit.sh "$@"
+}
+
 bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_valid.log"
@@ -643,6 +671,34 @@ fi
 if ! rg -q 'u2:equality_factoring' \
     "$WORK_DIR/native_cert_v1_equality_factoring_core_closed_bad.err"; then
   echo "core closed native certificate v1 equality_factoring rejection did not name the unsupported rule" >&2
+  exit 1
+fi
+
+MIN_EQUALITY_FACTORING=1 \
+WORK_DIR="$WORK_DIR/equality_factoring_primitive_audit_valid" \
+run_focused_primitive_audit \
+  tests/vampire_certificate/native_cert_v1_equality_factoring_primitive_valid.sexp \
+  >"$WORK_DIR/equality_factoring_primitive_audit_valid.out"
+
+if ! rg -q 'equality_factoring 1' \
+    "$WORK_DIR/equality_factoring_primitive_audit_valid/rule_counts.txt"; then
+  echo "native primitive audit did not count the equality_factoring primitive fixture" >&2
+  exit 1
+fi
+
+if MIN_EQUALITY_FACTORING=1 \
+    WORK_DIR="$WORK_DIR/equality_factoring_primitive_audit_missing_other_bad" \
+    run_focused_primitive_audit \
+      tests/vampire_certificate/native_cert_v1_equality_factoring_primitive_missing_other_bad.sexp \
+      >"$WORK_DIR/equality_factoring_primitive_audit_missing_other_bad.out" \
+      2>"$WORK_DIR/equality_factoring_primitive_audit_missing_other_bad.err"; then
+  echo "native primitive audit accepted equality_factoring without an other literal" >&2
+  exit 1
+fi
+
+if ! rg -q '\(other ' \
+    "$WORK_DIR/equality_factoring_primitive_audit_missing_other_bad/missing_equality_factoring_fields.tsv"; then
+  echo "native primitive audit did not explain the missing equality_factoring other literal" >&2
   exit 1
 fi
 

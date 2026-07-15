@@ -273,7 +273,9 @@ that may already have a clause-producing primitive step.
 metadata audit by default after a successful live run. Set
 `AUDIT_NATIVE_PRIMITIVES=0` or `AUDIT_KERNEL_V1_METADATA=0` only for
 deliberately tiny focused experiments, or lower individual minimums such as
-`MIN_FACTOR=0` when a selected corpus is not expected to exercise a rule.
+`MIN_FACTOR=0` when a selected corpus is not expected to exercise a rule. Use
+`MIN_EQUALITY_FACTORING` and `MIN_EQUALITY_FACTORING_CONSTRAINTS` to require
+focused coverage of the equality-factoring primitive records.
 
 Set `CLOSED_CERT_V1=1` on the cached emitter harness to request
 `-vampirecertv1closed`. In that mode a case passes only when emission introduces

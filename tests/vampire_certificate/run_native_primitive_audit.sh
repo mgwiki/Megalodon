@@ -9,6 +9,9 @@ MIN_SUBSTITUTE=${MIN_SUBSTITUTE:-1}
 MIN_PARAMODULATE=${MIN_PARAMODULATE:-1}
 MIN_EQUALITY_SYMMETRY=${MIN_EQUALITY_SYMMETRY:-1}
 MIN_EQUALITY_RESOLUTION=${MIN_EQUALITY_RESOLUTION:-1}
+MIN_EQUALITY_RESOLUTION_CONSTRAINTS=${MIN_EQUALITY_RESOLUTION_CONSTRAINTS:-0}
+MIN_EQUALITY_FACTORING=${MIN_EQUALITY_FACTORING:-0}
+MIN_EQUALITY_FACTORING_CONSTRAINTS=${MIN_EQUALITY_FACTORING_CONSTRAINTS:-0}
 MIN_RESOLVE=${MIN_RESOLVE:-1}
 MIN_FACTOR=${MIN_FACTOR:-1}
 MIN_FOOL_ATOM_LIFT=${MIN_FOOL_ATOM_LIFT:-0}
@@ -157,6 +160,9 @@ collect_rule substitute "$WORK_DIR/substitute.tsv"
 collect_rule paramodulate "$WORK_DIR/paramodulate.tsv"
 collect_rule equality_symmetry "$WORK_DIR/equality_symmetry.tsv"
 collect_rule equality_resolution "$WORK_DIR/equality_resolution.tsv"
+collect_rule equality_resolution_constraints "$WORK_DIR/equality_resolution_constraints.tsv"
+collect_rule equality_factoring "$WORK_DIR/equality_factoring.tsv"
+collect_rule equality_factoring_constraints "$WORK_DIR/equality_factoring_constraints.tsv"
 collect_rule resolve "$WORK_DIR/resolve.tsv"
 collect_rule factor "$WORK_DIR/factor.tsv"
 collect_rule fool_atom_lift "$WORK_DIR/fool_atom_lift.tsv"
@@ -200,6 +206,30 @@ require_min equality_resolution "$WORK_DIR/equality_resolution.tsv" "$MIN_EQUALI
 require_fields equality_resolution "$WORK_DIR/equality_resolution.tsv" \
   '(parent "' \
   '(literal ' \
+  '(result (clause'
+
+require_min equality_resolution_constraints "$WORK_DIR/equality_resolution_constraints.tsv" "$MIN_EQUALITY_RESOLUTION_CONSTRAINTS"
+require_fields equality_resolution_constraints "$WORK_DIR/equality_resolution_constraints.tsv" \
+  '(parent "' \
+  '(literal ' \
+  '(constraints (clause' \
+  '(result (clause'
+
+require_min equality_factoring "$WORK_DIR/equality_factoring.tsv" "$MIN_EQUALITY_FACTORING"
+require_fields equality_factoring "$WORK_DIR/equality_factoring.tsv" \
+  '(parent "' \
+  '(selected ' \
+  '(other ' \
+  '(subst' \
+  '(result (clause'
+
+require_min equality_factoring_constraints "$WORK_DIR/equality_factoring_constraints.tsv" "$MIN_EQUALITY_FACTORING_CONSTRAINTS"
+require_fields equality_factoring_constraints "$WORK_DIR/equality_factoring_constraints.tsv" \
+  '(parent "' \
+  '(selected ' \
+  '(other ' \
+  '(subst' \
+  '(constraints (clause' \
   '(result (clause'
 
 require_min resolve "$WORK_DIR/resolve.tsv" "$MIN_RESOLVE"
