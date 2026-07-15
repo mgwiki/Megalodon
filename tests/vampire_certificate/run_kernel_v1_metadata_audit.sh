@@ -102,7 +102,9 @@ awk '
   /rule=formula_copy/ || /rule=formula_normalize/ ||
   /rule=fool_formula/ || /rule=fool_exhaustiveness/ ||
   /rule=avatar_component/ || /rule=avatar_split/ ||
-  /rule=avatar_refutation/ || /rule=truth_conflict/ {
+  /rule=avatar_refutation/ || /rule=truth_conflict/ ||
+  /rule=predicate_definition/ || /rule=predicate_definition_fold/ ||
+  /rule=predicate_definition_fold_chain/ {
     next
   }
   { print }
@@ -390,6 +392,51 @@ if [[ -s "$WORK_DIR/truth_conflict.tsv" ]]; then
   if [[ -s "$WORK_DIR/missing_truth_conflict_fields.tsv" ]]; then
     echo "kernel_v1 metadata audit found truth-conflict records missing selected/result fields" >&2
     sed -n '1,40p' "$WORK_DIR/missing_truth_conflict_fields.tsv" >&2
+    exit 1
+  fi
+fi
+
+grep -F '"rule=predicate_definition"' "$WORK_DIR/kernel_v1.tsv" \
+  > "$WORK_DIR/predicate_definition.tsv" || true
+
+if [[ -s "$WORK_DIR/predicate_definition.tsv" ]]; then
+  : > "$WORK_DIR/missing_predicate_definition_fields.tsv"
+  for pattern in \
+    'introduced_symbol=' \
+    'definiendum_symbol=' \
+    'result_formula=' \
+    'body_variable_sort_count='; do
+    awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
+      "$WORK_DIR/predicate_definition.tsv" >> "$WORK_DIR/missing_predicate_definition_fields.tsv"
+  done
+
+  if [[ -s "$WORK_DIR/missing_predicate_definition_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found predicate-definition records missing symbol/formula fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_predicate_definition_fields.tsv" >&2
+    exit 1
+  fi
+fi
+
+grep -E '"rule=predicate_definition_fold(_chain)?"' "$WORK_DIR/kernel_v1.tsv" \
+  > "$WORK_DIR/predicate_definition_fold.tsv" || true
+
+if [[ -s "$WORK_DIR/predicate_definition_fold.tsv" ]]; then
+  : > "$WORK_DIR/missing_predicate_definition_fold_fields.tsv"
+  for pattern in \
+    'source_unit=' \
+    'source_formula=' \
+    'definition_count=' \
+    'definition_0_unit=' \
+    'definition_0_formula=' \
+    'definition_0_symbol=' \
+    'result_formula='; do
+    awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
+      "$WORK_DIR/predicate_definition_fold.tsv" >> "$WORK_DIR/missing_predicate_definition_fold_fields.tsv"
+  done
+
+  if [[ -s "$WORK_DIR/missing_predicate_definition_fold_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found predicate-definition fold records missing source/definition/result fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_predicate_definition_fold_fields.tsv" >&2
     exit 1
   fi
 fi

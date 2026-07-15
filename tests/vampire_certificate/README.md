@@ -173,6 +173,9 @@ For AVATAR refutations, it requires the empty result clause, SAT input clauses,
 input origin units, and SAT proof steps emitted by Vampire.
 For truth conflicts, it requires the selected true/false conflict literal,
 selected literal index, parent clause, and result clause.
+For predicate definitions and folds, it requires the introduced/defined symbol,
+definition formula, source formula, definition parent formula, and result formula
+that Vampire used for the fold.
 The point of this gate is to keep new work on the Prover9/Ivy-style certificate
 path: Vampire must emit primitive replay data, rather than leaving Megalodon to
 recover it by broad OCaml-side reconstruction.
