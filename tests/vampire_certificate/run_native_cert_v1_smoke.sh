@@ -897,6 +897,34 @@ fi
 
 bin/megalodon \
   -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_equality_resolution_kernel_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_equality_resolution_kernel_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_equality_resolution_kernel_strict_valid.log"
+
+if ! rg -q 'Vampire certificate v1 strict checked 3 steps' \
+    "$WORK_DIR/native_cert_v1_equality_resolution_kernel_strict_valid.log"; then
+  echo "strict native certificate v1 checker did not accept equality-resolution kernel metadata" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_equality_resolution_kernel_missing_selected_substituted_bad.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_equality_resolution_kernel_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_equality_resolution_kernel_missing_selected_substituted_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_equality_resolution_kernel_missing_selected_substituted_bad.err"; then
+  echo "strict native certificate v1 checker accepted equality-resolution metadata without substituted selected literal" >&2
+  exit 1
+fi
+
+if ! rg -q 'kernel_v1 metadata requires selected_substituted' \
+    "$WORK_DIR/native_cert_v1_equality_resolution_kernel_missing_selected_substituted_bad.err"; then
+  echo "strict native certificate v1 equality-resolution failure did not explain the missing selected_substituted metadata" >&2
+  exit 1
+fi
+
+bin/megalodon \
+  -vampirecertv1strict \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_equality_factoring_kernel_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_equality_factoring_kernel_valid.th0.p \
   "$dummy" >"$WORK_DIR/native_cert_v1_equality_factoring_kernel_valid.log"

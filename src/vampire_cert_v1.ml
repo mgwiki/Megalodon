@@ -3640,6 +3640,13 @@ let validate_kernel_v1_metadata_contracts cert =
         (id ^ ": strict certificate v1 kernel_v1 metadata field "
          ^ key ^ " does not match the certificate clause")
   in
+  let require_field_literal id fields key expected =
+    let actual = parse_field id fields key parse_literal in
+    if not (same_literal_mod_vampire_vars actual expected) then
+      error
+        (id ^ ": strict certificate v1 kernel_v1 metadata field "
+         ^ key ^ " does not match the certificate literal")
+  in
   let require_field_formula id fields key expected =
     let actual = parse_field id fields key parse_tm in
     if actual <> expected
@@ -3968,6 +3975,58 @@ let validate_kernel_v1_metadata_contracts cert =
                 "other_literal_index";
                 "other_parent_unit";
                 "primitive_parent_0_substitution"]
+         | "equality_resolution" ->
+             require_rule_fields id fields kernel_rule
+               ["selected";
+                "selected_substituted";
+                "selected_parent_index";
+                "selected_literal_index";
+                "selected_parent_unit";
+                "result_clause";
+                "result_literal_count"];
+             begin match Hashtbl.find_opt step_by_id id with
+             | Some (EqualityResolution (_, parent_id, literal_index, result))
+             | Some (EqualityResolutionConstraints (_, parent_id, literal_index, _, _, result)) ->
+                 require_field_int id fields "selected_parent_index" 0;
+                 require_field_int id fields "selected_literal_index" literal_index;
+                 let selected_parent_unit = field_required id fields "selected_parent_unit" in
+                 if selected_parent_unit <> parent_id then
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 equality_resolution selected_parent_unit "
+                      ^ selected_parent_unit ^ " does not match certificate parent " ^ parent_id);
+                 begin match Hashtbl.find_opt step_by_id parent_id with
+                 | Some parent_step ->
+                     begin match step_clause_opt parent_step with
+                     | Some parent_clause ->
+                         let selected =
+                           nth literal_index parent_clause
+                             (id ^ " strict kernel_v1 equality_resolution selected literal")
+                         in
+                         require_field_literal id fields "selected" selected;
+                         require_field_literal id fields "selected_substituted" selected
+                     | None ->
+                         error
+                           (id ^ ": strict certificate v1 kernel_v1 equality_resolution parent "
+                            ^ parent_id ^ " is not a clause-bearing step")
+                     end
+                 | None ->
+                     error
+                       (id ^ ": strict certificate v1 kernel_v1 equality_resolution references missing parent "
+                        ^ parent_id)
+                 end;
+                 require_field_clause id fields "result_clause" result;
+                 begin match field_value "conclusion_clause" fields with
+                 | Some _ -> require_field_clause id fields "conclusion_clause" result
+                 | None -> ()
+                 end;
+                 require_field_int id fields "result_literal_count" (List.length result)
+             | Some _ ->
+                 error
+                   (id ^ ": strict certificate v1 kernel_v1 equality_resolution metadata must annotate an equality_resolution step")
+             | None ->
+                 error
+                   (id ^ ": strict certificate v1 kernel_v1 equality_resolution metadata has no matching certificate step")
+             end
          | "equality_factoring" ->
              require_rule_fields id fields kernel_rule
                ["selected";
