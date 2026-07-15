@@ -4407,6 +4407,22 @@ let simple_apply_forall_witnesses proof sorts =
     proof
     sorts
 
+let simple_apply_forall_result_vars_or_witnesses proof result_sorts parent_sorts =
+  let result_name_sorts =
+    List.map (fun (name, sort) -> (megalodon_ident name, sort)) result_sorts
+  in
+  List.fold_left
+    (fun acc (name, sort) ->
+       let ident = megalodon_ident name in
+       let arg =
+         match List.assoc_opt ident result_name_sorts with
+         | Some result_sort when result_sort = sort -> ident
+         | _ -> simple_witness_for_sort sort
+       in
+       "(" ^ acc ^ " " ^ arg ^ ")")
+    proof
+    parent_sorts
+
 let simple_parent_proof_with_emitted_prefix parent_prop parent_formula parent_name =
   let emitted_prefix = simple_forall_prefix_sorts parent_prop in
   let formula_prefix_count = prefix_forall_count parent_formula in
@@ -4467,10 +4483,16 @@ let simple_resolution_proof
     | _ -> emit_error (id ^ ": pivots are not complementary")
   in
   let positive_parent_name =
-    simple_apply_forall_vars (lookup_simple_name names positive_parent) (parent_sorts_of positive_parent)
+    simple_apply_forall_result_vars_or_witnesses
+      (lookup_simple_name names positive_parent)
+      result_sorts
+      (parent_sorts_of positive_parent)
   in
   let negative_parent_name =
-    simple_apply_forall_vars (lookup_simple_name names negative_parent) (parent_sorts_of negative_parent)
+    simple_apply_forall_result_vars_or_witnesses
+      (lookup_simple_name names negative_parent)
+      result_sorts
+      (parent_sorts_of negative_parent)
   in
   let wrap proof = simple_wrap_forall_intro result_sorts proof in
   match positive_rest, negative_rest, result with
@@ -4521,10 +4543,16 @@ let rec simple_resolution_clause_proof
   let positive_clause = lookup_simple_clause checked positive_parent in
   let negative_clause = lookup_simple_clause checked negative_parent in
   let positive_parent_name =
-    simple_apply_forall_vars (lookup_simple_name names positive_parent) (parent_sorts_of positive_parent)
+    simple_apply_forall_result_vars_or_witnesses
+      (lookup_simple_name names positive_parent)
+      result_sorts
+      (parent_sorts_of positive_parent)
   in
   let negative_parent_name =
-    simple_apply_forall_vars (lookup_simple_name names negative_parent) (parent_sorts_of negative_parent)
+    simple_apply_forall_result_vars_or_witnesses
+      (lookup_simple_name names negative_parent)
+      result_sorts
+      (parent_sorts_of negative_parent)
   in
   let target_prop = clause_body_prop result in
   let target_arg = simple_prop_arg target_prop in
@@ -11150,9 +11178,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             || simple_prop_equal_mod_cnf_defs parent_prop formula
           in
           let structurally_safe =
-            simple_sorts_subset left_sorts sorts
-            && simple_sorts_subset right_sorts sorts
-            && emitted_parent_matches left_id left_sorts left_clause
+            emitted_parent_matches left_id left_sorts left_clause
             && emitted_parent_matches right_id right_sorts right_clause
             && prop = structural_clause_prop sorts result
           in
