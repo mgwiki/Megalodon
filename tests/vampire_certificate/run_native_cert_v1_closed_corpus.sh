@@ -15,6 +15,69 @@ CORE_CERT_V1=${CORE_CERT_V1:-0}
 mkdir -p "$WORK_DIR/cases"
 ln -sfn "$WORK_DIR" "$TMPDIR/latest_native_cert_v1_closed_corpus"
 
+resolve_origin_file() {
+  local origin_file=$1
+  if [[ "$origin_file" = /* ]]; then
+    printf '%s\n' "$origin_file"
+  else
+    printf '%s/%s\n' "$ROOT" "$origin_file"
+  fi
+}
+
+read_origin_field() {
+  local field=$1
+  local source=$2
+  sed -n "s/^% megalodon_origin .*${field} \"\\([^\"]*\\)\".*/\\1/p" "$source" | head -1
+}
+
+check_origin_consistency() {
+  local source=$1
+  local emitted=$2
+  local report=$3
+  local origin_file origin_line origin_char origin_kind resolved_file
+  origin_file=$(read_origin_field file "$source")
+  origin_line=$(read_origin_field line "$source")
+  origin_char=$(read_origin_field char "$source")
+  origin_kind=$(read_origin_field kind "$source")
+
+  if [[ -z "$origin_file" || -z "$origin_line" || -z "$origin_char" || -z "$origin_kind" ]]; then
+    printf 'source origin is missing one or more fields\n' > "$report"
+    return 1
+  fi
+
+  case "$origin_kind" in
+    generated_*|manual_*)
+      ;;
+    *)
+      resolved_file=$(resolve_origin_file "$origin_file")
+      if [[ ! -f "$resolved_file" ]]; then
+        printf 'origin file does not exist: %s\n' "$resolved_file" > "$report"
+        return 1
+      fi
+      ;;
+  esac
+
+  awk \
+      -v file="$origin_file" \
+      -v line="$origin_line" \
+      -v chr="$origin_char" \
+      -v kind="$origin_kind" '
+    /^\/\/ Vampire certificate source origin:/ {
+      ok = index($0, ": " file " line " line " char " chr " ")
+      if (!ok) print FNR ":" $0
+    }
+    /^\/\/ vampire_source_assumption / {
+      ok = index($0, "(origin_file \"" file "\")") &&
+           index($0, "(origin_line \"" line "\")") &&
+           index($0, "(origin_char \"" chr "\")") &&
+           index($0, "(origin_kind \"" kind "\")")
+      if (!ok) print FNR ":" $0
+    }
+  ' "$emitted" > "$report"
+
+  [[ ! -s "$report" ]]
+}
+
 run_one() {
   local native=$1
   local base
@@ -69,6 +132,13 @@ run_one() {
     return 0
   fi
 
+  if ! check_origin_consistency "$source" "$case_dir/out.mg" "$case_dir/source_origin_mismatch.txt"; then
+    local first
+    first=$(head -1 "$case_dir/source_origin_mismatch.txt" | tr '\t' ' ')
+    printf '%s\tSOURCE_ORIGIN_MISMATCH\t%s\n' "$base" "$first" > "$case_dir/result.tsv"
+    return 0
+  fi
+
   if awk '/^\/\/ vampire_source_assumption / && $0 !~ /source_formula_status "closed_formula_checked"/ {print FNR ":" $0}' \
       "$case_dir/out.mg" > "$case_dir/unchecked_sources.txt" \
       && [[ -s "$case_dir/unchecked_sources.txt" ]]; then
@@ -111,8 +181,8 @@ run_one() {
   printf '%s\tCLOSED_PASS\n' "$base" > "$case_dir/result.tsv"
 }
 
-export MEGALODON CASES_DIR WORK_DIR CORE_CERT_V1
-export -f run_one
+export ROOT MEGALODON CASES_DIR WORK_DIR CORE_CERT_V1
+export -f resolve_origin_file read_origin_field check_origin_consistency run_one
 
 selected_cases="$WORK_DIR/selected_native_cases.list"
 : > "$selected_cases"
