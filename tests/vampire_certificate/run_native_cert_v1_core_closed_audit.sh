@@ -40,14 +40,18 @@ allowed_file="$WORK_DIR/allowed_rules.txt"
 printf '%s\n' "$allowed_rules" | sort > "$allowed_file"
 : > "$WORK_DIR/eligible.tsv"
 : > "$WORK_DIR/excluded.tsv"
+: > "$WORK_DIR/first_excluded.tsv"
+: > "$WORK_DIR/near_core_nonidentity_substitute.list"
 : > "$WORK_DIR/core_closed_cases.list"
 all_rules="$WORK_DIR/all_case_rules.tsv"
 : > "$all_rules"
 mkdir -p "$WORK_DIR/cases_by_rule"
+mkdir -p "$WORK_DIR/cases_by_first_blocker"
 
 find "$CASES_DIR" -maxdepth 1 -name '*.native.sexp' -type f | sort |
 while IFS= read -r native; do
   base=$(basename "$native" .native.sexp)
+  rules_order_file="$WORK_DIR/$base.rules_order"
   rules_file="$WORK_DIR/$base.rules"
   bad_file="$WORK_DIR/$base.bad_rules"
   awk '
@@ -57,7 +61,8 @@ while IFS= read -r native; do
         else print m[1]
       }
     }
-  ' metadata="$metadata_rules" "$native" | sort -u > "$rules_file"
+  ' metadata="$metadata_rules" "$native" > "$rules_order_file"
+  sort -u "$rules_order_file" > "$rules_file"
   while IFS= read -r rule || [[ -n "$rule" ]]; do
     [[ -z "$rule" ]] && continue
     printf '%s\t%s\n' "$base" "$rule" >> "$all_rules"
@@ -71,6 +76,24 @@ while IFS= read -r native; do
   else
     printf '%s\tEXCLUDED\t%s\n' "$base" "$(paste -sd, "$bad_file")" \
       >> "$WORK_DIR/excluded.tsv"
+    first_blocker=""
+    while IFS= read -r rule || [[ -n "$rule" ]]; do
+      [[ -z "$rule" ]] && continue
+      if ! grep -Fxq "$rule" "$allowed_file"; then
+        first_blocker="$rule"
+        break
+      fi
+    done < "$rules_order_file"
+    if [[ -z "$first_blocker" ]]; then
+      first_blocker="$(sed -n '1p' "$bad_file")"
+    fi
+    printf '%s\tFIRST_EXCLUDED\t%s\n' "$base" "$first_blocker" \
+      >> "$WORK_DIR/first_excluded.tsv"
+    printf '%s\n' "$base" >> "$WORK_DIR/cases_by_first_blocker/$first_blocker.list"
+    if [[ "$(wc -l < "$bad_file" | tr -d ' ')" == "1" ]] \
+        && [[ "$(sed -n '1p' "$bad_file")" == "nonidentity_substitute" ]]; then
+      printf '%s\n' "$base" >> "$WORK_DIR/near_core_nonidentity_substitute.list"
+    fi
   fi
 done
 
@@ -80,12 +103,19 @@ if [[ -s "$all_rules" ]]; then
   cut -f2 "$all_rules" | sort | uniq -c | sort -nr > "$WORK_DIR/rule_counts.txt"
   awk -F '\t' '$2 == "EXCLUDED" {split($3, rules, ","); for (i in rules) if (rules[i] != "") print rules[i]}' \
     "$WORK_DIR/excluded.tsv" | sort | uniq -c | sort -nr > "$WORK_DIR/excluded_rule_counts.txt"
+  awk -F '\t' '$2 == "FIRST_EXCLUDED" {print $3}' \
+    "$WORK_DIR/first_excluded.tsv" | sort | uniq -c | sort -nr > "$WORK_DIR/first_excluded_rule_counts.txt"
   find "$WORK_DIR/cases_by_rule" -type f -name '*.list' -print0 \
+    | xargs -0 -r -n1 sh -c 'sort -u "$1" -o "$1"' sh
+  find "$WORK_DIR/cases_by_first_blocker" -type f -name '*.list' -print0 \
     | xargs -0 -r -n1 sh -c 'sort -u "$1" -o "$1"' sh
 else
   : > "$WORK_DIR/rule_counts.txt"
   : > "$WORK_DIR/excluded_rule_counts.txt"
+  : > "$WORK_DIR/first_excluded_rule_counts.txt"
 fi
+sort -u "$WORK_DIR/near_core_nonidentity_substitute.list" \
+  -o "$WORK_DIR/near_core_nonidentity_substitute.list"
 
 {
   printf 'CORE_ELIGIBLE %s\n' "$eligible_count"
@@ -97,11 +127,15 @@ echo "native certificate v1 core closed audit artifacts: $WORK_DIR"
 echo "native certificate v1 core closed audit latest link: $TMPDIR/latest_native_cert_v1_core_closed_audit"
 echo "native certificate v1 core closed audit rule counts: $WORK_DIR/rule_counts.txt"
 echo "native certificate v1 core closed audit excluded rule counts: $WORK_DIR/excluded_rule_counts.txt"
+echo "native certificate v1 core closed audit first excluded rule counts: $WORK_DIR/first_excluded_rule_counts.txt"
+echo "native certificate v1 core closed audit near-core nonidentity-substitute cases: $WORK_DIR/near_core_nonidentity_substitute.list"
 
 if (( eligible_count < MIN_CORE )); then
   echo "core closed audit has fewer than $MIN_CORE whitelist-only cases" >&2
   echo "top excluded native certificate rules:" >&2
   sed -n '1,20p' "$WORK_DIR/excluded_rule_counts.txt" >&2
+  echo "top first excluded native certificate rules:" >&2
+  sed -n '1,20p' "$WORK_DIR/first_excluded_rule_counts.txt" >&2
   sed -n '1,40p' "$WORK_DIR/excluded.tsv" >&2
   exit 1
 fi

@@ -342,8 +342,17 @@ fixtures are broad source-linked reconstructions rather than the restricted
 first-order milestone requested by the audit.
 The audit run also writes `rule_counts.txt`, `excluded_rule_counts.txt`, and
 `cases_by_rule/*.list` under `/project/tmp/latest_native_cert_v1_core_closed_audit`
-so the next reconstruction work can target the largest repeated blocking
-classes instead of isolated examples.
+so the next reconstruction work can target repeated blocking classes instead
+of isolated examples.  It also writes `first_excluded.tsv`,
+`first_excluded_rule_counts.txt`, and `cases_by_first_blocker/*.list`.  These
+files preserve the first unsupported constructor in certificate order, which is
+the closest audit signal to a Prover9/Ivy frontier: the next Vampire-side
+primitive expansion should make that first blocker disappear rather than
+adding downstream reconstruction around later consequences.  The
+`near_core_nonidentity_substitute.list` file records certificates whose only
+core exclusion is non-identity substitution; those are the target set for
+redesigning the native core proof-term representation around per-step universal
+instantiation.
 Selected cases are checked with `-vampirecertv1coreclosed`, not only with the
 broader `-vampirecertv1closed` mode.
 The same eligible case list is also checked with `-vampirecertv1corepfcheck`,
