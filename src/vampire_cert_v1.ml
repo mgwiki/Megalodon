@@ -3532,10 +3532,43 @@ let validate_certificate_core_fragment cert =
          ^ suffix)
   end
 
-let native_sort_of_simple_sort = function
-  | "prop" -> Prop
-  | "set" -> Set
-  | sort -> error ("native core proof-term checker supports only prop/set variables, not " ^ sort)
+let native_core_strip_outer_parens text =
+  let text = String.trim text in
+  if String.length text >= 2
+     && text.[0] = '('
+     && text.[String.length text - 1] = ')' then
+    String.sub text 1 (String.length text - 2) |> String.trim
+  else text
+
+let native_sort_of_simple_sort sort =
+  let rec top_arrow text depth i =
+    if i + 1 >= String.length text then None
+    else
+      match text.[i] with
+      | '(' -> top_arrow text (depth + 1) (i + 1)
+      | ')' -> top_arrow text (depth - 1) (i + 1)
+      | '-' when depth = 0 && text.[i + 1] = '>' -> Some i
+      | _ -> top_arrow text depth (i + 1)
+  in
+  let rec parse sort =
+    let sort = native_core_strip_outer_parens sort in
+    match sort with
+    | "prop" -> Prop
+    | "set" -> Set
+    | _ ->
+        begin match top_arrow sort 0 0 with
+        | Some arrow ->
+            let left = String.sub sort 0 arrow in
+            let right =
+              String.sub sort (arrow + 2) (String.length sort - arrow - 2)
+            in
+            Ar (parse left, parse right)
+        | None ->
+            error
+              ("native core proof-term checker supports only prop/set/arrow variables, not " ^ sort)
+        end
+  in
+  parse sort
 
 let native_core_ident s =
   let n = String.length s in
@@ -3555,14 +3588,6 @@ let native_core_ident s =
 
 let native_core_ident_opt s =
   try Some (native_core_ident s) with Error _ -> None
-
-let native_core_strip_outer_parens text =
-  let text = String.trim text in
-  if String.length text >= 2
-     && text.[0] = '('
-     && text.[String.length text - 1] = ')' then
-    String.sub text 1 (String.length text - 2) |> String.trim
-  else text
 
 let native_core_declared_variables cert =
   let parse_decl decl =
