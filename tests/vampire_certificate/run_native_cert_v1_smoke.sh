@@ -1974,6 +1974,33 @@ if ! rg -q 'Vampire certificate v1 checked 6 steps' "$WORK_DIR/native_cert_v1_sk
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_kernel_skolemize_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_kernel_skolemize_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_kernel_skolemize_valid.log"
+
+if ! rg -q 'Vampire certificate v1 strict checked 6 steps' "$WORK_DIR/native_cert_v1_kernel_skolemize_valid.log"; then
+  echo "strict native certificate v1 checker did not accept Skolem kernel metadata" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_kernel_skolemize_introduced_symbol_bad.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_kernel_skolemize_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_kernel_skolemize_introduced_symbol_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_kernel_skolemize_introduced_symbol_bad.err"; then
+  echo "strict native certificate v1 checker accepted mismatched Skolem kernel metadata" >&2
+  exit 1
+fi
+
+if ! rg -q 'u1: strict certificate v1 kernel_v1 skolemize introduced symbol bad_sk is not present in skolem_formula metadata' \
+    "$WORK_DIR/native_cert_v1_kernel_skolemize_introduced_symbol_bad.err"; then
+  echo "strict native certificate v1 checker did not explain mismatched Skolem kernel metadata" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_skolem_introduced_symbol_bad.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_skolem_introduced_symbol_bad.out" \

@@ -3638,6 +3638,17 @@ let validate_kernel_v1_metadata_contracts cert =
         (id ^ ": strict certificate v1 kernel_v1 metadata field "
          ^ key ^ " does not match the certificate clause")
   in
+  let require_field_formula id fields key expected =
+    let actual = parse_field id fields key parse_tm in
+    if actual <> expected
+       && normalize_bool_equality_orientation actual
+          <> normalize_bool_equality_orientation expected
+       && normalize_equality_orientation actual
+          <> normalize_equality_orientation expected then
+      error
+        (id ^ ": strict certificate v1 kernel_v1 metadata field "
+         ^ key ^ " does not match the certificate formula")
+  in
   let require_field_substitution id fields key expected =
     let actual = parse_field id fields key parse_substitution in
     if actual <> expected then
@@ -3691,6 +3702,71 @@ let validate_kernel_v1_metadata_contracts cert =
     | PredicateDefinition _
     | PredicateDefinitionFold _
     | PredicateDefinitionFoldChain _ -> None
+  in
+  let step_formula_opt = function
+    | FormulaTermInput (_, _, formula)
+    | FormulaTermCopy (_, _, formula)
+    | RectifyFormula (_, _, _, formula)
+    | FoolFormula (_, _, formula)
+    | EnnfFormula (_, _, _, _, formula)
+    | SkolemFormula (_, _, _, _, _, formula)
+    | PredicateDefinition (_, _, formula)
+    | PredicateDefinitionFold (_, _, _, formula)
+    | PredicateDefinitionFoldChain (_, _, _, formula) -> Some formula
+    | FormulaInput (_, _, Pos formula)
+    | FormulaCopy (_, _, Pos formula)
+    | FoolBool (_, _, Pos formula) -> Some formula
+    | Input _
+    | FormulaInput (_, _, Neg _)
+    | FoolAtomLift _
+    | SkolemFormulaComputed (_, _, _)
+    | CnfFormulaClause _
+    | CnfLiteral _
+    | DefinitionInput _
+    | DefinitionRewriteChain _
+    | AvatarComponent _
+    | AvatarDefinition _
+    | SplitDependency _
+    | AvatarSplit _
+    | AvatarContradiction _
+    | AvatarRefutation _
+    | FoolExhaustiveness _
+    | FoolDistinctness _
+    | InequalityNameIntro _
+    | InequalitySplit _
+    | Substitute _
+    | Condensation _
+    | UnitResultingResolution _
+    | Resolve _
+    | SubsumptionResolution _
+    | Factor _
+    | EqualityResolution _
+    | EqualityResolutionConstraints _
+    | EqualityFactoring _
+    | EqualityFactoringConstraints _
+    | TruthConflict _
+    | EqualitySymmetry _
+    | BoolSimplify _
+    | Paramodulate _
+    | Superposition _
+    | FormulaCopy (_, _, Neg _)
+    | FoolBool (_, _, Neg _)
+    | Contradiction _ -> None
+  in
+  let require_formula_parent id parent_id =
+    match Hashtbl.find_opt step_by_id parent_id with
+    | Some parent_step ->
+        begin match step_formula_opt parent_step with
+        | Some formula -> formula
+        | None ->
+            error
+              (id ^ ": strict certificate v1 kernel_v1 metadata parent "
+               ^ parent_id ^ " is not a formula-bearing step")
+        end
+    | None ->
+        error
+          (id ^ ": strict certificate v1 kernel_v1 metadata references missing parent "
+           ^ parent_id)
   in
   List.iter
     (fun (id, kind, fields) ->
@@ -3774,6 +3850,108 @@ let validate_kernel_v1_metadata_contracts cert =
              | None ->
                  error
                    (id ^ ": strict certificate v1 kernel_v1 instantiation metadata has no matching certificate step")
+             end
+         | "skolemize" ->
+             require_rule_fields id fields kernel_rule
+               ["proof_parent_count";
+                "parent_0_unit";
+                "source_unit";
+                "source_formula";
+                "result_formula";
+                "introduced_count"];
+             begin match Hashtbl.find_opt step_by_id id with
+             | Some (SkolemFormula (_, parent_id, source, introductions, _, result)) ->
+                 let proof_parent_count = field_int id fields "proof_parent_count" in
+                 if proof_parent_count < 1 then
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 skolemize proof_parent_count must be positive");
+                 let parent_unit = field_required id fields "parent_0_unit" in
+                 if parent_unit <> parent_id then
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 skolemize parent_0_unit "
+                      ^ parent_unit ^ " does not match skolem_formula parent " ^ parent_id);
+                 let source_unit = field_required id fields "source_unit" in
+                 if source_unit <> parent_id then
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 skolemize source_unit "
+                      ^ source_unit ^ " does not match skolem_formula parent " ^ parent_id);
+                 let parent_formula = require_formula_parent id parent_id in
+                 begin match source with
+                 | Some source_formula when source_formula <> parent_formula ->
+                     error
+                       (id ^ ": strict certificate v1 kernel_v1 skolemize source does not match parent formula")
+                 | Some _ | None -> ()
+                 end;
+                 require_field_formula id fields "source_formula" parent_formula;
+                 begin match field_value "parent_0_formula" fields with
+                 | Some _ -> require_field_formula id fields "parent_0_formula" parent_formula
+                 | None -> ()
+                 end;
+                 require_field_formula id fields "result_formula" result;
+                 begin match field_value "conclusion_formula" fields with
+                 | Some _ -> require_field_formula id fields "conclusion_formula" result
+                 | None -> ()
+                 end;
+                 let introduced_count = field_int id fields "introduced_count" in
+                 if introduced_count < 0 then
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 skolemize introduced_count must be non-negative");
+                 if introductions <> [] && introduced_count <> List.length introductions then
+                   error
+                     (Printf.sprintf
+                        "%s: strict certificate v1 kernel_v1 skolemize introduced_count expected %d but got %d"
+                        id (List.length introductions) introduced_count);
+                 let expected_by_symbol =
+                   introductions
+                   |> List.map
+                        (fun introduction ->
+                           (introduction.skolem_intro_symbol,
+                            (introduction.skolem_intro_replaced_var,
+                             introduction.skolem_intro_declaration)))
+                 in
+                 if introductions <> [] then
+                   for index = 0 to introduced_count - 1 do
+                     let prefix = "introduced_" ^ string_of_int index in
+                     let symbol = field_required id fields (prefix ^ "_symbol") in
+                     begin match List.assoc_opt symbol expected_by_symbol with
+                     | None ->
+                         error
+                           (id ^ ": strict certificate v1 kernel_v1 skolemize introduced symbol "
+                            ^ symbol ^ " is not present in skolem_formula metadata")
+                     | Some (expected_var, expected_declaration) ->
+                         begin match expected_var, field_value (prefix ^ "_replaced_var") fields with
+                         | Some expected, Some actual when actual = expected -> ()
+                         | Some expected, Some actual ->
+                             error
+                               (id ^ ": strict certificate v1 kernel_v1 skolemize introduced symbol "
+                                ^ symbol ^ " replaces " ^ actual ^ " but skolem_formula says " ^ expected)
+                         | Some expected, None ->
+                             error
+                               (id ^ ": strict certificate v1 kernel_v1 skolemize introduced symbol "
+                                ^ symbol ^ " is missing replaced_var " ^ expected)
+                         | None, _ -> ()
+                         end;
+                         begin match expected_declaration, field_value (prefix ^ "_declaration") fields with
+                         | Some expected, Some actual when actual = expected -> ()
+                         | Some expected, Some actual ->
+                             error
+                               (id ^ ": strict certificate v1 kernel_v1 skolemize introduced symbol "
+                                ^ symbol ^ " declaration mismatch: expected "
+                                ^ expected ^ " but got " ^ actual)
+                         | Some expected, None ->
+                             error
+                               (id ^ ": strict certificate v1 kernel_v1 skolemize introduced symbol "
+                                ^ symbol ^ " is missing declaration " ^ expected)
+                         | None, _ -> ()
+                         end
+                     end
+                   done
+             | Some _ ->
+                 error
+                   (id ^ ": strict certificate v1 kernel_v1 skolemize metadata must annotate a skolem_formula step")
+             | None ->
+                 error
+                   (id ^ ": strict certificate v1 kernel_v1 skolemize metadata has no matching certificate step")
              end
          | "factoring" ->
              require_rule_fields id fields kernel_rule
