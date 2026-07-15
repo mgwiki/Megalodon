@@ -326,6 +326,9 @@ fi
 awk '
   {
     if (match($0, /proof_parent_count=([0-9]+)/, parent_count_match)) {
+      if (index($0, "rule=cnf_clause") != 0) {
+        next
+      }
       parent_count = parent_count_match[1] + 0
       if (index($0, "source_unit=") == 0) {
         print "source_unit=\t" $0
@@ -986,6 +989,8 @@ if [[ -s "$WORK_DIR/cnf_clause.tsv" ]]; then
   : > "$WORK_DIR/missing_cnf_clause_fields.tsv"
   for pattern in \
     'source_unit=' \
+    'parent_0_unit=' \
+    'proof_parent_count=1' \
     'source_kind=' \
     'result_clause=' \
     'clause_parent_unit=' \
@@ -996,6 +1001,12 @@ if [[ -s "$WORK_DIR/cnf_clause.tsv" ]]; then
   done
 
   awk 'index($0, "source_formula=") == 0 && index($0, "source_clause=") == 0 {print "source_formula_or_clause=\t" $0}' \
+    "$WORK_DIR/cnf_clause.tsv" >> "$WORK_DIR/missing_cnf_clause_fields.tsv"
+  awk 'index($0, "parent_0_formula=") == 0 && index($0, "parent_0_clause=") == 0 {print "parent_0_formula_or_clause=\t" $0}' \
+    "$WORK_DIR/cnf_clause.tsv" >> "$WORK_DIR/missing_cnf_clause_fields.tsv"
+  awk 'index($0, "source_kind=formula") != 0 && index($0, "parent_0_formula=") == 0 {print "parent_0_formula=\t" $0}' \
+    "$WORK_DIR/cnf_clause.tsv" >> "$WORK_DIR/missing_cnf_clause_fields.tsv"
+  awk 'index($0, "source_kind=clause") != 0 && index($0, "parent_0_clause=") == 0 {print "parent_0_clause=\t" $0}' \
     "$WORK_DIR/cnf_clause.tsv" >> "$WORK_DIR/missing_cnf_clause_fields.tsv"
 
   if [[ -s "$WORK_DIR/missing_cnf_clause_fields.tsv" ]]; then
