@@ -819,6 +819,22 @@ if ! rg -q 'f1: native preprocess proof-term checker has no proof-term rule for 
   exit 1
 fi
 
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_formula_normalize_primitive_contract_missing_bad.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_formula_cnf_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_formula_normalize_primitive_contract_missing_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_formula_normalize_primitive_contract_missing_bad.err"; then
+  echo "strict native certificate v1 checker accepted formula-normalize metadata without a primitive-expansion contract" >&2
+  exit 1
+fi
+
+if ! rg -q 'requires primitive_expansion=prefix for kernel rule formula_normalize' \
+    "$WORK_DIR/native_cert_v1_formula_normalize_primitive_contract_missing_bad.err"; then
+  echo "strict native certificate v1 formula-normalize primitive-contract failure did not explain the missing contract" >&2
+  exit 1
+fi
+
 MIN_REWRITE_POSITION=0 \
   tests/vampire_certificate/run_kernel_v1_metadata_audit.sh \
   tests/vampire_certificate/native_cert_v1_kernel_instantiation_valid.sexp \
