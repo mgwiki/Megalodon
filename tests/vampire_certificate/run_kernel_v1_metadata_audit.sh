@@ -187,6 +187,8 @@ awk 'index($0, "conclusion_clause=") != 0 {print}' "$WORK_DIR/kernel_v1.tsv" \
 
 if [[ -s "$WORK_DIR/clausal_kernel.tsv" ]]; then
   : > "$WORK_DIR/missing_clausal_kernel_fields.tsv"
+  awk 'index($0, "result_clause=") == 0 {print "result_clause=\t" $0}' \
+    "$WORK_DIR/clausal_kernel.tsv" >> "$WORK_DIR/missing_clausal_kernel_fields.tsv"
   awk 'index($0, "result_literal_count=") == 0 {print "result_literal_count=\t" $0}' \
     "$WORK_DIR/clausal_kernel.tsv" >> "$WORK_DIR/missing_clausal_kernel_fields.tsv"
   awk 'index($0, "result_literal_count=0") == 0 && index($0, "result_literal_0=") == 0 {print "result_literal_0=\t" $0}' \

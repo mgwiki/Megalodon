@@ -144,7 +144,8 @@ It also rejects premise-like unit references in `kernel_v1` metadata unless
 the referenced unit has already appeared earlier in that certificate; only
 `conclusion_unit` may name the unit produced by the current kernel record.
 For every clausal kernel record with a `conclusion_clause`, it requires
-Vampire's explicit `result_literal_count` and `result_literal_i` conclusion map.
+Vampire's explicit `result_clause`, `result_literal_count`, and
+`result_literal_i` conclusion map.
 For every reported parent, it also requires `parent_i_clause`,
 `parent_i_literal_count`, and `parent_i_literal_j` fields so replay does not
 have to re-parse incomplete parent metadata to recover clause and literal
