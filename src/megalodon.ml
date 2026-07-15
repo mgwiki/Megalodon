@@ -33,6 +33,7 @@ let vampirecertv1source : string option ref = ref None;;
 let vampirecertv1strict : bool ref = ref false;;
 let vampirecertv1closed : bool ref = ref false;;
 let vampirecertv1coreclosed : bool ref = ref false;;
+let vampirecertv1corepfcheck : bool ref = ref false;;
 let vampirecertv1emit : string option ref = ref None;;
 let bushy = ref false;;
 let bushykdeps : (string,unit) Hashtbl.t = Hashtbl.create 10;;
@@ -7057,6 +7058,22 @@ let check_vampire_cert_v1_file fn =
        else "")
       (List.length checked)
       (if List.length checked = 1 then "" else "s");
+    begin if !vampirecertv1corepfcheck then
+      let native_core = Vampire_cert_v1.elaborate_core_unit_refutation_native cert in
+      match
+        check_propofpf sigdelta sigtmof [] []
+          native_core.Vampire_cert_v1.core_native_proof
+          native_core.Vampire_cert_v1.core_native_proposition
+          []
+      with
+      | Some _ ->
+          Printf.printf
+            "Vampire certificate v1 native core proof term checked %d step%s.\n"
+            native_core.Vampire_cert_v1.core_native_steps
+            (if native_core.Vampire_cert_v1.core_native_steps = 1 then "" else "s")
+      | None ->
+          raise (Vampire_cert_v1.Error "native core proof term does not prove its proposition")
+    end;
     begin match !vampirecertv1emit with
     | None -> ()
     | Some out_fn ->
@@ -7319,6 +7336,13 @@ let _ =
             vampirecertv1strict := true;
             vampirecertv1closed := true;
             vampirecertv1coreclosed := true
+          end
+        else if Sys.argv.(!j) = "-vampirecertv1corepfcheck" then
+          begin
+            vampirecertv1strict := true;
+            vampirecertv1closed := true;
+            vampirecertv1coreclosed := true;
+            vampirecertv1corepfcheck := true
           end
         else if Sys.argv.(!j) = "-vampirecertv1source" then
           begin

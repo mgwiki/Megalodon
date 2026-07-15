@@ -153,6 +153,14 @@ the core clause proof language before emission. The shell audit below still
 pre-filters fixtures for reporting, but the final guard is now enforced by
 Megalodon itself.
 
+Use `-vampirecertv1corepfcheck` for the first native proof-term seed. This
+implies `-vampirecertv1coreclosed`, then constructs and kernel-checks a
+`Syntax.pf` proof term for the currently supported unit-resolution refutation
+fragment. It deliberately rejects non-unit core proofs instead of falling back
+to textual replay. This is not yet the full nine-rule core elaborator; it is
+the initial checked entrypoint for replacing the broad `certificate -> string`
+path with a native `certificate -> Syntax.tm * Syntax.pf` path.
+
 For the audit-recommended restricted milestone, use:
 
 ```sh

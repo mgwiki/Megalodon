@@ -130,6 +130,12 @@ type certificate = {
   steps : step list;
 }
 
+type core_native_proof = {
+  core_native_proposition : tm;
+  core_native_proof : pf;
+  core_native_steps : int;
+}
+
 type source_map_entry = {
   source_map_kind : string;
   source_map_tptp_name : string;
@@ -3166,6 +3172,199 @@ let validate_certificate_core_fragment cert =
          ^ String.concat ", " shown
          ^ suffix)
   end
+
+let native_sort_of_simple_sort = function
+  | "prop" -> Prop
+  | "set" -> Set
+  | sort -> error ("native core proof-term checker supports only prop/set variables, not " ^ sort)
+
+let native_core_ident s =
+  let n = String.length s in
+  if n = 0 then error "native core proof-term checker found empty identifier";
+  let is_alpha c =
+    ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || c = '_'
+  in
+  let is_ident c = is_alpha c || ('0' <= c && c <= '9') || c = '\'' in
+  if not (is_alpha s.[0]) then
+    error ("native core proof-term checker found unsupported identifier " ^ s);
+  String.iter
+    (fun c ->
+       if not (is_ident c) then
+         error ("native core proof-term checker found unsupported identifier " ^ s))
+    s;
+  s
+
+let native_core_strip_outer_parens text =
+  let text = String.trim text in
+  if String.length text >= 2
+     && text.[0] = '('
+     && text.[String.length text - 1] = ')' then
+    String.sub text 1 (String.length text - 2) |> String.trim
+  else text
+
+let native_core_declared_variables cert =
+  let parse_decl decl =
+    let line = String.trim decl in
+    if not (string_starts_with "Variable " line) then None
+    else
+      let body =
+        String.sub line 9 (String.length line - 9)
+        |> String.trim
+      in
+      match String.index_opt body ':' with
+      | None -> None
+      | Some colon ->
+          let name = String.sub body 0 colon |> String.trim |> native_core_ident in
+          let typ =
+            String.sub body (colon + 1) (String.length body - colon - 1)
+            |> String.trim
+          in
+          let typ =
+            if String.length typ > 0 && typ.[String.length typ - 1] = '.' then
+              String.sub typ 0 (String.length typ - 1)
+            else typ
+          in
+          Some (name, native_sort_of_simple_sort (native_core_strip_outer_parens typ))
+  in
+  cert.metadata.symbol_declarations
+  |> List.filter_map parse_decl
+  |> List.sort_uniq compare
+
+let native_core_close_tm variables tm =
+  let variable_count = List.length variables in
+  let rec variable_index index = function
+    | [] -> None
+    | (name, _) :: rest ->
+        if name = index then Some 0
+        else Option.map (fun i -> i + 1) (variable_index index rest)
+  in
+  let rec close depth = function
+    | TmH name ->
+        begin match variable_index (native_core_ident name) variables with
+        | Some outer_index -> DB (depth + variable_count - outer_index - 1)
+        | None -> TmH name
+        end
+    | TpAp (m, a) -> TpAp (close depth m, a)
+    | Ap (m, n) -> Ap (close depth m, close depth n)
+    | Lam (a, body) -> Lam (a, close (depth + 1) body)
+    | Imp (m, n) -> Imp (close depth m, close depth n)
+    | All (a, body) -> All (a, close (depth + 1) body)
+    | tm -> tm
+  in
+  close 0 tm
+
+let rec native_core_close_pf variables = function
+  | Hyp i -> Hyp i
+  | Known h -> Known h
+  | PTpAp (proof, tp) -> PTpAp (native_core_close_pf variables proof, tp)
+  | PTmAp (proof, tm) ->
+      PTmAp (native_core_close_pf variables proof, native_core_close_tm variables tm)
+  | PPfAp (left, right) ->
+      PPfAp (native_core_close_pf variables left, native_core_close_pf variables right)
+  | PLam (prop, proof) ->
+      PLam (native_core_close_tm variables prop, native_core_close_pf variables proof)
+  | TLam (tp, proof) -> TLam (tp, native_core_close_pf variables proof)
+
+let native_core_literal_prop = function
+  | Pos tm -> tm
+  | Neg tm -> Imp (tm, TmH "vampire_false")
+
+let native_core_unit_prop id = function
+  | [literal] -> native_core_literal_prop literal
+  | _ -> error (id ^ ": native core proof-term checker currently supports only unit clauses")
+
+let native_core_same_atom left right =
+  left = right
+
+let elaborate_core_unit_refutation_native cert =
+  let core_steps = validate_certificate_core_fragment cert in
+  ignore (check_certificate_strict cert);
+  let source_inputs = ref [] in
+  List.iter
+    (function
+      | Input (id, _, clause) ->
+          source_inputs := !source_inputs @ [(id, native_core_unit_prop id clause)]
+      | _ -> ())
+    cert.steps;
+  let source_count = List.length !source_inputs in
+  let source_hyp_index id =
+    let rec find index = function
+      | [] -> None
+      | (input_id, _) :: rest ->
+          if input_id = id then Some (source_count - index - 1)
+          else find (index + 1) rest
+    in
+    match find 0 !source_inputs with
+    | Some index -> index
+    | None -> error (id ^ ": native core proof-term checker lost source hypothesis")
+  in
+  let table = Hashtbl.create 101 in
+  let final_proof = ref None in
+  let store id clause proof =
+    Hashtbl.replace table id (clause, proof);
+    if clause = [] then final_proof := Some proof
+  in
+  let lookup id =
+    try Hashtbl.find table id
+    with Not_found ->
+      error (id ^ ": native core proof-term checker references unknown parent")
+  in
+  List.iter
+    (function
+      | Input (id, _, clause) ->
+          let _ = native_core_unit_prop id clause in
+          store id clause (Hyp (source_hyp_index id))
+      | Resolve (id, left_id, right_id, left_index, right_index, result) ->
+          let left_clause, left_proof = lookup left_id in
+          let right_clause, right_proof = lookup right_id in
+          begin match left_clause, right_clause, result, left_index, right_index with
+          | [Pos left_atom], [Neg right_atom], [], 0, 0
+            when native_core_same_atom left_atom right_atom ->
+              store id result (PPfAp (right_proof, left_proof))
+          | [Neg left_atom], [Pos right_atom], [], 0, 0
+            when native_core_same_atom left_atom right_atom ->
+              store id result (PPfAp (left_proof, right_proof))
+          | _ ->
+              error
+                (id ^ ": native core proof-term checker currently supports only unit complementary resolution")
+          end
+      | Contradiction (id, parent_id) ->
+          let parent_clause, parent_proof = lookup parent_id in
+          if parent_clause <> [] then
+            error (id ^ ": native core proof-term contradiction parent is not empty");
+          store id [] parent_proof
+      | step ->
+          error
+            (step_id step ^ ": native core proof-term checker has no proof-term rule for "
+             ^ step_rule_name step))
+    cert.steps;
+  let proof =
+    match !final_proof with
+    | Some proof -> proof
+    | None -> error "native core proof-term checker found no empty-clause proof"
+  in
+  let body_prop =
+    List.fold_right
+      (fun (_, assumption) target -> Imp (assumption, target))
+      !source_inputs
+      (TmH "vampire_false")
+  in
+  let body_proof =
+    List.fold_right
+      (fun (_, assumption) proof -> PLam (assumption, proof))
+      !source_inputs
+      proof
+  in
+  let variables = native_core_declared_variables cert in
+  let closed_prop = native_core_close_tm variables body_prop in
+  let closed_proof = native_core_close_pf variables body_proof in
+  {
+    core_native_proposition =
+      List.fold_right (fun (_, tp) prop -> All (tp, prop)) variables closed_prop;
+    core_native_proof =
+      List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) variables closed_proof;
+    core_native_steps = core_steps;
+  }
 
 let emit_error msg =
   let msg =
