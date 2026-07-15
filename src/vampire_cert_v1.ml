@@ -3105,6 +3105,10 @@ let check_certificate_strict cert =
 
 let emit_error msg = error ("simple Megalodon emitter: " ^ msg)
 
+let debug_emit_error context msg =
+  if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+    prerr_endline ("simple Megalodon emitter debug: " ^ context ^ ": " ^ msg)
+
 let simple_normalize_vlam_text ?(lambda_binder_sort = fun _ -> None) text =
   let is_name_char = function
     | 'A'..'Z' | 'a'..'z' | '0'..'9' | '_' | '\'' -> true
@@ -6650,7 +6654,10 @@ let simple_clause_projection_with_eliminators target_prop target_clause source_c
           else
             begin match eliminator lit head_name with
             | Some contradiction -> false_elim contradiction
-            | None -> emit_error "avatar split projection has an unhandled literal"
+            | None ->
+                emit_error
+                  ("avatar split projection has an unhandled literal "
+                   ^ simple_literal_prop lit)
             end
         in
         let tail_branch = project (depth + 1) rest tail_name in
@@ -6780,7 +6787,10 @@ let simple_avatar_split_proof
           | None ->
             begin match eliminator lit proof with
             | Some contradiction -> false_elim contradiction
-            | None -> emit_error "avatar split projection has an unhandled literal"
+            | None ->
+                emit_error
+                  ("avatar split projection has an unhandled literal "
+                   ^ prop_text (formula_tm_of_literal lit))
             end
           end
       | lit :: rest ->
@@ -6794,7 +6804,10 @@ let simple_avatar_split_proof
             | None ->
               begin match eliminator lit head_name with
               | Some contradiction -> false_elim contradiction
-              | None -> emit_error "avatar split projection has an unhandled literal"
+              | None ->
+                  emit_error
+                    ("avatar split projection has an unhandled literal "
+                     ^ prop_text (formula_tm_of_literal lit))
               end
           in
           let tail_branch = project (depth + 1) rest tail_name in
@@ -6880,8 +6893,15 @@ let simple_avatar_split_proof
               end
           | _ -> None
         in
-        let try_definition (split_name, (_, body_clause, _)) =
+        let try_definition (split_name, (_, body_clause, body_prop)) =
+          let source_prop = prop_text (formula_tm_of_literal lit) in
           match body_clause, lookup_assignment split_name assignments, lit with
+          | [], Some (_, `False not_name), _
+              when simple_prop_equal_mod_cnf_defs source_prop body_prop ->
+              Some (Printf.sprintf "(%s %s)" not_name lit_proof)
+          | [], Some (_, `True true_name), Neg source_atom
+              when simple_prop_equal_mod_cnf_defs (prop_text source_atom) body_prop ->
+              Some (Printf.sprintf "(%s %s)" lit_proof true_name)
           | [Pos body_atom], Some (_, `False not_name), Pos source_atom
               when source_atom = body_atom ->
               Some (Printf.sprintf "(%s %s)" not_name lit_proof)
@@ -6909,7 +6929,10 @@ let simple_avatar_split_proof
     | Some (_, body_clause, body_prop) ->
         let body_sorts = simple_forall_prefix_sorts body_prop in
         let body_type_env = simple_type_env_with_variables body_sorts type_env in
-        let body_target_prop = simple_clause_prop_with_type_env body_type_env body_clause in
+        let body_target_prop =
+          if body_clause = [] then body_prop
+          else simple_clause_prop_with_type_env body_type_env body_clause
+        in
         let parent_proof, parent_subst =
           List.fold_left
             (fun (proof, subst) (name, sort) ->
@@ -6932,8 +6955,51 @@ let simple_avatar_split_proof
         let parent_clause = subst_clause parent_subst parent_clause in
         let eliminator lit proof = contradiction_from_assignment lit proof assignments in
         let body_proof =
-          simple_clause_projection_with_eliminators
-            body_target_prop body_clause parent_clause parent_proof eliminator
+          if body_clause = [] then
+            let false_elim proof =
+              Printf.sprintf "(%s %s)" proof (simple_prop_arg body_target_prop)
+            in
+            let rec project depth clause proof =
+              match clause with
+              | [] -> emit_error (id ^ ": avatar split cannot project from empty metadata body")
+              | [lit] ->
+                  let source_prop = prop_text (formula_tm_of_literal lit) in
+                  if simple_prop_equal_mod_cnf_defs source_prop body_target_prop then
+                    proof
+                  else
+                    begin match eliminator lit proof with
+                    | Some contradiction -> false_elim contradiction
+                    | None ->
+                        emit_error
+                          ("avatar split metadata-body projection has an unhandled literal "
+                           ^ source_prop)
+                    end
+              | lit :: rest ->
+                  let head_name = "Havatar_split_metadata_lit_" ^ string_of_int depth in
+                  let tail_name = "Havatar_split_metadata_tail_" ^ string_of_int depth in
+                  let source_prop = prop_text (formula_tm_of_literal lit) in
+                  let head_branch =
+                    if simple_prop_equal_mod_cnf_defs source_prop body_target_prop then
+                      head_name
+                    else
+                      begin match eliminator lit head_name with
+                      | Some contradiction -> false_elim contradiction
+                      | None ->
+                          emit_error
+                            ("avatar split metadata-body projection has an unhandled literal "
+                             ^ source_prop)
+                      end
+                  in
+                  let tail_branch = project (depth + 1) rest tail_name in
+                  Printf.sprintf "(%s %s (fun %s:%s => %s) (fun %s:%s => %s))"
+                    proof (simple_prop_arg body_target_prop)
+                    head_name source_prop head_branch
+                    tail_name (prop_text (simple_clause_formula_tm rest)) tail_branch
+            in
+            project 0 parent_clause parent_proof
+          else
+            simple_clause_projection_with_eliminators
+              body_target_prop body_clause parent_clause parent_proof eliminator
         in
         simple_wrap_forall_intro body_sorts body_proof
   in
@@ -6957,7 +7023,11 @@ let simple_avatar_split_proof
           else
             match
               try Some (prove_positive_split split_name assignments)
-              with Error _ -> None
+              with Error msg ->
+                debug_emit_error
+                  ("avatar_split " ^ id ^ " candidate " ^ split_name)
+                  msg;
+                None
             with
             | Some split_proof ->
                 Some
@@ -7559,9 +7629,21 @@ let rec simple_formula_prop_text_with_used used type_env tm =
                   | None -> true) ->
             megalodon_ident name
         | _ ->
-            begin match
-              first_unused_vampire_var_name_with_sort
-                type_env used sort body
+            let candidates =
+              type_env
+              |> List.filter
+                   (fun (name, known_sort) ->
+                      let binder = megalodon_ident name in
+                      known_sort = sort
+                      && is_vampire_var_name binder
+                      && not (List.mem binder used)
+                      && tm_contains_symbol binder body)
+            in
+            begin match candidates with
+            | (name, _) :: _ -> megalodon_ident name
+            | [] ->
+            match first_unused_vampire_var_name_with_sort
+                    type_env used sort body
             with
             | Some name -> megalodon_ident name
             | None ->
@@ -9516,6 +9598,92 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
               (source_var, sort))
       |> simple_unique_variable_sorts
     in
+    let skolem_lambda_binder used sort body =
+      let used = List.map megalodon_ident used in
+      match
+        subst
+        |> List.find_opt
+             (fun (raw_source_var, _) ->
+                let source_var = megalodon_ident raw_source_var in
+                not (List.mem source_var used)
+                && tm_contains_symbol source_var body
+                && List.assoc_opt source_var subst_variable_env = Some sort)
+      with
+      | Some (raw_source_var, _) -> megalodon_ident raw_source_var
+      | None ->
+          begin match first_unused_vampire_var_name_with_sort
+                        (subst_variable_env @ binder_sorts) used sort body with
+          | Some name -> megalodon_ident name
+          | None ->
+              begin match first_unused_vampire_var_name used body with
+              | Some name -> megalodon_ident name
+              | None -> "Xskolem_def_" ^ string_of_int !binder_index
+              end
+          end
+    in
+    let skolem_formula_binder used env sort body =
+      let used = List.map megalodon_ident used in
+      match preferred_formula_binder_name sort body with
+      | Some name
+          when not (List.mem (megalodon_ident name) used)
+               &&
+               (match List.assoc_opt (megalodon_ident name) env with
+                | Some known_sort -> known_sort = sort
+                | None -> true) ->
+          megalodon_ident name
+      | _ ->
+          begin match first_unused_vampire_var_name_with_sort env used sort body with
+          | Some name -> megalodon_ident name
+          | None ->
+              begin match first_unused_vampire_var_name used body with
+              | Some name -> megalodon_ident name
+              | None ->
+                  let name = "Xskolem_def_" ^ string_of_int !binder_index in
+                  incr binder_index;
+                  name
+              end
+          end
+    in
+    let rec skolem_formula_text used env tm =
+      match tm with
+      | All (tp, body) ->
+          let sort = simple_tp_expr tp in
+          let binder = skolem_formula_binder used env sort body in
+          "forall " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ ", "
+          ^ skolem_formula_text (binder :: used) ((binder, sort) :: env) body
+      | Imp (left, right) ->
+          "(" ^ skolem_formula_text used env left ^ " -> "
+          ^ skolem_formula_text used env right ^ ")"
+      | Ap (Ap (TmH "vampire_and", left), right) ->
+          "vampire_and (" ^ skolem_formula_text used env left ^ ") ("
+          ^ skolem_formula_text used env right ^ ")"
+      | Ap (Ap (TmH "vampire_or", left), right) ->
+          "vampire_or (" ^ skolem_formula_text used env left ^ ") ("
+          ^ skolem_formula_text used env right ^ ")"
+      | Ap (exists_head, Lam (tp, body))
+          when exists_head = TmH "vampire_exists_prop"
+               || exists_head = TmH "vampire_exists_set" ->
+          let sort = simple_tp_expr tp in
+          let exists_name =
+            match sort with
+            | "set" -> "vampire_exists_set"
+            | "prop" -> "vampire_exists_prop"
+            | "set->prop" -> "vampire_exists_set_prop"
+            | "set->set" -> "vampire_exists_set_set"
+            | "set->set->prop" -> "vampire_exists_set_set_prop"
+            | _ -> "vampire_exists_set"
+          in
+          let binder = skolem_lambda_binder used sort body in
+          exists_name ^ " (fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort
+          ^ " => "
+          ^ skolem_formula_text (binder :: used) ((binder, sort) :: env) body
+          ^ ")"
+      | atom ->
+          begin match equality_sides atom with
+          | Some _ -> simple_atom_prop_with_type_env env atom
+          | None -> simple_tm_expr_with_expected env (Some "prop") atom
+          end
+    in
     let binder_for_arg env index arg =
       match arg with
       | TmH raw_name ->
@@ -9569,7 +9737,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                         |> simple_unique_variable_sorts)
                   in
                   let body_text =
-                    simple_formula_prop_text_with_used [source_var] predicate_env body
+                    skolem_formula_text [source_var] predicate_env body
                   in
                   let sort =
                     List.fold_right
@@ -10629,24 +10797,27 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             | _ -> None
           in
           begin match
-            try
-              let parent_formula = lookup_formula checked_certificate parent_id in
-              let parent_sorts = [] in
-              let type_env =
-                simple_type_env_with_variables
-                  (parent_sorts @ target_sorts |> simple_unique_variable_sorts)
-                  symbol_type_env
-              in
-              let proof_parent_formula =
-                proof_parent_formula_for_emitted_prop
-                  type_env parent_id parent_formula
-                |> normalize_skolem_parent_formula parent_id
-              in
-              Some
-                (simple_skolem_formula_proof
-                   type_env id parent_id subst proof_parent_formula proof_formula
-                   parent_sorts target_sorts !emitted_names)
-            with Error _ -> None
+            if List.length subst > 4 then
+              None
+            else
+              try
+                let parent_formula = lookup_formula checked_certificate parent_id in
+                let parent_sorts = [] in
+                let type_env =
+                  simple_type_env_with_variables
+                    (parent_sorts @ target_sorts |> simple_unique_variable_sorts)
+                    symbol_type_env
+                in
+                let proof_parent_formula =
+                  proof_parent_formula_for_emitted_prop
+                    type_env parent_id parent_formula
+                  |> normalize_skolem_parent_formula parent_id
+                in
+                Some
+                  (simple_skolem_formula_proof
+                     type_env id parent_id subst proof_parent_formula proof_formula
+                     parent_sorts target_sorts !emitted_names)
+              with Error _ -> None
           with
           | Some proof ->
               add_emitted id name;
@@ -11141,7 +11312,9 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                        id sorts
                        parent_id (variable_sorts_for_ids [parent_id]) parent_clause
                        proof_result parent_name)
-                with Error _ -> None
+                with Error msg ->
+                  debug_emit_error ("avatar_split " ^ id) msg;
+                  None
               with
               | Some proof ->
                   claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")]
@@ -11391,20 +11564,39 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             in
             simple_quantify_prop sorts body
           in
-          let emitted_parent_matches parent_id parent_sorts parent_clause =
+          let emitted_parent_match_modes parent_id parent_sorts parent_clause =
             let parent_prop = emitted_parent_prop parent_id in
             let structural = structural_clause_prop parent_sorts parent_clause in
             let formula = formula_clause_prop parent_sorts parent_clause in
-            parent_prop = structural
-            || parent_prop = formula
-            || simple_prop_equal_mod_app_parens parent_prop structural
-            || simple_prop_equal_mod_app_parens parent_prop formula
-            || simple_prop_equal_mod_cnf_defs parent_prop structural
-            || simple_prop_equal_mod_cnf_defs parent_prop formula
+            let parent_is_avatar_component =
+              List.exists
+                (function
+                  | AvatarComponent (step_id, _) when step_id = parent_id -> true
+                  | _ -> false)
+                cert.steps
+            in
+            let structural_match =
+              ((not parent_is_avatar_component) || List.length parent_clause <= 2)
+              && (parent_prop = structural
+                  || simple_prop_equal_mod_app_parens parent_prop structural
+                  || simple_prop_equal_mod_cnf_defs parent_prop structural)
+            in
+            let formula_match =
+              parent_prop = formula
+              || simple_prop_equal_mod_app_parens parent_prop formula
+              || simple_prop_equal_mod_cnf_defs parent_prop formula
+            in
+            (structural_match, formula_match)
+          in
+          let left_matches_structural, left_matches_formula =
+            emitted_parent_match_modes left_id left_sorts left_clause
+          in
+          let right_matches_structural, right_matches_formula =
+            emitted_parent_match_modes right_id right_sorts right_clause
           in
           let structurally_safe =
-            emitted_parent_matches left_id left_sorts left_clause
-            && emitted_parent_matches right_id right_sorts right_clause
+            (left_matches_structural || left_matches_formula)
+            && (right_matches_structural || right_matches_formula)
             && prop = structural_clause_prop sorts result
           in
           begin match
@@ -11416,11 +11608,14 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                 else variable_sorts_for_ids [parent_id]
               in
               match
-                try Some (simple_resolution_clause_proof
-                            clause_body_prop parent_sorts_of sorts
-                            id left_id right_id left_index right_index result
-                            !checked !emitted_names)
-                with Error _ -> None
+                if left_matches_structural && right_matches_structural then
+                  try Some (simple_resolution_clause_proof
+                              clause_body_prop parent_sorts_of sorts
+                              id left_id right_id left_index right_index result
+                              !checked !emitted_names)
+                  with Error _ -> None
+                else
+                  None
               with
               | Some proof -> Some proof
               | None ->
