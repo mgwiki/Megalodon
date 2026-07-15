@@ -6040,6 +6040,17 @@ let simple_cnf_clause_projection_proof
         end
   in
   let choose_binder used sort body =
+    let rec contains_outside_nested_forall name = function
+      | All _ -> false
+      | TpAp (tm, _) -> contains_outside_nested_forall name tm
+      | Ap (left, right)
+      | Imp (left, right) ->
+          contains_outside_nested_forall name left
+          || contains_outside_nested_forall name right
+      | Lam (_, body) -> contains_outside_nested_forall name body
+      | TmH h -> h = name
+      | DB _ | Prim _ -> false
+    in
     let candidates =
       target_sorts
       |> List.filter
@@ -6049,6 +6060,15 @@ let simple_cnf_clause_projection_proof
               && not (List.mem binder used)
               && tm_contains_symbol binder body)
     in
+    let outside_nested =
+      candidates
+      |> List.filter
+           (fun (name, _) ->
+              contains_outside_nested_forall (megalodon_ident name) body)
+    in
+    match outside_nested with
+    | (name, _) :: _ -> megalodon_ident name
+    | [] ->
     match candidates with
     | (name, _) :: _ -> megalodon_ident name
     | [] -> emit_error "CNF clause projection could not find a target binder for nested forall"
