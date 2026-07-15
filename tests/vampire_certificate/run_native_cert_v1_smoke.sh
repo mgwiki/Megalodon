@@ -888,9 +888,15 @@ if rg -q 'f1_fool_atom_0: native preprocess proof-term checker has no proof-term
   exit 1
 fi
 
-if ! rg -q 'f1: native preprocess proof-term checker has no proof-term rule for fool_formula' \
+if rg -q 'f1: native preprocess proof-term checker has no proof-term rule for fool_formula' \
     "$WORK_DIR/native_cert_v1_fool_preprocess_pf_frontier.err"; then
-  echo "native preprocess proof-term checker did not advance from FOOL atom-lift to the FOOL formula frontier" >&2
+  echo "native preprocess proof-term checker did not recognize the FOOL formula primitive" >&2
+  exit 1
+fi
+
+if ! rg -q 'f1: native preprocess proof-term fool_formula cannot lift atom' \
+    "$WORK_DIR/native_cert_v1_fool_preprocess_pf_frontier.err"; then
+  echo "native preprocess proof-term checker did not advance from FOOL formula macro replay to the typed-atom frontier" >&2
   exit 1
 fi
 

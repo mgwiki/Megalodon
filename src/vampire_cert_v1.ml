@@ -3853,6 +3853,34 @@ let native_core_step_variables cert id =
               (native_core_ident name,
                native_sort_of_simple_sort (native_core_strip_outer_parens sort)))
 
+let native_core_true =
+  All (Prop, Imp (DB 0, DB 0))
+
+let native_core_false =
+  All (Prop, DB 0)
+
+let native_core_is_vampire_true_name = function
+  | "f__true" | "vampire_true" -> true
+  | _ -> false
+
+let native_core_is_vampire_false_name = function
+  | "f__false" | "vampire_false" -> true
+  | _ -> false
+
+let rec native_core_normalize_bool_constants = function
+  | TmH h when native_core_is_vampire_true_name h -> native_core_true
+  | TmH h when native_core_is_vampire_false_name h -> native_core_false
+  | TpAp (m, a) -> TpAp (native_core_normalize_bool_constants m, a)
+  | Ap (m, n) ->
+      Ap (native_core_normalize_bool_constants m,
+          native_core_normalize_bool_constants n)
+  | Lam (a, body) -> Lam (a, native_core_normalize_bool_constants body)
+  | Imp (left, right) ->
+      Imp (native_core_normalize_bool_constants left,
+           native_core_normalize_bool_constants right)
+  | All (a, body) -> All (a, native_core_normalize_bool_constants body)
+  | DB _ | TmH _ | Prim _ as tm -> tm
+
 let native_core_close_tm ?(depth=0) variables tm =
   let variable_count = List.length variables in
   let rec variable_index index = function
@@ -3874,7 +3902,7 @@ let native_core_close_tm ?(depth=0) variables tm =
     | All (a, body) -> All (a, close (depth + 1) body)
     | tm -> tm
   in
-  close depth tm
+  close depth (native_core_normalize_bool_constants tm)
 
 let native_core_close_pf variables proof =
   let rec close depth = function
@@ -3890,9 +3918,6 @@ let native_core_close_pf variables proof =
     | TLam (tp, proof) -> TLam (tp, close (depth + 1) proof)
   in
   close 0 proof
-
-let native_core_false =
-  All (Prop, DB 0)
 
 let native_core_or left right =
   All
@@ -3910,6 +3935,14 @@ let native_core_expand_eq_atom = function
            (Ap (Ap (DB 0, tmshift 0 1 left), tmshift 0 1 right),
             Ap (Ap (DB 0, tmshift 0 1 right), tmshift 0 1 left)))
   | tm -> tm
+
+let rec native_core_formula_prop = function
+  | Imp (left, right) ->
+      Imp (native_core_formula_prop left, native_core_formula_prop right)
+  | All (tp, body) -> All (tp, native_core_formula_prop body)
+  | Ap (Ap (TmH "vampire_or", left), right) ->
+      native_core_or (native_core_formula_prop left) (native_core_formula_prop right)
+  | tm -> native_core_expand_eq_atom tm
 
 let native_core_literal_prop = function
   | Pos tm -> native_core_expand_eq_atom tm
@@ -4195,8 +4228,162 @@ let native_core_reflexive_eq_proof = function
            (Ar (tp, Ar (tp, Prop)),
             PLam
               (Ap (Ap (DB 0, tmshift 0 1 left), tmshift 0 1 left),
-               Hyp 0)))
+           Hyp 0)))
   | _ -> None
+
+let native_core_prop_ext_hash =
+  "d8c32d0ac70c5760222c9adf1a3ca90f3cb6b5182b0f70a5d82cb9000abc77ef"
+
+let native_core_eq_prop left right =
+  Ap (Ap (TpAp (TmH megalodon_eq_poly_hash, Prop), left), right)
+
+let native_core_prop_ext_prop =
+  All
+    (Prop,
+     All
+       (Prop,
+        Imp
+          (Imp (DB 1, DB 0),
+           Imp
+             (Imp (DB 0, DB 1),
+              native_core_expand_eq_atom (native_core_eq_prop (DB 1) (DB 0))))))
+
+let native_core_approved_sgdelta () =
+  let sgdelta = Hashtbl.create 1 in
+  Hashtbl.add sgdelta native_core_prop_ext_hash (0, native_core_prop_ext_prop);
+  sgdelta
+
+let native_core_true_proof =
+  TLam (Prop, PLam (DB 0, Hyp 0))
+
+let native_core_prop_ext_eq left right left_to_right right_to_left =
+  PPfAp
+    (PPfAp
+       (PTmAp (PTmAp (Known native_core_prop_ext_hash, left), right),
+        left_to_right),
+     right_to_left)
+
+let native_core_true_eq_from_proof source target proof =
+  match megalodon_eq_poly_sides target with
+  | Some (Prop, left, right) when left = source && right = native_core_true ->
+      let atom = left in
+      let atom_to_true = PLam (atom, native_core_true_proof) in
+      let true_to_atom = PLam (native_core_true, pfshift 0 1 proof) in
+      Some (native_core_prop_ext_eq atom native_core_true atom_to_true true_to_atom)
+  | Some (Prop, left, right) when left = native_core_true && right = source ->
+      let atom = right in
+      let atom_to_true = PLam (atom, native_core_true_proof) in
+      let true_to_atom = PLam (native_core_true, pfshift 0 1 proof) in
+      Some (native_core_prop_ext_eq native_core_true atom true_to_atom atom_to_true)
+  | _ -> None
+
+let native_core_proof_from_true_eq source target proof =
+  match megalodon_eq_poly_sides target with
+  | Some (Prop, left, right) when left = source && right = native_core_true ->
+      let atom = left in
+      let atom_to_true = PLam (atom, native_core_true_proof) in
+      let motive = Lam (Prop, Lam (Prop, Imp (DB 1, DB 0))) in
+      Some (PPfAp (PPfAp (PTmAp (proof, motive), atom_to_true), native_core_true_proof))
+  | Some (Prop, left, right) when left = native_core_true && right = source ->
+      let atom = right in
+      let atom_to_true = PLam (atom, native_core_true_proof) in
+      let motive = Lam (Prop, Lam (Prop, Imp (DB 0, DB 1))) in
+      Some (PPfAp (PPfAp (PTmAp (proof, motive), atom_to_true), native_core_true_proof))
+  | _ -> None
+
+let native_core_fool_formula_proof id variables step_variables source target proof =
+  let source = native_core_close_tm (variables @ step_variables) source in
+  let target = native_core_close_tm (variables @ step_variables) target in
+  let rec convert direction source target proof =
+    if source = target then proof
+    else
+      match source, target with
+      | All (source_tp, source_body), All (target_tp, target_body)
+          when source_tp = target_tp ->
+          TLam
+            (source_tp,
+             convert
+               direction
+               source_body
+               target_body
+               (PTmAp (pftmshift 0 1 proof, DB 0)))
+      | Imp (source_left, source_right), Imp (target_left, target_right) ->
+          begin match direction with
+          | `Forward ->
+              let source_left_proof =
+                convert `Backward source_left target_left (Hyp 0)
+              in
+              let source_right_proof =
+                PPfAp (pfshift 0 1 proof, source_left_proof)
+              in
+              PLam
+                (native_core_formula_prop target_left,
+                 convert `Forward source_right target_right source_right_proof)
+          | `Backward ->
+              let target_left_proof =
+                convert `Forward source_left target_left (Hyp 0)
+              in
+              let target_right_proof =
+                PPfAp (pfshift 0 1 proof, target_left_proof)
+              in
+              PLam
+                (native_core_formula_prop source_left,
+                 convert `Backward source_right target_right target_right_proof)
+          end
+      | _ ->
+          begin match direction with
+          | `Forward ->
+              begin match native_core_true_eq_from_proof source target proof with
+              | Some proof -> proof
+              | None ->
+                  error
+                    (id ^ ": native preprocess proof-term fool_formula cannot lift atom")
+              end
+          | `Backward ->
+              begin match native_core_proof_from_true_eq source target proof with
+              | Some proof -> proof
+              | None ->
+                  error
+                    (id ^ ": native preprocess proof-term fool_formula cannot lower atom")
+              end
+          end
+  in
+  let body_proof =
+    let rec introduce variables proof =
+      match variables with
+      | [] -> convert `Forward source target proof
+      | (_, tp) :: rest ->
+          TLam
+            (tp,
+             introduce rest (PTmAp (pftmshift 0 1 proof, DB 0)))
+    in
+    introduce step_variables proof
+  in
+  body_proof
+
+let native_core_fool_bool_proof id variables parent_formula parent_proof result =
+  let close = native_core_close_tm variables in
+  match parent_formula, result with
+  | atom, Pos target_atom ->
+      let atom = close atom in
+      let target_atom = close target_atom in
+      begin match native_core_true_eq_from_proof atom target_atom parent_proof with
+      | Some proof -> proof
+      | None -> error (id ^ ": native preprocess proof-term fool_bool cannot lift positive atom")
+      end
+  | Imp (atom, false_tm), Neg target_atom
+      when native_core_normalize_bool_constants false_tm = native_core_false ->
+      let atom = close atom in
+      let target_atom = close target_atom in
+      begin match native_core_proof_from_true_eq atom target_atom (Hyp 0) with
+      | Some atom_proof ->
+          PLam
+            (native_core_expand_eq_atom target_atom,
+             PPfAp (pfshift 0 1 parent_proof, atom_proof))
+      | None -> error (id ^ ": native preprocess proof-term fool_bool cannot lower negative atom")
+      end
+  | _ ->
+      error (id ^ ": native preprocess proof-term fool_bool parent/result shape is unsupported")
 
 let native_core_swapped_eq_literal = function
   | Pos atom ->
@@ -4724,7 +4911,7 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
         prerr_endline ("native core proof: " ^ pf_to_str proof)
       end
     in
-    let empty_delta = Hashtbl.create 0 in
+    let empty_delta = native_core_approved_sgdelta () in
     let empty_tms = Hashtbl.create 0 in
     try
       match check_propofpf empty_delta empty_tms variable_types closed_source_context proof prop [] with
@@ -4897,7 +5084,11 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
 
 let native_preprocess_step_formula_prop cert variables id formula =
   let step_variables = native_core_step_variables cert id in
-  let prop = native_core_close_tm (variables @ step_variables) formula in
+  let prop =
+    native_core_close_tm
+      (variables @ step_variables)
+      (native_core_formula_prop formula)
+  in
   List.fold_right (fun (_, tp) prop -> All (tp, prop)) step_variables prop
 
 let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
@@ -4958,7 +5149,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
         prerr_endline ("native preprocess proof: " ^ pf_to_str proof)
       end
     in
-    let empty_delta = Hashtbl.create 0 in
+    let empty_delta = native_core_approved_sgdelta () in
     let empty_tms = Hashtbl.create 0 in
     try
       match check_propofpf empty_delta empty_tms variable_types closed_source_context proof prop [] with
@@ -5016,11 +5207,24 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           if parent_formula <> result then
             error (id ^ ": native preprocess proof-term rectify_formula is not an identity copy");
           store_formula id result parent_proof
+      | FoolBool (id, parent_id, result) ->
+          let parent_formula, parent_proof = lookup_formula parent_id in
+          store_formula id (formula_tm_of_literal result)
+            (native_core_fool_bool_proof id variables parent_formula parent_proof result)
       | FoolAtomLift (id, source, target, path) ->
           check_fool_atom_lift id source target path
+      | FoolFormula (id, parent_id, result) ->
+          let parent_formula, parent_proof = lookup_formula parent_id in
+          let candidates = fool_formula_tm_candidates parent_formula in
+          if not (List.exists (fun expected -> same_fool_formula_lift expected result) candidates) then
+            error (id ^ ": fool_formula result does not match recursive FOOL Boolean lifting");
+          let step_variables = native_core_step_variables cert parent_id in
+          store_formula id result
+            (native_core_fool_formula_proof id variables step_variables parent_formula result parent_proof)
       | FormulaCopy (id, parent_id, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
-          if native_core_literal_prop result <> parent_formula then
+          if native_core_normalize_bool_constants (native_core_literal_prop result)
+             <> native_core_normalize_bool_constants (native_core_formula_prop parent_formula) then
             error (id ^ ": native preprocess proof-term formula_copy result is not the parent formula");
           store_clause id [result] parent_proof
       | Substitute (id, parent_id, [], result) ->
