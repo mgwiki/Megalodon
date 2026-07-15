@@ -13514,6 +13514,56 @@ let parse_source_map text =
     else if string_starts_with "cnf(" line then Some ("cnf", 4)
     else None
   in
+  let strip_tptp_comment line =
+    try String.sub line 0 (String.index line '%') with Not_found -> line
+  in
+  let tptp_paren_delta line =
+    let line = strip_tptp_comment line in
+    let rec loop i delta =
+      if i >= String.length line then delta
+      else
+        let delta =
+          match line.[i] with
+          | '(' -> delta + 1
+          | ')' -> delta - 1
+          | _ -> delta
+        in
+        loop (i + 1) delta
+    in
+    loop 0 0
+  in
+  let tptp_decl_blocks lines =
+    let finish current acc =
+      match current with
+      | None -> acc
+      | Some block -> block :: acc
+    in
+    let rec loop current depth acc = function
+      | [] -> List.rev (finish current acc)
+      | line :: rest ->
+          let trimmed = trim_ascii line in
+          begin match current with
+          | None ->
+              begin match tptp_decl_prefix trimmed with
+              | None -> loop None 0 acc rest
+              | Some _ ->
+                  let depth = tptp_paren_delta trimmed in
+                  if depth <= 0 then
+                    loop None 0 (trimmed :: acc) rest
+                  else
+                    loop (Some trimmed) depth acc rest
+              end
+          | Some block ->
+              let block = block ^ " " ^ trimmed in
+              let depth = depth + tptp_paren_delta trimmed in
+              if depth <= 0 then
+                loop None 0 (block :: acc) rest
+              else
+                loop (Some block) depth acc rest
+          end
+    in
+    loop None 0 [] lines
+  in
   let tptp_decl_name name =
     let name = trim_ascii name in
     let len = String.length name in
@@ -13547,9 +13597,7 @@ let parse_source_map text =
             let comma1 = String.index_from line name_start ',' in
             let name = String.sub line name_start (comma1 - name_start) |> tptp_decl_name in
             let comma2 = String.index_from line (comma1 + 1) ',' in
-            let line_without_comment =
-              try String.sub line 0 (String.index line '%') with Not_found -> line
-            in
+            let line_without_comment = strip_tptp_comment line in
             let close = String.rindex line_without_comment ')' in
             let start = comma2 + 1 in
             if close <= start then None
@@ -13629,6 +13677,7 @@ let parse_source_map text =
   let replace_assoc key value entries =
     (key, value) :: List.remove_assoc key entries
   in
+  let decl_blocks = tptp_decl_blocks lines in
   let decl_hashes =
     List.fold_left
       (fun acc line ->
@@ -13636,7 +13685,7 @@ let parse_source_map text =
          | Some (name, hash) -> replace_assoc name hash acc
          | None -> acc)
       []
-      lines
+      decl_blocks
   in
   let decl_formulas =
     List.fold_left
@@ -13645,7 +13694,7 @@ let parse_source_map text =
          | Some (name, formula) -> replace_assoc name formula acc
          | None -> acc)
       []
-      lines
+      decl_blocks
   in
   let decl_roles =
     List.fold_left
@@ -13654,7 +13703,7 @@ let parse_source_map text =
          | Some (name, role) -> replace_assoc name role acc
          | None -> acc)
       []
-      lines
+      decl_blocks
   in
   let decl_hash name =
     List.assoc_opt name decl_hashes

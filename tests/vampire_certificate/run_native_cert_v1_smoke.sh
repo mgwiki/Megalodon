@@ -265,6 +265,24 @@ fi
 bin/megalodon \
   -vampirecertv1closed \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_multiline_valid.th0.p \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_source_map_multiline_closed.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_multiline_closed.log"
+
+if ! rg -q 'Vampire certificate v1 closed checked 6 steps' \
+    "$WORK_DIR/native_cert_v1_source_map_multiline_closed.log"; then
+  echo "closed native certificate v1 checker did not accept multiline THF source-map declarations" >&2
+  exit 1
+fi
+if ! rg -q 'source_formula_status "closed_formula_checked"' \
+    "$WORK_DIR/native_cert_v1_source_map_multiline_closed.mg"; then
+  echo "closed native certificate v1 checker did not semantically check multiline THF source formulas" >&2
+  exit 1
+fi
+
+bin/megalodon \
+  -vampirecertv1closed \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_synthetic_valid.th0.p \
   -vampirecertv1emit "$WORK_DIR/native_cert_v1_source_map_synthetic_closed.mg" \
   "$dummy" >"$WORK_DIR/native_cert_v1_source_map_synthetic_closed.log"
