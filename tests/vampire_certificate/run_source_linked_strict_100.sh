@@ -4,15 +4,10 @@ set -euo pipefail
 ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"}
 TMPDIR=${TMPDIR:-/project/tmp}
 export TMPDIR
-export PROBLEMS_FILE="${PROBLEMS_FILE:-"$ROOT/tests/vampire_certificate/source_linked_strict_100.list"}"
-export LIMIT="${LIMIT:-100}"
-export MIN_PASS="${MIN_PASS:-100}"
+export CASE_LIST="${CASE_LIST:-"$ROOT/tests/vampire_certificate/source_linked_strict_100.list"}"
 export JOBS="${JOBS:-20}"
-export VAMPIRE_SECONDS="${VAMPIRE_SECONDS:-10}"
-export WALL_SECONDS="${WALL_SECONDS:-15}"
 export WORK_DIR="${WORK_DIR:-"$TMPDIR/source_linked_strict_100"}"
-export CORPUS_DIR="${CORPUS_DIR:-"$TMPDIR/source_linked_strict_100_corpus"}"
+export CASES_DIR="${CASES_DIR:-"$ROOT/tests/vampire_certificate/closed_cases"}"
 ln -sfn "$WORK_DIR" "$TMPDIR/latest_source_linked_strict_100"
-ln -sfn "$CORPUS_DIR" "$TMPDIR/latest_source_linked_strict_100_corpus"
 
-exec "$ROOT/tests/vampire_certificate/run_source_linked_corpus_parallel.sh"
+exec "$ROOT/tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh"

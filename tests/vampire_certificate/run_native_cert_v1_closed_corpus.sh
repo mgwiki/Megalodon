@@ -116,6 +116,8 @@ if [[ -n "$CASE_LIST" ]]; then
       native="$raw"
     elif [[ "$raw" == *.native.sexp ]]; then
       native="$CASES_DIR/$raw"
+    elif [[ "$raw" == *.th0.p ]]; then
+      native="$CASES_DIR/${raw%.th0.p}.native.sexp"
     else
       native="$CASES_DIR/$raw.native.sexp"
     fi
