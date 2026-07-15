@@ -140,6 +140,8 @@ their substituted forms, and requires rewrite-position records to carry the
 explicit `from`, `to`, substituted target/equality, and rewritten target fields.
 It rejects any `..._unit=uN` metadata reference that does not point to a unit
 id present in the same native certificate.
+It rejects a `kernel_v1` record unless the surrounding `step_extra` unit id is
+the same id as its `conclusion_unit`.
 It also rejects premise-like unit references in `kernel_v1` metadata unless
 the referenced unit has already appeared earlier in that certificate; only
 `conclusion_unit` may name the unit produced by the current kernel record.

@@ -64,6 +64,31 @@ if [[ -s "$WORK_DIR/missing_required.tsv" ]]; then
   exit 1
 fi
 
+: > "$WORK_DIR/mismatched_conclusion_units.tsv"
+while IFS= read -r native_file; do
+  awk -v source="$native_file" '
+    index($0, "\"kernel_v1\"") != 0 {
+      owner = ""
+      conclusion = ""
+      if (match($0, /step_extra "([^"]+)"/, owner_match)) {
+        owner = owner_match[1]
+      }
+      if (match($0, /conclusion_unit=(u[0-9][[:alnum:]_]*)/, conclusion_match)) {
+        conclusion = conclusion_match[1]
+      }
+      if (owner == "" || conclusion == "" || owner != conclusion) {
+        print source ":" FNR "\towner=" owner "\tconclusion_unit=" conclusion "\t" $0
+      }
+    }
+  ' "$native_file" >> "$WORK_DIR/mismatched_conclusion_units.tsv"
+done < "$WORK_DIR/native_files.txt"
+
+if [[ -s "$WORK_DIR/mismatched_conclusion_units.tsv" ]]; then
+  echo "kernel_v1 metadata audit found records attached to a different unit than their conclusion_unit" >&2
+  sed -n '1,40p' "$WORK_DIR/mismatched_conclusion_units.tsv" >&2
+  exit 1
+fi
+
 : > "$WORK_DIR/missing_unit_references.tsv"
 while IFS= read -r native_file; do
   awk -v source="$native_file" '
