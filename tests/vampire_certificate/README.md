@@ -146,6 +146,8 @@ clause string to recover literal positions.
 Whenever Vampire reports a `parent_i_substitution`, it also requires
 `parent_i_substituted_literal_count` and `parent_i_substituted_literal_j` fields
 rendered after applying that substitution.
+For formula transformation records with `proof_parent_count`, it requires
+`source_unit`, `result_formula`, and every `parent_i_unit`/`parent_i_formula`.
 For unit-resulting resolution, it also requires Vampire's trace main parent,
 unit parent, selected/substituted selected literal, substituted unit literal,
 and remaining clause state after each pivot.

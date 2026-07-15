@@ -192,6 +192,36 @@ if [[ -s "$WORK_DIR/missing_parent_substituted_literal_fields.tsv" ]]; then
   exit 1
 fi
 
+awk '
+  {
+    if (match($0, /proof_parent_count=([0-9]+)/, parent_count_match)) {
+      parent_count = parent_count_match[1] + 0
+      if (index($0, "source_unit=") == 0) {
+        print "source_unit=\t" $0
+      }
+      if (index($0, "result_formula=") == 0) {
+        print "result_formula=\t" $0
+      }
+      for (parent_index = 0; parent_index < parent_count; ++parent_index) {
+        unit_field = "parent_" parent_index "_unit="
+        formula_field = "parent_" parent_index "_formula="
+        if (index($0, unit_field) == 0) {
+          print unit_field "\t" $0
+        }
+        if (index($0, formula_field) == 0) {
+          print formula_field "\t" $0
+        }
+      }
+    }
+  }
+' "$WORK_DIR/kernel_v1.tsv" > "$WORK_DIR/missing_formula_parent_fields.tsv"
+
+if [[ -s "$WORK_DIR/missing_formula_parent_fields.tsv" ]]; then
+  echo "kernel_v1 metadata audit found formula transformation records missing parent formula fields" >&2
+  sed -n '1,40p' "$WORK_DIR/missing_formula_parent_fields.tsv" >&2
+  exit 1
+fi
+
 grep -F 'rule=unit_resulting_resolution' "$WORK_DIR/kernel_v1.tsv" \
   > "$WORK_DIR/unit_resulting_resolution.tsv" || true
 
