@@ -11557,6 +11557,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
         let missing_sorts =
           available_sorts
           |> List.filter (fun (name, _) -> not (List.mem_assoc name metadata_sorts))
+          |> List.filter (fun (name, _) -> List.mem name names)
         in
         let prop = simple_fix_known_higher_order_binders prop in
         (simple_quantify_prop (missing_sorts @ definition_sorts) prop,

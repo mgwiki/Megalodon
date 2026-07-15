@@ -576,6 +576,28 @@ fi
 bin/megalodon -hf "$WORK_DIR/native_cert_v1_vlam_fool_closed.mg" \
   >"$WORK_DIR/native_cert_v1_vlam_fool_closed.check.log"
 
+bin/megalodon \
+  -vampirecertv1closed \
+  -vampirecertv1 tests/vampire_certificate/closed_cases/hammer.10783.22.native.sexp \
+  -vampirecertv1source tests/vampire_certificate/closed_cases/hammer.10783.22.th0.p \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_metadata_binder_substitute_closed.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_metadata_binder_substitute_closed.log"
+
+if rg -q 'bridge_substitute__u364_subst0' \
+    "$WORK_DIR/native_cert_v1_metadata_binder_substitute_closed.mg"; then
+  echo "closed native certificate v1 metadata binder replay generated a substitution bridge" >&2
+  exit 1
+fi
+
+if rg -q 'claim u222: forall X2:set' \
+    "$WORK_DIR/native_cert_v1_metadata_binder_substitute_closed.mg"; then
+  echo "closed native certificate v1 metadata binder replay kept an unused parent binder" >&2
+  exit 1
+fi
+
+bin/megalodon -hf "$WORK_DIR/native_cert_v1_metadata_binder_substitute_closed.mg" \
+  >"$WORK_DIR/native_cert_v1_metadata_binder_substitute_closed.check.log"
+
 if bin/megalodon \
     -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_local_fact_negated.sexp \
     -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_local_fact_negated.th0.p \
