@@ -3291,25 +3291,27 @@ let field_value key fields =
        else None)
     fields
 
-let required_primitive_for_kernel_rule = function
-  | "fool_formula" -> Some "fool_atom_lift"
-  | "rectify_formula" -> Some "rectify_formula"
-  | "formula_normalize" -> Some "ennf_formula"
-  | "skolemize" -> Some "skolem_formula"
-  | "fool_exhaustiveness" -> Some "fool_exhaustiveness"
-  | "truth_conflict" -> Some "truth_conflict"
-  | "avatar_component" -> Some "avatar_component"
-  | "avatar_split" -> Some "avatar_split"
-  | "avatar_refutation" -> Some "avatar_refutation"
-  | "avatar_definition" -> Some "avatar_definition"
-  | "split_dependency" -> Some "split_dependency"
+let required_primitives_for_kernel_rule = function
+  | "fool_formula" -> ["fool_atom_lift"]
+  | "rectify_formula" -> ["rectify_formula"]
+  | "formula_normalize" -> ["ennf_formula"]
+  | "skolemize" -> ["skolem_formula"]
+  | "cnf_clause" -> ["cnf_literal"; "cnf_formula_clause"]
+  | "formula_copy" -> ["formula_copy"; "formula_term_copy"]
+  | "fool_exhaustiveness" -> ["fool_exhaustiveness"]
+  | "truth_conflict" -> ["truth_conflict"]
+  | "avatar_component" -> ["avatar_component"]
+  | "avatar_split" -> ["avatar_split"]
+  | "avatar_refutation" -> ["avatar_refutation"]
+  | "avatar_definition" -> ["avatar_definition"]
+  | "split_dependency" -> ["split_dependency"]
   | "superposition"
-  | "rewrite" -> Some "paramodulate"
+  | "rewrite" -> ["paramodulate"]
   | "subsumption_resolution"
   | "unit_resulting_resolution"
-  | "resolution" -> Some "resolve"
-  | "factoring" -> Some "factor"
-  | _ -> None
+  | "resolution" -> ["resolve"]
+  | "factoring" -> ["factor"]
+  | _ -> []
 
 let has_id_prefix id prefix =
   id = prefix
@@ -3603,16 +3605,58 @@ let validate_primitive_expansion_contracts cert =
     if not (has_prefixed_primitive prefix primitive_required) then
       fail ("requires a " ^ primitive_required ^ " primitive step with prefix " ^ prefix)
   in
+  let validate_one_of_contract id kernel_rule primitive_options fields =
+    let fail message =
+      error (id ^ ": strict certificate v1 " ^ message)
+    in
+    match primitive_options with
+    | [] -> ()
+    | [primitive] -> validate_contract id kernel_rule primitive fields
+    | _ ->
+        begin match field_value "primitive_expansion" fields with
+        | Some "prefix" -> ()
+        | Some other ->
+            fail ("rejects unsupported primitive_expansion " ^ other)
+        | None ->
+            fail ("requires primitive_expansion=prefix for kernel rule " ^ kernel_rule)
+        end;
+        let prefix =
+          match field_value "primitive_expansion_prefix" fields with
+          | Some prefix when prefix = id -> prefix
+          | Some prefix ->
+              fail ("primitive_expansion_prefix " ^ prefix ^ " does not match step id " ^ id)
+          | None ->
+              fail ("requires primitive_expansion_prefix for kernel rule " ^ kernel_rule)
+        in
+        let primitive_required =
+          match field_value "primitive_expansion_requires" fields with
+          | Some required when List.mem required primitive_options -> required
+          | Some required ->
+              fail
+                ("primitive_expansion_requires " ^ required ^ " but one of "
+                 ^ String.concat ", " primitive_options
+                 ^ " is required for " ^ kernel_rule)
+          | None ->
+              fail
+                ("requires primitive_expansion_requires one of "
+                 ^ String.concat ", " primitive_options
+                 ^ " for kernel rule " ^ kernel_rule)
+        in
+        if not (has_step_id id) then
+          fail "requires a final certificate step with the kernel unit id";
+        if not (has_prefixed_primitive prefix primitive_required) then
+          fail ("requires a " ^ primitive_required ^ " primitive step with prefix " ^ prefix)
+  in
   List.iter
     (fun (id, kind, fields) ->
        if kind = "kernel_v1" then
          match field_value "rule" fields with
          | None -> ()
          | Some kernel_rule ->
-             begin match required_primitive_for_kernel_rule kernel_rule with
-             | Some primitive ->
-                 validate_contract id kernel_rule primitive fields
-             | None ->
+             begin match required_primitives_for_kernel_rule kernel_rule with
+             | _ :: _ as primitives ->
+                 validate_one_of_contract id kernel_rule primitives fields
+             | [] ->
                  begin match field_value "primitive_expansion_requires" fields with
                  | Some primitive -> validate_contract id kernel_rule primitive fields
                  | None -> ()
