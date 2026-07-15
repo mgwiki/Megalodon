@@ -11549,7 +11549,6 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       List.map (fun (name, _) -> "proof:" ^ name) proof_assumptions
       @ List.map (fun (name, _) -> "derived:" ^ name) !derived_assumptions
       @ List.map (fun (name, _) -> "bridge:" ^ name) !bridge_assumptions
-      @ (if !uses_vampire_eq_prop_ext then ["helper:prop_ext"] else [])
     in
     match non_source_premises with
     | [] -> ()
@@ -11575,6 +11574,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       insert_after_marker
         "Infix = 502 := eq."
         [
+          "// vampire_approved_library_known ((name \"prop_ext\") (hash \"d8c32d0ac70c5760222c9adf1a3ca90f3cb6b5182b0f70a5d82cb9000abc77ef\"))";
           "Axiom prop_ext : forall p q:prop, iff p q -> p = q.";
         ]
         !lines;

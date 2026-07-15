@@ -16,6 +16,14 @@ fi
 dummy="$WORK_DIR/native_cert_v1_dummy.mg"
 : >"$dummy"
 
+check_no_unindexed_axioms() {
+  local log=$1
+  if rg -n 'WARNING: The id .*not indexed as previously known' "$log"; then
+    echo "Megalodon accepted an unindexed axiom in $log" >&2
+    exit 1
+  fi
+}
+
 bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_valid.log"
@@ -980,21 +988,30 @@ if ! rg -q 'Vampire certificate v1 checked 6 steps' "$WORK_DIR/native_cert_v1_fo
   exit 1
 fi
 
-if bin/megalodon \
+bin/megalodon \
   -vampirecertv1closed \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_exhaustiveness_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_fool_exhaustiveness_valid.th0.p \
   -vampirecertv1emit "$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.mg" \
-  "$dummy" >"$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.out" \
-  2>"$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.err"; then
-  echo "closed native certificate v1 FOOL-exhaustiveness accepted the prop_ext helper axiom" >&2
+  "$dummy" >"$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.out"
+if ! rg -q 'Vampire certificate v1 closed checked 6 steps' \
+    "$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.out"; then
+  echo "closed native certificate v1 checker did not accept replayed FOOL exhaustiveness" >&2
   exit 1
 fi
-if ! rg -q 'zero non-source premises.*helper:prop_ext' \
-    "$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.err"; then
-  echo "closed native certificate v1 FOOL-exhaustiveness failure did not report prop_ext" >&2
+if ! rg -q '^// vampire_approved_library_known .*prop_ext' \
+    "$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.mg"; then
+  echo "closed native certificate v1 FOOL-exhaustiveness did not mark prop_ext as an approved library known" >&2
   exit 1
 fi
+if rg -n '\b(admit|aby)\b|-allowincompleteqed|bridge_|^assume (definition_input__|avatar_|theory_|predicate_definition__|vampire_eq_prop_ext\b)' \
+    "$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.mg"; then
+  echo "closed native certificate v1 FOOL-exhaustiveness emitted a forbidden premise" >&2
+  exit 1
+fi
+bin/megalodon -hf "$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.mg" \
+  >"$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.check.log"
+check_no_unindexed_axioms "$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.check.log"
 
 bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_distinctness_valid.sexp \
@@ -1005,21 +1022,30 @@ if ! rg -q 'Vampire certificate v1 checked 4 steps' "$WORK_DIR/native_cert_v1_fo
   exit 1
 fi
 
-if bin/megalodon \
+bin/megalodon \
   -vampirecertv1closed \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_distinctness_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_fool_distinctness_valid.th0.p \
   -vampirecertv1emit "$WORK_DIR/native_cert_v1_fool_distinctness_closed.mg" \
-  "$dummy" >"$WORK_DIR/native_cert_v1_fool_distinctness_closed.out" \
-  2>"$WORK_DIR/native_cert_v1_fool_distinctness_closed.err"; then
-  echo "closed native certificate v1 FOOL-distinctness accepted the prop_ext helper axiom" >&2
+  "$dummy" >"$WORK_DIR/native_cert_v1_fool_distinctness_closed.out"
+if ! rg -q 'Vampire certificate v1 closed checked 4 steps' \
+    "$WORK_DIR/native_cert_v1_fool_distinctness_closed.out"; then
+  echo "closed native certificate v1 checker did not accept replayed FOOL distinctness" >&2
   exit 1
 fi
-if ! rg -q 'zero non-source premises.*helper:prop_ext' \
-    "$WORK_DIR/native_cert_v1_fool_distinctness_closed.err"; then
-  echo "closed native certificate v1 FOOL-distinctness failure did not report prop_ext" >&2
+if ! rg -q '^// vampire_approved_library_known .*prop_ext' \
+    "$WORK_DIR/native_cert_v1_fool_distinctness_closed.mg"; then
+  echo "closed native certificate v1 FOOL-distinctness did not mark prop_ext as an approved library known" >&2
   exit 1
 fi
+if rg -n '\b(admit|aby)\b|-allowincompleteqed|bridge_|^assume (definition_input__|avatar_|theory_|predicate_definition__|vampire_eq_prop_ext\b)' \
+    "$WORK_DIR/native_cert_v1_fool_distinctness_closed.mg"; then
+  echo "closed native certificate v1 FOOL-distinctness emitted a forbidden premise" >&2
+  exit 1
+fi
+bin/megalodon -hf "$WORK_DIR/native_cert_v1_fool_distinctness_closed.mg" \
+  >"$WORK_DIR/native_cert_v1_fool_distinctness_closed.check.log"
+check_no_unindexed_axioms "$WORK_DIR/native_cert_v1_fool_distinctness_closed.check.log"
 
 bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_formula_cnf_valid.sexp \
@@ -1054,21 +1080,30 @@ fi
 bin/megalodon -hf "$WORK_DIR/native_cert_v1_formula_cnf_valid_emit.mg" \
   >"$WORK_DIR/native_cert_v1_formula_cnf_valid_emit.check.log"
 
-if bin/megalodon \
+bin/megalodon \
   -vampirecertv1closed \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_formula_cnf_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_formula_cnf_valid.th0.p \
   -vampirecertv1emit "$WORK_DIR/native_cert_v1_formula_cnf_closed.mg" \
-  "$dummy" >"$WORK_DIR/native_cert_v1_formula_cnf_closed.out" \
-  2>"$WORK_DIR/native_cert_v1_formula_cnf_closed.err"; then
-  echo "closed native certificate v1 formula-CNF accepted the prop_ext helper axiom" >&2
+  "$dummy" >"$WORK_DIR/native_cert_v1_formula_cnf_closed.out"
+if ! rg -q 'Vampire certificate v1 closed checked 9 steps' \
+    "$WORK_DIR/native_cert_v1_formula_cnf_closed.out"; then
+  echo "closed native certificate v1 checker did not accept replayed formula-CNF" >&2
   exit 1
 fi
-if ! rg -q 'zero non-source premises.*helper:prop_ext' \
-    "$WORK_DIR/native_cert_v1_formula_cnf_closed.err"; then
-  echo "closed native certificate v1 formula-CNF failure did not report prop_ext" >&2
+if ! rg -q '^// vampire_approved_library_known .*prop_ext' \
+    "$WORK_DIR/native_cert_v1_formula_cnf_closed.mg"; then
+  echo "closed native certificate v1 formula-CNF did not mark prop_ext as an approved library known" >&2
   exit 1
 fi
+if rg -n '\b(admit|aby)\b|-allowincompleteqed|bridge_|^assume (definition_input__|avatar_|theory_|predicate_definition__|vampire_eq_prop_ext\b)' \
+    "$WORK_DIR/native_cert_v1_formula_cnf_closed.mg"; then
+  echo "closed native certificate v1 formula-CNF emitted a forbidden premise" >&2
+  exit 1
+fi
+bin/megalodon -hf "$WORK_DIR/native_cert_v1_formula_cnf_closed.mg" \
+  >"$WORK_DIR/native_cert_v1_formula_cnf_closed.check.log"
+check_no_unindexed_axioms "$WORK_DIR/native_cert_v1_formula_cnf_closed.check.log"
 
 bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_formula_cnf_vampire_order_valid.sexp \

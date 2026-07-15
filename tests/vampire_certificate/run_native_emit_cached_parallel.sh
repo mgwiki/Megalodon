@@ -104,7 +104,7 @@ run_one() {
   fi
 
   if [[ "$CLOSED_CERT_V1" == "1" ]] \
-      && rg -n '^assume (bridge_|definition_input__|avatar_|theory_|predicate_definition__|vampire_eq_prop_ext\b)|^Axiom prop_ext :' \
+      && rg -n '^assume (bridge_|definition_input__|avatar_|theory_|predicate_definition__|vampire_eq_prop_ext\b)' \
           "$case_dir/out.mg" > "$case_dir/forbidden.txt"; then
     local first
     first=$(head -1 "$case_dir/forbidden.txt" | tr '\t' ' ')
@@ -127,11 +127,28 @@ run_one() {
     proof_check_args+=(-hf)
   fi
 
-  if ! timeout "$CHECK_TIMEOUT" "$MEGALODON" "${proof_check_args[@]}" "$case_dir/out.mg" \
-      > "$case_dir/check.out" 2> "$case_dir/check.err"; then
+  set +e
+  timeout "$CHECK_TIMEOUT" "$MEGALODON" "${proof_check_args[@]}" "$case_dir/out.mg" \
+      > "$case_dir/check.out" 2> "$case_dir/check.err"
+  local check_status=$?
+  set -e
+  if (( check_status != 0 )); then
     local err
     err=$(tail -1 "$case_dir/check.err" | tr '\t' ' ')
-    printf '%s\tCHECK_FAIL\t%s\n' "$name" "$err" > "$case_dir/result.tsv"
+    if (( check_status == 124 )); then
+      printf '%s\tCHECK_TIMEOUT\t%s seconds\n' "$name" "$CHECK_TIMEOUT" > "$case_dir/result.tsv"
+    else
+      printf '%s\tCHECK_FAIL\t%s\n' "$name" "$err" > "$case_dir/result.tsv"
+    fi
+    return 0
+  fi
+
+  if [[ "$CLOSED_CERT_V1" == "1" ]] \
+      && rg -n 'WARNING: The id .*not indexed as previously known' \
+          "$case_dir/check.out" "$case_dir/check.err" > "$case_dir/unindexed_axioms.txt"; then
+    local first
+    first=$(head -1 "$case_dir/unindexed_axioms.txt" | tr '\t' ' ')
+    printf '%s\tUNINDEXED_AXIOM\t%s\n' "$name" "$first" > "$case_dir/result.tsv"
     return 0
   fi
 

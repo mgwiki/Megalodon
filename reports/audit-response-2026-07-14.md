@@ -1945,3 +1945,84 @@ EMIT_FAIL 206
 The drop in broad cached closed count is intentional. It removes cases whose
 only missing dependency was hidden behind `prop_ext`, leaving the audit
 milestone focused on the ten committed restricted source-linked proofs.
+
+## July 15 Follow-up: Indexed Library `prop_ext`
+
+The previous tightening was too conservative about propositional extensionality.
+It correctly rejected hidden fresh axioms, but it also rejected the actual HF
+library theorem `prop_ext`. A direct probe of the generated standalone prelude
+under `-hf -v 10` shows that
+
+```text
+Axiom prop_ext : forall p q:prop, iff p q -> p = q.
+```
+
+is assigned Megalodon's indexed known id
+
+```text
+d8c32d0ac70c5760222c9adf1a3ca90f3cb6b5182b0f70a5d82cb9000abc77ef
+```
+
+and checks without an "unindexed axiom" warning. The branch now treats this as
+an explicit approved library dependency rather than a non-source theorem premise:
+
+- the emitted script marks the dependency with
+  `// vampire_approved_library_known ((name "prop_ext") ...)`;
+- closed mode no longer fails merely because replayed FOOL/formula steps use
+  `vampire_eq_prop_ext`, provided no bridge or derived theorem premise is
+  introduced;
+- closed harnesses still reject `assume vampire_eq_prop_ext`, bridge premises,
+  derived premise assumptions, `admit`, `aby`, and incomplete-QED markers;
+- closed harnesses now run axiom-containing scripts with `-hf` and reject any
+  `WARNING: The id ... not indexed as previously known` output.
+
+Focused validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+
+native certificate v1 smoke test passed
+/project/tmp/native_cert_v1.OOr1Ae
+
+TMPDIR=/project/tmp JOBS=10 MIN_CORE=10 RUN_CORE_CASES=1 \
+  tests/vampire_certificate/run_native_cert_v1_core_closed_audit.sh
+
+CORE_ELIGIBLE 10
+EXCLUDED 147
+CLOSED_PASS 10
+CORE_CLOSED_PASS 10
+/project/tmp/native_cert_v1_core_closed_audit.eJeyKx
+```
+
+Cached 20-way replay over the same existing source-linked frontier, without
+rerunning Vampire, moved broad closed replay from 7 to 141 passes:
+
+```text
+WORK_DIR=/project/tmp/megalodon3_prop_ext_indexed_frontier_020834 \
+TMPDIR=/project/tmp \
+PROBLEM_DIR=/project/tmp/source_linked_strict_100_corpus_fresh_041947 \
+JOBS=20 MIN_PASS=0 CLOSED_CERT_V1=1 CHECK_SOURCE_MAP=1 STRICT_CERT_V1=1 \
+EMIT_TIMEOUT=30 CHECK_TIMEOUT=45 \
+tests/vampire_certificate/run_native_emit_cached_parallel.sh \
+  /project/tmp/megalodon3_native_live_current_noorigin_003131
+
+CLOSED_PASS 141
+EMIT_FAIL 71
+CHECK_FAIL 1
+```
+
+The sole `CHECK_FAIL`, `hammer.10847.41.th0.p`, had empty stdout/stderr under
+the 45-second check cap. Rechecking that exact emitted script with a 180-second
+timeout succeeded:
+
+```text
+timeout 180 ./bin/megalodon -hf \
+  /project/tmp/megalodon3_prop_ext_indexed_frontier_020834/cases/hammer.10847.41.th0/out.mg
+
+Everything looks good.
+```
+
+The cached harness now classifies timeout exits as `CHECK_TIMEOUT` instead of a
+blank `CHECK_FAIL`, so future frontier summaries distinguish proof errors from
+large-script checking time.
