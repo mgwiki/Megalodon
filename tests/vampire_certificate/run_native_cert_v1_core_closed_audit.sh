@@ -14,6 +14,11 @@ JOBS=${JOBS:-7}
 mkdir -p "$WORK_DIR"
 ln -sfn "$WORK_DIR" "$TMPDIR/latest_native_cert_v1_core_closed_audit"
 
+# This is the audit/MVP qualifying fragment.  It deliberately excludes
+# preprocessing and macro proof steps such as rectification, FOOL elimination,
+# ENNF/CNF projection, Skolemization, definition inputs, AVATAR, and theory
+# facts.  Those may still be useful closed-mode diagnostics, but they are not
+# counted by this core gate.
 allowed_rules=$(
   cat <<'RULES'
 input
@@ -22,11 +27,11 @@ formula_term_input
 formula_term_copy
 formula_copy
 substitute
-condensation
 resolve
+subsumption_resolution
 factor
 equality_resolution
-equality_symmetry
+equality_factoring
 paramodulate
 contradiction
 RULES
@@ -106,4 +111,10 @@ if [[ "$RUN_CORE_CASES" == "1" ]]; then
   WORK_DIR="$WORK_DIR/closed_check" \
   JOBS="$JOBS" \
     "$ROOT/tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh"
+  sed 's/\tCLOSED_PASS$/\tCORE_CLOSED_PASS/' \
+    "$WORK_DIR/closed_check/summary.tsv" > "$WORK_DIR/core_summary.tsv"
+  awk -F '\t' '{count[$2]++} END {for (status in count) print status, count[status]}' \
+    "$WORK_DIR/core_summary.tsv" \
+    | sort > "$WORK_DIR/core_counts.txt"
+  cat "$WORK_DIR/core_counts.txt"
 fi

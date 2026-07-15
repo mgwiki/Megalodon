@@ -1687,3 +1687,108 @@ Plain `-vampirecertv1` remains a loose inspection mode so unsupported formulas
 can still be triaged without claiming a qualifying reconstruction. The smoke
 suite now has an explicit regression: the unsupported-source fixture is accepted
 by ordinary inspection, rejected by strict, and rejected by closed mode.
+
+## July 15 Re-read on `vampire/megalodon3`
+
+I re-read `reports/audit-REPORT-2026-07-14.md` after switching both repositories
+to `vampire/megalodon3`. Several of the audit's concrete objections have been
+addressed on this branch:
+
+- `-vampirecertv1closed` exists and fails emission when any bridge or derived
+  non-source theorem premise remains.
+- The cached harness reports `CLOSED_PASS` separately from ordinary integration
+  `PASS`.
+- Strict and closed source-map checking now require semantic source-formula
+  matching for the supported THF fragment; the earlier `$true` fixture is no
+  longer accepted as a strict/closed source link.
+- The closed corpus harness rejects unchecked source-assumption comments and
+  generated scripts containing `admit`, `aby`, `bridge_*`, or derived premise
+  assumptions.
+
+However, the audit's larger architectural criticism still applies. The branch
+continued to improve broad closed replay, including CNF, Skolem, FOOL,
+definition-input, and AVATAR cases. Those results are useful diagnostics, but
+they are not the audit's recommended MVP milestone.
+
+I therefore tightened `tests/vampire_certificate/run_native_cert_v1_core_closed_audit.sh`
+so its whitelist is the restricted clause-level fragment only:
+
+```text
+input
+formula_input
+formula_term_input
+formula_term_copy
+formula_copy
+substitute
+resolve
+subsumption_resolution
+factor
+equality_resolution
+equality_factoring
+paramodulate
+contradiction
+```
+
+The gate deliberately excludes rectification, FOOL elimination, ENNF/CNF
+projection, Skolemization, definition inputs, inequality splitting, AVATAR,
+theory facts, predicate definitions, and other preprocessing macros. If those
+steps appear in a closed proof, the proof may still be a valuable broad
+closed-mode regression, but it is not a core/audit-qualifying proof.
+
+Running the tightened core audit on the committed closed corpus gives:
+
+```text
+TMPDIR=/project/tmp JOBS=10 MIN_CORE=10 RUN_CORE_CASES=1 \
+  tests/vampire_certificate/run_native_cert_v1_core_closed_audit.sh
+
+CORE_ELIGIBLE 0
+EXCLUDED 147
+MIN_CORE 10
+```
+
+The top excluded rules were:
+
+```text
+140 rectify_formula
+134 fool_formula
+134 cnf_formula_clause
+131 ennf_formula
+130 cnf_literal
+122 equality_symmetry
+120 fool_bool
+75 truth_conflict
+75 fool_exhaustiveness
+48 skolem_formula
+18 definition_input
+15 avatar_split
+15 avatar_refutation
+15 avatar_component
+```
+
+This is the important accounting correction: the current committed closed
+corpus is not yet the ten restricted source-linked core proofs requested by the
+audit. The next milestone should be to generate and commit ten restricted
+Vampire native certificates from a schedule/export mode that avoids the excluded
+preprocessing and AVATAR rules, then make the tightened core audit pass with
+`CORE_CLOSED_PASS 10`. Broad cached `CLOSED_PASS` counts should remain
+secondary until that gate is green.
+
+I also rebuilt Vampire on this branch with:
+
+```text
+TMPDIR=/project/tmp make -j10 vampire_rel
+```
+
+The rebuilt binary is:
+
+```text
+/project/vampire-leancheck/vampire_rel_vampire/megalodon3_10967
+```
+
+A minimal THF probe with source maps still produced native certificates
+containing `rectify_formula`, `fool_formula`, `cnf_formula_clause`,
+`cnf_literal`, and related preprocessing steps. That confirms the reset should
+not be more Megalodon-side special handling for the broad schedule. It should be
+a Vampire-side restricted core certificate schedule/export path, or a carefully
+selected already-clausal input form, before claiming the audit's restricted
+milestone.
