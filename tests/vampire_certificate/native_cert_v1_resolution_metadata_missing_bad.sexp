@@ -15,6 +15,9 @@
      "other_literal_index=0"
      "other_parent_unit=c2"
      "primitive_parent_0_substitution=(subst)"
+     "result_clause=(clause (pos (TMH \"q\")))"
+     "conclusion_clause=(clause (pos (TMH \"q\")))"
+     "result_literal_count=1"
      "primitive_expansion=prefix"
      "primitive_expansion_prefix=c3"
      "primitive_expansion_requires=resolve"))

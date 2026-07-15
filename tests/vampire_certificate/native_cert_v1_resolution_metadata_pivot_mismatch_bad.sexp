@@ -1,5 +1,5 @@
 (certificate vampire-megalodon 1
-  (problem "native-cert-v1-resolution-metadata-valid")
+  (problem "native-cert-v1-resolution-metadata-pivot-mismatch-bad")
   (step_extra c3 "kernel_v1"
     ("schema=prover9-small-kernel-v1"
      "rule=resolution"
@@ -7,7 +7,7 @@
      "selected=(pos (TMH \"p\"))"
      "selected_substituted=(pos (TMH \"p\"))"
      "selected_parent_index=0"
-     "selected_literal_index=0"
+     "selected_literal_index=1"
      "selected_parent_unit=c1"
      "other=(neg (TMH \"p\"))"
      "other_substituted=(neg (TMH \"p\"))"

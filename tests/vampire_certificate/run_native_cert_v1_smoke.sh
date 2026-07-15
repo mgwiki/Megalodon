@@ -1258,6 +1258,22 @@ if ! rg -q 'kernel_v1 metadata requires primitive_parent_1_substitution' \
   exit 1
 fi
 
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_resolution_metadata_pivot_mismatch_bad.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_resolution_metadata_pivot_mismatch_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_resolution_metadata_pivot_mismatch_bad.err"; then
+  echo "strict native certificate v1 checker accepted resolution metadata with mismatched pivots" >&2
+  exit 1
+fi
+
+if ! rg -q 'resolution parent/literal metadata does not match certificate pivots' \
+    "$WORK_DIR/native_cert_v1_resolution_metadata_pivot_mismatch_bad.err"; then
+  echo "strict native certificate v1 resolution-metadata failure did not explain the pivot mismatch" >&2
+  exit 1
+fi
+
 bin/megalodon \
   -vampirecertv1closed \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \

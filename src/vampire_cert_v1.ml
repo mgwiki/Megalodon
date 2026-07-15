@@ -3804,7 +3804,89 @@ let validate_kernel_v1_metadata_contracts cert =
                 "other_literal_index";
                 "other_parent_unit";
                 "primitive_parent_0_substitution";
-                "primitive_parent_1_substitution"]
+                "primitive_parent_1_substitution";
+                "result_clause";
+                "result_literal_count"];
+             begin match Hashtbl.find_opt step_by_id id with
+             | Some (Resolve (_, left_id, right_id, left_index, right_index, result)) ->
+                 let selected_parent_index = field_int id fields "selected_parent_index" in
+                 let other_parent_index = field_int id fields "other_parent_index" in
+                 let selected_literal_index = field_int id fields "selected_literal_index" in
+                 let other_literal_index = field_int id fields "other_literal_index" in
+                 let selected_parent_unit = field_required id fields "selected_parent_unit" in
+                 let other_parent_unit = field_required id fields "other_parent_unit" in
+                 let selected_subst =
+                   parse_field id fields "primitive_parent_0_substitution" parse_substitution
+                 in
+                 let other_subst =
+                   parse_field id fields "primitive_parent_1_substitution" parse_substitution
+                 in
+                 let check_side parent_id parent_index literal_index subst literal_key substituted_key =
+                   begin match Hashtbl.find_opt step_by_id parent_id with
+                   | Some parent_step ->
+                       begin match step_clause_opt parent_step with
+                       | Some parent_clause ->
+                           let literal =
+                             nth literal_index parent_clause
+                               (id ^ " strict kernel_v1 resolution pivot literal")
+                           in
+                           require_field_literal id fields literal_key literal;
+                           require_field_literal id fields substituted_key (subst_literal subst literal)
+                       | None ->
+                           error
+                             (id ^ ": strict certificate v1 kernel_v1 resolution parent "
+                              ^ parent_id ^ " is not a clause-bearing step")
+                       end
+                   | None ->
+                       error
+                         (id ^ ": strict certificate v1 kernel_v1 resolution references missing parent "
+                          ^ parent_id)
+                   end;
+                   ignore parent_index
+                 in
+                 let matches_left_right =
+                   selected_parent_index = 0
+                   && other_parent_index = 1
+                   && selected_parent_unit = left_id
+                   && other_parent_unit = right_id
+                   && selected_literal_index = left_index
+                   && other_literal_index = right_index
+                 in
+                 let matches_right_left =
+                   selected_parent_index = 1
+                   && other_parent_index = 0
+                   && selected_parent_unit = right_id
+                   && other_parent_unit = left_id
+                   && selected_literal_index = right_index
+                   && other_literal_index = left_index
+                 in
+                 if not (matches_left_right || matches_right_left) then
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 resolution parent/literal metadata does not match certificate pivots");
+                 if matches_left_right then begin
+                   check_side left_id selected_parent_index selected_literal_index
+                     selected_subst "selected" "selected_substituted";
+                   check_side right_id other_parent_index other_literal_index
+                     other_subst "other" "other_substituted"
+                 end else begin
+                   check_side right_id selected_parent_index selected_literal_index
+                     selected_subst "selected" "selected_substituted";
+                   check_side left_id other_parent_index other_literal_index
+                     other_subst "other" "other_substituted"
+                 end;
+                 require_field_clause id fields "result_clause" result;
+                 begin match field_value "conclusion_clause" fields with
+                 | Some _ -> require_field_clause id fields "conclusion_clause" result
+                 | None -> ()
+                 end;
+                 require_field_int id fields "result_literal_count" (List.length result)
+             | Some _ ->
+                 error
+                   (id ^ ": strict certificate v1 kernel_v1 resolution metadata must annotate a resolve step")
+             | None ->
+                 error
+                   (id ^ ": strict certificate v1 kernel_v1 resolution metadata has no matching certificate step")
+             end
          | "instantiation" ->
              require_rule_fields id fields kernel_rule
                ["substitution";
