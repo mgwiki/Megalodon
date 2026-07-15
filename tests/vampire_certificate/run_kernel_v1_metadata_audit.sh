@@ -99,7 +99,8 @@ awk '
   /rule=equality_factoring/ || /rule=rewrite/ ||
   /rule=unit_resulting_resolution/ || /rule=cnf_clause/ ||
   /rule=skolemize/ || /rule=rectify_formula/ ||
-  /rule=formula_copy/ || /rule=formula_normalize/ {
+  /rule=formula_copy/ || /rule=formula_normalize/ ||
+  /rule=fool_formula/ {
     next
   }
   { print }
@@ -232,6 +233,31 @@ if [[ -s "$WORK_DIR/formula_normalize.tsv" ]]; then
   if [[ -s "$WORK_DIR/missing_formula_normalize_fields.tsv" ]]; then
     echo "kernel_v1 metadata audit found formula-normalization records missing transformation fields" >&2
     sed -n '1,40p' "$WORK_DIR/missing_formula_normalize_fields.tsv" >&2
+    exit 1
+  fi
+fi
+
+grep -F 'rule=fool_formula' "$WORK_DIR/kernel_v1.tsv" \
+  > "$WORK_DIR/fool_formula.tsv" || true
+
+if [[ -s "$WORK_DIR/fool_formula.tsv" ]]; then
+  : > "$WORK_DIR/missing_fool_formula_fields.tsv"
+  for pattern in \
+    'source_unit=' \
+    'proof_parent_count=1' \
+    'source_formula=' \
+    'result_formula=' \
+    'transformation_pair_count=' \
+    'pair_0_source=' \
+    'pair_0_target=' \
+    'pair_0_path='; do
+    awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
+      "$WORK_DIR/fool_formula.tsv" >> "$WORK_DIR/missing_fool_formula_fields.tsv"
+  done
+
+  if [[ -s "$WORK_DIR/missing_fool_formula_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found FOOL formula records missing transformation fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_fool_formula_fields.tsv" >&2
     exit 1
   fi
 fi
