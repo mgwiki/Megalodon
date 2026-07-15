@@ -147,9 +147,10 @@ tests/vampire_certificate/run_native_cert_v1_core_closed_audit.sh
 
 This is intentionally stricter than the broad closed corpus. It first filters
 tracked closed fixtures to certificates using only the small core clause-proof
-constructors (`input`, formula inputs/copies, substitution,
-resolution, factoring, equality resolution/factoring, paramodulation, and
-contradiction). It excludes preprocessing-heavy rules such as FOOL, ENNF, CNF,
+constructors (`input`, substitution, resolution, subsumption resolution,
+factoring, equality resolution/factoring, paramodulation, and contradiction).
+It excludes preprocessing-heavy rules such as formula inputs/copies, FOOL,
+ENNF, CNF,
 Skolemization, AVATAR, predicate definitions, theory FOOL clauses, and
 inequality splitting. By default it requires at least ten whitelist-only cases
 before delegating to the closed corpus checker. If it fails with
