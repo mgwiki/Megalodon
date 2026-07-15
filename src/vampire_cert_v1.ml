@@ -4932,6 +4932,8 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           if parent_formula <> result then
             error (id ^ ": native preprocess proof-term rectify_formula is not an identity copy");
           store_formula id result parent_proof
+      | FoolAtomLift (id, source, target, path) ->
+          check_fool_atom_lift id source target path
       | FormulaCopy (id, parent_id, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
           if native_core_literal_prop result <> parent_formula then

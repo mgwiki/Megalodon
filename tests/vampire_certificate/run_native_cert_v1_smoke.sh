@@ -797,6 +797,28 @@ if ! rg -q 'requires primitive_expansion=prefix for kernel rule fool_formula' \
   exit 1
 fi
 
+if bin/megalodon \
+  -vampirecertv1preprocesspfcheck \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_primitive_expansion_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_fool_primitive_expansion_origin_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_fool_preprocess_pf_frontier.out" \
+  2>"$WORK_DIR/native_cert_v1_fool_preprocess_pf_frontier.err"; then
+  echo "native preprocess proof-term checker unexpectedly accepted FOOL formula macro replay" >&2
+  exit 1
+fi
+
+if rg -q 'f1_fool_atom_0: native preprocess proof-term checker has no proof-term rule for fool_atom_lift' \
+    "$WORK_DIR/native_cert_v1_fool_preprocess_pf_frontier.err"; then
+  echo "native preprocess proof-term checker did not recognize the FOOL atom-lift primitive" >&2
+  exit 1
+fi
+
+if ! rg -q 'f1: native preprocess proof-term checker has no proof-term rule for fool_formula' \
+    "$WORK_DIR/native_cert_v1_fool_preprocess_pf_frontier.err"; then
+  echo "native preprocess proof-term checker did not advance from FOOL atom-lift to the FOOL formula frontier" >&2
+  exit 1
+fi
+
 MIN_REWRITE_POSITION=0 \
   tests/vampire_certificate/run_kernel_v1_metadata_audit.sh \
   tests/vampire_certificate/native_cert_v1_kernel_instantiation_valid.sexp \
