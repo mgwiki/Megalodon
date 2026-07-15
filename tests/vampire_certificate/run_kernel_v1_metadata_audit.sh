@@ -102,7 +102,7 @@ awk '
   /rule=formula_copy/ || /rule=formula_normalize/ ||
   /rule=fool_formula/ || /rule=fool_exhaustiveness/ ||
   /rule=avatar_component/ || /rule=avatar_split/ ||
-  /rule=avatar_refutation/ {
+  /rule=avatar_refutation/ || /rule=truth_conflict/ {
     next
   }
   { print }
@@ -367,6 +367,29 @@ if [[ -s "$WORK_DIR/avatar_refutation.tsv" ]]; then
   if [[ -s "$WORK_DIR/missing_avatar_refutation_fields.tsv" ]]; then
     echo "kernel_v1 metadata audit found AVATAR refutation records missing SAT proof fields" >&2
     sed -n '1,40p' "$WORK_DIR/missing_avatar_refutation_fields.tsv" >&2
+    exit 1
+  fi
+fi
+
+grep -F 'rule=truth_conflict' "$WORK_DIR/kernel_v1.tsv" \
+  > "$WORK_DIR/truth_conflict.tsv" || true
+
+if [[ -s "$WORK_DIR/truth_conflict.tsv" ]]; then
+  : > "$WORK_DIR/missing_truth_conflict_fields.tsv"
+  for pattern in \
+    'parent_0_clause=' \
+    'selected=' \
+    'selected_substituted=' \
+    'selected_parent_index=0' \
+    'selected_literal_index=' \
+    'result_clause='; do
+    awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
+      "$WORK_DIR/truth_conflict.tsv" >> "$WORK_DIR/missing_truth_conflict_fields.tsv"
+  done
+
+  if [[ -s "$WORK_DIR/missing_truth_conflict_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found truth-conflict records missing selected/result fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_truth_conflict_fields.tsv" >&2
     exit 1
   fi
 fi
