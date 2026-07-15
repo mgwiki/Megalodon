@@ -385,6 +385,26 @@ if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
     sed -n '1,40p' "$WORK_DIR/missing_skolemize_fields.tsv" >&2
     exit 1
   fi
+
+  awk '
+    {
+      if (match($0, /introduced_count=([0-9]+)/, introduced_count_match)) {
+        introduced_count = introduced_count_match[1] + 0
+        for (introduced_index = 0; introduced_index < introduced_count; ++introduced_index) {
+          symbol_field = "introduced_" introduced_index "_symbol="
+          if (index($0, symbol_field) == 0) {
+            print symbol_field "\t" $0
+          }
+        }
+      }
+    }
+  ' "$WORK_DIR/skolemize.tsv" > "$WORK_DIR/missing_skolemize_map_fields.tsv"
+
+  if [[ -s "$WORK_DIR/missing_skolemize_map_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found skolemization maps with missing indexed fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_skolemize_map_fields.tsv" >&2
+    exit 1
+  fi
 fi
 
 grep -F 'rule=rectify_formula' "$WORK_DIR/kernel_v1.tsv" \
@@ -408,6 +428,27 @@ if [[ -s "$WORK_DIR/rectify_formula.tsv" ]]; then
     "$WORK_DIR/rectify_formula.tsv" >> "$WORK_DIR/missing_rectify_formula_fields.tsv"
   awk 'index($0, "renaming_count=0") == 0 && index($0, "renaming_0_substitution=") == 0 {print "renaming_0_substitution=\t" $0}' \
     "$WORK_DIR/rectify_formula.tsv" >> "$WORK_DIR/missing_rectify_formula_fields.tsv"
+  awk '
+    {
+      if (match($0, /renaming_count=([0-9]+)/, renaming_count_match)) {
+        renaming_count = renaming_count_match[1] + 0
+        for (renaming_index = 0; renaming_index < renaming_count; ++renaming_index) {
+          source_field = "renaming_" renaming_index "_source="
+          target_field = "renaming_" renaming_index "_target="
+          substitution_field = "renaming_" renaming_index "_substitution="
+          if (index($0, source_field) == 0) {
+            print source_field "\t" $0
+          }
+          if (index($0, target_field) == 0) {
+            print target_field "\t" $0
+          }
+          if (index($0, substitution_field) == 0) {
+            print substitution_field "\t" $0
+          }
+        }
+      }
+    }
+  ' "$WORK_DIR/rectify_formula.tsv" >> "$WORK_DIR/missing_rectify_formula_fields.tsv"
 
   if [[ -s "$WORK_DIR/missing_rectify_formula_fields.tsv" ]]; then
     echo "kernel_v1 metadata audit found rectification records missing transformation fields" >&2
@@ -462,6 +503,34 @@ if [[ -s "$WORK_DIR/formula_normalize.tsv" ]]; then
     sed -n '1,40p' "$WORK_DIR/missing_formula_normalize_fields.tsv" >&2
     exit 1
   fi
+
+  awk '
+    {
+      if (match($0, /transformation_pair_count=([0-9]+)/, pair_count_match)) {
+        pair_count = pair_count_match[1] + 0
+        for (pair_index = 0; pair_index < pair_count; ++pair_index) {
+          source_field = "pair_" pair_index "_source="
+          target_field = "pair_" pair_index "_target="
+          path_field = "pair_" pair_index "_path="
+          if (index($0, source_field) == 0) {
+            print source_field "\t" $0
+          }
+          if (index($0, target_field) == 0) {
+            print target_field "\t" $0
+          }
+          if (index($0, path_field) == 0) {
+            print path_field "\t" $0
+          }
+        }
+      }
+    }
+  ' "$WORK_DIR/formula_normalize.tsv" > "$WORK_DIR/missing_formula_normalize_map_fields.tsv"
+
+  if [[ -s "$WORK_DIR/missing_formula_normalize_map_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found formula-normalization maps with missing indexed fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_formula_normalize_map_fields.tsv" >&2
+    exit 1
+  fi
 fi
 
 grep -F 'rule=fool_formula' "$WORK_DIR/kernel_v1.tsv" \
@@ -485,6 +554,34 @@ if [[ -s "$WORK_DIR/fool_formula.tsv" ]]; then
   if [[ -s "$WORK_DIR/missing_fool_formula_fields.tsv" ]]; then
     echo "kernel_v1 metadata audit found FOOL formula records missing transformation fields" >&2
     sed -n '1,40p' "$WORK_DIR/missing_fool_formula_fields.tsv" >&2
+    exit 1
+  fi
+
+  awk '
+    {
+      if (match($0, /transformation_pair_count=([0-9]+)/, pair_count_match)) {
+        pair_count = pair_count_match[1] + 0
+        for (pair_index = 0; pair_index < pair_count; ++pair_index) {
+          source_field = "pair_" pair_index "_source="
+          target_field = "pair_" pair_index "_target="
+          path_field = "pair_" pair_index "_path="
+          if (index($0, source_field) == 0) {
+            print source_field "\t" $0
+          }
+          if (index($0, target_field) == 0) {
+            print target_field "\t" $0
+          }
+          if (index($0, path_field) == 0) {
+            print path_field "\t" $0
+          }
+        }
+      }
+    }
+  ' "$WORK_DIR/fool_formula.tsv" > "$WORK_DIR/missing_fool_formula_map_fields.tsv"
+
+  if [[ -s "$WORK_DIR/missing_fool_formula_map_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found FOOL formula maps with missing indexed fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_fool_formula_map_fields.tsv" >&2
     exit 1
   fi
 fi

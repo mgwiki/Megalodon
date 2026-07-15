@@ -166,16 +166,19 @@ transformation extra.
 For skolemization, it accepts formula-result kernel records and requires the
 source formula, result formula, proof parent count, introduced symbol, replaced
 variable when available, and declaration metadata that Vampire already records.
+`introduced_count` must enumerate a complete indexed introduced-symbol map.
 For formula rectification, it accepts formula-result kernel records and requires
 the source formula, result formula, proof parent count, and Vampire's explicit
 renaming source/target/substitution metadata when a nonempty renaming is
-reported.
+reported. `renaming_count` must enumerate complete source/target/substitution
+triples.
 For formula copies, it requires source/result formulas and the
 `copy_kind=formula_term_identity` marker that Vampire emits only after comparing
 the formula-term S-expressions.
 For non-identity formula normalization, it requires source/result formulas,
 Vampire's underlying normal-form rule, and explicit source/target/path
 transformation pairs computed by the Vampire normal-form traversal.
+`transformation_pair_count` must enumerate complete source/target/path triples.
 For AVATAR refutations, it requires the emitted SAT input map and SAT proof
 data. `sat_input_count` and `sat_proof_step_count` must enumerate complete
 indexed maps. Every RUP SAT step must include its parent count, parent ids,
@@ -184,6 +187,7 @@ record.
 For FOOL formula elimination, it requires source/result formulas and explicit
 source/target/path transformation pairs computed by Vampire while it still has
 the pre- and post-elimination formula trees.
+`transformation_pair_count` must enumerate complete source/target/path triples.
 For FOOL exhaustiveness, it requires a parentless
 `axiom_kind=all_is_true_or_false` kernel record with the result clause and both
 literal fields rendered by Vampire.
