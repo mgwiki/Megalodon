@@ -183,6 +183,23 @@ The point of this gate is to keep new work on the Prover9/Ivy-style certificate
 path: Vampire must emit primitive replay data, rather than leaving Megalodon to
 recover it by broad OCaml-side reconstruction.
 
+To audit the already-emitted native primitive proof records without rerunning
+Vampire, use:
+
+```sh
+tests/vampire_certificate/run_native_primitive_audit.sh \
+  /project/tmp/latest_megalodon_native_live
+```
+
+This checks the explicit native records for the frequent clausal small-kernel
+steps: `substitute`, `paramodulate`, `equality_symmetry`,
+`equality_resolution`, `resolve`, and `factor`. The gate requires each present
+rule family to expose the fields Megalodon should replay mechanically: parent
+ids, substitutions, equality/target parents, rewrite positions, literal or
+pivot indices, and result clauses. It is intentionally separate from the
+`kernel_v1` metadata audit because these are first-class certificate steps, not
+`step_extra` annotations.
+
 Set `CLOSED_CERT_V1=1` on the cached emitter harness to request
 `-vampirecertv1closed`. In that mode a case passes only when emission introduces
 no non-source theorem premises; the summary status is `CLOSED_PASS`. Ordinary
