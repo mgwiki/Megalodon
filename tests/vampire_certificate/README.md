@@ -139,6 +139,14 @@ axiom can count only when Megalodon recognizes it as an indexed library fact
 such as the HF `prop_ext` theorem. Other premises must be replayed as Megalodon
 claims before the case can count.
 
+Closed emission also performs an importer-side axiom policy check. Every
+generated `Axiom` line must match the small approved closed prelude by both name
+and exact proposition; unapproved axioms or changed approved axiom statements
+are rejected before a proof script is written. This is still transitional: the
+audit-preferred endpoint is to resolve approved logical principles from the
+original Megalodon context or an exact indexed-hash basis, not to grow this
+allowlist.
+
 Use `-vampirecertv1coreclosed` for the audit/MVP clausal fragment. This implies
 strict and closed checking, then rejects every certificate constructor outside
 the core clause proof language before emission. The shell audit below still

@@ -3179,6 +3179,61 @@ let debug_emit_error context msg =
   if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
     prerr_endline ("simple Megalodon emitter debug: " ^ context ^ ": " ^ msg)
 
+let closed_approved_axioms =
+  [
+    ("dneg", "forall P:prop, ~~P -> P");
+    ("Eps_i_ax", "forall P:set->prop, forall x:set, P x -> P (Eps_i P)");
+    ("vampire_exists_prop_choice",
+     "forall P:prop->prop, vampire_exists_prop P -> P (Eps_prop P)");
+    ("vampire_exists_set_prop_choice",
+     "forall P:(set->prop)->prop, vampire_exists_set_prop P -> P (Eps_set_prop P)");
+    ("vampire_exists_set_set_choice",
+     "forall P:(set->set)->prop, vampire_exists_set_set P -> P (Eps_set_set P)");
+    ("vampire_exists_set_set_prop_choice",
+     "forall P:(set->set->prop)->prop, vampire_exists_set_set_prop P -> P (Eps_set_set_prop P)");
+    ("prop_ext", "forall p q:prop, iff p q -> p = q");
+  ]
+
+let closed_axiom_line line =
+  if not (string_starts_with "Axiom " line) then None
+  else
+    let rest = String.sub line 6 (String.length line - 6) in
+    match string_find_substring " : " rest with
+    | None -> emit_error ("closed axiom policy cannot parse axiom line: " ^ line)
+    | Some colon ->
+        let name = String.sub rest 0 colon |> String.trim in
+        let prop =
+          String.sub rest (colon + 3) (String.length rest - colon - 3)
+          |> String.trim
+        in
+        let prop =
+          if String.length prop > 0 && prop.[String.length prop - 1] = '.' then
+            String.sub prop 0 (String.length prop - 1) |> String.trim
+          else prop
+        in
+        Some (name, prop)
+
+let validate_closed_axiom_policy lines =
+  List.iteri
+    (fun index line ->
+       match closed_axiom_line line with
+       | None -> ()
+       | Some (name, prop) ->
+           begin match List.assoc_opt name closed_approved_axioms with
+           | Some expected when prop = expected -> ()
+           | Some expected ->
+               emit_error
+                 (Printf.sprintf
+                    "closed axiom policy rejects changed axiom %s at generated line %d; expected %s but got %s"
+                    name (index + 1) expected prop)
+           | None ->
+               emit_error
+                 (Printf.sprintf
+                    "closed axiom policy rejects unapproved axiom %s at generated line %d"
+                    name (index + 1))
+           end)
+    lines
+
 let simple_normalize_vlam_text ?(lambda_binder_sort = fun _ -> None) text =
   let is_name_char = function
     | 'A'..'Z' | 'a'..'z' | '0'..'9' | '_' | '\'' -> true
@@ -13712,6 +13767,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     !claims;
   let final_name = lookup_simple_name !emitted_names final in
   lines := !lines @ [Printf.sprintf "exact %s." (megalodon_ident final_name); "Qed."];
+  if closed then validate_closed_axiom_policy !lines;
   String.concat "\n" !lines ^ "\n"
 
 let source_map_prefix = "% megalodon_source_map "
