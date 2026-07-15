@@ -4819,7 +4819,9 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
       | Input (id, _, clause) ->
           store_clause id clause (Hyp (source_hyp_index id))
       | FormulaInput (id, _, literal) ->
-          store_clause id [literal] (Hyp (source_hyp_index id))
+          let proof = Hyp (source_hyp_index id) in
+          store_clause id [literal] proof;
+          store_formula id (native_core_literal_prop literal) proof
       | FormulaTermInput (id, _, formula) ->
           store_formula id formula (Hyp (source_hyp_index id))
       | FormulaTermCopy (id, parent_id, result) ->
