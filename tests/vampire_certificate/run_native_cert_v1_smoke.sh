@@ -1149,20 +1149,6 @@ if ! rg -q 'Vampire certificate v1 checked 6 steps' "$WORK_DIR/native_cert_v1_re
   exit 1
 fi
 
-if bin/megalodon \
-  -vampirecertv1 tests/vampire_certificate/native_cert_v1_rectify_scoped_equality_symmetry_valid.sexp \
-  -vampirecertv1emit "$WORK_DIR/native_cert_v1_rectify_scoped_equality_symmetry_unsupported.mg" \
-  "$dummy" >"$WORK_DIR/native_cert_v1_rectify_scoped_equality_symmetry_unsupported.out" \
-  2>"$WORK_DIR/native_cert_v1_rectify_scoped_equality_symmetry_unsupported.err"; then
-  echo "native certificate v1 simple emitter accepted unsupported formula transformation" >&2
-  exit 1
-fi
-if ! rg -q 'unsupported identifier =' \
-    "$WORK_DIR/native_cert_v1_rectify_scoped_equality_symmetry_unsupported.err"; then
-  echo "native certificate v1 simple emitter did not report the unsupported equality identifier" >&2
-  exit 1
-fi
-
 bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_skolem_equality_orientation_valid.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_skolem_equality_orientation_valid.log"

@@ -3127,7 +3127,13 @@ let check_certificate cert =
 let check_certificate_strict cert =
   check_certificate_with check_step_strict cert
 
-let emit_error msg = error ("simple Megalodon emitter: " ^ msg)
+let emit_error msg =
+  let msg =
+    if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+      msg ^ "\n" ^ Printexc.raw_backtrace_to_string (Printexc.get_callstack 20)
+    else msg
+  in
+  error ("simple Megalodon emitter: " ^ msg)
 
 let debug_emit_error context msg =
   if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
@@ -5228,47 +5234,91 @@ let simple_add_inferred_sort type_env acc name sort =
   else acc @ [(name, sort)]
 
 let simple_infer_tm_variable_sorts ?expected type_env tm =
-  let rec infer expected acc = function
+  let rec known_sort local_env = function
+    | TmH name -> List.assoc_opt (megalodon_ident name) local_env
+    | DB _ | Prim _ -> None
+    | TpAp (fn, _) -> known_sort local_env fn
+    | Ap (TmH "vLAM", _) as tm -> simple_lambda_sort tm
+    | Ap (fn, _) ->
+        begin match Option.bind (known_sort local_env fn) simple_split_arrow_type with
+        | Some (_, codomain) -> Some codomain
+        | None -> None
+        end
+    | Lam _ | Imp _ | All _ -> None
+  in
+  let rec infer local_env expected acc tm =
+    match equality_sides tm with
+    | Some (left, right) ->
+        let left_sort = known_sort local_env left in
+        let right_sort = known_sort local_env right in
+        let _, acc = infer local_env right_sort acc left in
+        let _, acc = infer local_env left_sort acc right in
+        (Some "prop", acc)
+    | None ->
+    match tm with
     | TmH name ->
         let name = megalodon_ident name in
-        let known = List.assoc_opt name type_env in
+        let known = List.assoc_opt name local_env in
         let sort = match known with Some sort -> Some sort | None -> expected in
         let acc =
           match expected, known with
-          | Some sort, None -> simple_add_inferred_sort type_env acc name sort
+          | Some sort, None -> simple_add_inferred_sort local_env acc name sort
           | _ -> acc
         in
         (sort, acc)
     | DB _ | Prim _ -> (expected, acc)
-    | TpAp (fn, _) -> infer expected acc fn
+    | TpAp (fn, _) -> infer local_env expected acc fn
     | Ap (fn, arg) ->
-        let fn_sort, acc = infer None acc fn in
+        let fn_sort, acc = infer local_env None acc fn in
         let domain, codomain =
           match Option.bind fn_sort simple_split_arrow_type with
           | Some (domain, codomain) -> (Some domain, Some codomain)
           | None -> (None, None)
         in
-        let arg_sort, acc = infer domain acc arg in
+        let arg_sort, acc = infer local_env domain acc arg in
         let acc =
           match fn, fn_sort, domain, arg_sort, expected with
           | TmH name, None, None, Some domain, Some codomain ->
-              simple_add_inferred_sort type_env acc name (domain ^ "->" ^ codomain)
+              simple_add_inferred_sort local_env acc name (domain ^ "->" ^ codomain)
           | _ -> acc
         in
         let result_sort = match codomain with Some _ -> codomain | None -> expected in
         (result_sort, acc)
     | Lam (_, body) ->
-        let _, acc = infer None acc body in
+        let _, acc = infer local_env None acc body in
         (expected, acc)
     | Imp (left, right) ->
-        let _, acc = infer (Some "prop") acc left in
-        let _, acc = infer (Some "prop") acc right in
+        let _, acc = infer local_env (Some "prop") acc left in
+        let _, acc = infer local_env (Some "prop") acc right in
         (Some "prop", acc)
-    | All (_, body) ->
-        let _, acc = infer (Some "prop") acc body in
+    | All (tp, body) ->
+        let sort = simple_tp_expr tp in
+        let local_env =
+          match preferred_formula_binder_name sort body with
+          | Some name when List.assoc_opt (megalodon_ident name) local_env = Some sort ->
+              (megalodon_ident name, sort) :: local_env
+          | _ ->
+              let candidates =
+                local_env
+                |> List.filter
+                     (fun (name, known_sort) ->
+                        known_sort = sort
+                        && is_vampire_var_name name
+                        && tm_contains_symbol name body)
+              in
+              begin match candidates with
+              | (name, _) :: _ -> (name, sort) :: local_env
+              | [] ->
+              begin match max_vampire_var_name body with
+              | Some name -> (megalodon_ident name, sort) :: local_env
+              | None -> local_env
+              end
+              end
+        in
+        let _, acc = infer local_env (Some "prop") acc body in
         (Some "prop", acc)
   in
-  snd (infer expected [] tm)
+  snd (infer type_env expected [] tm)
 
 let rec simple_tm_sort type_env = function
   | TmH name -> List.assoc_opt (megalodon_ident name) type_env
@@ -5455,16 +5505,90 @@ let simple_equality_prop_with_type_env type_env left right =
       end
   | None, None -> left_text ^ " = " ^ right_text
 
-let simple_atom_prop_with_type_env type_env atom =
+let rec simple_formula_like_prop_with_type_env type_env tm =
+  match tm with
+  | All (tp, body) ->
+      let sort = simple_tp_expr tp in
+      let binder =
+        let candidates =
+          type_env
+          |> List.filter
+               (fun (name, known_sort) ->
+                  known_sort = sort
+                  && is_vampire_var_name name
+                  && tm_contains_symbol name body)
+        in
+        match candidates with
+        | (name, _) :: _ -> megalodon_ident name
+        | [] ->
+            match preferred_formula_binder_name sort body with
+            | Some name when List.assoc_opt name type_env = Some sort ->
+                megalodon_ident name
+            | _ ->
+            begin match max_vampire_var_name body with
+            | Some name -> megalodon_ident name
+            | None -> "Xformula"
+            end
+      in
+      "forall " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ ", "
+      ^ simple_formula_like_prop_with_type_env ((binder, sort) :: type_env) body
+  | Imp (left, right) ->
+      "(" ^ simple_formula_like_prop_with_type_env type_env left ^ " -> "
+      ^ simple_formula_like_prop_with_type_env type_env right ^ ")"
+  | Ap (Ap (TmH "vampire_and", left), right) ->
+      "vampire_and (" ^ simple_formula_like_prop_with_type_env type_env left ^ ") ("
+      ^ simple_formula_like_prop_with_type_env type_env right ^ ")"
+  | Ap (Ap (TmH "vampire_or", left), right) ->
+      "vampire_or (" ^ simple_formula_like_prop_with_type_env type_env left ^ ") ("
+      ^ simple_formula_like_prop_with_type_env type_env right ^ ")"
+  | Ap (exists_head, Lam (tp, body))
+      when exists_head = TmH "vampire_exists_prop"
+           || exists_head = TmH "vampire_exists_set" ->
+      let sort = simple_tp_expr tp in
+      let exists_name =
+        match sort with
+        | "set" -> "vampire_exists_set"
+        | "prop" -> "vampire_exists_prop"
+        | "set->prop" -> "vampire_exists_set_prop"
+        | "set->set" -> "vampire_exists_set_set"
+        | "set->set->prop" -> "vampire_exists_set_set_prop"
+        | _ -> "vampire_exists_set"
+      in
+      let binder =
+        let candidates =
+          type_env
+          |> List.filter
+               (fun (name, known_sort) ->
+                  known_sort = sort
+                  && is_vampire_var_name name
+                  && tm_contains_symbol name body)
+        in
+        match candidates with
+        | (name, _) :: _ -> megalodon_ident name
+        | [] ->
+            match preferred_formula_binder_name sort body with
+            | Some name when List.assoc_opt name type_env = Some sort ->
+                megalodon_ident name
+            | _ ->
+            begin match max_vampire_var_name body with
+            | Some name -> megalodon_ident name
+            | None -> "Xformula"
+            end
+      in
+      exists_name ^ " (fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => "
+      ^ simple_formula_like_prop_with_type_env ((binder, sort) :: type_env) body ^ ")"
+  | atom -> simple_atom_prop_with_type_env type_env atom
+
+and simple_atom_prop_with_type_env type_env atom =
   match equality_sides atom with
   | Some (left, right) when is_vampire_bool_const left || is_vampire_bool_const right ->
       simple_prop_equality left right
   | Some (left, right) -> simple_equality_prop_with_type_env type_env left right
-  | None -> simple_tm_expr_with_expected type_env None atom
+  | None -> simple_tm_expr_with_expected type_env (Some "prop") atom
 
 let simple_literal_prop_with_type_env type_env = function
-  | Pos atom -> simple_atom_prop_with_type_env type_env atom
-  | Neg atom -> "(" ^ simple_atom_prop_with_type_env type_env atom ^ " -> False)"
+  | Pos atom -> simple_formula_like_prop_with_type_env type_env atom
+  | Neg atom -> "(" ^ simple_formula_like_prop_with_type_env type_env atom ^ " -> False)"
 
 let rec simple_clause_prop_with_type_env type_env = function
   | [] -> "False"
@@ -5583,7 +5707,7 @@ let rec simple_clause_formula_tm = function
   | lit :: rest -> vampire_or (formula_tm_of_literal lit) (simple_clause_formula_tm rest)
 
 let simple_clause_formula_prop_with_type_env type_env clause =
-  simple_tm_expr_with_expected type_env (Some "prop") (simple_clause_formula_tm clause)
+  simple_formula_like_prop_with_type_env type_env (simple_clause_formula_tm clause)
 
 let rec simple_formula_clause_projection_proof type_env target_prop target_clause source_formula source_proof depth =
   match source_formula with
@@ -8739,14 +8863,15 @@ let simple_formula_orientation_proof
 	          let body_proof =
 	            convert body_env (binder :: used) source_body target_body witness_name
 	          in
-	          let map_name =
-	            match sort with
-	            | "set" -> "vampire_exists_set_map"
-	            | "prop" -> "vampire_exists_prop_map"
-	            | _ ->
-	                emit_error
-	                  "formula orientation transport has no existential map theorem for this sort"
-	          in
+		          let map_name =
+		            match sort with
+		            | "set" -> "vampire_exists_set_map"
+		            | "prop" -> "vampire_exists_prop_map"
+                | "set->prop" -> "vampire_exists_set_prop_map"
+		            | _ ->
+		                emit_error
+		                  "formula orientation transport has no existential map theorem for this sort"
+		          in
 	          Printf.sprintf
 	            "(%s (fun %s:%s => %s) (fun %s:%s => %s) (fun %s:%s => fun %s:%s => %s) %s)"
 	            map_name
@@ -10185,10 +10310,13 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
 	      "Theorem vampire_exists_prop_map : forall P Q:prop->prop, (forall x:prop, P x -> Q x) -> vampire_exists_prop P -> vampire_exists_prop Q.";
 	      "exact (fun P:prop->prop => fun Q:prop->prop => fun HPQ:(forall x:prop, P x -> Q x) => fun HP:vampire_exists_prop P => fun q:prop => fun Hcase:(forall x:prop, Q x -> q) => HP q (fun x:prop => fun HPx:P x => Hcase x (HPQ x HPx))).";
 	      "Qed.";
-      "Theorem vampire_exists_set_prop_intro : forall P:(set->prop)->prop, forall x:set->prop, P x -> vampire_exists_set_prop P.";
-      "exact (fun P:(set->prop)->prop => fun x:set->prop => fun HP:P x => fun q:prop => fun Hcase:(forall y:set->prop, P y -> q) => Hcase x HP).";
-      "Qed.";
-      "Theorem vampire_exists_set_set_intro : forall P:(set->set)->prop, forall x:set->set, P x -> vampire_exists_set_set P.";
+	      "Theorem vampire_exists_set_prop_intro : forall P:(set->prop)->prop, forall x:set->prop, P x -> vampire_exists_set_prop P.";
+	      "exact (fun P:(set->prop)->prop => fun x:set->prop => fun HP:P x => fun q:prop => fun Hcase:(forall y:set->prop, P y -> q) => Hcase x HP).";
+	      "Qed.";
+        "Theorem vampire_exists_set_prop_map : forall P Q:(set->prop)->prop, (forall x:set->prop, P x -> Q x) -> vampire_exists_set_prop P -> vampire_exists_set_prop Q.";
+        "exact (fun P:(set->prop)->prop => fun Q:(set->prop)->prop => fun HPQ:(forall x:set->prop, P x -> Q x) => fun HP:vampire_exists_set_prop P => fun q:prop => fun Hcase:(forall x:set->prop, Q x -> q) => HP q (fun x:set->prop => fun HPx:P x => Hcase x (HPQ x HPx))).";
+        "Qed.";
+	      "Theorem vampire_exists_set_set_intro : forall P:(set->set)->prop, forall x:set->set, P x -> vampire_exists_set_set P.";
       "exact (fun P:(set->set)->prop => fun x:set->set => fun HP:P x => fun q:prop => fun Hcase:(forall y:set->set, P y -> q) => Hcase x HP).";
       "Qed.";
       "Theorem vampire_exists_set_set_prop_intro : forall P:(set->set->prop)->prop, forall x:set->set->prop, P x -> vampire_exists_set_set_prop P.";
@@ -11237,8 +11365,13 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           metadata_sorts @ definition_sorts
           |> simple_unique_variable_sorts
         in
+        let missing_sorts =
+          available_sorts
+          |> List.filter (fun (name, _) -> not (List.mem_assoc name metadata_sorts))
+        in
         let prop = simple_fix_known_higher_order_binders prop in
-        (simple_quantify_prop definition_sorts prop, metadata_sorts)
+        (simple_quantify_prop (missing_sorts @ definition_sorts) prop,
+         missing_sorts @ metadata_sorts |> simple_unique_variable_sorts)
     | Some _ | None ->
         try
           let prop =
@@ -11254,9 +11387,29 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   in
   let formula_literal_prop_and_sorts id literal =
     let sorts = metadata_step_variable_sort_pairs cert id in
+    let literal_type_env =
+      simple_type_env_with_variable_overrides sorts symbol_type_env
+    in
+    let inferred_sorts =
+      simple_infer_literal_variable_sorts literal_type_env literal
+      |> List.filter (fun (name, _) -> not (List.mem_assoc name sorts))
+    in
+    let all_sorts = sorts @ inferred_sorts |> simple_unique_variable_sorts in
+    let render_type_env =
+      simple_type_env_with_variable_overrides all_sorts symbol_type_env
+    in
+    let rendered_literal_prop () =
+      match literal with
+      | Pos atom -> simple_formula_like_prop_with_type_env render_type_env atom
+      | Neg atom -> "(" ^ simple_formula_like_prop_with_type_env render_type_env atom ^ " -> False)"
+    in
     match metadata_step_proposition cert id with
     | Some prop when not (simple_literal_contains_function_alias literal) ->
-        (simple_fix_known_higher_order_binders prop, sorts)
+        let prop =
+          if inferred_sorts = [] then simple_fix_known_higher_order_binders prop
+          else rendered_literal_prop ()
+        in
+        (simple_quantify_prop inferred_sorts prop, all_sorts)
     | None ->
         let prop =
           try
@@ -11265,7 +11418,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             | Neg atom -> "(" ^ simple_atom_prop_with_type_env symbol_type_env atom ^ " -> False)"
           with Error _ -> simple_formula_prop cert id
         in
-        (prop, sorts)
+        (prop, all_sorts)
     | Some _ ->
         let prop =
           try
@@ -11274,25 +11427,43 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             | Neg atom -> "(" ^ simple_atom_prop_with_type_env symbol_type_env atom ^ " -> False)"
           with Error _ -> simple_formula_prop cert id
         in
-        (prop, sorts)
+        (simple_quantify_prop inferred_sorts prop, all_sorts)
   in
   let formula_tm_prop_and_sorts id formula =
     let sorts = metadata_step_variable_sort_pairs cert id in
+    let formula_type_env =
+      simple_type_env_with_variable_overrides sorts symbol_type_env
+    in
+    let inferred_sorts =
+      simple_infer_tm_variable_sorts formula_type_env formula
+      |> List.filter (fun (name, _) -> not (List.mem_assoc name sorts))
+    in
+    let all_sorts = sorts @ inferred_sorts |> simple_unique_variable_sorts in
+    let render_type_env =
+      simple_type_env_with_variable_overrides all_sorts symbol_type_env
+    in
+    let rendered_formula_prop () =
+      simple_formula_like_prop_with_type_env render_type_env formula
+    in
     match metadata_step_proposition cert id with
     | Some prop when not (simple_tm_contains_function_alias formula) ->
-        (simple_fix_known_higher_order_binders prop, sorts)
+        let prop =
+          if inferred_sorts = [] then simple_fix_known_higher_order_binders prop
+          else rendered_formula_prop ()
+        in
+        (simple_quantify_prop inferred_sorts prop, all_sorts)
     | None ->
         let prop =
           try simple_atom_prop_with_type_env symbol_type_env formula
           with Error _ -> simple_formula_prop cert id
         in
-        (prop, sorts)
+        (prop, all_sorts)
     | Some _ ->
         let prop =
           try simple_atom_prop_with_type_env symbol_type_env formula
           with Error _ -> simple_formula_prop cert id
         in
-        (prop, sorts)
+        (simple_quantify_prop inferred_sorts prop, all_sorts)
   in
   let clause_formula_prop_for_sorts sorts clause =
     let type_env = simple_type_env_with_variables sorts symbol_type_env in
