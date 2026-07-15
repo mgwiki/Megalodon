@@ -159,13 +159,13 @@ implies `-vampirecertv1coreclosed`, then constructs and kernel-checks a
 unit/unit, binary/unit, and binary/binary resolution plus duplicate binary
 factoring, identity substitution, and equality resolution over reflexive
 disequalities encoded with Megalodon's actual polymorphic equality, plus
-unit/unit positive paramodulation using explicit Vampire position/from/to data.
-Clauses are represented by native impredicative false and disjunction terms. It
-deliberately rejects unsupported core rules, including non-identity
-substitution, non-unit paramodulation, negative paramodulation targets, and
-untyped `TMH "="` equality, instead of falling back to textual replay. This is
-not yet the full nine-rule core elaborator; it is the initial checked entrypoint
-for replacing the broad `certificate -> string` path with a native
+unit/unit paramodulation into positive and negative targets using explicit
+Vampire position/from/to data. Clauses are represented by native impredicative
+false and disjunction terms. It deliberately rejects unsupported core rules,
+including non-identity substitution, non-unit paramodulation, and untyped
+`TMH "="` equality, instead of falling back to textual replay. This is not yet
+the full nine-rule core elaborator; it is the initial checked entrypoint for
+replacing the broad `certificate -> string` path with a native
 `certificate -> Syntax.tm * Syntax.pf` path. This mode also requires
 `-vampirecertv1source` to contain `megalodon_origin` metadata, so native
 proof-term evidence is tied at least to a specific exported Megalodon source

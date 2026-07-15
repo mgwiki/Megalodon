@@ -3600,10 +3600,53 @@ let native_core_paramodulate_unit id equality_clause equality_proof target_claus
       in
       let motive = Lam (tp, Lam (tp, native_core_expand_eq_atom context_atom)) in
       PPfAp (PTmAp (equality_proof, motive), target_proof)
-  | [Pos _], [Neg _], [_], 0, 0 ->
-      error (id ^ ": native core proof-term paramodulation does not yet support negative target literals")
+  | [Pos equality_atom], [Neg target_atom], [Neg result_atom], 0, 0 ->
+      let tp, eq_left, eq_right =
+        match megalodon_eq_poly_sides equality_atom with
+        | Some sides -> sides
+        | None ->
+            error (id ^ ": native core proof-term paramodulation equality literal is not typed Megalodon equality")
+      in
+      let context_replacement, source_atom =
+        if eq_left = from_tm && eq_right = to_tm then
+          (DB 0, from_tm)
+        else if eq_right = from_tm && eq_left = to_tm then
+          (DB 1, from_tm)
+        else
+          error (id ^ ": native core proof-term paramodulation from/to terms do not match equality literal")
+      in
+      let rewrite_position =
+        let rec select = function
+          | [] -> error (id ^ ": native core proof-term paramodulation position does not contain from term")
+          | candidate :: rest ->
+              begin match try_tm_at_position target_atom candidate with
+              | Some found when found = source_atom -> candidate
+              | _ -> select rest
+              end
+        in
+        select (paramodulation_position_candidates target_atom position)
+      in
+      let rewritten_atom =
+        replace_tm_at_position target_atom rewrite_position to_tm (id ^ " native paramodulation target")
+      in
+      if rewritten_atom <> result_atom then
+        error (id ^ ": native core proof-term paramodulation currently supports only the direct rewritten unit result");
+      let context_atom =
+        replace_tm_at_position
+          (tmshift 0 2 target_atom)
+          rewrite_position
+          context_replacement
+          (id ^ " native paramodulation context")
+      in
+      let motive = Lam (tp, Lam (tp, native_core_expand_eq_atom context_atom)) in
+      let result_prop = native_core_expand_eq_atom result_atom in
+      PLam
+        (result_prop,
+         PPfAp
+           (pfshift 0 1 target_proof,
+            PPfAp (PTmAp (pfshift 0 1 equality_proof, motive), Hyp 0)))
   | [_], [_], [_], _, _ ->
-      error (id ^ ": native core proof-term paramodulation currently supports only unit positive equality and unit positive targets")
+      error (id ^ ": native core proof-term paramodulation currently supports only unit positive equality and unit targets")
   | _ ->
       error (id ^ ": native core proof-term paramodulation currently supports only unit/unit paramodulation")
 
