@@ -105,6 +105,30 @@ bin/megalodon -hf "$WORK_DIR/native_cert_v1_source_name_mangled_valid_emit.mg" \
   >"$WORK_DIR/native_cert_v1_source_name_mangled_valid_emit.check.log"
 
 bin/megalodon \
+  -vampirecertv1closed \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_copied_conjecture_alias_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_copied_conjecture_alias_valid.th0.p \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_copied_conjecture_alias_valid_emit.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_copied_conjecture_alias_valid_emit.log"
+if ! rg -q 'Vampire certificate v1 closed checked 5 steps' \
+    "$WORK_DIR/native_cert_v1_copied_conjecture_alias_valid_emit.log"; then
+  echo "closed native certificate v1 checker did not accept copied-corpus conjecture aliases" >&2
+  exit 1
+fi
+if ! rg -q 'source_formula_status "closed_formula_checked"' \
+    "$WORK_DIR/native_cert_v1_copied_conjecture_alias_valid_emit.mg"; then
+  echo "copied-corpus conjecture alias was not semantically checked against the stable THF source" >&2
+  exit 1
+fi
+if ! rg -q 'assume src_conjecture_hammer_10656_24__c1:' \
+    "$WORK_DIR/native_cert_v1_copied_conjecture_alias_valid_emit.mg"; then
+  echo "copied-corpus conjecture alias did not recover the stable source name" >&2
+  exit 1
+fi
+bin/megalodon -hf "$WORK_DIR/native_cert_v1_copied_conjecture_alias_valid_emit.mg" \
+  >"$WORK_DIR/native_cert_v1_copied_conjecture_alias_valid_emit.check.log"
+
+bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_resolution_mirrored_valid.sexp \
   -vampirecertv1emit "$WORK_DIR/native_cert_v1_resolution_mirrored_valid_emit.mg" \
   "$dummy" >"$WORK_DIR/native_cert_v1_resolution_mirrored_valid_emit.log"

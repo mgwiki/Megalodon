@@ -3695,18 +3695,54 @@ let simple_source_kind_and_tptp_name = function
   | SourceDefinition name -> ("definition", name)
   | SourceSetReflexivity name -> ("set_reflexivity", name)
 
+let simple_path_basename value =
+  let rec loop i last =
+    if i >= String.length value then last
+    else
+      let last =
+        match value.[i] with
+        | '/' | '\\' -> i + 1
+        | _ -> last
+      in
+      loop (i + 1) last
+  in
+  let start = loop 0 0 in
+  String.sub value start (String.length value - start)
+
+let simple_copied_conjecture_alias tptp_name =
+  let decoded = decode_megalodon_tptp_name tptp_name in
+  let base = simple_path_basename decoded in
+  if base = "" || base = decoded then None
+  else Some ("conj_" ^ base)
+
+let simple_source_map_entry source_map source =
+  let _, tptp_name = simple_source_kind_and_tptp_name source in
+  match List.find_opt (fun entry -> entry.source_map_tptp_name = tptp_name) source_map with
+  | Some _ as entry -> entry
+  | None ->
+      begin match source, simple_copied_conjecture_alias tptp_name with
+      | (SourceConjecture _ | SourceNegatedConjecture _), Some alias ->
+          begin match
+            List.filter
+              (fun entry ->
+                 entry.source_map_kind = "conjecture"
+                 && entry.source_map_tptp_name = alias)
+              source_map
+          with
+          | [entry] -> Some entry
+          | _ -> None
+          end
+      | _ -> None
+      end
+
 let simple_source_label source_map source =
   let kind, tptp_name = simple_source_kind_and_tptp_name source in
   let displayed_name =
-    match List.find_opt (fun entry -> entry.source_map_tptp_name = tptp_name) source_map with
+    match simple_source_map_entry source_map source with
     | Some entry when entry.source_map_source_name <> "" -> entry.source_map_source_name
     | _ -> decode_megalodon_tptp_name tptp_name
   in
   kind ^ "_" ^ displayed_name
-
-let simple_source_map_entry source_map source =
-  let _, tptp_name = simple_source_kind_and_tptp_name source in
-  List.find_opt (fun entry -> entry.source_map_tptp_name = tptp_name) source_map
 
 let simple_fresh_name used base =
   let base = megalodon_safe_ident "" base in
@@ -14512,11 +14548,14 @@ let validate_certificate_sources ?(require_formula_match=false) source_map cert 
       | Some (id, source) ->
           let name = source_name source in
           let entry =
-            try Hashtbl.find table name
-            with Not_found ->
-              error
-                (id ^ ": certificate " ^ source_kind_name source
-                 ^ " source " ^ name ^ " is not present in the Megalodon source map")
+            match simple_source_map_entry source_map source with
+            | Some entry -> entry
+            | None ->
+                try Hashtbl.find table name
+                with Not_found ->
+                  error
+                    (id ^ ": certificate " ^ source_kind_name source
+                     ^ " source " ^ name ^ " is not present in the Megalodon source map")
           in
           if not (source_map_kind_compatible source entry) then
             error
