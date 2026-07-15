@@ -356,6 +356,37 @@ if [[ -s "$WORK_DIR/missing_formula_parent_fields.tsv" ]]; then
   exit 1
 fi
 
+grep -F 'rule=subsumption_resolution' "$WORK_DIR/kernel_v1.tsv" \
+  > "$WORK_DIR/subsumption_resolution.tsv" || true
+
+if [[ -s "$WORK_DIR/subsumption_resolution.tsv" ]]; then
+  : > "$WORK_DIR/missing_subsumption_resolution_fields.tsv"
+  for pattern in \
+    'selected=' \
+    'selected_substituted=' \
+    'selected_parent_index=' \
+    'selected_literal_index=' \
+    'selected_parent_unit=' \
+    'main_parent_index=' \
+    'side_parent_index=' \
+    'side_substitution=' \
+    'side_pivot=' \
+    'side_pivot_substituted=' \
+    'side_pivot_parent_index=' \
+    'side_pivot_literal_index=' \
+    'side_pivot_parent_unit=' \
+    'result_clause='; do
+    awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
+      "$WORK_DIR/subsumption_resolution.tsv" >> "$WORK_DIR/missing_subsumption_resolution_fields.tsv"
+  done
+
+  if [[ -s "$WORK_DIR/missing_subsumption_resolution_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found subsumption-resolution records missing side-pivot fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_subsumption_resolution_fields.tsv" >&2
+    exit 1
+  fi
+fi
+
 grep -F 'rule=unit_resulting_resolution' "$WORK_DIR/kernel_v1.tsv" \
   > "$WORK_DIR/unit_resulting_resolution.tsv" || true
 
