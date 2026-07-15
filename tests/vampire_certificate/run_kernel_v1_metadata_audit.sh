@@ -104,7 +104,8 @@ awk '
   /rule=avatar_component/ || /rule=avatar_split/ ||
   /rule=avatar_refutation/ || /rule=truth_conflict/ ||
   /rule=predicate_definition/ || /rule=predicate_definition_fold/ ||
-  /rule=predicate_definition_fold_chain/ {
+  /rule=predicate_definition_fold_chain/ ||
+  /rule=avatar_definition/ || /rule=split_dependency/ {
     next
   }
   { print }
@@ -437,6 +438,55 @@ if [[ -s "$WORK_DIR/predicate_definition_fold.tsv" ]]; then
   if [[ -s "$WORK_DIR/missing_predicate_definition_fold_fields.tsv" ]]; then
     echo "kernel_v1 metadata audit found predicate-definition fold records missing source/definition/result fields" >&2
     sed -n '1,40p' "$WORK_DIR/missing_predicate_definition_fold_fields.tsv" >&2
+    exit 1
+  fi
+fi
+
+grep -F '"rule=avatar_definition"' "$WORK_DIR/kernel_v1.tsv" \
+  > "$WORK_DIR/avatar_definition.tsv" || true
+
+if [[ -s "$WORK_DIR/avatar_definition.tsv" ]]; then
+  : > "$WORK_DIR/missing_avatar_definition_fields.tsv"
+  for pattern in \
+    'result_clause=' \
+    'component_split_level=' \
+    'component_split_var=' \
+    'component_split_positive=' \
+    'component_clause_sexpr=' \
+    'component_clause_variable_sort_count=' \
+    'component_clause_db_sort_count='; do
+    awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
+      "$WORK_DIR/avatar_definition.tsv" >> "$WORK_DIR/missing_avatar_definition_fields.tsv"
+  done
+
+  if [[ -s "$WORK_DIR/missing_avatar_definition_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found AVATAR definition records missing component fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_avatar_definition_fields.tsv" >&2
+    exit 1
+  fi
+fi
+
+grep -F '"rule=split_dependency"' "$WORK_DIR/kernel_v1.tsv" \
+  > "$WORK_DIR/split_dependency.tsv" || true
+
+if [[ -s "$WORK_DIR/split_dependency.tsv" ]]; then
+  : > "$WORK_DIR/missing_split_dependency_fields.tsv"
+  for pattern in \
+    'result_clause=' \
+    'dependency_count=' \
+    'dependency_0_split_level=' \
+    'dependency_0_split_var=' \
+    'dependency_0_split_positive=' \
+    'dependency_0_component_clause_sexpr=' \
+    'dependency_0_component_clause_variable_sort_count=' \
+    'dependency_0_component_clause_db_sort_count='; do
+    awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
+      "$WORK_DIR/split_dependency.tsv" >> "$WORK_DIR/missing_split_dependency_fields.tsv"
+  done
+
+  if [[ -s "$WORK_DIR/missing_split_dependency_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found split-dependency records missing component/result fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_split_dependency_fields.tsv" >&2
     exit 1
   fi
 fi
