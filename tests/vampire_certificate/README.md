@@ -243,8 +243,9 @@ steps: `substitute`, `paramodulate`, `equality_symmetry`,
 `skolem_formula`, `cnf_literal`, `cnf_formula_clause`, `formula_copy`,
 `formula_term_copy`, `rectify_formula`, `fool_exhaustiveness`, and
 `truth_conflict`, plus the first-class AVATAR records `avatar_component`,
-`avatar_split`, and `avatar_refutation`. The gate requires each present rule
-family to expose the fields Megalodon should replay
+`avatar_definition`, `avatar_split`, `avatar_refutation`, and
+`split_dependency`. The gate requires each present rule family to expose the
+fields Megalodon should replay
 mechanically: parent ids, substitutions, equality/target parents, rewrite
 positions, literal or pivot indices, source and target formulas, paths,
 introduced Skolem symbols, CNF clause indices, truth-conflict literals, and
@@ -261,7 +262,10 @@ prefix. Clausal decompositions often use suffixed ids such as
 steps such as `ennf_formula`, `skolem_formula`, `cnf_formula_clause`,
 `formula_copy`, `formula_term_copy`, `rectify_formula`,
 `fool_exhaustiveness`, `truth_conflict`, `avatar_component`, `avatar_split`,
-and `avatar_refutation` may reuse the kernel unit id exactly.
+`avatar_refutation`, and `avatar_definition` may reuse the kernel unit id
+exactly. `split_dependency` uses a suffixed id such as
+`u123_split_dependency` because it records dependency metadata for an owner unit
+that may already have a clause-producing primitive step.
 
 `run_native_live_parallel.sh` runs this primitive audit and the `kernel_v1`
 metadata audit by default after a successful live run. Set

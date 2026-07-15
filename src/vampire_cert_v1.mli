@@ -58,6 +58,12 @@ type rectify_renaming = {
   rectify_target : Syntax.tm;
 }
 
+type avatar_dependency = {
+  dependency_split_var : int;
+  dependency_split_positive : bool;
+  dependency_component : clause;
+}
+
 type checked_item =
   | CheckedClause of clause
   | CheckedFormula of Syntax.tm
@@ -84,6 +90,8 @@ type step =
   | DefinitionInput of string * clause
   | DefinitionRewriteChain of string * string * definition_rewrite list * clause
   | AvatarComponent of string * clause
+  | AvatarDefinition of string * int * bool * clause
+  | SplitDependency of string * string * avatar_dependency list * clause
   | AvatarSplit of string * string list * clause
   | AvatarContradiction of string * string list * clause
   | AvatarRefutation of string * string list * sat_clause list * sat_proof_step list option * clause

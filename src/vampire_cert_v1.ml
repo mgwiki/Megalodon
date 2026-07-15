@@ -60,6 +60,12 @@ type rectify_renaming = {
   rectify_target : tm;
 }
 
+type avatar_dependency = {
+  dependency_split_var : int;
+  dependency_split_positive : bool;
+  dependency_component : clause;
+}
+
 type checked_item =
   | CheckedClause of clause
   | CheckedFormula of tm
@@ -94,6 +100,8 @@ type step =
   | DefinitionInput of string * clause
   | DefinitionRewriteChain of string * string * definition_rewrite list * clause
   | AvatarComponent of string * clause
+  | AvatarDefinition of string * int * bool * clause
+  | SplitDependency of string * string * avatar_dependency list * clause
   | AvatarSplit of string * string list * clause
   | AvatarContradiction of string * string list * clause
   | AvatarRefutation of string * string list * sat_clause list * sat_proof_step list option * clause
@@ -337,6 +345,10 @@ let parse_parent = function
   | List [Atom "parent"; parent] -> atom parent
   | _ -> error "expected parent"
 
+let parse_owner = function
+  | List [Atom "owner"; owner] -> atom owner
+  | _ -> error "expected owner"
+
 let parse_symbol = function
   | List [Atom "symbol"; symbol] -> atom symbol
   | _ -> error "expected symbol"
@@ -462,6 +474,31 @@ let parse_index = function
   | List [Atom "index"; index] -> int_atom index
   | _ -> error "expected index"
 
+let bool_atom = function
+  | Atom "true" -> true
+  | Atom "false" -> false
+  | Str "true" -> true
+  | Str "false" -> false
+  | _ -> error "expected boolean"
+
+let parse_split = function
+  | List [Atom "split"; var; positive] -> (int_atom var, bool_atom positive)
+  | _ -> error "expected split"
+
+let parse_avatar_dependency = function
+  | List [Atom "dependency"; var; positive; List [Atom "component"; clause]] ->
+      {
+        dependency_split_var = int_atom var;
+        dependency_split_positive = bool_atom positive;
+        dependency_component = parse_clause clause;
+      }
+  | _ -> error "expected AVATAR dependency"
+
+let parse_avatar_dependencies = function
+  | List (Atom "dependencies" :: dependencies) ->
+      List.map parse_avatar_dependency dependencies
+  | _ -> error "expected AVATAR dependency list"
+
 let parse_named_index name = function
   | List [Atom label; index] when label = name -> int_atom index
   | _ -> error ("expected " ^ name ^ " index")
@@ -554,6 +591,12 @@ let parse_step = function
       DefinitionRewriteChain (atom id, parse_parent parent, parse_definition_rewrites rewrites, parse_result result)
   | List [Atom "avatar_component"; id; result] ->
       AvatarComponent (atom id, parse_result result)
+  | List [Atom "avatar_definition"; id; split; result] ->
+      let split_var, split_positive = parse_split split in
+      AvatarDefinition (atom id, split_var, split_positive, parse_result result)
+  | List [Atom "split_dependency"; id; owner; dependencies; result] ->
+      SplitDependency
+        (atom id, parse_owner owner, parse_avatar_dependencies dependencies, parse_result result)
   | List [Atom "avatar_split"; id; parents; result] ->
       AvatarSplit (atom id, parse_parent_id_list parents, parse_result result)
   | List [Atom "avatar_contradiction"; id; parents; result] ->
@@ -707,6 +750,8 @@ let step_id = function
   | DefinitionInput (id, _) -> id
   | DefinitionRewriteChain (id, _, _, _) -> id
   | AvatarComponent (id, _) -> id
+  | AvatarDefinition (id, _, _, _) -> id
+  | SplitDependency (id, _, _, _) -> id
   | AvatarSplit (id, _, _) -> id
   | AvatarContradiction (id, _, _) -> id
   | AvatarRefutation (id, _, _, _, _) -> id
@@ -752,6 +797,8 @@ let step_rule_name = function
   | DefinitionInput _ -> "definition_input"
   | DefinitionRewriteChain _ -> "definition_rewrite_chain"
   | AvatarComponent _ -> "avatar_component"
+  | AvatarDefinition _ -> "avatar_definition"
+  | SplitDependency _ -> "split_dependency"
   | AvatarSplit _ -> "avatar_split"
   | AvatarContradiction _ -> "avatar_contradiction"
   | AvatarRefutation _ -> "avatar_refutation"
@@ -2072,6 +2119,43 @@ let check_avatar_component_strict id clause =
   if component_literals = [] then
     error (id ^ ": strict avatar_component must contain a component literal")
 
+let avatar_split_literal_matches split_var split_positive lit =
+  match split_literal_number lit with
+  | Some n when n = split_var ->
+      begin match lit with
+      | Neg _ -> split_positive
+      | Pos _ -> not split_positive
+      end
+  | _ -> false
+
+let check_avatar_component_split id split_var split_positive clause =
+  check_avatar_component_strict id clause;
+  if not (List.exists (avatar_split_literal_matches split_var split_positive) clause) then
+    error (id ^ ": AVATAR component split literal does not match emitted split metadata")
+
+let check_avatar_component_split_variable id split_var clause =
+  check_avatar_component_strict id clause;
+  if not
+       (List.exists
+          (fun lit ->
+             match split_literal_number lit with
+             | Some n -> n = split_var
+             | None -> false)
+          clause)
+  then
+    error (id ^ ": AVATAR dependency component split variable does not match emitted metadata")
+
+let check_avatar_dependencies id dependencies =
+  if dependencies = [] then
+    error (id ^ ": split_dependency must include at least one dependency");
+  List.iter
+    (fun dependency ->
+       check_avatar_component_split_variable
+         id
+         dependency.dependency_split_var
+         dependency.dependency_component)
+    dependencies
+
 let validate_sat_clauses id clauses =
   if clauses = [] then error (id ^ ": avatar_refutation must contain SAT clauses");
   List.iter
@@ -3078,6 +3162,14 @@ let check_step checked = function
   | AvatarComponent (id, clause) ->
       check_avatar_component id clause;
       (id, CheckedClause clause) :: checked
+  | AvatarDefinition (id, split_var, split_positive, clause) ->
+      check_avatar_component_split id split_var split_positive clause;
+      (id, CheckedClause clause) :: checked
+  | SplitDependency (id, owner_id, dependencies, clause) ->
+      check_avatar_dependencies id dependencies;
+      let owner_clause = lookup_clause checked owner_id in
+      if owner_clause <> clause then error (id ^ ": split_dependency result does not match owner clause");
+      (id, CheckedClause clause) :: checked
   | AvatarSplit (id, parent_ids, clause) ->
       check_avatar_sat_clause checked id parent_ids clause;
       (id, CheckedClause clause) :: checked
@@ -3153,6 +3245,9 @@ let check_step_strict checked = function
   | AvatarComponent (id, clause) ->
       check_avatar_component_strict id clause;
       check_step checked (AvatarComponent (id, clause))
+  | AvatarDefinition (id, split_var, split_positive, clause) ->
+      check_avatar_component_split id split_var split_positive clause;
+      check_step checked (AvatarDefinition (id, split_var, split_positive, clause))
   | AvatarRefutation (id, _, _, None, _) ->
       error (id ^ ": strict certificate v1 requires SAT proof traces for AVATAR refutations")
   | AvatarRefutation (id, [], _, _, _) ->
@@ -3298,6 +3393,8 @@ let validate_kernel_v1_metadata_contracts cert =
     | DefinitionInput (_, clause)
     | DefinitionRewriteChain (_, _, _, clause)
     | AvatarComponent (_, clause)
+    | AvatarDefinition (_, _, _, clause)
+    | SplitDependency (_, _, _, clause)
     | AvatarSplit (_, _, clause)
     | AvatarContradiction (_, _, clause)
     | AvatarRefutation (_, _, _, _, clause)
@@ -6269,6 +6366,12 @@ let collect_simple_names cert =
     | Superposition (_, _, _, _, _, _, _, _, _, _, clause) -> add_clause acc clause
     | DefinitionRewriteChain (_, _, _, clause) -> add_clause acc clause
     | AvatarComponent (_, clause) -> add_clause acc clause
+    | AvatarDefinition (_, _, _, clause) -> add_clause acc clause
+    | SplitDependency (_, _, dependencies, clause) ->
+        dependencies
+        |> List.fold_left
+             (fun acc dependency -> add_clause acc dependency.dependency_component)
+             (add_clause acc clause)
     | AvatarSplit (_, _, clause) -> add_clause acc clause
     | AvatarContradiction (_, _, clause) -> add_clause acc clause
     | AvatarRefutation (_, _, _, _, clause) -> add_clause acc clause
@@ -13606,6 +13709,30 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           in
           (simple_fix_known_higher_order_binders (simple_quantify_prop variable_sorts prop), variable_sorts)
   in
+  let structural_clause_prop_and_sorts_for_id id result =
+    let vlam_bound_names = simple_clause_vlam_bound_names result in
+    let available_sorts =
+      simple_infer_clause_variable_sorts symbol_type_env result
+      @ variable_sorts_for_ids [id]
+      |> simple_unique_variable_sorts
+      |> List.filter (fun (name, _) -> not (List.mem name vlam_bound_names))
+    in
+    let names = local_clause_names result in
+    let variable_sorts = simple_variable_sorts_for_names names available_sorts in
+    let type_env = simple_type_env_with_variables available_sorts symbol_type_env in
+    let prop =
+      simple_with_stable_vlam_names
+        (fun () ->
+           try
+             result
+             |> simple_clause_formula_tm
+             |> left_assoc_vampire_or_formula
+             |> simple_formula_prop_text_with_used [] type_env
+           with Error _ -> simple_clause_prop result)
+    in
+    (simple_fix_known_higher_order_binders (simple_quantify_prop variable_sorts prop),
+     variable_sorts)
+  in
   let formula_literal_prop_and_sorts id literal =
     let raw_sorts = metadata_step_variable_sort_pairs cert id in
     let vlam_bound_names =
@@ -14741,8 +14868,46 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
 	              in
 	              claims := !claims @ [(name, prop, proof_body)]
 	          | None ->
-	              derived_assumptions := !derived_assumptions @ [(name, prop)]
+              derived_assumptions := !derived_assumptions @ [(name, prop)]
           end;
+          add_checked id result
+      | AvatarDefinition (id, _split_var, _split_positive, result) ->
+          let name = simple_fresh_name used_names ("avatar_definition__" ^ id) in
+          let prop, sorts = structural_clause_prop_and_sorts_for_id id result in
+          add_emitted id name;
+          add_emitted_prop_and_sorts id prop sorts;
+          begin match
+            try
+              let type_env =
+                simple_type_env_with_variables
+                  (sorts |> simple_unique_variable_sorts)
+                  symbol_type_env
+              in
+              Some
+                (simple_avatar_component_proof
+                   type_env avatar_split_definition_env id sorts result)
+            with Error _ -> None
+            with
+            | Some proof ->
+                let proof_body =
+                  if string_starts_with "__SCRIPT__" proof then
+                    String.sub proof 10 (String.length proof - 10)
+                  else
+                    "exact " ^ proof ^ "."
+                in
+                claims := !claims @ [(name, prop, proof_body)]
+            | None ->
+                derived_assumptions := !derived_assumptions @ [(name, prop)]
+          end;
+          add_checked id result
+      | SplitDependency (id, owner_id, _dependencies, result) ->
+          let name = simple_fresh_name used_names ("split_dependency__" ^ id) in
+          let prop = emitted_parent_prop owner_id in
+          let sorts = variable_sorts_for_ids [owner_id] in
+          let owner_name = lookup_simple_name !emitted_names owner_id in
+          add_emitted id name;
+          add_emitted_prop_and_sorts id prop sorts;
+          claims := !claims @ [(name, prop, "exact " ^ owner_name ^ ".")];
           add_checked id result
       | AvatarSplit (id, parent_ids, result) ->
           let name = simple_fresh_name used_names ("avatar_split__" ^ id) in
@@ -14750,14 +14915,14 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           add_emitted id name;
           add_emitted_prop_and_sorts id prop sorts;
           begin match parent_ids with
-          | [parent_id] ->
+          | parent_id :: _component_parent_ids ->
               begin match
                 try
                   let parent_clause = lookup_simple_clause !checked parent_id in
                   let parent_name = lookup_simple_name !emitted_names parent_id in
                   let type_env =
                     simple_type_env_with_variables
-                      (variable_sorts_for_ids [parent_id; id]
+                      (variable_sorts_for_ids (id :: parent_ids)
                        |> simple_unique_variable_sorts)
                       symbol_type_env
                   in

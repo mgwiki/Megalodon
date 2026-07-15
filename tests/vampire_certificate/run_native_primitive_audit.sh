@@ -22,8 +22,10 @@ MIN_RECTIFY_FORMULA=${MIN_RECTIFY_FORMULA:-0}
 MIN_FOOL_EXHAUSTIVENESS=${MIN_FOOL_EXHAUSTIVENESS:-0}
 MIN_TRUTH_CONFLICT=${MIN_TRUTH_CONFLICT:-0}
 MIN_AVATAR_COMPONENT=${MIN_AVATAR_COMPONENT:-0}
+MIN_AVATAR_DEFINITION=${MIN_AVATAR_DEFINITION:-0}
 MIN_AVATAR_SPLIT=${MIN_AVATAR_SPLIT:-0}
 MIN_AVATAR_REFUTATION=${MIN_AVATAR_REFUTATION:-0}
+MIN_SPLIT_DEPENDENCY=${MIN_SPLIT_DEPENDENCY:-0}
 
 mkdir -p "$WORK_DIR"
 ln -sfn "$WORK_DIR" "$TMPDIR/latest_native_primitive_audit"
@@ -168,8 +170,10 @@ collect_rule rectify_formula "$WORK_DIR/rectify_formula.tsv"
 collect_rule fool_exhaustiveness "$WORK_DIR/fool_exhaustiveness.tsv"
 collect_rule truth_conflict "$WORK_DIR/truth_conflict.tsv"
 collect_rule avatar_component "$WORK_DIR/avatar_component.tsv"
+collect_rule avatar_definition "$WORK_DIR/avatar_definition.tsv"
 collect_rule avatar_split "$WORK_DIR/avatar_split.tsv"
 collect_rule avatar_refutation "$WORK_DIR/avatar_refutation.tsv"
+collect_rule split_dependency "$WORK_DIR/split_dependency.tsv"
 
 require_min substitute "$WORK_DIR/substitute.tsv" "$MIN_SUBSTITUTE"
 require_fields substitute "$WORK_DIR/substitute.tsv" \
@@ -267,6 +271,11 @@ require_min avatar_component "$WORK_DIR/avatar_component.tsv" "$MIN_AVATAR_COMPO
 require_fields avatar_component "$WORK_DIR/avatar_component.tsv" \
   '(result (clause'
 
+require_min avatar_definition "$WORK_DIR/avatar_definition.tsv" "$MIN_AVATAR_DEFINITION"
+require_fields avatar_definition "$WORK_DIR/avatar_definition.tsv" \
+  '(split ' \
+  '(result (clause'
+
 require_min avatar_split "$WORK_DIR/avatar_split.tsv" "$MIN_AVATAR_SPLIT"
 require_fields avatar_split "$WORK_DIR/avatar_split.tsv" \
   '(parents' \
@@ -275,6 +284,12 @@ require_fields avatar_split "$WORK_DIR/avatar_split.tsv" \
 require_min avatar_refutation "$WORK_DIR/avatar_refutation.tsv" "$MIN_AVATAR_REFUTATION"
 require_fields avatar_refutation "$WORK_DIR/avatar_refutation.tsv" \
   '(sat_clauses' \
+  '(result (clause'
+
+require_min split_dependency "$WORK_DIR/split_dependency.tsv" "$MIN_SPLIT_DEPENDENCY"
+require_fields split_dependency "$WORK_DIR/split_dependency.tsv" \
+  '(owner "' \
+  '(dependencies' \
   '(result (clause'
 
 parent_errors="$WORK_DIR/primitive_parent_reference_errors.tsv"
@@ -308,7 +323,8 @@ while IFS= read -r native_file; do
             rule == "rectify_formula" ||
             rule == "truth_conflict" ||
             rule == "avatar_split" ||
-            rule == "avatar_refutation") {
+            rule == "avatar_refutation" ||
+            rule == "split_dependency") {
           if (match(line, /\(parent "([^"]+)"/, ref)) {
             report("parent", ref[1], line)
           }
@@ -321,6 +337,9 @@ while IFS= read -r native_file; do
           }
           if (match(line, /\(target "([^"]+)"/, ref)) {
             report("target", ref[1], line)
+          }
+          if (match(line, /\(owner "([^"]+)"/, ref)) {
+            report("owner", ref[1], line)
           }
         }
 
@@ -373,6 +392,10 @@ while IFS= read -r native_file; do
       }
       if (rule == "instantiation") {
         return "substitute"
+      }
+      if (rule == "avatar_definition" ||
+          rule == "split_dependency") {
+        return rule
       }
       if (rule == "superposition" || rule == "rewrite") {
         return "paramodulate"

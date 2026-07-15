@@ -287,6 +287,8 @@ require_primitive_expansion_contract avatar_component avatar_component
 require_primitive_expansion_contract avatar_split avatar_split
 require_primitive_expansion_contract avatar_refutation avatar_refutation
 require_primitive_expansion_contract instantiation substitute
+require_primitive_expansion_contract avatar_definition avatar_definition
+require_primitive_expansion_contract split_dependency split_dependency
 
 grep -F 'rule=instantiation' "$WORK_DIR/kernel_v1.tsv" \
   > "$WORK_DIR/instantiation.tsv" || true
