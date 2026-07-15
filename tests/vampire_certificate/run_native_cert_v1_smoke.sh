@@ -718,6 +718,34 @@ if ! rg -q 'kernel_v1 metadata references non-earlier premise unit c4' \
 fi
 
 bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_resolution_metadata_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_resolution_metadata_valid.log"
+
+if ! rg -q 'Vampire certificate v1 strict checked 6 steps' \
+    "$WORK_DIR/native_cert_v1_resolution_metadata_valid.log"; then
+  echo "strict native certificate v1 checker did not accept resolution primitive metadata" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_resolution_metadata_missing_bad.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_resolution_metadata_missing_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_resolution_metadata_missing_bad.err"; then
+  echo "strict native certificate v1 checker accepted resolution metadata without both primitive parent substitutions" >&2
+  exit 1
+fi
+
+if ! rg -q 'kernel_v1 metadata requires primitive_parent_1_substitution' \
+    "$WORK_DIR/native_cert_v1_resolution_metadata_missing_bad.err"; then
+  echo "strict native certificate v1 resolution-metadata failure did not explain the missing primitive parent substitution" >&2
+  exit 1
+fi
+
+bin/megalodon \
   -vampirecertv1closed \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_valid.th0.p \

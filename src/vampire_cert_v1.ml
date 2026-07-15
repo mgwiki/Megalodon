@@ -3219,6 +3219,13 @@ let validate_kernel_v1_metadata_contracts cert =
     | Some value -> value
     | None -> error (id ^ ": strict certificate v1 kernel_v1 metadata requires " ^ key)
   in
+  let require_rule_fields id fields kernel_rule keys =
+    List.iter
+      (fun key ->
+         ignore (field_required id fields key : string))
+      keys;
+    ignore kernel_rule
+  in
   List.iter
     (fun (id, kind, fields) ->
        if kind = "kernel_v1" then
@@ -3226,12 +3233,42 @@ let validate_kernel_v1_metadata_contracts cert =
          let schema = field_required id fields "schema" in
          if schema <> "prover9-small-kernel-v1" then
            error (id ^ ": strict certificate v1 rejects unsupported kernel_v1 schema " ^ schema);
-         ignore (field_required id fields "rule");
+         let kernel_rule = field_required id fields "rule" in
          let conclusion_unit = field_required id fields "conclusion_unit" in
          if conclusion_unit <> id then
           error
              (id ^ ": strict certificate v1 kernel_v1 conclusion_unit "
               ^ conclusion_unit ^ " does not match metadata step id");
+         begin match kernel_rule with
+         | "resolution" ->
+             require_rule_fields id fields kernel_rule
+               ["selected";
+                "selected_substituted";
+                "selected_parent_index";
+                "selected_literal_index";
+                "selected_parent_unit";
+                "other";
+                "other_substituted";
+                "other_parent_index";
+                "other_literal_index";
+                "other_parent_unit";
+                "primitive_parent_0_substitution";
+                "primitive_parent_1_substitution"]
+         | "factoring" ->
+             require_rule_fields id fields kernel_rule
+               ["selected";
+                "selected_substituted";
+                "selected_parent_index";
+                "selected_literal_index";
+                "selected_parent_unit";
+                "other";
+                "other_substituted";
+                "other_parent_index";
+                "other_literal_index";
+                "other_parent_unit";
+                "primitive_parent_0_substitution"]
+         | _ -> ()
+         end;
          List.iter
            (fun field ->
               match field_key_value field with

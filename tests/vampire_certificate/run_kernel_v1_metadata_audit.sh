@@ -240,6 +240,65 @@ require_primitive_expansion_contract subsumption_resolution resolve
 require_primitive_expansion_contract resolution resolve
 require_primitive_expansion_contract factoring factor
 
+grep -F 'rule=resolution' "$WORK_DIR/kernel_v1.tsv" \
+  > "$WORK_DIR/resolution.tsv" || true
+
+if [[ -s "$WORK_DIR/resolution.tsv" ]]; then
+  : > "$WORK_DIR/missing_resolution_fields.tsv"
+  for pattern in \
+    'selected=' \
+    'selected_substituted=' \
+    'selected_parent_index=' \
+    'selected_literal_index=' \
+    'selected_parent_unit=' \
+    'other=' \
+    'other_substituted=' \
+    'other_parent_index=' \
+    'other_literal_index=' \
+    'other_parent_unit=' \
+    'primitive_parent_0_substitution=' \
+    'primitive_parent_1_substitution=' \
+    'result_clause='; do
+    awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
+      "$WORK_DIR/resolution.tsv" >> "$WORK_DIR/missing_resolution_fields.tsv"
+  done
+
+  if [[ -s "$WORK_DIR/missing_resolution_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found resolution records missing primitive pivot fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_resolution_fields.tsv" >&2
+    exit 1
+  fi
+fi
+
+grep -F 'rule=factoring' "$WORK_DIR/kernel_v1.tsv" \
+  > "$WORK_DIR/factoring.tsv" || true
+
+if [[ -s "$WORK_DIR/factoring.tsv" ]]; then
+  : > "$WORK_DIR/missing_factoring_fields.tsv"
+  for pattern in \
+    'selected=' \
+    'selected_substituted=' \
+    'selected_parent_index=' \
+    'selected_literal_index=' \
+    'selected_parent_unit=' \
+    'other=' \
+    'other_substituted=' \
+    'other_parent_index=' \
+    'other_literal_index=' \
+    'other_parent_unit=' \
+    'primitive_parent_0_substitution=' \
+    'result_clause='; do
+    awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
+      "$WORK_DIR/factoring.tsv" >> "$WORK_DIR/missing_factoring_fields.tsv"
+  done
+
+  if [[ -s "$WORK_DIR/missing_factoring_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found factoring records missing primitive pivot fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_factoring_fields.tsv" >&2
+    exit 1
+  fi
+fi
+
 awk 'index($0, "conclusion_clause=") != 0 {print}' "$WORK_DIR/kernel_v1.tsv" \
   > "$WORK_DIR/clausal_kernel.tsv"
 
