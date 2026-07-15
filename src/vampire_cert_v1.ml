@@ -3346,7 +3346,7 @@ let check_certificate_strict cert =
 let validate_certificate_core_fragment cert =
   let allowed = function
     | Input _
-    | Substitute _
+    | Substitute (_, _, [], _)
     | Resolve _
     | SubsumptionResolution _
     | Factor _
@@ -3354,6 +3354,7 @@ let validate_certificate_core_fragment cert =
     | EqualitySymmetry _
     | Paramodulate _
     | Contradiction _ -> true
+    | Substitute _ -> false
     | _ -> false
   in
   let accepted = ref 0 in

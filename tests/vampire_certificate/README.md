@@ -285,7 +285,7 @@ unit/unit, binary/unit, and binary/binary resolution, binary/unit
 subsumption-resolution with empty side substitution including binary side
 remainders already present in the result, duplicate literal factoring in
 larger clauses,
-identity substitution, and equality resolution over reflexive disequalities
+identity substitution only, and equality resolution over reflexive disequalities
 encoded with Megalodon's actual polymorphic equality, equality symmetry over
 typed Megalodon equality literals in unit and binary clauses, plus unit/unit
 paramodulation into positive and negative targets, and unit-equality
@@ -329,14 +329,14 @@ tests/vampire_certificate/run_native_cert_v1_core_closed_audit.sh
 
 This is intentionally stricter than the broad closed corpus. It first filters
 tracked closed fixtures to certificates using only the small core clause-proof
-constructors (`input`, substitution, resolution, subsumption resolution,
+constructors (`input`, identity substitution, resolution, subsumption resolution,
 factoring, equality resolution, equality symmetry, paramodulation, and
 contradiction).
 It excludes preprocessing-heavy rules such as formula inputs/copies, FOOL,
-ENNF, CNF,
-Skolemization, AVATAR, predicate definitions, theory FOOL clauses, and
-inequality splitting. By default it requires at least ten whitelist-only cases
-before delegating to the closed corpus checker. If it fails with
+ENNF, CNF, Skolemization, AVATAR, predicate definitions, theory FOOL clauses,
+non-identity substitution, and inequality splitting. By default it requires at
+least ten whitelist-only cases before delegating to the closed corpus checker.
+If it fails with
 `CORE_ELIGIBLE 0`, that is an honest statement that the current committed closed
 fixtures are broad source-linked reconstructions rather than the restricted
 first-order milestone requested by the audit.

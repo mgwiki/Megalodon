@@ -414,6 +414,21 @@ if ! rg -q 'Vampire certificate v1 native core proof term checked 5 steps' \
   exit 1
 fi
 
+if bin/megalodon \
+  -vampirecertv1coreclosed \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_substitute_prop_changed_unsupported.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_core_closed_nonidentity_substitute_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_core_closed_nonidentity_substitute_bad.err"; then
+  echo "core closed native certificate v1 checker accepted a non-identity substitution" >&2
+  exit 1
+fi
+
+if ! rg -q 'c2:substitute' \
+    "$WORK_DIR/native_cert_v1_core_closed_nonidentity_substitute_bad.err"; then
+  echo "core closed native certificate v1 non-identity substitution rejection did not name the unsupported step" >&2
+  exit 1
+fi
+
 {
   echo '% megalodon_origin ((file "native_cert_v1_substitute_prop_changed_unsupported.mg") (line "1") (char "1") (kind "synthetic_negative"))'
   cat tests/vampire_certificate/native_cert_v1_substitute_prop_changed_unsupported.th0.p
@@ -429,9 +444,9 @@ if bin/megalodon \
   exit 1
 fi
 
-if ! rg -q 'non-identity substitution' \
+if ! rg -q 'c2:substitute' \
     "$WORK_DIR/native_cert_v1_core_pf_nonidentity_substitute_bad.err"; then
-  echo "native core proof-term non-identity substitution rejection did not explain the missing proof data" >&2
+  echo "native core proof-term non-identity substitution rejection did not name the unsupported step" >&2
   exit 1
 fi
 

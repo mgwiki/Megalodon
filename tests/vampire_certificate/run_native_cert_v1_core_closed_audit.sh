@@ -52,7 +52,10 @@ while IFS= read -r native; do
   bad_file="$WORK_DIR/$base.bad_rules"
   awk '
     match($0, /^  \(([a-z_]+)/, m) {
-      if (m[1] !~ metadata) print m[1]
+      if (m[1] !~ metadata) {
+        if (m[1] == "substitute" && $0 !~ /\(subst\)/) print "nonidentity_substitute"
+        else print m[1]
+      }
     }
   ' metadata="$metadata_rules" "$native" | sort -u > "$rules_file"
   while IFS= read -r rule || [[ -n "$rule" ]]; do
