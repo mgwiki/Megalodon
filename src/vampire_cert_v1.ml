@@ -5322,9 +5322,9 @@ and simple_vlam_expr_with_expected type_env expected body =
   match expected with
   | None -> simple_vlam_expr body
   | Some _ ->
-      begin match
-        try Some (collect [] expected body)
-        with Error _ -> None
+	      begin match
+	        try Some (collect [] expected body)
+	        with Error _ -> None
       with
       | None -> simple_vlam_expr body
       | Some (sorts, final_expected, body) ->
@@ -5569,12 +5569,12 @@ let simple_paramodulate_unit_proof
     else
       direct_proof
   in
-  let target_prop = clause_body_prop result in
-  let rec consume_target equality_lit_proof selected_index source_clause source_proof depth =
-    match source_clause with
-    | [] -> emit_error "cannot paramodulate from the empty clause"
-    | [lit] ->
-        begin match selected_index with
+	  let target_prop = clause_body_prop result in
+	  let rec consume_target equality_lit_proof selected_index source_clause source_proof depth =
+	    match source_clause with
+	    | [] -> emit_error "cannot paramodulate from the empty clause"
+	    | [lit] ->
+	        begin match selected_index with
         | Some 0 ->
             simple_clause_intro_proof result result_literal
               (result_literal_proof equality_lit_proof source_proof)
@@ -5591,51 +5591,51 @@ let simple_paramodulate_unit_proof
                 (result_literal_proof equality_lit_proof head_name)
           | _ -> simple_clause_intro_proof result lit head_name
         in
-        let rest_selected =
-          match selected_index with
-          | Some 0 -> None
-          | Some n -> Some (n - 1)
-          | None -> None
-        in
-        let tail_branch =
-          consume_target equality_lit_proof rest_selected rest tail_name (depth + 1)
-        in
-        Printf.sprintf "(%s %s (fun %s => %s) (fun %s => %s))"
-          source_proof (simple_prop_arg target_prop)
-          head_name head_branch
-          tail_name tail_branch
-  in
-  let rec consume_equality selected_index source_clause source_proof depth =
-    match source_clause with
-    | [] -> emit_error "cannot paramodulate from an empty equality clause"
-    | [lit] ->
-        begin match selected_index with
-        | Some 0 -> consume_target source_proof (Some target_index) target_clause target_expr 0
-        | Some _ -> emit_error "paramodulation equality index is out of bounds"
-        | None -> simple_clause_intro_proof result lit source_proof
-        end
+	        let rest_selected =
+	          match selected_index with
+	          | Some 0 -> None
+	          | Some n -> Some (n - 1)
+	          | None -> None
+	        in
+	        let tail_branch =
+	          consume_target equality_lit_proof rest_selected rest tail_name (depth + 1)
+	        in
+	        Printf.sprintf "(%s %s (fun %s => %s) (fun %s => %s))"
+	          source_proof (simple_prop_arg target_prop)
+	          head_name head_branch
+	          tail_name tail_branch
+	  in
+	  let rec consume_equality selected_index source_clause source_proof depth =
+	    match source_clause with
+	    | [] -> emit_error "cannot paramodulate from an empty equality clause"
+	    | [lit] ->
+	        begin match selected_index with
+	        | Some 0 -> consume_target source_proof (Some target_index) target_clause target_expr 0
+	        | Some _ -> emit_error "paramodulation equality index is out of bounds"
+	        | None -> simple_clause_intro_proof result lit source_proof
+	        end
     | lit :: rest ->
         let head_name = "Hparamod_eq_lit_" ^ string_of_int depth in
         let tail_name = "Hparamod_eq_tail_" ^ string_of_int depth in
-        let head_branch =
-          match selected_index with
-          | Some 0 -> consume_target head_name (Some target_index) target_clause target_expr 0
-          | _ -> simple_clause_intro_proof result lit head_name
-        in
+	        let head_branch =
+	          match selected_index with
+	          | Some 0 -> consume_target head_name (Some target_index) target_clause target_expr 0
+	          | _ -> simple_clause_intro_proof result lit head_name
+	        in
         let rest_selected =
           match selected_index with
           | Some 0 -> None
           | Some n -> Some (n - 1)
           | None -> None
-        in
-        let tail_branch = consume_equality rest_selected rest tail_name (depth + 1) in
-        Printf.sprintf "(%s %s (fun %s => %s) (fun %s => %s))"
-          source_proof (simple_prop_arg target_prop)
-          head_name head_branch
-          tail_name tail_branch
-  in
-  simple_wrap_forall_intro result_sorts
-    (consume_equality (Some equality_index) equality_clause equality_expr 0)
+	        in
+	        let tail_branch = consume_equality rest_selected rest tail_name (depth + 1) in
+	        Printf.sprintf "(%s %s (fun %s => %s) (fun %s => %s))"
+	          source_proof (simple_prop_arg target_prop)
+	          head_name head_branch
+	          tail_name tail_branch
+	  in
+	  simple_wrap_forall_intro result_sorts
+	    (consume_equality (Some equality_index) equality_clause equality_expr 0)
 
 let simple_substitute_proof
     ?(formula_parent=false)
@@ -5668,20 +5668,22 @@ let simple_substitute_proof
       (lookup_simple_name names parent_id)
       parent_sorts
   in
-  let target = clause_body_prop result in
-  let proof =
-    if formula_parent then
-      let source_formula =
-        substituted_parent
-        |> simple_clause_formula_tm
-        |> left_assoc_vampire_or_formula
-      in
-      simple_formula_clause_projection_proof
-        type_env target result source_formula parent_expr 0
-    else
-      simple_clause_projection_proof target result substituted_parent parent_expr 0
-  in
-  simple_wrap_forall_intro result_sorts proof
+	  let target = clause_body_prop result in
+	  let proof =
+	    if formula_parent then
+	      let source_formula =
+	        substituted_parent
+	        |> simple_clause_formula_tm
+	        |> left_assoc_vampire_or_formula
+	      in
+	      simple_formula_clause_projection_proof
+	        type_env target result source_formula parent_expr 0
+	    else if substituted_parent = result then
+	      parent_expr
+	    else
+	      simple_clause_projection_proof target result substituted_parent parent_expr 0
+	  in
+	  simple_wrap_forall_intro result_sorts proof
 
 let simple_substituted_parent_expr type_env subst parent_sorts parent_name =
   let subst_sources = List.map fst subst in
@@ -7106,7 +7108,9 @@ let simple_avatar_split_proof
     try
       Some
         (formula_projection_with_eliminators parent_clause parent_name (fun _ _ -> None))
-    with Error _ -> None
+	              with Error msg ->
+	                debug_emit_error ("predicate_definition_fold " ^ id) msg;
+	                None
   in
   let proof =
     match direct with
@@ -7881,28 +7885,106 @@ let simple_formula_orientation_proof
           let source_right_proof = "(" ^ proof ^ " " ^ source_left_proof ^ ")" in
           let target_right_proof = convert env used source_right target_right source_right_proof in
           "(fun " ^ arg ^ ":" ^ target_left_text ^ " => " ^ target_right_proof ^ ")"
-      | Ap (Ap (TmH "vampire_and", source_left), source_right),
-        Ap (Ap (TmH "vampire_and", target_left), target_right) ->
-          let left_name = fresh "Horient_left_" in
-          let right_name = fresh "Horient_right_" in
-          let source_left_text = render_source used env source_left in
-          let source_right_text = render_source used env source_right in
-          let target_left_text = render_target used env target_left in
-          let target_right_text = render_target used env target_right in
-          let target_text = render_target used env target in
-          let left_proof = convert env used source_left target_left left_name in
-          let right_proof = convert env used source_right target_right right_name in
-          let target_intro =
-            Printf.sprintf
-              "(fun vorient_goal:prop => fun Horient_and:(%s) -> (%s) -> vorient_goal => Horient_and %s %s)"
-              target_left_text target_right_text left_proof right_proof
-          in
-          Printf.sprintf "(%s (%s) (fun %s:%s => fun %s:%s => %s))"
-            proof target_text
-            left_name source_left_text right_name source_right_text target_intro
-      | Ap (Ap (TmH "vampire_or", source_a),
-            Ap (Ap (TmH "vampire_or", source_b), source_c)),
-        Ap (Ap (TmH "vampire_or",
+	      | Ap (Ap (TmH "vampire_and", source_left), source_right),
+	        Ap (Ap (TmH "vampire_and", target_left), target_right) ->
+	          let left_name = fresh "Horient_left_" in
+	          let right_name = fresh "Horient_right_" in
+	          let source_left_text = render_source used env source_left in
+	          let source_right_text = render_source used env source_right in
+	          let target_left_text = render_target used env target_left in
+	          let target_right_text = render_target used env target_right in
+	          let left_proof = convert env used source_left target_left left_name in
+	          let right_proof = convert env used source_right target_right right_name in
+	          Printf.sprintf
+	            "(vampire_and_map (%s) (%s) (%s) (%s) (fun %s:%s => %s) (fun %s:%s => %s) %s)"
+	            source_left_text source_right_text target_left_text target_right_text
+	            left_name source_left_text left_proof
+	            right_name source_right_text right_proof
+	            proof
+	      | Ap (Ap (TmH "vampire_or", source_a),
+	            Ap (Ap (TmH "vampire_or", source_b), source_c)), _
+	          when
+	            let source_items = collect_binary "vampire_or" source in
+	            let target_items = collect_binary "vampire_or" target in
+	            List.length source_items = List.length target_items
+	            && List.length source_items > 2 ->
+	          let source_a_text = render_source used env source_a in
+	          let source_b_text = render_source used env source_b in
+	          let source_c_text = render_source used env source_c in
+	          let associated_source =
+	            Ap (Ap (TmH "vampire_or",
+	                    Ap (Ap (TmH "vampire_or", source_a), source_b)),
+	                source_c)
+	          in
+	          let associated_proof =
+	            Printf.sprintf
+	              "(vampire_or_assoc (%s) (%s) (%s) %s)"
+	              source_a_text source_b_text source_c_text proof
+	          in
+	          convert env used associated_source target associated_proof
+	      | _ when
+	          let source_items = collect_binary "vampire_or" source in
+	          let target_items = collect_binary "vampire_or" target in
+	          List.length source_items = List.length target_items
+		          && List.length source_items > 1
+		          && (source_items <> [source] || target_items <> [target]) ->
+		          let target_items = collect_binary "vampire_or" target in
+		          let target_text = render_target used env target in
+	          let target_item index =
+	            match List.nth_opt target_items index with
+	            | Some tm -> tm
+	            | None ->
+	                emit_error
+	                  "formula orientation transport lost a disjunction target leaf"
+	          in
+	          let rec inject target index leaf_proof =
+	            match target with
+	            | Ap (Ap (TmH "vampire_or", left), right) ->
+	                let left_count =
+	                  List.length (collect_binary "vampire_or" left)
+	                in
+	                let left_text = render_target used env left in
+	                let right_text = render_target used env right in
+	                if index < left_count then
+	                  let left_proof = inject left index leaf_proof in
+	                  Printf.sprintf
+	                    "(fun vorient_goal:prop => fun Horient_left:(%s) -> vorient_goal => fun Horient_right:(%s) -> vorient_goal => Horient_left %s)"
+	                    left_text right_text left_proof
+	                else
+	                  let right_proof = inject right (index - left_count) leaf_proof in
+	                  Printf.sprintf
+	                    "(fun vorient_goal:prop => fun Horient_left:(%s) -> vorient_goal => fun Horient_right:(%s) -> vorient_goal => Horient_right %s)"
+	                    left_text right_text right_proof
+	            | _ -> leaf_proof
+	          in
+	          let rec eliminate source index proof_expr =
+	            match source with
+	            | Ap (Ap (TmH "vampire_or", left), right) ->
+	                let left_count =
+	                  List.length (collect_binary "vampire_or" left)
+	                in
+	                let left_name = fresh "Horient_or_left_" in
+	                let right_name = fresh "Horient_or_right_" in
+	                let left_text = render_source used env left in
+	                let right_text = render_source used env right in
+	                let left_proof = eliminate left index left_name in
+	                let right_proof =
+	                  eliminate right (index + left_count) right_name
+	                in
+	                Printf.sprintf
+	                  "(%s %s (fun %s:%s => %s) (fun %s:%s => %s))"
+	                  proof_expr (simple_prop_arg target_text)
+	                  left_name left_text left_proof
+	                  right_name right_text right_proof
+	            | leaf ->
+	                let target_leaf = target_item index in
+	                inject target index
+	                  (convert env used leaf target_leaf proof_expr)
+	          in
+	          eliminate source 0 proof
+	      | Ap (Ap (TmH "vampire_or", source_a),
+	            Ap (Ap (TmH "vampire_or", source_b), source_c)),
+	        Ap (Ap (TmH "vampire_or",
                 Ap (Ap (TmH "vampire_or", target_a), target_b)),
             target_c) ->
           let a_name = fresh "Horient_assoc_a_" in
@@ -7992,34 +8074,28 @@ let simple_formula_orientation_proof
             else subst_tm [(source_raw, TmH binder)] source_body
           in
           let body_env = (binder, sort) :: env in
-          let source_body_text = render_source (binder :: used) body_env source_body in
-          let target_body_text = render_target (binder :: used) body_env target_body in
-          let target_text =
-            let exists_name =
-              match sort with
-              | "set" -> "vampire_exists_set"
-              | "prop" -> "vampire_exists_prop"
-              | "set->prop" -> "vampire_exists_set_prop"
-              | "set->set" -> "vampire_exists_set_set"
-              | "set->set->prop" -> "vampire_exists_set_set_prop"
-              | _ ->
-                  (match target_exists with
-                  | TmH "vampire_exists_prop" -> "vampire_exists_prop"
-                  | TmH "vampire_exists_set" -> "vampire_exists_set"
-                  | _ -> "vampire_exists_set")
-            in
-            exists_name ^ " (fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort
-            ^ " => " ^ target_body_text ^ ")"
-          in
-          let witness_name = fresh "Horient_exists_" in
-          let body_proof =
-            convert body_env (binder :: used) source_body target_body witness_name
-          in
-          Printf.sprintf
-            "(%s (%s) (fun %s:%s => fun %s:%s => fun vorient_exists_goal:prop => fun Horient_exists_case:(forall %s:%s, (%s) -> vorient_exists_goal) => Horient_exists_case %s %s))"
-            proof (simple_prop_arg target_text)
-            binder (simple_binder_sort_expr sort) witness_name source_body_text
-            binder (simple_binder_sort_expr sort) target_body_text binder body_proof
+	          let source_body_text = render_source (binder :: used) body_env source_body in
+	          let target_body_text = render_target (binder :: used) body_env target_body in
+	          let witness_name = fresh "Horient_exists_" in
+	          let body_proof =
+	            convert body_env (binder :: used) source_body target_body witness_name
+	          in
+	          let map_name =
+	            match sort with
+	            | "set" -> "vampire_exists_set_map"
+	            | "prop" -> "vampire_exists_prop_map"
+	            | _ ->
+	                emit_error
+	                  "formula orientation transport has no existential map theorem for this sort"
+	          in
+	          Printf.sprintf
+	            "(%s (fun %s:%s => %s) (fun %s:%s => %s) (fun %s:%s => fun %s:%s => %s) %s)"
+	            map_name
+	            binder (simple_binder_sort_expr sort) source_body_text
+	            binder (simple_binder_sort_expr sort) target_body_text
+	            binder (simple_binder_sort_expr sort)
+	            witness_name source_body_text body_proof
+	            proof
       | _ ->
           begin match equality_sides source, equality_sides target with
           | Some (source_left, source_right), Some (target_left, target_right)
@@ -8851,12 +8927,15 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
     ignore sort;
     name
   in
-  let binder_for_body sort body =
+  let binder_for_body env sort body =
+    let used = List.map fst env in
     let preferred =
       match preferred_formula_binder_name sort body with
       | Some name ->
           let binder = megalodon_ident name in
-          if is_vampire_var_name binder && tm_contains_symbol binder body then
+          if is_vampire_var_name binder
+             && not (List.mem binder used)
+             && tm_contains_symbol binder body then
             Some binder
           else None
       | None -> None
@@ -8882,6 +8961,7 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
           let binder = megalodon_ident name in
           if known_sort = sort
              && is_vampire_var_name binder
+             && not (List.mem binder used)
              && tm_contains_symbol binder body then begin
             binder_index := i + 1;
             Some binder
@@ -8892,6 +8972,10 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
     match preferred with
     | Some binder -> use_preferred binder
     | None ->
+    match first_unused_vampire_var_name_with_sort
+            (env @ binder_sorts @ type_env) used sort body with
+    | Some name -> use_preferred (megalodon_ident name)
+    | None ->
     match find_from !binder_index with
     | Some binder -> binder
     | None ->
@@ -8899,10 +8983,11 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
           binder_sorts
           |> List.filter
                (fun (name, known_sort) ->
-                  let binder = megalodon_ident name in
-                  known_sort = sort
-                  && is_vampire_var_name binder
-                  && tm_contains_symbol binder body)
+	                  let binder = megalodon_ident name in
+	                  known_sort = sort
+	                  && is_vampire_var_name binder
+	                  && not (List.mem binder used)
+	                  && tm_contains_symbol binder body)
         in
         match List.rev candidates with
         | (name, _) :: _ -> megalodon_ident name
@@ -9014,7 +9099,7 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
     match source, target with
     | All (source_tp, source_body), All (target_tp, target_body) when source_tp = target_tp ->
         let sort = simple_tp_expr source_tp in
-        let binder = binder_for_body sort target_body in
+        let binder = binder_for_body env sort target_body in
         let env = (binder, sort) :: env in
         let body_proof = convert env source_body target_body ("(" ^ proof ^ " " ^ binder ^ ")") in
         "(fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => " ^ body_proof ^ ")"
@@ -9064,7 +9149,7 @@ let simple_ennf_formula_proof type_env id parent_sorts result_sorts source targe
           | EnnfChainBinder tp :: rest, Ap (exists_head, Lam (target_tp, body))
               when tp = target_tp && is_exists_head exists_head ->
               let sort = simple_tp_expr tp in
-              let binder = binder_for_body sort body in
+              let binder = binder_for_body env sort body in
               match_target_chain
                 ((binder, sort) :: env)
                 (MatchedEnnfBinder (binder, sort, tp) :: acc)
@@ -9342,19 +9427,31 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       "Theorem vampire_xm : forall P:prop, P \\/ (P -> False).";
       "exact (fun P:prop => fun q:prop => fun Hleft:P -> q => fun Hright:(P -> False) -> q => dneg q (fun Hnq:q -> False => Hnq (Hright (fun HP:P => Hnq (Hleft HP))))).";
       "Qed.";
-      "Definition vampire_or : prop -> prop -> prop := or.";
-      "Definition vampire_and : prop -> prop -> prop := and.";
-      "Definition vampire_exists_set : (set -> prop) -> prop := fun P:set->prop => forall q:prop, (forall x:set, P x -> q) -> q.";
-      "Definition vampire_exists_prop : (prop -> prop) -> prop := fun P:prop->prop => forall q:prop, (forall x:prop, P x -> q) -> q.";
+	      "Definition vampire_or : prop -> prop -> prop := or.";
+	      "Theorem vampire_or_assoc : forall A B C:prop, vampire_or A (vampire_or B C) -> vampire_or (vampire_or A B) C.";
+	      "exact (fun A:prop => fun B:prop => fun C:prop => fun H:vampire_or A (vampire_or B C) => fun q:prop => fun Hleft:(vampire_or A B) -> q => fun Hright:C -> q => H q (fun HA:A => Hleft (fun qab:prop => fun Hab_left:A -> qab => fun Hab_right:B -> qab => Hab_left HA)) (fun Hbc:vampire_or B C => Hbc q (fun HB:B => Hleft (fun qab:prop => fun Hab_left:A -> qab => fun Hab_right:B -> qab => Hab_right HB)) Hright)).";
+	      "Qed.";
+	      "Definition vampire_and : prop -> prop -> prop := and.";
+	      "Theorem vampire_and_map : forall A B C D:prop, (A -> C) -> (B -> D) -> vampire_and A B -> vampire_and C D.";
+	      "exact (fun A:prop => fun B:prop => fun C:prop => fun D:prop => fun HAC:A -> C => fun HBD:B -> D => fun HAB:vampire_and A B => fun q:prop => fun HCD:C -> D -> q => HAB q (fun HA:A => fun HB:B => HCD (HAC HA) (HBD HB))).";
+	      "Qed.";
+	      "Definition vampire_exists_set : (set -> prop) -> prop := fun P:set->prop => forall q:prop, (forall x:set, P x -> q) -> q.";
+	      "Definition vampire_exists_prop : (prop -> prop) -> prop := fun P:prop->prop => forall q:prop, (forall x:prop, P x -> q) -> q.";
       "Definition vampire_exists_set_prop : ((set->prop) -> prop) -> prop := fun P:(set->prop)->prop => forall q:prop, (forall x:set->prop, P x -> q) -> q.";
       "Definition vampire_exists_set_set : ((set->set) -> prop) -> prop := fun P:(set->set)->prop => forall q:prop, (forall x:set->set, P x -> q) -> q.";
       "Definition vampire_exists_set_set_prop : ((set->set->prop) -> prop) -> prop := fun P:(set->set->prop)->prop => forall q:prop, (forall x:set->set->prop, P x -> q) -> q.";
-      "Theorem vampire_exists_set_intro : forall P:set->prop, forall x:set, P x -> vampire_exists_set P.";
-      "exact (fun P:set->prop => fun x:set => fun HP:P x => fun q:prop => fun Hcase:(forall y:set, P y -> q) => Hcase x HP).";
-      "Qed.";
-      "Theorem vampire_exists_prop_intro : forall P:prop->prop, forall x:prop, P x -> vampire_exists_prop P.";
-      "exact (fun P:prop->prop => fun x:prop => fun HP:P x => fun q:prop => fun Hcase:(forall y:prop, P y -> q) => Hcase x HP).";
-      "Qed.";
+	      "Theorem vampire_exists_set_intro : forall P:set->prop, forall x:set, P x -> vampire_exists_set P.";
+	      "exact (fun P:set->prop => fun x:set => fun HP:P x => fun q:prop => fun Hcase:(forall y:set, P y -> q) => Hcase x HP).";
+	      "Qed.";
+	      "Theorem vampire_exists_set_map : forall P Q:set->prop, (forall x:set, P x -> Q x) -> vampire_exists_set P -> vampire_exists_set Q.";
+	      "exact (fun P:set->prop => fun Q:set->prop => fun HPQ:(forall x:set, P x -> Q x) => fun HP:vampire_exists_set P => fun q:prop => fun Hcase:(forall x:set, Q x -> q) => HP q (fun x:set => fun HPx:P x => Hcase x (HPQ x HPx))).";
+	      "Qed.";
+	      "Theorem vampire_exists_prop_intro : forall P:prop->prop, forall x:prop, P x -> vampire_exists_prop P.";
+	      "exact (fun P:prop->prop => fun x:prop => fun HP:P x => fun q:prop => fun Hcase:(forall y:prop, P y -> q) => Hcase x HP).";
+	      "Qed.";
+	      "Theorem vampire_exists_prop_map : forall P Q:prop->prop, (forall x:prop, P x -> Q x) -> vampire_exists_prop P -> vampire_exists_prop Q.";
+	      "exact (fun P:prop->prop => fun Q:prop->prop => fun HPQ:(forall x:prop, P x -> Q x) => fun HP:vampire_exists_prop P => fun q:prop => fun Hcase:(forall x:prop, Q x -> q) => HP q (fun x:prop => fun HPx:P x => Hcase x (HPQ x HPx))).";
+	      "Qed.";
       "Theorem vampire_exists_set_prop_intro : forall P:(set->prop)->prop, forall x:set->prop, P x -> vampire_exists_set_prop P.";
       "exact (fun P:(set->prop)->prop => fun x:set->prop => fun HP:P x => fun q:prop => fun Hcase:(forall y:set->prop, P y -> q) => Hcase x HP).";
       "Qed.";
@@ -10617,18 +10714,20 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                 Some
                   (simple_rectify_extra_prefix_binders_proof
                      parent_prop prop parent_formula formula proof)
-              with Error _ -> None
+	              with Error msg ->
+	                debug_emit_error ("rectify_formula " ^ id) msg;
+	                None
             with
             | Some prefix_proof ->
                 add_emitted id name;
                 add_emitted_prop_and_sorts id prop sorts;
                 claims := !claims @ [(name, prop, "exact " ^ prefix_proof ^ ".")]
-            | None ->
-                if same_mod_scoped_vampire_var_renaming parent_formula formula then begin
-                  add_emitted id name;
-                  add_emitted_prop_and_sorts id prop sorts;
-                  claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")]
-                end else begin
+	            | None ->
+	                if same_mod_scoped_vampire_var_renaming parent_formula formula then begin
+	                  add_emitted id name;
+	                  add_emitted_prop_and_sorts id prop sorts;
+	                  claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")]
+	                end else begin
                   let proof_target_formula = left_assoc_vampire_or_formula formula in
                   begin match
                     try
@@ -10637,7 +10736,9 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                            ~source_type_env:parent_type_env
                            ~target_type_env
                            type_env parent_formula proof_target_formula proof)
-                    with Error _ -> None
+	              with Error msg ->
+	                debug_emit_error ("predicate_definition_fold " ^ id) msg;
+	                None
                   with
                   | Some orient_proof ->
                       add_emitted id name;
@@ -11112,9 +11213,15 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           end
       | PredicateDefinitionFold (id, source_id, definition_id, formula) ->
           let target_prop, target_sorts = formula_tm_prop_and_sorts id formula in
+          let metadata_target_prop = metadata_step_proposition cert id in
+          let final_target_prop =
+            match metadata_target_prop with
+            | Some prop -> simple_fix_known_higher_order_binders prop
+            | None -> target_prop
+          in
           let source_prop = emitted_parent_prop source_id in
           let can_use_transparent_definition =
-            simple_rendered_prop_equiv source_prop target_prop
+            simple_rendered_prop_equiv source_prop final_target_prop
             && try
               let definition = lookup_formula checked_certificate definition_id in
               let _, atom, _ = predicate_definition_parts definition_id definition in
@@ -11129,8 +11236,8 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             let source_name = lookup_simple_name !emitted_names source_id in
             ignore (lookup_simple_name !emitted_names definition_id);
             add_emitted id name;
-            add_emitted_prop_and_sorts id target_prop target_sorts;
-            claims := !claims @ [(name, target_prop, "exact " ^ source_name ^ ".")]
+            add_emitted_prop_and_sorts id final_target_prop target_sorts;
+            claims := !claims @ [(name, final_target_prop, "exact " ^ source_name ^ ".")]
           end else
             begin match
               try
@@ -11153,28 +11260,44 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                   simple_predicate_definition_fold_proof
                     type_env id target_sorts source formula body atom source_name
                 in
-                let replay_target_prop =
-                  try simple_formula_prop_text_with_used [] type_env formula
-                  with Error _ -> simple_atom_prop_with_type_env type_env formula
-                in
-                let final_name = derived_name id in
-                let final_prop =
-                  if replay_target_prop = target_prop then target_prop
-                  else replay_target_prop
-                in
-                Some
-                  (final_name, final_prop,
-                   [(final_name, final_prop, "exact " ^ fold_proof ^ ".")])
-              with Error _ -> None
+	                let replay_target_prop =
+	                  try simple_formula_prop_text_with_used [] type_env formula
+	                  with Error _ -> simple_atom_prop_with_type_env type_env formula
+	                in
+	                let final_name = derived_name id in
+	                if replay_target_prop = final_target_prop then
+	                  Some
+	                    (final_name, final_target_prop,
+	                     [(final_name, final_target_prop, "exact " ^ fold_proof ^ ".")])
+	                else begin
+	                  let raw_name =
+	                    simple_fresh_name used_names
+	                      ("predicate_definition_fold__" ^ id ^ "_raw")
+	                  in
+	                  let proof_target_formula = left_assoc_vampire_or_formula formula in
+	                  let orientation_proof =
+	                    simple_formula_orientation_proof
+	                      ~source_type_env:type_env
+	                      ~target_type_env:type_env
+	                      type_env formula proof_target_formula raw_name
+	                  in
+	                  Some
+	                    (final_name, final_target_prop,
+	                     [(raw_name, replay_target_prop, "exact " ^ fold_proof ^ ".");
+	                      (final_name, final_target_prop, "exact " ^ orientation_proof ^ ".")])
+	                end
+	              with Error msg ->
+	                debug_emit_error ("predicate_definition_fold " ^ id) msg;
+	                None
             with
-            | Some (name, prop, new_claims) ->
+	            | Some (name, prop, new_claims) ->
                 ignore (lookup_simple_name !emitted_names definition_id);
                 uses_vampire_eq_prop_ext := true;
                 add_emitted id name;
-                add_emitted_prop_and_sorts id prop target_sorts;
-                claims := !claims @ new_claims
-            | None ->
-                add_formula_inference_bridge "predicate_definition_fold" id [source_id; definition_id] target_prop
+	                add_emitted_prop_and_sorts id prop target_sorts;
+	                claims := !claims @ new_claims
+	            | None ->
+	                add_formula_inference_bridge "predicate_definition_fold" id [source_id; definition_id] final_target_prop
             end
       | PredicateDefinitionFoldChain (id, source_id, definition_ids, formula) ->
           let target_prop, target_sorts = formula_tm_prop_and_sorts id formula in
