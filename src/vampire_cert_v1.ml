@@ -8684,6 +8684,110 @@ let rec simple_formula_prop_text_with_used used type_env tm =
       | None -> simple_tm_expr_with_expected type_env (Some "prop") atom
       end
 
+let rec simple_formula_prop_text_for_definition used type_env tm =
+  match tm with
+  | All (tp, body) ->
+      let sort = simple_tp_expr tp in
+      let binder =
+        match preferred_formula_binder_name sort body with
+        | Some name
+            when not (List.mem name used)
+                 && List.assoc_opt name type_env = Some sort ->
+            megalodon_ident name
+        | _ ->
+            begin match first_unused_vampire_var_name_with_sort type_env used sort body with
+            | Some name -> megalodon_ident name
+            | None ->
+                let candidates =
+                  type_env
+                  |> List.filter
+                       (fun (name, known_sort) ->
+                          let binder = megalodon_ident name in
+                          known_sort = sort
+                          && is_vampire_var_name binder
+                          && not (List.mem binder used)
+                          && tm_contains_symbol binder body)
+                in
+                match candidates with
+                | (name, _) :: _ -> megalodon_ident name
+                | [] ->
+                    begin match max_vampire_var_name body with
+                    | Some name -> megalodon_ident name
+                    | None -> "Xformula"
+                    end
+            end
+      in
+      "forall " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ ", "
+      ^ simple_with_db_aliases [binder]
+          (fun () ->
+             simple_formula_prop_text_for_definition
+               (binder :: used) ((binder, sort) :: type_env) body)
+  | Imp (left, right) ->
+      "(" ^ simple_formula_prop_text_for_definition used type_env left ^ " -> "
+      ^ simple_formula_prop_text_for_definition used type_env right ^ ")"
+  | Ap (Ap (TmH "vampire_and", left), right) ->
+      "vampire_and (" ^ simple_formula_prop_text_for_definition used type_env left ^ ") ("
+      ^ simple_formula_prop_text_for_definition used type_env right ^ ")"
+  | Ap (Ap (TmH "vampire_or", left), right) ->
+      "vampire_or (" ^ simple_formula_prop_text_for_definition used type_env left ^ ") ("
+      ^ simple_formula_prop_text_for_definition used type_env right ^ ")"
+  | Ap (exists_head, Lam (tp, body))
+      when exists_head = TmH "vampire_exists_prop"
+           || exists_head = TmH "vampire_exists_set" ->
+      let sort = simple_tp_expr tp in
+      let exists_name =
+        match sort with
+        | "set" -> "vampire_exists_set"
+        | "prop" -> "vampire_exists_prop"
+        | "set->prop" -> "vampire_exists_set_prop"
+        | "set->set" -> "vampire_exists_set_set"
+        | "set->set->prop" -> "vampire_exists_set_set_prop"
+        | _ -> "vampire_exists_set"
+      in
+      let binder =
+        match preferred_formula_binder_name sort body with
+        | Some name
+            when not (List.mem name used)
+                 &&
+                 (match List.assoc_opt name type_env with
+                  | Some known_sort -> known_sort = sort
+                  | None -> true) ->
+            megalodon_ident name
+        | _ ->
+            begin match first_unused_vampire_var_name_with_sort type_env used sort body with
+            | Some name -> megalodon_ident name
+            | None ->
+                let candidates =
+                  type_env
+                  |> List.filter
+                       (fun (name, known_sort) ->
+                          let binder = megalodon_ident name in
+                          known_sort = sort
+                          && is_vampire_var_name binder
+                          && not (List.mem binder used)
+                          && tm_contains_symbol binder body)
+                in
+                begin match candidates with
+                | (name, _) :: _ -> megalodon_ident name
+                | [] ->
+                    begin match first_unused_vampire_var_name used body with
+                    | Some name -> megalodon_ident name
+                    | None -> "Xformula"
+                    end
+                end
+            end
+      in
+      exists_name ^ " (fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => "
+      ^ simple_with_db_aliases [binder]
+          (fun () ->
+             simple_formula_prop_text_for_definition
+               (binder :: used) ((binder, sort) :: type_env) body) ^ ")"
+  | atom ->
+      begin match equality_sides atom with
+      | Some _ -> simple_atom_prop_with_type_env type_env atom
+      | None -> simple_tm_expr_with_expected type_env (Some "prop") atom
+      end
+
 let rec simple_formula_prop_text type_env tm =
   match tm with
   | All (tp, body) ->
@@ -11165,94 +11269,17 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             |> List.sort_uniq compare
           in
           let rendered_body_text =
-            simple_formula_prop_text_with_used
+            simple_formula_prop_text_for_definition
               (List.map fst binders) definition_env body
           in
-          let body_variable_sort_pairs =
-            metadata_step_extra_fields cert id "predicate_definition"
-            |> List.concat
-            |> List.filter_map
-                 (fun field ->
-                    match String.index_opt field '=' with
-                    | None -> None
-                    | Some eq ->
-                        let key = String.sub field 0 eq in
-                        let value =
-                          String.sub field (eq + 1) (String.length field - eq - 1)
-                        in
-                        let prefix = "body_variable_sort_" in
-                        let prefix_len = String.length prefix in
-                        if String.length key > prefix_len
-                           && String.sub key 0 prefix_len = prefix then
-                          try
-                            let index =
-                              int_of_string
-                                (String.sub key prefix_len (String.length key - prefix_len))
-                            in
-                            Option.map (fun pair -> (index, pair)) (variable_sort_pair value)
-                          with Failure _ -> None
-                        else None)
-            |> List.sort compare
-            |> List.map snd
+          let rhs =
+            List.fold_right
+              (fun (binder, sort) acc ->
+                 "fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => " ^ acc)
+              binders
+              rendered_body_text
           in
-          let metadata_body_variable_renamings =
-            let rec pair acc metadata_vars actual_vars =
-              match metadata_vars, actual_vars with
-              | (metadata_name, metadata_sort) :: metadata_tail,
-                (actual_name, actual_sort) :: actual_tail
-                  when metadata_sort = actual_sort ->
-                  pair
-                    ((megalodon_ident metadata_name, megalodon_ident actual_name) :: acc)
-                    metadata_tail actual_tail
-              | _ -> List.rev acc
-            in
-            pair [] body_variable_sort_pairs (metadata_step_variable_sort_pairs cert id)
-          in
-          let body_text_opt =
-            match metadata_step_extra_field cert id "predicate_definition" "formula" with
-            | Some formula_text ->
-                let metadata_body_text =
-                  simple_fix_known_higher_order_binders formula_text
-                  |> string_map_identifiers metadata_body_variable_renamings
-                in
-                let metadata_names_defined_predicate =
-                  match metadata_step_extra_field cert id "predicate_definition" "introduced_symbol" with
-                  | Some introduced ->
-                      megalodon_ident introduced = name
-                      || megalodon_ident introduced = megalodon_ident defined
-                  | None -> false
-                in
-                let starts_with prefix text =
-                  let text = String.trim text in
-                  let prefix_len = String.length prefix in
-                  String.length text >= prefix_len
-                  && String.sub text 0 prefix_len = prefix
-                in
-                if simple_rendered_prop_equiv rendered_body_text metadata_body_text
-                   || (metadata_names_defined_predicate
-                       && ((starts_with "forall " rendered_body_text
-                            && starts_with "forall " metadata_body_text)
-                           || (starts_with "vampire_exists" rendered_body_text
-                               && starts_with "vampire_exists" metadata_body_text))) then
-                  Some metadata_body_text
-                else if formula_text <> "" then
-                  Some rendered_body_text
-                else
-                  None
-            | None -> Some rendered_body_text
-          in
-          begin match body_text_opt with
-          | Some body_text ->
-              let rhs =
-                List.fold_right
-                  (fun (binder, sort) acc ->
-                     "fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => " ^ acc)
-                  binders
-                  body_text
-              in
-              Some (name, Printf.sprintf "Definition %s : %s := %s." name declared_sort rhs, declared_sort)
-          | None -> None
-          end
+          Some (name, Printf.sprintf "Definition %s : %s := %s." name declared_sort rhs, declared_sort)
       | _ -> None
     with Error _ -> None
   in
