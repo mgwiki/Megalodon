@@ -828,6 +828,18 @@ if ! rg -q 'Vampire certificate v1 strict checked 7 steps' \
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_primitive_expansion_typed_eq_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_fool_primitive_expansion_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_fool_primitive_expansion_typed_eq_valid.log"
+
+if ! rg -q 'Vampire certificate v1 strict checked 7 steps' \
+    "$WORK_DIR/native_cert_v1_fool_primitive_expansion_typed_eq_valid.log"; then
+  echo "strict native certificate v1 checker did not accept typed-equality FOOL primitive-expansion metadata" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1strict \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_primitive_expansion_missing_bad.sexp \

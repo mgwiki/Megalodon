@@ -1499,6 +1499,22 @@ let rec fool_formula_tm tm =
   | TmH h when is_vampire_var_name h -> Ap (Ap (TmH "=", TmH "f__true"), tm)
   | _ -> equality_to_true (fool_term_tm tm)
 
+let rec typed_fool_bool_lifts tm =
+  match tm with
+  | Ap (Ap (TmH "=", left), TmH "f__true") ->
+      typed_prop_equality_to_true (typed_fool_bool_lifts left)
+  | TpAp (m, a) -> TpAp (typed_fool_bool_lifts m, a)
+  | Ap (m, n) -> Ap (typed_fool_bool_lifts m, typed_fool_bool_lifts n)
+  | Lam (tp, body) -> Lam (tp, typed_fool_bool_lifts body)
+  | Imp (left, right) -> Imp (typed_fool_bool_lifts left, typed_fool_bool_lifts right)
+  | All (tp, body) -> All (tp, typed_fool_bool_lifts body)
+  | DB _ | TmH _ | Prim _ -> tm
+
+let fool_formula_tm_candidates tm =
+  let raw = fool_formula_tm tm in
+  let typed = typed_fool_bool_lifts raw in
+  if raw = typed then [raw] else [raw; typed]
+
 let rec ennf_pos tm =
   match tm with
   | Imp (left, false_tm) when is_vampire_false false_tm -> ennf_neg left
@@ -1533,6 +1549,12 @@ let rec skolemize_formula_tm subst tm =
 let rec normalize_bool_equality_orientation tm =
   let normalize = normalize_bool_equality_orientation in
   match tm with
+  | Ap (Ap (TpAp (TmH h, tp), left), TmH b)
+      when h = megalodon_eq_poly_hash && (b = "f__true" || b = "f__false") ->
+      Ap (Ap (TpAp (TmH h, tp), TmH b), normalize left)
+  | Ap (Ap (TpAp (TmH h, tp), left), right)
+      when h = megalodon_eq_poly_hash ->
+      Ap (Ap (TpAp (TmH h, tp), normalize left), normalize right)
   | Ap (Ap (TmH "=", left), TmH h) when h = "f__true" || h = "f__false" ->
       Ap (Ap (TmH "=", TmH h), normalize left)
   | Ap (Ap (TmH "=", left), right) ->
@@ -1547,6 +1569,12 @@ let rec normalize_bool_equality_orientation tm =
 let rec normalize_equality_orientation tm =
   let normalize = normalize_equality_orientation in
   match tm with
+  | Ap (Ap (TpAp (TmH h, tp), left), right)
+      when h = megalodon_eq_poly_hash ->
+      let left = normalize left in
+      let right = normalize right in
+      if compare left right <= 0 then Ap (Ap (TpAp (TmH h, tp), left), right)
+      else Ap (Ap (TpAp (TmH h, tp), right), left)
   | Ap (Ap (TmH "=", left), right) ->
       let left = normalize left in
       let right = normalize right in
@@ -1642,6 +1670,12 @@ let normalize_fool_formula_shape tm =
   |> normalize_fool_bool_association
   |> normalize_equality_orientation
   |> normalize_fool_bool_association
+
+let same_fool_formula_lift expected target =
+  expected = target
+  || normalize_bool_equality_orientation expected = normalize_bool_equality_orientation target
+  || normalize_equality_orientation expected = normalize_equality_orientation target
+  || normalize_fool_formula_shape expected = normalize_fool_formula_shape target
 
 let rec debug_tm tm =
   match tm with
@@ -1819,25 +1853,18 @@ let check_rectify_formula checked id parent_id renamings result =
 
 let check_fool_formula checked id parent_id result =
   let parent_formula = lookup_formula checked parent_id in
-  let expected = fool_formula_tm parent_formula in
-  if expected <> result
-    && normalize_bool_equality_orientation expected <> normalize_bool_equality_orientation result
-    && normalize_equality_orientation expected <> normalize_equality_orientation result then begin
-    if normalize_fool_formula_shape expected = normalize_fool_formula_shape result then ()
-    else begin
+  let candidates = fool_formula_tm_candidates parent_formula in
+  if not (List.exists (fun expected -> same_fool_formula_lift expected result) candidates) then begin
+    let expected = List.hd candidates in
     debug_certificate_mismatch id expected result;
     error (id ^ ": fool_formula result does not match recursive FOOL Boolean lifting")
-    end
   end
 
 let check_fool_atom_lift id source target path =
   if path = "" then
     error (id ^ ": fool_atom_lift path is empty");
-  let expected = fool_formula_tm source in
-  if expected <> target
-    && normalize_bool_equality_orientation expected <> normalize_bool_equality_orientation target
-    && normalize_equality_orientation expected <> normalize_equality_orientation target
-    && normalize_fool_formula_shape expected <> normalize_fool_formula_shape target then
+  let candidates = fool_formula_tm_candidates source in
+  if not (List.exists (fun expected -> same_fool_formula_lift expected target) candidates) then
     error (id ^ ": fool_atom_lift target does not match the explicit FOOL Boolean lift")
 
 let check_ennf_formula checked id parent_id result =
@@ -2955,11 +2982,11 @@ let check_paramodulate checked id equality_parent_id target_parent_id equality_i
   let equality_rest = remove_at equality_index equality_clause (id ^ " equality literal") in
   let target_rest = remove_at target_index target_clause (id ^ " target literal") in
   let expected = equality_rest @ target_rest @ [rewritten_literal] in
-  if not (same_clause_multiset expected result) then
+  if not (same_clause_multiset expected result || same_clause_set_mod_equality expected result) then
     begin match swap_literal_equality rewritten_literal with
     | Some swapped_literal ->
         let swapped_expected = equality_rest @ target_rest @ [swapped_literal] in
-        if not (same_clause_multiset swapped_expected result) then
+        if not (same_clause_multiset swapped_expected result || same_clause_set_mod_equality swapped_expected result) then
           error (id ^ ": paramodulation result does not match explicit rewrite")
     | None -> error (id ^ ": paramodulation result does not match explicit rewrite")
     end
