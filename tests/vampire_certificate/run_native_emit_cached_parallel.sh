@@ -95,8 +95,9 @@ run_one() {
     return 0
   fi
 
-  if rg -n '\b(admit|aby)\b|-allowincompleteqed' "$case_dir/out.mg" \
-      > "$case_dir/forbidden.txt"; then
+  if awk '$0 !~ /^\/\// && ($0 ~ /(^|[^[:alnum:]_])(admit|aby)([^[:alnum:]_]|$)/ || $0 ~ /-allowincompleteqed/) {print FNR ":" $0}' \
+      "$case_dir/out.mg" > "$case_dir/forbidden.txt" \
+      && [[ -s "$case_dir/forbidden.txt" ]]; then
     local first
     first=$(head -1 "$case_dir/forbidden.txt" | tr '\t' ' ')
     printf '%s\tFORBIDDEN_TOKEN\t%s\n' "$name" "$first" > "$case_dir/result.tsv"
@@ -119,6 +120,16 @@ run_one() {
     local first
     first=$(head -1 "$case_dir/unchecked_sources.txt" | tr '\t' ' ')
     printf '%s\tUNCHECKED_SOURCE\t%s\n' "$name" "$first" > "$case_dir/result.tsv"
+    return 0
+  fi
+
+  if [[ "$REQUIRE_SOURCE_ORIGIN" == "1" ]] \
+      && awk '/^\/\/ vampire_source_assumption / && $0 !~ /origin_file "[^"]+".*origin_line "[^"]*".*origin_char "[^"]*".*origin_kind "[^"]+"/ {print FNR ":" $0}' \
+          "$case_dir/out.mg" > "$case_dir/source_bindings_without_origin.txt" \
+      && [[ -s "$case_dir/source_bindings_without_origin.txt" ]]; then
+    local first
+    first=$(head -1 "$case_dir/source_bindings_without_origin.txt" | tr '\t' ' ')
+    printf '%s\tSOURCE_BINDING_WITHOUT_ORIGIN\t%s\n' "$name" "$first" > "$case_dir/result.tsv"
     return 0
   fi
 

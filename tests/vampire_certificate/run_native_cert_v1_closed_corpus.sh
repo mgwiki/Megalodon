@@ -60,6 +60,15 @@ run_one() {
     return 0
   fi
 
+  if awk '/^\/\/ vampire_source_assumption / && $0 !~ /origin_file "[^"]+".*origin_line "[^"]*".*origin_char "[^"]*".*origin_kind "[^"]+"/ {print FNR ":" $0}' \
+      "$case_dir/out.mg" > "$case_dir/source_bindings_without_origin.txt" \
+      && [[ -s "$case_dir/source_bindings_without_origin.txt" ]]; then
+    local first
+    first=$(head -1 "$case_dir/source_bindings_without_origin.txt" | tr '\t' ' ')
+    printf '%s\tSOURCE_BINDING_WITHOUT_ORIGIN\t%s\n' "$base" "$first" > "$case_dir/result.tsv"
+    return 0
+  fi
+
   if awk '/^\/\/ vampire_source_assumption / && $0 !~ /source_formula_status "closed_formula_checked"/ {print FNR ":" $0}' \
       "$case_dir/out.mg" > "$case_dir/unchecked_sources.txt" \
       && [[ -s "$case_dir/unchecked_sources.txt" ]]; then
@@ -69,8 +78,9 @@ run_one() {
     return 0
   fi
 
-  if rg -n '\b(admit|aby)\b|-allowincompleteqed|bridge_|^assume (definition_input__|avatar_|theory_|predicate_definition__|vampire_eq_prop_ext\b)' \
-      "$case_dir/out.mg" > "$case_dir/forbidden.txt"; then
+  if awk '$0 !~ /^\/\// && ($0 ~ /(^|[^[:alnum:]_])(admit|aby)([^[:alnum:]_]|$)/ || $0 ~ /-allowincompleteqed|bridge_|^assume (definition_input__|avatar_|theory_|predicate_definition__|vampire_eq_prop_ext\b)/) {print FNR ":" $0}' \
+      "$case_dir/out.mg" > "$case_dir/forbidden.txt" \
+      && [[ -s "$case_dir/forbidden.txt" ]]; then
     local first
     first=$(head -1 "$case_dir/forbidden.txt" | tr '\t' ' ')
     printf '%s\tFORBIDDEN_TOKEN\t%s\n' "$base" "$first" > "$case_dir/result.tsv"
