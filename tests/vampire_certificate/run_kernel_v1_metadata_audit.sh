@@ -234,12 +234,51 @@ require_primitive_expansion_contract() {
   fi
 }
 
+require_primitive_expansion_contract_any() {
+  local rule=$1
+  shift
+  local file="$WORK_DIR/${rule}_primitive_expansion.tsv"
+  grep -F "\"rule=${rule}\"" "$WORK_DIR/kernel_v1.tsv" > "$file" || true
+  if [[ ! -s "$file" ]]; then
+    return 0
+  fi
+
+  local missing="$WORK_DIR/missing_${rule}_primitive_expansion.tsv"
+  : > "$missing"
+  for pattern in \
+    'primitive_expansion=prefix' \
+    'primitive_expansion_prefix=' \
+    'primitive_expansion_requires='; do
+    awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
+      "$file" >> "$missing"
+  done
+
+  local allowed=" $* "
+  awk -v allowed="$allowed" '
+    match($0, /primitive_expansion_requires=([^"]+)/, primitive) {
+      if (index(allowed, " " primitive[1] " ") == 0) {
+        print "unexpected-primitive\t" primitive[1] "\t" $0
+      }
+      next
+    }
+  ' "$file" >> "$missing"
+
+  if [[ -s "$missing" ]]; then
+    echo "kernel_v1 metadata audit found ${rule} records missing primitive-expansion contract fields" >&2
+    sed -n '1,40p' "$missing" >&2
+    exit 1
+  fi
+}
+
 require_primitive_expansion_contract superposition paramodulate
 require_primitive_expansion_contract rewrite paramodulate
 require_primitive_expansion_contract unit_resulting_resolution resolve
 require_primitive_expansion_contract subsumption_resolution resolve
 require_primitive_expansion_contract resolution resolve
 require_primitive_expansion_contract factoring factor
+require_primitive_expansion_contract formula_normalize ennf_formula
+require_primitive_expansion_contract skolemize skolem_formula
+require_primitive_expansion_contract_any cnf_clause cnf_literal cnf_formula_clause
 
 grep -F 'rule=instantiation' "$WORK_DIR/kernel_v1.tsv" \
   > "$WORK_DIR/instantiation.tsv" || true

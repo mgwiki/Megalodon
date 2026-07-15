@@ -12,6 +12,10 @@ MIN_EQUALITY_RESOLUTION=${MIN_EQUALITY_RESOLUTION:-1}
 MIN_RESOLVE=${MIN_RESOLVE:-1}
 MIN_FACTOR=${MIN_FACTOR:-1}
 MIN_FOOL_ATOM_LIFT=${MIN_FOOL_ATOM_LIFT:-0}
+MIN_ENNF_FORMULA=${MIN_ENNF_FORMULA:-0}
+MIN_SKOLEM_FORMULA=${MIN_SKOLEM_FORMULA:-0}
+MIN_CNF_LITERAL=${MIN_CNF_LITERAL:-0}
+MIN_CNF_FORMULA_CLAUSE=${MIN_CNF_FORMULA_CLAUSE:-0}
 
 mkdir -p "$WORK_DIR"
 ln -sfn "$WORK_DIR" "$TMPDIR/latest_native_primitive_audit"
@@ -146,6 +150,10 @@ collect_rule equality_resolution "$WORK_DIR/equality_resolution.tsv"
 collect_rule resolve "$WORK_DIR/resolve.tsv"
 collect_rule factor "$WORK_DIR/factor.tsv"
 collect_rule fool_atom_lift "$WORK_DIR/fool_atom_lift.tsv"
+collect_rule ennf_formula "$WORK_DIR/ennf_formula.tsv"
+collect_rule skolem_formula "$WORK_DIR/skolem_formula.tsv"
+collect_rule cnf_literal "$WORK_DIR/cnf_literal.tsv"
+collect_rule cnf_formula_clause "$WORK_DIR/cnf_formula_clause.tsv"
 
 require_min substitute "$WORK_DIR/substitute.tsv" "$MIN_SUBSTITUTE"
 require_fields substitute "$WORK_DIR/substitute.tsv" \
@@ -192,6 +200,28 @@ require_fields fool_atom_lift "$WORK_DIR/fool_atom_lift.tsv" \
   '(target (formula ' \
   '(path '
 
+require_min ennf_formula "$WORK_DIR/ennf_formula.tsv" "$MIN_ENNF_FORMULA"
+require_fields ennf_formula "$WORK_DIR/ennf_formula.tsv" \
+  '(parent "' \
+  '(result (formula '
+
+require_min skolem_formula "$WORK_DIR/skolem_formula.tsv" "$MIN_SKOLEM_FORMULA"
+require_fields skolem_formula "$WORK_DIR/skolem_formula.tsv" \
+  '(parent "' \
+  '(subst' \
+  '(result (formula '
+
+require_min cnf_literal "$WORK_DIR/cnf_literal.tsv" "$MIN_CNF_LITERAL"
+require_fields cnf_literal "$WORK_DIR/cnf_literal.tsv" \
+  '(parent "' \
+  '(result (clause'
+
+require_min cnf_formula_clause "$WORK_DIR/cnf_formula_clause.tsv" "$MIN_CNF_FORMULA_CLAUSE"
+require_fields cnf_formula_clause "$WORK_DIR/cnf_formula_clause.tsv" \
+  '(parent "' \
+  '(index ' \
+  '(result (clause'
+
 parent_errors="$WORK_DIR/primitive_parent_reference_errors.tsv"
 : > "$parent_errors"
 while IFS= read -r native_file; do
@@ -213,7 +243,11 @@ while IFS= read -r native_file; do
             rule == "equality_symmetry" ||
             rule == "equality_resolution" ||
             rule == "resolve" ||
-            rule == "factor") {
+            rule == "factor" ||
+            rule == "ennf_formula" ||
+            rule == "skolem_formula" ||
+            rule == "cnf_literal" ||
+            rule == "cnf_formula_clause") {
           if (match(line, /\(parent "([^"]+)"/, ref)) {
             report("parent", ref[1], line)
           }
@@ -265,6 +299,12 @@ while IFS= read -r native_file; do
       if (rule == "fool_formula") {
         return "fool_atom_lift"
       }
+      if (rule == "formula_normalize") {
+        return "ennf_formula"
+      }
+      if (rule == "skolemize") {
+        return "skolem_formula"
+      }
       if (rule == "superposition" || rule == "rewrite") {
         return "paramodulate"
       }
@@ -299,6 +339,10 @@ while IFS= read -r native_file; do
         unit = owner[1]
         kernel_rule = rule_match[1]
         primitive = required_primitive(kernel_rule)
+        if (primitive == "" &&
+            match(line, /primitive_expansion_requires=([^"]+)/, required_match)) {
+          primitive = required_match[1]
+        }
         if (primitive != "") {
           macro_count++
           macro_unit[macro_count] = unit
