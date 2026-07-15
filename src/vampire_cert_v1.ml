@@ -4475,6 +4475,24 @@ let simple_witness_for_sort sort =
   | "prop" -> "vampire_true"
   | other -> emit_error ("no canonical witness for quantified sort " ^ other)
 
+let simple_sort_has_canonical_witness sort =
+  try
+    ignore (simple_witness_for_sort sort);
+    true
+  with Error _ -> false
+
+let simple_sorts_instantiable_from_result parent_sorts result_sorts =
+  let result_name_sorts =
+    List.map (fun (name, sort) -> (megalodon_ident name, sort)) result_sorts
+  in
+  List.for_all
+    (fun (name, sort) ->
+       let ident = megalodon_ident name in
+       match List.assoc_opt ident result_name_sorts with
+       | Some result_sort when result_sort = sort -> true
+       | _ -> simple_sort_has_canonical_witness sort)
+    parent_sorts
+
 let simple_apply_forall_witnesses proof sorts =
   List.fold_left
     (fun acc (_, sort) -> "(" ^ acc ^ " " ^ simple_witness_for_sort sort ^ ")")
@@ -5860,10 +5878,16 @@ let simple_paramodulate_unit_proof
     | None, None -> emit_error (id ^ ": cannot infer paramodulation rewrite sort")
   in
   let equality_expr =
-    simple_apply_forall_vars (lookup_simple_name names equality_parent_id) equality_sorts
+    simple_apply_forall_result_vars_or_witnesses
+      (lookup_simple_name names equality_parent_id)
+      result_sorts
+      equality_sorts
   in
   let target_expr =
-    simple_apply_forall_vars (lookup_simple_name names target_parent_id) target_sorts
+    simple_apply_forall_result_vars_or_witnesses
+      (lookup_simple_name names target_parent_id)
+      result_sorts
+      target_sorts
   in
   let rewrite_selected_proof equality_lit_proof target_lit_proof =
     if sort = "prop" then begin
@@ -6043,7 +6067,10 @@ let simple_paramodulate_unit_split_proof
     | None, None -> emit_error (id ^ ": cannot infer paramodulation rewrite sort")
   in
   let target_expr =
-    simple_apply_forall_vars (lookup_simple_name names target_parent_id) target_sorts
+    simple_apply_forall_result_vars_or_witnesses
+      (lookup_simple_name names target_parent_id)
+      result_sorts
+      target_sorts
   in
   let rewrite_selected_proof equality_lit_proof target_lit_proof =
     if sort = "prop" then begin
@@ -6314,7 +6341,10 @@ let simple_paramodulate_unit_split_proof
   let final_proof =
     simple_wrap_forall_intro result_sorts
       (consume_equality (Some equality_index) equality_clause
-         (simple_apply_forall_vars (lookup_simple_name names equality_parent_id) equality_sorts)
+         (simple_apply_forall_result_vars_or_witnesses
+            (lookup_simple_name names equality_parent_id)
+            result_sorts
+            equality_sorts)
          0)
   in
   let helper_claim_proof =
@@ -13170,8 +13200,8 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             || simple_prop_equal_mod_cnf_defs emitted formula
           in
           let structurally_safe =
-            simple_sorts_subset equality_sorts sorts
-            && simple_sorts_subset target_sorts sorts
+            simple_sorts_instantiable_from_result equality_sorts sorts
+            && simple_sorts_instantiable_from_result target_sorts sorts
             && emitted_parent_matches equality_parent_id equality_sorts equality_clause
             && emitted_parent_matches target_parent_id target_sorts target_clause
             && prop = structural_clause_prop sorts result
