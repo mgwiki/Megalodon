@@ -2165,3 +2165,72 @@ hammer.10909.19.th0.p
 This is intentionally not reported as a broad bridge-count milestone. It is a
 small closed-mode correction: two net new checked closed proofs, and stricter
 rejection of incompatible transparent predicate definitions.
+
+## July 15 Follow-up: Predicate Metadata Variable Remapping
+
+The transparent predicate-definition guard exposed one more metadata/text issue:
+the `predicate_definition/formula` body can use Vampire's canonical
+`body_variable_sort_i` names even when the actual predicate-definition theorem
+has been rectified to different variable names.  In `hammer.10794.63.th0`,
+`u235` defines `sP1` over `X3`, but the metadata body still mentioned `X0`.
+The generated script therefore contained:
+
+```text
+Definition sP1 : set->prop := fun X3:set => ... X0 ...
+```
+
+and Megalodon rejected it with:
+
+```text
+Failure at line 108 char 359: Unknown term X0
+```
+
+The emitter now remaps metadata body identifiers from the ordered
+`body_variable_sort_i` fields to the actual `step_variable_sorts` before using
+the metadata body as a transparent Megalodon definition.  The remapping is a
+whole-identifier rewrite, so variables such as `X1` are not rewritten inside
+`X10`.
+
+Focused validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+
+native certificate v1 smoke test passed
+
+hammer.10794.63.th0:
+  closed emit: succeeds
+  -hf check: Everything looks good.
+```
+
+Cached 20-way replay over the same existing native certificates, without
+rerunning Vampire:
+
+```text
+WORK_DIR=/project/tmp/megalodon3_preddef_varmap_034321
+TMPDIR=/project/tmp \
+PROBLEM_DIR=/project/tmp/source_linked_strict_100_corpus_fresh_041947 \
+JOBS=20 MIN_PASS=0 CLOSED_CERT_V1=1 CHECK_SOURCE_MAP=1 STRICT_CERT_V1=1 \
+EMIT_TIMEOUT=30 CHECK_TIMEOUT=45 \
+tests/vampire_certificate/run_native_emit_cached_parallel.sh \
+  /project/tmp/megalodon3_native_live_current_noorigin_003131
+
+CLOSED_PASS 144
+EMIT_FAIL 67
+CHECK_FAIL 2
+```
+
+Relative to `/project/tmp/megalodon3_predfold_transparent_gate_033843`, this
+adds one checked closed proof:
+
+```text
+hammer.10794.63.th0.p
+```
+
+The remaining emitted-but-not-checked cases are:
+
+```text
+hammer.10890.4.th0.p
+hammer.10909.19.th0.p
+```

@@ -1944,6 +1944,30 @@ let string_find_identifier needle value =
   in
   loop 0
 
+let string_map_identifiers replacements value =
+  let len = String.length value in
+  let buffer = Buffer.create len in
+  let rec loop i =
+    if i >= len then ()
+    else if is_ident_char value.[i] then begin
+      let rec scan j =
+        if j < len && is_ident_char value.[j] then scan (j + 1) else j
+      in
+      let j = scan (i + 1) in
+      let ident = String.sub value i (j - i) in
+      Buffer.add_string buffer
+        (match List.assoc_opt ident replacements with
+         | Some replacement -> replacement
+         | None -> ident);
+      loop j
+    end else begin
+      Buffer.add_char buffer value.[i];
+      loop (i + 1)
+    end
+  in
+  loop 0;
+  Buffer.contents buffer
+
 let split_literal_name = function
   | Pos (TmH name)
   | Neg (TmH name) ->
@@ -9971,10 +9995,53 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             simple_formula_prop_text_with_used
               (List.map fst binders) definition_env body
           in
+          let body_variable_sort_pairs =
+            metadata_step_extra_fields cert id "predicate_definition"
+            |> List.concat
+            |> List.filter_map
+                 (fun field ->
+                    match String.index_opt field '=' with
+                    | None -> None
+                    | Some eq ->
+                        let key = String.sub field 0 eq in
+                        let value =
+                          String.sub field (eq + 1) (String.length field - eq - 1)
+                        in
+                        let prefix = "body_variable_sort_" in
+                        let prefix_len = String.length prefix in
+                        if String.length key > prefix_len
+                           && String.sub key 0 prefix_len = prefix then
+                          try
+                            let index =
+                              int_of_string
+                                (String.sub key prefix_len (String.length key - prefix_len))
+                            in
+                            Option.map (fun pair -> (index, pair)) (variable_sort_pair value)
+                          with Failure _ -> None
+                        else None)
+            |> List.sort compare
+            |> List.map snd
+          in
+          let metadata_body_variable_renamings =
+            let rec pair acc metadata_vars actual_vars =
+              match metadata_vars, actual_vars with
+              | (metadata_name, metadata_sort) :: metadata_tail,
+                (actual_name, actual_sort) :: actual_tail
+                  when metadata_sort = actual_sort ->
+                  pair
+                    ((megalodon_ident metadata_name, megalodon_ident actual_name) :: acc)
+                    metadata_tail actual_tail
+              | _ -> List.rev acc
+            in
+            pair [] body_variable_sort_pairs (metadata_step_variable_sort_pairs cert id)
+          in
           let body_text_opt =
             match metadata_step_extra_field cert id "predicate_definition" "formula" with
             | Some formula_text ->
-                let metadata_body_text = simple_fix_known_higher_order_binders formula_text in
+                let metadata_body_text =
+                  simple_fix_known_higher_order_binders formula_text
+                  |> string_map_identifiers metadata_body_variable_renamings
+                in
                 let starts_with prefix text =
                   let text = String.trim text in
                   let prefix_len = String.length prefix in
