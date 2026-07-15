@@ -15561,6 +15561,27 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   let quote_comment_value value =
     "\"" ^ String.escaped value ^ "\""
   in
+  let source_origin_comment_fields =
+    match source_origin with
+    | None -> ""
+    | Some origin ->
+        let line =
+          match origin.source_origin_line with
+          | Some line -> string_of_int line
+          | None -> ""
+        in
+        let chr =
+          match origin.source_origin_char with
+          | Some chr -> string_of_int chr
+          | None -> ""
+        in
+        Printf.sprintf
+          " (origin_file %s) (origin_line %s) (origin_char %s) (origin_kind %s)"
+          (quote_comment_value origin.source_origin_file)
+          (quote_comment_value line)
+          (quote_comment_value chr)
+          (quote_comment_value origin.source_origin_kind)
+  in
   List.iter
     (fun (id, source, name, prop) ->
        let source_kind, tptp_name = simple_source_kind_and_tptp_name source in
@@ -15598,7 +15619,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
        lines := !lines @
          [
            Printf.sprintf
-             "// vampire_source_assumption ((parameter %s) (step %s) (certificate_source_kind %s) (tptp_name %s) (source_name %s) (source_map_kind %s) (source_hash %s) (source_formula_status %s) (proposition %s))"
+             "// vampire_source_assumption ((parameter %s) (step %s) (certificate_source_kind %s) (tptp_name %s) (source_name %s) (source_map_kind %s) (source_hash %s) (source_formula_status %s)%s (proposition %s))"
              (quote_comment_value name)
              (quote_comment_value id)
              (quote_comment_value source_kind)
@@ -15607,6 +15628,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
              (quote_comment_value source_map_kind)
              (quote_comment_value source_hash)
              (quote_comment_value source_formula_status)
+             source_origin_comment_fields
              (quote_comment_value prop);
          ])
     !source_assumption_bindings;

@@ -91,6 +91,11 @@ if ! rg -q 'source_formula_status "decl_formula_present_unhashed"' \
   echo "native certificate v1 simple emitter did not classify local source-assumption binding metadata" >&2
   exit 1
 fi
+if ! rg -q 'vampire_source_assumption .*origin_file "examples/hammer/100thms_12_h\.mg".*origin_line "123".*origin_char "45".*origin_kind "aby"' \
+    "$WORK_DIR/native_cert_v1_source_name_mangled_valid_emit.mg"; then
+  echo "native certificate v1 simple emitter did not attach origin metadata to source-assumption bindings" >&2
+  exit 1
+fi
 if ! rg -q 'assume src_axiom_Foo_bar__c1:' \
     "$WORK_DIR/native_cert_v1_source_name_mangled_valid_emit.mg"; then
   echo "native certificate v1 simple emitter did not use the original Foo_bar source name" >&2
