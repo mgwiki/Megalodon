@@ -6150,17 +6150,98 @@ let simple_paramodulate_unit_split_proof
     simple_quantify_prop result_sorts
       ("(" ^ equality_literal_prop ^ " -> " ^ target_result_prop ^ ")")
   in
-  let helper_proof =
-    let target_body =
-      match rotate6_target_proof "Hparamod_eq" target_expr with
-      | Some proof -> proof
-      | None ->
-          consume_target "Hparamod_eq" (Some target_index) target_clause target_expr 0
+  let script_binder_prefix () =
+    let binders =
+      result_sorts
+      |> List.map (fun (name, _) -> megalodon_ident name)
+      |> String.concat " "
     in
-    simple_wrap_forall_intro result_sorts
-      ("(fun Hparamod_eq:" ^ equality_literal_prop ^ " => "
-       ^ target_body
-       ^ ")")
+    if binders = "" then "" else "let " ^ binders ^ ". "
+  in
+  let target_result_injection_script index proof =
+    if index < 0 || index >= List.length target_result_clause then
+      emit_error (id ^ ": target result injection index is out of bounds");
+    let rights =
+      List.init index (fun _ -> "apply vampire_or_intro_right.")
+      |> String.concat " "
+    in
+    let left =
+      if index < List.length target_result_clause - 1 then
+        " apply vampire_or_intro_left."
+      else
+        ""
+    in
+    String.trim (rights ^ left ^ " exact " ^ proof ^ ".")
+  in
+  let target_result_index source_index =
+    if source_index = target_index then
+      List.length target_rest
+    else if source_index < target_index then
+      source_index
+    else
+      source_index - 1
+  in
+  let target_clause_script () =
+    if List.length target_clause < 5 then
+      None
+    else
+      let bullet depth =
+        match depth mod 3 with
+        | 0 -> "-"
+        | 1 -> "+"
+        | _ -> "*"
+      in
+      let branch_proof index lit assumption =
+        if index = target_index then
+          target_result_injection_script
+            (target_result_index index)
+            (result_literal_proof "Hparamod_eq" assumption)
+        else
+          target_result_injection_script (target_result_index index) assumption
+      in
+      let rec cases depth index clause proof_name =
+        match clause with
+        | [] -> emit_error (id ^ ": cannot script paramodulation over an empty target clause")
+        | [lit] -> branch_proof index lit proof_name
+        | lit :: rest ->
+            let head_name = "Hparamod_lit_" ^ string_of_int index in
+            let tail_name = "Hparamod_tail_" ^ string_of_int index in
+            let marker = bullet depth in
+            let head_line =
+              marker ^ " assume " ^ head_name ^ ". "
+              ^ branch_proof index lit head_name
+            in
+            let tail_body =
+              match rest with
+              | [tail_lit] -> branch_proof (index + 1) tail_lit tail_name
+              | _ ->
+                  "apply " ^ tail_name ^ ".\n"
+                  ^ cases (depth + 1) (index + 1) rest tail_name
+            in
+            head_line ^ "\n"
+            ^ marker ^ " assume " ^ tail_name ^ ". " ^ tail_body
+      in
+      Some
+        ("__SCRIPT__"
+         ^ script_binder_prefix ()
+         ^ "assume Hparamod_eq. "
+         ^ "apply (" ^ target_expr ^ " " ^ simple_prop_arg target_result_prop ^ ").\n"
+         ^ cases 0 0 target_clause target_expr)
+  in
+  let helper_proof =
+    match target_clause_script () with
+    | Some script -> script
+    | None ->
+        let target_body =
+          match rotate6_target_proof "Hparamod_eq" target_expr with
+          | Some proof -> proof
+          | None ->
+              consume_target "Hparamod_eq" (Some target_index) target_clause target_expr 0
+        in
+        simple_wrap_forall_intro result_sorts
+          ("(fun Hparamod_eq:" ^ equality_literal_prop ^ " => "
+           ^ target_body
+           ^ ")")
   in
   let helper_expr =
     simple_apply_forall_vars helper_name result_sorts
@@ -6236,7 +6317,13 @@ let simple_paramodulate_unit_split_proof
          (simple_apply_forall_vars (lookup_simple_name names equality_parent_id) equality_sorts)
          0)
   in
-  ([(helper_name, helper_prop, "exact " ^ helper_proof ^ ".")], final_proof)
+  let helper_claim_proof =
+    if string_starts_with "__SCRIPT__" helper_proof then
+      String.sub helper_proof 10 (String.length helper_proof - 10)
+    else
+      "exact " ^ helper_proof ^ "."
+  in
+  ([(helper_name, helper_prop, helper_claim_proof)], final_proof)
 
 let simple_substitute_proof
     ?(formula_parent=false)
