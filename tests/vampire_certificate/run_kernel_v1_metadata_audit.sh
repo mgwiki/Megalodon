@@ -64,6 +64,36 @@ if [[ -s "$WORK_DIR/missing_required.tsv" ]]; then
   exit 1
 fi
 
+: > "$WORK_DIR/missing_unit_references.tsv"
+while IFS= read -r native_file; do
+  awk -v source="$native_file" '
+    NR == FNR {
+      if (match($0, /^  \([[:alnum:]_]+ "([^"]+)"/, step)) {
+        ids[step[1]] = 1
+      }
+      next
+    }
+    index($0, "\"kernel_v1\"") != 0 {
+      rest = $0
+      while (match(rest, /[[:alnum:]_]+_unit=u[0-9][[:alnum:]_]*/)) {
+        token = substr(rest, RSTART, RLENGTH)
+        split(token, parts, "=")
+        ref = parts[2]
+        if (!(ref in ids)) {
+          print source ":" FNR "\t" ref "\t" $0
+        }
+        rest = substr(rest, RSTART + RLENGTH)
+      }
+    }
+  ' "$native_file" "$native_file" >> "$WORK_DIR/missing_unit_references.tsv"
+done < "$WORK_DIR/native_files.txt"
+
+if [[ -s "$WORK_DIR/missing_unit_references.tsv" ]]; then
+  echo "kernel_v1 metadata audit found unit references missing from their certificate" >&2
+  sed -n '1,40p' "$WORK_DIR/missing_unit_references.tsv" >&2
+  exit 1
+fi
+
 awk '
   index($0, "conclusion_clause=") == 0 &&
   index($0, "result_clause=") == 0 &&
