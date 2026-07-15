@@ -41,9 +41,65 @@ fi
 collect_rule() {
   local rule=$1
   local out=$2
-  xargs -a "$WORK_DIR/native_files.txt" \
-    rg -n "^  \\(${rule} " \
-    > "$out" || true
+  : > "$out"
+  while IFS= read -r native_file; do
+    awk -v source="$native_file" -v wanted="$rule" '
+      function paren_delta(text,    i, c, delta) {
+        delta = 0
+        for (i = 1; i <= length(text); ++i) {
+          c = substr(text, i, 1)
+          if (c == "(") {
+            ++delta
+          } else if (c == ")") {
+            --delta
+          }
+        }
+        return delta
+      }
+
+      /^  \([[:alnum:]_]+ "[^"]+"/ {
+        if (collecting) {
+          gsub(/[[:space:]]+/, " ", record)
+          print source ":" start_line ":" record
+        }
+        collecting = 0
+        record = ""
+        depth = 0
+
+        if (match($0, "^  \\(" wanted " ")) {
+          collecting = 1
+          start_line = FNR
+          record = $0
+          depth = paren_delta($0)
+          if (depth <= 0) {
+            gsub(/[[:space:]]+/, " ", record)
+            print source ":" start_line ":" record
+            collecting = 0
+            record = ""
+          }
+        }
+        next
+      }
+
+      collecting {
+        record = record " " $0
+        depth += paren_delta($0)
+        if (depth <= 0) {
+          gsub(/[[:space:]]+/, " ", record)
+          print source ":" start_line ":" record
+          collecting = 0
+          record = ""
+        }
+      }
+
+      END {
+        if (collecting) {
+          gsub(/[[:space:]]+/, " ", record)
+          print source ":" start_line ":" record
+        }
+      }
+    ' "$native_file" >> "$out"
+  done < "$WORK_DIR/native_files.txt"
 }
 
 require_min() {
