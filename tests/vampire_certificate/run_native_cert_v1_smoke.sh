@@ -414,6 +414,27 @@ if ! rg -q 'Vampire certificate v1 native core proof term checked 5 steps' \
   exit 1
 fi
 
+{
+  echo '% megalodon_origin ((file "native_cert_v1_substitute_prop_changed_unsupported.mg") (line "1") (char "1") (kind "synthetic_negative"))'
+  cat tests/vampire_certificate/native_cert_v1_substitute_prop_changed_unsupported.th0.p
+} >"$WORK_DIR/native_cert_v1_substitute_prop_changed_unsupported_with_origin.th0.p"
+
+if bin/megalodon \
+  -vampirecertv1corepfcheck \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_substitute_prop_changed_unsupported.sexp \
+  -vampirecertv1source "$WORK_DIR/native_cert_v1_substitute_prop_changed_unsupported_with_origin.th0.p" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_core_pf_nonidentity_substitute_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_core_pf_nonidentity_substitute_bad.err"; then
+  echo "native core proof-term checker accepted a non-identity substitution without explicit proof data" >&2
+  exit 1
+fi
+
+if ! rg -q 'non-identity substitution' \
+    "$WORK_DIR/native_cert_v1_core_pf_nonidentity_substitute_bad.err"; then
+  echo "native core proof-term non-identity substitution rejection did not explain the missing proof data" >&2
+  exit 1
+fi
+
 bin/megalodon \
   -vampirecertv1corepfcheck \
   -vampirecertv1 tests/vampire_certificate/closed_cases/core.cnf.17.native.sexp \
