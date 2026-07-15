@@ -56,6 +56,11 @@ run_one() {
   mkdir -p "$case_dir"
   : > "$case_dir/dummy.mg"
 
+  if [[ ! -s "$source" ]]; then
+    printf '%s\tCORE_PF_MISSING_SOURCE\n' "$base" > "$case_dir/result.tsv"
+    return 0
+  fi
+
   if ! "$MEGALODON" \
       -vampirecertv1corepfcheck \
       -vampirecertv1 "$native" \

@@ -568,6 +568,29 @@ if ! rg -q 'Vampire certificate v1 native core proof term checked 10 steps' \
   exit 1
 fi
 
+mkdir -p "$WORK_DIR/core_pf_missing_source_cases"
+cp tests/vampire_certificate/closed_cases/core.cnf.2.native.sexp \
+  "$WORK_DIR/core_pf_missing_source_cases/missing_source.native.sexp"
+cat >"$WORK_DIR/core_pf_missing_source_cases.list" <<EOF
+missing_source
+EOF
+if CASES_DIR="$WORK_DIR/core_pf_missing_source_cases" \
+    CASE_LIST="$WORK_DIR/core_pf_missing_source_cases.list" \
+    WORK_DIR="$WORK_DIR/core_pf_missing_source_audit" \
+    MIN_CORE_PF=1 \
+    tests/vampire_certificate/run_native_cert_v1_core_pf_audit.sh \
+    >"$WORK_DIR/core_pf_missing_source_audit.out" \
+    2>"$WORK_DIR/core_pf_missing_source_audit.err"; then
+  echo "native core proof-term audit accepted a selected certificate without a source file" >&2
+  exit 1
+fi
+
+if ! rg -q $'missing_source\tCORE_PF_MISSING_SOURCE' \
+    "$WORK_DIR/core_pf_missing_source_audit/summary.tsv"; then
+  echo "native core proof-term audit did not classify missing source files explicitly" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1coreclosed \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_formula_cnf_valid.sexp \
