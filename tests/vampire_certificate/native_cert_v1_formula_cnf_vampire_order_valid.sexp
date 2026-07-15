@@ -14,6 +14,7 @@
   (cnf_formula_clause c1
     (parent f0)
     (index 1)
+    (count 4)
     (result
       (clause
         (pos (TMH "b"))

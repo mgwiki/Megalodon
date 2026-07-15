@@ -86,7 +86,7 @@ type step =
   | EnnfFormula of string * string * Syntax.tm option * ennf_pair list * Syntax.tm
   | SkolemFormula of string * string * (string * Syntax.tm) list * Syntax.tm
   | SkolemFormulaComputed of string * string * (string * Syntax.tm) list
-  | CnfFormulaClause of string * string * int * clause
+  | CnfFormulaClause of string * string * int * int option * clause
   | FormulaCopy of string * string * literal
   | FoolBool of string * string * literal
   | CnfLiteral of string * string * clause

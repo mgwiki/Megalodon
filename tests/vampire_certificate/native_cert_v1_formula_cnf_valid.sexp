@@ -39,6 +39,7 @@
   (cnf_formula_clause c1
     (parent f2)
     (index 0)
+    (count 1)
     (result
       (clause
         (neg (AP (AP (TMH "=") (TMH "p")) (TMH "f__true")))

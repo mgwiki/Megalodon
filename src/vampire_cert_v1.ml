@@ -96,7 +96,7 @@ type step =
   | EnnfFormula of string * string * tm option * ennf_pair list * tm
   | SkolemFormula of string * string * (string * tm) list * tm
   | SkolemFormulaComputed of string * string * (string * tm) list
-  | CnfFormulaClause of string * string * int * clause
+  | CnfFormulaClause of string * string * int * int option * clause
   | FormulaCopy of string * string * literal
   | FoolBool of string * string * literal
   | CnfLiteral of string * string * clause
@@ -601,7 +601,17 @@ let parse_step = function
   | List [Atom "skolem_formula_computed"; id; parent; subst] ->
       SkolemFormulaComputed (atom id, parse_parent parent, parse_substitution subst)
   | List [Atom "cnf_formula_clause"; id; parent; index; result] ->
-      CnfFormulaClause (atom id, parse_parent parent, parse_index index, parse_result result)
+      CnfFormulaClause (atom id, parse_parent parent, parse_index index, None, parse_result result)
+  | List [Atom "cnf_formula_clause"; id; parent; index; count; result] ->
+      let count =
+        match count with
+        | List [Atom "count"; Atom n] ->
+            begin try Some (int_of_string n)
+            with Failure _ -> error "expected cnf_formula_clause count integer"
+            end
+        | _ -> error "expected cnf_formula_clause count"
+      in
+      CnfFormulaClause (atom id, parse_parent parent, parse_index index, count, parse_result result)
   | List [Atom "formula_copy"; id; parent; result] ->
       FormulaCopy (atom id, parse_parent parent, parse_literal_result result)
   | List [Atom "fool_bool"; id; parent; result] ->
@@ -771,7 +781,7 @@ let step_id = function
   | EnnfFormula (id, _, _, _, _) -> id
   | SkolemFormula (id, _, _, _) -> id
   | SkolemFormulaComputed (id, _, _) -> id
-  | CnfFormulaClause (id, _, _, _) -> id
+  | CnfFormulaClause (id, _, _, _, _) -> id
   | FormulaCopy (id, _, _) -> id
   | FoolBool (id, _, _) -> id
   | CnfLiteral (id, _, _) -> id
@@ -1753,9 +1763,15 @@ let drop_prefix n xs =
   in
   loop n xs
 
+let is_native_core_false_tm = function
+  | All (Prop, DB 0) -> true
+  | _ -> false
+
 let literal_of_formula_tm tm =
   match tm with
-  | Imp (atom, false_tm) when is_vampire_false false_tm -> Neg atom
+  | Imp (atom, false_tm)
+      when is_vampire_false false_tm || is_native_core_false_tm false_tm ->
+      Neg atom
   | _ -> Pos tm
 
 let formula_tm_of_literal = function
@@ -1932,10 +1948,15 @@ let check_skolem_formula_computed checked parent_id subst =
   let parent_formula = lookup_formula checked parent_id in
   skolemize_formula_tm subst parent_formula
 
-let check_cnf_formula_clause checked id parent_id index result =
+let check_cnf_formula_clause checked id parent_id index count result =
   if index < 0 then error (id ^ ": cnf_formula_clause index must be non-negative");
   let parent_formula = lookup_formula checked parent_id in
   let clauses = cnf_clauses parent_formula in
+  begin match count with
+  | Some count when count <> List.length clauses ->
+      error (id ^ ": cnf_formula_clause count does not match deterministic CNF projection count")
+  | Some _ | None -> ()
+  end;
   let expected = nth index clauses (id ^ " CNF clause") in
   if not (same_clause_multiset expected result) then
     error (id ^ ": cnf_formula_clause result does not match deterministic CNF projection")
@@ -3209,8 +3230,8 @@ let check_step checked = function
   | SkolemFormulaComputed (id, parent_id, subst) ->
       let result = check_skolem_formula_computed checked parent_id subst in
       (id, CheckedFormula result) :: checked
-  | CnfFormulaClause (id, parent_id, index, result) ->
-      check_cnf_formula_clause checked id parent_id index result;
+  | CnfFormulaClause (id, parent_id, index, count, result) ->
+      check_cnf_formula_clause checked id parent_id index count result;
       (id, CheckedClause result) :: checked
   | FormulaCopy (id, parent_id, result) ->
       check_formula_copy checked id parent_id result;
@@ -3478,7 +3499,7 @@ let validate_kernel_v1_metadata_contracts cert =
   in
   let step_clause_opt = function
     | Input (_, _, clause)
-    | CnfFormulaClause (_, _, _, clause)
+    | CnfFormulaClause (_, _, _, _, clause)
     | CnfLiteral (_, _, clause)
     | DefinitionInput (_, clause)
     | DefinitionRewriteChain (_, _, _, clause)
@@ -4421,10 +4442,77 @@ let native_core_proof_from_true_eq source target proof =
       Some (PPfAp (PPfAp (PTmAp (proof, motive), atom_to_true), native_core_true_proof))
   | _ -> None
 
-let native_core_fool_formula_proof id variables step_variables source target proof =
-  let source = native_core_close_tm (variables @ step_variables) source in
-  let target = native_core_close_tm (variables @ step_variables) target in
-  let rec convert direction source target proof =
+let native_core_fool_formula_proof
+    id variables parent_step_variables result_step_variables source target proof =
+  let source = native_core_close_tm (variables @ result_step_variables) source in
+  let target = native_core_close_tm (variables @ result_step_variables) target in
+  let result_variable_count = List.length result_step_variables in
+  let db_for_result_variable name tp =
+    let rec find index = function
+      | [] -> None
+      | (candidate_name, candidate_tp) :: rest ->
+          if candidate_name = name && candidate_tp = tp then
+            Some (DB (result_variable_count - index - 1))
+          else find (index + 1) rest
+    in
+    find 0 result_step_variables
+  in
+  let fallback_result_variable tp =
+    let rec find index = function
+      | [] -> None
+      | (_, candidate_tp) :: rest ->
+          if candidate_tp = tp then Some (DB (result_variable_count - index - 1))
+          else find (index + 1) rest
+    in
+    find 0 result_step_variables
+  in
+  let fallback_declared_variable tp =
+    variables
+    |> List.find_opt (fun (_, candidate_tp) -> candidate_tp = tp)
+    |> Option.map (fun (name, _) -> TmH name)
+  in
+  let fallback_variable tp =
+    match fallback_result_variable tp with
+    | Some tm -> Some tm
+    | None -> fallback_declared_variable tp
+  in
+  let parent_proof =
+    List.fold_left
+      (fun proof (name, tp) ->
+         let arg =
+           match db_for_result_variable name tp with
+           | Some tm -> tm
+           | None ->
+               begin match fallback_variable tp with
+               | Some tm -> tm
+               | None ->
+                   error
+                     (id ^ ": native preprocess proof-term fool_formula cannot instantiate dropped parent variable " ^ name)
+               end
+         in
+         PTmAp (proof, arg))
+      (pftmshift 0 result_variable_count proof)
+      parent_step_variables
+  in
+  let initial_context = List.rev (List.map snd result_step_variables) in
+  let witness context tp =
+    let rec find index = function
+      | [] -> None
+      | candidate_tp :: rest ->
+          if candidate_tp = tp then Some (DB index)
+          else find (index + 1) rest
+    in
+    match find 0 context with
+    | Some tm -> tm
+    | None ->
+        begin match fallback_declared_variable tp with
+        | Some tm -> tm
+        | None ->
+            error
+              (id ^ ": native preprocess proof-term fool_formula cannot instantiate redundant universal binder")
+        end
+  in
+  let rec convert context direction source target proof =
     if source = target then proof
     else
       match source, target with
@@ -4433,32 +4521,67 @@ let native_core_fool_formula_proof id variables step_variables source target pro
           TLam
             (source_tp,
              convert
+               (source_tp :: context)
                direction
                source_body
                target_body
                (PTmAp (pftmshift 0 1 proof, DB 0)))
+      | All (source_tp, source_body), _ ->
+          begin match direction with
+          | `Forward ->
+              let arg = witness context source_tp in
+              convert
+                context
+                direction
+                (tmsubst source_body 0 arg)
+                target
+                (PTmAp (proof, arg))
+          | `Backward ->
+              error
+                (id ^ ": native preprocess proof-term fool_formula cannot synthesize a dropped source universal binder")
+          end
+      | _, All (target_tp, target_body) ->
+          begin match direction with
+          | `Forward ->
+              TLam
+                (target_tp,
+                 convert
+                   (target_tp :: context)
+                   direction
+                   (tmshift 0 1 source)
+                   target_body
+                   (pftmshift 0 1 proof))
+          | `Backward ->
+              let arg = witness context target_tp in
+              convert
+                context
+                direction
+                source
+                (tmsubst target_body 0 arg)
+                (PTmAp (proof, arg))
+          end
       | Imp (source_left, source_right), Imp (target_left, target_right) ->
           begin match direction with
           | `Forward ->
               let source_left_proof =
-                convert `Backward source_left target_left (Hyp 0)
+                convert context `Backward source_left target_left (Hyp 0)
               in
               let source_right_proof =
                 PPfAp (pfshift 0 1 proof, source_left_proof)
               in
               PLam
                 (native_core_formula_prop target_left,
-                 convert `Forward source_right target_right source_right_proof)
+                 convert context `Forward source_right target_right source_right_proof)
           | `Backward ->
               let target_left_proof =
-                convert `Forward source_left target_left (Hyp 0)
+                convert context `Forward source_left target_left (Hyp 0)
               in
               let target_right_proof =
                 PPfAp (pfshift 0 1 proof, target_left_proof)
               in
               PLam
                 (native_core_formula_prop source_left,
-                 convert `Backward source_right target_right target_right_proof)
+                 convert context `Backward source_right target_right target_right_proof)
           end
       | _ ->
           begin match direction with
@@ -4479,17 +4602,9 @@ let native_core_fool_formula_proof id variables step_variables source target pro
           end
   in
   let body_proof =
-    let rec introduce variables proof =
-      match variables with
-      | [] -> convert `Forward source target proof
-      | (_, tp) :: rest ->
-          TLam
-            (tp,
-             introduce rest (PTmAp (pftmshift 0 1 proof, DB 0)))
-    in
-    introduce step_variables proof
+    convert initial_context `Forward source target parent_proof
   in
-  body_proof
+  List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
 
 let native_core_ennf_formula_proof id variables step_variables source target proof =
   let source = native_core_close_tm (variables @ step_variables) source in
@@ -4587,15 +4702,95 @@ let native_core_rectify_formula_proof
 let native_core_cnf_formula_clause_proof
     id variables parent_step_variables result_step_variables parent_formula result proof =
   let parent_formula =
-    native_core_close_tm (variables @ parent_step_variables) parent_formula
+    native_core_close_tm (variables @ result_step_variables) parent_formula
   in
+  let close_literal = function
+    | Pos atom -> Pos (native_core_close_tm (variables @ result_step_variables) atom)
+    | Neg atom -> Neg (native_core_close_tm (variables @ result_step_variables) atom)
+  in
+  let result = List.map close_literal result in
   let result_prop =
-    native_core_close_tm
-      (variables @ result_step_variables)
-      (native_core_clause_prop id result)
-    |> native_core_normalize_bool_constants
+    native_core_clause_prop id result
+      |> native_core_normalize_bool_constants
   in
-  let rec eliminate formula proof =
+  let result_variable_count = List.length result_step_variables in
+  let db_for_result_variable name tp =
+    let rec find index = function
+      | [] -> None
+      | (candidate_name, candidate_tp) :: rest ->
+          if candidate_name = name && candidate_tp = tp then
+            Some (DB (result_variable_count - index - 1))
+          else find (index + 1) rest
+    in
+    find 0 result_step_variables
+  in
+  let fallback_result_variable tp =
+    let rec find index = function
+      | [] -> None
+      | (_, candidate_tp) :: rest ->
+          if candidate_tp = tp then Some (DB (result_variable_count - index - 1))
+          else find (index + 1) rest
+    in
+    find 0 result_step_variables
+  in
+  let fallback_declared_variable tp =
+    variables
+    |> List.find_opt (fun (_, candidate_tp) -> candidate_tp = tp)
+    |> Option.map (fun (name, _) -> TmH name)
+  in
+  let fallback_variable tp =
+    match fallback_result_variable tp with
+    | Some tm -> Some tm
+    | None -> fallback_declared_variable tp
+  in
+  let parent_proof =
+    List.fold_left
+      (fun proof (name, tp) ->
+         let arg =
+           match db_for_result_variable name tp with
+           | Some tm -> tm
+           | None ->
+               begin match fallback_variable tp with
+               | Some tm -> tm
+               | None ->
+                   error
+                     (id ^ ": native preprocess proof-term cnf_formula_clause cannot instantiate parent variable " ^ name)
+               end
+         in
+         PTmAp (proof, arg))
+      (pftmshift 0 result_variable_count proof)
+      parent_step_variables
+  in
+  let quantifier_witness pending tp =
+    let rec find_named = function
+      | [] -> None
+      | (name, candidate_tp) :: rest ->
+          if candidate_tp = tp then
+            match db_for_result_variable name tp with
+            | Some tm -> Some tm
+            | None -> find_named rest
+          else find_named rest
+    in
+    match find_named pending with
+    | Some tm -> tm
+    | None ->
+        begin match fallback_variable tp with
+        | Some tm -> tm
+        | None ->
+            error
+              (id ^ ": native preprocess proof-term cnf_formula_clause cannot instantiate formula universal binder")
+        end
+  in
+  let consume_quantifier pending tp =
+    let rec drop_first_same_sort acc = function
+      | [] -> List.rev acc
+      | (_, candidate_tp) :: rest when candidate_tp = tp ->
+          List.rev_append acc rest
+      | item :: rest -> drop_first_same_sort (item :: acc) rest
+    in
+    drop_first_same_sort [] pending
+  in
+  let rec eliminate pending formula proof =
     let formula_prop =
       native_core_formula_prop formula
       |> native_core_normalize_bool_constants
@@ -4604,31 +4799,58 @@ let native_core_cnf_formula_clause_proof
     else
       match formula with
       | All (_, body) ->
-          eliminate (tmsubst body 0 (DB 0)) (PTmAp (proof, DB 0))
+          let tp =
+            match formula with
+            | All (tp, _) -> tp
+            | _ -> assert false
+          in
+          let arg = quantifier_witness pending tp in
+          eliminate
+            (consume_quantifier pending tp)
+            (tmsubst body 0 arg)
+            (PTmAp (proof, arg))
+      | Ap (Ap (TmH "vampire_or", left), right) ->
+          let left_prop =
+            native_core_formula_prop left
+            |> native_core_normalize_bool_constants
+          in
+          let right_prop =
+            native_core_formula_prop right
+            |> native_core_normalize_bool_constants
+          in
+          let left_branch =
+            PLam (left_prop, eliminate pending left (Hyp 0))
+          in
+          let right_branch =
+            PLam (right_prop, eliminate pending right (Hyp 0))
+          in
+          PPfAp (PPfAp (PTmAp (proof, result_prop), left_branch), right_branch)
       | _ ->
-          error
-            (id ^ ": native preprocess proof-term cnf_formula_clause cannot instantiate parent formula to result clause")
+          let literal = literal_of_formula_tm formula in
+          if List.exists ((=) literal) result then
+            native_core_prove_literal_to_clause id result literal proof
+          else begin
+            if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+              prerr_endline
+                (id ^ ": cnf_formula_clause branch formula: " ^ tm_to_str formula);
+              prerr_endline
+                (id ^ ": cnf_formula_clause branch literal formula: "
+                 ^ tm_to_str (formula_tm_of_literal literal));
+              List.iteri
+                (fun index target ->
+                   prerr_endline
+                     (id ^ ": cnf_formula_clause target literal " ^ string_of_int index
+                      ^ ": " ^ tm_to_str (formula_tm_of_literal target)))
+                result
+            end;
+            error
+              (id ^ ": native preprocess proof-term cnf_formula_clause cannot project parent formula branch to result clause")
+          end
   in
-  let rec introduce parent_variables result_variables proof =
-    match parent_variables, result_variables with
-    | [], [] -> eliminate parent_formula proof
-    | (_, parent_tp) :: parent_rest, (_, result_tp) :: result_rest
-        when parent_tp = result_tp ->
-        TLam
-          (result_tp,
-           introduce
-             parent_rest
-             result_rest
-             (PTmAp (pftmshift 0 1 proof, DB 0)))
-    | [], (_, result_tp) :: result_rest ->
-        TLam
-          (result_tp,
-           introduce [] result_rest (pftmshift 0 1 proof))
-    | _ ->
-        error
-          (id ^ ": native preprocess proof-term cnf_formula_clause parent/result variable sorts do not align")
+  let body_proof =
+    eliminate parent_step_variables parent_formula parent_proof
   in
-  introduce parent_step_variables result_step_variables proof
+  List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
 
 let native_core_fool_exhaustiveness_proof id result =
   let eq_atom = function
@@ -5720,9 +5942,12 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           let candidates = fool_formula_tm_candidates parent_formula in
           if not (List.exists (fun expected -> same_fool_formula_lift expected result) candidates) then
             error (id ^ ": fool_formula result does not match recursive FOOL Boolean lifting");
-          let step_variables = native_core_step_variables cert parent_id in
+          let parent_step_variables = native_core_step_variables cert parent_id in
+          let result_step_variables = native_core_step_variables cert id in
           store_formula id result
-            (native_core_fool_formula_proof id variables step_variables parent_formula result parent_proof)
+            (native_core_fool_formula_proof
+               id variables parent_step_variables result_step_variables
+               parent_formula result parent_proof)
       | EnnfFormula (id, parent_id, _source, _pairs, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
           let expected = ennf_pos parent_formula in
@@ -5752,7 +5977,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
             error
               (id ^ ": native preprocess proof-term cnf_literal result is not propositionally identical to the parent formula");
           store_clause id result parent_proof
-      | CnfFormulaClause (id, parent_id, _index, result) ->
+      | CnfFormulaClause (id, parent_id, _index, _count, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
           let parent_step_variables = native_core_step_variables cert parent_id in
           let result_step_variables = native_core_step_variables cert id in
@@ -7165,7 +7390,7 @@ let collect_simple_names cert =
     | CnfLiteral (id, _, clause) ->
         ignore (simple_formula_prop cert id);
         add_clause acc clause
-    | CnfFormulaClause (id, _, _, clause) ->
+    | CnfFormulaClause (id, _, _, _, clause) ->
         ignore (simple_formula_prop cert id);
         add_clause acc clause
     | FoolExhaustiveness (_, clause) -> add_clause acc clause
@@ -15297,7 +15522,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             end
           end;
           add_checked id result
-      | CnfFormulaClause (id, parent_id, index, result) ->
+      | CnfFormulaClause (id, parent_id, index, _count, result) ->
           let name = derived_name id in
           let target_prop, target_sorts =
             clause_prop_and_sorts_for_ids
