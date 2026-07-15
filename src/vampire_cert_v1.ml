@@ -3553,19 +3553,41 @@ let native_core_resolve_binary_binary id main_clause main_proof main_index side_
          main_right_branch)
   | _ -> error (id ^ ": native core proof-term checker expected binary/binary resolution")
 
-let native_core_factor_binary id parent_clause parent_proof left_index right_index result =
-  match parent_clause, result, left_index, right_index with
-  | [left; right], [result_literal], 0, 1 when left = right && result_literal = left ->
-      let target_prop = native_core_clause_prop id result in
-      let literal_prop = native_core_literal_prop result_literal in
-      PPfAp
-        (PPfAp
-           (PTmAp (parent_proof, target_prop),
-            PLam (literal_prop, Hyp 0)),
-         PLam (literal_prop, Hyp 0))
-  | _ ->
-      error
-        (id ^ ": native core proof-term checker currently supports only factoring duplicate binary clauses")
+let native_core_factor id parent_clause parent_proof left_index right_index result =
+  if left_index = right_index then
+    error (id ^ ": native core proof-term factor literal indices must be distinct");
+  let left = nth left_index parent_clause (id ^ " native factor left literal") in
+  let right = nth right_index parent_clause (id ^ " native factor right literal") in
+  if left <> right then
+    error (id ^ ": native core proof-term factor literals are not identical");
+  let remove_index = if left_index > right_index then left_index else right_index in
+  let expected =
+    remove_at remove_index parent_clause (id ^ " native factor removed literal")
+  in
+  if not (same_clause_multiset expected result) then
+    error (id ^ ": native core proof-term factor result does not remove one duplicate literal");
+  let target_prop = native_core_clause_prop id result in
+  let rec consume clause proof =
+    match clause with
+    | [] -> error (id ^ ": native core proof-term factor parent clause is empty")
+    | [literal] ->
+        native_core_prove_literal_to_clause id result literal proof
+    | literal :: rest ->
+        let literal_prop = native_core_literal_prop literal in
+        let rest_prop = native_core_clause_prop id rest in
+        let head_branch =
+          PLam
+            (literal_prop,
+             native_core_prove_literal_to_clause id result literal (Hyp 0))
+        in
+        let tail_branch =
+          PLam
+            (rest_prop,
+             consume rest (Hyp 0))
+        in
+        PPfAp (PPfAp (PTmAp (proof, target_prop), head_branch), tail_branch)
+  in
+  consume parent_clause parent_proof
 
 let native_core_reflexive_eq_proof = function
   | Ap (Ap (TpAp (TmH h, tp), left), right)
@@ -4172,7 +4194,7 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
       | Factor (id, parent_id, left_index, right_index, result) ->
           let parent_clause, parent_proof = lookup parent_id in
           let proof =
-            native_core_factor_binary id parent_clause parent_proof left_index right_index result
+            native_core_factor id parent_clause parent_proof left_index right_index result
           in
           store id result proof
       | EqualityResolution (id, parent_id, literal_index, result) ->
@@ -14396,10 +14418,18 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           let structural_clause_prop sorts clause =
             simple_quantify_prop sorts (clause_body_prop clause)
           in
+          let prop_matches left right =
+            left = right
+            || simple_prop_equal_mod_app_parens left right
+            || simple_prop_equal_mod_cnf_defs left right
+          in
+          let parent_prop = emitted_parent_prop parent_id in
+          let parent_structural_prop = structural_clause_prop parent_sorts parent_clause in
+          let result_structural_prop = structural_clause_prop sorts result in
           let structurally_safe =
             simple_sorts_subset parent_sorts sorts
-            && emitted_parent_prop parent_id = structural_clause_prop parent_sorts parent_clause
-            && prop = structural_clause_prop sorts result
+            && prop_matches parent_prop parent_structural_prop
+            && prop_matches prop result_structural_prop
           in
           begin match
             if not structurally_safe then None

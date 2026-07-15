@@ -272,7 +272,8 @@ implies `-vampirecertv1coreclosed`, then constructs and kernel-checks a
 `Syntax.pf` proof term for the currently supported core seed:
 unit/unit, binary/unit, and binary/binary resolution, binary/unit
 subsumption-resolution with empty side substitution including binary side
-remainders already present in the result, duplicate binary factoring,
+remainders already present in the result, duplicate literal factoring in
+larger clauses,
 identity substitution, and equality resolution over reflexive disequalities
 encoded with Megalodon's actual polymorphic equality, equality symmetry over
 typed Megalodon equality literals in unit and binary clauses, plus unit/unit
