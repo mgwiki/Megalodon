@@ -79,6 +79,12 @@ type matched_ennf_chain_item =
   | MatchedEnnfBinder of string * string * tp
   | MatchedEnnfPremise of tm * tm * string
 
+type ennf_pair = {
+  ennf_pair_path : string;
+  ennf_pair_source : tm;
+  ennf_pair_target : tm;
+}
+
 type step =
   | Input of string * source * clause
   | FormulaInput of string * source * literal
@@ -87,7 +93,7 @@ type step =
   | RectifyFormula of string * string * rectify_renaming list * tm
   | FoolAtomLift of string * tm * tm * string
   | FoolFormula of string * string * tm
-  | EnnfFormula of string * string * tm
+  | EnnfFormula of string * string * tm option * ennf_pair list * tm
   | SkolemFormula of string * string * (string * tm) list * tm
   | SkolemFormulaComputed of string * string * (string * tm) list
   | CnfFormulaClause of string * string * int * clause
@@ -452,6 +458,24 @@ let parse_formula_field name = function
   | List [Atom label; List [Atom "formula"; tm]] when label = name -> parse_tm tm
   | _ -> error ("expected " ^ name ^ " formula")
 
+let parse_path_field = function
+  | List [Atom "path"; Str value] -> value
+  | List [Atom "path"; Atom value] -> value
+  | _ -> error "expected path"
+
+let parse_ennf_pair = function
+  | List [Atom "pair"; path; source; target] ->
+      {
+        ennf_pair_path = parse_path_field path;
+        ennf_pair_source = parse_formula_field "source" source;
+        ennf_pair_target = parse_formula_field "target" target;
+      }
+  | _ -> error "expected ennf pair"
+
+let parse_ennf_pairs = function
+  | List (Atom "pairs" :: pairs) -> List.map parse_ennf_pair pairs
+  | _ -> error "expected ennf pairs"
+
 let parse_rectify_renaming = function
   | List [Atom "renaming"; source; subst; target] ->
       {
@@ -564,7 +588,14 @@ let parse_step = function
   | List [Atom "fool_formula"; id; parent; result] ->
       FoolFormula (atom id, parse_parent parent, parse_formula_result result)
   | List [Atom "ennf_formula"; id; parent; result] ->
-      EnnfFormula (atom id, parse_parent parent, parse_formula_result result)
+      EnnfFormula (atom id, parse_parent parent, None, [], parse_formula_result result)
+  | List [Atom "ennf_formula"; id; parent; source; pairs; result] ->
+      EnnfFormula
+        (atom id,
+         parse_parent parent,
+         Some (parse_formula_field "source" source),
+         parse_ennf_pairs pairs,
+         parse_formula_result result)
   | List [Atom "skolem_formula"; id; parent; subst; result] ->
       SkolemFormula (atom id, parse_parent parent, parse_substitution subst, parse_formula_result result)
   | List [Atom "skolem_formula_computed"; id; parent; subst] ->
@@ -737,7 +768,7 @@ let step_id = function
   | RectifyFormula (id, _, _, _) -> id
   | FoolAtomLift (id, _, _, _) -> id
   | FoolFormula (id, _, _) -> id
-  | EnnfFormula (id, _, _) -> id
+  | EnnfFormula (id, _, _, _, _) -> id
   | SkolemFormula (id, _, _, _) -> id
   | SkolemFormulaComputed (id, _, _) -> id
   | CnfFormulaClause (id, _, _, _) -> id
@@ -1867,8 +1898,24 @@ let check_fool_atom_lift id source target path =
   if not (List.exists (fun expected -> same_fool_formula_lift expected target) candidates) then
     error (id ^ ": fool_atom_lift target does not match the explicit FOOL Boolean lift")
 
-let check_ennf_formula checked id parent_id result =
+let check_ennf_formula checked id parent_id source pairs result =
   let parent_formula = lookup_formula checked parent_id in
+  begin match source with
+  | Some source when source <> parent_formula ->
+      error (id ^ ": ennf_formula source does not match parent formula")
+  | Some source when source <> result && pairs = [] ->
+      error (id ^ ": ennf_formula detailed source requires at least one transformation pair")
+  | Some _ | None -> ()
+  end;
+  List.iter
+    (fun pair ->
+       if pair.ennf_pair_path = "" then
+         error (id ^ ": ennf_formula pair path is empty");
+       let expected = ennf_pos pair.ennf_pair_source in
+       if expected <> pair.ennf_pair_target then
+         error
+           (id ^ ": ennf_formula pair target does not match deterministic ENNF transformation"))
+    pairs;
   let expected = ennf_pos parent_formula in
   if expected <> result then
     error (id ^ ": ennf_formula result does not match deterministic ENNF transformation")
@@ -3153,8 +3200,8 @@ let check_step checked = function
   | FoolFormula (id, parent_id, result) ->
       check_fool_formula checked id parent_id result;
       (id, CheckedFormula result) :: checked
-  | EnnfFormula (id, parent_id, result) ->
-      check_ennf_formula checked id parent_id result;
+  | EnnfFormula (id, parent_id, source, pairs, result) ->
+      check_ennf_formula checked id parent_id source pairs result;
       (id, CheckedFormula result) :: checked
   | SkolemFormula (id, parent_id, subst, result) ->
       check_skolem_formula checked id parent_id subst result;
@@ -6613,7 +6660,7 @@ let collect_simple_names cert =
     | FoolBool (id, _, lit) ->
         ignore (simple_formula_prop cert id);
         add_literal acc lit
-    | EnnfFormula (id, _, _) ->
+    | EnnfFormula (id, _, _, _, _) ->
         ignore (simple_formula_prop cert id);
         acc
     | SkolemFormula (id, _, _, _) ->
@@ -14496,7 +14543,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
               add_emitted id name;
               add_bridge_claim ~kind:"fool" id parent_id name target_prop target_sorts
           end
-      | EnnfFormula (id, parent_id, formula) ->
+      | EnnfFormula (id, parent_id, _, _, formula) ->
           let name = derived_name id in
           let target_prop, target_sorts = formula_tm_prop_and_sorts id formula in
           begin match

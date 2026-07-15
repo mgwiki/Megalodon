@@ -69,6 +69,12 @@ type checked_item =
   | CheckedFormula of Syntax.tm
   | CheckedSatClauseRecord
 
+type ennf_pair = {
+  ennf_pair_path : string;
+  ennf_pair_source : Syntax.tm;
+  ennf_pair_target : Syntax.tm;
+}
+
 type step =
   | Input of string * source * clause
   | FormulaInput of string * source * literal
@@ -77,7 +83,7 @@ type step =
   | RectifyFormula of string * string * rectify_renaming list * Syntax.tm
   | FoolAtomLift of string * Syntax.tm * Syntax.tm * string
   | FoolFormula of string * string * Syntax.tm
-  | EnnfFormula of string * string * Syntax.tm
+  | EnnfFormula of string * string * Syntax.tm option * ennf_pair list * Syntax.tm
   | SkolemFormula of string * string * (string * Syntax.tm) list * Syntax.tm
   | SkolemFormulaComputed of string * string * (string * Syntax.tm) list
   | CnfFormulaClause of string * string * int * clause
