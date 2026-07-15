@@ -4698,6 +4698,32 @@ let rec simple_clause_projection_proof target_prop target_clause source_clause s
         head_name head_branch
         tail_name tail_branch
 
+let simple_clause_projection_script target_prop target_clause source_clause source_proof result_sorts =
+  match source_clause, target_clause with
+  | [a; b; c; d; e; f; g], [g'; b'; c'; d'; e'; f'; a']
+      when a = a' && b = b' && c = c' && d = d' && e = e' && f = f' && g = g' ->
+      let binders =
+        result_sorts
+        |> List.map (fun (name, _) -> megalodon_ident name)
+        |> String.concat " "
+      in
+      let let_prefix =
+        if binders = "" then "" else "let " ^ binders ^ ". "
+      in
+      let intro_rights =
+        List.init (List.length target_clause - 1) (fun _ -> "apply vampire_or_intro_right.")
+        |> String.concat " "
+      in
+      Some
+        ("__SCRIPT__"
+         ^ let_prefix
+         ^ "apply (" ^ source_proof ^ " " ^ simple_prop_arg target_prop ^ ").\n"
+         ^ "- assume Hproj_head. "
+         ^ intro_rights
+         ^ " exact Hproj_head.\n"
+         ^ "- assume Hproj_tail. apply vampire_or_rotate_last_first6_extend. exact Hproj_tail.")
+  | _ -> None
+
 let rec simple_clause_remove_reflexive_disequality_proof
     target_prop target_clause selected_index source_clause source_proof depth =
   let literal_prop = simple_literal_prop in
@@ -5490,6 +5516,24 @@ let simple_clause_map_selected_literal_proof
             (map_selected e e2 selected_name)
             source_proof
       end
+  | [a; b; c; d; e; f; g; h], [a'; b'; c'; d'; e2; f'; g'; h'], 4
+      when a = a' && b = b' && c = c' && d = d' && f = f' && g = g' && h = h' ->
+      let selected_name = "Hmap_selected_4" in
+      Printf.sprintf
+        "(vampire_or_map5_8 (%s) (%s) (%s) (%s) (%s) (%s) (%s) (%s) (%s) (fun %s:%s => %s) %s)"
+        (prop a) (prop b) (prop c) (prop d) (prop e) (prop f) (prop g) (prop h) (prop e2)
+        selected_name (prop e)
+        (map_selected e e2 selected_name)
+        source_proof
+  | [a; b; c; d; e; f; g; h], [a'; b'; c'; d'; e'; f2; g'; h'], 5
+      when a = a' && b = b' && c = c' && d = d' && e = e' && g = g' && h = h' ->
+      let selected_name = "Hmap_selected_5" in
+      Printf.sprintf
+        "(vampire_or_map6_8 (%s) (%s) (%s) (%s) (%s) (%s) (%s) (%s) (%s) (fun %s:%s => %s) %s)"
+        (prop a) (prop b) (prop c) (prop d) (prop e) (prop f) (prop g) (prop h) (prop f2)
+        selected_name (prop f)
+        (map_selected f f2 selected_name)
+        source_proof
   | _ ->
   let rec go index source target proof =
     match source, target with
@@ -6061,22 +6105,61 @@ let simple_substitute_proof
       (lookup_simple_name names parent_id)
       parent_sorts
   in
-	  let target = clause_body_prop result in
-	  let proof =
-	    if formula_parent then
-	      let source_formula =
-	        substituted_parent
-	        |> simple_clause_formula_tm
-	        |> left_assoc_vampire_or_formula
-	      in
-	      simple_formula_clause_projection_proof
-	        type_env target result source_formula parent_expr 0
-	    else if substituted_parent = result then
-	      parent_expr
-	    else
-	      simple_clause_projection_proof target result substituted_parent parent_expr 0
-	  in
-	  simple_wrap_forall_intro result_sorts proof
+  let simple_formula_parent_projection_script source_formula target_prop =
+    let source_items = collect_binary "vampire_or" source_formula in
+    let target_items = List.map formula_tm_of_literal result in
+    let source_is_left_assoc5 =
+      match source_formula with
+      | Ap (Ap (TmH "vampire_or",
+                Ap (Ap (TmH "vampire_or",
+                        Ap (Ap (TmH "vampire_or",
+                                Ap (Ap (TmH "vampire_or", _), _)), _)), _)), _) ->
+          true
+      | _ -> false
+    in
+    if source_is_left_assoc5
+       && List.length source_items = 5
+       && source_items = target_items then
+      let binders =
+        result_sorts
+        |> List.map (fun (name, _) -> megalodon_ident name)
+        |> String.concat " "
+      in
+      let let_prefix =
+        if binders = "" then "" else "let " ^ binders ^ ". "
+      in
+      Some
+        ("__SCRIPT__"
+         ^ let_prefix
+         ^ "apply vampire_or_left5_to_right5. exact "
+         ^ parent_expr
+         ^ ".")
+    else
+      None
+  in
+  let target = clause_body_prop result in
+  let proof =
+    if formula_parent then
+      let source_formula =
+        substituted_parent
+        |> simple_clause_formula_tm
+        |> left_assoc_vampire_or_formula
+      in
+      begin match simple_formula_parent_projection_script source_formula target with
+      | Some script -> script
+      | None ->
+          simple_formula_clause_projection_proof
+            type_env target result source_formula parent_expr 0
+      end
+    else if substituted_parent = result then
+      parent_expr
+    else
+      match simple_clause_projection_script target result substituted_parent parent_expr result_sorts with
+      | Some script -> script
+      | None -> simple_clause_projection_proof target result substituted_parent parent_expr 0
+  in
+  if string_starts_with "__SCRIPT__" proof then proof
+  else simple_wrap_forall_intro result_sorts proof
 
 let simple_substituted_parent_expr type_env subst parent_sorts parent_name =
   let subst_sources = List.map fst subst in
@@ -6251,6 +6334,14 @@ let simple_equality_symmetry_clause_proof
   in
   let parent_name = lookup_simple_name names parent_id in
   let parent_expr = simple_apply_forall_vars parent_name parent_sorts in
+  let script_binder_prefix () =
+    let binders =
+      result_sorts
+      |> List.map (fun (name, _) -> megalodon_ident name)
+      |> String.concat " "
+    in
+    if binders = "" then "" else "let " ^ binders ^ ". "
+  in
   let goal_directed_set_eqsym_script () =
     match parent_clause, result, literal_index, literal, swapped with
     | [a; b; c; d; e; f; g], [a'; b'; c'; d'; e2; f'; g'], 4, Pos source_atom, Pos target_atom
@@ -6264,16 +6355,8 @@ let simple_equality_symmetry_clause_proof
                  (match simple_tm_sort type_env left, simple_tm_sort type_env right with
                   | Some sort, _ | _, Some sort -> simple_strip_outer_parens sort = "set"
                   | None, None -> true) ->
-            let binders =
-              result_sorts
-              |> List.map (fun (name, _) -> megalodon_ident name)
-              |> String.concat " "
-            in
-            let let_prefix =
-              if binders = "" then "" else "let " ^ binders ^ ". "
-            in
             Some
-              ("__SCRIPT__" ^ let_prefix
+              ("__SCRIPT__" ^ script_binder_prefix ()
                ^ "apply vampire_or_eqsym5_7_set. exact "
                ^ parent_expr
                ^ ".")
@@ -6281,20 +6364,94 @@ let simple_equality_symmetry_clause_proof
         end
     | _ -> None
   in
+  let goal_directed_map8_eqsym_script () =
+    let selected_proof source_lit target_lit assumption =
+      if target_lit <> swapped then
+        emit_error (id ^ ": equality-symmetry target literal is not the swapped selected literal");
+      "(" ^ simple_literal_equality_symmetry_proof type_env source_lit assumption ^ ")"
+    in
+    let bullet depth =
+      match depth mod 3 with
+      | 0 -> "-"
+      | 1 -> "+"
+      | _ -> "*"
+    in
+    let inject index proof =
+      let rights =
+        List.init index (fun _ -> "apply vampire_or_intro_right.")
+        |> String.concat " "
+      in
+      let left =
+        if index < List.length result - 1 then " apply vampire_or_intro_left." else ""
+      in
+      String.trim (rights ^ left ^ " exact " ^ proof ^ ".")
+    in
+    let branch_proof index source_lit target_lit assumption =
+      if index = literal_index then
+        let converted = selected_proof source_lit target_lit assumption in
+        inject index converted
+      else begin
+        if source_lit <> target_lit then
+          emit_error (id ^ ": equality-symmetry map found a non-selected mismatch");
+        inject index assumption
+      end
+    in
+    let rec cases depth index source_lits target_lits proof_name =
+      match source_lits, target_lits with
+      | [], [] -> emit_error (id ^ ": equality-symmetry map cannot project an empty clause")
+      | [source_lit], [target_lit] ->
+          branch_proof index source_lit target_lit proof_name
+      | source_lit :: source_rest, target_lit :: target_rest ->
+          let head_name = "Hmap_lit_" ^ string_of_int index in
+          let tail_name = "Hmap_tail_" ^ string_of_int index in
+          let marker = bullet depth in
+          let head_line =
+            marker ^ " assume " ^ head_name ^ ". "
+            ^ branch_proof index source_lit target_lit head_name
+          in
+          let tail_body =
+            match source_rest, target_rest with
+            | [tail_source], [tail_target] ->
+                branch_proof (index + 1) tail_source tail_target tail_name
+            | _ ->
+                "apply " ^ tail_name ^ ".\n"
+                ^ cases (depth + 1) (index + 1) source_rest target_rest tail_name
+          in
+          head_line ^ "\n"
+          ^ marker ^ " assume " ^ tail_name ^ ". " ^ tail_body
+      | _ -> emit_error (id ^ ": equality-symmetry map source and target lengths differ")
+    in
+    let script source_lits target_lits =
+      "__SCRIPT__" ^ script_binder_prefix ()
+      ^ "apply (" ^ parent_expr ^ " " ^ simple_prop_arg target_prop ^ ").\n"
+      ^ cases 0 0 source_lits target_lits parent_expr
+    in
+    match parent_clause, result, literal_index with
+    | [a; b; c; d; e; f; g; h], [a'; b'; c'; d'; e2; f'; g'; h'], 4
+        when a = a' && b = b' && c = c' && d = d' && f = f' && g = g' && h = h' ->
+        Some (script [a; b; c; d; e; f; g; h] [a'; b'; c'; d'; e2; f'; g'; h'])
+    | [a; b; c; d; e; f; g; h], [a'; b'; c'; d'; e'; f2; g'; h'], 5
+        when a = a' && b = b' && c = c' && d = d' && e = e' && g = g' && h = h' ->
+        Some (script [a; b; c; d; e; f; g; h] [a'; b'; c'; d'; e'; f2; g'; h'])
+    | _ -> None
+  in
   let proof =
     match goal_directed_set_eqsym_script () with
     | Some script -> script
     | None ->
-        try
-          simple_clause_map_selected_literal_proof
-            type_env literal_index parent_clause result parent_expr
-            (fun source_lit target_lit source_proof ->
-               if target_lit <> swapped then
-                 emit_error (id ^ ": equality-symmetry target literal is not the swapped selected literal");
-               "(" ^ simple_literal_equality_symmetry_proof type_env source_lit source_proof ^ ")")
-        with Error _ ->
-          simple_clause_equality_symmetry_proof
-            type_env target_prop result (Some literal_index) parent_clause parent_expr 0
+        match goal_directed_map8_eqsym_script () with
+        | Some script -> script
+        | None ->
+            try
+              simple_clause_map_selected_literal_proof
+                type_env literal_index parent_clause result parent_expr
+                (fun source_lit target_lit source_proof ->
+                   if target_lit <> swapped then
+                     emit_error (id ^ ": equality-symmetry target literal is not the swapped selected literal");
+                   "(" ^ simple_literal_equality_symmetry_proof type_env source_lit source_proof ^ ")")
+            with Error _ ->
+              simple_clause_equality_symmetry_proof
+                type_env target_prop result (Some literal_index) parent_clause parent_expr 0
   in
   if string_starts_with "__SCRIPT__" proof then proof
   else simple_wrap_forall_intro result_sorts proof
@@ -6947,9 +7104,9 @@ let simple_avatar_component_proof type_env split_definitions id result_sorts res
         || formula_contains_literal right literal
     | _ -> false
   in
-  let rec formula_intro_proof formula literal proof =
-    if formula = formula_tm_of_literal literal then proof
-    else
+	  let rec formula_intro_proof formula literal proof =
+	    if formula = formula_tm_of_literal literal then proof
+	    else
       match formula with
       | Ap (Ap (TmH "vampire_or", left), right) ->
           let left_prop = prop_text left in
@@ -6966,8 +7123,23 @@ let simple_avatar_component_proof type_env split_definitions id result_sorts res
               left_prop right_prop right_proof
           else
             emit_error (id ^ ": avatar component target does not contain literal")
-      | _ -> emit_error (id ^ ": avatar component target is not an or-formula")
-  in
+	      | _ -> emit_error (id ^ ": avatar component target is not an or-formula")
+	  in
+	  let rec formula_intro_script formula literal proof =
+	    if formula = formula_tm_of_literal literal then "exact " ^ proof ^ "."
+	    else
+	      match formula with
+	      | Ap (Ap (TmH "vampire_or", left), right) ->
+	          if formula_contains_literal left literal then
+	            "apply vampire_or_intro_left. "
+	            ^ formula_intro_script left literal proof
+	          else if formula_contains_literal right literal then
+	            "apply vampire_or_intro_right. "
+	            ^ formula_intro_script right literal proof
+	          else
+	            emit_error (id ^ ": avatar component target does not contain literal")
+	      | _ -> emit_error (id ^ ": avatar component target is not an or-formula")
+	  in
   let rec formula_projection_from_clause source_clause source_proof depth =
     match source_clause with
     | [] -> emit_error (id ^ ": avatar component cannot project from empty body")
@@ -7053,14 +7225,60 @@ let simple_avatar_component_proof type_env split_definitions id result_sorts res
   let target_from_not_body proof_name =
     formula_intro_proof target_formula split_literal proof_name
   in
-  let proof =
-    match split_literal with
-    | Neg (TmH _) ->
-        let positive_branch = target_from_body "Havatar_body" in
-        let negative_branch = target_from_not_body "Havatar_not_body" in
-        Printf.sprintf
-          "((vampire_xm (%s)) %s (fun Havatar_body:%s => %s) (fun Havatar_not_body:(%s) -> False => %s))"
-          body_prop target_prop body_prop positive_branch body_prop negative_branch
+	  let proof =
+	    match split_literal with
+	    | Neg (TmH _) ->
+	        begin match body_clause with
+	        | [lit0; lit1; lit2; lit3] ->
+	            let binders =
+	              result_sorts
+	              |> List.map (fun (name, _) -> megalodon_ident name)
+	              |> String.concat " "
+	            in
+	            let let_prefix =
+	              if binders = "" then "" else "let " ^ binders ^ ". "
+	            in
+	            let body_instance =
+	              List.fold_left
+	                (fun acc (name, _) -> "(" ^ acc ^ " " ^ megalodon_ident name ^ ")")
+	                "Havatar_body"
+	                result_sorts
+	            in
+	            "__SCRIPT__"
+	            ^ let_prefix
+	            ^ "apply (vampire_xm "
+	            ^ simple_prop_arg body_prop
+	            ^ " "
+	            ^ simple_prop_arg target_prop
+	            ^ ").\n"
+	            ^ "- assume Havatar_body. apply ("
+	            ^ body_instance
+	            ^ " "
+	            ^ simple_prop_arg target_prop
+	            ^ ").\n"
+	            ^ "  + assume Havatar_lit_0. "
+	            ^ formula_intro_script target_formula lit0 "Havatar_lit_0"
+	            ^ "\n"
+	            ^ "  + assume Havatar_tail_0. apply Havatar_tail_0.\n"
+	            ^ "    * assume Havatar_lit_1. "
+	            ^ formula_intro_script target_formula lit1 "Havatar_lit_1"
+	            ^ "\n"
+	            ^ "    * assume Havatar_tail_1. apply Havatar_tail_1.\n"
+	            ^ "      + assume Havatar_lit_2. "
+	            ^ formula_intro_script target_formula lit2 "Havatar_lit_2"
+	            ^ "\n"
+	            ^ "      + assume Havatar_lit_3. "
+	            ^ formula_intro_script target_formula lit3 "Havatar_lit_3"
+	            ^ "\n"
+	            ^ "- assume Havatar_not_body. "
+	            ^ formula_intro_script target_formula split_literal "Havatar_not_body"
+	        | _ ->
+	            let positive_branch = target_from_body "Havatar_body" in
+	            let negative_branch = target_from_not_body "Havatar_not_body" in
+	            Printf.sprintf
+	              "((vampire_xm (%s)) %s (fun Havatar_body:%s => %s) (fun Havatar_not_body:(%s) -> False => %s))"
+	              body_prop target_prop body_prop positive_branch body_prop negative_branch
+	        end
     | Pos (TmH _) ->
         begin match component_literals, body_clause with
         | [Neg atom], [Pos body_atom] when atom = body_atom ->
@@ -7092,7 +7310,8 @@ let simple_avatar_component_proof type_env split_definitions id result_sorts res
         end
     | _ -> emit_error (id ^ ": avatar component split literal is not a split atom")
   in
-  simple_wrap_forall_intro result_sorts proof
+	  if string_starts_with "__SCRIPT__" proof then proof
+	  else simple_wrap_forall_intro result_sorts proof
 
 let simple_clause_projection_with_eliminators target_prop target_clause source_clause source_proof eliminator =
   let false_elim proof =
@@ -9877,16 +10096,63 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
 	      "Theorem vampire_or_intro_right : forall A B:prop, B -> vampire_or A B.";
 	      "exact (fun A:prop => fun B:prop => fun HB:B => fun q:prop => fun Hleft:A -> q => fun Hright:B -> q => Hright HB).";
 	      "Qed.";
-	      "Theorem vampire_or_map : forall A B C D:prop, (A -> C) -> (B -> D) -> vampire_or A B -> vampire_or C D.";
-	      "exact (fun A:prop => fun B:prop => fun C:prop => fun D:prop => fun HAC:A -> C => fun HBD:B -> D => fun HAB:vampire_or A B => fun q:prop => fun HC:C -> q => fun HD:D -> q => HAB q (fun HA:A => HC (HAC HA)) (fun HB:B => HD (HBD HB))).";
-	      "Qed.";
+		      "Theorem vampire_or_map : forall A B C D:prop, (A -> C) -> (B -> D) -> vampire_or A B -> vampire_or C D.";
+		      "exact (fun A:prop => fun B:prop => fun C:prop => fun D:prop => fun HAC:A -> C => fun HBD:B -> D => fun HAB:vampire_or A B => fun q:prop => fun HC:C -> q => fun HD:D -> q => HAB q (fun HA:A => HC (HAC HA)) (fun HB:B => HD (HBD HB))).";
+		      "Qed.";
+		      "Theorem vampire_or_left5_to_right5 : forall A B C D E:prop, vampire_or (vampire_or (vampire_or (vampire_or A B) C) D) E -> vampire_or A (vampire_or B (vampire_or C (vampire_or D E))).";
+		      "let A B C D E.";
+		      "assume H.";
+		      "apply H.";
+		      "- assume Hleft3. apply Hleft3.";
+		      "  + assume Hleft2. apply Hleft2.";
+		      "    * assume Hleft1. apply Hleft1.";
+		      "      + assume HA. apply vampire_or_intro_left. exact HA.";
+		      "      + assume HB. apply vampire_or_intro_right. apply vampire_or_intro_left. exact HB.";
+		      "    * assume HC. apply vampire_or_intro_right. apply vampire_or_intro_right. apply vampire_or_intro_left. exact HC.";
+		      "  + assume HD. apply vampire_or_intro_right. apply vampire_or_intro_right. apply vampire_or_intro_right. apply vampire_or_intro_left. exact HD.";
+		      "- assume HE. apply vampire_or_intro_right. apply vampire_or_intro_right. apply vampire_or_intro_right. apply vampire_or_intro_right. exact HE.";
+		      "Qed.";
 	      "Theorem vampire_or_rotate6 : forall A B C D E F G:prop, (A -> G) -> vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E F)))) -> vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G)))).";
 	      "exact (fun A:prop => fun B:prop => fun C:prop => fun D:prop => fun E:prop => fun F:prop => fun G:prop => fun HAG:A -> G => fun H:vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E F)))) => H (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) (fun HA:A => vampire_or_intro_right B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G)))) (vampire_or_intro_right C (vampire_or D (vampire_or E (vampire_or F G))) (vampire_or_intro_right D (vampire_or E (vampire_or F G)) (vampire_or_intro_right E (vampire_or F G) (vampire_or_intro_right F G (HAG HA)))))) (fun Htail:vampire_or B (vampire_or C (vampire_or D (vampire_or E F))) => Htail (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) (fun HB:B => vampire_or_intro_left B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G)))) HB) (fun HtailC:vampire_or C (vampire_or D (vampire_or E F)) => vampire_or_intro_right B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G)))) (HtailC (vampire_or C (vampire_or D (vampire_or E (vampire_or F G)))) (fun HC:C => vampire_or_intro_left C (vampire_or D (vampire_or E (vampire_or F G))) HC) (fun HtailD:vampire_or D (vampire_or E F) => vampire_or_intro_right C (vampire_or D (vampire_or E (vampire_or F G))) (HtailD (vampire_or D (vampire_or E (vampire_or F G))) (fun HD:D => vampire_or_intro_left D (vampire_or E (vampire_or F G)) HD) (fun HtailE:vampire_or E F => vampire_or_intro_right D (vampire_or E (vampire_or F G)) (HtailE (vampire_or E (vampire_or F G)) (fun HE:E => vampire_or_intro_left E (vampire_or F G) HE) (fun HF:F => vampire_or_intro_right E (vampire_or F G) (vampire_or_intro_left F G HF)))))))))).";
 	      "Qed.";
-		      "Theorem vampire_or_map5_7 : forall A B C D E F G E2:prop, (E -> E2) -> vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) -> vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E2 (vampire_or F G))))).";
-		      "exact (fun A:prop => fun B:prop => fun C:prop => fun D:prop => fun E:prop => fun F:prop => fun G:prop => fun E2:prop => fun HEE:E -> E2 => fun H:vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) => vampire_or_map A (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) A (vampire_or B (vampire_or C (vampire_or D (vampire_or E2 (vampire_or F G))))) (fun HA:A => HA) (fun HT:vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G)))) => vampire_or_map B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G)))) B (vampire_or C (vampire_or D (vampire_or E2 (vampire_or F G)))) (fun HB:B => HB) (fun HU:vampire_or C (vampire_or D (vampire_or E (vampire_or F G))) => vampire_or_map C (vampire_or D (vampire_or E (vampire_or F G))) C (vampire_or D (vampire_or E2 (vampire_or F G))) (fun HC:C => HC) (fun HV:vampire_or D (vampire_or E (vampire_or F G)) => vampire_or_map D (vampire_or E (vampire_or F G)) D (vampire_or E2 (vampire_or F G)) (fun HD:D => HD) (fun HW:vampire_or E (vampire_or F G) => vampire_or_map E (vampire_or F G) E2 (vampire_or F G) HEE (fun HX:vampire_or F G => HX) HW) HV) HU) HT) H).";
-		      "Qed.";
-		      "Theorem vampire_or_drop_head7 : forall A B C D E F G:prop, (A -> vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) -> vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) -> vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G)))).";
+			      "Theorem vampire_or_map5_7 : forall A B C D E F G E2:prop, (E -> E2) -> vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) -> vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E2 (vampire_or F G))))).";
+			      "exact (fun A:prop => fun B:prop => fun C:prop => fun D:prop => fun E:prop => fun F:prop => fun G:prop => fun E2:prop => fun HEE:E -> E2 => fun H:vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) => vampire_or_map A (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) A (vampire_or B (vampire_or C (vampire_or D (vampire_or E2 (vampire_or F G))))) (fun HA:A => HA) (fun HT:vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G)))) => vampire_or_map B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G)))) B (vampire_or C (vampire_or D (vampire_or E2 (vampire_or F G)))) (fun HB:B => HB) (fun HU:vampire_or C (vampire_or D (vampire_or E (vampire_or F G))) => vampire_or_map C (vampire_or D (vampire_or E (vampire_or F G))) C (vampire_or D (vampire_or E2 (vampire_or F G))) (fun HC:C => HC) (fun HV:vampire_or D (vampire_or E (vampire_or F G)) => vampire_or_map D (vampire_or E (vampire_or F G)) D (vampire_or E2 (vampire_or F G)) (fun HD:D => HD) (fun HW:vampire_or E (vampire_or F G) => vampire_or_map E (vampire_or F G) E2 (vampire_or F G) HEE (fun HX:vampire_or F G => HX) HW) HV) HU) HT) H).";
+			      "Qed.";
+			      "Theorem vampire_or_map5_8 : forall A B C D E F G H E2:prop, (E -> E2) -> vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F (vampire_or G H)))))) -> vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E2 (vampire_or F (vampire_or G H)))))).";
+			      "let A B C D E F G H E2.";
+			      "assume HEE.";
+			      "assume Hor.";
+			      "apply Hor.";
+			      "- assume HA. apply vampire_or_intro_left. exact HA.";
+			      "- assume HtailA. apply vampire_or_intro_right. apply HtailA.";
+			      "  + assume HB. apply vampire_or_intro_left. exact HB.";
+			      "  + assume HtailB. apply vampire_or_intro_right. apply HtailB.";
+			      "    * assume HC. apply vampire_or_intro_left. exact HC.";
+			      "    * assume HtailC. apply vampire_or_intro_right. apply HtailC.";
+			      "      + assume HD. apply vampire_or_intro_left. exact HD.";
+			      "      + assume HtailD. apply vampire_or_intro_right. apply HtailD.";
+			      "        * assume HE. apply vampire_or_intro_left. exact (HEE HE).";
+			      "        * assume HtailE. apply vampire_or_intro_right. exact HtailE.";
+			      "Qed.";
+			      "Theorem vampire_or_map6_8 : forall A B C D E F G H F2:prop, (F -> F2) -> vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F (vampire_or G H)))))) -> vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F2 (vampire_or G H)))))).";
+			      "let A B C D E F G H F2.";
+			      "assume HFF.";
+			      "assume Hor.";
+			      "apply Hor.";
+			      "- assume HA. apply vampire_or_intro_left. exact HA.";
+			      "- assume HtailA. apply vampire_or_intro_right. apply HtailA.";
+			      "  + assume HB. apply vampire_or_intro_left. exact HB.";
+			      "  + assume HtailB. apply vampire_or_intro_right. apply HtailB.";
+			      "    * assume HC. apply vampire_or_intro_left. exact HC.";
+			      "    * assume HtailC. apply vampire_or_intro_right. apply HtailC.";
+			      "      + assume HD. apply vampire_or_intro_left. exact HD.";
+			      "      + assume HtailD. apply vampire_or_intro_right. apply HtailD.";
+			      "        * assume HE. apply vampire_or_intro_left. exact HE.";
+			      "        * assume HtailE. apply vampire_or_intro_right. apply HtailE.";
+			      "          + assume HF. apply vampire_or_intro_left. exact (HFF HF).";
+			      "          + assume HtailF. apply vampire_or_intro_right. exact HtailF.";
+			      "Qed.";
+			      "Theorem vampire_or_drop_head7 : forall A B C D E F G:prop, (A -> vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) -> vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) -> vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G)))).";
 		      "exact (fun A:prop => fun B:prop => fun C:prop => fun D:prop => fun E:prop => fun F:prop => fun G:prop => fun Hdrop:A -> vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G)))) => fun H:vampire_or A (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) => H (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) Hdrop (fun Htail:vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G)))) => Htail)).";
 		      "Qed.";
 		      "Theorem vampire_or_paramod_suffix7 : forall A S B C D E F G:prop, (A -> vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))) -> vampire_or A S -> vampire_or S (vampire_or B (vampire_or C (vampire_or D (vampire_or E (vampire_or F G))))).";
@@ -11962,11 +12228,17 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                 (simple_avatar_component_proof
                    type_env avatar_split_definition_env id sorts result)
             with Error _ -> None
-          with
-          | Some proof ->
-              claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")]
-          | None ->
-              derived_assumptions := !derived_assumptions @ [(name, prop)]
+	          with
+	          | Some proof ->
+	              let proof_body =
+	                if string_starts_with "__SCRIPT__" proof then
+	                  String.sub proof 10 (String.length proof - 10)
+	                else
+	                  "exact " ^ proof ^ "."
+	              in
+	              claims := !claims @ [(name, prop, proof_body)]
+	          | None ->
+	              derived_assumptions := !derived_assumptions @ [(name, prop)]
           end;
           add_checked id result
       | AvatarSplit (id, parent_ids, result) ->
@@ -12175,12 +12447,18 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                   Some (proof, prop, sorts)
                 with Error _ -> None
           with
-          | Some (proof, claim_prop, claim_sorts) ->
-              let name = derived_name id in
-              add_emitted id name;
-              add_emitted_prop_and_sorts id claim_prop claim_sorts;
-              claims := !claims @ [(name, claim_prop, "exact " ^ proof ^ ".")];
-              add_checked id result
+	          | Some (proof, claim_prop, claim_sorts) ->
+	              let name = derived_name id in
+	              let proof_body =
+	                if string_starts_with "__SCRIPT__" proof then
+	                  String.sub proof 10 (String.length proof - 10)
+	                else
+	                  "exact " ^ proof ^ "."
+	              in
+	              add_emitted id name;
+	              add_emitted_prop_and_sorts id claim_prop claim_sorts;
+	              claims := !claims @ [(name, claim_prop, proof_body)];
+	              add_checked id result
           | None ->
               add_clause_inference_bridge
                 ~extra_sorts:subst_sorts
