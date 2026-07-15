@@ -462,6 +462,18 @@ if ! rg -q 'Vampire certificate v1 native core proof term checked 6 steps' \
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1corepfcheck \
+  -vampirecertv1 tests/vampire_certificate/closed_cases/core.cnf.21.native.sexp \
+  -vampirecertv1source tests/vampire_certificate/closed_cases/core.cnf.21.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_core_pf_paramodulation_binary.log"
+
+if ! rg -q 'Vampire certificate v1 native core proof term checked 8 steps' \
+    "$WORK_DIR/native_cert_v1_core_pf_paramodulation_binary.log"; then
+  echo "native core proof-term checker did not validate the binary-target paramodulation seed" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1coreclosed \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_formula_cnf_valid.sexp \

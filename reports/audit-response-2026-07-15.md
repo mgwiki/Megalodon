@@ -77,6 +77,10 @@ positive equality into unit positive and negative targets, using the explicit
 position/from/to fields emitted by the certificate and Megalodon's Leibniz
 equality as the transport principle.  Larger paramodulation clauses still fail
 closed until they are decomposed into similarly explicit primitive data.
+That support has been generalized to binary target clauses when the equality
+parent is still unit: the selected target literal is transported natively, and
+the unmodified target literal is reintroduced through the native disjunction
+encoding.
 
 The next core rule added in the same style is binary/unit
 subsumption-resolution with an empty side substitution.  The checker validates

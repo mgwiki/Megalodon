@@ -3593,97 +3593,143 @@ let native_core_subsumption_resolution_unit id main_clause main_proof side_claus
   | _ ->
       error (id ^ ": native core proof-term subsumption-resolution currently supports only unit side parents")
 
-let native_core_paramodulate_unit id equality_clause equality_proof target_clause target_proof equality_index target_index position from_tm to_tm result =
-  match equality_clause, target_clause, result, equality_index, target_index with
-  | [Pos equality_atom], [Pos target_atom], [Pos result_atom], 0, 0 ->
-      let tp, eq_left, eq_right =
-        match megalodon_eq_poly_sides equality_atom with
-        | Some sides -> sides
-        | None ->
-            error (id ^ ": native core proof-term paramodulation equality literal is not typed Megalodon equality")
-      in
-      let context_replacement, source_atom =
-        if eq_left = from_tm && eq_right = to_tm then
-          (DB 1, from_tm)
-        else if eq_right = from_tm && eq_left = to_tm then
-          (DB 0, from_tm)
-        else
-          error (id ^ ": native core proof-term paramodulation from/to terms do not match equality literal")
-      in
-      let rewrite_position =
-        let rec select = function
-          | [] -> error (id ^ ": native core proof-term paramodulation position does not contain from term")
-          | candidate :: rest ->
-              begin match try_tm_at_position target_atom candidate with
-              | Some found when found = source_atom -> candidate
-              | _ -> select rest
-              end
+let native_core_paramodulate_literal_transport
+    id equality_atom equality_proof target_literal position from_tm to_tm result_literal literal_proof =
+  let tp, eq_left, eq_right =
+    match megalodon_eq_poly_sides equality_atom with
+    | Some sides -> sides
+    | None ->
+        error (id ^ ": native core proof-term paramodulation equality literal is not typed Megalodon equality")
+  in
+  let target_atom, result_atom, context_replacement, source_atom =
+    match target_literal, result_literal with
+    | Pos target_atom, Pos result_atom ->
+        let context_replacement, source_atom =
+          if eq_left = from_tm && eq_right = to_tm then
+            (DB 1, from_tm)
+          else if eq_right = from_tm && eq_left = to_tm then
+            (DB 0, from_tm)
+          else
+            error (id ^ ": native core proof-term paramodulation from/to terms do not match equality literal")
         in
-        select (paramodulation_position_candidates target_atom position)
-      in
-      let rewritten_atom =
-        replace_tm_at_position target_atom rewrite_position to_tm (id ^ " native paramodulation target")
-      in
-      if rewritten_atom <> result_atom then
-        error (id ^ ": native core proof-term paramodulation currently supports only the direct rewritten unit result");
-      let context_atom =
-        replace_tm_at_position
-          (tmshift 0 2 target_atom)
-          rewrite_position
-          context_replacement
-          (id ^ " native paramodulation context")
-      in
-      let motive = Lam (tp, Lam (tp, native_core_expand_eq_atom context_atom)) in
-      PPfAp (PTmAp (equality_proof, motive), target_proof)
-  | [Pos equality_atom], [Neg target_atom], [Neg result_atom], 0, 0 ->
-      let tp, eq_left, eq_right =
-        match megalodon_eq_poly_sides equality_atom with
-        | Some sides -> sides
-        | None ->
-            error (id ^ ": native core proof-term paramodulation equality literal is not typed Megalodon equality")
-      in
-      let context_replacement, source_atom =
-        if eq_left = from_tm && eq_right = to_tm then
-          (DB 0, from_tm)
-        else if eq_right = from_tm && eq_left = to_tm then
-          (DB 1, from_tm)
-        else
-          error (id ^ ": native core proof-term paramodulation from/to terms do not match equality literal")
-      in
-      let rewrite_position =
-        let rec select = function
-          | [] -> error (id ^ ": native core proof-term paramodulation position does not contain from term")
-          | candidate :: rest ->
-              begin match try_tm_at_position target_atom candidate with
-              | Some found when found = source_atom -> candidate
-              | _ -> select rest
-              end
+        (target_atom, result_atom, context_replacement, source_atom)
+    | Neg target_atom, Neg result_atom ->
+        let context_replacement, source_atom =
+          if eq_left = from_tm && eq_right = to_tm then
+            (DB 0, from_tm)
+          else if eq_right = from_tm && eq_left = to_tm then
+            (DB 1, from_tm)
+          else
+            error (id ^ ": native core proof-term paramodulation from/to terms do not match equality literal")
         in
-        select (paramodulation_position_candidates target_atom position)
-      in
-      let rewritten_atom =
-        replace_tm_at_position target_atom rewrite_position to_tm (id ^ " native paramodulation target")
-      in
-      if rewritten_atom <> result_atom then
-        error (id ^ ": native core proof-term paramodulation currently supports only the direct rewritten unit result");
-      let context_atom =
-        replace_tm_at_position
-          (tmshift 0 2 target_atom)
-          rewrite_position
-          context_replacement
-          (id ^ " native paramodulation context")
-      in
-      let motive = Lam (tp, Lam (tp, native_core_expand_eq_atom context_atom)) in
+        (target_atom, result_atom, context_replacement, source_atom)
+    | _ ->
+        error (id ^ ": native core proof-term paramodulation cannot change literal polarity")
+  in
+  let rewrite_position =
+    let rec select = function
+      | [] -> error (id ^ ": native core proof-term paramodulation position does not contain from term")
+      | candidate :: rest ->
+          begin match try_tm_at_position target_atom candidate with
+          | Some found when found = source_atom -> candidate
+          | _ -> select rest
+          end
+    in
+    select (paramodulation_position_candidates target_atom position)
+  in
+  let rewritten_atom =
+    replace_tm_at_position target_atom rewrite_position to_tm (id ^ " native paramodulation target")
+  in
+  if rewritten_atom <> result_atom then
+    error (id ^ ": native core proof-term paramodulation result literal is not the direct rewrite");
+  let context_atom =
+    replace_tm_at_position
+      (tmshift 0 2 target_atom)
+      rewrite_position
+      context_replacement
+      (id ^ " native paramodulation context")
+  in
+  let motive = Lam (tp, Lam (tp, native_core_expand_eq_atom context_atom)) in
+  match target_literal, result_literal with
+  | Pos _, Pos _ -> PPfAp (PTmAp (equality_proof, motive), literal_proof)
+  | Neg _, Neg result_atom ->
       let result_prop = native_core_expand_eq_atom result_atom in
       PLam
         (result_prop,
          PPfAp
-           (pfshift 0 1 target_proof,
+           (pfshift 0 1 literal_proof,
             PPfAp (PTmAp (pfshift 0 1 equality_proof, motive), Hyp 0)))
-  | [_], [_], [_], _, _ ->
-      error (id ^ ": native core proof-term paramodulation currently supports only unit positive equality and unit targets")
+  | _ -> assert false
+
+let native_core_paramodulate_unit id equality_clause equality_proof target_clause target_proof equality_index target_index position from_tm to_tm result =
+  let equality_atom =
+    match equality_clause, equality_index with
+    | [Pos equality_atom], 0 -> equality_atom
+    | [Neg _], 0 -> error (id ^ ": native core proof-term paramodulation equality literal must be positive")
+    | [_], _ -> error (id ^ ": native core proof-term paramodulation equality index is out of bounds")
+    | _ -> error (id ^ ": native core proof-term paramodulation currently supports only unit equality parents")
+  in
+  let selected =
+    nth target_index target_clause (id ^ " native paramodulation target literal")
+  in
+  let target_rest =
+    remove_at target_index target_clause (id ^ " native paramodulation target literal")
+  in
+  let result_literal =
+    let candidates =
+      List.filter
+        (fun literal ->
+           try
+             ignore
+               (native_core_paramodulate_literal_transport
+                  id equality_atom equality_proof selected position from_tm to_tm literal (Hyp 0));
+             same_clause_multiset (target_rest @ [literal]) result
+           with Error _ -> false)
+        result
+    in
+    match candidates with
+    | literal :: _ -> literal
+    | [] ->
+        error (id ^ ": native core proof-term paramodulation result does not contain the rewritten target literal")
+  in
+  match target_clause, result with
+  | [_], [_] ->
+      native_core_paramodulate_literal_transport
+        id equality_atom equality_proof selected position from_tm to_tm result_literal target_proof
+  | [_; _], [_; _] ->
+      let target_prop = native_core_clause_prop id result in
+      let selected_branch =
+        PLam
+          (native_core_literal_prop selected,
+           let transported =
+             native_core_paramodulate_literal_transport
+               id equality_atom (pfshift 0 1 equality_proof) selected position from_tm to_tm result_literal (Hyp 0)
+           in
+           native_core_prove_literal_to_clause id result result_literal transported)
+      in
+      let rest_literal =
+        match target_rest with
+        | [literal] -> literal
+        | _ -> error (id ^ ": native core proof-term paramodulation expected one unmodified target literal")
+      in
+      let rest_branch =
+        PLam
+          (native_core_literal_prop rest_literal,
+           native_core_prove_literal_to_clause id result rest_literal (Hyp 0))
+      in
+      let left_branch, right_branch =
+        if target_index = 0 then
+          (selected_branch, rest_branch)
+        else if target_index = 1 then
+          (rest_branch, selected_branch)
+        else
+          error (id ^ ": native core proof-term paramodulation target index is out of bounds")
+      in
+      PPfAp
+        (PPfAp (PTmAp (target_proof, target_prop), left_branch),
+         right_branch)
   | _ ->
-      error (id ^ ": native core proof-term paramodulation currently supports only unit/unit paramodulation")
+      error (id ^ ": native core proof-term paramodulation currently supports only unit or binary target clauses")
 
 let native_core_source_kind_and_tptp_name = function
   | SourceAxiom name -> ("axiom", name)

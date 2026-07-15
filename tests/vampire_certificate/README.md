@@ -160,14 +160,16 @@ unit/unit, binary/unit, and binary/binary resolution, binary/unit
 subsumption-resolution with empty side substitution, duplicate binary factoring,
 identity substitution, and equality resolution over reflexive disequalities
 encoded with Megalodon's actual polymorphic equality, plus unit/unit
-paramodulation into positive and negative targets using explicit Vampire
+paramodulation into positive and negative targets, and unit-equality
+paramodulation into binary target clauses, using explicit Vampire
 position/from/to data. Clauses are represented by native impredicative false and
 disjunction terms. It deliberately rejects unsupported core rules, including
 non-identity substitution, subsumption-resolution with non-empty side
-substitution, non-unit paramodulation, and untyped `TMH "="` equality, instead
-of falling back to textual replay. This is not yet the full nine-rule core
-elaborator; it is the initial checked entrypoint for replacing the broad
-`certificate -> string` path with a native
+substitution, non-unit equality parents for paramodulation, target clauses of
+length greater than two, and untyped `TMH "="` equality, instead of falling back
+to textual replay. This is not yet the full nine-rule core elaborator; it is
+the initial checked entrypoint for replacing the broad `certificate -> string`
+path with a native
 `certificate -> Syntax.tm * Syntax.pf` path. This mode also requires
 `-vampirecertv1source` to contain `megalodon_origin` metadata, so native
 proof-term evidence is tied at least to a specific exported Megalodon source
