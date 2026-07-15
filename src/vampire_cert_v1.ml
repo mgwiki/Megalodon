@@ -11402,6 +11402,7 @@ let parse_source_map text =
   let tptp_decl_prefix line =
     if string_starts_with "thf(" line then Some ("thf", 4)
     else if string_starts_with "fof(" line then Some ("fof", 4)
+    else if string_starts_with "cnf(" line then Some ("cnf", 4)
     else None
   in
   let tptp_decl_name name =
@@ -11718,7 +11719,7 @@ let source_map_entry_well_formed entry =
              ^ entry.source_map_tptp_name
              ^ " has source hash "
              ^ entry.source_map_hash
-             ^ " but the THF declaration is tagged "
+             ^ " but the TPTP declaration is tagged "
              ^ declared)
       | None ->
           error
@@ -11726,7 +11727,7 @@ let source_map_entry_well_formed entry =
              ^ entry.source_map_tptp_name
              ^ " has source hash "
              ^ entry.source_map_hash
-             ^ " but the THF declaration has no matching trailing hash")
+             ^ " but the TPTP declaration has no matching trailing hash")
       end
   | _ -> ()
 

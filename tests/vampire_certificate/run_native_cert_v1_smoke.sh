@@ -396,7 +396,7 @@ if bin/megalodon \
   exit 1
 fi
 
-if ! rg -q 'has source hash .* but the THF declaration is tagged' \
+if ! rg -q 'has source hash .* but the TPTP declaration is tagged' \
     "$WORK_DIR/native_cert_v1_source_map_hash_mismatch_bad.err"; then
   echo "native certificate v1 source-map hash mismatch failure did not explain the stale hash" >&2
   exit 1
@@ -435,6 +435,28 @@ if ! rg -q 'source_hash "[0-9a-fA-F]{64}".*source_formula_status "closed_formula
 fi
 bin/megalodon -hf "$WORK_DIR/native_cert_v1_closed_source_map_valid.mg" \
   >"$WORK_DIR/native_cert_v1_closed_source_map_valid.check.log"
+
+bin/megalodon \
+  -vampirecertv1closed \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_cnf_source_map_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_cnf_source_map_valid.th0.p \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_cnf_source_map_valid.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_cnf_source_map_valid.log"
+
+if ! rg -q 'Vampire certificate v1 closed checked 5 steps' \
+    "$WORK_DIR/native_cert_v1_cnf_source_map_valid.log"; then
+  echo "closed native certificate v1 checker did not accept the CNF source-map fixture" >&2
+  exit 1
+fi
+
+if ! rg -q 'source_hash "[0-9a-fA-F]{64}".*source_formula_status "closed_formula_checked"' \
+    "$WORK_DIR/native_cert_v1_cnf_source_map_valid.mg"; then
+  echo "closed native certificate v1 emitter did not mark CNF source bindings as checked" >&2
+  exit 1
+fi
+
+bin/megalodon -hf "$WORK_DIR/native_cert_v1_cnf_source_map_valid.mg" \
+  >"$WORK_DIR/native_cert_v1_cnf_source_map_valid.check.log"
 
 if bin/megalodon \
     -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_local_fact_negated.sexp \
