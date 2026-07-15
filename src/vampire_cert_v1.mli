@@ -71,6 +71,7 @@ type checked_item =
 
 type ennf_pair = {
   ennf_pair_path : string;
+  ennf_pair_kind : string option;
   ennf_pair_source : Syntax.tm;
   ennf_pair_target : Syntax.tm;
 }

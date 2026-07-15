@@ -81,6 +81,7 @@ type matched_ennf_chain_item =
 
 type ennf_pair = {
   ennf_pair_path : string;
+  ennf_pair_kind : string option;
   ennf_pair_source : tm;
   ennf_pair_target : tm;
 }
@@ -469,6 +470,20 @@ let parse_ennf_pair = function
   | List [Atom "pair"; path; source; target] ->
       {
         ennf_pair_path = parse_path_field path;
+        ennf_pair_kind = None;
+        ennf_pair_source = parse_formula_field "source" source;
+        ennf_pair_target = parse_formula_field "target" target;
+      }
+  | List [Atom "pair"; path; kind; source; target] ->
+      let kind =
+        match kind with
+        | List [Atom "kind"; Str value] -> value
+        | List [Atom "kind"; Atom value] -> value
+        | _ -> error "expected ennf pair kind"
+      in
+      {
+        ennf_pair_path = parse_path_field path;
+        ennf_pair_kind = Some kind;
         ennf_pair_source = parse_formula_field "source" source;
         ennf_pair_target = parse_formula_field "target" target;
       }
@@ -1916,6 +1931,26 @@ let check_fool_atom_lift id source target path =
   if not (List.exists (fun expected -> same_fool_formula_lift expected target) candidates) then
     error (id ^ ": fool_atom_lift target does not match the explicit FOOL Boolean lift")
 
+let negated_body_tm = function
+  | Imp (body, false_tm) when is_vampire_false false_tm -> Some body
+  | _ -> None
+
+let expected_ennf_pair_kind source target =
+  match negated_body_tm source, target with
+  | Some (All _), Ap (TmH "vampire_exists_prop", _) -> "not_forall_to_exists"
+  | Some (Imp _), Ap (Ap (TmH "vampire_and", _), _) -> "not_imp_to_and"
+  | Some (Ap (Ap (TmH "vampire_and", _), _)), Ap (Ap (TmH "vampire_or", _), _) -> "not_and_to_or"
+  | Some (Ap (Ap (TmH "vampire_or", _), _)), Ap (Ap (TmH "vampire_and", _), _) -> "not_or_to_and"
+  | _ ->
+      match source, target with
+      | Imp _, Ap (Ap (TmH "vampire_or", _), _) -> "imp_to_or"
+      | All _, All _ -> "context_forall"
+      | Imp _, Imp _ -> "context_imp"
+      | Ap (Ap (TmH "vampire_or", _), _), Ap (Ap (TmH "vampire_or", _), _) -> "context_or"
+      | Ap (Ap (TmH "vampire_and", _), _), Ap (Ap (TmH "vampire_and", _), _) -> "context_and"
+      | Ap (TmH "vampire_exists_prop", _), Ap (TmH "vampire_exists_prop", _) -> "context_exists"
+      | _ -> "unknown"
+
 let check_ennf_formula checked id parent_id source pairs result =
   let parent_formula = lookup_formula checked parent_id in
   begin match source with
@@ -1929,6 +1964,15 @@ let check_ennf_formula checked id parent_id source pairs result =
     (fun pair ->
        if pair.ennf_pair_path = "" then
          error (id ^ ": ennf_formula pair path is empty");
+       begin match pair.ennf_pair_kind with
+       | Some kind ->
+           let expected_kind =
+             expected_ennf_pair_kind pair.ennf_pair_source pair.ennf_pair_target
+           in
+           if expected_kind <> "unknown" && kind <> expected_kind then
+             error (id ^ ": ennf_formula pair kind does not match source/target shape")
+       | None -> ()
+       end;
        let expected = ennf_pos pair.ennf_pair_source in
        if expected <> pair.ennf_pair_target then
          error
