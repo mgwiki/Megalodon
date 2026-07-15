@@ -346,6 +346,27 @@ if ! rg -q 'Vampire certificate v1 native core proof term checked 3 steps' \
   echo "native core proof-term checker did not validate the unit resolution seed" >&2
   exit 1
 fi
+if ! rg -q 'Vampire certificate v1 source origin core_seed_core\.cnf\.2\.mg line 1 char 1 \(generated_core_seed\)' \
+    "$WORK_DIR/native_cert_v1_core_pf_unit.log"; then
+  echo "native core proof-term checker did not require/report original-origin metadata" >&2
+  exit 1
+fi
+
+tail -n +2 tests/vampire_certificate/closed_cases/core.cnf.2.th0.p \
+  >"$WORK_DIR/core.cnf.2.no_origin.th0.p"
+if bin/megalodon \
+  -vampirecertv1corepfcheck \
+  -vampirecertv1 tests/vampire_certificate/closed_cases/core.cnf.2.native.sexp \
+  -vampirecertv1source "$WORK_DIR/core.cnf.2.no_origin.th0.p" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_core_pf_no_origin.log" 2>"$WORK_DIR/native_cert_v1_core_pf_no_origin.err"; then
+  echo "native core proof-term checker accepted a source file without Megalodon origin metadata" >&2
+  exit 1
+fi
+if ! rg -q 'requires Megalodon origin metadata' \
+    "$WORK_DIR/native_cert_v1_core_pf_no_origin.err"; then
+  echo "native core proof-term missing-origin rejection did not explain the source-origin requirement" >&2
+  exit 1
+fi
 
 bin/megalodon \
   -vampirecertv1corepfcheck \

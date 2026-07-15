@@ -50,6 +50,12 @@ rules fail explicitly instead of falling back to textual replay.  This is still
 small, but it creates the native elaboration entrypoint that the audit asked
 for and covers the committed synthetic clausal-core seed corpus.
 
+The native proof-term seed now also refuses source-less evidence:
+`-vampirecertv1corepfcheck` requires `-vampirecertv1source` and a
+`megalodon_origin` comment in that source file.  This is not full Tier 1
+original-context replay, but it makes the native path provenance-bound and
+prevents origin-free exported THF files from being counted as native progress.
+
 ## Accepted Audit Criticisms
 
 The following criticisms should be treated as controlling for the next

@@ -42,6 +42,11 @@ run_one() {
     return 0
   fi
 
+  if ! rg -q 'Vampire certificate v1 source origin ' "$case_dir/check.out"; then
+    printf '%s\tCORE_PF_MISSING_ORIGIN\n' "$base" > "$case_dir/result.tsv"
+    return 0
+  fi
+
   printf '%s\tCORE_PF_PASS\n' "$base" > "$case_dir/result.tsv"
 }
 

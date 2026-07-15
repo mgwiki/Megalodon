@@ -162,7 +162,10 @@ disjunction terms. It deliberately rejects unsupported core rules instead of
 falling back to textual replay. This is not yet the full nine-rule core
 elaborator; it is the initial checked entrypoint for replacing the broad
 `certificate -> string` path with a native
-`certificate -> Syntax.tm * Syntax.pf` path.
+`certificate -> Syntax.tm * Syntax.pf` path. This mode also requires
+`-vampirecertv1source` to contain `megalodon_origin` metadata, so native
+proof-term evidence is tied at least to a specific exported Megalodon source
+obligation instead of to a source-less THF artifact.
 
 To run the committed synthetic core seed through that native proof-term path,
 use:
@@ -172,7 +175,8 @@ tests/vampire_certificate/run_native_cert_v1_core_pf_audit.sh
 ```
 
 This gate runs `-vampirecertv1corepfcheck` over the tracked `core.cnf.*`
-closed fixtures and requires all selected cases to report `CORE_PF_PASS`.
+closed fixtures and requires all selected cases to report `CORE_PF_PASS`,
+including source-origin reporting for every checked proof term.
 
 For the audit-recommended restricted milestone, use:
 

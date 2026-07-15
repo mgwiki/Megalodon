@@ -7018,15 +7018,22 @@ let check_vampire_cert_v1_file fn =
       else Vampire_cert_v1.check_certificate cert
     in
     let source_map_for_emit = ref [] in
+    let source_origin_for_emit = ref None in
     begin match !vampirecertv1source with
     | None ->
+        if !vampirecertv1corepfcheck then
+          raise
+            (Vampire_cert_v1.Error
+               "native core proof-term checking requires -vampirecertv1source with Megalodon origin metadata");
         if (!vampirecertv1strict || !vampirecertv1closed)
            && Vampire_cert_v1.certificate_source_count cert > 0 then
           raise (Vampire_cert_v1.Error "strict certificate v1 requires -vampirecertv1source for source-backed inputs")
     | Some source_fn ->
-        let source_map = Vampire_cert_v1.parse_source_map (read_all source_fn) in
-        begin match Vampire_cert_v1.parse_source_origin (read_all source_fn) with
+        let source_content = read_all source_fn in
+        let source_map = Vampire_cert_v1.parse_source_map source_content in
+        begin match Vampire_cert_v1.parse_source_origin source_content with
         | Some origin ->
+            source_origin_for_emit := Some origin;
             let pos =
               match origin.Vampire_cert_v1.source_origin_line, origin.Vampire_cert_v1.source_origin_char with
               | Some line, Some chr -> Printf.sprintf " line %d char %d" line chr
@@ -7038,7 +7045,11 @@ let check_vampire_cert_v1_file fn =
               origin.Vampire_cert_v1.source_origin_file
               pos
               origin.Vampire_cert_v1.source_origin_kind
-        | None -> ()
+        | None ->
+            if !vampirecertv1corepfcheck then
+              raise
+                (Vampire_cert_v1.Error
+                   "native core proof-term checking requires Megalodon origin metadata in -vampirecertv1source")
         end;
         source_map_for_emit := source_map;
         let source_count =
@@ -7080,11 +7091,7 @@ let check_vampire_cert_v1_file fn =
         let content =
           Vampire_cert_v1.emit_simple_megalodon
             ~source_map:!source_map_for_emit
-            ?source_origin:
-              (begin match !vampirecertv1source with
-               | None -> None
-               | Some source_fn -> Vampire_cert_v1.parse_source_origin (read_all source_fn)
-               end)
+            ?source_origin:!source_origin_for_emit
             ~closed:!vampirecertv1closed
             cert
         in
