@@ -6966,11 +6966,11 @@ let simple_cnf_clause_projection_proof
             | None -> true)
         then binder
         else
-          begin match metadata_candidate () with
-          | Some binder -> binder
+          begin match first_unused_vampire_var_name_with_sort env used sort body with
+          | Some name -> megalodon_ident name
           | None ->
-              begin match first_unused_vampire_var_name_with_sort env used sort body with
-              | Some name -> megalodon_ident name
+              begin match metadata_candidate () with
+              | Some binder -> binder
               | None ->
                   begin match first_unused_vampire_var_name used body with
                   | Some name -> megalodon_ident name
@@ -6979,11 +6979,11 @@ let simple_cnf_clause_projection_proof
               end
           end
     | None ->
-        begin match metadata_candidate () with
-        | Some binder -> binder
+        begin match first_unused_vampire_var_name_with_sort env used sort body with
+        | Some name -> megalodon_ident name
         | None ->
-            begin match first_unused_vampire_var_name_with_sort env used sort body with
-            | Some name -> megalodon_ident name
+            begin match metadata_candidate () with
+            | Some binder -> binder
             | None ->
                 begin match first_unused_vampire_var_name used body with
                 | Some name -> megalodon_ident name
@@ -8863,10 +8863,15 @@ let simple_formula_orientation_proof
             choose_binder target_type_env used sort target_body
           in
           let source_raw, _ = source_binder in
-          let _, binder = target_binder in
+          let target_raw, _ = target_binder in
+          let binder = fresh "Xorient_forall_" in
           let source_body =
             if source_raw = binder then source_body
             else subst_tm [(source_raw, TmH binder)] source_body
+          in
+          let target_body =
+            if target_raw = binder then target_body
+            else subst_tm [(target_raw, TmH binder)] target_body
           in
           let env = (binder, sort) :: env in
           "(fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => "
@@ -9265,7 +9270,7 @@ let simple_skolem_formula_proof ?opened_witness
           | None ->
           match raw_source_var with
           | Some source_var
-              when not (List.mem (megalodon_ident source_var) (List.map fst env))
+              when not (List.mem (megalodon_ident source_var) bound)
                    &&
                    (match known_binder_sort env (megalodon_ident source_var) with
                     | Some known_sort -> known_sort = sort
@@ -9273,11 +9278,11 @@ let simple_skolem_formula_proof ?opened_witness
               megalodon_ident source_var
           | Some _ | None ->
               begin match
-                first_unused_vampire_var_name_with_sort env (List.map fst env) sort body
+                first_unused_vampire_var_name_with_sort env bound sort body
               with
               | Some name -> megalodon_ident name
               | None ->
-                  begin match first_unused_vampire_var_name (List.map fst env) body with
+                  begin match first_unused_vampire_var_name bound body with
                   | Some name -> megalodon_ident name
                   | None -> fallback_binder sort
                   end
@@ -11447,6 +11452,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   let used_names = ref (prop_names @ term_names @ local_definition_names) in
   let emitted_names = ref [] in
   let emitted_props = ref [] in
+  let raw_formula_names = ref [] in
   let emitted_var_sorts = ref [] in
   let checked = ref [] in
   let assumptions = ref [] in
@@ -11477,6 +11483,23 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   let add_emitted_prop_and_sorts id prop sorts =
     add_emitted_prop id prop;
     add_emitted_var_sorts id sorts
+  in
+  let add_raw_formula_name id prop name =
+    raw_formula_names := (id, prop, name) :: !raw_formula_names
+  in
+  let raw_formula_name_for_prop id prop =
+    !raw_formula_names
+    |> List.find_map
+         (fun (raw_id, raw_prop, raw_name) ->
+            if raw_id = id && simple_rendered_prop_equiv raw_prop prop then
+              Some raw_name
+            else None)
+  in
+  let raw_formula_name_for_id id =
+    !raw_formula_names
+    |> List.find_map
+         (fun (raw_id, _, raw_name) ->
+            if raw_id = id then Some raw_name else None)
   in
   let input_name id source =
     simple_fresh_name used_names ("src_" ^ simple_source_label source_map source ^ "__" ^ id)
@@ -12112,8 +12135,12 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           end
       | SkolemFormula (id, parent_id, subst, formula) ->
           let name = derived_name id in
-          let proof_formula = left_assoc_vampire_or_formula formula in
+          let proof_formula = formula in
           let target_prop, target_sorts = formula_tm_prop_and_sorts id formula in
+          let skolem_sorts =
+            metadata_step_variable_sort_pairs cert id @ target_sorts
+            |> simple_unique_variable_sorts
+          in
           let normalize_skolem_parent_formula parent_id formula =
             if
               List.exists
@@ -12158,7 +12185,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                       in
                       let type_env =
                         simple_type_env_with_variables
-                          (target_sorts |> simple_unique_variable_sorts)
+                          skolem_sorts
                           symbol_type_env
                       in
                       let proof =
@@ -12167,10 +12194,25 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                             type_env parent_id parent_formula
                           |> normalize_skolem_parent_formula parent_id
                         in
+                        let proof_parent_prop =
+                          simple_formula_prop_text_with_used
+                            [] type_env proof_parent_formula
+                        in
+                        let names =
+                          match raw_formula_name_for_prop parent_id proof_parent_prop with
+                          | Some raw_name -> (parent_id, raw_name) :: !emitted_names
+                          | None ->
+                              if not (simple_rendered_prop_equiv proof_parent_prop (emitted_parent_prop parent_id)) then
+                                match raw_formula_name_for_id parent_id with
+                                | Some raw_name -> (parent_id, raw_name) :: !emitted_names
+                                | None -> !emitted_names
+                              else
+                                !emitted_names
+                        in
                         simple_skolem_formula_proof
                           ~opened_witness:witness_name
                           type_env id parent_id subst proof_parent_formula proof_formula
-                          [] target_sorts !emitted_names
+                          [] target_sorts names
                       in
                       Some (skolem_name, source_sort, witness_name, witness_prop, proof)
                   | _ -> None
@@ -12186,7 +12228,9 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                 let parent_sorts = [] in
                 let type_env =
                   simple_type_env_with_variables
-                    (parent_sorts @ target_sorts |> simple_unique_variable_sorts)
+                    (metadata_step_variable_sort_pairs cert parent_id
+                     @ parent_sorts @ skolem_sorts
+                     |> simple_unique_variable_sorts)
                     symbol_type_env
                 in
                 let proof_parent_formula =
@@ -12194,16 +12238,67 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
                     type_env parent_id parent_formula
                   |> normalize_skolem_parent_formula parent_id
                 in
+                let proof_parent_prop =
+                  simple_formula_prop_text_with_used
+                    [] type_env proof_parent_formula
+                in
+                let names =
+                  match raw_formula_name_for_prop parent_id proof_parent_prop with
+                  | Some raw_name -> (parent_id, raw_name) :: !emitted_names
+                  | None ->
+                      if not (simple_rendered_prop_equiv proof_parent_prop (emitted_parent_prop parent_id)) then
+                        match raw_formula_name_for_id parent_id with
+                        | Some raw_name -> (parent_id, raw_name) :: !emitted_names
+                        | None -> !emitted_names
+                      else
+                        !emitted_names
+                in
                 Some
                   (simple_skolem_formula_proof
                      type_env id parent_id subst proof_parent_formula proof_formula
-                     parent_sorts target_sorts !emitted_names)
+                     parent_sorts target_sorts names)
               with Error _ -> None
           with
           | Some proof ->
-              add_emitted id name;
-              add_emitted_prop_and_sorts id target_prop target_sorts;
-              claims := !claims @ [(name, target_prop, "exact " ^ proof ^ ".")]
+              let proof_type_env =
+                simple_type_env_with_variables
+                  skolem_sorts
+                  symbol_type_env
+              in
+              let proof_prop =
+                simple_formula_prop_text_with_used
+                  [] proof_type_env proof_formula
+              in
+              if simple_rendered_prop_equiv proof_prop target_prop then begin
+                add_emitted id name;
+                add_emitted_prop_and_sorts id target_prop target_sorts;
+                claims := !claims @ [(name, target_prop, "exact " ^ proof ^ ".")]
+              end else begin
+                let raw_name =
+                  simple_fresh_name used_names ("skolem_formula__" ^ id ^ "_raw")
+                in
+                let target_formula =
+                  let left_formula = left_assoc_vampire_or_formula formula in
+                  let left_prop =
+                    simple_formula_prop_text_with_used
+                      [] proof_type_env left_formula
+                  in
+                  if simple_rendered_prop_equiv left_prop target_prop then left_formula
+                  else formula
+                in
+                let orientation_proof =
+                  simple_formula_orientation_proof
+                    ~source_type_env:proof_type_env
+                    ~target_type_env:proof_type_env
+                    proof_type_env proof_formula target_formula raw_name
+                in
+                add_raw_formula_name id proof_prop raw_name;
+                add_emitted id name;
+                add_emitted_prop_and_sorts id target_prop target_sorts;
+                claims := !claims @
+                  [(raw_name, proof_prop, "exact " ^ proof ^ ".");
+                   (name, target_prop, "exact " ^ orientation_proof ^ ".")]
+              end
           | None ->
               begin match
                 try opened_higher_order_skolem ()
@@ -12445,6 +12540,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
 	                    simple_fresh_name used_names
 	                      ("predicate_definition_fold__" ^ id ^ "_raw")
 	                  in
+	                  add_raw_formula_name id replay_target_prop raw_name;
 	                  let proof_target_formula = left_assoc_vampire_or_formula formula in
 	                  let orientation_proof =
 	                    simple_formula_orientation_proof
