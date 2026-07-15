@@ -144,8 +144,8 @@ tests/vampire_certificate/run_native_cert_v1_core_closed_audit.sh
 
 This is intentionally stricter than the broad closed corpus. It first filters
 tracked closed fixtures to certificates using only the small core clause-proof
-constructors (`input`, formula inputs/copies, substitution/condensation,
-resolution, factoring, equality resolution/symmetry, paramodulation, and
+constructors (`input`, formula inputs/copies, substitution,
+resolution, factoring, equality resolution/factoring, paramodulation, and
 contradiction). It excludes preprocessing-heavy rules such as FOOL, ENNF, CNF,
 Skolemization, AVATAR, predicate definitions, theory FOOL clauses, and
 inequality splitting. By default it requires at least ten whitelist-only cases
@@ -157,6 +157,20 @@ The audit run also writes `rule_counts.txt`, `excluded_rule_counts.txt`, and
 `cases_by_rule/*.list` under `/project/tmp/latest_native_cert_v1_core_closed_audit`
 so the next reconstruction work can target the largest repeated blocking
 classes instead of isolated examples.
+
+For the next layer above the clausal core, use:
+
+```sh
+tests/vampire_certificate/run_native_cert_v1_preprocess_closed_audit.sh
+```
+
+This gate permits the certified THF preprocessing fragment: formula
+inputs/copies, rectification, FOOL elimination, ENNF/CNF projection, and the
+same core clause rules. It still excludes Skolemization, AVATAR, introduced
+definitions, FOOL theory facts, inequality splitting, and other broad macro
+steps. A selected case must contain at least one preprocessing rule, so the
+clausal core corpus alone cannot satisfy it. The summary status for selected
+and checked cases is `PREPROCESS_CLOSED_PASS`.
 
 To export a Megalodon development once and then check the resulting source-mapped
 TH0 corpus in parallel, use:

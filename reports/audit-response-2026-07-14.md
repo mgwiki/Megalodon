@@ -1853,3 +1853,53 @@ when Vampire starts from already-clausal input.  The next step is to replace or
 extend these clausal seeds toward THF-exported Megalodon obligations by adding a
 certified preprocessing layer rather than folding preprocessing into the core
 count.
+
+## July 15 Increment: Separate THF Preprocessing Gate
+
+The next adjustment adds an intermediate audit gate between the clausal core and
+the broad closed corpus:
+
+```text
+tests/vampire_certificate/run_native_cert_v1_preprocess_closed_audit.sh
+```
+
+This gate permits the certified formula-preprocessing layer:
+
+```text
+formula_input
+formula_term_input
+formula_term_copy
+formula_copy
+rectify_formula
+fool_formula
+fool_bool
+ennf_formula
+cnf_formula_clause
+cnf_literal
+```
+
+plus the restricted core clause rules.  It still excludes Skolemization, AVATAR,
+introduced definitions, FOOL theory facts, inequality splitting, and other broad
+macro steps.  It also requires at least one preprocessing rule in each selected
+case, so the ten clausal `core.cnf.*` fixtures cannot satisfy this gate by
+themselves.
+
+Validation:
+
+```text
+TMPDIR=/project/tmp JOBS=10 MIN_PREPROCESS=10 RUN_PREPROCESS_CASES=1 \
+  tests/vampire_certificate/run_native_cert_v1_preprocess_closed_audit.sh
+
+PREPROCESS_ELIGIBLE 15
+EXCLUDED_OR_CORE_ONLY 142
+PREPROCESS_CLOSED_PASS 15
+```
+
+This is still not the full large-development target, but it is a better
+staging line than a single broad `CLOSED_PASS` count.  The branch now has three
+separate committed gates:
+
+- `CORE_CLOSED_PASS 10` for source-linked clausal core proofs;
+- `PREPROCESS_CLOSED_PASS 15` for source-linked THF preprocessing plus core;
+- broad `CLOSED_PASS 157` for all committed closed cases, including cases with
+  later macro layers.

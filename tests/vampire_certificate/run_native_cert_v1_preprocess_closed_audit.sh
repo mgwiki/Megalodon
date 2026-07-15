@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"}
+TMPDIR=${TMPDIR:-/project/tmp}
+export TMPDIR
+
+CASES_DIR=${CASES_DIR:-"$ROOT/tests/vampire_certificate/closed_cases"}
+WORK_DIR=${WORK_DIR:-"$(mktemp -d "$TMPDIR/native_cert_v1_preprocess_closed_audit.XXXXXX")"}
+MIN_PREPROCESS=${MIN_PREPROCESS:-10}
+RUN_PREPROCESS_CASES=${RUN_PREPROCESS_CASES:-1}
+JOBS=${JOBS:-7}
+
+mkdir -p "$WORK_DIR"
+ln -sfn "$WORK_DIR" "$TMPDIR/latest_native_cert_v1_preprocess_closed_audit"
+
+# This gate tracks the certified THF preprocessing layer above the clausal core.
+# It permits formula-input/copy, rectification, FOOL elimination, ENNF and CNF
+# projection plus the core clause rules.  It deliberately excludes Skolemization,
+# AVATAR, introduced definitions, theory facts, inequality splitting and other
+# broader macro steps.  A selected case must contain at least one preprocessing
+# rule, so the clausal core seed corpus cannot satisfy this gate by itself.
+allowed_rules=$(
+  cat <<'RULES'
+input
+formula_input
+formula_term_input
+formula_term_copy
+formula_copy
+rectify_formula
+fool_formula
+fool_bool
+ennf_formula
+cnf_formula_clause
+cnf_literal
+substitute
+resolve
+subsumption_resolution
+factor
+equality_resolution
+equality_factoring
+paramodulate
+contradiction
+RULES
+)
+
+preprocess_rules=$(
+  cat <<'RULES'
+rectify_formula
+fool_formula
+fool_bool
+ennf_formula
+cnf_formula_clause
+cnf_literal
+RULES
+)
+
+metadata_rules='^(problem|step_proposition|step_variable_sorts|step_extra|symbol_declaration|source_declaration)$'
+
+allowed_file="$WORK_DIR/allowed_rules.txt"
+preprocess_file="$WORK_DIR/preprocess_rules.txt"
+printf '%s\n' "$allowed_rules" | sort > "$allowed_file"
+printf '%s\n' "$preprocess_rules" | sort > "$preprocess_file"
+: > "$WORK_DIR/eligible.tsv"
+: > "$WORK_DIR/excluded.tsv"
+: > "$WORK_DIR/preprocess_closed_cases.list"
+all_rules="$WORK_DIR/all_case_rules.tsv"
+: > "$all_rules"
+mkdir -p "$WORK_DIR/cases_by_rule"
+
+find "$CASES_DIR" -maxdepth 1 -name '*.native.sexp' -type f | sort |
+while IFS= read -r native; do
+  base=$(basename "$native" .native.sexp)
+  rules_file="$WORK_DIR/$base.rules"
+  bad_file="$WORK_DIR/$base.bad_rules"
+  pre_file="$WORK_DIR/$base.preprocess_rules"
+  awk '
+    match($0, /^  \(([a-z_]+)/, m) {
+      if (m[1] !~ metadata) print m[1]
+    }
+  ' metadata="$metadata_rules" "$native" | sort -u > "$rules_file"
+  while IFS= read -r rule || [[ -n "$rule" ]]; do
+    [[ -z "$rule" ]] && continue
+    printf '%s\t%s\n' "$base" "$rule" >> "$all_rules"
+    printf '%s\n' "$base" >> "$WORK_DIR/cases_by_rule/$rule.list"
+  done < "$rules_file"
+  comm -23 "$rules_file" "$allowed_file" > "$bad_file"
+  comm -12 "$rules_file" "$preprocess_file" > "$pre_file"
+  if [[ ! -s "$bad_file" && -s "$pre_file" ]]; then
+    printf '%s\tPREPROCESS_ELIGIBLE\t%s\n' "$base" "$(paste -sd, "$rules_file")" \
+      >> "$WORK_DIR/eligible.tsv"
+    printf '%s\n' "$base" >> "$WORK_DIR/preprocess_closed_cases.list"
+  elif [[ -s "$bad_file" ]]; then
+    printf '%s\tEXCLUDED\t%s\n' "$base" "$(paste -sd, "$bad_file")" \
+      >> "$WORK_DIR/excluded.tsv"
+  else
+    printf '%s\tCORE_ONLY\t%s\n' "$base" "$(paste -sd, "$rules_file")" \
+      >> "$WORK_DIR/excluded.tsv"
+  fi
+done
+
+eligible_count=$(wc -l < "$WORK_DIR/eligible.tsv" | tr -d ' ')
+excluded_count=$(wc -l < "$WORK_DIR/excluded.tsv" | tr -d ' ')
+if [[ -s "$all_rules" ]]; then
+  cut -f2 "$all_rules" | sort | uniq -c | sort -nr > "$WORK_DIR/rule_counts.txt"
+  awk -F '\t' '$2 == "EXCLUDED" {split($3, rules, ","); for (i in rules) if (rules[i] != "") print rules[i]}' \
+    "$WORK_DIR/excluded.tsv" | sort | uniq -c | sort -nr > "$WORK_DIR/excluded_rule_counts.txt"
+  find "$WORK_DIR/cases_by_rule" -type f -name '*.list' -print0 \
+    | xargs -0 -r -n1 sh -c 'sort -u "$1" -o "$1"' sh
+else
+  : > "$WORK_DIR/rule_counts.txt"
+  : > "$WORK_DIR/excluded_rule_counts.txt"
+fi
+
+{
+  printf 'PREPROCESS_ELIGIBLE %s\n' "$eligible_count"
+  printf 'EXCLUDED_OR_CORE_ONLY %s\n' "$excluded_count"
+  printf 'MIN_PREPROCESS %s\n' "$MIN_PREPROCESS"
+} | tee "$WORK_DIR/counts.txt"
+
+echo "native certificate v1 preprocess closed audit artifacts: $WORK_DIR"
+echo "native certificate v1 preprocess closed audit latest link: $TMPDIR/latest_native_cert_v1_preprocess_closed_audit"
+echo "native certificate v1 preprocess closed audit rule counts: $WORK_DIR/rule_counts.txt"
+echo "native certificate v1 preprocess closed audit excluded rule counts: $WORK_DIR/excluded_rule_counts.txt"
+
+if (( eligible_count < MIN_PREPROCESS )); then
+  echo "preprocess closed audit has fewer than $MIN_PREPROCESS preprocessing cases" >&2
+  echo "top excluded native certificate rules:" >&2
+  sed -n '1,20p' "$WORK_DIR/excluded_rule_counts.txt" >&2
+  sed -n '1,40p' "$WORK_DIR/excluded.tsv" >&2
+  exit 1
+fi
+
+if [[ "$RUN_PREPROCESS_CASES" == "1" ]]; then
+  CASE_LIST="$WORK_DIR/preprocess_closed_cases.list" \
+  WORK_DIR="$WORK_DIR/closed_check" \
+  JOBS="$JOBS" \
+    "$ROOT/tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh"
+  sed 's/\tCLOSED_PASS$/\tPREPROCESS_CLOSED_PASS/' \
+    "$WORK_DIR/closed_check/summary.tsv" > "$WORK_DIR/preprocess_summary.tsv"
+  awk -F '\t' '{count[$2]++} END {for (status in count) print status, count[status]}' \
+    "$WORK_DIR/preprocess_summary.tsv" \
+    | sort > "$WORK_DIR/preprocess_counts.txt"
+  cat "$WORK_DIR/preprocess_counts.txt"
+fi
