@@ -151,6 +151,9 @@ For formula rectification, it accepts formula-result kernel records and requires
 the source formula, result formula, proof parent count, and Vampire's explicit
 renaming source/target/substitution metadata when a nonempty renaming is
 reported.
+For formula copies, it requires source/result formulas and the
+`copy_kind=formula_term_identity` marker that Vampire emits only after comparing
+the formula-term S-expressions.
 The point of this gate is to keep new work on the Prover9/Ivy-style certificate
 path: Vampire must emit primitive replay data, rather than leaving Megalodon to
 recover it by broad OCaml-side reconstruction.

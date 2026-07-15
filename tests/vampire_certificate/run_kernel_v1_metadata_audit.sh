@@ -98,7 +98,8 @@ awk '
   /rule=equality_resolution/ || /rule=superposition/ ||
   /rule=equality_factoring/ || /rule=rewrite/ ||
   /rule=unit_resulting_resolution/ || /rule=cnf_clause/ ||
-  /rule=skolemize/ || /rule=rectify_formula/ {
+  /rule=skolemize/ || /rule=rectify_formula/ ||
+  /rule=formula_copy/ {
     next
   }
   { print }
@@ -183,6 +184,28 @@ if [[ -s "$WORK_DIR/rectify_formula.tsv" ]]; then
   if [[ -s "$WORK_DIR/missing_rectify_formula_fields.tsv" ]]; then
     echo "kernel_v1 metadata audit found rectification records missing transformation fields" >&2
     sed -n '1,40p' "$WORK_DIR/missing_rectify_formula_fields.tsv" >&2
+    exit 1
+  fi
+fi
+
+grep -F 'rule=formula_copy' "$WORK_DIR/kernel_v1.tsv" \
+  > "$WORK_DIR/formula_copy.tsv" || true
+
+if [[ -s "$WORK_DIR/formula_copy.tsv" ]]; then
+  : > "$WORK_DIR/missing_formula_copy_fields.tsv"
+  for pattern in \
+    'source_unit=' \
+    'proof_parent_count=1' \
+    'source_formula=' \
+    'result_formula=' \
+    'copy_kind=formula_term_identity'; do
+    awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
+      "$WORK_DIR/formula_copy.tsv" >> "$WORK_DIR/missing_formula_copy_fields.tsv"
+  done
+
+  if [[ -s "$WORK_DIR/missing_formula_copy_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found formula-copy records missing identity fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_formula_copy_fields.tsv" >&2
     exit 1
   fi
 fi
