@@ -49,7 +49,6 @@ required_patterns=(
   'schema=prover9-small-kernel-v1'
   'rule='
   'conclusion_unit='
-  'conclusion_clause='
   'parent_count='
 )
 
@@ -62,6 +61,19 @@ done
 if [[ -s "$WORK_DIR/missing_required.tsv" ]]; then
   echo "kernel_v1 metadata audit found records missing required fields" >&2
   sed -n '1,40p' "$WORK_DIR/missing_required.tsv" >&2
+  exit 1
+fi
+
+awk '
+  index($0, "conclusion_clause=") == 0 &&
+  index($0, "result_clause=") == 0 &&
+  index($0, "result_formula=") == 0 {
+    print
+  }
+' "$WORK_DIR/kernel_v1.tsv" > "$WORK_DIR/missing_result.tsv"
+if [[ -s "$WORK_DIR/missing_result.tsv" ]]; then
+  echo "kernel_v1 metadata audit found records without a clause or formula result" >&2
+  sed -n '1,40p' "$WORK_DIR/missing_result.tsv" >&2
   exit 1
 fi
 
@@ -85,7 +97,8 @@ awk '
   /rule=resolution/ || /rule=subsumption_resolution/ || /rule=factoring/ ||
   /rule=equality_resolution/ || /rule=superposition/ ||
   /rule=equality_factoring/ || /rule=rewrite/ ||
-  /rule=unit_resulting_resolution/ || /rule=cnf_clause/ {
+  /rule=unit_resulting_resolution/ || /rule=cnf_clause/ ||
+  /rule=skolemize/ {
     next
   }
   { print }
@@ -118,6 +131,29 @@ if [[ -s "$WORK_DIR/unit_resulting_resolution.tsv" ]]; then
   if [[ -s "$WORK_DIR/missing_urr_fields.tsv" ]]; then
     echo "kernel_v1 metadata audit found unit-resulting-resolution records missing trace fields" >&2
     sed -n '1,40p' "$WORK_DIR/missing_urr_fields.tsv" >&2
+    exit 1
+  fi
+fi
+
+grep -F 'rule=skolemize' "$WORK_DIR/kernel_v1.tsv" \
+  > "$WORK_DIR/skolemize.tsv" || true
+
+if [[ -s "$WORK_DIR/skolemize.tsv" ]]; then
+  : > "$WORK_DIR/missing_skolemize_fields.tsv"
+  for pattern in \
+    'source_unit=' \
+    'proof_parent_count=' \
+    'source_formula=' \
+    'result_formula=' \
+    'introduced_count=' \
+    'introduced_0_symbol='; do
+    awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
+      "$WORK_DIR/skolemize.tsv" >> "$WORK_DIR/missing_skolemize_fields.tsv"
+  done
+
+  if [[ -s "$WORK_DIR/missing_skolemize_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found skolemization records missing transformation fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_skolemize_fields.tsv" >&2
     exit 1
   fi
 fi

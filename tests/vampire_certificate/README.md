@@ -144,6 +144,9 @@ and remaining clause state after each pivot.
 For CNF clause extraction, it requires the source unit/formula or clause,
 resulting clause, and clause index/count metadata from Vampire's CNF
 transformation extra.
+For skolemization, it accepts formula-result kernel records and requires the
+source formula, result formula, proof parent count, introduced symbol, replaced
+variable when available, and declaration metadata that Vampire already records.
 The point of this gate is to keep new work on the Prover9/Ivy-style certificate
 path: Vampire must emit primitive replay data, rather than leaving Megalodon to
 recover it by broad OCaml-side reconstruction.
