@@ -140,6 +140,9 @@ their substituted forms, and requires rewrite-position records to carry the
 explicit `from`, `to`, substituted target/equality, and rewritten target fields.
 For every clausal kernel record with a `conclusion_clause`, it requires
 Vampire's explicit `result_literal_count` and `result_literal_i` conclusion map.
+For every reported parent, it also requires `parent_i_literal_count` and
+`parent_i_literal_j` fields so replay does not have to re-parse the parent
+clause string to recover literal positions.
 For unit-resulting resolution, it also requires Vampire's trace main parent,
 unit parent, selected/substituted selected literal, substituted unit literal,
 and remaining clause state after each pivot.
