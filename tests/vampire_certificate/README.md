@@ -148,6 +148,8 @@ the referenced unit has already appeared earlier in that certificate; only
 For every clausal kernel record with a `conclusion_clause`, it requires
 Vampire's explicit `result_clause`, `result_literal_count`, and
 `result_literal_i` conclusion map.
+For every formula-result kernel record with `result_formula`, it requires
+Vampire's explicit `conclusion_formula`.
 For every reported parent, it also requires `parent_i_clause`,
 `parent_i_literal_count`, and `parent_i_literal_j` fields so replay does not
 have to re-parse incomplete parent metadata to recover clause and literal

@@ -241,6 +241,20 @@ if [[ -s "$WORK_DIR/clausal_kernel.tsv" ]]; then
   fi
 fi
 
+awk 'index($0, "result_formula=") != 0 && index($0, "rule=avatar_split") == 0 {print}' "$WORK_DIR/kernel_v1.tsv" \
+  > "$WORK_DIR/formula_kernel.tsv"
+
+if [[ -s "$WORK_DIR/formula_kernel.tsv" ]]; then
+  awk 'index($0, "conclusion_formula=") == 0 {print "conclusion_formula=\t" $0}' \
+    "$WORK_DIR/formula_kernel.tsv" > "$WORK_DIR/missing_formula_kernel_fields.tsv"
+
+  if [[ -s "$WORK_DIR/missing_formula_kernel_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found formula primitive records missing conclusion formula fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_formula_kernel_fields.tsv" >&2
+    exit 1
+  fi
+fi
+
 awk '
   {
     if (match($0, /"parent_count=([0-9]+)/, parent_count_match)) {
