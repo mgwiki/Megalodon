@@ -202,7 +202,8 @@ For AVATAR split clauses, it requires the source clause, result clause or
 formula, SAT literals, previous split count, component-parent count,
 zero-indexed `component_parent_ref_i` unit/split/clause fields, literal-class
 count, and parent variable binding count that Vampire computes during split
-reconstruction.
+reconstruction. The literal-class and parent-variable-binding counts must
+enumerate complete indexed maps.
 For AVATAR refutations, it requires the empty result clause, SAT input clauses,
 input origin units, and SAT proof steps emitted by Vampire.
 For truth conflicts, it requires the selected true/false conflict literal,

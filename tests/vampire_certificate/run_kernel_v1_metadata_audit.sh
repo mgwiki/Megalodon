@@ -701,6 +701,43 @@ if [[ -s "$WORK_DIR/avatar_split.tsv" ]]; then
   ' "$WORK_DIR/avatar_split.tsv" >> "$WORK_DIR/missing_avatar_split_fields.tsv"
 
   awk '
+    {
+      if (match($0, /literal_class_count=([0-9]+)/, class_count_match)) {
+        class_count = class_count_match[1] + 0
+        for (class_index = 0; class_index < class_count; ++class_index) {
+          class_prefix = "literal_class_" class_index
+          literal_count_field = class_prefix "_literal_count="
+          if (!match($0, class_prefix "_literal_count=([0-9]+)", literal_count_match)) {
+            print literal_count_field "\t" $0
+            continue
+          }
+          literal_count = literal_count_match[1] + 0
+          for (literal_index = 0; literal_index < literal_count; ++literal_index) {
+            literal_field = class_prefix "_literal_" literal_index "="
+            if (index($0, literal_field) == 0) {
+              print literal_field "\t" $0
+            }
+          }
+        }
+      }
+      if (match($0, /parent_var_binding_count=([0-9]+)/, binding_count_match)) {
+        binding_count = binding_count_match[1] + 0
+        for (binding_index = 0; binding_index < binding_count; ++binding_index) {
+          binding_prefix = "parent_var_binding_" binding_index
+          parent_var_field = binding_prefix "_parent_var="
+          if (index($0, parent_var_field) == 0) {
+            print parent_var_field "\t" $0
+          }
+          if (index($0, binding_prefix "_component_var=") == 0 &&
+              index($0, binding_prefix "_split_var=") == 0) {
+            print binding_prefix "_component_var|split_var=\t" $0
+          }
+        }
+      }
+    }
+  ' "$WORK_DIR/avatar_split.tsv" >> "$WORK_DIR/missing_avatar_split_fields.tsv"
+
+  awk '
     index($0, "result_clause=") == 0 &&
     index($0, "result_formula=") == 0 {
       print "result_clause|result_formula\t" $0
