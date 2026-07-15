@@ -230,10 +230,11 @@ missing or later proof steps, while allowing `step_proposition`,
 intentionally separate from the `kernel_v1` metadata audit because these are
 first-class certificate steps, not `step_extra` annotations.
 
-`run_native_live_parallel.sh` runs this primitive audit by default after a
-successful live run. Set `AUDIT_NATIVE_PRIMITIVES=0` only for deliberately tiny
-focused experiments, or lower individual minimums such as `MIN_FACTOR=0` when a
-selected corpus is not expected to exercise a rule.
+`run_native_live_parallel.sh` runs this primitive audit and the `kernel_v1`
+metadata audit by default after a successful live run. Set
+`AUDIT_NATIVE_PRIMITIVES=0` or `AUDIT_KERNEL_V1_METADATA=0` only for
+deliberately tiny focused experiments, or lower individual minimums such as
+`MIN_FACTOR=0` when a selected corpus is not expected to exercise a rule.
 
 Set `CLOSED_CERT_V1=1` on the cached emitter harness to request
 `-vampirecertv1closed`. In that mode a case passes only when emission introduces

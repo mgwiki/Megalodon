@@ -37,6 +37,7 @@ CHECK_SOURCE_MAP=${CHECK_SOURCE_MAP:-0}
 REQUIRE_SOURCE_ORIGIN=${REQUIRE_SOURCE_ORIGIN:-0}
 STRICT_CERT_V1=${STRICT_CERT_V1:-0}
 AUDIT_NATIVE_PRIMITIVES=${AUDIT_NATIVE_PRIMITIVES:-1}
+AUDIT_KERNEL_V1_METADATA=${AUDIT_KERNEL_V1_METADATA:-1}
 VAMPIRE_PROOF_ARGS=${VAMPIRE_PROOF_ARGS:-"--proof_extra lean --skolemization syntactic --shuffle_input off"}
 VAMPIRE_EXTRA_ARGS=${VAMPIRE_EXTRA_ARGS:-}
 WORK_DIR=${WORK_DIR:-"$TMPDIR/megalodon_native_live_${LIMIT}"}
@@ -219,5 +220,13 @@ if [[ "$AUDIT_NATIVE_PRIMITIVES" == "1" ]]; then
   (
     unset WORK_DIR
     "$ROOT/tests/vampire_certificate/run_native_primitive_audit.sh" "$live_work_dir"
+  )
+fi
+
+if [[ "$AUDIT_KERNEL_V1_METADATA" == "1" ]]; then
+  live_work_dir=$WORK_DIR
+  (
+    unset WORK_DIR
+    "$ROOT/tests/vampire_certificate/run_kernel_v1_metadata_audit.sh" "$live_work_dir"
   )
 fi
