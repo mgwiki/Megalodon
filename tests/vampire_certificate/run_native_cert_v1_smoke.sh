@@ -873,6 +873,34 @@ if ! rg -q 'Vampire certificate v1 strict checked 6 steps' \
 fi
 
 bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_factoring_kernel_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_factoring_kernel_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_factoring_kernel_valid.log"
+
+if ! rg -q 'Vampire certificate v1 strict checked 5 steps' \
+    "$WORK_DIR/native_cert_v1_factoring_kernel_valid.log"; then
+  echo "strict native certificate v1 checker did not accept factoring kernel metadata" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_factoring_kernel_missing_other_bad.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_factoring_kernel_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_factoring_kernel_missing_other_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_factoring_kernel_missing_other_bad.err"; then
+  echo "strict native certificate v1 checker accepted factoring metadata without an other literal" >&2
+  exit 1
+fi
+
+if ! rg -q 'kernel_v1 metadata requires other' \
+    "$WORK_DIR/native_cert_v1_factoring_kernel_missing_other_bad.err"; then
+  echo "strict native certificate v1 factoring failure did not explain the missing other metadata" >&2
+  exit 1
+fi
+
+bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_equality_resolution_kernel_valid.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_equality_resolution_kernel_valid.log"
 
