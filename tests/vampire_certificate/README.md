@@ -140,6 +140,9 @@ their substituted forms, and requires rewrite-position records to carry the
 explicit `from`, `to`, substituted target/equality, and rewritten target fields.
 It rejects any `..._unit=uN` metadata reference that does not point to a unit
 id present in the same native certificate.
+It also rejects premise-like unit references in `kernel_v1` metadata unless
+the referenced unit has already appeared earlier in that certificate; only
+`conclusion_unit` may name the unit produced by the current kernel record.
 For every clausal kernel record with a `conclusion_clause`, it requires
 Vampire's explicit `result_literal_count` and `result_literal_i` conclusion map.
 For every reported parent, it also requires `parent_i_literal_count` and

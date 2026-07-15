@@ -94,6 +94,41 @@ if [[ -s "$WORK_DIR/missing_unit_references.tsv" ]]; then
   exit 1
 fi
 
+: > "$WORK_DIR/future_unit_references.tsv"
+while IFS= read -r native_file; do
+  awk -v source="$native_file" '
+    function remember_line_id() {
+      if (match($0, /^  \([[:alnum:]_]+ "([^"]+)"/, step)) {
+        seen[step[1]] = FNR
+      }
+    }
+
+    index($0, "\"kernel_v1\"") != 0 {
+      rest = $0
+      while (match(rest, /[[:alnum:]_]*unit[[:alnum:]_]*=u[0-9][[:alnum:]_]*/)) {
+        token = substr(rest, RSTART, RLENGTH)
+        split(token, parts, "=")
+        field = parts[1]
+        ref = parts[2]
+        if (field != "conclusion_unit" && !(ref in seen)) {
+          print source ":" FNR "\t" field "\t" ref "\t" $0
+        }
+        rest = substr(rest, RSTART + RLENGTH)
+      }
+    }
+
+    {
+      remember_line_id()
+    }
+  ' "$native_file" >> "$WORK_DIR/future_unit_references.tsv"
+done < "$WORK_DIR/native_files.txt"
+
+if [[ -s "$WORK_DIR/future_unit_references.tsv" ]]; then
+  echo "kernel_v1 metadata audit found premise unit references that are not earlier certificate units" >&2
+  sed -n '1,40p' "$WORK_DIR/future_unit_references.tsv" >&2
+  exit 1
+fi
+
 awk '
   index($0, "conclusion_clause=") == 0 &&
   index($0, "result_clause=") == 0 &&
