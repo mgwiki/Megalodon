@@ -72,6 +72,13 @@ encoded with Megalodon's real polymorphic equality.  This intentionally does not
 prove clauses headed by the old untyped `TMH "="` placeholder; those certificates
 must be fixed at the Vampire/export level to carry typed Megalodon equality.
 
+The native core also now has a first paramodulation proof-term case: unit
+positive equality into a unit positive target, using the explicit
+position/from/to fields emitted by the certificate and Megalodon's Leibniz
+equality as the transport principle.  Larger paramodulation clauses and negative
+targets still fail closed until they are decomposed into similarly explicit
+primitive data.
+
 ## Accepted Audit Criticisms
 
 The following criticisms should be treated as controlling for the next

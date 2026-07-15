@@ -998,6 +998,11 @@ let equality_sides = function
   | Ap (Ap (TpAp (TmH h, _), left), right) when h = megalodon_eq_poly_hash -> Some (left, right)
   | _ -> None
 
+let megalodon_eq_poly_sides = function
+  | Ap (Ap (TpAp (TmH h, tp), left), right) when h = megalodon_eq_poly_hash ->
+      Some (tp, left, right)
+  | _ -> None
+
 let equality_to_true atom =
   Ap (Ap (TmH "=", atom), TmH "f__true")
 
@@ -3553,6 +3558,55 @@ let native_core_equality_resolution id parent_clause parent_proof literal_index 
       error
         (id ^ ": native core proof-term equality-resolution currently supports only unit or binary parents")
 
+let native_core_paramodulate_unit id equality_clause equality_proof target_clause target_proof equality_index target_index position from_tm to_tm result =
+  match equality_clause, target_clause, result, equality_index, target_index with
+  | [Pos equality_atom], [Pos target_atom], [Pos result_atom], 0, 0 ->
+      let tp, eq_left, eq_right =
+        match megalodon_eq_poly_sides equality_atom with
+        | Some sides -> sides
+        | None ->
+            error (id ^ ": native core proof-term paramodulation equality literal is not typed Megalodon equality")
+      in
+      let context_replacement, source_atom =
+        if eq_left = from_tm && eq_right = to_tm then
+          (DB 1, from_tm)
+        else if eq_right = from_tm && eq_left = to_tm then
+          (DB 0, from_tm)
+        else
+          error (id ^ ": native core proof-term paramodulation from/to terms do not match equality literal")
+      in
+      let rewrite_position =
+        let rec select = function
+          | [] -> error (id ^ ": native core proof-term paramodulation position does not contain from term")
+          | candidate :: rest ->
+              begin match try_tm_at_position target_atom candidate with
+              | Some found when found = source_atom -> candidate
+              | _ -> select rest
+              end
+        in
+        select (paramodulation_position_candidates target_atom position)
+      in
+      let rewritten_atom =
+        replace_tm_at_position target_atom rewrite_position to_tm (id ^ " native paramodulation target")
+      in
+      if rewritten_atom <> result_atom then
+        error (id ^ ": native core proof-term paramodulation currently supports only the direct rewritten unit result");
+      let context_atom =
+        replace_tm_at_position
+          (tmshift 0 2 target_atom)
+          rewrite_position
+          context_replacement
+          (id ^ " native paramodulation context")
+      in
+      let motive = Lam (tp, Lam (tp, native_core_expand_eq_atom context_atom)) in
+      PPfAp (PTmAp (equality_proof, motive), target_proof)
+  | [Pos _], [Neg _], [_], 0, 0 ->
+      error (id ^ ": native core proof-term paramodulation does not yet support negative target literals")
+  | [_], [_], [_], _, _ ->
+      error (id ^ ": native core proof-term paramodulation currently supports only unit positive equality and unit positive targets")
+  | _ ->
+      error (id ^ ": native core proof-term paramodulation currently supports only unit/unit paramodulation")
+
 let native_core_source_kind_and_tptp_name = function
   | SourceAxiom name -> ("axiom", name)
   | SourceConjecture name -> ("conjecture", name)
@@ -3728,6 +3782,15 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
           let parent_clause, parent_proof = lookup parent_id in
           let proof =
             native_core_equality_resolution id parent_clause parent_proof literal_index result
+          in
+          store id result proof
+      | Paramodulate (id, equality_parent_id, target_parent_id, equality_index, target_index, position, from_tm, to_tm, result) ->
+          let equality_clause, equality_proof = lookup equality_parent_id in
+          let target_clause, target_proof = lookup target_parent_id in
+          let proof =
+            native_core_paramodulate_unit
+              id equality_clause equality_proof target_clause target_proof
+              equality_index target_index position from_tm to_tm result
           in
           store id result proof
       | Contradiction (id, parent_id) ->
