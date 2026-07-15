@@ -371,6 +371,9 @@ while IFS= read -r native_file; do
           rule == "truth_conflict") {
         return rule
       }
+      if (rule == "instantiation") {
+        return "substitute"
+      }
       if (rule == "superposition" || rule == "rewrite") {
         return "paramodulate"
       }

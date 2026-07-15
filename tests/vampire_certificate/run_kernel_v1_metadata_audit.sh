@@ -286,6 +286,7 @@ require_primitive_expansion_contract truth_conflict truth_conflict
 require_primitive_expansion_contract avatar_component avatar_component
 require_primitive_expansion_contract avatar_split avatar_split
 require_primitive_expansion_contract avatar_refutation avatar_refutation
+require_primitive_expansion_contract instantiation substitute
 
 grep -F 'rule=instantiation' "$WORK_DIR/kernel_v1.tsv" \
   > "$WORK_DIR/instantiation.tsv" || true
