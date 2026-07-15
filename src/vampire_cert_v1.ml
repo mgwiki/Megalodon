@@ -86,6 +86,12 @@ type ennf_pair = {
   ennf_pair_target : tm;
 }
 
+type skolem_introduction = {
+  skolem_intro_symbol : string;
+  skolem_intro_replaced_var : string option;
+  skolem_intro_declaration : string option;
+}
+
 type step =
   | Input of string * source * clause
   | FormulaInput of string * source * literal
@@ -95,7 +101,7 @@ type step =
   | FoolAtomLift of string * tm * tm * string
   | FoolFormula of string * string * tm
   | EnnfFormula of string * string * tm option * ennf_pair list * tm
-  | SkolemFormula of string * string * (string * tm) list * tm
+  | SkolemFormula of string * string * tm option * skolem_introduction list * (string * tm) list * tm
   | SkolemFormulaComputed of string * string * (string * tm) list
   | CnfFormulaClause of string * string * int * int option * clause
   | FormulaCopy of string * string * literal
@@ -493,6 +499,51 @@ let parse_ennf_pairs = function
   | List (Atom "pairs" :: pairs) -> List.map parse_ennf_pair pairs
   | _ -> error "expected ennf pairs"
 
+let parse_skolem_intro_symbol = function
+  | List [Atom "name"; name] -> atom name
+  | _ -> error "expected skolem introduced symbol name"
+
+let parse_skolem_intro_replaced_var = function
+  | List [Atom "replaced_var"; name] -> Some (atom name)
+  | List [Atom "replaced_var"] -> None
+  | _ -> error "expected skolem introduced replaced_var"
+
+let parse_skolem_intro_declaration = function
+  | List [Atom "declaration"; declaration] -> Some (atom declaration)
+  | List [Atom "declaration"] -> None
+  | _ -> error "expected skolem introduced declaration"
+
+let parse_skolem_introduction = function
+  | List (Atom "symbol" :: fields) ->
+      let symbol = ref None in
+      let replaced_var = ref None in
+      let declaration = ref None in
+      List.iter
+        (function
+          | List (Atom "name" :: _) as field ->
+              symbol := Some (parse_skolem_intro_symbol field)
+          | List (Atom "replaced_var" :: _) as field ->
+              replaced_var := parse_skolem_intro_replaced_var field
+          | List (Atom "declaration" :: _) as field ->
+              declaration := parse_skolem_intro_declaration field
+          | _ -> error "unexpected skolem introduced symbol field")
+        fields;
+      begin match !symbol with
+      | Some skolem_intro_symbol ->
+          {
+            skolem_intro_symbol;
+            skolem_intro_replaced_var = !replaced_var;
+            skolem_intro_declaration = !declaration;
+          }
+      | None -> error "skolem introduced symbol missing name"
+      end
+  | _ -> error "expected skolem introduced symbol"
+
+let parse_skolem_introductions = function
+  | List (Atom "introduced" :: introductions) ->
+      List.map parse_skolem_introduction introductions
+  | _ -> error "expected skolem introduced symbol list"
+
 let parse_rectify_renaming = function
   | List [Atom "renaming"; source; subst; target] ->
       {
@@ -614,7 +665,15 @@ let parse_step = function
          parse_ennf_pairs pairs,
          parse_formula_result result)
   | List [Atom "skolem_formula"; id; parent; subst; result] ->
-      SkolemFormula (atom id, parse_parent parent, parse_substitution subst, parse_formula_result result)
+      SkolemFormula (atom id, parse_parent parent, None, [], parse_substitution subst, parse_formula_result result)
+  | List [Atom "skolem_formula"; id; parent; source; subst; introduced; result] ->
+      SkolemFormula
+        (atom id,
+         parse_parent parent,
+         Some (parse_formula_field "source" source),
+         parse_skolem_introductions introduced,
+         parse_substitution subst,
+         parse_formula_result result)
   | List [Atom "skolem_formula_computed"; id; parent; subst] ->
       SkolemFormulaComputed (atom id, parse_parent parent, parse_substitution subst)
   | List [Atom "cnf_formula_clause"; id; parent; index; result] ->
@@ -796,7 +855,7 @@ let step_id = function
   | FoolAtomLift (id, _, _, _) -> id
   | FoolFormula (id, _, _) -> id
   | EnnfFormula (id, _, _, _, _) -> id
-  | SkolemFormula (id, _, _, _) -> id
+  | SkolemFormula (id, _, _, _, _, _) -> id
   | SkolemFormulaComputed (id, _, _) -> id
   | CnfFormulaClause (id, _, _, _, _) -> id
   | FormulaCopy (id, _, _) -> id
@@ -1982,8 +2041,51 @@ let check_ennf_formula checked id parent_id source pairs result =
   if expected <> result then
     error (id ^ ": ennf_formula result does not match deterministic ENNF transformation")
 
-let check_skolem_formula checked id parent_id subst result =
+let rec head_symbol_of_tm = function
+  | TmH name -> Some name
+  | Ap (fn, _) -> head_symbol_of_tm fn
+  | TpAp (fn, _) -> head_symbol_of_tm fn
+  | _ -> None
+
+let check_skolem_introductions id subst introductions =
+  let binding_for_var var =
+    List.find_opt (fun (name, _) -> name = var) subst
+  in
+  List.iter
+    (fun introduction ->
+       begin match introduction.skolem_intro_replaced_var with
+       | Some replaced_var ->
+           begin match binding_for_var replaced_var with
+           | Some (_, witness) ->
+               begin match head_symbol_of_tm witness with
+               | Some symbol when symbol = introduction.skolem_intro_symbol -> ()
+               | Some symbol ->
+                   error
+                     (id ^ ": skolem introduced symbol " ^ introduction.skolem_intro_symbol
+                      ^ " does not head substitution for " ^ replaced_var
+                      ^ " (found " ^ symbol ^ ")")
+               | None ->
+                   error
+                     (id ^ ": skolem substitution for " ^ replaced_var
+                      ^ " has no named head symbol")
+               end
+           | None ->
+               error
+                 (id ^ ": skolem introduced symbol " ^ introduction.skolem_intro_symbol
+                  ^ " replaces " ^ replaced_var ^ " but no such substitution exists")
+           end
+       | None -> ()
+       end)
+    introductions
+
+let check_skolem_formula checked id parent_id source introductions subst result =
   let parent_formula = lookup_formula checked parent_id in
+  begin match source with
+  | Some source when source <> parent_formula ->
+      error (id ^ ": skolem_formula source does not match parent formula")
+  | Some _ | None -> ()
+  end;
+  check_skolem_introductions id subst introductions;
   let expected = skolemize_formula_tm subst parent_formula in
   if expected <> result
     && normalize_bool_equality_orientation expected <> normalize_bool_equality_orientation result
@@ -3270,8 +3372,8 @@ let check_step checked = function
   | EnnfFormula (id, parent_id, source, pairs, result) ->
       check_ennf_formula checked id parent_id source pairs result;
       (id, CheckedFormula result) :: checked
-  | SkolemFormula (id, parent_id, subst, result) ->
-      check_skolem_formula checked id parent_id subst result;
+  | SkolemFormula (id, parent_id, source, introductions, subst, result) ->
+      check_skolem_formula checked id parent_id source introductions subst result;
       (id, CheckedFormula result) :: checked
   | SkolemFormulaComputed (id, parent_id, subst) ->
       let result = check_skolem_formula_computed checked parent_id subst in
@@ -8176,7 +8278,7 @@ let collect_simple_names cert =
     | EnnfFormula (id, _, _, _, _) ->
         ignore (simple_formula_prop cert id);
         acc
-    | SkolemFormula (id, _, _, _) ->
+    | SkolemFormula (id, _, _, _, _, _) ->
         ignore (simple_formula_prop cert id);
         acc
     | SkolemFormulaComputed (id, _, _) ->
@@ -14987,7 +15089,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     cert.steps
     |> List.fold_left
          (fun acc -> function
-            | SkolemFormula (id, parent_id, subst, _) ->
+            | SkolemFormula (id, parent_id, _, _, subst, _) ->
                 skolem_definitions_for_step id parent_id subst @ acc
             | _ -> acc)
          []
@@ -15000,7 +15102,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     cert.steps
     |> List.fold_left
          (fun acc -> function
-            | SkolemFormula (_, parent_id, subst, _) ->
+            | SkolemFormula (_, parent_id, _, _, subst, _) ->
                 local_skolem_witnesses_for_step parent_id subst @ acc
             | _ -> acc)
          []
@@ -15290,7 +15392,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     cert.steps
     |> List.filter_map
          (function
-           | SkolemFormula (id, _, _, _) -> Some id
+           | SkolemFormula (id, _, _, _, _, _) -> Some id
            | _ -> None)
   in
   let emitted_formula_for_parent parent_id formula =
@@ -16083,7 +16185,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
               add_emitted id name;
               add_bridge_claim ~kind:"normal_form" id parent_id name target_prop target_sorts
           end
-      | SkolemFormula (id, parent_id, subst, formula) ->
+      | SkolemFormula (id, parent_id, _, _, subst, formula) ->
           let name = derived_name id in
           let proof_formula = left_assoc_vampire_or_formula formula in
           let target_prop, target_sorts = formula_tm_prop_and_sorts id formula in

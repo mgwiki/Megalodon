@@ -76,6 +76,12 @@ type ennf_pair = {
   ennf_pair_target : Syntax.tm;
 }
 
+type skolem_introduction = {
+  skolem_intro_symbol : string;
+  skolem_intro_replaced_var : string option;
+  skolem_intro_declaration : string option;
+}
+
 type step =
   | Input of string * source * clause
   | FormulaInput of string * source * literal
@@ -85,7 +91,7 @@ type step =
   | FoolAtomLift of string * Syntax.tm * Syntax.tm * string
   | FoolFormula of string * string * Syntax.tm
   | EnnfFormula of string * string * Syntax.tm option * ennf_pair list * Syntax.tm
-  | SkolemFormula of string * string * (string * Syntax.tm) list * Syntax.tm
+  | SkolemFormula of string * string * Syntax.tm option * skolem_introduction list * (string * Syntax.tm) list * Syntax.tm
   | SkolemFormulaComputed of string * string * (string * Syntax.tm) list
   | CnfFormulaClause of string * string * int * int option * clause
   | FormulaCopy of string * string * literal

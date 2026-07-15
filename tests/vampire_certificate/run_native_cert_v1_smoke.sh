@@ -1975,6 +1975,20 @@ if ! rg -q 'Vampire certificate v1 checked 6 steps' "$WORK_DIR/native_cert_v1_sk
 fi
 
 if bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_skolem_introduced_symbol_bad.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_skolem_introduced_symbol_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_skolem_introduced_symbol_bad.err"; then
+  echo "native certificate v1 checker accepted mismatched Skolem introduced-symbol metadata" >&2
+  exit 1
+fi
+
+if ! rg -q 'skolem introduced symbol bad_sk does not head substitution for X0' \
+    "$WORK_DIR/native_cert_v1_skolem_introduced_symbol_bad.err"; then
+  echo "native certificate v1 checker did not explain mismatched Skolem introduced-symbol metadata" >&2
+  exit 1
+fi
+
+if bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_skolem_bogus_shape_bad.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_skolem_bogus_shape_bad.out" \
   2>"$WORK_DIR/native_cert_v1_skolem_bogus_shape_bad.err"; then
