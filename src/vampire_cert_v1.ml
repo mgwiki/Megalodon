@@ -4151,9 +4151,19 @@ let native_core_literal_index id rule selected clause =
   in
   find 0 clause
 
-let native_core_subsumption_resolution_unit id main_clause main_proof side_clause side_proof selected side_pivot side_subst result =
-  if side_subst <> [] then
-    error (id ^ ": native core proof-term subsumption-resolution needs explicit proof data for non-empty side substitutions");
+let native_core_instantiate_step_proof cert parent_id subst proof =
+  native_core_step_variables cert parent_id
+  |> List.fold_left
+       (fun proof (name, _) ->
+          let witness =
+            match List.assoc_opt name subst with
+            | Some tm -> tm
+            | None -> TmH name
+          in
+          PTmAp (proof, witness))
+       proof
+
+let native_core_subsumption_resolution_unit id main_clause main_proof side_clause side_proof selected side_pivot result =
   let selected_index =
     native_core_literal_index id "subsumption-resolution" selected main_clause
   in
@@ -4610,9 +4620,14 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
       | SubsumptionResolution (id, main_parent_id, side_parent_id, selected, side_pivot, side_subst, result) ->
           let main_clause, main_proof = lookup main_parent_id in
           let side_clause, side_proof = lookup side_parent_id in
+          let side_clause = subst_clause side_subst side_clause in
+          let side_pivot = subst_literal side_subst side_pivot in
+          let side_proof =
+            native_core_instantiate_step_proof cert side_parent_id side_subst side_proof
+          in
           let proof =
             native_core_subsumption_resolution_unit
-              id main_clause main_proof side_clause side_proof selected side_pivot side_subst result
+              id main_clause main_proof side_clause side_proof selected side_pivot result
           in
           store id result proof
       | Paramodulate (id, equality_parent_id, target_parent_id, equality_index, target_index, position, from_tm, to_tm, result) ->
@@ -6253,15 +6268,48 @@ let simple_resolution_proof
 
 let simple_subsumption_resolution_proof
     literal_prop parent_sorts_of result_sorts id main_parent_id side_parent_id selected side_pivot side_subst result checked names =
-  if side_subst <> [] then
-    emit_error (id ^ ": simple subsumption-resolution proof supports only empty side substitutions");
   let main_clause = lookup_simple_clause checked main_parent_id in
-  let side_clause = lookup_simple_clause checked side_parent_id in
+  let raw_side_clause = lookup_simple_clause checked side_parent_id in
+  let side_clause = subst_clause side_subst raw_side_clause in
+  let side_pivot = subst_literal side_subst side_pivot in
   let selected_index =
     simple_literal_index id "subsumption-resolution selected" selected main_clause
   in
   let side_index =
     simple_literal_index id "subsumption-resolution side" side_pivot side_clause
+  in
+  let checked, names, parent_sorts_of =
+    match side_subst with
+    | [] -> checked, names, parent_sorts_of
+    | _ ->
+        let side_parent_sorts = parent_sorts_of side_parent_id in
+        let side_parent_name = lookup_simple_name names side_parent_id in
+        let instantiated_side_name =
+          List.fold_left
+            (fun acc (name, sort) ->
+               let arg =
+                 match List.assoc_opt name side_subst with
+                 | Some tm -> simple_tm_expr tm
+                 | None ->
+                     let ident = megalodon_ident name in
+                     if ident <> "" then ident else simple_witness_for_sort sort
+               in
+               "(" ^ acc ^ " " ^ arg ^ ")")
+            side_parent_name
+            side_parent_sorts
+        in
+        let checked =
+          (side_parent_id, side_clause)
+          :: List.remove_assoc side_parent_id checked
+        in
+        let names =
+          (side_parent_id, instantiated_side_name)
+          :: List.remove_assoc side_parent_id names
+        in
+        let parent_sorts_of parent_id =
+          if parent_id = side_parent_id then [] else parent_sorts_of parent_id
+        in
+        checked, names, parent_sorts_of
   in
   simple_resolution_proof
     literal_prop parent_sorts_of result_sorts id
