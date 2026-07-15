@@ -3486,6 +3486,14 @@ let native_core_false_from_two_pivots main_pivot side_pivot =
       PPfAp (Hyp 1, Hyp 0)
   | _ -> error "native core proof-term checker expected complementary binary pivots"
 
+let native_core_false_from_complement_proofs left left_proof right right_proof =
+  match left, right with
+  | Pos left_atom, Neg right_atom when native_core_same_atom left_atom right_atom ->
+      PPfAp (right_proof, left_proof)
+  | Neg left_atom, Pos right_atom when native_core_same_atom left_atom right_atom ->
+      PPfAp (left_proof, right_proof)
+  | _ -> error "native core proof-term checker expected complementary pivots"
+
 let native_core_resolve_binary_binary id main_clause main_proof main_index side_clause side_proof side_index result =
   match main_clause, side_clause, result with
   | [main_left; main_right], [side_left; side_right], [_; _] ->
@@ -3743,29 +3751,110 @@ let native_core_literal_index id rule selected clause =
 let native_core_subsumption_resolution_unit id main_clause main_proof side_clause side_proof selected side_pivot side_subst result =
   if side_subst <> [] then
     error (id ^ ": native core proof-term subsumption-resolution needs explicit proof data for non-empty side substitutions");
-  match side_clause with
-  | [side_literal] ->
-      if side_literal <> side_pivot then
-        error (id ^ ": native core proof-term subsumption-resolution side pivot does not match the unit side parent");
-      if not (native_core_complement selected side_pivot) then
-        error (id ^ ": native core proof-term subsumption-resolution side pivot does not complement the selected literal");
-      let selected_index =
-        native_core_literal_index id "subsumption-resolution" selected main_clause
-      in
-      let expected =
-        remove_at selected_index main_clause (id ^ " native subsumption-resolution selected literal")
-      in
-      if expected <> result then
-        error (id ^ ": native core proof-term subsumption-resolution result does not remove the selected literal");
-      begin match main_clause, result with
-      | [_; _], [_] ->
-          native_core_resolve_binary_unit
-            id main_clause main_proof selected_index side_clause side_proof 0 result
-      | _ ->
-          error (id ^ ": native core proof-term subsumption-resolution currently supports only binary main clauses with unit side parents")
-      end
-  | _ ->
-      error (id ^ ": native core proof-term subsumption-resolution currently supports only unit side parents")
+  let selected_index =
+    native_core_literal_index id "subsumption-resolution" selected main_clause
+  in
+  let side_pivot_index =
+    native_core_literal_index id "subsumption-resolution side" side_pivot side_clause
+  in
+  if not (native_core_complement selected side_pivot) then
+    error (id ^ ": native core proof-term subsumption-resolution side pivot does not complement the selected literal");
+  let expected =
+    remove_at selected_index main_clause (id ^ " native subsumption-resolution selected literal")
+  in
+  if expected <> result then
+    error (id ^ ": native core proof-term subsumption-resolution result does not remove the selected literal");
+  let side_remaining =
+    remove_at side_pivot_index side_clause (id ^ " native subsumption-resolution side pivot")
+  in
+  List.iter
+    (fun literal ->
+       if not (List.exists ((=) literal) result) then
+         error (id ^ ": native core proof-term subsumption-resolution side remainder is not in the result"))
+    side_remaining;
+  let target_prop = native_core_clause_prop id result in
+  let rec consume_side selected_proof side_index clause proof =
+    match clause, side_index with
+    | [], _ -> error (id ^ ": native core proof-term subsumption-resolution side pivot is out of bounds")
+    | [literal], Some 0 when literal = side_pivot ->
+        let false_proof =
+          native_core_false_from_complement_proofs selected selected_proof literal proof
+        in
+        PTmAp (false_proof, target_prop)
+    | [literal], Some _ ->
+        error (id ^ ": native core proof-term subsumption-resolution side pivot is out of bounds")
+    | [literal], None ->
+        native_core_prove_literal_to_clause id result literal proof
+    | literal :: rest, side_index ->
+        let literal_prop = native_core_literal_prop literal in
+        let rest_prop = native_core_clause_prop id rest in
+        let head_branch =
+          PLam
+            (literal_prop,
+             match side_index with
+             | Some 0 when literal = side_pivot ->
+                 let false_proof =
+                   native_core_false_from_complement_proofs
+                     selected (pfshift 0 1 selected_proof) literal (Hyp 0)
+                 in
+                 PTmAp (false_proof, target_prop)
+             | Some 0 ->
+                 error (id ^ ": native core proof-term subsumption-resolution side pivot mismatch")
+             | _ ->
+                 native_core_prove_literal_to_clause id result literal (Hyp 0))
+        in
+        let tail_index =
+          match side_index with
+          | Some 0 -> None
+          | Some n -> Some (n - 1)
+          | None -> None
+        in
+        let tail_branch =
+          PLam
+            (rest_prop,
+             consume_side (pfshift 0 1 selected_proof) tail_index rest (Hyp 0))
+        in
+        PPfAp (PPfAp (PTmAp (proof, target_prop), head_branch), tail_branch)
+  in
+  let prove_selected selected_proof side_proof =
+    consume_side selected_proof (Some side_pivot_index) side_clause side_proof
+  in
+  let rec consume_main selected_index clause proof side_proof =
+    match clause, selected_index with
+    | [], _ -> error (id ^ ": native core proof-term subsumption-resolution selected index is out of bounds")
+    | [literal], Some 0 when literal = selected -> prove_selected proof side_proof
+    | [literal], Some _ ->
+        error (id ^ ": native core proof-term subsumption-resolution selected index is out of bounds")
+    | [literal], None ->
+        native_core_prove_literal_to_clause id result literal proof
+    | literal :: rest, selected_index ->
+        let literal_prop = native_core_literal_prop literal in
+        let rest_prop = native_core_clause_prop id rest in
+        let head_branch =
+          PLam
+            (literal_prop,
+             match selected_index with
+             | Some 0 when literal = selected ->
+                 prove_selected (Hyp 0) (pfshift 0 1 side_proof)
+             | Some 0 ->
+                 error (id ^ ": native core proof-term subsumption-resolution selected literal mismatch")
+             | _ ->
+                 native_core_prove_literal_to_clause id result literal (Hyp 0))
+        in
+        let tail_index =
+          match selected_index with
+          | Some 0 -> None
+          | Some n -> Some (n - 1)
+          | None -> None
+        in
+        let tail_branch =
+          PLam
+            (rest_prop,
+             consume_main tail_index rest (Hyp 0) (pfshift 0 1 side_proof))
+        in
+        PPfAp (PPfAp (PTmAp (proof, target_prop), head_branch), tail_branch)
+  in
+  consume_main (Some selected_index) main_clause main_proof side_proof
 
 let native_core_paramodulate_literal_transport
     id equality_atom equality_proof target_literal position from_tm to_tm result_literal literal_proof =
@@ -5725,6 +5814,16 @@ let simple_resolution_proof
         (Printf.sprintf
            "(%s %s (fun Hlit_0 => ((Hlit_0 %s) %s)) (fun Htail_1 => Htail_1))"
            negative_parent_name target_arg positive_parent_name target_arg)
+  | [positive_tail], [negative_tail], [res]
+      when positive_tail = res && negative_tail = res ->
+      if positive_index <> 0 || negative_index <> 0 then
+        emit_error (id ^ ": simple binary-tail resolution expects pivots at clause heads");
+      let target = literal_prop res in
+      let target_arg = simple_prop_arg target in
+      wrap
+        (Printf.sprintf
+           "(%s %s (fun Hlit_0 => (%s %s (fun Hnot_1 => ((Hnot_1 Hlit_0) %s)) (fun Htail_2 => Htail_2))) (fun Htail_3 => Htail_3))"
+           positive_parent_name target_arg negative_parent_name target_arg target_arg)
   | [], [], [] ->
       if positive_index <> 0 || negative_index <> 0 then
         emit_error (id ^ ": simple unit resolution expects pivots at the clause head");
@@ -5738,17 +5837,15 @@ let simple_subsumption_resolution_proof
     emit_error (id ^ ": simple subsumption-resolution proof supports only empty side substitutions");
   let main_clause = lookup_simple_clause checked main_parent_id in
   let side_clause = lookup_simple_clause checked side_parent_id in
-  begin match side_clause with
-  | [literal] when literal = side_pivot -> ()
-  | [_] -> emit_error (id ^ ": side pivot does not match the unit side parent")
-  | _ -> emit_error (id ^ ": simple subsumption-resolution proof supports only unit side parents")
-  end;
   let selected_index =
     simple_literal_index id "subsumption-resolution selected" selected main_clause
   in
+  let side_index =
+    simple_literal_index id "subsumption-resolution side" side_pivot side_clause
+  in
   simple_resolution_proof
     literal_prop parent_sorts_of result_sorts id
-    main_parent_id side_parent_id selected_index 0 result checked names
+    main_parent_id side_parent_id selected_index side_index result checked names
 
 let rec simple_resolution_clause_proof
     clause_body_prop parent_sorts_of result_sorts id left_id right_id left_index right_index result checked names =
