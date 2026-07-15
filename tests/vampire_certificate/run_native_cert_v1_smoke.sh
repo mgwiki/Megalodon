@@ -327,6 +327,23 @@ if rg -q 'bridge_' "$WORK_DIR/native_cert_v1_source_map_synthetic_closed.mg"; th
   exit 1
 fi
 
+if bin/megalodon \
+  -vampirecertv1closed \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_closed_unapproved_axiom_bad.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_synthetic_valid.th0.p \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_closed_unapproved_axiom_bad.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_closed_unapproved_axiom_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_closed_unapproved_axiom_bad.err"; then
+  echo "closed native certificate v1 emitter accepted an unapproved generated axiom" >&2
+  exit 1
+fi
+
+if ! rg -q 'closed axiom policy rejects unapproved axiom vampire_backdoor' \
+    "$WORK_DIR/native_cert_v1_closed_unapproved_axiom_bad.err"; then
+  echo "closed native certificate v1 unapproved-axiom failure did not explain the rejected axiom" >&2
+  exit 1
+fi
+
 bin/megalodon \
   -vampirecertv1coreclosed \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
