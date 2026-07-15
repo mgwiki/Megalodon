@@ -165,6 +165,10 @@ For FOOL exhaustiveness, it requires a parentless
 literal fields rendered by Vampire.
 For AVATAR components, it requires the result clause, rendered literals, and the
 split level/variable/sign fields read from Vampire's component clause split set.
+For AVATAR split clauses, it requires the source clause, result clause or
+formula, SAT literals, previous split count, component-parent count,
+literal-class count, and parent variable binding count that Vampire computes
+during split reconstruction.
 The point of this gate is to keep new work on the Prover9/Ivy-style certificate
 path: Vampire must emit primitive replay data, rather than leaving Megalodon to
 recover it by broad OCaml-side reconstruction.

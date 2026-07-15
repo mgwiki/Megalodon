@@ -101,7 +101,7 @@ awk '
   /rule=skolemize/ || /rule=rectify_formula/ ||
   /rule=formula_copy/ || /rule=formula_normalize/ ||
   /rule=fool_formula/ || /rule=fool_exhaustiveness/ ||
-  /rule=avatar_component/ {
+  /rule=avatar_component/ || /rule=avatar_split/ {
     next
   }
   { print }
@@ -308,6 +308,39 @@ if [[ -s "$WORK_DIR/avatar_component.tsv" ]]; then
   if [[ -s "$WORK_DIR/missing_avatar_component_fields.tsv" ]]; then
     echo "kernel_v1 metadata audit found AVATAR component records missing split fields" >&2
     sed -n '1,40p' "$WORK_DIR/missing_avatar_component_fields.tsv" >&2
+    exit 1
+  fi
+fi
+
+grep -F 'rule=avatar_split' "$WORK_DIR/kernel_v1.tsv" \
+  > "$WORK_DIR/avatar_split.tsv" || true
+
+if [[ -s "$WORK_DIR/avatar_split.tsv" ]]; then
+  : > "$WORK_DIR/missing_avatar_split_fields.tsv"
+  for pattern in \
+    'source_unit=' \
+    'source_clause=' \
+    'previous_split_count=' \
+    'sat_literal_count=' \
+    'sat_literal_0_var=' \
+    'sat_literal_0_positive=' \
+    'component_parent_count=' \
+    'literal_class_count=' \
+    'parent_var_binding_count='; do
+    awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
+      "$WORK_DIR/avatar_split.tsv" >> "$WORK_DIR/missing_avatar_split_fields.tsv"
+  done
+
+  awk '
+    index($0, "result_clause=") == 0 &&
+    index($0, "result_formula=") == 0 {
+      print "result_clause|result_formula\t" $0
+    }
+  ' "$WORK_DIR/avatar_split.tsv" >> "$WORK_DIR/missing_avatar_split_fields.tsv"
+
+  if [[ -s "$WORK_DIR/missing_avatar_split_fields.tsv" ]]; then
+    echo "kernel_v1 metadata audit found AVATAR split records missing split fields" >&2
+    sed -n '1,40p' "$WORK_DIR/missing_avatar_split_fields.tsv" >&2
     exit 1
   fi
 fi
