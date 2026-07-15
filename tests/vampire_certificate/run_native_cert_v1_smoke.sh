@@ -531,6 +531,24 @@ fi
 bin/megalodon -hf "$WORK_DIR/native_cert_v1_cnf_source_map_valid.mg" \
   >"$WORK_DIR/native_cert_v1_cnf_source_map_valid.check.log"
 
+bin/megalodon \
+  -vampirecertv1 tests/vampire_certificate/closed_cases/hammer.10208.46.native.sexp \
+  -vampirecertv1source tests/vampire_certificate/closed_cases/hammer.10208.46.th0.p \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_vlam_source_metadata_emit.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_vlam_source_metadata_emit.log"
+
+if rg -q 'assume src_axiom_LxLy.*forall X0:set, \(\(In X0\) Lx -> forall X0:set' \
+    "$WORK_DIR/native_cert_v1_vlam_source_metadata_emit.mg"; then
+  echo "native certificate v1 emitter reused an ill-scoped vLAM source proposition" >&2
+  exit 1
+fi
+
+if ! rg -q 'assume src_axiom_LxLy.*forall X2:set, forall X0:set, In X0 Lx -> forall X1:set' \
+    "$WORK_DIR/native_cert_v1_vlam_source_metadata_emit.mg"; then
+  echo "native certificate v1 emitter did not render the vLAM source proposition with distinct binders" >&2
+  exit 1
+fi
+
 if bin/megalodon \
     -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_local_fact_negated.sexp \
     -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_local_fact_negated.th0.p \

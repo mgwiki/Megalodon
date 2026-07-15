@@ -5069,6 +5069,12 @@ let simple_clause_contains_vlam clause =
   in
   List.exists (fun literal -> contains (literal_atom literal)) clause
 
+let simple_literal_contains_vlam literal =
+  simple_clause_contains_vlam [literal]
+
+let simple_tm_contains_vlam tm =
+  simple_clause_contains_vlam [Pos tm]
+
 let simple_quantify_prop variable_sorts prop =
   List.fold_right
     (fun (name, sort) body -> "forall " ^ megalodon_ident name ^ ":" ^ sort ^ ", " ^ body)
@@ -11430,6 +11436,15 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     checked := (id, clause) :: !checked;
     if clause = [] then final_empty := Some id
   in
+  let step_is_source_input step_id =
+    List.exists
+      (function
+        | Input (id, _, _)
+        | FormulaInput (id, _, _)
+        | FormulaTermInput (id, _, _) -> id = step_id
+        | _ -> false)
+      cert.steps
+  in
   let variable_sorts_for_ids ids =
     ids
     |> List.concat_map
@@ -11515,7 +11530,9 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
     match metadata_step_proposition cert id with
     | Some prop
         when (parent_ids = [] || prefer_metadata)
-             && not (simple_clause_contains_function_alias result) ->
+             && not (simple_clause_contains_function_alias result)
+             && (not (simple_clause_contains_vlam result)
+                 || not (step_is_source_input id)) ->
         let metadata_sorts = metadata_step_variable_sort_pairs cert id in
         let definition_sorts = metadata_definition_lhs_sort_pairs cert id in
         let metadata_sorts =
@@ -11561,7 +11578,10 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       | Neg atom -> "(" ^ simple_formula_like_prop_with_type_env render_type_env atom ^ " -> False)"
     in
     match metadata_step_proposition cert id with
-    | Some prop when not (simple_literal_contains_function_alias literal) ->
+    | Some prop
+        when not (simple_literal_contains_function_alias literal)
+             && (not (simple_literal_contains_vlam literal)
+                 || not (step_is_source_input id)) ->
         let prop =
           if inferred_sorts = [] then simple_fix_known_higher_order_binders prop
           else rendered_literal_prop ()
@@ -11603,7 +11623,10 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       simple_formula_like_prop_with_type_env render_type_env formula
     in
     match metadata_step_proposition cert id with
-    | Some prop when not (simple_tm_contains_function_alias formula) ->
+    | Some prop
+        when not (simple_tm_contains_function_alias formula)
+             && (not (simple_tm_contains_vlam formula)
+                 || not (step_is_source_input id)) ->
         let prop =
           if inferred_sorts = [] then simple_fix_known_higher_order_binders prop
           else rendered_formula_prop ()
