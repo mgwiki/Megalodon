@@ -2026,3 +2026,53 @@ Everything looks good.
 The cached harness now classifies timeout exits as `CHECK_TIMEOUT` instead of a
 blank `CHECK_FAIL`, so future frontier summaries distinguish proof errors from
 large-script checking time.
+
+## July 15 Follow-up: Predicate-Definition Fold Chains
+
+The next native-emitter change targets the audit's request to replay Vampire's
+own proof object rather than reconstructing by external Python heuristics.
+`predicate_definition_fold_chain` is no longer an unconditional bridge: the
+emitter now searches the checked certificate's definition sequence, emits
+internal Megalodon claims for each body-to-definiendum replacement, and uses the
+existing formula-orientation proof when Vampire's metadata proposition is the
+left-associated normal form of the native term.
+
+The implementation is intentionally conservative. It replays chains whose
+formula shapes are covered by the current fold proof generator, including
+set/set->prop existential contexts, and falls back to closed-mode bridges for
+prop-binder-heavy or arbitrary true-left FOOL-equality shapes that are known to
+need more atomic replay. This avoids producing invalid closed scripts while
+leaving the remaining cases visible as explicit bridge blockers.
+
+Focused validation:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+
+native certificate v1 smoke test passed
+
+hammer.10794.63.th0:
+  closed emit: no predicate_definition_fold(_chain) bridge
+  -hf check: Everything looks good.
+```
+
+Cached 20-way replay over the same existing native certificates, without
+rerunning Vampire:
+
+```text
+WORK_DIR=/project/tmp/megalodon3_predfold_single_guard_023237 \
+TMPDIR=/project/tmp \
+PROBLEM_DIR=/project/tmp/source_linked_strict_100_corpus_fresh_041947 \
+JOBS=20 MIN_PASS=0 CLOSED_CERT_V1=1 CHECK_SOURCE_MAP=1 STRICT_CERT_V1=1 \
+EMIT_TIMEOUT=30 CHECK_TIMEOUT=45 \
+tests/vampire_certificate/run_native_emit_cached_parallel.sh \
+  /project/tmp/megalodon3_native_live_current_noorigin_003131
+
+CLOSED_PASS 142
+EMIT_FAIL 70
+CHECK_TIMEOUT 1
+```
+
+The single timeout remains `hammer.10847.41.th0.p`, previously shown to pass
+with a 180-second local check. No `CHECK_FAIL` rows remain in this replay.

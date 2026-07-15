@@ -7632,12 +7632,27 @@ let rec simple_formula_prop_text type_env tm =
       in
       let binder =
         match preferred_formula_binder_name sort body with
-        | Some name -> megalodon_ident name
+        | Some name when List.assoc_opt name type_env = Some sort ->
+            megalodon_ident name
         | None ->
-            begin match max_vampire_var_name body with
-            | Some name -> megalodon_ident name
-            | None -> "Xformula"
+            let candidates =
+              type_env
+              |> List.filter
+                   (fun (name, known_sort) ->
+                      let binder = megalodon_ident name in
+                      known_sort = sort
+                      && is_vampire_var_name binder
+                      && tm_contains_symbol binder body)
+            in
+            begin match candidates with
+            | (name, _) :: _ -> megalodon_ident name
+            | [] ->
+                begin match max_vampire_var_name body with
+                | Some name -> megalodon_ident name
+                | None -> "Xformula"
+                end
             end
+        | Some name -> megalodon_ident name
       in
       exists_name ^ " (fun " ^ binder ^ ":" ^ simple_binder_sort_expr sort ^ " => "
       ^ simple_formula_prop_text ((binder, sort) :: type_env) body ^ ")"
@@ -8447,13 +8462,21 @@ let simple_predicate_definition_proof type_env id formula =
 
 let simple_predicate_definition_fold_proof type_env id result_sorts source target body atom parent_name =
   let definiendum = predicate_definition_definiendum_term atom in
+  let supported_exists_sort = function
+    | "set" | "prop" | "set->prop" | "set->set" | "set->set->prop" -> true
+    | _ -> false
+  in
+  let is_exists_head = function
+    | TmH ("vampire_exists_prop" | "vampire_exists_set"
+          | "vampire_exists_set_prop" | "vampire_exists_set_set"
+          | "vampire_exists_set_set_prop") -> true
+    | _ -> false
+  in
   let rec contains_unsupported_exists = function
-    | Ap (TmH ("vampire_exists_set_prop"
-              | "vampire_exists_set_set"
-              | "vampire_exists_set_set_prop"), _) -> true
-    | Ap (TmH "vampire_exists_prop", Lam (tp, body)) ->
+    | Ap (exists_head, Lam (tp, body)) when is_exists_head exists_head ->
         let sort = simple_tp_expr tp in
-        sort <> "set" || contains_unsupported_exists body
+        not (supported_exists_sort sort) || contains_unsupported_exists body
+    | Ap (exists_head, _) when is_exists_head exists_head -> true
     | TpAp (tm, _) -> contains_unsupported_exists tm
     | Ap (left, right)
     | Imp (left, right) -> contains_unsupported_exists left || contains_unsupported_exists right
@@ -8466,14 +8489,31 @@ let simple_predicate_definition_fold_proof type_env id result_sorts source targe
      || contains_unsupported_exists body
      || contains_unsupported_exists atom then
     emit_error (id ^ ": predicate-definition fold proof does not yet support this existential context");
-  let binder_index = ref 0 in
-  let proof_index = ref 0 in
-  let is_exists_head = function
-    | TmH ("vampire_exists_prop" | "vampire_exists_set"
-          | "vampire_exists_set_prop" | "vampire_exists_set_set"
-          | "vampire_exists_set_set_prop") -> true
+  let is_definition_predicate_application tm =
+    match flatten_value_application tm with
+    | TmH name, _ -> String.length name >= 2 && String.sub name 0 2 = "sP"
     | _ -> false
   in
+  let rec contains_unsupported_formula_shape = function
+    | All (tp, body)
+    | Lam (tp, body) ->
+        simple_tp_expr tp = "prop" || contains_unsupported_formula_shape body
+    | Ap (Ap (TmH ("=" | "vampire_eq_prop"), TmH ("f__true" | "vampire_true")), other)
+        when not (is_definition_predicate_application other) ->
+        true
+    | TpAp (tm, _) -> contains_unsupported_formula_shape tm
+    | Ap (left, right)
+    | Imp (left, right) ->
+        contains_unsupported_formula_shape left || contains_unsupported_formula_shape right
+    | DB _ | TmH _ | Prim _ -> false
+  in
+  if contains_unsupported_formula_shape source
+     || contains_unsupported_formula_shape target
+     || contains_unsupported_formula_shape body
+     || contains_unsupported_formula_shape atom then
+    emit_error (id ^ ": predicate-definition fold proof does not yet support this formula shape");
+  let binder_index = ref 0 in
+  let proof_index = ref 0 in
   let exists_name_for_sort = function
     | "set" -> "vampire_exists_set"
     | "prop" -> "vampire_exists_prop"
@@ -10803,39 +10843,188 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             add_emitted_prop_and_sorts id target_prop target_sorts;
             claims := !claims @ [(name, target_prop, "exact " ^ source_name ^ ".")]
           end else
-            begin match
-              try
-                let source = lookup_formula checked_certificate source_id in
-                let definition = lookup_formula checked_certificate definition_id in
-                let _, atom, body = predicate_definition_parts definition_id definition in
-                let type_env =
-                  simple_type_env_with_variables
-                    (target_sorts
-                     @ metadata_step_variable_sort_pairs cert source_id
-                     @ metadata_step_variable_sort_pairs cert definition_id
-                     |> simple_unique_variable_sorts)
-                    symbol_type_env
+	            begin match
+	              try
+	                let source = lookup_formula checked_certificate source_id in
+	                let definition = lookup_formula checked_certificate definition_id in
+	                let _, atom, body = predicate_definition_parts definition_id definition in
+	                let type_env =
+	                  simple_type_env_with_variables
+	                    (target_sorts
+	                     @ metadata_step_variable_sort_pairs cert source_id
+	                     @ metadata_step_variable_sort_pairs cert definition_id
+	                     |> simple_unique_variable_sorts)
+	                    symbol_type_env
 	                in
 	                let source_name = lookup_simple_name !emitted_names source_id in
 	                Some
 	                  (simple_predicate_definition_fold_proof
 	                     type_env id target_sorts source formula body atom source_name)
 	              with Error _ -> None
-            with
-            | Some proof ->
-                let name = derived_name id in
-                ignore (lookup_simple_name !emitted_names definition_id);
-                uses_vampire_eq_prop_ext := true;
-                add_emitted id name;
-                add_emitted_prop_and_sorts id target_prop target_sorts;
-                claims := !claims @ [(name, target_prop, "exact " ^ proof ^ ".")]
+	            with
+	            | Some proof ->
+	                let name = derived_name id in
+	                ignore (lookup_simple_name !emitted_names definition_id);
+	                uses_vampire_eq_prop_ext := true;
+	                add_emitted id name;
+	                add_emitted_prop_and_sorts id target_prop target_sorts;
+	                claims := !claims @ [(name, target_prop, "exact " ^ proof ^ ".")]
             | None ->
                 add_formula_inference_bridge "predicate_definition_fold" id [source_id; definition_id] target_prop
             end
       | PredicateDefinitionFoldChain (id, source_id, definition_ids, formula) ->
-          let target_prop, _ = formula_tm_prop_and_sorts id formula in
-          add_formula_inference_bridge "predicate_definition_fold_chain" id (source_id :: definition_ids) target_prop
-      | DefinitionInput (id, result) ->
+          let target_prop, target_sorts = formula_tm_prop_and_sorts id formula in
+          let metadata_target_prop = metadata_step_proposition cert id in
+          let final_target_prop =
+            match metadata_target_prop with
+            | Some prop -> simple_fix_known_higher_order_binders prop
+            | None -> target_prop
+          in
+          let has_metadata_target = metadata_target_prop <> None in
+          begin match
+            try
+              if definition_ids = [] then
+                emit_error (id ^ ": predicate-definition fold-chain has no definitions");
+              let source = lookup_formula checked_certificate source_id in
+              let definitions =
+                List.map
+                  (fun definition_id ->
+                     let definition = lookup_formula checked_certificate definition_id in
+                     let _, atom, body = predicate_definition_parts definition_id definition in
+                     ignore (lookup_simple_name !emitted_names definition_id);
+                     (definition_id, atom, body))
+                  definition_ids
+              in
+              let is_definition_predicate_application tm =
+                match flatten_value_application tm with
+                | TmH name, _ -> String.length name >= 2 && String.sub name 0 2 = "sP"
+                | _ -> false
+              in
+              let rec contains_unsupported_fold_chain_shape = function
+                | All (tp, body)
+                | Lam (tp, body) ->
+                    simple_tp_expr tp = "prop"
+                    || contains_unsupported_fold_chain_shape body
+                | Ap (Ap (TmH ("=" | "vampire_eq_prop"),
+                          TmH ("f__true" | "vampire_true")), other)
+                    when not (is_definition_predicate_application other) ->
+                    true
+                | Ap (left, right)
+                | Imp (left, right) ->
+                    contains_unsupported_fold_chain_shape left
+                    || contains_unsupported_fold_chain_shape right
+                | TpAp (tm, _) -> contains_unsupported_fold_chain_shape tm
+                | TmH _ | DB _ | Prim _ -> false
+              in
+              if contains_unsupported_fold_chain_shape source
+                 || contains_unsupported_fold_chain_shape formula
+                 || List.exists
+                      (fun (_, atom, body) ->
+                         contains_unsupported_fold_chain_shape atom
+                         || contains_unsupported_fold_chain_shape body)
+                      definitions then
+                emit_error
+                  (id ^ ": predicate-definition fold-chain shape is not yet supported");
+              let rec find_path current = function
+                | [] ->
+                    if current = formula then Some []
+                    else None
+                | (definition_id, atom, body) :: rest ->
+                    let candidates =
+                      unique_terms (tm_one_replacement_results current body atom)
+                    in
+                    let rec try_candidates = function
+                      | [] -> None
+                      | candidate :: more ->
+                          begin match find_path candidate rest with
+                          | Some path -> Some ((definition_id, atom, body, candidate) :: path)
+                          | None -> try_candidates more
+                          end
+                    in
+                    try_candidates candidates
+              in
+              let path =
+                match find_path source definitions with
+                | Some path -> path
+                | None ->
+                    emit_error
+                      (id ^ ": predicate-definition fold-chain result is not replayable")
+              in
+              let type_env =
+                simple_type_env_with_variables
+                  (target_sorts
+                   @ metadata_step_variable_sort_pairs cert source_id
+                   @ List.concat_map
+                       (fun definition_id ->
+                          metadata_step_variable_sort_pairs cert definition_id)
+                       definition_ids
+                   |> simple_unique_variable_sorts)
+                  symbol_type_env
+              in
+              let prop_for_formula tm =
+                try simple_formula_prop_text_with_used [] type_env tm
+                with Error _ -> simple_atom_prop_with_type_env type_env tm
+              in
+              let replay_target_prop = prop_for_formula formula in
+              let final_name = derived_name id in
+              let proof_target_formula = left_assoc_vampire_or_formula formula in
+              let needs_orientation =
+                has_metadata_target && replay_target_prop <> final_target_prop
+              in
+              let chain_name =
+                if needs_orientation then
+                  simple_fresh_name used_names
+                    ("predicate_definition_fold_chain__" ^ id ^ "_raw")
+                else final_name
+              in
+              let last_index = List.length path - 1 in
+              let source_name = lookup_simple_name !emitted_names source_id in
+              let rec emit_steps index parent_name parent_formula = function
+                | [] -> ()
+                | (_, atom, body, step_formula) :: rest ->
+                    let is_last = index = last_index in
+                    let name =
+                      if is_last then chain_name
+                      else
+                        simple_fresh_name used_names
+                          ("predicate_definition_fold_chain__" ^ id
+                           ^ "_step" ^ string_of_int (index + 1))
+                    in
+                    let prop =
+                      if is_last then replay_target_prop
+                      else prop_for_formula step_formula
+                    in
+                    let proof =
+                      simple_predicate_definition_fold_proof
+                        type_env id target_sorts parent_formula step_formula body atom parent_name
+                    in
+                    claims := !claims @ [(name, prop, "exact " ^ proof ^ ".")];
+                    emit_steps (index + 1) name step_formula rest
+              in
+              emit_steps 0 source_name source path;
+              if needs_orientation then begin
+                let orientation_proof =
+                  simple_formula_orientation_proof
+                    ~source_type_env:type_env
+                    ~target_type_env:type_env
+                    type_env formula proof_target_formula chain_name
+                in
+                claims := !claims @
+                  [(final_name, final_target_prop, "exact " ^ orientation_proof ^ ".")];
+                Some (final_name, final_target_prop)
+              end else
+                Some (final_name, replay_target_prop)
+            with Error _ -> None
+          with
+          | Some (name, replay_target_prop) ->
+              uses_vampire_eq_prop_ext := true;
+              add_emitted id name;
+              add_emitted_prop_and_sorts id replay_target_prop target_sorts
+          | None ->
+              add_formula_inference_bridge
+                "predicate_definition_fold_chain" id (source_id :: definition_ids) final_target_prop
+          end
+	      | DefinitionInput (id, result) ->
           let name = simple_fresh_name used_names ("definition_input__" ^ id) in
           let prop, sorts = clause_prop_and_sorts_for_ids id [] result in
           add_emitted id name;
