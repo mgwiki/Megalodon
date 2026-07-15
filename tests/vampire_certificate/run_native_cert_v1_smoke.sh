@@ -980,23 +980,19 @@ if ! rg -q 'Vampire certificate v1 checked 6 steps' "$WORK_DIR/native_cert_v1_fo
   exit 1
 fi
 
-bin/megalodon \
+if bin/megalodon \
   -vampirecertv1closed \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_exhaustiveness_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_fool_exhaustiveness_valid.th0.p \
   -vampirecertv1emit "$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.mg" \
   "$dummy" >"$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.out" \
-  2>"$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.err"
-if rg -n '\b(admit|aby)\b|-allowincompleteqed|bridge_|derived:theory_fool_exhaustiveness' \
-    "$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.mg"; then
-  echo "closed native certificate v1 FOOL-exhaustiveness emitter left an admission or bridge" >&2
+  2>"$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.err"; then
+  echo "closed native certificate v1 FOOL-exhaustiveness accepted the prop_ext helper axiom" >&2
   exit 1
 fi
-bin/megalodon -hf "$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.mg" \
-  >"$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.check.log"
-if ! rg -q 'claim theory_fool_exhaustiveness__b1:' \
-    "$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.mg"; then
-  echo "closed native certificate v1 FOOL-exhaustiveness emitter did not emit a replayed claim" >&2
+if ! rg -q 'zero non-source premises.*helper:prop_ext' \
+    "$WORK_DIR/native_cert_v1_fool_exhaustiveness_closed.err"; then
+  echo "closed native certificate v1 FOOL-exhaustiveness failure did not report prop_ext" >&2
   exit 1
 fi
 
@@ -1009,23 +1005,19 @@ if ! rg -q 'Vampire certificate v1 checked 4 steps' "$WORK_DIR/native_cert_v1_fo
   exit 1
 fi
 
-bin/megalodon \
+if bin/megalodon \
   -vampirecertv1closed \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_distinctness_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_fool_distinctness_valid.th0.p \
   -vampirecertv1emit "$WORK_DIR/native_cert_v1_fool_distinctness_closed.mg" \
   "$dummy" >"$WORK_DIR/native_cert_v1_fool_distinctness_closed.out" \
-  2>"$WORK_DIR/native_cert_v1_fool_distinctness_closed.err"
-if rg -n '\b(admit|aby)\b|-allowincompleteqed|bridge_|derived:theory_fool_distinctness' \
-    "$WORK_DIR/native_cert_v1_fool_distinctness_closed.mg"; then
-  echo "closed native certificate v1 FOOL-distinctness emitter left an admission or bridge" >&2
+  2>"$WORK_DIR/native_cert_v1_fool_distinctness_closed.err"; then
+  echo "closed native certificate v1 FOOL-distinctness accepted the prop_ext helper axiom" >&2
   exit 1
 fi
-bin/megalodon -hf "$WORK_DIR/native_cert_v1_fool_distinctness_closed.mg" \
-  >"$WORK_DIR/native_cert_v1_fool_distinctness_closed.check.log"
-if ! rg -q 'claim theory_fool_distinctness__d1:' \
-    "$WORK_DIR/native_cert_v1_fool_distinctness_closed.mg"; then
-  echo "closed native certificate v1 FOOL-distinctness emitter did not emit a replayed claim" >&2
+if ! rg -q 'zero non-source premises.*helper:prop_ext' \
+    "$WORK_DIR/native_cert_v1_fool_distinctness_closed.err"; then
+  echo "closed native certificate v1 FOOL-distinctness failure did not report prop_ext" >&2
   exit 1
 fi
 
@@ -1062,22 +1054,19 @@ fi
 bin/megalodon -hf "$WORK_DIR/native_cert_v1_formula_cnf_valid_emit.mg" \
   >"$WORK_DIR/native_cert_v1_formula_cnf_valid_emit.check.log"
 
-bin/megalodon \
+if bin/megalodon \
   -vampirecertv1closed \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_formula_cnf_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_formula_cnf_valid.th0.p \
   -vampirecertv1emit "$WORK_DIR/native_cert_v1_formula_cnf_closed.mg" \
   "$dummy" >"$WORK_DIR/native_cert_v1_formula_cnf_closed.out" \
-  2>"$WORK_DIR/native_cert_v1_formula_cnf_closed.err"
-if rg -n '\b(admit|aby)\b|-allowincompleteqed|bridge_' \
-    "$WORK_DIR/native_cert_v1_formula_cnf_closed.mg"; then
-  echo "closed native certificate v1 formula-CNF emitter left an admission or bridge" >&2
+  2>"$WORK_DIR/native_cert_v1_formula_cnf_closed.err"; then
+  echo "closed native certificate v1 formula-CNF accepted the prop_ext helper axiom" >&2
   exit 1
 fi
-bin/megalodon -hf "$WORK_DIR/native_cert_v1_formula_cnf_closed.mg" \
-  >"$WORK_DIR/native_cert_v1_formula_cnf_closed.check.log"
-if ! rg -q 'claim f2:' "$WORK_DIR/native_cert_v1_formula_cnf_closed.mg"; then
-  echo "closed native certificate v1 formula-CNF emitter did not emit the replayed normal-form claim" >&2
+if ! rg -q 'zero non-source premises.*helper:prop_ext' \
+    "$WORK_DIR/native_cert_v1_formula_cnf_closed.err"; then
+  echo "closed native certificate v1 formula-CNF failure did not report prop_ext" >&2
   exit 1
 fi
 

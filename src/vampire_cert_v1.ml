@@ -9152,6 +9152,15 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
   let checked_certificate = check_certificate cert in
   simple_lambda_sort_env := metadata_lambda_sort_env cert;
   let prop_names, term_names = collect_simple_names cert in
+  let insert_after_marker marker additions lines =
+    let rec loop acc = function
+      | [] -> List.rev acc @ additions
+      | head :: tail when head = marker ->
+          List.rev_append acc (head :: additions @ tail)
+      | head :: tail -> loop (head :: acc) tail
+    in
+    loop [] lines
+  in
   let lines = ref
     [
       "Definition True : prop := forall p:prop, p -> p.";
@@ -9165,7 +9174,6 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       "Definition eq : A->A->prop := fun x y:A => forall Q:A->A->prop, Q x y -> Q y x.";
       "End Eq.";
       "Infix = 502 := eq.";
-      "Axiom prop_ext : forall p q:prop, iff p q -> p = q.";
       "Axiom dneg : forall P:prop, ~~P -> P.";
       "Definition vampire_false : prop := False.";
       "Definition vampire_true : prop := True.";
@@ -9215,9 +9223,6 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       "Parameter Eps_set_set_prop : ((set->set->prop)->prop)->set->set->prop.";
       "Axiom vampire_exists_set_set_prop_choice : forall P:(set->set->prop)->prop, vampire_exists_set_set_prop P -> P (Eps_set_set_prop P).";
       "Definition vampire_eq_prop : prop -> prop -> prop := eq prop.";
-      "Theorem vampire_eq_prop_ext : forall p q:prop, (p -> q) -> (q -> p) -> vampire_eq_prop p q.";
-      "exact (fun p q Hpq Hqp => prop_ext p q (fun R H => H Hpq Hqp)).";
-      "Qed.";
       "Theorem vampire_eq_prop_sym : forall A:prop, forall B:prop, vampire_eq_prop A B -> vampire_eq_prop B A.";
       "let A B.";
       "assume H.";
@@ -11544,6 +11549,7 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
       List.map (fun (name, _) -> "proof:" ^ name) proof_assumptions
       @ List.map (fun (name, _) -> "derived:" ^ name) !derived_assumptions
       @ List.map (fun (name, _) -> "bridge:" ^ name) !bridge_assumptions
+      @ (if !uses_vampire_eq_prop_ext then ["helper:prop_ext"] else [])
     in
     match non_source_premises with
     | [] -> ()
@@ -11564,6 +11570,24 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
            ^ String.concat ", " shown
            ^ suffix)
   end;
+  if !uses_vampire_eq_prop_ext then
+    lines :=
+      insert_after_marker
+        "Infix = 502 := eq."
+        [
+          "Axiom prop_ext : forall p q:prop, iff p q -> p = q.";
+        ]
+        !lines;
+  if !uses_vampire_eq_prop_ext then
+    lines :=
+      insert_after_marker
+        "Definition vampire_eq_prop : prop -> prop -> prop := eq prop."
+        [
+          "Theorem vampire_eq_prop_ext : forall p q:prop, (p -> q) -> (q -> p) -> vampire_eq_prop p q.";
+          "exact (fun p q Hpq Hqp => prop_ext p q (fun R H => H Hpq Hqp)).";
+          "Qed.";
+        ]
+        !lines;
   let theorem_assumptions =
     proof_assumptions @ !assumptions @ !derived_assumptions @ !bridge_assumptions
   in

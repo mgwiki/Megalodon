@@ -1819,7 +1819,8 @@ CLOSED_PASS 10
 CORE_CLOSED_PASS 10
 ```
 
-The full committed closed corpus also passes with the new cases included:
+Before the later `prop_ext` tightening below, the full committed closed corpus
+also passed with the new cases included:
 
 ```text
 TMPDIR=/project/tmp JOBS=10 tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh
@@ -1833,7 +1834,8 @@ certificate path can be source-linked and checked without preprocessing steps
 when Vampire starts from already-clausal input.  The next step is to replace or
 extend these clausal seeds toward THF-exported Megalodon obligations by adding a
 certified preprocessing layer rather than folding preprocessing into the core
-count.
+count.  The broad `CLOSED_PASS 157` number is historical and is superseded by
+the stricter `prop_ext` accounting at the end of this response.
 
 ## July 15 Increment: Separate THF Preprocessing Gate
 
@@ -1882,5 +1884,64 @@ separate committed gates:
 
 - `CORE_CLOSED_PASS 10` for source-linked clausal core proofs;
 - `PREPROCESS_CLOSED_PASS 15` for source-linked THF preprocessing plus core;
-- broad `CLOSED_PASS 157` for all committed closed cases, including cases with
-  later macro layers.
+- a historical broad `CLOSED_PASS 157` measurement for all committed closed
+  cases before the later `prop_ext` tightening below.
+
+## July 15 Tightening on `vampire/megalodon3`
+
+One remaining P0 gap was still present after the initial response above:
+generated scripts always declared `Axiom prop_ext`, and closed mode did not
+count the derived helper `vampire_eq_prop_ext` as a non-source dependency. This
+made some FOOL/equality reconstructions look closed even though they relied on
+an unproved propositional-extensionality axiom rather than a Megalodon replay or
+an explicitly approved source/library premise.
+
+The branch now makes that dependency visible and non-qualifying:
+
+- `prop_ext` and `vampire_eq_prop_ext` are emitted only when a non-closed
+  diagnostic reconstruction actually uses them.
+- `-vampirecertv1closed` fails before emission if any step requires that helper,
+  reporting `helper:prop_ext` alongside bridge and derived-premise blockers.
+- The cached and committed closed harnesses reject leaked `Axiom prop_ext`
+  declarations as a defense in depth.
+- FOOL exhaustiveness, FOOL distinctness, and formula-CNF smoke fixtures remain
+  valid structural/native-certificate tests, but their closed-mode checks are
+  now negative until propositional extensionality is discharged in Megalodon or
+  accepted as an explicit library theorem by the qualifying policy.
+- The closed corpus checker uses `-hf` whenever emitted scripts contain axioms,
+  because the project setting explicitly allows classical reasoning (`xm`).
+  This does not re-allow `prop_ext`; it is separately forbidden in closed mode.
+
+Validation after this tightening:
+
+```text
+TMPDIR=/project/tmp ./makeopt
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+
+native certificate v1 smoke test passed
+/project/tmp/native_cert_v1.YPgnjU
+
+TMPDIR=/project/tmp JOBS=10 MIN_CORE=10 RUN_CORE_CASES=1 \
+  tests/vampire_certificate/run_native_cert_v1_core_closed_audit.sh
+
+CORE_ELIGIBLE 10
+EXCLUDED 147
+CLOSED_PASS 10
+CORE_CLOSED_PASS 10
+/project/tmp/native_cert_v1_core_closed_audit.1L1etj
+
+WORK_DIR=/project/tmp/megalodon3_prop_ext_closed_frontier_015640 \
+TMPDIR=/project/tmp \
+PROBLEM_DIR=/project/tmp/source_linked_strict_100_corpus_fresh_041947 \
+JOBS=20 MIN_PASS=0 CLOSED_CERT_V1=1 CHECK_SOURCE_MAP=1 STRICT_CERT_V1=1 \
+EMIT_TIMEOUT=30 CHECK_TIMEOUT=45 \
+tests/vampire_certificate/run_native_emit_cached_parallel.sh \
+  /project/tmp/megalodon3_native_live_current_noorigin_003131
+
+CLOSED_PASS 7
+EMIT_FAIL 206
+```
+
+The drop in broad cached closed count is intentional. It removes cases whose
+only missing dependency was hidden behind `prop_ext`, leaving the audit
+milestone focused on the ten committed restricted source-linked proofs.

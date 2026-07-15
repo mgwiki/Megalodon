@@ -133,7 +133,8 @@ no non-source theorem premises; the summary status is `CLOSED_PASS`. Ordinary
 reconstruction successes if generated scripts contain bridge or derived
 premises. The closed harness also scans emitted scripts for known non-source
 assumption prefixes (`bridge_`, `definition_input__`, `avatar_`, `theory_`,
-and predicate-definition helper assumptions) as a defense in depth; these
+predicate-definition helper assumptions) and leaked `Axiom prop_ext`
+declarations as a defense in depth; these
 premises must be replayed as Megalodon claims before the case can count.
 
 For the audit-recommended restricted milestone, use:
