@@ -1715,10 +1715,6 @@ so its whitelist is the restricted clause-level fragment only:
 
 ```text
 input
-formula_input
-formula_term_input
-formula_term_copy
-formula_copy
 substitute
 resolve
 subsumption_resolution
@@ -1729,49 +1725,32 @@ paramodulate
 contradiction
 ```
 
-The gate deliberately excludes rectification, FOOL elimination, ENNF/CNF
-projection, Skolemization, definition inputs, inequality splitting, AVATAR,
-theory facts, predicate definitions, and other preprocessing macros. If those
-steps appear in a closed proof, the proof may still be a valuable broad
-closed-mode regression, but it is not a core/audit-qualifying proof.
+The gate deliberately excludes formula inputs/copies, rectification, FOOL
+elimination, ENNF/CNF projection, Skolemization, definition inputs, inequality
+splitting, AVATAR, theory facts, predicate definitions, and other preprocessing
+macros. If those steps appear in a closed proof, the proof may still be a
+valuable broad closed-mode regression, but it is not a core/audit-qualifying
+proof.
 
-Running the tightened core audit on the committed closed corpus gives:
+After the clausal seed work below, rerunning the tightened core audit on the
+committed closed corpus gives the requested restricted threshold:
 
 ```text
 TMPDIR=/project/tmp JOBS=10 MIN_CORE=10 RUN_CORE_CASES=1 \
   tests/vampire_certificate/run_native_cert_v1_core_closed_audit.sh
 
-CORE_ELIGIBLE 0
+CORE_ELIGIBLE 10
 EXCLUDED 147
 MIN_CORE 10
+CLOSED_PASS 10
+CORE_CLOSED_PASS 10
 ```
 
-The top excluded rules were:
-
-```text
-140 rectify_formula
-134 fool_formula
-134 cnf_formula_clause
-131 ennf_formula
-130 cnf_literal
-122 equality_symmetry
-120 fool_bool
-75 truth_conflict
-75 fool_exhaustiveness
-48 skolem_formula
-18 definition_input
-15 avatar_split
-15 avatar_refutation
-15 avatar_component
-```
-
-This is the important accounting correction: the current committed closed
-corpus is not yet the ten restricted source-linked core proofs requested by the
-audit. The next milestone should be to generate and commit ten restricted
-Vampire native certificates from a schedule/export mode that avoids the excluded
-preprocessing and AVATAR rules, then make the tightened core audit pass with
-`CORE_CLOSED_PASS 10`. Broad cached `CLOSED_PASS` counts should remain
-secondary until that gate is green.
+This is the important accounting correction: the project now has ten
+committed, source-linked, zero-non-source-premise core proofs, but they are
+already-clausal seed problems. Broad cached `CLOSED_PASS` counts remain
+secondary until the same discipline covers THF-exported Megalodon obligations
+through a certified preprocessing layer.
 
 I also rebuilt Vampire on this branch with:
 
@@ -1835,6 +1814,8 @@ TMPDIR=/project/tmp JOBS=10 MIN_CORE=10 RUN_CORE_CASES=1 \
 
 CORE_ELIGIBLE 10
 EXCLUDED 147
+MIN_CORE 10
+CLOSED_PASS 10
 CORE_CLOSED_PASS 10
 ```
 

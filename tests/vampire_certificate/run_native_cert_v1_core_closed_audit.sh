@@ -22,10 +22,6 @@ ln -sfn "$WORK_DIR" "$TMPDIR/latest_native_cert_v1_core_closed_audit"
 allowed_rules=$(
   cat <<'RULES'
 input
-formula_input
-formula_term_input
-formula_term_copy
-formula_copy
 substitute
 resolve
 subsumption_resolution
