@@ -3483,9 +3483,18 @@ let check_certificate_strict cert =
   check_certificate_with check_step_strict cert
 
 let validate_certificate_core_fragment cert =
+  let has_kernel_instantiation_metadata id =
+    List.exists
+      (fun (step_id, kind, fields) ->
+         step_id = id
+         && kind = "kernel_v1"
+         && field_value "rule" fields = Some "instantiation")
+      cert.metadata.step_extras
+  in
   let allowed = function
     | Input _
-    | Substitute (_, _, [], _)
+    | Substitute (_, _, [], _) -> true
+    | Substitute (id, _, _, _) when has_kernel_instantiation_metadata id -> true
     | Resolve _
     | SubsumptionResolution _
     | Factor _
@@ -3583,6 +3592,25 @@ let native_core_declared_variables cert =
   |> List.filter_map parse_decl
   |> List.sort_uniq compare
 
+let native_core_step_variables cert id =
+  let variable_sort_pair sort =
+    match String.index_opt sort ':' with
+    | Some colon when colon > 0 ->
+        Some
+          (String.sub sort 0 colon,
+           String.sub sort (colon + 1) (String.length sort - colon - 1))
+    | _ -> None
+  in
+  match List.assoc_opt id cert.metadata.step_variable_sorts with
+  | None -> []
+  | Some sorts ->
+      sorts
+      |> List.filter_map variable_sort_pair
+      |> List.map
+           (fun (name, sort) ->
+              (native_core_ident name,
+               native_sort_of_simple_sort (native_core_strip_outer_parens sort)))
+
 let native_core_close_tm ?(depth=0) variables tm =
   let variable_count = List.length variables in
   let rec variable_index index = function
@@ -3650,6 +3678,15 @@ let rec native_core_clause_prop id = function
   | [literal] -> native_core_literal_prop literal
   | literal :: rest ->
       native_core_or (native_core_literal_prop literal) (native_core_clause_prop id rest)
+
+let native_core_step_clause_prop cert variables id clause =
+  let step_variables = native_core_step_variables cert id in
+  let prop =
+    native_core_close_tm
+      (variables @ step_variables)
+      (native_core_clause_prop id clause)
+  in
+  List.fold_right (fun (_, tp) prop -> All (tp, prop)) step_variables prop
 
 let native_core_same_atom left right =
   left = right
@@ -4394,11 +4431,12 @@ let native_core_source_binding source_map id source proposition =
 let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
   let core_steps = validate_certificate_core_fragment cert in
   ignore (check_certificate_strict cert);
+  let variables = native_core_declared_variables cert in
   let source_inputs = ref [] in
   List.iter
     (function
       | Input (id, source, clause) ->
-          let proposition = native_core_clause_prop id clause in
+          let proposition = native_core_step_clause_prop cert variables id clause in
           source_inputs :=
             !source_inputs
             @ [(id, proposition,
@@ -4417,16 +4455,16 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
     | Some index -> index
     | None -> error (id ^ ": native core proof-term checker lost source hypothesis")
   in
-  let variables = native_core_declared_variables cert in
   let variable_types = List.rev (List.map snd variables) in
   let closed_source_context =
     !source_inputs
-    |> List.map (fun (_, prop, _) -> native_core_close_tm variables prop)
+    |> List.map (fun (_, prop, _) -> prop)
     |> List.rev
   in
   let check_step_proof id clause proof =
-    let prop = native_core_close_tm variables (native_core_clause_prop id clause) in
-    let proof = native_core_close_pf variables proof in
+    let step_variables = native_core_step_variables cert id in
+    let prop = native_core_step_clause_prop cert variables id clause in
+    let proof = native_core_close_pf (variables @ step_variables) proof in
     let debug_failure msg =
       if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
         prerr_endline ("native core proof-term debug step " ^ id ^ ": " ^ msg);
@@ -4471,9 +4509,25 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
             error
               (id ^ ": native core proof-term checker supports only identity substitution when the result clause is unchanged");
           store id result parent_proof
-      | Substitute (id, _, _, _) ->
-          error
-            (id ^ ": native core proof-term checker needs explicit instantiation proof data for non-identity substitution")
+      | Substitute (id, parent_id, subst, result) ->
+          let parent_clause, parent_proof = lookup parent_id in
+          let expected = subst_clause subst parent_clause in
+          if not (same_clause_multiset expected result) then
+            error
+              (id ^ ": native core proof-term checker instantiation substitution does not produce result clause");
+          let parent_variables = native_core_step_variables cert parent_id in
+          let proof =
+            List.fold_left
+              (fun proof (name, _) ->
+                 match List.assoc_opt name subst with
+                 | Some tm -> PTmAp (proof, tm)
+                 | None ->
+                     error
+                       (id ^ ": native core proof-term checker instantiation needs an explicit term for parent variable " ^ name))
+              parent_proof
+              parent_variables
+          in
+          store id result proof
       | Resolve (id, left_id, right_id, left_index, right_index, result) ->
           let left_clause, left_proof = lookup left_id in
           let right_clause, right_proof = lookup right_id in

@@ -414,6 +414,18 @@ if ! rg -q 'Vampire certificate v1 native core proof term checked 5 steps' \
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1corepfcheck \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_kernel_instantiation_refutation_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_kernel_instantiation_refutation_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_core_pf_instantiation_substitute.log"
+
+if ! rg -q 'Vampire certificate v1 native core proof term checked 5 steps' \
+    "$WORK_DIR/native_cert_v1_core_pf_instantiation_substitute.log"; then
+  echo "native core proof-term checker did not validate the instantiation substitution seed" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1coreclosed \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_substitute_prop_changed_unsupported.sexp \
