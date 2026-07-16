@@ -271,6 +271,15 @@ let subst_named_tm name tm =
   in
   subst 0 tm
 
+let rec vampire_db_name_tm = function
+  | DB i -> TmH ("db" ^ string_of_int i)
+  | TpAp (m, a) -> TpAp (vampire_db_name_tm m, a)
+  | Ap (m, n) -> Ap (vampire_db_name_tm m, vampire_db_name_tm n)
+  | Lam (tp, body) -> Lam (tp, vampire_db_name_tm body)
+  | Imp (m, n) -> Imp (vampire_db_name_tm m, vampire_db_name_tm n)
+  | All (tp, body) -> All (tp, vampire_db_name_tm body)
+  | tm -> tm
+
 let rec parse_tm = function
   | List [Atom "DB"; n] -> DB (int_atom n)
   | List [Atom "TMH"; h] -> TmH (atom h)
@@ -278,9 +287,10 @@ let rec parse_tm = function
   | List [Atom "TPAP"; m; a] -> TpAp (parse_tm m, parse_tp a)
   | List [Atom "AP"; m; n] -> Ap (parse_tm m, parse_tm n)
   | List [Atom "LAM"; a; m] -> Lam (parse_tp a, parse_tm m)
-  | List [Atom "LAMV"; name; a; m] ->
-      let tp = parse_tp a in
-      Lam (tp, subst_named_tm (atom name) (parse_tm m))
+  | List [Atom "LAMV"; name; a; m]
+  | List [Atom "VLAMV"; name; a; m] ->
+      let _tp = parse_tp a in
+      Ap (TmH "vLAM", vampire_db_name_tm (subst_named_tm (atom name) (parse_tm m)))
   | List [Atom "IMP"; m; n] -> Imp (parse_tm m, parse_tm n)
   | List [Atom "ALL"; a; m] -> All (parse_tp a, parse_tm m)
   | List [Atom "ALLV"; name; a; m] ->

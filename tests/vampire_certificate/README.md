@@ -269,6 +269,12 @@ exactly. `split_dependency` uses a suffixed id such as
 `u123_split_dependency` because it records dependency metadata for an owner unit
 that may already have a clause-producing primitive step.
 
+Native certificates spell Vampire HOL lambdas as `(VLAMV "X" sort body)` in
+new output. This is parsed as the explicit `vLAM`/`dbN` term representation used
+by FOOL preprocessing, not as a Megalodon kernel lambda. The importer still
+accepts older cached `(LAMV ...)` certificates as the same representation so
+the committed closed corpus remains replayable.
+
 `run_native_live_parallel.sh` runs this primitive audit and the `kernel_v1`
 metadata audit by default after a successful live run. Set
 `AUDIT_NATIVE_PRIMITIVES=0` or `AUDIT_KERNEL_V1_METADATA=0` only for
