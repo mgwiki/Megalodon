@@ -5177,10 +5177,23 @@ let native_core_false_from_complement shifted_unit_proof pivot_literal branch_li
       PPfAp (Hyp 0, shifted_unit_proof)
   | _ -> error "native core proof-term checker received non-complementary branch"
 
+let native_core_false_from_complement_proofs left left_proof right right_proof =
+  match left, right with
+  | Pos left_atom, Neg right_atom when native_core_same_atom left_atom right_atom ->
+      PPfAp (right_proof, left_proof)
+  | Neg left_atom, Pos right_atom when native_core_same_atom left_atom right_atom ->
+      PPfAp (left_proof, right_proof)
+  | _ -> error "native core proof-term checker expected complementary pivots"
+
 let native_core_branch_from_complement target_prop unit_proof pivot_literal branch_literal =
   let shifted_unit_proof = pfshift 0 1 unit_proof in
   PTmAp
     (native_core_false_from_complement shifted_unit_proof pivot_literal branch_literal,
+     target_prop)
+
+let native_core_branch_from_complement_proofs target_prop unit_literal unit_proof branch_literal branch_proof =
+  PTmAp
+    (native_core_false_from_complement_proofs branch_literal branch_proof unit_literal unit_proof,
      target_prop)
 
 let native_core_resolve_binary_unit id binary_clause binary_proof binary_index unit_clause unit_proof unit_index result =
@@ -5231,7 +5244,8 @@ let native_core_resolve_clause_unit id clause clause_proof clause_index unit_cla
         match clause, selected_index with
         | [], _ -> error (id ^ ": native core proof-term clause/unit resolution pivot index is out of bounds")
         | [literal], Some 0 when literal = selected ->
-            native_core_branch_from_complement target_prop unit_proof unit_literal literal
+            native_core_branch_from_complement_proofs
+              target_prop unit_literal unit_proof literal proof
         | [literal], Some _ ->
             error (id ^ ": native core proof-term clause/unit resolution pivot index is out of bounds")
         | [literal], None ->
@@ -5277,14 +5291,6 @@ let native_core_false_from_two_pivots main_pivot side_pivot =
   | Neg main_atom, Pos side_atom when native_core_same_atom main_atom side_atom ->
       PPfAp (Hyp 1, Hyp 0)
   | _ -> error "native core proof-term checker expected complementary binary pivots"
-
-let native_core_false_from_complement_proofs left left_proof right right_proof =
-  match left, right with
-  | Pos left_atom, Neg right_atom when native_core_same_atom left_atom right_atom ->
-      PPfAp (right_proof, left_proof)
-  | Neg left_atom, Pos right_atom when native_core_same_atom left_atom right_atom ->
-      PPfAp (left_proof, right_proof)
-  | _ -> error "native core proof-term checker expected complementary pivots"
 
 let native_core_resolve_binary_binary id main_clause main_proof main_index side_clause side_proof side_index result =
   match main_clause, side_clause, result with
