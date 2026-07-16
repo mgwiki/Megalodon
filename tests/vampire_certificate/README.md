@@ -97,6 +97,22 @@ Set `STRICT_CERT_V1=1` to run the live certificates through
 `-vampirecertv1strict`; these stricter runs require source maps and traced SAT
 proofs for AVATAR refutations.
 
+To measure the current real-case proof-term frontier without rerunning Vampire,
+run:
+
+```sh
+tests/vampire_certificate/run_native_cert_v1_real_core_frontier.sh
+```
+
+This wraps the closed-corpus core audit, splits eligible cases into synthetic
+`core.cnf.*` fixtures and real `hammer.*` certificates, and writes blocker
+counts under `/project/tmp/latest_native_cert_v1_real_core_frontier`. On
+`vampire/megalodon5` the expected result is `REAL_CORE_ELIGIBLE 0`,
+`SYNTHETIC_CORE_ELIGIBLE 23`, `EXCLUDED 149`, with first blockers
+`formula_term_input` and `formula_input`. That result is not a failure of the
+clausal kernel; it means real examples need proof-producing source and
+preprocessing certificates before their later clausal refutations can count.
+
 For repeatable non-overlapping corpus slices, use:
 
 ```sh

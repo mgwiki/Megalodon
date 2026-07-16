@@ -2,7 +2,7 @@
 
 Date: 2026-07-16
 
-Status: design plan for the `vampire/megalodon4` branch and successors
+Status: design plan for the `vampire/megalodon5` branch and successors
 
 Post-audit note, 2026-07-16: `reports/audit-REPORT-2026-07-16.md`
 changes the milestone order. The native preprocessing frontier described
@@ -11,6 +11,16 @@ certificate-derived `Known` propositions. The first milestone is now a trust
 reset: dynamic known-theorem insertion must be absent from counted native
 paths. The strict live 100 run is integration/metadata evidence, not closed
 proof reconstruction.
+
+Second post-audit note, 2026-07-16: the `vampire/megalodon5` real-core
+frontier audit confirms that no non-synthetic closed hammer certificate enters
+the current native proof-term core. The 23 `CORE_PF_PASS` cases are still only
+`core.cnf.*` fixtures. All 149 real closed hammer certificates are stopped by
+source/preprocessing entry rules before the clausal kernel can qualify them.
+The next milestone is therefore not another corpus selection pass. It is a
+proof-producing source/preprocessing certificate layer for `formula_input` and
+`formula_term_input`, plus continued Vampire-side primitive lowering for the
+clausal part that follows.
 
 Primary repositories:
 
@@ -47,13 +57,18 @@ replay engine is no longer the architectural target. It is a temporary oracle
 and debugging tool. Counted success should increasingly move to the native
 `Syntax.pf` path and then to original-context reconstruction.
 
-The immediate sequencing is:
+The immediate sequencing is now:
 
-1. Stabilize the existing primitive certificate frontier and metadata audits.
-2. Move frequent Vampire macros onto a shared Vampire-side primitive builder.
-3. Expand native Megalodon proof-term checking for the same primitive kernel.
-4. Add original-context source glue and set-equality/reflexivity handling.
-5. Add certified preprocessing transformations, including Skolemization.
+1. Keep certificate-derived `Known` insertion out of every counted native path.
+2. Make `formula_input` and `formula_term_input` proof-producing from the
+   original Megalodon source context, including set-generated equalities by
+   reflexivity and conjecture negation.
+3. Add the first Smolka-style transformation proofs needed to justify real
+   clausal inputs: rectification, FOOL/boolean normalization, ENNF, CNF
+   projection, and then Skolemization.
+4. Move frequent Vampire clausal macros onto a shared Vampire-side primitive
+   builder so the post-preprocessing refutation is a small kernel proof.
+5. Expand native Megalodon proof-term checking for the same primitive kernel.
 6. Only then run the final fresh 100-theorem gate as a qualifying result.
 
 ## Purpose
@@ -114,7 +129,7 @@ The plan below addresses these gaps.
 ## Measured Baseline on 2026-07-16
 
 The following results define the current local baseline on
-`vampire/megalodon4`.
+`vampire/megalodon5`.
 
 Strict live 100-case gate:
 
@@ -144,7 +159,7 @@ exported-THF-bound, source-linked, structurally checked certificate data. It
 is not closed proof reconstruction and not Tier 1 original-context proof
 reconstruction.
 
-Core native proof-term gate:
+Synthetic core native proof-term gate:
 
 ```sh
 TMPDIR=/project/tmp JOBS=10 \
@@ -163,6 +178,30 @@ Artifacts:
 - `/project/tmp/native_cert_v1_core_closed_audit.aoXKNK`
 - `/project/tmp/latest_native_cert_v1_core_closed_audit`
 
+Real closed hammer frontier:
+
+```sh
+TMPDIR=/project/tmp JOBS=10 \
+tests/vampire_certificate/run_native_cert_v1_real_core_frontier.sh
+```
+
+Result:
+
+- `REAL_CORE_ELIGIBLE 0`
+- `SYNTHETIC_CORE_ELIGIBLE 23`
+- `EXCLUDED 149`
+
+The first excluded-rule distribution is:
+
+- `formula_term_input`: 126
+- `formula_input`: 23
+
+This is now the controlling blocker for real examples. A real hammer proof
+cannot count merely because its later clausal steps contain `resolve`,
+`paramodulate`, `factor`, or `equality_resolution`; its clausal inputs must
+first be proved from the original Megalodon context without dynamic `Known`
+insertion.
+
 The first blockers beyond this frontier are not clausal primitive failures.
 They are mostly source/preprocessing and macro territory:
 
@@ -178,9 +217,10 @@ They are mostly source/preprocessing and macro territory:
 - AVATAR/split rules
 
 This confirms the next architectural split: do not grow broad Megalodon
-reconstruction to handle these as opaque replay tricks. Push clausal macros
-down to Vampire-side primitive steps, and handle source transformations in a
-separate certified preprocessing layer.
+reconstruction to handle these as opaque replay tricks. First make the
+source/preprocessing layer proof-producing for real inputs; in parallel, push
+clausal macros down to Vampire-side primitive steps so the already justified
+clauses can be checked by the small kernel.
 
 ## Design Principles
 

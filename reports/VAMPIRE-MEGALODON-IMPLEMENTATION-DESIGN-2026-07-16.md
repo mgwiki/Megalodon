@@ -22,6 +22,14 @@ integration and metadata evidence. Counted proof reconstruction now starts
 from the genuine `-vampirecertv1corepfcheck` seed and from future
 preprocessing transformations that do not use dynamic known-theorem insertion.
 
+Second post-audit note, 2026-07-16: the real-core frontier audit on
+`vampire/megalodon5` found `REAL_CORE_ELIGIBLE 0`,
+`SYNTHETIC_CORE_ELIGIBLE 23`, and `EXCLUDED 149`. The first blockers for real
+closed hammer certificates are `formula_term_input` and `formula_input`, not
+missing clausal proof-term templates. This document therefore treats
+source/preprocessing proof production as the next qualifying gate, with
+Vampire-side clausal primitive lowering proceeding in parallel.
+
 The purpose is to stop ad-hoc growth. A new change is aligned with this plan
 only if it does one of the following:
 
@@ -80,7 +88,10 @@ Current positive evidence, as reclassified by the July 16 audit:
   native-AST plumbing. It is not qualifying proof-term evidence while it relies
   on certificate-derived `Known` propositions.
 - The native core proof-term audit passes on the current 23 eligible
-  core-closed cases.
+  core-closed cases, all of which are synthetic `core.cnf.*` fixtures.
+- The real closed hammer frontier is measured and reproducible: zero real
+  hammer cases currently pass the core proof-term gate, because all real cases
+  first require source/preprocessing proof obligations.
 - Source formulas are checked for the supported THF fragment.
 - Closed modes reject bridge and derived assumptions.
 
@@ -96,6 +107,9 @@ Current limitations:
   lowered to simple kernel steps.
 - Skolemization and source-to-clause transformations are only partially
   proof-producing.
+- `formula_input` and `formula_term_input` are the immediate real-case
+  blockers and must be linked to original Megalodon facts or generated
+  preprocessing proofs before downstream clausal reconstruction can count.
 - Set-command generated equalities still need explicit original-context
   reflexivity handling.
 - AVATAR/split proof composition remains transitional.
@@ -121,6 +135,19 @@ Responsibilities:
 - prove rectification, FOOL, ENNF, CNF, definition introduction, and
   Skolemization transformations;
 - produce Megalodon proof terms for the generated clause inputs.
+
+Immediate scope:
+
+- `formula_input`: prove the exported formula directly from a source origin or
+  from a generated source fact such as a conjecture-negation wrapper.
+- `formula_term_input`: prove the certificate-level formula term from the
+  corresponding source formula, including the boolean/formula-term coercion
+  used by the THF export.
+- set-command equalities: do not look for a source claim; prove them by
+  reflexivity or definitional conversion in the original Megalodon context.
+- Skolemization: introduce a transformation certificate carrying the source
+  formula, result formula, introduced symbols, replaced variables, and the
+  freshness/dependency data needed for a Megalodon proof term.
 
 Non-responsibilities:
 
@@ -200,6 +227,16 @@ Required macro lowering:
 
 The Vampire fork should gain an explicit primitive certificate builder instead
 of emitting every constructor directly from scattered printer logic.
+
+The builder is still required, but the real-core audit changes its role in the
+next milestone. It is not enough to lower later `superposition`, `rewrite`, or
+unit-resulting-resolution steps if every real certificate remains blocked at
+`formula_input`/`formula_term_input`. Vampire should therefore also print
+source/preprocessing transformation records in the same disciplined style:
+explicit parent formulas, result formulas, source ids, variable/symbol sorts,
+renaming maps, transformation paths, Skolem introductions, and formula-term
+coercion data. Megalodon should check those records; it should not synthesize
+missing Smolka transformations from before/after formulas.
 
 Proposed internal shape:
 
