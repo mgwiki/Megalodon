@@ -262,7 +262,7 @@ let subst_named_tm name tm =
   let rec subst depth = function
     | TmH h when h = name -> DB depth
     | TpAp (m, a) -> TpAp (subst depth m, a)
-    | Ap (TmH "vLAM", body) -> Ap (TmH "vLAM", subst (depth + 1) body)
+    | Ap (TmH "vLAM", body) -> Ap (TmH "vLAM", subst depth body)
     | Ap (m, n) -> Ap (subst depth m, subst depth n)
     | Lam (tp, body) -> Lam (tp, subst (depth + 1) body)
     | Imp (m, n) -> Imp (subst depth m, subst depth n)
@@ -280,6 +280,42 @@ let rec vampire_db_name_tm = function
   | All (tp, body) -> All (tp, vampire_db_name_tm body)
   | tm -> tm
 
+let subst_vlam_named_tm name tm =
+  let rec subst depth = function
+    | TmH h when h = name -> TmH ("db" ^ string_of_int depth)
+    | TpAp (m, a) -> TpAp (subst depth m, a)
+    | Ap (TmH "vLAM", body) -> Ap (TmH "vLAM", subst (depth + 1) body)
+    | Ap (m, n) -> Ap (subst depth m, subst depth n)
+    | Lam (tp, body) -> Lam (tp, subst depth body)
+    | Imp (m, n) -> Imp (subst depth m, subst depth n)
+    | All (tp, body) -> All (tp, subst depth body)
+    | tm -> tm
+  in
+  subst 0 tm
+
+let vampire_db_index_tm tm =
+  let db_name_index name =
+    if String.length name > 2 && String.sub name 0 2 = "db" then
+      try Some (int_of_string (String.sub name 2 (String.length name - 2)))
+      with Failure _ -> None
+    else None
+  in
+  let rec convert depth = function
+    | TmH name ->
+        begin match db_name_index name with
+        | Some index -> DB (depth + index)
+        | None -> TmH name
+        end
+    | DB index when index >= depth -> DB (index + 1)
+    | TpAp (m, a) -> TpAp (convert depth m, a)
+    | Ap (m, n) -> Ap (convert depth m, convert depth n)
+    | Lam (tp, body) -> Lam (tp, convert (depth + 1) body)
+    | Imp (m, n) -> Imp (convert depth m, convert depth n)
+    | All (tp, body) -> All (tp, convert (depth + 1) body)
+    | tm -> tm
+  in
+  convert 0 tm
+
 let rec parse_tm = function
   | List [Atom "DB"; n] -> DB (int_atom n)
   | List [Atom "TMH"; h] -> TmH (atom h)
@@ -290,7 +326,7 @@ let rec parse_tm = function
   | List [Atom "LAMV"; name; a; m]
   | List [Atom "VLAMV"; name; a; m] ->
       let _tp = parse_tp a in
-      Ap (TmH "vLAM", vampire_db_name_tm (subst_named_tm (atom name) (parse_tm m)))
+      Ap (TmH "vLAM", subst_vlam_named_tm (atom name) (parse_tm m))
   | List [Atom "IMP"; m; n] -> Imp (parse_tm m, parse_tm n)
   | List [Atom "ALL"; a; m] -> All (parse_tp a, parse_tm m)
   | List [Atom "ALLV"; name; a; m] ->
@@ -1696,6 +1732,28 @@ and ennf_neg tm =
   | Ap (Ap (TmH "vampire_and", left), right) -> vampire_or (ennf_neg left) (ennf_neg right)
   | _ -> neg_formula tm
 
+let rec ennf_lambda_to_vlam_tm tm =
+  let rec body depth = function
+    | DB i when i = depth -> TmH "db0"
+    | DB i when i > depth -> DB (i - 1)
+    | TpAp (m, a) -> TpAp (body depth m, a)
+    | Ap (m, n) -> Ap (body depth m, body depth n)
+    | Lam (_, nested) -> Ap (TmH "vLAM", body 0 nested)
+    | Imp (m, n) -> Imp (body depth m, body depth n)
+    | All (tp, nested) -> All (tp, body (depth + 1) nested)
+    | tm -> tm
+  in
+  match tm with
+  | Lam (_, body_tm) -> Ap (TmH "vLAM", body 0 body_tm)
+  | TpAp (m, a) -> TpAp (ennf_lambda_to_vlam_tm m, a)
+  | Ap (m, n) -> Ap (ennf_lambda_to_vlam_tm m, ennf_lambda_to_vlam_tm n)
+  | Imp (m, n) -> Imp (ennf_lambda_to_vlam_tm m, ennf_lambda_to_vlam_tm n)
+  | All (tp, body_tm) -> All (tp, ennf_lambda_to_vlam_tm body_tm)
+  | tm -> tm
+
+let same_ennf_tm expected target =
+  expected = target || ennf_lambda_to_vlam_tm expected = target
+
 let rec skolemize_formula_tm subst tm =
   match tm with
   | Imp (left, right) -> Imp (skolemize_formula_tm subst left, skolemize_formula_tm subst right)
@@ -1705,6 +1763,11 @@ let rec skolemize_formula_tm subst tm =
   | Ap (TmH "vampire_exists_prop", Lam (_, body)) ->
       skolemize_formula_tm subst (subst_tm subst body)
   | Ap (TmH "vampire_exists_prop", Ap (TmH "vLAM", body)) ->
+      let subst =
+        match subst with
+        | [(_, skolem_tm)] -> ("db0", skolem_tm) :: subst
+        | _ -> subst
+      in
       skolemize_formula_tm subst (subst_tm subst body)
   | TpAp (m, a) -> TpAp (skolemize_formula_tm subst m, a)
   | Ap (m, n) -> Ap (skolemize_formula_tm subst m, skolemize_formula_tm subst n)
@@ -2195,13 +2258,25 @@ let check_ennf_formula checked id parent_id source pairs result =
        | None -> ()
        end;
        let expected = ennf_pos pair.ennf_pair_source in
-       if expected <> pair.ennf_pair_target then
+       if not (same_ennf_tm expected pair.ennf_pair_target) then begin
+         debug_certificate_mismatch id expected pair.ennf_pair_target;
+         if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+           prerr_endline
+             (id ^ " expected_ennf_vlam: "
+              ^ debug_tm (ennf_lambda_to_vlam_tm expected));
          error
-           (id ^ ": ennf_formula pair target does not match deterministic ENNF transformation"))
+           (id ^ ": ennf_formula pair target does not match deterministic ENNF transformation")
+       end)
     pairs;
   let expected = ennf_pos parent_formula in
-  if expected <> result then
+  if not (same_ennf_tm expected result) then begin
+    debug_certificate_mismatch id expected result;
+    if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+      prerr_endline
+        (id ^ " expected_ennf_vlam: "
+         ^ debug_tm (ennf_lambda_to_vlam_tm expected));
     error (id ^ ": ennf_formula result does not match deterministic ENNF transformation")
+  end
 
 let rec head_symbol_of_tm = function
   | TmH name -> Some name
@@ -2265,8 +2340,10 @@ let check_skolem_formula checked id parent_id source introductions subst result 
   if expected <> result
     && normalize_bool_equality_orientation expected <> normalize_bool_equality_orientation result
     && normalize_equality_orientation expected <> normalize_equality_orientation result
-    && not (List.exists matches candidates) then
+    && not (List.exists matches candidates) then begin
+    debug_certificate_mismatch id expected result;
     error (id ^ ": skolem_formula result does not match explicit skolem substitution")
+  end
 
 let check_skolem_formula_computed checked parent_id subst =
   let parent_formula = lookup_formula checked parent_id in
@@ -7094,6 +7171,14 @@ let native_core_fool_formula_proof
 let native_core_ennf_formula_proof id variables step_variables source target proof =
   let source = native_core_close_tm (variables @ step_variables) source in
   let target = native_core_close_tm (variables @ step_variables) target in
+  let native_core_exists_body source_tp = function
+    | Ap (TmH "vampire_exists_prop", Lam (target_tp, target_body))
+        when source_tp = target_tp ->
+        Some target_body
+    | Ap (TmH "vampire_exists_prop", Ap (TmH "vLAM", target_body)) ->
+        Some (vampire_db_index_tm target_body)
+    | _ -> None
+  in
   let rec convert source target proof =
     if native_core_formula_prop source = native_core_formula_prop target then proof
     else
@@ -7126,6 +7211,8 @@ let native_core_ennf_formula_proof id variables step_variables source target pro
             |> native_core_normalize_bool_constants
           in
           if target_left_prop <> source_left_prop then
+            debug_certificate_mismatch id source_left_prop target_left_prop;
+          if target_left_prop <> source_left_prop then
             error
               (id ^ ": native preprocess proof-term ennf_formula expected not-implication to conjunction");
           let left_proof =
@@ -7157,9 +7244,13 @@ let native_core_ennf_formula_proof id variables step_variables source target pro
           in
           native_core_and_intro
             source_left_prop target_right_prop left_proof right_proof
-      | Imp (All (source_tp, source_body), source_false),
-        Ap (TmH "vampire_exists_prop", Lam (target_tp, target_body))
-          when source_false = native_core_false && source_tp = target_tp ->
+      | Imp (All (source_tp, source_body), source_false), target
+          when source_false = native_core_false ->
+          begin match native_core_exists_body source_tp target with
+          | None ->
+              error
+                (id ^ ": native preprocess proof-term ennf_formula expected negated universal to existential")
+          | Some target_body ->
           let source_body_prop =
             native_core_formula_prop source_body
             |> native_core_normalize_bool_constants
@@ -7169,7 +7260,7 @@ let native_core_ennf_formula_proof id variables step_variables source target pro
             |> native_core_normalize_bool_constants
           in
           let source_predicate = Lam (source_tp, source_body_prop) in
-          let target_predicate = Lam (target_tp, target_body_prop) in
+          let target_predicate = Lam (source_tp, target_body_prop) in
           let pointwise_proof =
             TLam
               (source_tp,
@@ -7189,6 +7280,7 @@ let native_core_ennf_formula_proof id variables step_variables source target pro
                    target_predicate),
                 pointwise_proof),
              proof)
+          end
       | Imp (source_left, source_right),
         Ap (Ap (TmH "vampire_or", target_left), target_right) ->
           let source_left_prop = native_core_formula_prop source_left in
@@ -9238,7 +9330,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
       | EnnfFormula (id, parent_id, _source, _pairs, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
           let expected = ennf_pos parent_formula in
-          if expected <> result then
+          if not (same_ennf_tm expected result) then
             error (id ^ ": ennf_formula result does not match deterministic ENNF transformation");
           let step_variables = native_core_step_variables cert parent_id in
           store_formula id result
