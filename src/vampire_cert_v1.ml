@@ -4473,13 +4473,15 @@ let validate_kernel_v1_metadata_contracts cert =
                  | None -> ()
                  end;
                  require_field_int id fields "result_literal_count" (List.length result);
-                 let side_parent_matches resolve_side_parent =
-                   if side_subst = [] then
-                     resolve_side_parent = side_parent_id
+                 let rec side_parent_matches resolve_side_parent =
+                   if side_subst = [] && resolve_side_parent = side_parent_id then
+                     true
                    else
                      match Hashtbl.find_opt step_by_id resolve_side_parent with
                      | Some (Substitute (_, subst_parent_id, subst, _)) ->
                          subst_parent_id = side_parent_id && subst = side_subst
+                     | Some (EqualitySymmetry (_, parent_id, _, _)) ->
+                         side_parent_matches parent_id
                      | _ -> false
                  in
                  let has_matching_resolve =
