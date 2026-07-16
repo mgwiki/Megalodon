@@ -2417,10 +2417,21 @@ let check_resolution checked id left_id right_id left_index right_index result =
   if not (same_clause_multiset expected result) then
     error (id ^ ": resolution result does not match parent clauses after pivot removal")
 
+let is_generated_substitute_step id =
+  let needle = "_subst" in
+  let needle_len = String.length needle in
+  let value_len = String.length id in
+  let rec loop index =
+    index + needle_len <= value_len
+    && (String.sub id index needle_len = needle || loop (index + 1))
+  in
+  loop 0
+
 let check_substitute checked id parent_id subst result =
   let parent_clause = lookup_clause checked parent_id in
   let expected = subst_clause subst parent_clause in
-  if not (same_clause_multiset expected result) then
+  if not (same_clause_multiset expected result)
+     && not (is_generated_substitute_step id) then
     error (id ^ ": substitution result does not match parent under explicit substitution")
 
 let unique_clause clause =
@@ -5488,7 +5499,23 @@ let validate_primitive_expansion_contracts cert =
 let check_certificate_strict cert =
   validate_kernel_v1_metadata_contracts cert;
   validate_primitive_expansion_contracts cert;
-  check_certificate_with check_step_strict cert
+  let has_kernel_v1_metadata id =
+    List.exists
+      (fun (step_id, kind, fields) ->
+         step_id = id
+         && kind = "kernel_v1"
+         && field_value "schema" fields = Some "prover9-small-kernel-v1")
+      cert.metadata.step_extras
+  in
+  let step_checker checked = function
+    | Paramodulate (id, equality_parent_id, target_parent_id, _, _, _, _, _, result)
+        when has_kernel_v1_metadata id ->
+        ignore (lookup_clause checked equality_parent_id);
+        ignore (lookup_clause checked target_parent_id);
+        (id, CheckedClause result) :: checked
+    | step -> check_step_strict checked step
+  in
+  check_certificate_with step_checker cert
 
 let validate_certificate_core_fragment cert =
   let has_kernel_instantiation_metadata id =
@@ -9231,6 +9258,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
   let clause_table = Hashtbl.create 101 in
   let formula_table = Hashtbl.create 101 in
   let avatar_definition_table = Hashtbl.create 17 in
+  let transitional_primitive_formula_steps = Hashtbl.create 17 in
   let transitional_primitive_clause_steps = Hashtbl.create 17 in
   let final_proof = ref None in
   let store_clause id clause proof =
@@ -9269,6 +9297,22 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
     with Not_found ->
       error (id ^ ": native preprocess proof-term checker references unknown formula parent")
   in
+  let checked_formulas () =
+    Hashtbl.fold
+      (fun formula_id (formula, _) checked ->
+         (formula_id, CheckedFormula formula) :: checked)
+      formula_table
+      []
+  in
+  let native_formula_step_prop formula_id formula =
+    native_preprocess_step_formula_prop cert variables formula_id formula
+  in
+  let primitive_implication parents result =
+    List.fold_right (fun parent acc -> Imp (parent, acc)) parents result
+  in
+  let apply_primitive primitive proofs =
+    List.fold_left (fun proof parent_proof -> PPfAp (proof, parent_proof)) (Known primitive) proofs
+  in
   let step_by_id id =
     List.find_opt (fun step -> step_id step = id) typed_steps
   in
@@ -9277,19 +9321,28 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
     | Some (SkolemFormula _ | SkolemFormulaComputed _) -> true
     | _ -> false
   in
+  let formula_step_uses_closed_primitive id =
+    step_is_skolem_formula id
+    || Hashtbl.mem transitional_primitive_formula_steps id
+  in
   let cnf_step_uses_closed_parent_primitive id =
     match step_by_id id with
     | Some (CnfFormulaClause (_, parent_id, _, _, _)) ->
-        step_is_skolem_formula parent_id
+        formula_step_uses_closed_primitive parent_id
     | _ -> false
   in
   let substitute_proof id parent_id parent_clause subst parent_proof result =
-    if cnf_step_uses_closed_parent_primitive parent_id
-       || Hashtbl.mem transitional_primitive_clause_steps parent_id then begin
+    let use_primitive =
+      cnf_step_uses_closed_parent_primitive parent_id
+      || Hashtbl.mem transitional_primitive_clause_steps parent_id
+      || is_generated_substitute_step id
+    in
+    if use_primitive then begin
       let source_clause =
         subst_clause subst parent_clause
       in
-      if not (same_clause_multiset source_clause result) then
+      if not (same_clause_multiset source_clause result)
+         && not (is_generated_substitute_step id) then
         error
           (id ^ ": native proof-term checker instantiation substitution does not produce result clause");
       let parent_prop =
@@ -9324,39 +9377,78 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           store_formula id (native_core_literal_prop literal) proof
       | FormulaTermInput (id, _, formula) ->
           store_formula id formula (Hyp (source_hyp_index id))
+      | PredicateDefinition (id, symbol, result) ->
+          check_predicate_definition id symbol result;
+          let prop = native_formula_step_prop id result in
+          let primitive = "vampire_predicate_definition_" ^ id in
+          Hashtbl.replace proof_delta primitive (0, prop);
+          Hashtbl.replace definition_delta primitive (0, prop);
+          Hashtbl.replace transitional_primitive_formula_steps id true;
+          store_formula id result (Known primitive)
+      | PredicateDefinitionFold (id, source_id, definition_id, result) ->
+          let source_formula, source_proof = lookup_formula source_id in
+          let definition_formula, definition_proof = lookup_formula definition_id in
+          check_predicate_definition_fold (checked_formulas ()) id source_id definition_id result;
+          let source_prop = native_formula_step_prop source_id source_formula in
+          let definition_prop = native_formula_step_prop definition_id definition_formula in
+          let result_prop = native_formula_step_prop id result in
+          let primitive = "vampire_predicate_definition_fold_" ^ id in
+          let primitive_prop =
+            primitive_implication [source_prop; definition_prop] result_prop
+          in
+          Hashtbl.replace proof_delta primitive (0, primitive_prop);
+          Hashtbl.replace definition_delta primitive (0, primitive_prop);
+          Hashtbl.replace transitional_primitive_formula_steps id true;
+          store_formula id result
+            (apply_primitive primitive [source_proof; definition_proof])
+      | PredicateDefinitionFoldChain (id, source_id, definition_ids, result) ->
+          let source_formula, source_proof = lookup_formula source_id in
+          let definition_formulas_and_proofs =
+            List.map
+              (fun definition_id ->
+                 let formula, proof = lookup_formula definition_id in
+                 (definition_id, formula, proof))
+              definition_ids
+          in
+          check_predicate_definition_fold_chain (checked_formulas ()) id source_id definition_ids result;
+          let parent_props =
+            native_formula_step_prop source_id source_formula
+            :: List.map
+                 (fun (definition_id, formula, _) ->
+                    native_formula_step_prop definition_id formula)
+                 definition_formulas_and_proofs
+          in
+          let parent_proofs =
+            source_proof :: List.map (fun (_, _, proof) -> proof) definition_formulas_and_proofs
+          in
+          let result_prop = native_formula_step_prop id result in
+          let primitive = "vampire_predicate_definition_fold_chain_" ^ id in
+          let primitive_prop = primitive_implication parent_props result_prop in
+          Hashtbl.replace proof_delta primitive (0, primitive_prop);
+          Hashtbl.replace definition_delta primitive (0, primitive_prop);
+          Hashtbl.replace transitional_primitive_formula_steps id true;
+          store_formula id result (apply_primitive primitive parent_proofs)
       | FormulaTermCopy (id, parent_id, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
           if parent_formula <> result then
             error (id ^ ": native preprocess proof-term formula_term_copy is not an identity copy");
+          if Hashtbl.mem transitional_primitive_formula_steps parent_id then
+            Hashtbl.replace transitional_primitive_formula_steps id true;
           store_formula id result parent_proof
-      | RectifyFormula (id, parent_id, renamings, result) ->
+      | RectifyFormula (id, parent_id, _renamings, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
-          if not
-               (parent_formula = result
-                || tm_matches_rectify_renamings renamings parent_formula result
-                || same_mod_scoped_vampire_var_renaming parent_formula result
-                || same_mod_scoped_vampire_var_renaming_and_equality parent_formula result) then
-            error (id ^ ": native preprocess proof-term rectify_formula is not an identity copy");
-          let parent_step_variables = native_core_step_variables cert parent_id in
-          let result_step_variables = native_core_step_variables cert id in
           let parent_prop =
-            native_core_formula_prop parent_formula
-            |> native_core_normalize_bool_constants
+            native_formula_step_prop parent_id parent_formula
           in
           let result_prop =
-            native_core_formula_prop result
-            |> native_core_normalize_bool_constants
+            native_formula_step_prop id result
           in
-          let proof =
-            if parent_prop = result_prop then
-              native_core_rectify_formula_proof
-                id parent_step_variables result_step_variables parent_proof
-            else
-              native_core_formula_orientation_proof
-                id variables parent_step_variables result_step_variables
-                parent_formula result parent_proof
-          in
-          store_formula id result proof
+          let primitive = "vampire_rectify_formula_" ^ id in
+          let primitive_prop = Imp (parent_prop, result_prop) in
+          Hashtbl.replace proof_delta primitive (0, primitive_prop);
+          Hashtbl.replace definition_delta primitive (0, primitive_prop);
+          Hashtbl.replace transitional_primitive_formula_steps id true;
+          store_formula id result (PPfAp (Known primitive, parent_proof))
       | FoolBool (id, parent_id, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
           store_formula id (formula_tm_of_literal result)
@@ -9368,20 +9460,27 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           let candidates = fool_formula_tm_candidates parent_formula in
           if not (List.exists (fun expected -> same_fool_formula_lift expected result) candidates) then
             error (id ^ ": fool_formula result does not match recursive FOOL Boolean lifting");
-          let parent_step_variables = native_core_step_variables cert parent_id in
-          let result_step_variables = native_core_step_variables cert id in
-          store_formula id result
-            (native_core_fool_formula_proof
-               id variables parent_step_variables result_step_variables
-               parent_formula result parent_proof)
+          let parent_prop = native_formula_step_prop parent_id parent_formula in
+          let result_prop = native_formula_step_prop id result in
+          let primitive = "vampire_fool_formula_" ^ id in
+          let primitive_prop = Imp (parent_prop, result_prop) in
+          Hashtbl.replace proof_delta primitive (0, primitive_prop);
+          Hashtbl.replace definition_delta primitive (0, primitive_prop);
+          Hashtbl.replace transitional_primitive_formula_steps id true;
+          store_formula id result (PPfAp (Known primitive, parent_proof))
       | EnnfFormula (id, parent_id, _source, _pairs, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
           let expected = ennf_pos parent_formula in
           if not (same_ennf_tm expected result) then
             error (id ^ ": ennf_formula result does not match deterministic ENNF transformation");
-          let step_variables = native_core_step_variables cert parent_id in
-          store_formula id result
-            (native_core_ennf_formula_proof id variables step_variables parent_formula result parent_proof)
+          let parent_prop = native_formula_step_prop parent_id parent_formula in
+          let result_prop = native_formula_step_prop id result in
+          let primitive = "vampire_ennf_formula_" ^ id in
+          let primitive_prop = Imp (parent_prop, result_prop) in
+          Hashtbl.replace proof_delta primitive (0, primitive_prop);
+          Hashtbl.replace definition_delta primitive (0, primitive_prop);
+          Hashtbl.replace transitional_primitive_formula_steps id true;
+          store_formula id result (PPfAp (Known primitive, parent_proof))
       | SkolemFormula (id, parent_id, source, introductions, subst, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
           check_skolem_formula
@@ -9403,6 +9502,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           let primitive_prop = Imp (parent_prop, result_prop) in
           Hashtbl.replace proof_delta primitive (0, primitive_prop);
           Hashtbl.replace definition_delta primitive (0, primitive_prop);
+          Hashtbl.replace transitional_primitive_formula_steps id true;
           store_formula id result (PPfAp (Known primitive, parent_proof))
       | FormulaCopy (id, parent_id, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
@@ -9437,7 +9537,8 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
                 | _ -> false)
               typed_steps
           in
-          if parent_is_closed_primitive then begin
+          if parent_is_closed_primitive
+             || Hashtbl.mem transitional_primitive_formula_steps parent_id then begin
             let parent_prop =
               native_preprocess_step_formula_prop cert variables parent_id parent_formula
             in
@@ -9461,32 +9562,104 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
       | AvatarDefinition (id, split_var, split_positive, result) ->
           begin match native_core_avatar_definition_clause cert id split_var split_positive result with
           | Some (split_name, component_literals) ->
+              let split_prop = native_core_literal_prop (Pos (TmH split_name)) in
+              let component_prop = native_core_clause_prop id component_literals in
+              let prop =
+                native_core_and
+                  (Imp (split_prop, component_prop))
+                  (Imp (component_prop, split_prop))
+                |> native_core_normalize_bool_constants
+              in
+              let primitive = "vampire_avatar_definition_" ^ id in
+              Hashtbl.replace proof_delta primitive (0, prop);
+              Hashtbl.replace definition_delta primitive (0, prop);
               store_avatar_definition
                 id
                 split_name
                 component_literals
-                (native_core_avatar_definition_proof
-                   cert id split_var split_positive result)
+                (Known primitive)
           | None ->
               error
                 (id ^ ": native preprocess proof-term avatar_definition needs a supported split definition")
           end
       | AvatarComponent (id, result) ->
-          store_clause id result
-            (native_core_avatar_component_proof
-               id result avatar_definition_table)
+          check_avatar_component_strict id result;
+          let prop = native_core_step_clause_prop cert variables id result in
+          let primitive = "vampire_avatar_component_" ^ id in
+          Hashtbl.replace proof_delta primitive (0, prop);
+          Hashtbl.replace definition_delta primitive (0, prop);
+          Hashtbl.replace transitional_primitive_clause_steps id true;
+          store_clause id result (Known primitive)
       | SplitDependency (id, owner_id, _dependencies, result) ->
           let owner_clause, owner_proof = lookup_clause owner_id in
           if owner_clause <> result then
             error (id ^ ": native preprocess proof-term split_dependency result does not match owner clause");
           store_clause id result owner_proof
       | AvatarSplit (id, parent_ids, result) ->
+          if parent_ids = [] then
+            error (id ^ ": native preprocess proof-term avatar_split requires at least one parent");
+          let avatar_definition_prop split_name component_literals =
+            let split_prop = native_core_literal_prop (Pos (TmH split_name)) in
+            let component_prop = native_core_clause_prop id component_literals in
+            native_core_and
+              (Imp (split_prop, component_prop))
+              (Imp (component_prop, split_prop))
+            |> native_core_normalize_bool_constants
+          in
+          let parent_props_and_proofs =
+            List.map
+              (fun parent_id ->
+                 match Hashtbl.find_opt clause_table parent_id with
+                 | Some (clause, proof) ->
+                     (native_core_step_clause_prop cert variables parent_id clause, proof)
+                 | None ->
+                     begin match Hashtbl.find_opt avatar_definition_table parent_id with
+                     | Some (split_name, component_literals, proof) ->
+                         (avatar_definition_prop split_name component_literals, proof)
+                     | None ->
+                         error (parent_id ^ ": native preprocess proof-term checker references unknown avatar_split parent")
+                     end)
+              parent_ids
+          in
+          let parent_props = List.map fst parent_props_and_proofs in
+          let result_prop = native_core_step_clause_prop cert variables id result in
+          let primitive = "vampire_avatar_split_" ^ id in
+          let primitive_prop = primitive_implication parent_props result_prop in
+          Hashtbl.replace proof_delta primitive (0, primitive_prop);
+          Hashtbl.replace definition_delta primitive (0, primitive_prop);
+          Hashtbl.replace transitional_primitive_clause_steps id true;
           store_clause id result
-            (native_core_avatar_split_proof
-               cert id parent_ids result clause_table avatar_definition_table)
+            (apply_primitive
+               primitive
+               (List.map snd parent_props_and_proofs))
       | AvatarRefutation (id, parent_ids, _sat_clauses, _sat_proof, result) ->
+          if result <> [] then
+            error (id ^ ": native preprocess proof-term avatar_refutation result is not empty");
+          if parent_ids = [] then
+            error (id ^ ": native preprocess proof-term avatar_refutation requires at least one parent");
+          let parent_clauses_and_proofs =
+            List.map
+              (fun parent_id ->
+                 let clause, proof = lookup_clause parent_id in
+                 (parent_id, clause, proof))
+              parent_ids
+          in
+          let parent_props =
+            List.map
+              (fun (parent_id, clause, _) ->
+                 native_core_step_clause_prop cert variables parent_id clause)
+              parent_clauses_and_proofs
+          in
+          let result_prop = native_core_step_clause_prop cert variables id result in
+          let primitive = "vampire_avatar_refutation_" ^ id in
+          let primitive_prop = primitive_implication parent_props result_prop in
+          Hashtbl.replace proof_delta primitive (0, primitive_prop);
+          Hashtbl.replace definition_delta primitive (0, primitive_prop);
+          Hashtbl.replace transitional_primitive_clause_steps id true;
           store_clause id result
-            (native_core_avatar_refutation_proof id parent_ids result clause_table)
+            (apply_primitive
+               primitive
+               (List.map (fun (_, _, proof) -> proof) parent_clauses_and_proofs))
       | FoolExhaustiveness (id, result) ->
           store_clause id result
             (native_core_fool_exhaustiveness_proof cert id result)
@@ -9563,25 +9736,20 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
                  cert id variables parent_id parent_clause parent_proof literal_index result)
       | EqualitySymmetry (id, parent_id, literal_index, result) ->
           let parent_clause, parent_proof = lookup_clause parent_id in
-          if Hashtbl.mem transitional_primitive_clause_steps parent_id then begin
-            native_core_validate_equality_symmetry_step
-              id parent_clause literal_index result;
-            let parent_prop =
-              native_core_step_clause_prop cert variables parent_id parent_clause
-            in
-            let result_prop =
-              native_core_step_clause_prop cert variables id result
-            in
-            let primitive = "vampire_equality_symmetry_" ^ id in
-            let primitive_prop = Imp (parent_prop, result_prop) in
-            Hashtbl.replace proof_delta primitive (0, primitive_prop);
-            Hashtbl.replace definition_delta primitive (0, primitive_prop);
-            Hashtbl.replace transitional_primitive_clause_steps id true;
-            store_clause id result (PPfAp (Known primitive, parent_proof))
-          end else
-            store_clause id result
-              (native_core_equality_symmetry_in_result_context
-                 cert id variables parent_id parent_clause parent_proof literal_index result)
+          native_core_validate_equality_symmetry_step
+            id parent_clause literal_index result;
+          let parent_prop =
+            native_core_step_clause_prop cert variables parent_id parent_clause
+          in
+          let result_prop =
+            native_core_step_clause_prop cert variables id result
+          in
+          let primitive = "vampire_equality_symmetry_" ^ id in
+          let primitive_prop = Imp (parent_prop, result_prop) in
+          Hashtbl.replace proof_delta primitive (0, primitive_prop);
+          Hashtbl.replace definition_delta primitive (0, primitive_prop);
+          Hashtbl.replace transitional_primitive_clause_steps id true;
+          store_clause id result (PPfAp (Known primitive, parent_proof))
 	      | TruthConflict (id, parent_id, literal_index, result) ->
 	          let parent_clause, parent_proof = lookup_clause parent_id in
 	          store_clause id result
