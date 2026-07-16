@@ -1089,25 +1089,23 @@ if rg -q 'admit|aby|-allowincompleteqed' \
   exit 1
 fi
 
-if bin/megalodon \
+bin/megalodon \
   -vampirecertv1preprocesspfcheck \
   -vampirecertv1 tests/vampire_certificate/closed_cases/hammer.1032.16.native.sexp \
   -vampirecertv1source tests/vampire_certificate/closed_cases/hammer.1032.16.th0.p \
   "$dummy" >"$WORK_DIR/native_cert_v1_raw_prop_eq_fool_bool_frontier.out" \
-  2>"$WORK_DIR/native_cert_v1_raw_prop_eq_fool_bool_frontier.err"; then
-  echo "native preprocess proof-term checker unexpectedly accepted the raw-prop-equality FOOL frontier case" >&2
+  2>"$WORK_DIR/native_cert_v1_raw_prop_eq_fool_bool_frontier.err"
+
+if ! rg -q 'Vampire certificate v1 native preprocess proof term checked 15 steps' \
+    "$WORK_DIR/native_cert_v1_raw_prop_eq_fool_bool_frontier.out"; then
+  echo "native preprocess proof-term checker did not accept the refreshed typed-equality hammer FOOL case" >&2
   exit 1
 fi
 
-if rg -q 'u85: native preprocess proof-term fool_bool cannot lift positive atom' \
+if rg -q 'native preprocess proof-term fool_bool cannot lift positive atom|equality-symmetry requires typed Megalodon equality|admit|-allowincompleteqed' \
+    "$WORK_DIR/native_cert_v1_raw_prop_eq_fool_bool_frontier.out" \
     "$WORK_DIR/native_cert_v1_raw_prop_eq_fool_bool_frontier.err"; then
-  echo "native preprocess proof-term checker still rejects raw propositional equality in FOOL Boolean lifting" >&2
-  exit 1
-fi
-
-if ! rg -q 'u120_symmetry: native core proof-term equality-symmetry requires typed Megalodon equality' \
-    "$WORK_DIR/native_cert_v1_raw_prop_eq_fool_bool_frontier.err"; then
-  echo "native preprocess proof-term checker did not advance from raw propositional equality to the typed equality-symmetry frontier" >&2
+  echo "native preprocess proof-term checker regressed on the refreshed typed-equality hammer FOOL case" >&2
   exit 1
 fi
 
