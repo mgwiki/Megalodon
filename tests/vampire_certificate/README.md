@@ -288,6 +288,11 @@ deliberately tiny focused experiments, or lower individual minimums such as
 `MIN_FACTOR=0` when a selected corpus is not expected to exercise a rule. Use
 `MIN_EQUALITY_FACTORING` and `MIN_EQUALITY_FACTORING_CONSTRAINTS` to require
 focused coverage of the equality-factoring primitive records.
+Because live runs regenerate certificates with the current Vampire exporter,
+they also default to `AUDIT_SUBSTITUTE_METADATA=1`, which makes the
+`kernel_v1` audit require explicit instantiation metadata for every
+first-class `substitute` step. Set it to `0` only when comparing against older
+cached certificates that predate the substitution-helper metadata emitter.
 
 Set `CLOSED_CERT_V1=1` on the cached emitter harness to request
 `-vampirecertv1closed`. In that mode a case passes only when emission introduces
