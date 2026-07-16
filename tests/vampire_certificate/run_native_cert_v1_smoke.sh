@@ -419,22 +419,15 @@ assume Hp:p.
 aby Hp.
 Qed.
 EOF_LOCAL_SOURCE_LIVE_MG
-if ! bin/megalodon \
-    -v 9 \
-    -vampireaby "$local_source_live_dir/fake_vampire" \
-    -vampireabyproof megalodon \
-    -vampireabynative \
-    -vampireabyoutdir "$local_source_live_dir/out" \
-    "$local_source_live_dir/local_source_live.mg" \
-    >"$WORK_DIR/native_cert_v1_live_local_source_context.log" \
-    2>"$WORK_DIR/native_cert_v1_live_local_source_context.err"; then
-  if ! rg -q 'depends on non-proved xm' \
-      "$WORK_DIR/native_cert_v1_live_local_source_context.log" \
-      "$WORK_DIR/native_cert_v1_live_local_source_context.err"; then
-    echo "live vampireaby source-context fixture failed before the expected xm dependency boundary" >&2
-    exit 1
-  fi
-fi
+bin/megalodon \
+  -v 9 \
+  -vampireaby "$local_source_live_dir/fake_vampire" \
+  -vampireabyproof megalodon \
+  -vampireabynative \
+  -vampireabyoutdir "$local_source_live_dir/out" \
+  "$local_source_live_dir/local_source_live.mg" \
+  >"$WORK_DIR/native_cert_v1_live_local_source_context.log" \
+  2>"$WORK_DIR/native_cert_v1_live_local_source_context.err"
 
 if ! rg -q 'source_context known=0 local=1 unresolved=1' \
     "$WORK_DIR/native_cert_v1_live_local_source_context.log"; then
@@ -444,6 +437,64 @@ fi
 if ! rg -q 'Vampire native certificate reconstructed aby proof term' \
     "$WORK_DIR/native_cert_v1_live_local_source_context.log"; then
   echo "live vampireaby did not compose the native certificate proof into the current Megalodon goal" >&2
+  exit 1
+fi
+if ! rg -q 'Everything looks good' \
+    "$WORK_DIR/native_cert_v1_live_local_source_context.log"; then
+  echo "live vampireaby source-context fixture did not close after composing the native certificate proof" >&2
+  exit 1
+fi
+
+cat >"$WORK_DIR/native_cert_v1_bad_xm_shape.mg" <<'EOF_BAD_XM_SHAPE'
+Definition False : prop := forall p:prop, p.
+Definition not : prop -> prop := fun A:prop => A -> False.
+Prefix ~ 700 := not.
+Definition or : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> p) -> (B -> p) -> p.
+Infix \/ 785 left := or.
+Axiom xm : forall P:prop, P.
+Variable p:prop.
+Theorem bad_xm_shape:p.
+exact (xm p).
+Qed.
+EOF_BAD_XM_SHAPE
+if bin/megalodon "$WORK_DIR/native_cert_v1_bad_xm_shape.mg" \
+    >"$WORK_DIR/native_cert_v1_bad_xm_shape.out" \
+    2>"$WORK_DIR/native_cert_v1_bad_xm_shape.err"; then
+  echo "Megalodon trusted an xm axiom with the wrong proposition shape" >&2
+  exit 1
+fi
+
+library_source_live_dir="$WORK_DIR/library_source_live"
+mkdir -p "$library_source_live_dir"
+awk '{print} /^Axiom xm /{exit}' examples/UpToOctonions/Part2.mg \
+  >"$library_source_live_dir/prefix.mg"
+cp "$local_source_live_dir/fake_vampire" "$library_source_live_dir/fake_vampire"
+cat "$library_source_live_dir/prefix.mg" >"$library_source_live_dir/library_source_live.mg"
+cat >>"$library_source_live_dir/library_source_live.mg" <<'EOF_LIBRARY_SOURCE_LIVE_MG'
+
+Variable p:prop.
+Theorem live_source_after_library_xm:p -> p.
+assume Hp:p.
+aby Hp.
+Qed.
+EOF_LIBRARY_SOURCE_LIVE_MG
+bin/megalodon \
+  -v 9 \
+  -vampireaby "$library_source_live_dir/fake_vampire" \
+  -vampireabyproof megalodon \
+  -vampireabynative \
+  -vampireabyoutdir "$library_source_live_dir/out" \
+  "$library_source_live_dir/library_source_live.mg" \
+  >"$WORK_DIR/native_cert_v1_live_library_source_context.log" \
+  2>"$WORK_DIR/native_cert_v1_live_library_source_context.err"
+if ! rg -q 'Vampire native certificate reconstructed aby proof term' \
+    "$WORK_DIR/native_cert_v1_live_library_source_context.log"; then
+  echo "live vampireaby did not compose a native certificate proof in the larger library context" >&2
+  exit 1
+fi
+if ! rg -q 'Everything looks good' \
+    "$WORK_DIR/native_cert_v1_live_library_source_context.log"; then
+  echo "live vampireaby larger library-context fixture did not close" >&2
   exit 1
 fi
 

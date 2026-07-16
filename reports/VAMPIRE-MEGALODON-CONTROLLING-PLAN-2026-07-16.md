@@ -160,6 +160,11 @@ while local hypotheses are kept as explicit source assumptions and applied only
 after Vampire variables are instantiated into the live Megalodon context.  This
 avoids shifting live `Hyp` proofs under certificate-local binders.
 
+The same branch makes the classical-context assumption explicit: an axiom named
+`xm` is trusted only if its proposition is convertible to excluded middle.  This
+lets the live certificate regression close with `Qed` without allowing arbitrary
+axioms to masquerade as the classical principle.
+
 ### Layer 2: Source-to-Clause Transformations
 
 Input:

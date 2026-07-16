@@ -347,6 +347,11 @@ Implementation update, 2026-07-16:
   Vampire variables with live Megalodon context variables, applies the local
   `Hyp` proofs at the original-context boundary, and uses loaded `xm` to turn
   the remaining negated-conjecture refutation into the current goal.
+- `xm` is now an explicit trusted classical principle only when an axiom named
+  `xm` has the standard excluded-middle proposition.  The smoke suite checks
+  the positive live certificate path, a negative malformed-`xm` case, and the
+  same live certificate theorem appended after an `UpToOctonions` library
+  prelude that declares `xm`.
 - This is still partial original theorem reconstruction: it handles the simple
   core shape `local facts -> negated conjecture -> False`, but not local
   definitions, generated preprocessing facts, Skolemization, or general

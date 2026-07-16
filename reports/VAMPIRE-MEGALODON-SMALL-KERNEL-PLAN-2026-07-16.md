@@ -297,10 +297,14 @@ for `vampireaby`:
 
 The smoke suite now has a live fake-Vampire fixture that checks this path:
 `source_context known=0 local=1 unresolved=1` followed by `Vampire native
-certificate reconstructed aby proof term`.  The fixture uses a local axiom for
-`xm`, so it intentionally stops at Megalodon's existing "depends on non-proved
-xm" boundary after the handoff is demonstrated.  Real library runs should use
-the already-proved/imported `xm`.
+certificate reconstructed aby proof term` and a closing `Everything looks
+good`.  Because the project setting assumes classical reasoning, an axiom
+named `xm` is treated as a trusted classical principle only when its
+proposition is convertible to the standard excluded-middle shape
+`forall P:prop, P \/ ~P`; a negative fixture checks that a malformed `xm` is
+not trusted.  A second live fixture appends the same certificate-reconstructed
+theorem after the `xm` declaration in an `UpToOctonions` library prelude and
+checks that it also closes.
 
 This is still partial original-context reconstruction: local facts and
 conjecture negation now compose in the simple core case, but local definitions,

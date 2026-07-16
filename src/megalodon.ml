@@ -480,6 +480,20 @@ let sigdelta : (string,ptm) Hashtbl.t = Hashtbl.create 1000;;
 let sigdelta_opaque : (string,ptm) Hashtbl.t = Hashtbl.create 1000;;
 let sigtm = ref (Hashtbl.create 100);;
 let sigpf = ref [];;
+
+let trusted_classical_xm_axiom name poly proposition =
+  name = "xm"
+  && poly = 0
+  &&
+    let expected =
+      All(Prop,Ap(Ap(TmH(!disj),DB(0)),Imp(DB(0),TmH(!fal))))
+    in
+    try
+      match conv proposition expected sigdelta [] with
+      | Some _ -> true
+      | None -> false
+    with _ -> false
+
 let polytm = ref [];;
 let polypf = ref [];;
 let futurepolytm = ref [];;
@@ -4336,6 +4350,8 @@ let evaluate_docitem_1 ditem =
         (* (Printf.printf "ERROR: The id %s for the proposition for axiom %s [pfg %s] is not indexed as previously known.\nYou have to prove it (or leave it as admitted).\n" ahv x (Hash.hashval_hexstring (pfg_propid agtm)); exit 1) *) (* Chad treats this as an error so he comments the warning and uncomments this error. If Chad wants to allow it, the next line outputting UNKNOWN so the instances are easier to find. *)
         (*          (Printf.printf "(UNKNOWN \"%s\" \"%s\" \"%s\")\n" ahv x (Hash.hashval_hexstring (pfg_propid agtm)); flush stdout) *)
       else
+        Hashtbl.replace istrustedhash ahv ();
+      if trusted_classical_xm_axiom x i agtm then
         Hashtbl.replace istrustedhash ahv ();
       Hashtbl.replace indexknowns ahv ();
       secstack := List.map (fun (y,f,atl,apl,st,sp) -> (y,f,atl,apl,st,(x,apl (Known(ahv)))::sp)) !secstack;
