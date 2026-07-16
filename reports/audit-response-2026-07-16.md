@@ -124,6 +124,32 @@ next source/preprocessing milestone: the checked source formulas are now
 measured explicitly, and generated equality/set-reflexivity obligations are
 separated from ordinary source claims.
 
+### Original-Context Source Resolver Added
+
+The new flags:
+
+```sh
+-vampirecertv1sourcecontext
+-vampirecertv1sourcecontextstrict
+```
+
+make Megalodon load the main `.mg` file before checking the certificate, then
+audit certificate source bindings against the loaded context. Hash-backed
+`known`/`axiom` entries are checked by applying `Known hash` to the certificate
+source proposition; definition hashes are checked for presence in the
+definition environment; local/unhashed sources are counted separately.
+
+The smoke test now covers both sides:
+
+- strict source-context audit rejects fake hash-backed source-map comments
+  when the hashes are not present in the loaded context;
+- a generated Megalodon axiom is assigned a real hash, exported into a tiny
+  THF source map and native certificate, and accepted with `known_checked=1`.
+
+This is still not full original-context reconstruction. It is the first
+mechanical resolver for global source facts and a fail-closed gate before
+using those facts to discharge source assumptions in the final proof term.
+
 ## Accepted Audit Corrections
 
 ### 1. The 100 Strict Live Run Is Integration Evidence
@@ -197,6 +223,7 @@ Completed in this response:
 - design plan updated to match the audit.
 - source-obligation auditing added for source-map inputs and committed
   closed-corpus measurement.
+- original-context source resolver added for hash-backed source inputs.
 
 Not completed:
 

@@ -308,6 +308,68 @@ if ! rg -q 'Vampire certificate v1 source map checked 3 sources' "$WORK_DIR/nati
   exit 1
 fi
 
+if bin/megalodon \
+  -vampirecertv1sourcecontextstrict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_hash_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_context_missing.out" \
+  2>"$WORK_DIR/native_cert_v1_source_context_missing.err"; then
+  echo "native certificate v1 strict source-context audit accepted missing hash-backed knowns" >&2
+  exit 1
+fi
+
+if ! rg -q 'strict source-context audit failed' "$WORK_DIR/native_cert_v1_source_context_missing.err"; then
+  echo "native certificate v1 strict source-context audit did not explain missing hash-backed knowns" >&2
+  exit 1
+fi
+
+source_context_mg="$WORK_DIR/native_cert_v1_source_context.mg"
+source_context_th0="$WORK_DIR/native_cert_v1_source_context.th0.p"
+source_context_cert="$WORK_DIR/native_cert_v1_source_context.sexp"
+cat > "$source_context_mg" <<'EOF_SOURCE_CONTEXT_MG'
+Variable p:prop.
+Axiom original_a1 : forall r:prop, r -> r.
+EOF_SOURCE_CONTEXT_MG
+source_context_hash=$(bin/megalodon -pfgsummary2 "$source_context_mg" \
+  | sed -n 's/^Known:\([0-9a-f][0-9a-f]*\)$/\1/p' \
+  | head -1)
+if [[ -z "$source_context_hash" ]]; then
+  echo "native certificate v1 source-context smoke could not obtain the generated axiom hash" >&2
+  exit 1
+fi
+cat > "$source_context_th0" <<EOF_SOURCE_CONTEXT_TH0
+% megalodon_source_map (type "p" "p" "")
+thf(p,type,(p : \$o)).
+% megalodon_source_map (known "a1" "original_a1" "$source_context_hash")
+thf(a1,axiom,(! [R:\$o,S:\$o] : (S => S))). % $source_context_hash
+% megalodon_source_map (local_fact "a2" "local_not_p" "")
+thf(a2,axiom,~p).
+% megalodon_source_map (local_fact "a3" "local_p" "")
+thf(a3,axiom,p).
+EOF_SOURCE_CONTEXT_TH0
+cat > "$source_context_cert" <<'EOF_SOURCE_CONTEXT_CERT'
+(certificate vampire-megalodon 1
+  (problem "source-context")
+  (symbol_declaration "Variable p:prop.")
+  (formula_term_input "u0" (source axiom "a1") (formula (ALL (PROP) (ALL (PROP) (IMP (DB 0) (DB 0))))))
+  (input "u2" (source axiom "a2") (clause (neg (TMH "p"))))
+  (input "u3" (source axiom "a3") (clause (pos (TMH "p"))))
+  (resolve "u4" (parents "u2" "u3") (pivot 0 0) (result (clause)))
+)
+EOF_SOURCE_CONTEXT_CERT
+
+bin/megalodon \
+  -vampirecertv1sourcecontextstrict \
+  -vampirecertv1 "$source_context_cert" \
+  -vampirecertv1source "$source_context_th0" \
+  "$source_context_mg" >"$WORK_DIR/native_cert_v1_source_context_checked.log"
+
+if ! rg -q 'source context audited total=3 known_checked=1 known_missing=0 known_mismatch=0 .*local_or_unhashed=2' \
+    "$WORK_DIR/native_cert_v1_source_context_checked.log"; then
+  echo "native certificate v1 source-context audit did not resolve a real hash-backed known" >&2
+  exit 1
+fi
+
 bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_synthetic_valid.th0.p \

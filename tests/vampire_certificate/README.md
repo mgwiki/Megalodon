@@ -130,6 +130,27 @@ THF fragment, how many are unsupported or missing formulas, and how many are
 generated equality/`set_reflexivity` obligations. This is a source-linking
 measurement gate, not proof reconstruction evidence by itself.
 
+To audit whether hash-backed source inputs are actually available in the loaded
+Megalodon context, add:
+
+```sh
+-vampirecertv1sourcecontext
+```
+
+or the fail-closed variant:
+
+```sh
+-vampirecertv1sourcecontextstrict
+```
+
+When this flag is present, Megalodon checks the main `.mg` file before the
+certificate so the certificate audit can resolve `known`/`axiom` source hashes
+through the real `sigdelta` environment. The audit reports resolved knowns,
+missing knowns, mismatches, resolved definition hashes, missing definition
+hashes, and local/unhashed sources. This is the first original-context source
+resolver gate; local hypotheses and conjectures still need theorem-local
+source proof binding before they can be removed as assumptions.
+
 For repeatable non-overlapping corpus slices, use:
 
 ```sh

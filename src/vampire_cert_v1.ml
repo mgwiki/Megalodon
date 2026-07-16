@@ -9336,6 +9336,39 @@ let native_core_set_reflexivity_clause_proof id = function
       error
         (id ^ ": native proof-term source set_reflexivity expects a unit equality clause")
 
+let native_certificate_source_bindings ?(source_map=[]) cert =
+  ignore (check_certificate_strict cert);
+  let variables = native_core_proof_variables cert in
+  let symbol_table = native_core_symbol_table cert in
+  let typed_steps =
+    List.map
+      (native_core_type_raw_equalities_step cert variables symbol_table)
+      cert.steps
+  in
+  List.fold_left
+    (fun bindings step ->
+       match step with
+       | Input (id, source, clause) ->
+           let proposition = native_core_step_clause_prop cert variables id clause in
+           bindings @ [native_core_source_binding source_map id source proposition]
+       | FormulaInput (id, source, literal) ->
+           let proposition = native_core_step_clause_prop cert variables id [literal] in
+           bindings @ [native_core_source_binding source_map id source proposition]
+       | FormulaTermInput (id, source, formula) ->
+           let step_variables = native_core_step_variables cert id in
+           let proposition =
+             native_core_close_tm
+               (variables @ step_variables)
+               (native_core_formula_prop formula)
+           in
+           let proposition =
+             List.fold_right (fun (_, tp) prop -> All (tp, prop)) step_variables proposition
+           in
+           bindings @ [native_core_source_binding source_map id source proposition]
+       | _ -> bindings)
+    []
+    typed_steps
+
 let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
   let core_steps = validate_certificate_core_fragment cert in
   ignore (check_certificate_strict cert);

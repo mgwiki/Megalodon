@@ -31,6 +31,8 @@ let vampireabynativestrict : bool ref = ref false;;
 let vampirecertv1 : string option ref = ref None;;
 let vampirecertv1source : string option ref = ref None;;
 let vampirecertv1sourceaudit : bool ref = ref false;;
+let vampirecertv1sourcecontext : bool ref = ref false;;
+let vampirecertv1sourcecontextstrict : bool ref = ref false;;
 let vampirecertv1strict : bool ref = ref false;;
 let vampirecertv1closed : bool ref = ref false;;
 let vampirecertv1coreclosed : bool ref = ref false;;
@@ -7018,6 +7020,85 @@ let read_all fn =
     close_in_noerr c;
     raise e
 
+let audit_vampire_cert_v1_source_context cert source_map =
+  let bindings =
+    Vampire_cert_v1.native_certificate_source_bindings ~source_map cert
+  in
+  let total = ref 0 in
+  let known_checked = ref 0 in
+  let known_missing = ref 0 in
+  let known_mismatch = ref 0 in
+  let definition_resolved = ref 0 in
+  let definition_missing = ref 0 in
+  let local_or_unhashed = ref 0 in
+  let known_source_kind kind =
+    kind = "known" || kind = "axiom"
+  in
+  let definition_source_kind kind =
+    kind = "def" || kind = "definition" || kind = "local_definition"
+  in
+  let known_hash_proves hash proposition =
+    try
+      match check_propofpf sigdelta sigtmof [] [] (Known hash) proposition [] with
+      | Some _ -> true
+      | None -> false
+    with _ -> false
+  in
+  let debug_source_context_mismatch hash proposition =
+    if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+      let known_prop =
+        try
+          let (_, prop) = Hashtbl.find sigdelta hash in
+          tm_to_str prop
+        with Not_found -> "<missing>"
+      in
+      prerr_endline ("vampire certificate source-context mismatch for " ^ hash);
+      prerr_endline ("known proposition: " ^ known_prop);
+      prerr_endline ("certificate proposition: " ^ tm_to_str proposition)
+  in
+  List.iter
+    (fun binding ->
+       incr total;
+       let hash = binding.Vampire_cert_v1.core_native_source_hash in
+       let kind = binding.Vampire_cert_v1.core_native_source_map_kind in
+       if hash = "" then
+         incr local_or_unhashed
+       else if known_source_kind kind then
+         begin
+           if not (Hashtbl.mem sigdelta hash) then
+             incr known_missing
+           else if known_hash_proves hash binding.Vampire_cert_v1.core_native_source_proposition then
+             incr known_checked
+           else begin
+             debug_source_context_mismatch hash binding.Vampire_cert_v1.core_native_source_proposition;
+             incr known_mismatch
+           end
+         end
+       else if definition_source_kind kind then
+         begin
+           if Hashtbl.mem sigdelta hash || Hashtbl.mem sigdelta_opaque hash then
+             incr definition_resolved
+           else
+             incr definition_missing
+         end
+       else
+         incr local_or_unhashed)
+    bindings;
+  Printf.printf
+    "Vampire certificate v1 source context audited total=%d known_checked=%d known_missing=%d known_mismatch=%d definition_resolved=%d definition_missing=%d local_or_unhashed=%d.\n"
+    !total
+    !known_checked
+    !known_missing
+    !known_mismatch
+    !definition_resolved
+    !definition_missing
+    !local_or_unhashed;
+  if !vampirecertv1sourcecontextstrict
+     && (!known_missing > 0 || !known_mismatch > 0 || !definition_missing > 0) then
+    raise
+      (Vampire_cert_v1.Error
+         "strict source-context audit failed: at least one hash-backed source did not resolve in the loaded Megalodon context")
+
 let check_vampire_cert_v1_file fn =
   try
     let cert = Vampire_cert_v1.parse_certificate (read_all fn) in
@@ -7078,6 +7159,8 @@ let check_vampire_cert_v1_file fn =
         Printf.printf "Vampire certificate v1 source map checked %d source%s.\n"
           source_count
           (if source_count = 1 then "" else "s");
+        if !vampirecertv1sourcecontext || !vampirecertv1sourcecontextstrict then
+          audit_vampire_cert_v1_source_context cert source_map;
         if !vampirecertv1sourceaudit then
           Printf.printf
             "Vampire certificate v1 source obligations audited total=%d formula_checked=%d formula_unsupported=%d formula_missing=%d equality_checked=%d set_reflexivity_checked=%d true_checked=%d.\n"
@@ -7466,6 +7549,13 @@ let _ =
           end
         else if Sys.argv.(!j) = "-vampirecertv1sourceaudit" then
           vampirecertv1sourceaudit := true
+        else if Sys.argv.(!j) = "-vampirecertv1sourcecontext" then
+          vampirecertv1sourcecontext := true
+        else if Sys.argv.(!j) = "-vampirecertv1sourcecontextstrict" then
+          begin
+            vampirecertv1sourcecontext := true;
+            vampirecertv1sourcecontextstrict := true
+          end
         else if Sys.argv.(!j) = "-vampirecertv1emit" then
           begin
 	    if !j < i-2 then
@@ -8028,12 +8118,12 @@ let _ =
 	  | None -> ()
 	end;
       in
-      begin
+      let check_vampirecertv1_if_requested () =
         match !vampirecertv1 with
         | None -> ()
         | Some fn -> check_vampire_cert_v1_file fn
-      end;
-      begin
+      in
+      let check_main_file () =
         match !solvesproblemfile with
 	| None -> checkfile ()
 	| Some probf ->
@@ -8042,8 +8132,18 @@ let _ =
 	    mgchecksolves p c;
 	    close_in c;
 	    close_in p;
-	    if !verbosity > 1 then (Printf.printf "%s completely solves %s\n" Sys.argv.(i-1) probf; flush stdout);
-      end
+	    if !verbosity > 1 then (Printf.printf "%s completely solves %s\n" Sys.argv.(i-1) probf; flush stdout)
+      in
+      if !vampirecertv1sourcecontext || !vampirecertv1sourcecontextstrict then
+        begin
+          check_main_file ();
+          check_vampirecertv1_if_requested ()
+        end
+      else
+        begin
+          check_vampirecertv1_if_requested ();
+          check_main_file ()
+        end
     end;
   begin
     match !reportbushydeps with

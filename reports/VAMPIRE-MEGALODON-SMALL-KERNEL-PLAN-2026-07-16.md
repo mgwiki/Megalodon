@@ -253,6 +253,22 @@ The next implementation step is to turn these audited source obligations into
 native Megalodon proof bindings instead of treating them merely as validated
 certificate inputs.
 
+Original-context source resolver gate:
+
+- `-vampirecertv1sourcecontext` now loads the main Megalodon file before
+  auditing the certificate and checks hash-backed `known`/`axiom` source
+  bindings against the loaded `sigdelta` with `Known hash`.
+- `-vampirecertv1sourcecontextstrict` fails when a hash-backed source is
+  missing or mismatched.
+- The smoke suite generates a fresh Megalodon axiom, extracts its real hash,
+  emits a matching THF source map and native certificate, and checks that the
+  context audit reports `known_checked=1`.
+
+This does not yet eliminate local source assumptions. It is the prerequisite
+for replacing global source hypotheses by `Known hash` proofs while preserving
+the audit's trust boundary: the proposition must already be in the loaded
+Megalodon context and cannot be installed from the certificate.
+
 ## Design Principles
 
 ### 1. Vampire explains, Megalodon checks
