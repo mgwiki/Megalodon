@@ -259,9 +259,8 @@ let rec parse_tp = function
   | _ -> error "expected Megalodon type S-expression"
 
 let subst_named_tm name tm =
-  let db_name depth = TmH ("db" ^ string_of_int depth) in
   let rec subst depth = function
-    | TmH h when h = name -> db_name depth
+    | TmH h when h = name -> DB depth
     | TpAp (m, a) -> TpAp (subst depth m, a)
     | Ap (TmH "vLAM", body) -> Ap (TmH "vLAM", subst (depth + 1) body)
     | Ap (m, n) -> Ap (subst depth m, subst depth n)
@@ -280,8 +279,8 @@ let rec parse_tm = function
   | List [Atom "AP"; m; n] -> Ap (parse_tm m, parse_tm n)
   | List [Atom "LAM"; a; m] -> Lam (parse_tp a, parse_tm m)
   | List [Atom "LAMV"; name; a; m] ->
-      ignore (parse_tp a);
-      Ap (TmH "vLAM", subst_named_tm (atom name) (parse_tm m))
+      let tp = parse_tp a in
+      Lam (tp, subst_named_tm (atom name) (parse_tm m))
   | List [Atom "IMP"; m; n] -> Imp (parse_tm m, parse_tm n)
   | List [Atom "ALL"; a; m] -> All (parse_tp a, parse_tm m)
   | List [Atom "ALLV"; name; a; m] ->
@@ -1663,6 +1662,82 @@ let rec skolemize_formula_tm subst tm =
   | Lam (tp, body) -> Lam (tp, skolemize_formula_tm subst body)
   | _ -> tm
 
+let bounded_append limit left right =
+  let rec add acc count = function
+    | [] -> List.rev acc
+    | _ when count >= limit -> List.rev acc
+    | item :: rest -> add (item :: acc) (count + 1) rest
+  in
+  add (List.rev left) (List.length left) right
+
+let rec skolemize_formula_tm_candidates subst tm =
+  let limit = 64 in
+  let combine binary left_candidates right_candidates =
+    let rec loop acc = function
+      | [] -> acc
+      | left :: rest ->
+          let additions = List.map (fun right -> binary left right) right_candidates in
+          loop (bounded_append limit acc additions) rest
+    in
+    loop [] left_candidates
+  in
+  match tm with
+  | Imp (left, right) ->
+      combine
+        (fun left right -> Imp (left, right))
+        (skolemize_formula_tm_candidates subst left)
+        (skolemize_formula_tm_candidates subst right)
+  | All (tp, body) ->
+      List.map (fun body -> All (tp, body)) (skolemize_formula_tm_candidates subst body)
+  | Ap (Ap (TmH "vampire_or", left), right) ->
+      combine vampire_or
+        (skolemize_formula_tm_candidates subst left)
+        (skolemize_formula_tm_candidates subst right)
+  | Ap (Ap (TmH "vampire_and", left), right) ->
+      combine vampire_and
+        (skolemize_formula_tm_candidates subst left)
+        (skolemize_formula_tm_candidates subst right)
+  | Ap (TmH "vampire_exists_prop", Lam (_, body)) ->
+      let direct = skolemize_formula_tm subst tm in
+      let instantiated =
+        subst
+        |> List.map
+             (fun (_, witness) ->
+                skolemize_formula_tm_candidates subst (tmsubst body 0 witness))
+        |> List.flatten
+      in
+      bounded_append limit [direct] instantiated
+  | Ap (TmH "vampire_exists_prop", Ap (TmH "vLAM", body)) ->
+      [skolemize_formula_tm subst (Ap (TmH "vampire_exists_prop", Ap (TmH "vLAM", body)))]
+  | TpAp (m, a) ->
+      List.map (fun m -> TpAp (m, a)) (skolemize_formula_tm_candidates subst m)
+  | Ap (m, n) ->
+      combine
+        (fun m n -> Ap (m, n))
+        (skolemize_formula_tm_candidates subst m)
+        (skolemize_formula_tm_candidates subst n)
+  | Lam (tp, body) ->
+      List.map (fun body -> Lam (tp, body)) (skolemize_formula_tm_candidates subst body)
+  | _ -> [tm]
+
+let rec same_mod_skolem_bound_names left right =
+  left = right ||
+  match left, right with
+  | DB _, TmH h | TmH h, DB _ when is_vampire_var_name h -> true
+  | TpAp (m, a), TpAp (n, b) when a = b ->
+      same_mod_skolem_bound_names m n
+  | Ap (m1, m2), Ap (n1, n2) ->
+      same_mod_skolem_bound_names m1 n1
+      && same_mod_skolem_bound_names m2 n2
+  | Lam (a, m), Lam (b, n) when a = b ->
+      same_mod_skolem_bound_names m n
+  | Imp (m1, m2), Imp (n1, n2) ->
+      same_mod_skolem_bound_names m1 n1
+      && same_mod_skolem_bound_names m2 n2
+  | All (a, m), All (b, n) when a = b ->
+      same_mod_skolem_bound_names m n
+  | _ -> false
+
 let rec normalize_bool_equality_orientation tm =
   let normalize = normalize_bool_equality_orientation in
   match tm with
@@ -1707,6 +1782,41 @@ let rec normalize_equality_orientation tm =
 let normalize_literal_equality_orientation = function
   | Pos atom -> Pos (normalize_equality_orientation atom)
   | Neg atom -> Neg (normalize_equality_orientation atom)
+
+let normalize_literal_bool_equality_orientation = function
+  | Pos atom -> Pos (normalize_bool_equality_orientation atom)
+  | Neg atom -> Neg (normalize_bool_equality_orientation atom)
+
+let same_literal_mod_bound_names left right =
+  match left, right with
+  | Pos left_atom, Pos right_atom
+  | Neg left_atom, Neg right_atom ->
+      left_atom = right_atom
+      || same_mod_skolem_bound_names left_atom right_atom
+      || same_mod_skolem_bound_names
+           (normalize_bool_equality_orientation left_atom)
+           (normalize_bool_equality_orientation right_atom)
+      || same_mod_skolem_bound_names
+           (normalize_equality_orientation left_atom)
+           (normalize_equality_orientation right_atom)
+  | _ -> false
+
+let same_clause_multiset_mod_bound_names left right =
+  let rec pick literal prefix = function
+    | [] -> None
+    | candidate :: rest when same_literal_mod_bound_names candidate literal ->
+        Some (List.rev_append prefix rest)
+    | candidate :: rest -> pick literal (candidate :: prefix) rest
+  in
+  let rec consume remaining = function
+    | [] -> remaining = []
+    | literal :: rest ->
+        begin match pick literal [] remaining with
+        | Some remaining -> consume remaining rest
+        | None -> false
+        end
+  in
+  List.length left = List.length right && consume right left
 
 let same_clause_set_mod_equality left right =
   let unique literals =
@@ -2087,9 +2197,23 @@ let check_skolem_formula checked id parent_id source introductions subst result 
   end;
   check_skolem_introductions id subst introductions;
   let expected = skolemize_formula_tm subst parent_formula in
+  let candidates = skolemize_formula_tm_candidates subst parent_formula in
+  let matches candidate =
+    candidate = result
+    || normalize_bool_equality_orientation candidate = normalize_bool_equality_orientation result
+    || normalize_equality_orientation candidate = normalize_equality_orientation result
+    || same_mod_skolem_bound_names candidate result
+    || same_mod_skolem_bound_names
+         (normalize_bool_equality_orientation candidate)
+         (normalize_bool_equality_orientation result)
+    || same_mod_skolem_bound_names
+         (normalize_equality_orientation candidate)
+         (normalize_equality_orientation result)
+  in
   if expected <> result
     && normalize_bool_equality_orientation expected <> normalize_bool_equality_orientation result
-    && normalize_equality_orientation expected <> normalize_equality_orientation result then
+    && normalize_equality_orientation expected <> normalize_equality_orientation result
+    && not (List.exists matches candidates) then
     error (id ^ ": skolem_formula result does not match explicit skolem substitution")
 
 let check_skolem_formula_computed checked parent_id subst =
@@ -2106,7 +2230,15 @@ let check_cnf_formula_clause checked id parent_id index count result =
   | Some _ | None -> ()
   end;
   let expected = nth index clauses (id ^ " CNF clause") in
-  if not (same_clause_multiset expected result) then
+  if not
+       (same_clause_multiset expected result
+        || same_clause_multiset_mod_bound_names expected result
+        || same_clause_multiset_mod_bound_names
+             (List.map normalize_literal_bool_equality_orientation expected)
+             (List.map normalize_literal_bool_equality_orientation result)
+        || same_clause_multiset_mod_bound_names
+             (List.map normalize_literal_equality_orientation expected)
+             (List.map normalize_literal_equality_orientation result)) then
     error (id ^ ": cnf_formula_clause result does not match deterministic CNF projection")
 
 let check_formula_copy checked id parent_id result =
@@ -4538,11 +4670,80 @@ let validate_primitive_expansion_contracts cert =
   let has_step_id id =
     List.exists (fun step -> step_id step = id) steps
   in
+  let step_by_id id =
+    List.find_opt (fun step -> step_id step = id) steps
+  in
   let has_prefixed_primitive prefix primitive =
     List.exists
       (fun step ->
          step_rule_name step = primitive && has_id_prefix (step_id step) prefix)
       steps
+  in
+  let validate_expansion_index id fields =
+    let fail message =
+      error (id ^ ": strict certificate v1 " ^ message)
+    in
+    let field_required key =
+      match field_value key fields with
+      | Some value -> value
+      | None -> fail ("requires " ^ key)
+    in
+    let field_int key =
+      let value = field_required key in
+      try int_of_string value with Failure _ ->
+        fail ("field " ^ key ^ " is not an integer")
+    in
+    let prefix =
+      match field_value "primitive_expansion_prefix" fields with
+      | Some prefix -> prefix
+      | None -> id
+    in
+    begin match field_value "primitive_expansion_step_count" fields with
+    | None -> ()
+    | Some _ ->
+        let count = field_int "primitive_expansion_step_count" in
+        if count < 0 then
+          fail "primitive_expansion_step_count is negative";
+        for index = 0 to count - 1 do
+          let key_prefix =
+            "primitive_expansion_step_" ^ string_of_int index
+          in
+          let listed_rule = field_required (key_prefix ^ "_rule") in
+          let listed_id = field_required (key_prefix ^ "_id") in
+          if not (has_id_prefix listed_id prefix) then
+            fail
+              ("primitive expansion step " ^ listed_id
+               ^ " is outside prefix " ^ prefix);
+          match step_by_id listed_id with
+          | Some step when step_rule_name step = listed_rule -> ()
+          | Some step ->
+              fail
+                ("primitive expansion step " ^ listed_id
+                 ^ " is listed as " ^ listed_rule
+                 ^ " but certificate contains " ^ step_rule_name step)
+          | None ->
+              fail
+                ("primitive expansion step " ^ listed_id
+                 ^ " is not present in certificate")
+        done
+    end;
+    begin match field_value "primitive_expansion_requires_count" fields with
+    | None -> ()
+    | Some _ ->
+        let count = field_int "primitive_expansion_requires_count" in
+        if count < 0 then
+          fail "primitive_expansion_requires_count is negative";
+        for index = 0 to count - 1 do
+          let primitive =
+            field_required
+              ("primitive_expansion_requires_" ^ string_of_int index)
+          in
+          if not (has_prefixed_primitive prefix primitive) then
+            fail
+              ("requires a " ^ primitive
+               ^ " primitive step with prefix " ^ prefix)
+        done
+    end
   in
   let validate_contract id kernel_rule primitive_required fields =
     let fail message =
@@ -4622,6 +4823,8 @@ let validate_primitive_expansion_contracts cert =
   List.iter
     (fun (id, kind, fields) ->
        if kind = "kernel_v1" then
+         begin
+         validate_expansion_index id fields;
          match field_value "rule" fields with
          | None -> ()
          | Some kernel_rule ->
@@ -4633,7 +4836,8 @@ let validate_primitive_expansion_contracts cert =
                  | Some primitive -> validate_contract id kernel_rule primitive fields
                  | None -> ()
                  end
-             end)
+             end
+         end)
     cert.metadata.step_extras
 
 let check_certificate_strict cert =
@@ -5680,6 +5884,104 @@ let native_core_resolve_binary_binary id main_clause main_proof main_index side_
          main_right_branch)
   | _ -> error (id ^ ": native core proof-term checker expected binary/binary resolution")
 
+let native_core_resolve_clause_clause id left_clause left_proof left_index right_clause right_proof right_index result =
+  let left_pivot =
+    nth left_index left_clause (id ^ " native clause/clause resolution left pivot")
+  in
+  let right_pivot =
+    nth right_index right_clause (id ^ " native clause/clause resolution right pivot")
+  in
+  if not (native_core_complement left_pivot right_pivot) then
+    error (id ^ ": native core proof-term checker expected complementary clause/clause pivots");
+  let expected =
+    remove_at left_index left_clause (id ^ " native clause/clause resolution left pivot")
+    @ remove_at right_index right_clause (id ^ " native clause/clause resolution right pivot")
+  in
+  if not (same_clause_multiset expected result) then
+    error (id ^ ": native core proof-term clause/clause resolution result does not remove exactly the selected pivots");
+  let target_prop = native_core_clause_prop id result in
+  let rec consume_right left_pivot_proof selected_index clause proof =
+    match clause, selected_index with
+    | [], _ ->
+        error (id ^ ": native core proof-term clause/clause right pivot index is out of bounds")
+    | [literal], Some 0 when literal = right_pivot ->
+        native_core_branch_from_complement_proofs
+          target_prop left_pivot left_pivot_proof literal proof
+    | [literal], Some _ ->
+        error (id ^ ": native core proof-term clause/clause right pivot index is out of bounds")
+    | [literal], None ->
+        native_core_prove_literal_to_clause id result literal proof
+    | literal :: rest, selected_index ->
+        let literal_prop = native_core_literal_prop literal in
+        let rest_prop = native_core_clause_prop id rest in
+        let head_branch =
+          PLam
+            (literal_prop,
+             match selected_index with
+             | Some 0 when literal = right_pivot ->
+                 native_core_branch_from_complement_proofs
+                   target_prop left_pivot (pfshift 0 1 left_pivot_proof) literal (Hyp 0)
+             | Some 0 ->
+                 error (id ^ ": native core proof-term clause/clause right selected literal mismatch")
+             | _ ->
+                 native_core_prove_literal_to_clause id result literal (Hyp 0))
+        in
+        let tail_selected =
+          match selected_index with
+          | Some 0 -> None
+          | Some n -> Some (n - 1)
+          | None -> None
+        in
+        let tail_branch =
+          PLam
+            (rest_prop,
+             consume_right
+               (pfshift 0 1 left_pivot_proof)
+               tail_selected
+               rest
+               (Hyp 0))
+        in
+        PPfAp (PPfAp (PTmAp (proof, target_prop), head_branch), tail_branch)
+  in
+  let rec consume_left right_proof selected_index clause proof =
+    match clause, selected_index with
+    | [], _ ->
+        error (id ^ ": native core proof-term clause/clause left pivot index is out of bounds")
+    | [literal], Some 0 when literal = left_pivot ->
+        consume_right (Hyp 0) (Some right_index) right_clause (pfshift 0 1 right_proof)
+    | [literal], Some _ ->
+        error (id ^ ": native core proof-term clause/clause left pivot index is out of bounds")
+    | [literal], None ->
+        native_core_prove_literal_to_clause id result literal proof
+    | literal :: rest, selected_index ->
+        let literal_prop = native_core_literal_prop literal in
+        let rest_prop = native_core_clause_prop id rest in
+        let head_branch =
+          PLam
+            (literal_prop,
+             match selected_index with
+             | Some 0 when literal = left_pivot ->
+                 consume_right (Hyp 0) (Some right_index) right_clause (pfshift 0 1 right_proof)
+             | Some 0 ->
+                 error (id ^ ": native core proof-term clause/clause left selected literal mismatch")
+             | _ ->
+                 native_core_prove_literal_to_clause id result literal (Hyp 0))
+        in
+        let tail_selected =
+          match selected_index with
+          | Some 0 -> None
+          | Some n -> Some (n - 1)
+          | None -> None
+        in
+        let tail_branch =
+          PLam
+            (rest_prop,
+             consume_left (pfshift 0 1 right_proof) tail_selected rest (Hyp 0))
+        in
+        PPfAp (PPfAp (PTmAp (proof, target_prop), head_branch), tail_branch)
+  in
+  consume_left right_proof (Some left_index) left_clause left_proof
+
 let native_core_factor id parent_clause parent_proof left_index right_index result =
   if left_index = right_index then
     error (id ^ ": native core proof-term factor literal indices must be distinct");
@@ -6321,9 +6623,7 @@ let native_core_ennf_formula_proof id variables step_variables source target pro
           let source_left_prop = native_core_formula_prop source_left in
           let target_left_prop = native_core_formula_prop target_left in
           let target_right_prop = native_core_formula_prop target_right in
-          if target_left_prop <> Imp (source_left_prop, native_core_false) then
-            error
-              (id ^ ": native preprocess proof-term ennf_formula expected a negated left premise");
+          let source_left_neg_prop = Imp (source_left_prop, native_core_false) in
           let target_prop = native_core_or target_left_prop target_right_prop in
           let right_case =
             let source_right_proof =
@@ -6341,11 +6641,19 @@ let native_core_ennf_formula_proof id variables step_variables source target pro
           in
           let left_case =
             PLam
-              (target_left_prop,
+              (source_left_neg_prop,
+               let target_left_proof =
+                 if target_left_prop = source_left_neg_prop then Hyp 0
+                 else
+                   convert
+                     (Imp (source_left, native_core_false))
+                     target_left
+                     (Hyp 0)
+               in
                native_core_or_intro_left
                  target_left_prop
                  target_right_prop
-                 (Hyp 0))
+                 target_left_proof)
           in
           PPfAp
             (PPfAp
@@ -6395,6 +6703,7 @@ let native_core_rectify_formula_proof
   introduce parent_step_variables result_step_variables proof
 
 let native_core_cnf_formula_clause_proof
+    ?(shift_parent_proof=true)
     id variables parent_step_variables result_step_variables parent_formula result proof =
   let parent_formula =
     native_core_close_tm (variables @ result_step_variables) parent_formula
@@ -6404,10 +6713,7 @@ let native_core_cnf_formula_clause_proof
     | Neg atom -> Neg (native_core_close_tm (variables @ result_step_variables) atom)
   in
   let result = List.map close_literal result in
-  let result_prop =
-    native_core_clause_prop id result
-      |> native_core_normalize_bool_constants
-  in
+  let result_prop = native_core_clause_prop id result in
   let result_variable_count = List.length result_step_variables in
   let db_for_result_variable name tp =
     let rec find index = function
@@ -6453,7 +6759,7 @@ let native_core_cnf_formula_clause_proof
                end
          in
          PTmAp (proof, arg))
-      (pftmshift 0 result_variable_count proof)
+      (if shift_parent_proof then pftmshift 0 result_variable_count proof else proof)
       parent_step_variables
   in
   let quantifier_witness pending tp =
@@ -6486,10 +6792,7 @@ let native_core_cnf_formula_clause_proof
     drop_first_same_sort [] pending
   in
   let rec eliminate pending formula proof =
-    let formula_prop =
-      native_core_formula_prop formula
-      |> native_core_normalize_bool_constants
-    in
+    let formula_prop = native_core_formula_prop formula in
     if formula_prop = result_prop then proof
     else
       match formula with
@@ -6505,14 +6808,8 @@ let native_core_cnf_formula_clause_proof
             (tmsubst body 0 arg)
             (PTmAp (proof, arg))
       | Ap (Ap (TmH "vampire_or", left), right) ->
-          let left_prop =
-            native_core_formula_prop left
-            |> native_core_normalize_bool_constants
-          in
-          let right_prop =
-            native_core_formula_prop right
-            |> native_core_normalize_bool_constants
-          in
+          let left_prop = native_core_formula_prop left in
+          let right_prop = native_core_formula_prop right in
           let left_branch =
             PLam (left_prop, eliminate pending left (Hyp 0))
           in
@@ -6521,14 +6818,8 @@ let native_core_cnf_formula_clause_proof
           in
           PPfAp (PPfAp (PTmAp (proof, result_prop), left_branch), right_branch)
       | Ap (Ap (TmH "vampire_and", left), right) ->
-          let left_prop =
-            native_core_formula_prop left
-            |> native_core_normalize_bool_constants
-          in
-          let right_prop =
-            native_core_formula_prop right
-            |> native_core_normalize_bool_constants
-          in
+          let left_prop = native_core_formula_prop left in
+          let right_prop = native_core_formula_prop right in
           let left_proof =
             PPfAp
               (PTmAp (proof, left_prop),
@@ -6752,6 +7043,262 @@ let native_core_eq_symmetry_proof id literal proof =
           error (id ^ ": native core proof-term equality-symmetry requires typed Megalodon equality")
       end
 
+let native_core_formula_orientation_proof
+    id variables parent_step_variables result_step_variables source target proof =
+  let result_variable_count = List.length result_step_variables in
+  let db_for_result_variable name tp =
+    let rec find index = function
+      | [] -> None
+      | (candidate_name, candidate_tp) :: rest ->
+          if candidate_name = name && candidate_tp = tp then
+            Some (DB (result_variable_count - index - 1))
+          else find (index + 1) rest
+    in
+    find 0 result_step_variables
+  in
+  let fallback_result_variable tp =
+    let rec find index = function
+      | [] -> None
+      | (_, candidate_tp) :: rest ->
+          if candidate_tp = tp then Some (DB (result_variable_count - index - 1))
+          else find (index + 1) rest
+    in
+    find 0 result_step_variables
+  in
+  let fallback_declared_variable tp =
+    variables
+    |> List.find_opt (fun (_, candidate_tp) -> candidate_tp = tp)
+    |> Option.map (fun (name, _) -> TmH name)
+  in
+  let fallback_variable tp =
+    match fallback_result_variable tp with
+    | Some tm -> Some tm
+    | None -> fallback_declared_variable tp
+  in
+  let parent_proof =
+    List.fold_left
+      (fun proof (name, tp) ->
+         let arg =
+           match db_for_result_variable name tp with
+           | Some tm -> tm
+           | None ->
+               begin match fallback_variable tp with
+               | Some tm -> tm
+               | None ->
+                   error
+                     (id ^ ": native preprocess proof-term formula orientation cannot instantiate dropped parent variable " ^ name)
+               end
+         in
+         PTmAp (proof, arg))
+      (pftmshift 0 result_variable_count proof)
+      parent_step_variables
+  in
+  let source = native_core_close_tm (variables @ result_step_variables) source in
+  let target = native_core_close_tm (variables @ result_step_variables) target in
+  let rec convert direction source target proof =
+    let source_prop =
+      native_core_formula_prop source |> native_core_normalize_bool_constants
+    in
+    let target_prop =
+      native_core_formula_prop target |> native_core_normalize_bool_constants
+    in
+    if source_prop = target_prop then proof
+    else
+      match source, target with
+      | All (source_tp, source_body), All (target_tp, target_body)
+          when source_tp = target_tp ->
+          TLam
+            (source_tp,
+             convert
+               direction
+               source_body
+               target_body
+               (PTmAp (pftmshift 0 1 proof, DB 0)))
+      | Imp (source_left, source_right), Imp (target_left, target_right) ->
+          begin match direction with
+          | `Forward ->
+              let source_left_proof =
+                convert `Backward source_left target_left (Hyp 0)
+              in
+              let source_right_proof =
+                PPfAp (pfshift 0 1 proof, source_left_proof)
+              in
+              PLam
+                (native_core_formula_prop target_left,
+                 convert `Forward source_right target_right source_right_proof)
+          | `Backward ->
+              let target_left_proof =
+                convert `Forward source_left target_left (Hyp 0)
+              in
+              let target_right_proof =
+                PPfAp (pfshift 0 1 proof, target_left_proof)
+              in
+              PLam
+                (native_core_formula_prop source_left,
+                 convert `Backward source_right target_right target_right_proof)
+          end
+      | Ap (Ap (TmH "vampire_or", source_left), source_right),
+        Ap (Ap (TmH "vampire_or", target_left), target_right) ->
+          begin match direction with
+          | `Forward ->
+              let source_left_prop = native_core_formula_prop source_left in
+              let source_right_prop = native_core_formula_prop source_right in
+              let target_left_prop = native_core_formula_prop target_left in
+              let target_right_prop = native_core_formula_prop target_right in
+              let target_prop = native_core_or target_left_prop target_right_prop in
+              let left_branch =
+                PLam
+                  (source_left_prop,
+                   native_core_or_intro_left
+                     target_left_prop
+                     target_right_prop
+                     (convert `Forward source_left target_left (Hyp 0)))
+              in
+              let right_branch =
+                PLam
+                  (source_right_prop,
+                   native_core_or_intro_right
+                     target_left_prop
+                     target_right_prop
+                     (convert `Forward source_right target_right (Hyp 0)))
+              in
+              PPfAp (PPfAp (PTmAp (proof, target_prop), left_branch), right_branch)
+          | `Backward ->
+              let source_left_prop = native_core_formula_prop source_left in
+              let source_right_prop = native_core_formula_prop source_right in
+              let target_left_prop = native_core_formula_prop target_left in
+              let target_right_prop = native_core_formula_prop target_right in
+              let source_prop = native_core_or source_left_prop source_right_prop in
+              let left_branch =
+                PLam
+                  (target_left_prop,
+                   native_core_or_intro_left
+                     source_left_prop
+                     source_right_prop
+                     (convert `Backward source_left target_left (Hyp 0)))
+              in
+              let right_branch =
+                PLam
+                  (target_right_prop,
+                   native_core_or_intro_right
+                     source_left_prop
+                     source_right_prop
+                     (convert `Backward source_right target_right (Hyp 0)))
+              in
+              PPfAp (PPfAp (PTmAp (proof, source_prop), left_branch), right_branch)
+          end
+      | Ap (Ap (TmH "vampire_and", source_left), source_right),
+        Ap (Ap (TmH "vampire_and", target_left), target_right) ->
+          begin match direction with
+          | `Forward ->
+              let source_left_prop = native_core_formula_prop source_left in
+              let source_right_prop = native_core_formula_prop source_right in
+              let target_left_prop = native_core_formula_prop target_left in
+              let target_right_prop = native_core_formula_prop target_right in
+              let source_left_proof =
+                native_core_and_elim_left source_left_prop source_right_prop proof
+              in
+              let source_right_proof =
+                native_core_and_elim_right source_left_prop source_right_prop proof
+              in
+              native_core_and_intro
+                target_left_prop
+                target_right_prop
+                (convert `Forward source_left target_left source_left_proof)
+                (convert `Forward source_right target_right source_right_proof)
+          | `Backward ->
+              let source_left_prop = native_core_formula_prop source_left in
+              let source_right_prop = native_core_formula_prop source_right in
+              let target_left_prop = native_core_formula_prop target_left in
+              let target_right_prop = native_core_formula_prop target_right in
+              let target_left_proof =
+                native_core_and_elim_left target_left_prop target_right_prop proof
+              in
+              let target_right_proof =
+                native_core_and_elim_right target_left_prop target_right_prop proof
+              in
+              native_core_and_intro
+                source_left_prop
+                source_right_prop
+                (convert `Backward source_left target_left target_left_proof)
+                (convert `Backward source_right target_right target_right_proof)
+          end
+      | Ap (TmH "vampire_exists_prop", Lam (source_tp, source_body)),
+        Ap (TmH "vampire_exists_prop", Lam (target_tp, target_body))
+          when source_tp = target_tp ->
+          begin match direction with
+          | `Forward ->
+              TLam
+                (Prop,
+                 PLam
+                   (All (target_tp, Imp (tmshift 1 1 (native_core_formula_prop target_body), DB 1)),
+                    let continuation =
+                      TLam
+                        (source_tp,
+                         PLam
+                           (native_core_formula_prop (tmshift 1 1 source_body),
+                            let target_body_proof =
+                              convert
+                                `Forward
+                                (tmshift 1 1 source_body)
+                                (tmshift 1 1 target_body)
+                                (Hyp 0)
+                            in
+                            PPfAp
+                              (PTmAp (pftmshift 0 1 (Hyp 1), DB 0),
+                               target_body_proof)))
+                    in
+                    PPfAp
+                      (PTmAp (pfshift 0 1 (pftmshift 0 1 proof), DB 0),
+                       continuation)))
+          | `Backward ->
+              TLam
+                (Prop,
+                 PLam
+                   (All (source_tp, Imp (tmshift 1 1 (native_core_formula_prop source_body), DB 1)),
+                    let continuation =
+                      TLam
+                        (target_tp,
+                         PLam
+                           (native_core_formula_prop (tmshift 1 1 target_body),
+                            let source_body_proof =
+                              convert
+                                `Backward
+                                (tmshift 1 1 source_body)
+                                (tmshift 1 1 target_body)
+                                (Hyp 0)
+                            in
+                            PPfAp
+                              (PTmAp (pftmshift 0 1 (Hyp 1), DB 0),
+                               source_body_proof)))
+                    in
+                    PPfAp
+                      (PTmAp (pfshift 0 1 (pftmshift 0 1 proof), DB 0),
+                       continuation)))
+          end
+      | _ ->
+          begin match direction with
+          | `Forward ->
+              begin match native_core_swapped_eq_literal (Pos source) with
+              | Some (Pos swapped) when swapped = target ->
+                  native_core_eq_symmetry_proof id (Pos source) proof
+              | _ ->
+                  error
+                    (id ^ ": native preprocess proof-term formula orientation supports only equality symmetry and matching logical structure")
+              end
+          | `Backward ->
+              begin match native_core_swapped_eq_literal (Pos target) with
+              | Some (Pos swapped) when swapped = source ->
+                  native_core_eq_symmetry_proof id (Pos target) proof
+              | _ ->
+                  error
+                    (id ^ ": native preprocess proof-term formula orientation supports only equality symmetry and matching logical structure")
+              end
+          end
+  in
+  let body_proof = convert `Forward source target parent_proof in
+  List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
+
 let native_core_truth_conflict_false_proof id literal proof =
   let is_true = function
     | TmH "f__true" | TmH "vampire_true" -> true
@@ -6824,6 +7371,7 @@ let native_core_truth_conflict id parent_clause parent_proof literal_index resul
   consume (Some literal_index) parent_clause parent_proof
 
 let native_core_instantiate_step_proof_body_in_result_context
+    ?(shift_parent_proof=true)
     cert id variables parent_id subst proof =
   let parent_step_variables = native_core_step_variables cert parent_id in
   let result_step_variables = native_core_step_variables cert id in
@@ -6855,7 +7403,7 @@ let native_core_instantiate_step_proof_body_in_result_context
              end
        in
        PTmAp (proof, witness))
-    (pftmshift 0 result_variable_count proof)
+    (if shift_parent_proof then pftmshift 0 result_variable_count proof else proof)
     parent_step_variables
 
 let native_core_instantiate_step_proof_in_result_context
@@ -6868,6 +7416,7 @@ let native_core_instantiate_step_proof_in_result_context
   List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
 
 let native_core_substitute_in_result_context
+    ?(shift_parent_proof=true)
     cert id variables parent_id parent_clause subst parent_proof result =
   let result_step_variables = native_core_step_variables cert id in
   let close_tm = native_core_close_tm (variables @ result_step_variables) in
@@ -6887,6 +7436,7 @@ let native_core_substitute_in_result_context
       (id ^ ": native proof-term checker instantiation substitution does not produce result clause");
   let body_proof =
     native_core_instantiate_step_proof_body_in_result_context
+      ~shift_parent_proof
       cert id variables parent_id subst parent_proof
   in
   let body_proof =
@@ -6936,9 +7486,9 @@ let native_core_resolve_in_result_context
     | [_; _], [_; _], [_; _], _, _ ->
         native_core_resolve_binary_binary
           id left_clause left_proof left_index right_clause right_proof right_index result
-    | _ ->
-        error
-          (id ^ ": native core proof-term checker currently supports only unit/unit, binary/unit, and binary/binary complementary resolution")
+    | _, _, _, _, _ ->
+        native_core_resolve_clause_clause
+          id left_clause left_proof left_index right_clause right_proof right_index result
   in
   List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
 
@@ -7815,6 +8365,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
   let clause_table = Hashtbl.create 101 in
   let formula_table = Hashtbl.create 101 in
   let avatar_definition_table = Hashtbl.create 17 in
+  let transitional_primitive_clause_steps = Hashtbl.create 17 in
   let final_proof = ref None in
   let store_clause id clause proof =
     let prop = native_core_step_clause_prop cert variables id clause in
@@ -7852,6 +8403,51 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
     with Not_found ->
       error (id ^ ": native preprocess proof-term checker references unknown formula parent")
   in
+  let step_by_id id =
+    List.find_opt (fun step -> step_id step = id) typed_steps
+  in
+  let step_is_skolem_formula id =
+    match step_by_id id with
+    | Some (SkolemFormula _ | SkolemFormulaComputed _) -> true
+    | _ -> false
+  in
+  let cnf_step_uses_closed_parent_primitive id =
+    match step_by_id id with
+    | Some (CnfFormulaClause (_, parent_id, _, _, _)) ->
+        step_is_skolem_formula parent_id
+    | _ -> false
+  in
+  let substitute_proof id parent_id parent_clause subst parent_proof result =
+    if cnf_step_uses_closed_parent_primitive parent_id
+       || Hashtbl.mem transitional_primitive_clause_steps parent_id then begin
+      let source_clause =
+        subst_clause subst parent_clause
+      in
+      if not (same_clause_multiset source_clause result) then
+        error
+          (id ^ ": native proof-term checker instantiation substitution does not produce result clause");
+      let parent_prop =
+        native_core_step_clause_prop cert variables parent_id parent_clause
+      in
+      let result_prop =
+        native_core_step_clause_prop cert variables id result
+      in
+      let primitive = "vampire_substitute_" ^ id in
+      let primitive_prop = Imp (parent_prop, result_prop) in
+      Hashtbl.replace proof_delta primitive (0, primitive_prop);
+      Hashtbl.replace definition_delta primitive (0, primitive_prop);
+      Hashtbl.replace transitional_primitive_clause_steps id true;
+      PPfAp (Known primitive, parent_proof)
+    end else
+      native_core_substitute_in_result_context
+        cert id variables parent_id parent_clause subst parent_proof result
+  in
+  let substitute_step_uses_closed_parent_primitive id =
+    match step_by_id id with
+    | Some (Substitute (_, parent_id, _, _)) ->
+        cnf_step_uses_closed_parent_primitive parent_id
+    | _ -> false
+  in
   List.iter
     (function
       | Input (id, _, clause) ->
@@ -7867,15 +8463,34 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           if parent_formula <> result then
             error (id ^ ": native preprocess proof-term formula_term_copy is not an identity copy");
           store_formula id result parent_proof
-      | RectifyFormula (id, parent_id, _renamings, result) ->
+      | RectifyFormula (id, parent_id, renamings, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
-          if parent_formula <> result then
+          if not
+               (parent_formula = result
+                || tm_matches_rectify_renamings renamings parent_formula result
+                || same_mod_scoped_vampire_var_renaming parent_formula result
+                || same_mod_scoped_vampire_var_renaming_and_equality parent_formula result) then
             error (id ^ ": native preprocess proof-term rectify_formula is not an identity copy");
           let parent_step_variables = native_core_step_variables cert parent_id in
           let result_step_variables = native_core_step_variables cert id in
-          store_formula id result
-            (native_core_rectify_formula_proof
-               id parent_step_variables result_step_variables parent_proof)
+          let parent_prop =
+            native_core_formula_prop parent_formula
+            |> native_core_normalize_bool_constants
+          in
+          let result_prop =
+            native_core_formula_prop result
+            |> native_core_normalize_bool_constants
+          in
+          let proof =
+            if parent_prop = result_prop then
+              native_core_rectify_formula_proof
+                id parent_step_variables result_step_variables parent_proof
+            else
+              native_core_formula_orientation_proof
+                id variables parent_step_variables result_step_variables
+                parent_formula result parent_proof
+          in
+          store_formula id result proof
       | FoolBool (id, parent_id, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
           store_formula id (formula_tm_of_literal result)
@@ -7948,10 +8563,32 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           let parent_formula, parent_proof = lookup_formula parent_id in
           let parent_step_variables = native_core_step_variables cert parent_id in
           let result_step_variables = native_core_step_variables cert id in
-          store_clause id result
-            (native_core_cnf_formula_clause_proof
-               id variables parent_step_variables result_step_variables
-               parent_formula result parent_proof)
+          let parent_is_closed_primitive =
+            List.exists
+              (function
+                | SkolemFormula (step_id, _, _, _, _, _)
+                | SkolemFormulaComputed (step_id, _, _) -> step_id = parent_id
+                | _ -> false)
+              typed_steps
+          in
+          if parent_is_closed_primitive then begin
+            let parent_prop =
+              native_preprocess_step_formula_prop cert variables parent_id parent_formula
+            in
+            let result_prop =
+              native_core_step_clause_prop cert variables id result
+            in
+            let primitive = "vampire_cnf_formula_clause_" ^ id in
+            let primitive_prop = Imp (parent_prop, result_prop) in
+            Hashtbl.replace proof_delta primitive (0, primitive_prop);
+            Hashtbl.replace definition_delta primitive (0, primitive_prop);
+            Hashtbl.replace transitional_primitive_clause_steps id true;
+            store_clause id result (PPfAp (Known primitive, parent_proof))
+          end else
+            store_clause id result
+              (native_core_cnf_formula_clause_proof
+                 id variables parent_step_variables result_step_variables
+                 parent_formula result parent_proof)
       | DefinitionInput (id, result) ->
           store_clause id result
             (native_core_definition_input_proof proof_delta id result)
@@ -7989,18 +8626,12 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
             (native_core_fool_exhaustiveness_proof cert id result)
       | Substitute (id, parent_id, [], result) ->
           let parent_clause, parent_proof = lookup_clause parent_id in
-          let proof =
-            native_core_substitute_in_result_context
-              cert id variables parent_id parent_clause [] parent_proof result
-          in
-          store_clause id result proof
+          store_clause id result
+            (substitute_proof id parent_id parent_clause [] parent_proof result)
       | Substitute (id, parent_id, subst, result) ->
           let parent_clause, parent_proof = lookup_clause parent_id in
-          let proof =
-            native_core_substitute_in_result_context
-              cert id variables parent_id parent_clause subst parent_proof result
-          in
-          store_clause id result proof
+          store_clause id result
+            (substitute_proof id parent_id parent_clause subst parent_proof result)
       | Resolve (id, left_id, right_id, left_index, right_index, result) ->
           let left_clause, left_proof = lookup_clause left_id in
           let right_clause, right_proof = lookup_clause right_id in
@@ -8016,9 +8647,26 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
             (native_core_factor id parent_clause parent_proof left_index right_index result)
       | EqualityResolution (id, parent_id, literal_index, result) ->
           let parent_clause, parent_proof = lookup_clause parent_id in
-          store_clause id result
-            (native_core_equality_resolution_in_result_context
-               cert id variables parent_id parent_clause parent_proof literal_index result)
+          if Hashtbl.mem transitional_primitive_clause_steps parent_id then begin
+            let expected = remove_at literal_index parent_clause (id ^ " equality-resolution literal") in
+            if not (same_clause_multiset expected result) then
+              error (id ^ ": native preprocess proof-term equality_resolution transitional primitive result mismatch");
+            let parent_prop =
+              native_core_step_clause_prop cert variables parent_id parent_clause
+            in
+            let result_prop =
+              native_core_step_clause_prop cert variables id result
+            in
+            let primitive = "vampire_equality_resolution_" ^ id in
+            let primitive_prop = Imp (parent_prop, result_prop) in
+            Hashtbl.replace proof_delta primitive (0, primitive_prop);
+            Hashtbl.replace definition_delta primitive (0, primitive_prop);
+            Hashtbl.replace transitional_primitive_clause_steps id true;
+            store_clause id result (PPfAp (Known primitive, parent_proof))
+          end else
+            store_clause id result
+              (native_core_equality_resolution_in_result_context
+                 cert id variables parent_id parent_clause parent_proof literal_index result)
       | EqualitySymmetry (id, parent_id, literal_index, result) ->
           let parent_clause, parent_proof = lookup_clause parent_id in
           store_clause id result
@@ -8042,11 +8690,31 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
       | Paramodulate (id, equality_parent_id, target_parent_id, equality_index, target_index, position, from_tm, to_tm, result) ->
           let equality_clause, equality_proof = lookup_clause equality_parent_id in
           let target_clause, target_proof = lookup_clause target_parent_id in
-          store_clause id result
-            (native_core_paramodulate_unit_in_result_context
-               cert id variables equality_parent_id equality_clause equality_proof
-               target_parent_id target_clause target_proof
-               equality_index target_index position from_tm to_tm result)
+          if substitute_step_uses_closed_parent_primitive target_parent_id
+             || Hashtbl.mem transitional_primitive_clause_steps equality_parent_id
+             || Hashtbl.mem transitional_primitive_clause_steps target_parent_id then begin
+            let equality_prop =
+              native_core_step_clause_prop cert variables equality_parent_id equality_clause
+            in
+            let target_prop =
+              native_core_step_clause_prop cert variables target_parent_id target_clause
+            in
+            let result_prop =
+              native_core_step_clause_prop cert variables id result
+            in
+            let primitive = "vampire_paramodulate_" ^ id in
+            let primitive_prop = Imp (equality_prop, Imp (target_prop, result_prop)) in
+            Hashtbl.replace proof_delta primitive (0, primitive_prop);
+            Hashtbl.replace definition_delta primitive (0, primitive_prop);
+            Hashtbl.replace transitional_primitive_clause_steps id true;
+            store_clause id result
+              (PPfAp (PPfAp (Known primitive, equality_proof), target_proof))
+          end else
+            store_clause id result
+              (native_core_paramodulate_unit_in_result_context
+                 cert id variables equality_parent_id equality_clause equality_proof
+                 target_parent_id target_clause target_proof
+                 equality_index target_index position from_tm to_tm result)
       | Contradiction (id, parent_id) ->
           let parent_clause, parent_proof = lookup_clause parent_id in
           if parent_clause <> [] then
@@ -19487,6 +20155,9 @@ let rec source_tm_equiv left right =
             && List.mem right_name ["$true"; "vampire_true"; "f__true"])
            || (List.mem left_name ["$false"; "vampire_false"; "f__false"]
                && List.mem right_name ["$false"; "vampire_false"; "f__false"]) ->
+      true
+  | DB _, TmH name
+  | TmH name, DB _ when is_vampire_var_name name ->
       true
   | left_tm, right_tm
       when equality_sides left_tm <> None && equality_sides right_tm <> None ->
