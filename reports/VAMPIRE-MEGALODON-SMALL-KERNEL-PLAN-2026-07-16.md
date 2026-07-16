@@ -1,0 +1,1195 @@
+# Vampire to Megalodon Small-Kernel Certificate Plan
+
+Date: 2026-07-16
+
+Status: design plan for the `vampire/megalodon4` branch and successors
+
+Primary repositories:
+
+- Megalodon: `/project/Megalodon`
+- Vampire proof-export fork: `/project/vampire-leancheck`
+- Temporary artifacts: `/project/tmp`
+
+Related documents:
+
+- `reports/vampire-megalodon-certificate-spec.md`
+- `reports/PROVER9-IVY-ANALYSIS-2026-07-13.md`
+- `reports/REPORT-2026-07-16.md`
+- `reports/audit-REPORT-2026-07-15.md`
+- `reports/audit-response-2026-07-15.md`
+
+## Purpose
+
+This document is the implementation plan for moving the project away from
+ad-hoc textual replay and toward a Prover9/Ivy-style proof object:
+
+```text
+Vampire proof
+  -> Vampire-side expansion into small primitive steps
+  -> native S-expression certificate
+  -> Megalodon small-kernel checker / Syntax.pf elaborator
+  -> original-context Megalodon proof
+```
+
+The purpose is not to describe what has already happened. The purpose is to
+define the target architecture clearly enough that implementation work can be
+judged as aligned or misaligned.
+
+The key rule is:
+
+> New proof reconstruction power should come from Vampire emitting more exact
+> primitive proof data, and from Megalodon checking a small fixed calculus.
+> It should not come from a growing Megalodon-side heuristic reconstruction
+> engine or from Python proof search.
+
+## Current Problem
+
+The project has made real progress:
+
+- Vampire emits a native S-expression certificate.
+- Megalodon parses and validates that certificate in OCaml.
+- Closed mode rejects bridge and derived assumptions.
+- Source formulas are checked for the supported exported THF fragment.
+- The branch has a native `Syntax.pf` seed via `-vampirecertv1corepfcheck`.
+- A strict live 100-case artifact has all 100 certificates passing Megalodon
+  checking, modulo a still-open metadata audit issue for non-identity helper
+  substitutions.
+
+But the architecture is not yet clean:
+
+- `src/vampire_cert_v1.ml` still contains a large textual replay engine.
+- Many broad certificate constructors are checked or replayed outside the
+  native proof-term path.
+- Some Vampire-side expansions are implemented locally inside
+  `MegalodonChecker.cpp`, but there is no clean internal primitive proof IR.
+- Some non-identity helper substitutions are still emitted as certificate
+  steps without matching `kernel_v1 rule=instantiation` metadata.
+- Original-context reconstruction is not complete.
+- Smolka-style preprocessing transformations are not yet a separate small
+  proof-producing layer.
+
+The plan below addresses these gaps.
+
+## Design Principles
+
+### 1. Vampire explains, Megalodon checks
+
+Vampire has access to:
+
+- selected literals;
+- active substitutions;
+- side substitutions;
+- unification results;
+- equality orientation;
+- rewrite positions;
+- AVATAR state;
+- clause parents;
+- inference-specific extras;
+- term and variable sorts.
+
+Megalodon should not rediscover this information from before/after formulas.
+It should receive it explicitly and check it locally.
+
+### 2. Small primitive kernel first
+
+The primitive clausal kernel should remain small. A proposed stable kernel is:
+
+- `input`
+- `instantiate`
+- `rename`
+- `flip`
+- `resolve`
+- `factor`
+- `equality_resolution`
+- `equality_factoring`
+- `paramodulate`
+- `truth_conflict`
+- `contradiction`
+
+This is slightly larger than Prover9 Ivy because Megalodon needs explicit
+typed equality behavior and because Vampire exposes equality factoring and
+truth/FOOL interactions as important recurring cases. It is still small enough
+to check directly.
+
+The existing certificate constructors `substitute` and `equality_symmetry`
+should be treated as surface names for `instantiate` and `flip` respectively.
+Long term, the certificate should converge on the kernel vocabulary above.
+
+### 3. Macro inferences lower before printing
+
+Complex Vampire inferences should not be primitive Megalodon rules. They should
+lower to the kernel:
+
+```text
+superposition
+  -> instantiate equality parent
+  -> instantiate target parent
+  -> optional flip
+  -> paramodulate
+  -> factor / rename if needed
+
+demodulation / rewrite
+  -> instantiate demodulator if needed
+  -> instantiate target if needed
+  -> optional flip
+  -> one paramodulate per occurrence
+  -> factor / rename if needed
+
+unit-resulting resolution
+  -> instantiate current parent
+  -> instantiate unit parent
+  -> optional flips
+  -> one binary resolve per unit step
+  -> rename if needed
+
+subsumption resolution
+  -> instantiate side parent
+  -> optional flips
+  -> resolve selected literal
+  -> check side-remainder coverage
+
+condensation
+  -> instantiate
+  -> factor / propositional duplicate deletion
+  -> rename if needed
+```
+
+This mirrors Prover9's `expand_proof` plus `expand_proof_ivy` split.
+
+### 4. Source transformations are separate from the clausal kernel
+
+FOOL, ENNF, CNF, rectification, definition introduction, Skolemization,
+conjecture negation, and set-generated equalities should not be hidden inside
+clausal proof replay.
+
+They need a separate preprocessing certificate layer:
+
+```text
+original Megalodon source fact
+  -> exported THF formula
+  -> normalized formula
+  -> clausal input
+```
+
+The clausal kernel starts after source-to-clause transformation has produced
+clause inputs. The final proof composes the preprocessing proof with the
+clausal refutation.
+
+### 5. Native proof terms are the qualifying path
+
+Textual `.mg` emission is useful for debugging and regression. It should not
+remain the primary success criterion.
+
+The qualifying path should converge on:
+
+```ocaml
+source_context -> certificate -> Syntax.tm * Syntax.pf
+```
+
+and every constructed proof term should be checked with `check_propofpf`.
+
+### 6. No hidden admissions
+
+Accepted proofs must not use:
+
+- `admit`;
+- `aby`;
+- `-allowincompleteqed`;
+- bridge assumptions;
+- derived non-source premises;
+- unsupported axiom injection;
+- source labels without formula/context verification.
+
+## Target Architecture
+
+### Layer 1: Megalodon export
+
+Responsibilities:
+
+- Export THF/TPTP problems.
+- Emit source-map metadata for every exported formula.
+- Preserve origin information:
+  - original theorem;
+  - original lemma/fact;
+  - local hypothesis;
+  - definition;
+  - set-generated equality;
+  - conjecture negation;
+  - generated transformation artifact.
+- Emit enough metadata to recover original names and propositions.
+
+Non-responsibilities:
+
+- It should not pre-prove Vampire inferences.
+- It should not hide source transformations as unlabelled axioms.
+
+Required future additions:
+
+- stable source formula hashes;
+- stable original-context identifiers;
+- explicit classification of set-command equalities;
+- exported formula hash recomputed independently by Megalodon importer.
+
+### Layer 2: Vampire proof search
+
+Responsibilities:
+
+- Solve THF/TPTP problems.
+- Preserve proof/inference metadata needed for reconstruction.
+- Avoid losing substitutions, selected literals, and positions.
+
+Non-responsibilities:
+
+- It does not need to emit Megalodon proof terms.
+- It does not need to know original Megalodon local proof contexts beyond
+  exported source metadata.
+
+### Layer 3: Vampire proof expansion
+
+This is the missing Prover9-style layer.
+
+Proposed internal structure:
+
+```cpp
+enum class MegalodonKernelRule {
+  Input,
+  Instantiate,
+  Rename,
+  Flip,
+  Resolve,
+  Factor,
+  EqualityResolution,
+  EqualityFactoring,
+  Paramodulate,
+  TruthConflict,
+  Contradiction
+};
+
+struct MegalodonKernelStep {
+  std::string id;
+  MegalodonKernelRule rule;
+  std::vector<std::string> parents;
+  Clause result;
+  SortMap variableSorts;
+  SourceOrigin source;              // only for input-like steps
+  std::optional<Substitution> subst;
+  std::optional<SelectedLiteral> selected;
+  std::optional<SelectedLiteral> other;
+  std::optional<Position> position;
+  std::optional<Term> from;
+  std::optional<Term> to;
+  std::optional<OriginalInference> origin;
+};
+```
+
+This does not need to be exactly the final C++ shape. The important point is
+that Vampire should build a normalized list of small kernel steps before
+printing the S-expression certificate.
+
+Each macro inference should expand to a list:
+
+```cpp
+std::vector<MegalodonKernelStep>
+expandForMegalodon(Unit* unit, InferenceInformation* info);
+```
+
+Each emitted primitive step must be self-checkable by simple syntactic
+conditions.
+
+### Layer 4: Certificate printer
+
+Responsibilities:
+
+- Print kernel steps as S-expressions.
+- Print terms, literals, clauses, substitutions, sorts, and positions in one
+  canonical format.
+- Include `kernel_v1` metadata only when needed during migration.
+
+Long-term goal:
+
+- The primitive step itself should contain the data now duplicated in
+  `step_extra`.
+- `step_extra "kernel_v1"` remains a migration bridge but should shrink.
+
+### Layer 5: Megalodon certificate parser and checker
+
+Responsibilities:
+
+- Parse the S-expression certificate.
+- Validate local side conditions.
+- Reject malformed or unsupported certificates.
+- Elaborate primitive clausal steps to `Syntax.pf`.
+- Check every proof term with `check_propofpf`.
+
+Non-responsibilities:
+
+- It must not search for missing pivots.
+- It must not infer substitutions that Vampire failed to emit.
+- It must not repair malformed clauses.
+- It must not silently fall back from native proof terms to textual replay in
+  a qualifying mode.
+
+### Layer 6: Original-context composition
+
+Responsibilities:
+
+- Replace exported source assumptions by original Megalodon facts.
+- Prove set-generated equality facts by reflexivity/definitional conversion.
+- Connect conjecture negation to the target theorem.
+- Resolve approved logical principles such as classical `xm` from the library.
+- Compose preprocessing proofs with the clausal refutation.
+
+This is required for Tier 1 success.
+
+## Primitive Rule Specification
+
+This section defines the intended kernel rules. The names may be adjusted, but
+the proof obligations should stay stable.
+
+### `input`
+
+Introduces a clause already justified by the source/preprocessing layer.
+
+Fields:
+
+- `id`
+- `source`
+- `result_clause`
+
+Megalodon checker:
+
+- obtains or assumes the clause proof from the source/preprocessing context;
+- does not treat arbitrary certificate input as trusted in Tier 1.
+
+### `instantiate`
+
+Applies an explicit substitution to a parent clause.
+
+Fields:
+
+- `id`
+- `parent`
+- `substitution`
+- `parent_clause`
+- `parent_substituted_clause`
+- `result_clause`
+- variable sorts for introduced result variables.
+
+Side condition:
+
+- `result_clause = subst(parent_clause, substitution)` up to the agreed clause
+  representation and alpha-renaming policy.
+
+Megalodon proof:
+
+- universal elimination / proof term application over quantified clause
+  variables;
+- no search.
+
+Current state:
+
+- `substitute` steps exist.
+- Some non-identity helper substitutes still lack metadata.
+- `corepfcheck` has support for explicit instantiation/substitution when
+  enough data is present.
+
+Immediate implementation target:
+
+- every non-identity emitted `substitute` step must carry instantiation
+  metadata or become an `instantiate` primitive directly.
+
+### `rename`
+
+Renames variables without changing logical content.
+
+Fields:
+
+- `id`
+- `parent`
+- `renaming`
+- `result_clause`
+
+Side condition:
+
+- the result is alpha-equivalent to the parent under the exact renaming.
+
+Megalodon proof:
+
+- alpha conversion / context renaming.
+
+Current state:
+
+- Some renaming metadata exists in `kernel_v1`.
+- This should become a first-class kernel primitive or be folded into a
+  checked alpha-equivalence layer.
+
+### `flip`
+
+Swaps sides of a typed equality literal.
+
+Fields:
+
+- `id`
+- `parent`
+- `literal_index`
+- `result_clause`
+
+Side condition:
+
+- selected literal is typed Megalodon equality;
+- result clause is parent with that equality swapped.
+
+Megalodon proof:
+
+- equality symmetry.
+
+Current surface constructor:
+
+- `equality_symmetry`.
+
+### `resolve`
+
+Binary resolution.
+
+Fields:
+
+- `id`
+- `left_parent`
+- `right_parent`
+- `left_pivot_index`
+- `right_pivot_index`
+- `left_selected_literal`
+- `right_selected_literal`
+- `result_clause`
+
+Side condition:
+
+- selected literals are complements after any prior `instantiate` steps;
+- result is both clauses with pivots removed and remaining literals combined.
+
+Megalodon proof:
+
+- disjunction elimination/case split on the pivot.
+
+Macro expansions:
+
+- unit-resulting resolution becomes a chain of `instantiate`, `flip`, and
+  `resolve`.
+- hyper-like resolution should lower similarly.
+
+### `factor`
+
+Deletes duplicate literals.
+
+Fields:
+
+- `id`
+- `parent`
+- `left_literal_index`
+- `right_literal_index`
+- `result_clause`
+
+Side condition:
+
+- selected literals are identical after prior instantiation;
+- result removes one duplicate.
+
+Megalodon proof:
+
+- rebuild disjunction without duplicate branch.
+
+### `equality_resolution`
+
+Removes a negative reflexive equality.
+
+Fields:
+
+- `id`
+- `parent`
+- `literal_index`
+- `result_clause`
+
+Side condition:
+
+- selected literal is negative typed equality `t != t`;
+- result removes it.
+
+Megalodon proof:
+
+- contradiction from reflexivity.
+
+### `equality_factoring`
+
+Vampire equality factoring over typed equalities.
+
+Fields:
+
+- `id`
+- `parent`
+- `selected_index`
+- `other_index`
+- `selected_side`
+- `other_side`
+- `substitution` if needed;
+- `result_clause`.
+
+Side condition:
+
+- selected and other are positive typed equality literals;
+- supplied side terms and substitution produce the Vampire equality factoring
+  conclusion.
+
+Megalodon proof:
+
+- typed equality transitivity/symmetry plus disjunction rebuilding.
+
+Current state:
+
+- committed support exists for constrained seed cases.
+- all broad cases should be driven by Vampire-emitted side terms and
+  substitutions.
+
+### `paramodulate`
+
+Performs one equality replacement at one occurrence.
+
+Fields:
+
+- `id`
+- `equality_parent`
+- `target_parent`
+- `equality_index`
+- `target_index`
+- `position`
+- `from`
+- `to`
+- `result_clause`
+
+Side condition:
+
+- equality parent selected literal is positive typed equality;
+- `from`/`to` match one orientation of that equality;
+- position selects an occurrence of `from` inside the target literal;
+- result is exactly the target literal with that occurrence replaced, plus
+  side literals from both parents.
+
+Megalodon proof:
+
+- equality transport / Leibniz replacement.
+
+Macro expansions:
+
+- superposition lowers to instantiate + flip + paramodulate + factor/rename.
+- demodulation lowers to one paramodulate per rewrite occurrence.
+- definition rewrite lowers similarly, but may live in preprocessing if it is
+  formula-level rather than clause-level.
+
+### `truth_conflict`
+
+Handles explicit `true = false` / FOOL truth contradiction cases over
+Megalodon's typed equality.
+
+Fields:
+
+- `id`
+- `parent`
+- `literal_index`
+- `result_clause`
+
+Side condition:
+
+- selected positive literal is a typed equality contradicting the truth
+  constants.
+
+Megalodon proof:
+
+- contradiction from distinct truth values or library truth principle.
+
+This rule may eventually move to preprocessing/FOOL if that is cleaner.
+
+### `contradiction`
+
+Marks the empty clause as the final refutation.
+
+Fields:
+
+- `id`
+- `parent`
+
+Side condition:
+
+- parent clause is empty.
+
+Megalodon proof:
+
+- parent proof already proves false.
+
+## Macro Expansion Plan
+
+### Unit-resulting resolution
+
+Current issue:
+
+- helper steps like `u459_current_subst0` are non-identity `substitute` steps.
+- Some lack `rule=instantiation` metadata because they are emitted from a
+  synthetic-current-clause path.
+
+Target expansion:
+
+```text
+current parent
+  -> instantiate current parent if needed
+  -> instantiate unit parent if needed
+  -> flip current or unit equality if needed
+  -> resolve
+  -> repeat for each unit trace step
+  -> rename/factor if needed
+```
+
+Required Vampire data:
+
+- current parent id;
+- current clause before each trace step;
+- selected literal index;
+- selected literal after substitution;
+- current substitution;
+- unit parent id;
+- unit substitution;
+- unit pivot index;
+- result clause after each resolve.
+
+Immediate task:
+
+- add instantiation metadata for synthetic current-clause substitutes;
+- then move the URR expansion into a reusable primitive-step builder.
+
+### Demodulation and rewrite
+
+Current issue:
+
+- current uncommitted work fixed one repeated-target case by tracking target
+  literal index through the primitive chain.
+- this is correct but still implemented locally in the exporter.
+
+Target expansion:
+
+```text
+instantiate equality parent if needed
+instantiate target parent if needed
+flip equality if rewrite direction requires it
+for each rewritten occurrence:
+  paramodulate at exact target position
+factor/rename if needed
+```
+
+Required Vampire data:
+
+- demodulator/equality parent;
+- target parent;
+- direction;
+- occurrence position in the printed Megalodon term shape;
+- from/to terms;
+- active substitutions for both parents;
+- intermediate result clause for each rewrite.
+
+Immediate task:
+
+- keep the target-index fix;
+- remove temporary debug tracing before commit;
+- add regression tests for repeated occurrence rewrites.
+
+### Superposition
+
+Target expansion:
+
+```text
+instantiate equality parent
+instantiate target parent
+flip if orientation differs
+paramodulate once at exact position
+factor/rename if Vampire result differs only by duplicate/order/renaming
+```
+
+Required Vampire data:
+
+- equality parent/id/index;
+- target parent/id/index;
+- selected sides;
+- target position;
+- unifier/substitution for each parent;
+- target literal after substitution;
+- result clause.
+
+Implementation note:
+
+- superposition and demodulation should share the same primitive
+  paramodulation builder.
+
+### Subsumption resolution
+
+Target expansion:
+
+```text
+instantiate side parent
+flip side pivot if equality orientation differs
+resolve selected main literal against side pivot
+check side remainder literals are covered by result
+```
+
+Required Vampire data:
+
+- main parent;
+- side parent;
+- selected main literal/index;
+- side pivot/index;
+- side substitution;
+- side remainder coverage map or explicit remaining side literals.
+
+Current state:
+
+- metadata exists for some side substitutions;
+- native proof-term support exists for a bounded binary/unit style.
+
+Next step:
+
+- generalize the native proof-term checker only after Vampire emits explicit
+  side remainder data for all needed cases.
+
+### Condensation
+
+Target expansion:
+
+```text
+instantiate parent
+factor duplicate literals
+rename if needed
+```
+
+Required Vampire data:
+
+- substitution;
+- duplicate literal pairs or a sequence of factor steps;
+- result clause after each factor.
+
+Current state:
+
+- there are already local helpers for condensation-like paths.
+- this should be folded into the general instantiate/factor primitive builder.
+
+### Equality factoring
+
+Target expansion:
+
+```text
+instantiate parent if needed
+apply equality_factoring with explicit selected/other sides
+factor/rename if needed
+```
+
+Required Vampire data:
+
+- selected equality index;
+- other equality index;
+- selected side;
+- other side;
+- substitution;
+- constraints or side equalities as needed.
+
+Current state:
+
+- typed side terms are now emitted for supported cases;
+- native proof-term support exists for seed cases.
+
+### AVATAR
+
+AVATAR should not be part of the clausal kernel.
+
+Target handling:
+
+- either ask Vampire for proofs that avoid AVATAR for the first core gates;
+- or define a separate SAT/split certificate layer later.
+
+For the small-kernel milestone, AVATAR is out of scope.
+
+### FOOL, ENNF, CNF, rectification, definitions
+
+These are preprocessing transformations, not clausal kernel rules.
+
+Target handling:
+
+- define a transformation certificate layer with formula-level steps;
+- each step produces a `Syntax.pf`;
+- the final transformed clauses become `input` assumptions for the clausal
+  kernel.
+
+Priority order:
+
+1. set-generated equality/reflexivity facts;
+2. conjecture negation;
+3. definition unfolding/folding for simple equations;
+4. FOOL boolean lifts;
+5. ENNF implication/negation steps;
+6. CNF conjunction projection and disjunction clauses;
+7. rectification;
+8. skolemization.
+
+### Skolemization
+
+Skolemization needs its own certificate rule, not ad-hoc name recovery.
+
+Fields should include:
+
+- source formula before skolemization;
+- result formula after skolemization;
+- existential variable;
+- surrounding universal variables / dependencies;
+- generated Skolem symbol;
+- choice/epsilon term used in Megalodon;
+- proof term showing the transformation is classically valid.
+
+Megalodon proof:
+
+- use classical choice/epsilon principle already accepted in Megalodon;
+- make dependencies explicit.
+
+This should not block the first small clausal kernel milestone. It is required
+for full larger-development reconstruction.
+
+## Migration Plan
+
+### Phase 0: Freeze and classify
+
+Status: partially done.
+
+Actions:
+
+- stop adding broad textual replay cases except correctness fixes;
+- classify every certificate step by:
+  - kernel primitive;
+  - macro that should lower to kernel;
+  - preprocessing transformation;
+  - source/original-context glue;
+  - out of scope for current milestone.
+
+Deliverables:
+
+- committed design document;
+- current core whitelist;
+- current first-blocker lists from audits.
+
+### Phase 1: Make every current helper substitute explicit
+
+Goal:
+
+- no non-identity `substitute` certificate step without instantiation metadata.
+
+Actions:
+
+- fix synthetic current-clause substitutes in URR expansion;
+- audit all `certificateSubstituteStepSexpr` call sites;
+- ensure every emitted non-identity substitute is either:
+  - a kernel `instantiate` step; or
+  - accompanied by complete `kernel_v1 rule=instantiation` metadata.
+
+Gates:
+
+```sh
+TMPDIR=/project/tmp REQUIRE_SUBSTITUTE_METADATA=1 \
+  tests/vampire_certificate/run_kernel_v1_metadata_audit.sh \
+    /project/tmp/live_strict_100_after_fool_demod_fix
+```
+
+and a fresh focused live rerun for the failing `hammer.11453.77.th0`.
+
+### Phase 2: Factor a primitive builder in Vampire
+
+Goal:
+
+- replace local string construction with an internal primitive-step builder.
+
+Actions:
+
+- introduce C++ helper records for:
+  - rendered clauses;
+  - substitutions;
+  - selected literals;
+  - result clauses;
+  - metadata fields;
+  - origin macro id.
+- make `certificateSubstituteStepPartsSexpr` the model for other primitive
+  builders.
+- add builders:
+  - `makeInstantiateStep`;
+  - `makeFlipStep`;
+  - `makeResolveStep`;
+  - `makeFactorStep`;
+  - `makeParamodulateStep`;
+  - `makeEqualityResolutionStep`;
+  - `makeEqualityFactoringStep`.
+
+Gates:
+
+- existing smoke suite passes;
+- generated certificates are byte-stable or semantically equivalent for known
+  core fixtures;
+- metadata audit passes.
+
+### Phase 3: Move URR and demodulation onto the builder
+
+Goal:
+
+- two frequent macro classes lower through the shared primitive layer.
+
+Actions:
+
+- rewrite URR expansion to emit primitive builder steps;
+- rewrite demodulation/rewrite expansion to emit primitive builder steps;
+- add self-checks that final primitive result equals Vampire's actual unit
+  clause;
+- keep original macro id as final substep when useful.
+
+Gates:
+
+- focused `hammer.11453.77.th0` live check passes;
+- six-case previous failure set passes;
+- metadata audit passes;
+- native primitive audit counts instantiate/resolve/paramodulate/factor
+  records.
+
+### Phase 4: Make Megalodon `corepfcheck` cover the same primitive kernel
+
+Goal:
+
+- every primitive emitted by the kernel builder has a native `Syntax.pf`
+  elaborator.
+
+Actions:
+
+- align certificate parser names with primitive kernel names;
+- make `substitute`/`equality_symmetry` either aliases or migrated to
+  `instantiate`/`flip`;
+- keep unsupported macros out of `corepfcheck`;
+- add negative tests for missing metadata and untyped equality.
+
+Gates:
+
+```sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh
+TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_core_pf_audit.sh
+```
+
+### Phase 5: Produce first original-context native proofs
+
+Goal:
+
+- at least ten Tier 1 examples:
+  original-context, source-bound, closed native proof terms.
+
+Actions:
+
+- choose simple Megalodon theorems after `xm` in the library;
+- export THF;
+- solve with Vampire at 10s;
+- lower proof to primitive certificate;
+- import with native proof-term path;
+- replace source assumptions by original Megalodon facts;
+- prove set-generated equalities by reflexivity where present.
+
+Gates:
+
+- no textual fallback;
+- no bridge assumptions;
+- no `admit`, `aby`, or incomplete QED;
+- `check_propofpf` succeeds;
+- source-context checker confirms every input is original, generated
+  reflexivity, approved library principle, or conjecture negation.
+
+### Phase 6: Add preprocessing certificate layer
+
+Goal:
+
+- stop treating source-to-clause transformations as opaque inputs.
+
+Actions:
+
+- define formula transformation primitives;
+- implement set equality/reflexivity first;
+- implement conjecture negation;
+- implement simple definition unfolding/folding;
+- implement FOOL and ENNF fragments;
+- implement CNF projection;
+- only then implement skolemization.
+
+Gates:
+
+- each transformation has positive and negative fixtures;
+- transformation proofs compose with clausal kernel proofs;
+- original-context examples use this layer.
+
+### Phase 7: Fresh 100-case native gate
+
+Goal:
+
+- satisfy the original 100 theorem requirement in the intended architecture.
+
+Actions:
+
+- export a fresh or held-out 100-problem THF suite from Megalodon;
+- run Vampire with:
+
+```text
+VAMPIRE_SECONDS=10
+JOBS=10..20
+TMPDIR=/project/tmp
+```
+
+- lower every successful Vampire proof to primitive certificates;
+- check with Megalodon native proof-term path;
+- classify failures by first unsupported primitive/macro/transformation.
+
+Success criteria:
+
+- at least 100 checked proofs;
+- no proof holes;
+- no broad textual fallback in counted results;
+- source/original-context checks enabled;
+- committed harness and reproducible problem list.
+
+## Test Strategy
+
+### Unit fixtures
+
+For every primitive:
+
+- one positive fixture;
+- one malformed-parent fixture;
+- one malformed-result fixture;
+- one missing-metadata fixture if metadata is required;
+- one untyped-equality negative fixture for equality rules.
+
+### Focused live cases
+
+Maintain small lists under `/project/tmp` or committed test lists for:
+
+- FOOL lift failures;
+- demodulation repeated rewrite;
+- non-identity substitute metadata;
+- equality factoring;
+- subsumption side substitution;
+- paramodulation into larger target clauses.
+
+Focused runs should not use broad coverage thresholds unless the slice is
+expected to cover the relevant primitive.
+
+### Cached regression corpus
+
+Use the committed closed corpus to prevent regressions, but do not treat it as
+final success unless it uses the native proof-term path and original-context
+source glue.
+
+### Live regenerated gates
+
+Use live regenerated gates for current evidence:
+
+```sh
+TMPDIR=/project/tmp \
+PROBLEM_DIR=... \
+PROBLEMS_FILE=... \
+LIMIT=100 \
+JOBS=20 \
+VAMPIRE_SECONDS=10 \
+WALL_SECONDS=15 \
+CHECK_SOURCE_MAP=1 \
+REQUIRE_SOURCE_ORIGIN=1 \
+STRICT_CERT_V1=1 \
+AUDIT_NATIVE_PRIMITIVES=1 \
+AUDIT_KERNEL_V1_METADATA=1 \
+AUDIT_SUBSTITUTE_METADATA=1 \
+WORK_DIR=/project/tmp/... \
+tests/vampire_certificate/run_native_live_parallel.sh
+```
+
+### Scoreboard
+
+Report results by tier:
+
+1. Tier 1: original-context, source-bound, closed native proof terms.
+2. Tier 2: exported-THF-bound closed checked proofs.
+3. Tier 3: synthetic/core native proof-term fixtures.
+4. Tier 4: broad textual integration scripts without holes.
+5. Non-qualifying: anything with admissions, bridges, unsupported source
+   assumptions, or textual fallback counted as final proof reconstruction.
+
+## Concrete Next Tasks
+
+The immediate engineering queue should be:
+
+1. Fix non-identity helper substitute metadata for synthetic URR current
+   clauses.
+2. Remove temporary demodulation debug tracing from the Vampire diff.
+3. Keep the demodulation target-index fix.
+4. Rerun:
+
+   ```sh
+   TMPDIR=/project/tmp REQUIRE_SUBSTITUTE_METADATA=1 \
+     tests/vampire_certificate/run_kernel_v1_metadata_audit.sh \
+       /project/tmp/live_strict_100_after_fool_demod_fix
+   ```
+
+5. Rerun focused live `hammer.11453.77.th0`.
+6. Commit the scoped Vampire/Megalodon fixes.
+7. Start factoring the Vampire primitive builder.
+8. Move URR and demodulation onto that builder.
+9. Add first original-context `corepfcheck` examples.
+
+## Alignment Checklist
+
+Before accepting a change as aligned, answer yes to at least one:
+
+- Does it make Vampire emit more exact primitive proof data?
+- Does it shrink or replace heuristic replay in Megalodon?
+- Does it add native `Syntax.pf` coverage for a fixed primitive?
+- Does it strengthen source/original-context checking?
+- Does it add a negative test that prevents an unsound certificate from
+  passing?
+- Does it improve reproducible live/cached testing without changing the trust
+  boundary?
+
+Warning signs:
+
+- new Python proof-producing logic;
+- new broad OCaml normalization that guesses a missing Vampire choice;
+- arity-specific helper lemmas as the main solution;
+- accepting a certificate because the generated script happens to check with
+  extra assumptions;
+- treating exported THF source linkage as original-context proof without
+  additional evidence;
+- weakening audits to hide missing primitive data.
+
+## Expected End State
+
+The final successful system should look like this:
+
+```text
+Megalodon theorem/context
+  -> THF export with source map
+  -> Vampire proof
+  -> Vampire primitive expansion certificate
+  -> Megalodon source/preprocess proof terms
+  -> Megalodon clausal kernel proof terms
+  -> checked proof of original theorem
+```
+
+The broad textual emitter may still exist for debugging, but counted success
+should come from the native proof-term path.
+
+The project should be considered complete only when:
+
+- at least 100 representative Megalodon theorems are solved from THF by
+  Vampire under the agreed timeout;
+- their proofs are reconstructed by the primitive certificate path;
+- Megalodon checks the resulting native proofs without holes;
+- source assumptions are connected to original Megalodon context;
+- set-generated equalities are proved, not assumed;
+- skolemization and other preprocessing steps are certified where present;
+- tests and artifacts are committed or reproducibly generated.
