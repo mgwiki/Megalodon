@@ -4473,6 +4473,125 @@ let validate_kernel_v1_metadata_contracts cert =
                  error
                    (id ^ ": strict certificate v1 kernel_v1 skolemize metadata has no matching certificate step")
              end
+         | "cnf_clause" ->
+             begin match field_value "primitive_expansion" fields with
+             | None -> ()
+             | Some _ ->
+             require_rule_fields id fields kernel_rule
+               ["proof_parent_count";
+                "parent_0_unit";
+                "source_unit";
+                "source_kind";
+                "result_clause";
+                "result_literal_count"];
+             require_field_int id fields "proof_parent_count" 1;
+             begin match Hashtbl.find_opt step_by_id id with
+             | Some (CnfFormulaClause (_, parent_id, index, count, result)) ->
+                 let parent_unit = field_required id fields "parent_0_unit" in
+                 if parent_unit <> parent_id then
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 cnf_clause parent_0_unit "
+                      ^ parent_unit ^ " does not match cnf_formula_clause parent " ^ parent_id);
+                 let source_unit = field_required id fields "source_unit" in
+                 if source_unit <> parent_id then
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 cnf_clause source_unit "
+                      ^ source_unit ^ " does not match cnf_formula_clause parent " ^ parent_id);
+                 begin match field_value "clause_parent_unit" fields with
+                 | Some clause_parent_unit when clause_parent_unit <> parent_id ->
+                     error
+                       (id ^ ": strict certificate v1 kernel_v1 cnf_clause clause_parent_unit "
+                        ^ clause_parent_unit ^ " does not match cnf_formula_clause parent " ^ parent_id)
+                 | Some _ | None -> ()
+                 end;
+                 begin match field_value "source_kind" fields with
+                 | Some "formula" -> ()
+                 | Some kind ->
+                     error
+                       (id ^ ": strict certificate v1 kernel_v1 cnf_clause source_kind "
+                        ^ kind ^ " does not match cnf_formula_clause")
+                 | None -> assert false
+                 end;
+                 let parent_formula = require_formula_parent id parent_id in
+                 begin match field_value "source_formula" fields with
+                 | Some _ -> require_field_formula id fields "source_formula" parent_formula
+                 | None ->
+                     error
+                       (id ^ ": strict certificate v1 kernel_v1 cnf_clause requires source_formula")
+                 end;
+                 begin match field_value "parent_0_formula" fields with
+                 | Some _ -> require_field_formula id fields "parent_0_formula" parent_formula
+                 | None -> ()
+                 end;
+                 let deterministic_clauses = cnf_clauses parent_formula in
+                 require_field_int id fields "clause_index" index;
+                 begin match count with
+                 | Some expected_count ->
+                     require_field_int id fields "clause_count" expected_count
+                 | None -> ()
+                 end;
+                 begin match field_value "parent_clause_count" fields with
+                 | Some _ ->
+                     require_field_int id fields "parent_clause_count"
+                       (List.length deterministic_clauses)
+                 | None -> ()
+                 end;
+                 check_cnf_formula_clause
+                   [(parent_id, CheckedFormula parent_formula)]
+                   id parent_id index count result;
+                 require_field_clause id fields "result_clause" result;
+                 begin match field_value "conclusion_clause" fields with
+                 | Some _ -> require_field_clause id fields "conclusion_clause" result
+                 | None -> ()
+                 end;
+                 require_field_int id fields "result_literal_count" (List.length result)
+             | Some (CnfLiteral (_, parent_id, result)) ->
+                 let parent_unit = field_required id fields "parent_0_unit" in
+                 if parent_unit <> parent_id then
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 cnf_clause parent_0_unit "
+                      ^ parent_unit ^ " does not match cnf_literal parent " ^ parent_id);
+                 let source_unit = field_required id fields "source_unit" in
+                 if source_unit <> parent_id then
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 cnf_clause source_unit "
+                      ^ source_unit ^ " does not match cnf_literal parent " ^ parent_id);
+                 begin match field_value "source_kind" fields with
+                 | Some "formula" -> ()
+                 | Some kind ->
+                     error
+                       (id ^ ": strict certificate v1 kernel_v1 cnf_clause source_kind "
+                        ^ kind ^ " does not match cnf_literal")
+                 | None -> assert false
+                 end;
+                 let parent_formula = require_formula_parent id parent_id in
+                 begin match field_value "source_formula" fields with
+                 | Some _ -> require_field_formula id fields "source_formula" parent_formula
+                 | None ->
+                     error
+                       (id ^ ": strict certificate v1 kernel_v1 cnf_clause requires source_formula")
+                 end;
+                 begin match field_value "parent_0_formula" fields with
+                 | Some _ -> require_field_formula id fields "parent_0_formula" parent_formula
+                 | None -> ()
+                 end;
+                 check_cnf_literal
+                   [(parent_id, CheckedFormula parent_formula)]
+                   id parent_id result;
+                 require_field_clause id fields "result_clause" result;
+                 begin match field_value "conclusion_clause" fields with
+                 | Some _ -> require_field_clause id fields "conclusion_clause" result
+                 | None -> ()
+                 end;
+                 require_field_int id fields "result_literal_count" (List.length result)
+             | Some _ ->
+                 error
+                   (id ^ ": strict certificate v1 kernel_v1 cnf_clause metadata must annotate a cnf clause step")
+             | None ->
+                 error
+                   (id ^ ": strict certificate v1 kernel_v1 cnf_clause metadata has no matching certificate step")
+             end
+             end
          | "factoring" ->
              require_rule_fields id fields kernel_rule
                ["selected";

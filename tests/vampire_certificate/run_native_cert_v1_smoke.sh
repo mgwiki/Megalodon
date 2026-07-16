@@ -1140,6 +1140,21 @@ if ! rg -q 'requires primitive_expansion=prefix for kernel rule cnf_clause' \
   exit 1
 fi
 
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_cnf_clause_kernel_count_mismatch_bad.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_cnf_clause_kernel_count_mismatch_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_cnf_clause_kernel_count_mismatch_bad.err"; then
+  echo "strict native certificate v1 checker accepted CNF-clause metadata with a wrong deterministic clause count" >&2
+  exit 1
+fi
+
+if ! rg -q 'kernel_v1 metadata field clause_count expected 1 but got 2' \
+    "$WORK_DIR/native_cert_v1_cnf_clause_kernel_count_mismatch_bad.err"; then
+  echo "strict native certificate v1 CNF-clause count mismatch did not explain the bad metadata" >&2
+  exit 1
+fi
+
 cat >"$WORK_DIR/native_cert_v1_primitive_audit_cnf_clause_bad_requires.sexp" <<'EOF'
 (certificate vampire-megalodon 1
   (problem "native-cert-v1-primitive-audit-cnf-clause-bad-requires")
