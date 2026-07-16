@@ -6825,6 +6825,25 @@ let native_core_equality_symmetry id parent_clause parent_proof literal_index re
   in
   consume (Some literal_index) parent_clause parent_proof
 
+let native_core_equality_symmetry_in_result_context
+    cert id variables parent_id parent_clause parent_proof literal_index result =
+  let result_step_variables = native_core_step_variables cert id in
+  let close_tm tm = native_core_close_tm (variables @ result_step_variables) tm in
+  let close_literal = function
+    | Pos atom -> Pos (close_tm atom)
+    | Neg atom -> Neg (close_tm atom)
+  in
+  let parent_clause = List.map close_literal parent_clause in
+  let result = List.map close_literal result in
+  let parent_proof =
+    native_core_instantiate_step_proof_body_in_result_context
+      cert id variables parent_id [] parent_proof
+  in
+  let body_proof =
+    native_core_equality_symmetry id parent_clause parent_proof literal_index result
+  in
+  List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
+
 let native_core_literal_index id rule selected clause =
   let rec find index = function
     | [] -> error (id ^ ": native core proof-term " ^ rule ^ " selected literal is not in the main parent")
@@ -7376,12 +7395,13 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
               cert id variables parent_id parent_clause parent_proof literal_index result
           in
           store id result proof
-	      | EqualitySymmetry (id, parent_id, literal_index, result) ->
-	          let parent_clause, parent_proof = lookup parent_id in
-	          let proof =
-	            native_core_equality_symmetry id parent_clause parent_proof literal_index result
-	          in
-	          store id result proof
+      | EqualitySymmetry (id, parent_id, literal_index, result) ->
+          let parent_clause, parent_proof = lookup parent_id in
+          let proof =
+            native_core_equality_symmetry_in_result_context
+              cert id variables parent_id parent_clause parent_proof literal_index result
+          in
+          store id result proof
 	      | TruthConflict (id, parent_id, literal_index, result) ->
 	          let parent_clause, parent_proof = lookup parent_id in
 	          let proof =
@@ -7749,10 +7769,11 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           store_clause id result
             (native_core_equality_resolution_in_result_context
                cert id variables parent_id parent_clause parent_proof literal_index result)
-	      | EqualitySymmetry (id, parent_id, literal_index, result) ->
-	          let parent_clause, parent_proof = lookup_clause parent_id in
-	          store_clause id result
-	            (native_core_equality_symmetry id parent_clause parent_proof literal_index result)
+      | EqualitySymmetry (id, parent_id, literal_index, result) ->
+          let parent_clause, parent_proof = lookup_clause parent_id in
+          store_clause id result
+            (native_core_equality_symmetry_in_result_context
+               cert id variables parent_id parent_clause parent_proof literal_index result)
 	      | TruthConflict (id, parent_id, literal_index, result) ->
 	          let parent_clause, parent_proof = lookup_clause parent_id in
 	          store_clause id result
