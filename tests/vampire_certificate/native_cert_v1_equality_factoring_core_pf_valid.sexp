@@ -11,6 +11,8 @@
     (parent "u1")
     (selected 0)
     (other 1)
+    (selected_lhs (TMH "a"))
+    (other_rhs (TMH "c"))
     (subst)
     (result
       (clause

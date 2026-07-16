@@ -130,8 +130,8 @@ type step =
   | Factor of string * string * int * int * clause
   | EqualityResolution of string * string * int * clause
   | EqualityResolutionConstraints of string * string * int * literal * clause * clause
-  | EqualityFactoring of string * string * int * int * (string * tm) list * clause
-  | EqualityFactoringConstraints of string * string * int * int * (string * tm) list * clause * clause
+  | EqualityFactoring of string * string * int * int * (tm * tm) option * (string * tm) list * clause
+  | EqualityFactoringConstraints of string * string * int * int * (tm * tm) option * (string * tm) list * clause * clause
   | TruthConflict of string * string * int * clause
   | EqualitySymmetry of string * string * int * clause
   | BoolSimplify of string * string * int * int list * tm * tm * clause
@@ -787,6 +787,16 @@ let parse_step = function
         parse_parent parent,
         parse_named_index "selected" selected,
         parse_named_index "other" other,
+        None,
+        parse_substitution subst,
+        parse_result result)
+  | List [Atom "equality_factoring"; id; parent; selected; other; selected_lhs; other_rhs; subst; result] ->
+      EqualityFactoring (
+        atom id,
+        parse_parent parent,
+        parse_named_index "selected" selected,
+        parse_named_index "other" other,
+        Some (parse_tm_field "selected_lhs" selected_lhs, parse_tm_field "other_rhs" other_rhs),
         parse_substitution subst,
         parse_result result)
   | List [Atom "equality_factoring_constraints"; id; parent; selected; other; subst; constraints; result] ->
@@ -795,6 +805,17 @@ let parse_step = function
         parse_parent parent,
         parse_named_index "selected" selected,
         parse_named_index "other" other,
+        None,
+        parse_substitution subst,
+        parse_constraints constraints,
+        parse_result result)
+  | List [Atom "equality_factoring_constraints"; id; parent; selected; other; selected_lhs; other_rhs; subst; constraints; result] ->
+      EqualityFactoringConstraints (
+        atom id,
+        parse_parent parent,
+        parse_named_index "selected" selected,
+        parse_named_index "other" other,
+        Some (parse_tm_field "selected_lhs" selected_lhs, parse_tm_field "other_rhs" other_rhs),
         parse_substitution subst,
         parse_constraints constraints,
         parse_result result)
@@ -883,8 +904,8 @@ let step_id = function
   | Factor (id, _, _, _, _) -> id
   | EqualityResolution (id, _, _, _) -> id
   | EqualityResolutionConstraints (id, _, _, _, _, _) -> id
-  | EqualityFactoring (id, _, _, _, _, _) -> id
-  | EqualityFactoringConstraints (id, _, _, _, _, _, _) -> id
+  | EqualityFactoring (id, _, _, _, _, _, _) -> id
+  | EqualityFactoringConstraints (id, _, _, _, _, _, _, _) -> id
   | TruthConflict (id, _, _, _) -> id
   | EqualitySymmetry (id, _, _, _) -> id
   | BoolSimplify (id, _, _, _, _, _, _) -> id
@@ -3213,6 +3234,39 @@ let equality_factoring_constraint_candidates selected_sides other_sides =
   add_decomposed selected_left selected_right other_left other_right;
   List.filter (fun constraints -> constraints <> []) !candidates
 
+let equality_factoring_explicit_constraint_candidates id selected_sides other_sides selected_lhs other_rhs =
+  let selected_left, selected_right = selected_sides in
+  let other_left, other_right = other_sides in
+  let selected_choices =
+    List.filter
+      (fun (lhs, _) -> lhs = selected_lhs)
+      [(selected_left, selected_right); (selected_right, selected_left)]
+  in
+  let other_choices =
+    List.filter
+      (fun (rhs, _) -> rhs = other_rhs)
+      [(other_left, other_right); (other_right, other_left)]
+  in
+  if selected_choices = [] then
+    error (id ^ ": equality-factoring selected_lhs does not name a selected equality side");
+  if other_choices = [] then
+    error (id ^ ": equality-factoring other_rhs does not name an other equality side");
+  let candidates =
+    List.fold_left
+      (fun acc (selected_shared, selected_other) ->
+        List.fold_left
+          (fun acc (other_other, other_shared) ->
+            if selected_shared = other_shared then
+              [diseq_literal selected_other other_other] :: acc
+            else
+              acc)
+          acc other_choices)
+      [] selected_choices
+  in
+  if candidates = [] then
+    error (id ^ ": equality-factoring explicit sides do not identify matching unified sides");
+  candidates
+
 let check_negative_equality_constraints id constraints =
   List.iter
     (function
@@ -3253,11 +3307,17 @@ let equality_factoring_context checked id parent_id selected_index other_index s
   let without_selected = remove_at selected_index substituted_parent (id ^ " selected equality") in
   selected_sides, other_sides, without_selected
 
-let check_equality_factoring checked id parent_id selected_index other_index subst result =
+let check_equality_factoring checked id parent_id selected_index other_index explicit_sides subst result =
   let selected_sides, other_sides, without_selected =
     equality_factoring_context checked id parent_id selected_index other_index subst
   in
-  let candidates = equality_factoring_constraint_candidates selected_sides other_sides in
+  let candidates =
+    match explicit_sides with
+    | None -> equality_factoring_constraint_candidates selected_sides other_sides
+    | Some (selected_lhs, other_rhs) ->
+        equality_factoring_explicit_constraint_candidates
+          id selected_sides other_sides selected_lhs other_rhs
+  in
   if candidates = [] then error (id ^ ": selected and other equalities do not yield factoring constraints");
   if not (List.exists
       (fun candidate_constraints ->
@@ -3267,7 +3327,7 @@ let check_equality_factoring checked id parent_id selected_index other_index sub
       candidates) then
     error (id ^ ": equality-factoring result does not match explicit factoring")
 
-let check_equality_factoring_constraints checked id parent_id selected_index other_index subst constraints result =
+let check_equality_factoring_constraints checked id parent_id selected_index other_index explicit_sides subst constraints result =
   if constraints = [] then error (id ^ ": equality-factoring constraints must be non-empty");
   check_negative_equality_constraints id constraints;
   let selected_sides, other_sides, without_selected =
@@ -3276,7 +3336,13 @@ let check_equality_factoring_constraints checked id parent_id selected_index oth
   let expected = without_selected @ constraints in
   if not (same_clause_multiset expected result || same_clause_set_mod_equality expected result) then
     error (id ^ ": equality-factoring constraints do not explain result");
-  let candidates = equality_factoring_constraint_candidates selected_sides other_sides in
+  let candidates =
+    match explicit_sides with
+    | None -> equality_factoring_constraint_candidates selected_sides other_sides
+    | Some (selected_lhs, other_rhs) ->
+        equality_factoring_explicit_constraint_candidates
+          id selected_sides other_sides selected_lhs other_rhs
+  in
   if not (List.exists
       (fun candidate ->
         same_clause_multiset candidate constraints
@@ -3614,11 +3680,11 @@ let check_step checked = function
   | EqualityResolutionConstraints (id, parent_id, literal_index, selected, constraints, result) ->
       check_equality_resolution_constraints checked id parent_id literal_index selected constraints result;
       (id, CheckedClause result) :: checked
-  | EqualityFactoring (id, parent_id, selected_index, other_index, subst, result) ->
-      check_equality_factoring checked id parent_id selected_index other_index subst result;
+  | EqualityFactoring (id, parent_id, selected_index, other_index, explicit_sides, subst, result) ->
+      check_equality_factoring checked id parent_id selected_index other_index explicit_sides subst result;
       (id, CheckedClause result) :: checked
-  | EqualityFactoringConstraints (id, parent_id, selected_index, other_index, subst, constraints, result) ->
-      check_equality_factoring_constraints checked id parent_id selected_index other_index subst constraints result;
+  | EqualityFactoringConstraints (id, parent_id, selected_index, other_index, explicit_sides, subst, constraints, result) ->
+      check_equality_factoring_constraints checked id parent_id selected_index other_index explicit_sides subst constraints result;
       (id, CheckedClause result) :: checked
   | TruthConflict (id, parent_id, literal_index, result) ->
       check_truth_conflict checked id parent_id literal_index result;
@@ -3842,8 +3908,8 @@ let validate_kernel_v1_metadata_contracts cert =
     | Factor (_, _, _, _, clause)
     | EqualityResolution (_, _, _, clause)
     | EqualityResolutionConstraints (_, _, _, _, _, clause)
-    | EqualityFactoring (_, _, _, _, _, clause)
-    | EqualityFactoringConstraints (_, _, _, _, _, _, clause)
+    | EqualityFactoring (_, _, _, _, _, _, clause)
+    | EqualityFactoringConstraints (_, _, _, _, _, _, _, clause)
     | TruthConflict (_, _, _, clause)
     | EqualitySymmetry (_, _, _, clause)
     | BoolSimplify (_, _, _, _, _, _, clause)
@@ -5103,8 +5169,8 @@ let validate_kernel_v1_metadata_contracts cert =
                 "result_clause";
                 "result_literal_count"];
              begin match Hashtbl.find_opt step_by_id id with
-             | Some (EqualityFactoring (_, parent_id, selected_index, other_index, subst, result))
-             | Some (EqualityFactoringConstraints (_, parent_id, selected_index, other_index, subst, _, result)) ->
+             | Some (EqualityFactoring (_, parent_id, selected_index, other_index, _, subst, result))
+             | Some (EqualityFactoringConstraints (_, parent_id, selected_index, other_index, _, subst, _, result)) ->
                  require_field_int id fields "selected_parent_index" 0;
                  require_field_int id fields "other_parent_index" 0;
                  require_field_int id fields "selected_literal_index" selected_index;
@@ -5803,13 +5869,17 @@ let native_core_type_raw_equalities_step cert variables symbol_table step =
       EqualityResolutionConstraints
         (id, parent_id, literal_index, literal id selected,
          clause id constraints, clause id result)
-  | EqualityFactoring (id, parent_id, selected_index, other_index, substitution, result) ->
+  | EqualityFactoring (id, parent_id, selected_index, other_index, explicit_sides, substitution, result) ->
       EqualityFactoring
-        (id, parent_id, selected_index, other_index, subst id substitution,
+        (id, parent_id, selected_index, other_index,
+         Option.map (fun (selected_lhs, other_rhs) -> (tm id selected_lhs, tm id other_rhs)) explicit_sides,
+         subst id substitution,
          clause id result)
-  | EqualityFactoringConstraints (id, parent_id, selected_index, other_index, substitution, constraints, result) ->
+  | EqualityFactoringConstraints (id, parent_id, selected_index, other_index, explicit_sides, substitution, constraints, result) ->
       EqualityFactoringConstraints
-        (id, parent_id, selected_index, other_index, subst id substitution,
+        (id, parent_id, selected_index, other_index,
+         Option.map (fun (selected_lhs, other_rhs) -> (tm id selected_lhs, tm id other_rhs)) explicit_sides,
+         subst id substitution,
          clause id constraints, clause id result)
   | TruthConflict (id, parent_id, literal_index, result) ->
       TruthConflict (id, parent_id, literal_index, clause id result)
@@ -8839,7 +8909,7 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
               cert id variables parent_id parent_clause parent_proof literal_index result
           in
           store id result proof
-      | EqualityFactoring (id, parent_id, selected_index, other_index, subst, result) ->
+      | EqualityFactoring (id, parent_id, selected_index, other_index, _, subst, result) ->
           let parent_clause, parent_proof = lookup parent_id in
           let proof =
             native_core_equality_factoring_in_result_context
@@ -10704,8 +10774,8 @@ let collect_simple_names cert =
     | EqualitySymmetry (_, _, _, clause) -> add_clause acc clause
     | EqualityResolution (_, _, _, clause) -> add_clause acc clause
     | EqualityResolutionConstraints (_, _, _, _, _, clause) -> add_clause acc clause
-    | EqualityFactoring (_, _, _, _, _, clause) -> add_clause acc clause
-    | EqualityFactoringConstraints (_, _, _, _, _, _, clause) -> add_clause acc clause
+    | EqualityFactoring (_, _, _, _, _, _, clause) -> add_clause acc clause
+    | EqualityFactoringConstraints (_, _, _, _, _, _, _, clause) -> add_clause acc clause
     | TruthConflict (_, _, _, clause) -> add_clause acc clause
     | BoolSimplify (_, _, _, _, _, _, clause) -> add_clause acc clause
     | Paramodulate (_, _, _, _, _, _, _, _, clause) -> add_clause acc clause
@@ -19968,11 +20038,11 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
           end
       | EqualityResolutionConstraints (id, parent_id, _, _, _, result) ->
           add_clause_inference_bridge "equality_resolution_constraints" id [parent_id] result
-      | EqualityFactoring (id, parent_id, _, _, subst, result) ->
+      | EqualityFactoring (id, parent_id, _, _, _, subst, result) ->
           add_clause_inference_bridge
             ~extra_sorts:(substitution_variable_sorts parent_id subst)
             "equality_factoring" id [parent_id] result
-      | EqualityFactoringConstraints (id, parent_id, _, _, subst, _, result) ->
+      | EqualityFactoringConstraints (id, parent_id, _, _, _, subst, _, result) ->
           add_clause_inference_bridge
             ~extra_sorts:(substitution_variable_sorts parent_id subst)
             "equality_factoring_constraints" id [parent_id] result
