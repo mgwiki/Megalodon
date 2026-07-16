@@ -429,7 +429,7 @@ bin/megalodon \
   >"$WORK_DIR/native_cert_v1_live_local_source_context.log" \
   2>"$WORK_DIR/native_cert_v1_live_local_source_context.err"
 
-if ! rg -q 'source_context known=0 local=1 unresolved=1' \
+if ! rg -q 'source_context known=0 local=1 local_definition=0 unresolved=1' \
     "$WORK_DIR/native_cert_v1_live_local_source_context.log"; then
   echo "live vampireaby source-context resolver did not bind the local Hp hypothesis" >&2
   exit 1
@@ -442,6 +442,83 @@ fi
 if ! rg -q 'Everything looks good' \
     "$WORK_DIR/native_cert_v1_live_local_source_context.log"; then
   echo "live vampireaby source-context fixture did not close after composing the native certificate proof" >&2
+  exit 1
+fi
+
+local_definition_live_dir="$WORK_DIR/local_definition_live"
+mkdir -p "$local_definition_live_dir"
+cat >"$local_definition_live_dir/fake_vampire" <<'EOF_LOCAL_DEFINITION_FAKE_VAMPIRE'
+#!/usr/bin/env bash
+problem="${@: -1}"
+def=$(sed -n 's/^% megalodon_source_map (local_definition "\([^"]*\)" .*/\1/p' "$problem" | head -1)
+conj=$(sed -n 's/^% megalodon_source_map (conjecture "\([^"]*\)" .*/\1/p' "$problem" | head -1)
+cat <<CERT
+% SZS status Theorem
+% SZS output start Proof
+megalodon_certificate_native_sexpr_start.
+(certificate vampire-megalodon 1
+  (problem "local-definition-source-live")
+  (symbol_declaration "Variable p:prop.")
+  (symbol_declaration "Variable r:prop.")
+  (input "d0" (source definition "$def") (clause (pos (AP (AP (TMH "=") (TMH "r")) (TMH "p")))))
+  (input "u0" (source axiom "c_Hp") (clause (pos (TMH "p"))))
+  (input "u1" (source negated_conjecture "$conj") (clause (neg (TMH "p"))))
+  (resolve "u2" (parents "u0" "u1") (pivot 0 0) (result (clause)))
+)
+megalodon_certificate_native_sexpr_end.
+% SZS output end Proof
+CERT
+EOF_LOCAL_DEFINITION_FAKE_VAMPIRE
+chmod +x "$local_definition_live_dir/fake_vampire"
+cat >"$local_definition_live_dir/local_definition_live.mg" <<'EOF_LOCAL_DEFINITION_LIVE_MG'
+Definition False : prop := forall p:prop, p.
+Definition not : prop -> prop := fun A:prop => A -> False.
+Prefix ~ 700 := not.
+Definition or : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> p) -> (B -> p) -> p.
+Infix \/ 785 left := or.
+Axiom xm : forall P:prop, P \/ ~P.
+Variable p:prop.
+Theorem local_definition_live:p -> p.
+assume Hp:p.
+set r := p.
+aby Hp.
+Qed.
+EOF_LOCAL_DEFINITION_LIVE_MG
+bin/megalodon \
+  -v 9 \
+  -vampireaby "$local_definition_live_dir/fake_vampire" \
+  -vampireabyproof megalodon \
+  -vampireabynative \
+  -vampireabyoutdir "$local_definition_live_dir/out" \
+  "$local_definition_live_dir/local_definition_live.mg" \
+  >"$WORK_DIR/native_cert_v1_live_local_definition_source_context.log" \
+  2>"$WORK_DIR/native_cert_v1_live_local_definition_source_context.err"
+if ! rg -q 'source_context known=0 local=0 local_definition=1 unresolved=1' \
+    "$WORK_DIR/native_cert_v1_live_local_definition_source_context.log"; then
+  echo "live vampireaby source-context resolver did not identify the local set definition" >&2
+  exit 1
+fi
+if ! rg -q 'Everything looks good' \
+    "$WORK_DIR/native_cert_v1_live_local_definition_source_context.log"; then
+  echo "live vampireaby local-definition fixture did not close via non-strict fallback" >&2
+  exit 1
+fi
+if bin/megalodon \
+    -vampireaby "$local_definition_live_dir/fake_vampire" \
+    -vampireabyproof megalodon \
+    -vampireabynative \
+    -vampireabynativestrict \
+    -vampireabyoutdir "$local_definition_live_dir/strict_out" \
+    "$local_definition_live_dir/local_definition_live.mg" \
+    >"$WORK_DIR/native_cert_v1_live_local_definition_strict_bad.out" \
+    2>"$WORK_DIR/native_cert_v1_live_local_definition_strict_bad.err"; then
+  echo "strict live vampireaby accepted a matched local definition without a checked definition proof" >&2
+  exit 1
+fi
+if ! rg -q 'definition source did not resolve to a checked proof|did not resolve to a checked proof' \
+    "$WORK_DIR/native_cert_v1_live_local_definition_strict_bad.out" \
+    "$WORK_DIR/native_cert_v1_live_local_definition_strict_bad.err"; then
+  echo "strict live vampireaby local-definition failure did not explain the proof-producing gap" >&2
   exit 1
 fi
 
@@ -589,7 +666,7 @@ bin/megalodon \
   "$multi_local_source_live_dir/multi_local_source_live.mg" \
   >"$WORK_DIR/native_cert_v1_live_multi_local_source_context.log" \
   2>"$WORK_DIR/native_cert_v1_live_multi_local_source_context.err"
-if ! rg -q 'source_context known=0 local=2 unresolved=1' \
+if ! rg -q 'source_context known=0 local=2 local_definition=0 unresolved=1' \
     "$WORK_DIR/native_cert_v1_live_multi_local_source_context.log"; then
   echo "live vampireaby multi-local fixture did not bind both local hypotheses" >&2
   exit 1

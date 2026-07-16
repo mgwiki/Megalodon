@@ -175,6 +175,12 @@ proofs with the certificate-local symbol table. This covers the common
 Megalodon `set`-command equality obligations that do not correspond to an
 original named claim.
 
+The resolver now also carries theorem-local definitions from the live proof
+context and reports `local_definition_matched` when a `local_definition`
+source-map entry corresponds to a proof-local `set` binding. These bindings are
+not yet proof-producing, so strict source-context mode fails closed instead of
+counting them as completed reconstruction.
+
 Local and conjecture-backed sources are deliberately not discharged by this
 mechanism yet. They need theorem-local source-context bindings rather than a
 global `Known` hash.
@@ -261,6 +267,9 @@ Completed in this response:
 - generated `set_reflexivity` source entries are discharged by native
   reflexivity proofs produced by the source-context resolver and checked by
   the consuming native elaborator.
+- proof-local `set` definitions are now represented in source-context audits
+  as matched local definitions, but strict mode rejects them until a checked
+  definitional proof/composition path is implemented.
 
 Not completed:
 

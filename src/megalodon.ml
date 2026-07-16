@@ -615,6 +615,13 @@ let vampire_aby_source_context cxtm cxpf =
     symbol_table = sigtmof;
     term_context = List.map (fun (_, (tp, _)) -> tp) cxtm;
     local_hypotheses = cxpf;
+    local_definitions =
+      List.filter_map
+        (fun (name, (tp, definition)) ->
+           match definition with
+           | Some tm -> Some (name, tp, tm)
+           | None -> None)
+        cxtm;
   }
 
 let vampire_native_core_false_tm = All(Prop,DB(0))
@@ -911,7 +918,7 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) content 
           if !verbosity > 8 then
             begin
               Printf.printf
-                "Vampire native certificate checked %d step%s and %d source%s at line %d char %d; source_context known=%d local=%d unresolved=%d.\n"
+                "Vampire native certificate checked %d step%s and %d source%s at line %d char %d; source_context known=%d local=%d local_definition=%d unresolved=%d.\n"
                 (List.length checked)
                 (if List.length checked = 1 then "" else "s")
                 source_count
@@ -920,6 +927,7 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) content 
                 !charno
                 source_audit.Vampire_source_context.known_checked
                 source_audit.Vampire_source_context.local_checked
+                source_audit.Vampire_source_context.local_definition_matched
                 source_audit.Vampire_source_context.unresolved;
               flush stdout
             end
@@ -7375,6 +7383,7 @@ let audit_vampire_cert_v1_source_context cert source_map =
       symbol_table = sigtmof;
       term_context = [];
       local_hypotheses = [];
+      local_definitions = [];
     }
   in
   let audit = Vampire_source_context.resolve context bindings in
@@ -7382,26 +7391,29 @@ let audit_vampire_cert_v1_source_context cert source_map =
     audit.Vampire_source_context.local_checked
     + audit.Vampire_source_context.local_missing
     + audit.Vampire_source_context.local_mismatch
+    + audit.Vampire_source_context.local_definition_matched
     + audit.Vampire_source_context.generated_checked
     + audit.Vampire_source_context.unresolved
   in
   Printf.printf
-    "Vampire certificate v1 source context audited total=%d known_checked=%d known_missing=%d known_mismatch=%d definition_resolved=%d definition_missing=%d generated_checked=%d local_or_unhashed=%d.\n"
+    "Vampire certificate v1 source context audited total=%d known_checked=%d known_missing=%d known_mismatch=%d definition_resolved=%d local_definition_matched=%d definition_missing=%d generated_checked=%d local_or_unhashed=%d.\n"
     audit.Vampire_source_context.total
     audit.Vampire_source_context.known_checked
     audit.Vampire_source_context.known_missing
     audit.Vampire_source_context.known_mismatch
     audit.Vampire_source_context.definition_resolved
+    audit.Vampire_source_context.local_definition_matched
     audit.Vampire_source_context.definition_missing
     audit.Vampire_source_context.generated_checked
     local_or_unhashed;
   if !vampirecertv1sourcecontextstrict
      && (audit.Vampire_source_context.known_missing > 0
          || audit.Vampire_source_context.known_mismatch > 0
+         || audit.Vampire_source_context.local_definition_matched > 0
          || audit.Vampire_source_context.definition_missing > 0) then
     raise
       (Vampire_cert_v1.Error
-         "strict source-context audit failed: at least one hash-backed source did not resolve in the loaded Megalodon context");
+         "strict source-context audit failed: at least one definition source did not resolve to a checked proof in the loaded Megalodon context");
   audit.Vampire_source_context.source_proofs
 
 let check_vampire_cert_v1_file fn =

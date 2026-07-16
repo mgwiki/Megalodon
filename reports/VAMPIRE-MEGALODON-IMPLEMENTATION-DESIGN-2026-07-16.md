@@ -362,6 +362,12 @@ Implementation update, 2026-07-16:
   the consuming native elaborator checks them with the certificate-local symbol
   table. These entries cover Megalodon `set`-command equality obligations that
   have no corresponding original claim name.
+- The live source-context object now carries proof-local `set` definitions.
+  A `local_definition` source-map entry is reported as
+  `local_definition_matched` when it names one of those bindings. This is
+  deliberately not counted as proof reconstruction yet: strict mode fails
+  closed until the definition equality can be converted into a checked proof
+  and composed with the certificate.
 - This is still partial original theorem reconstruction: it handles the simple
   core shape `local facts -> negated conjecture -> False`, including multiple
   local facts, but not local

@@ -13,6 +13,7 @@ type source_context = {
   symbol_table : (string, int * tp) Hashtbl.t;
   term_context : tp list;
   local_hypotheses : (string * tm) list;
+  local_definitions : (string * tp * tm) list;
 }
 
 type audit = {
@@ -24,6 +25,7 @@ type audit = {
   local_missing : int;
   local_mismatch : int;
   definition_resolved : int;
+  local_definition_matched : int;
   definition_missing : int;
   generated_checked : int;
   unresolved : int;
@@ -40,6 +42,7 @@ let empty_audit = {
   local_missing = 0;
   local_mismatch = 0;
   definition_resolved = 0;
+  local_definition_matched = 0;
   definition_missing = 0;
   generated_checked = 0;
   unresolved = 0;
@@ -52,6 +55,9 @@ let known_source_kind kind =
 
 let definition_source_kind kind =
   kind = "def" || kind = "definition" || kind = "local_definition"
+
+let local_definition_source_kind kind =
+  kind = "local_definition"
 
 let local_source_kind kind =
   kind = "local_fact"
@@ -98,6 +104,9 @@ let local_hyp_index context name proposition =
   in
   scan 0 context.local_hypotheses
 
+let local_definition_matches context name =
+  List.exists (fun (local_name, _, _) -> local_name = name) context.local_definitions
+
 let add_source_proof step proof audit =
   { audit with source_proofs = (step, proof) :: audit.source_proofs }
 
@@ -135,7 +144,12 @@ let resolve_one context audit binding =
           { audit with local_missing = audit.local_missing + 1 }
     end
   else if definition_source_kind kind then
-    if hash <> "" && Hashtbl.mem context.proof_delta hash then
+    if local_definition_source_kind kind then
+      if local_definition_matches context binding.core_native_source_name then
+        { audit with local_definition_matched = audit.local_definition_matched + 1 }
+      else
+        { audit with definition_missing = audit.definition_missing + 1 }
+    else if hash <> "" && Hashtbl.mem context.proof_delta hash then
       { audit with definition_resolved = audit.definition_resolved + 1 }
     else
       { audit with definition_missing = audit.definition_missing + 1 }
@@ -170,8 +184,9 @@ let resolve ?(strict=false) context bindings =
          || audit.known_mismatch > 0
          || audit.local_missing > 0
          || audit.local_mismatch > 0
+         || audit.local_definition_matched > 0
          || audit.definition_missing > 0) then
     raise
       (Vampire_cert_v1.Error
-         "strict source-context audit failed: at least one source did not resolve in the Megalodon context");
+         "strict source-context audit failed: at least one source did not resolve to a checked proof in the Megalodon context");
   audit

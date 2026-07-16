@@ -416,6 +416,10 @@ Tasks:
   resolved by native reflexivity proofs checked by the consuming elaborator, so
   Megalodon `set`-command equality facts do not need to become bridge
   assumptions.
+- Proof-local `set` definitions are now carried in the live source-context
+  object and matched against `local_definition` source-map entries. They remain
+  non-qualifying until the matched definitional equality is turned into a
+  checked proof term and consumed by the native elaborator.
 
 ```ocaml
 type source_proof =

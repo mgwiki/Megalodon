@@ -11,6 +11,7 @@ type source_context = {
   symbol_table : (string, int * Syntax.tp) Hashtbl.t;
   term_context : Syntax.tp list;
   local_hypotheses : (string * Syntax.tm) list;
+  local_definitions : (string * Syntax.tp * Syntax.tm) list;
 }
 
 type audit = {
@@ -22,6 +23,7 @@ type audit = {
   local_missing : int;
   local_mismatch : int;
   definition_resolved : int;
+  local_definition_matched : int;
   definition_missing : int;
   generated_checked : int;
   unresolved : int;
