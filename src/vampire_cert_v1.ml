@@ -5348,7 +5348,7 @@ let native_core_resolve_clause_unit id clause clause_proof clause_index unit_cla
       let expected =
         remove_at clause_index clause (id ^ " native clause/unit resolution pivot")
       in
-      if expected <> result then
+      if not (same_clause_multiset expected result) then
         error (id ^ ": native core proof-term clause/unit resolution result does not remove the selected literal");
       let target_prop = native_core_clause_prop id result in
       let rec consume unit_proof selected_index clause proof =
@@ -6352,53 +6352,97 @@ let native_core_cnf_formula_clause_proof
   in
   List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
 
-let native_core_fool_exhaustiveness_proof id result =
+let native_core_fool_exhaustiveness_proof cert id result =
+  let step_variables = native_core_step_variables cert id in
+  let close_literal = function
+    | Pos atom -> Pos (native_core_close_tm step_variables atom)
+    | Neg atom -> Neg (native_core_close_tm step_variables atom)
+  in
+  let result = List.map close_literal result in
   let eq_atom = function
-    | Pos atom -> megalodon_eq_poly_sides atom
+    | Pos atom -> native_core_equality_sides atom
     | Neg _ -> None
+  in
+  let equality_case lit =
+    match eq_atom lit with
+    | Some (Prop, left, right)
+        when native_core_normalize_bool_constants left = native_core_true ->
+        Some (`TrueEq, `ConstLeft, right)
+    | Some (Prop, left, right)
+        when native_core_normalize_bool_constants right = native_core_true ->
+        Some (`TrueEq, `ConstRight, left)
+    | Some (Prop, left, right)
+        when native_core_normalize_bool_constants left = native_core_false ->
+        Some (`FalseEq, `ConstLeft, right)
+    | Some (Prop, left, right)
+        when native_core_normalize_bool_constants right = native_core_false ->
+        Some (`FalseEq, `ConstRight, left)
+    | _ -> None
+  in
+  let true_equality_proof side p =
+    match side with
+    | `ConstLeft ->
+        native_core_prop_ext_eq
+          native_core_true
+          p
+          (PLam (native_core_true, Hyp 1))
+          (PLam (p, native_core_true_proof))
+    | `ConstRight ->
+        native_core_prop_ext_eq
+          p
+          native_core_true
+          (PLam (p, native_core_true_proof))
+          (PLam (native_core_true, Hyp 1))
+  in
+  let false_equality_proof side p =
+    match side with
+    | `ConstLeft ->
+        native_core_prop_ext_eq
+          native_core_false
+          p
+          (PLam (native_core_false, PTmAp (Hyp 0, p)))
+          (PLam (p, PPfAp (Hyp 1, Hyp 0)))
+    | `ConstRight ->
+        native_core_prop_ext_eq
+          p
+          native_core_false
+          (PLam (p, PPfAp (Hyp 1, Hyp 0)))
+          (PLam (native_core_false, PTmAp (Hyp 0, p)))
   in
   match result with
   | [left_literal; right_literal] ->
-      begin match eq_atom left_literal, eq_atom right_literal with
-      | Some (Prop, left_true, left_prop), Some (Prop, left_false, right_prop)
-          when native_core_normalize_bool_constants left_true = native_core_true
-               && native_core_normalize_bool_constants left_false = native_core_false
-               && left_prop = right_prop ->
+      let left_prop = native_core_literal_prop left_literal in
+      let right_prop = native_core_literal_prop right_literal in
+      let target_prop = native_core_or left_prop right_prop in
+      begin match equality_case left_literal, equality_case right_literal with
+      | Some (`TrueEq, true_side, true_tm), Some (`FalseEq, false_side, false_tm)
+      | Some (`FalseEq, false_side, false_tm), Some (`TrueEq, true_side, true_tm)
+          when true_tm = false_tm ->
           let p = DB 0 in
-          let eq_true_p =
-            native_core_expand_eq_atom (native_core_eq_prop native_core_true p)
-          in
-          let eq_false_p =
-            native_core_expand_eq_atom (native_core_eq_prop native_core_false p)
-          in
-          let target_prop = native_core_or eq_true_p eq_false_p in
-          let true_eq_p =
-            native_core_prop_ext_eq
-              native_core_true
-              p
-              (PLam (native_core_true, Hyp 1))
-              (PLam (p, native_core_true_proof))
-          in
-          let false_eq_p =
-            native_core_prop_ext_eq
-              native_core_false
-              p
-              (PLam (native_core_false, PTmAp (Hyp 0, p)))
-              (PLam (p, PPfAp (Hyp 1, Hyp 0)))
-          in
           let positive_case =
             PLam
               (p,
-               native_core_or_intro_left eq_true_p eq_false_p true_eq_p)
+               let true_eq = true_equality_proof true_side p in
+               match equality_case left_literal with
+               | Some (`TrueEq, _, _) ->
+                   native_core_or_intro_left left_prop right_prop true_eq
+               | _ ->
+                   native_core_or_intro_right left_prop right_prop true_eq)
           in
           let negative_case =
             PLam
               (Imp (p, native_core_false),
-               native_core_or_intro_right eq_true_p eq_false_p false_eq_p)
+               let false_eq = false_equality_proof false_side p in
+               match equality_case left_literal with
+               | Some (`FalseEq, _, _) ->
+                   native_core_or_intro_left left_prop right_prop false_eq
+               | _ ->
+                   native_core_or_intro_right left_prop right_prop false_eq)
           in
-          TLam
-            (Prop,
-             PPfAp
+          List.fold_right
+            (fun (_, tp) proof -> TLam (tp, proof))
+            step_variables
+            (PPfAp
                (PPfAp
                   (PTmAp (native_core_xm_proof p, target_prop),
                    positive_case),
@@ -6602,6 +6646,53 @@ let native_core_instantiate_step_proof_in_result_context
   let body_proof =
     native_core_instantiate_step_proof_body_in_result_context
       cert id variables parent_id subst proof
+  in
+  List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
+
+let native_core_resolve_in_result_context
+    cert id variables left_id left_clause left_proof right_id right_clause right_proof
+    left_index right_index result =
+  let result_step_variables = native_core_step_variables cert id in
+  let close_tm tm = native_core_close_tm (variables @ result_step_variables) tm in
+  let close_literal = function
+    | Pos atom -> Pos (close_tm atom)
+    | Neg atom -> Neg (close_tm atom)
+  in
+  let left_clause = List.map close_literal left_clause in
+  let right_clause = List.map close_literal right_clause in
+  let result = List.map close_literal result in
+  let left_proof =
+    native_core_instantiate_step_proof_body_in_result_context
+      cert id variables left_id [] left_proof
+  in
+  let right_proof =
+    native_core_instantiate_step_proof_body_in_result_context
+      cert id variables right_id [] right_proof
+  in
+  let body_proof =
+    match left_clause, right_clause, result, left_index, right_index with
+    | [Pos left_atom], [Neg right_atom], [], 0, 0
+      when native_core_same_atom left_atom right_atom ->
+        PPfAp (right_proof, left_proof)
+    | [Neg left_atom], [Pos right_atom], [], 0, 0
+      when native_core_same_atom left_atom right_atom ->
+        PPfAp (left_proof, right_proof)
+    | _, [_], _, _, 0
+        when List.length left_clause >= 1
+             && List.length result + 1 = List.length left_clause ->
+        native_core_resolve_clause_unit
+          id left_clause left_proof left_index right_clause right_proof right_index result
+    | [_], _, _, 0, _
+        when List.length right_clause >= 1
+             && List.length result + 1 = List.length right_clause ->
+        native_core_resolve_clause_unit
+          id right_clause right_proof right_index left_clause left_proof left_index result
+    | [_; _], [_; _], [_; _], _, _ ->
+        native_core_resolve_binary_binary
+          id left_clause left_proof left_index right_clause right_proof right_index result
+    | _ ->
+        error
+          (id ^ ": native core proof-term checker currently supports only unit/unit, binary/unit, and binary/binary complementary resolution")
   in
   List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
 
@@ -7266,39 +7357,12 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
       | Resolve (id, left_id, right_id, left_index, right_index, result) ->
           let left_clause, left_proof = lookup left_id in
           let right_clause, right_proof = lookup right_id in
-          begin match left_clause, right_clause, result, left_index, right_index with
-          | [Pos left_atom], [Neg right_atom], [], 0, 0
-            when native_core_same_atom left_atom right_atom ->
-              store id result (PPfAp (right_proof, left_proof))
-          | [Neg left_atom], [Pos right_atom], [], 0, 0
-            when native_core_same_atom left_atom right_atom ->
-              store id result (PPfAp (left_proof, right_proof))
-          | _, [_], _, _, 0
-              when List.length left_clause >= 1
-                   && List.length result + 1 = List.length left_clause ->
-              let proof =
-                native_core_resolve_clause_unit
-                  id left_clause left_proof left_index right_clause right_proof right_index result
-              in
-              store id result proof
-          | [_], _, _, 0, _
-              when List.length right_clause >= 1
-                   && List.length result + 1 = List.length right_clause ->
-              let proof =
-                native_core_resolve_clause_unit
-                  id right_clause right_proof right_index left_clause left_proof left_index result
-              in
-              store id result proof
-          | [_; _], [_; _], [_; _], _, _ ->
-              let proof =
-                native_core_resolve_binary_binary
-                  id left_clause left_proof left_index right_clause right_proof right_index result
-              in
-              store id result proof
-          | _ ->
-              error
-                (id ^ ": native core proof-term checker currently supports only unit/unit, binary/unit, and binary/binary complementary resolution")
-          end
+          let proof =
+            native_core_resolve_in_result_context
+              cert id variables left_id left_clause left_proof right_id right_clause right_proof
+              left_index right_index result
+          in
+          store id result proof
       | Factor (id, parent_id, left_index, right_index, result) ->
           let parent_clause, parent_proof = lookup parent_id in
           let proof =
@@ -7649,7 +7713,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
             (native_core_avatar_refutation_proof id parent_ids result clause_table)
       | FoolExhaustiveness (id, result) ->
           store_clause id result
-            (native_core_fool_exhaustiveness_proof id result)
+            (native_core_fool_exhaustiveness_proof cert id result)
       | Substitute (id, parent_id, [], result) ->
           let parent_clause, parent_proof = lookup_clause parent_id in
           if result <> parent_clause then
@@ -7670,39 +7734,12 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
       | Resolve (id, left_id, right_id, left_index, right_index, result) ->
           let left_clause, left_proof = lookup_clause left_id in
           let right_clause, right_proof = lookup_clause right_id in
-          begin match left_clause, right_clause, result, left_index, right_index with
-          | [Pos left_atom], [Neg right_atom], [], 0, 0
-            when native_core_same_atom left_atom right_atom ->
-              store_clause id result (PPfAp (right_proof, left_proof))
-          | [Neg left_atom], [Pos right_atom], [], 0, 0
-            when native_core_same_atom left_atom right_atom ->
-              store_clause id result (PPfAp (left_proof, right_proof))
-          | _, [_], _, _, 0
-              when List.length left_clause >= 1
-                   && List.length result + 1 = List.length left_clause ->
-              let proof =
-                native_core_resolve_clause_unit
-                  id left_clause left_proof left_index right_clause right_proof right_index result
-              in
-              store_clause id result proof
-          | [_], _, _, 0, _
-              when List.length right_clause >= 1
-                   && List.length result + 1 = List.length right_clause ->
-              let proof =
-                native_core_resolve_clause_unit
-                  id right_clause right_proof right_index left_clause left_proof left_index result
-              in
-              store_clause id result proof
-          | [_; _], [_; _], [_; _], _, _ ->
-              let proof =
-                native_core_resolve_binary_binary
-                  id left_clause left_proof left_index right_clause right_proof right_index result
-              in
-              store_clause id result proof
-          | _ ->
-              error
-                (id ^ ": native preprocess proof-term checker currently supports only native core resolution shapes")
-          end
+          let proof =
+            native_core_resolve_in_result_context
+              cert id variables left_id left_clause left_proof right_id right_clause right_proof
+              left_index right_index result
+          in
+          store_clause id result proof
       | Factor (id, parent_id, left_index, right_index, result) ->
           let parent_clause, parent_proof = lookup_clause parent_id in
           store_clause id result
