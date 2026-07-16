@@ -9251,27 +9251,40 @@ let native_core_source_kind_and_tptp_name = function
   | SourceDefinition name -> ("definition", name)
   | SourceSetReflexivity name -> ("set_reflexivity", name)
 
+let native_core_source_map_entry source_map source =
+  let _, tptp_name = native_core_source_kind_and_tptp_name source in
+  match
+    List.find_opt
+      (fun entry -> entry.source_map_tptp_name = tptp_name)
+      source_map
+  with
+  | Some entry -> Some entry
+  | None ->
+      begin match source with
+      | SourceConjecture alias ->
+          List.find_opt
+            (fun entry ->
+               entry.source_map_kind = "conjecture"
+               && ("conj_" ^ entry.source_map_tptp_name = alias
+                   || "conj_" ^ entry.source_map_source_name = alias))
+            source_map
+      | _ -> None
+      end
+
+let native_core_source_is_set_reflexivity source_map source =
+  match source with
+  | SourceSetReflexivity _ -> true
+  | _ ->
+      begin match native_core_source_map_entry source_map source with
+      | Some entry ->
+          entry.source_map_kind = "set_reflexivity"
+          || entry.source_map_kind = "local_set_reflexivity"
+      | None -> false
+      end
+
 let native_core_source_binding source_map id source proposition =
   let source_kind, tptp_name = native_core_source_kind_and_tptp_name source in
-  let entry =
-    match
-      List.find_opt
-        (fun entry -> entry.source_map_tptp_name = tptp_name)
-        source_map
-    with
-    | Some entry -> Some entry
-    | None ->
-        begin match source with
-        | SourceConjecture alias ->
-            List.find_opt
-              (fun entry ->
-                 entry.source_map_kind = "conjecture"
-                 && ("conj_" ^ entry.source_map_tptp_name = alias
-                     || "conj_" ^ entry.source_map_source_name = alias))
-              source_map
-        | _ -> None
-        end
-  in
+  let entry = native_core_source_map_entry source_map source in
   {
     core_native_source_step = id;
     core_native_certificate_source_kind = source_kind;
@@ -9294,6 +9307,25 @@ let native_core_source_binding source_map id source proposition =
     core_native_source_proposition = proposition;
   }
 
+let native_core_set_reflexivity_atom_proof id atom =
+  match native_core_reflexive_eq_proof atom with
+  | Some proof -> proof
+  | None ->
+      error
+        (id ^ ": native proof-term source set_reflexivity is not a reflexive Megalodon equality")
+
+let native_core_set_reflexivity_literal_proof id = function
+  | Pos atom -> native_core_set_reflexivity_atom_proof id atom
+  | Neg _ ->
+      error
+        (id ^ ": native proof-term source set_reflexivity cannot prove a negative literal")
+
+let native_core_set_reflexivity_clause_proof id = function
+  | [literal] -> native_core_set_reflexivity_literal_proof id literal
+  | _ ->
+      error
+        (id ^ ": native proof-term source set_reflexivity expects a unit equality clause")
+
 let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
   let core_steps = validate_certificate_core_fragment cert in
   ignore (check_certificate_strict cert);
@@ -9305,14 +9337,16 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
       cert.steps
   in
   let source_inputs = ref [] in
+  let source_bindings = ref [] in
   List.iter
     (function
       | Input (id, source, clause) ->
           let proposition = native_core_step_clause_prop cert variables id clause in
-          source_inputs :=
-            !source_inputs
-            @ [(id, proposition,
-                native_core_source_binding source_map id source proposition)]
+          let binding = native_core_source_binding source_map id source proposition in
+          source_bindings := !source_bindings @ [binding];
+          if not (native_core_source_is_set_reflexivity source_map source) then
+            source_inputs :=
+              !source_inputs @ [(id, proposition, binding)]
       | _ -> ())
     typed_steps;
   let source_count = List.length !source_inputs in
@@ -9377,6 +9411,10 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
   in
   List.iter
     (function
+      | Input (id, source, clause)
+          when native_core_source_is_set_reflexivity source_map source ->
+          let proof = native_core_set_reflexivity_clause_proof id clause in
+          store id clause proof
       | Input (id, _, clause) ->
           let _ = native_core_clause_prop id clause in
           store id clause (Hyp (source_hyp_index id))
@@ -9497,8 +9535,7 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
     core_native_delta_table = definition_delta;
     core_native_symbol_table = symbol_table;
     core_native_steps = core_steps;
-    core_native_source_bindings =
-      List.map (fun (_, _, binding) -> binding) !source_inputs;
+    core_native_source_bindings = !source_bindings;
   }
 
 let native_preprocess_step_formula_prop cert variables id formula =
@@ -9520,30 +9557,28 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
       cert.steps
   in
   let source_inputs = ref [] in
+  let source_bindings = ref [] in
+  let add_source_input id source proposition =
+    let binding = native_core_source_binding source_map id source proposition in
+    source_bindings := !source_bindings @ [binding];
+    if not (native_core_source_is_set_reflexivity source_map source) then
+      source_inputs := !source_inputs @ [(id, proposition, binding)]
+  in
   List.iter
     (function
       | Input (id, source, clause) ->
           let proposition = native_core_step_clause_prop cert variables id clause in
-          source_inputs :=
-            !source_inputs
-            @ [(id, proposition,
-                native_core_source_binding source_map id source proposition)]
+          add_source_input id source proposition
       | FormulaInput (id, source, literal) ->
           let proposition =
             native_core_step_clause_prop cert variables id [literal]
           in
-          source_inputs :=
-            !source_inputs
-            @ [(id, proposition,
-                native_core_source_binding source_map id source proposition)]
+          add_source_input id source proposition
       | FormulaTermInput (id, source, formula) ->
           let proposition =
             native_preprocess_step_formula_prop cert variables id formula
           in
-          source_inputs :=
-            !source_inputs
-            @ [(id, proposition,
-                native_core_source_binding source_map id source proposition)]
+          add_source_input id source proposition
       | _ -> ())
     typed_steps;
   let source_count = List.length !source_inputs in
@@ -9717,12 +9752,24 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
   in
   List.iter
     (function
+      | Input (id, source, clause)
+          when native_core_source_is_set_reflexivity source_map source ->
+          let proof = native_core_set_reflexivity_clause_proof id clause in
+          store_clause id clause proof
       | Input (id, _, clause) ->
           store_clause id clause (Hyp (source_hyp_index id))
+      | FormulaInput (id, source, literal)
+          when native_core_source_is_set_reflexivity source_map source ->
+          let proof = native_core_set_reflexivity_literal_proof id literal in
+          store_clause id [literal] proof;
+          store_formula id (native_core_literal_prop literal) proof
       | FormulaInput (id, _, literal) ->
           let proof = Hyp (source_hyp_index id) in
           store_clause id [literal] proof;
           store_formula id (native_core_literal_prop literal) proof
+      | FormulaTermInput (id, source, formula)
+          when native_core_source_is_set_reflexivity source_map source ->
+          store_formula id formula (native_core_set_reflexivity_atom_proof id formula)
       | FormulaTermInput (id, _, formula) ->
           store_formula id formula (Hyp (source_hyp_index id))
       | PredicateDefinition (id, symbol, result) ->
@@ -10172,8 +10219,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
     core_native_delta_table = definition_delta;
     core_native_symbol_table = symbol_table;
     core_native_steps = List.length cert.steps;
-    core_native_source_bindings =
-      List.map (fun (_, _, binding) -> binding) !source_inputs;
+    core_native_source_bindings = !source_bindings;
   }
 
 let emit_error msg =

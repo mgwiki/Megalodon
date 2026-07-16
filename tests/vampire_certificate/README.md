@@ -112,6 +112,10 @@ counts under `/project/tmp/latest_native_cert_v1_real_core_frontier`. On
 `formula_term_input` and `formula_input`. That result is not a failure of the
 clausal kernel; it means real examples need proof-producing source and
 preprocessing certificates before their later clausal refutations can count.
+The first source-input exception is `set_reflexivity`: when the source map
+classifies an input as `set_reflexivity` or `local_set_reflexivity`, the native
+proof-term checker proves the reflexive Megalodon equality directly instead of
+adding it as a source hypothesis.
 
 For repeatable non-overlapping corpus slices, use:
 

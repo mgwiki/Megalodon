@@ -1660,6 +1660,17 @@ if ! rg -q 'Vampire certificate v1 source map checked 2 sources' "$WORK_DIR/nati
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1corepfcheck \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_set_reflexivity_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_set_reflexivity_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_set_reflexivity_corepf.log"
+
+if ! rg -q 'Vampire certificate v1 native core proof term checked 4 steps' "$WORK_DIR/native_cert_v1_source_map_set_reflexivity_corepf.log"; then
+  echo "native certificate v1 core proof-term checker did not prove a reflexive set source" >&2
+  exit 1
+fi
+
 if bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_set_reflexivity_bad.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_set_reflexivity_bad.th0.p \

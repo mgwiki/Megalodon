@@ -1,5 +1,6 @@
 (certificate vampire-megalodon 1
   (problem "native-cert-v1-source-map-set-reflexivity-valid")
+  (symbol_declaration "Variable a:set.")
   (input c1 (source axiom "set_eq")
     (clause
       (pos
