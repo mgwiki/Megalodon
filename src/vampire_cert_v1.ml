@@ -5669,6 +5669,11 @@ let native_core_has_function_definitions cert =
   List.exists
     (fun (_, kind, _) -> kind = "function_definition")
     cert.metadata.step_extras
+  || List.exists
+       (function
+         | InequalityNameIntro _ -> true
+         | _ -> false)
+       cert.steps
 
 let native_core_proof_variables cert =
   if native_core_has_function_definitions cert then [] else native_core_declared_variables cert
@@ -6083,6 +6088,65 @@ let native_core_definition_body symbol_table introduced application body =
       error
         ("native core proof-term checker expected generated definition headed by " ^ introduced)
 
+let native_core_inequality_split_definition_body symbol_table id result =
+  let false_tm = All (Prop, DB 0) in
+  let expand_eq_atom tp left right =
+    All
+      (Ar (tp, Ar (tp, Prop)),
+       Imp
+         (Ap (Ap (DB 0, tmshift 0 1 left), tmshift 0 1 right),
+          Ap (Ap (DB 0, tmshift 0 1 right), tmshift 0 1 left)))
+  in
+  match result with
+  | [literal] ->
+      begin match bool_name_literal false literal with
+      | Some named ->
+          let raw_name, args = split_name_application id named in
+          let introduced = native_core_ident raw_name in
+          let symbol_tp = native_core_symbol_type symbol_table introduced in
+          let arg_tps, result_tp = native_core_arrow_parts symbol_tp in
+          if result_tp <> Prop then
+            error (id ^ ": inequality split name does not return prop");
+          if args = [] then
+            error (id ^ ": inequality split name has no arguments");
+          if List.length args > List.length arg_tps then
+            error (id ^ ": inequality split name has too many arguments for its type");
+          let used_arg_tps = native_core_take_prefix (List.length args) arg_tps in
+          let binder_names =
+            List.mapi
+              (fun index _ -> "__ineq_split_arg_" ^ string_of_int index)
+              args
+          in
+          let substitution =
+            List.combine args binder_names
+            |> List.filter_map
+                 (function
+                   | TmH original, binder ->
+                       Some (native_core_ident original, TmH binder)
+                   | _ -> None)
+          in
+          let split_arg =
+            match List.rev args with
+            | arg :: _ -> subst_tm substitution arg
+            | [] -> assert false
+          in
+          let last_binder, last_tp =
+            match List.rev binder_names, List.rev used_arg_tps with
+            | binder :: _, tp :: _ -> TmH binder, tp
+            | _ -> assert false
+          in
+          let equality_prop =
+            expand_eq_atom last_tp last_binder split_arg
+          in
+          let body =
+            Imp (equality_prop, false_tm)
+            |> native_core_abstract_named_arguments binder_names
+          in
+          List.fold_right (fun tp tm -> Lam (tp, tm)) used_arg_tps body
+      | None -> raise Not_found
+      end
+  | _ -> raise Not_found
+
 let native_core_definition_delta_table cert symbol_table =
   let definitions = Hashtbl.create 31 in
   let add_definition id clause =
@@ -6117,6 +6181,29 @@ let native_core_definition_delta_table cert symbol_table =
   List.iter
     (function
       | DefinitionInput (id, clause) -> add_definition id clause
+      | InequalityNameIntro (id, clause) ->
+          begin try
+            let body =
+              native_core_inequality_split_definition_body symbol_table id clause
+            in
+            begin match clause with
+            | literal :: _ ->
+                begin match bool_name_literal false literal with
+                | Some named ->
+                    let raw_name, _ = split_name_application id named in
+                    let introduced = native_core_ident raw_name in
+                    begin match Hashtbl.find_opt definitions introduced with
+                    | Some (_, existing) when tm_beta_eta_norm existing <> tm_beta_eta_norm body ->
+                        error (id ^ ": conflicting inequality split-name definition for " ^ introduced)
+                    | _ ->
+                        Hashtbl.replace definitions introduced (0, tm_beta_eta_norm body)
+                    end
+                | None -> ()
+                end
+            | [] -> ()
+            end
+          with Not_found -> ()
+          end
       | _ -> ())
     cert.steps;
   definitions
@@ -7721,6 +7808,106 @@ let native_core_fool_bool_proof id variables parent_formula parent_proof result 
   | _ ->
       error (id ^ ": native preprocess proof-term fool_bool parent/result shape is unsupported")
 
+let native_core_inequality_name_intro_proof cert symbol_table id variables result =
+  check_inequality_name_intro id result;
+  let result_step_variables = native_core_step_variables cert id in
+  let close_tm tm = native_core_close_tm (variables @ result_step_variables) tm in
+  let closed_literal =
+    match result with
+    | [Pos atom] -> Pos (close_tm atom)
+    | [_] ->
+        error (id ^ ": native preprocess proof-term inequality_name_intro literal is not positive")
+    | _ ->
+        error (id ^ ": native preprocess proof-term inequality_name_intro expects a singleton clause")
+  in
+  let atom, named =
+    match closed_literal with
+    | Pos atom ->
+        begin match native_core_equality_sides atom with
+        | Some (Prop, left, right)
+            when left = native_core_false ->
+            atom, right
+        | Some (Prop, left, right)
+            when right = native_core_false ->
+            atom, left
+        | Some _ ->
+            error
+              (id ^ ": native preprocess proof-term inequality_name_intro literal is not an equality to false")
+        | None ->
+            error
+              (id ^ ": native preprocess proof-term inequality_name_intro literal is not typed Megalodon equality")
+        end
+    | Neg _ -> assert false
+  in
+  let split_argument_type_and_term =
+    match native_core_flatten_value_application named with
+    | TmH head, (_ :: _ as args) ->
+        let introduced = native_core_ident head in
+        let symbol_tp = native_core_symbol_type symbol_table introduced in
+        let arg_tps, result_tp = native_core_arrow_parts symbol_tp in
+        if result_tp <> Prop then
+          error (id ^ ": native preprocess proof-term inequality_name_intro split name does not return prop");
+        if List.length args > List.length arg_tps then
+          error (id ^ ": native preprocess proof-term inequality_name_intro split name has too many arguments");
+        begin match List.rev args, List.rev (native_core_take_prefix (List.length args) arg_tps) with
+        | split_arg :: _, split_tp :: _ -> split_tp, split_arg
+        | _ -> assert false
+        end
+    | _ ->
+        error (id ^ ": native preprocess proof-term inequality_name_intro literal is not a split-name application")
+  in
+  let split_tp, split_arg = split_argument_type_and_term in
+  let split_refl =
+    match
+      native_core_reflexive_eq_proof
+        (native_core_eq_atom split_tp split_arg split_arg)
+    with
+    | Some proof -> proof
+    | None ->
+        error (id ^ ": native preprocess proof-term inequality_name_intro cannot build split reflexivity proof")
+  in
+  let not_named =
+    PLam
+      (named,
+       PPfAp (Hyp 0, split_refl))
+  in
+  let proof =
+    match native_core_equality_sides atom with
+    | Some (Prop, left, right) when left = native_core_false && right = named ->
+        native_core_prop_ext_eq
+          native_core_false
+          named
+          (PLam (native_core_false, PTmAp (Hyp 0, named)))
+          not_named
+    | Some (Prop, left, right) when left = named && right = native_core_false ->
+        native_core_prop_ext_eq
+          named
+          native_core_false
+          not_named
+          (PLam (native_core_false, PTmAp (Hyp 0, named)))
+    | _ -> assert false
+  in
+  let result_clause = [closed_literal] in
+  let body_proof =
+    native_core_prove_literal_to_clause id result_clause closed_literal proof
+  in
+  List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
+
+let native_core_bool_name_literal value = function
+  | Pos atom ->
+      begin match native_core_equality_sides atom with
+      | Some (Prop, left, named)
+          when (value && left = native_core_true)
+               || ((not value) && left = native_core_false) ->
+          Some named
+      | Some (Prop, named, right)
+          when (value && right = native_core_true)
+               || ((not value) && right = native_core_false) ->
+          Some named
+      | _ -> None
+      end
+  | Neg _ -> None
+
 let native_core_swapped_eq_literal = function
   | Pos atom ->
       begin match megalodon_eq_poly_sides atom with
@@ -8146,6 +8333,146 @@ let native_core_instantiate_step_proof_in_result_context
     native_core_instantiate_step_proof_body_in_result_context
       cert id variables parent_id subst proof
   in
+  List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
+
+let native_core_inequality_split_proof
+    cert id variables source_id source_clause source_proof splits result =
+  let result_step_variables = native_core_step_variables cert id in
+  let close_tm tm = native_core_close_tm (variables @ result_step_variables) tm in
+  let close_literal = function
+    | Pos atom -> Pos (close_tm atom)
+    | Neg atom -> Neg (close_tm atom)
+  in
+  let close_split split =
+    {
+      split_name_parent = split.split_name_parent;
+      split_source = close_literal split.split_source;
+      split_name_literal = close_literal split.split_name_literal;
+      split_replacement = close_literal split.split_replacement;
+    }
+  in
+  let source_clause = List.map close_literal source_clause in
+  let result = List.map close_literal result in
+  let splits = List.map close_split splits in
+  let source_proof =
+    native_core_instantiate_step_proof_body_in_result_context
+      cert id variables source_id [] source_proof
+  in
+  let rec split_for_source lit = function
+    | [] -> None
+    | split :: rest ->
+        if split.split_source = lit then Some split else split_for_source lit rest
+  in
+  let replacement_for_split split =
+    let split_named =
+      match native_core_bool_name_literal false split.split_name_literal with
+      | Some named -> named
+      | None ->
+          error (id ^ ": native preprocess proof-term inequality_split name literal is not false equality")
+    in
+    let replacement_named =
+      match native_core_bool_name_literal true split.split_replacement with
+      | Some named -> named
+      | None ->
+          error (id ^ ": native preprocess proof-term inequality_split replacement is not true equality")
+    in
+    let split_name, split_args =
+      match native_core_flatten_value_application split_named with
+      | TmH name, (_ :: _ as args) -> (name, args)
+      | _ ->
+          error (id ^ ": native preprocess proof-term inequality_split name literal is not a split-name application")
+    in
+    let replacement_name, replacement_args =
+      match native_core_flatten_value_application replacement_named with
+      | TmH name, (_ :: _ as args) -> (name, args)
+      | _ ->
+          error (id ^ ": native preprocess proof-term inequality_split replacement is not a split-name application")
+    in
+    if native_core_ident split_name <> native_core_ident replacement_name then
+      error (id ^ ": native preprocess proof-term inequality_split replacement uses a different split name");
+    let split_arg =
+      match List.rev split_args with
+      | arg :: _ -> arg
+      | [] -> assert false
+    in
+    let target_arg =
+      match List.rev replacement_args with
+      | arg :: _ -> arg
+      | [] -> assert false
+    in
+    (replacement_named, split_arg, target_arg)
+  in
+  let replacement_proof split source_literal_proof =
+    let replacement_named, split_arg, target_arg = replacement_for_split split in
+    let source_atom =
+      match split.split_source with
+      | Neg atom -> atom
+      | Pos _ ->
+          error (id ^ ": native preprocess proof-term inequality_split source literal is not negative")
+    in
+    let source_to_named =
+      match native_core_equality_sides source_atom with
+      | Some (_, left, right) when left = target_arg && right = split_arg ->
+          source_literal_proof
+      | Some (tp, left, right) when left = split_arg && right = target_arg ->
+          let target_atom = native_core_eq_atom tp target_arg split_arg in
+          PLam
+            (native_core_expand_eq_atom target_atom,
+             let symmetry =
+               native_core_eq_symmetry_proof id (Pos target_atom) (Hyp 0)
+             in
+             PPfAp (pfshift 0 1 source_literal_proof, symmetry))
+      | Some _ ->
+          error (id ^ ": native preprocess proof-term inequality_split source equality does not match split arguments")
+      | None ->
+          error (id ^ ": native preprocess proof-term inequality_split source literal is not equality")
+    in
+    let replacement_atom =
+      match split.split_replacement with
+      | Pos atom -> atom
+      | Neg _ ->
+          error (id ^ ": native preprocess proof-term inequality_split replacement is not positive")
+    in
+    match native_core_true_eq_from_proof replacement_named replacement_atom source_to_named with
+    | Some proof -> proof
+    | None ->
+        error (id ^ ": native preprocess proof-term inequality_split cannot prove true equality replacement")
+  in
+  let introduce lit proof =
+    match split_for_source lit splits with
+    | Some split ->
+        native_core_prove_literal_to_clause
+          id result split.split_replacement (replacement_proof split proof)
+    | None ->
+        native_core_prove_literal_to_clause id result lit proof
+  in
+  let transformed =
+    List.map
+      (fun lit ->
+         match split_for_source lit splits with
+         | Some split -> split.split_replacement
+         | None -> lit)
+      source_clause
+  in
+  if not (same_clause_multiset transformed result) then
+    error (id ^ ": native preprocess proof-term inequality_split result does not match source replacements");
+  let rec consume clause proof =
+    match clause with
+    | [] -> error (id ^ ": native preprocess proof-term inequality_split source clause is empty")
+    | [literal] -> introduce literal proof
+    | literal :: rest ->
+        let literal_prop = native_core_literal_prop literal in
+        let rest_prop = native_core_clause_prop id rest in
+        let target_prop = native_core_clause_prop id result in
+        let head_branch =
+          PLam (literal_prop, introduce literal (Hyp 0))
+        in
+        let tail_branch =
+          PLam (rest_prop, consume rest (Hyp 0))
+        in
+        PPfAp (PPfAp (PTmAp (proof, target_prop), head_branch), tail_branch)
+  in
+  let body_proof = consume source_clause source_proof in
   List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
 
 let native_core_substitute_in_result_context
@@ -9672,6 +9999,17 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
       | FoolExhaustiveness (id, result) ->
           store_clause id result
             (native_core_fool_exhaustiveness_proof cert id result)
+      | InequalityNameIntro (id, result) ->
+          store_clause id result
+            (native_core_inequality_name_intro_proof cert symbol_table id variables result)
+      | InequalitySplit (id, source_id, splits, result) ->
+          List.iter
+            (fun split -> ignore (lookup_clause split.split_name_parent))
+            splits;
+          let source_clause, source_proof = lookup_clause source_id in
+          store_clause id result
+            (native_core_inequality_split_proof
+               cert id variables source_id source_clause source_proof splits result)
       | Substitute (id, parent_id, [], result) ->
           let parent_clause, parent_proof = lookup_clause parent_id in
           store_clause id result
