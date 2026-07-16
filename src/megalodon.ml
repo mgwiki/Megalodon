@@ -603,7 +603,238 @@ let vampire_aby_source_context cxtm cxpf =
     local_hypotheses = cxpf;
   }
 
-let check_vampire_aby_native_certificate ?(cxtm=[]) ?(cxpf=[]) content output proof_file =
+let vampire_native_core_false_tm = All(Prop,DB(0))
+
+let vampire_source_step_has_proof source_audit step =
+  List.exists
+    (fun (source_step, _) -> source_step = step)
+    source_audit.Vampire_source_context.source_proofs
+
+let vampire_source_proof_list_has_step source_proofs step =
+  List.exists (fun (source_step, _) -> source_step = step) source_proofs
+
+let vampire_generated_source_kind kind =
+  kind = "set_reflexivity" || kind = "local_set_reflexivity"
+
+let vampire_remaining_source_bindings_for_proofs source_proofs source_bindings =
+  List.filter
+    (fun binding ->
+       (not
+          (vampire_source_proof_list_has_step
+             source_proofs
+             binding.Vampire_cert_v1.core_native_source_step))
+       && not
+            (vampire_generated_source_kind
+               binding.Vampire_cert_v1.core_native_source_map_kind))
+    source_bindings
+
+let vampire_core_source_proofs source_audit =
+  List.filter
+    (fun (step, _) ->
+       match List.assoc_opt step source_audit.Vampire_source_context.resolved with
+       | Some (Vampire_source_context.LocalHyp _) -> false
+       | _ -> true)
+    source_audit.Vampire_source_context.source_proofs
+
+let vampire_source_proof source_audit step =
+  List.assoc_opt step source_audit.Vampire_source_context.source_proofs
+
+let vampire_check_current_goal_proof claimtm cxtm cxpf proof =
+  let cx = List.map (fun (_, (tp, _)) -> tp) cxtm in
+  let hyps = List.map snd cxpf in
+  let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
+  try
+    let (actual,dl) = extr_propofpf sigdelta sigtmof cx hyps proof [] in
+    match conv actual claimtm sigdelta dl with
+    | Some _ -> Some proof
+    | None ->
+        if debug then
+          begin
+            Printf.printf
+              "Vampire native certificate current-goal proof candidate has wrong proposition at line %d char %d.\nexpected: %s\nactual: %s\n"
+              !lineno
+              !charno
+              (tm_to_str claimtm)
+              (tm_to_str actual);
+            flush stdout
+          end;
+        None
+  with
+  | Failure msg ->
+      if debug then
+        begin
+          Printf.printf
+            "Vampire native certificate current-goal proof candidate rejected at line %d char %d: %s.\n"
+            !lineno
+            !charno
+            msg;
+          flush stdout
+        end;
+      None
+  | _ -> None
+
+let vampire_xm_double_negation_elim claimtm cxtm cxpf dnotnot =
+  match Hashtbl.find_opt sigknh "xm" with
+  | None -> None
+  | Some xm_hash ->
+      let not_claim = Imp(claimtm,TmH(!fal)) in
+      let dfalse = PPfAp(pfshift 0 1 dnotnot,Hyp(0)) in
+      let candidate =
+        PPfAp
+          (PPfAp
+             (PTmAp(PTmAp(Known(xm_hash),claimtm),claimtm),
+              PLam(claimtm,Hyp(0))),
+           PLam(not_claim,PTmAp(dfalse,claimtm)))
+      in
+      vampire_check_current_goal_proof claimtm cxtm cxpf candidate
+
+let vampire_context_terms_of_type cxtm target_tp =
+  let rec scan i = function
+    | [] -> []
+    | (_, (tp, _)) :: rest ->
+        let rest = scan (i + 1) rest in
+        if tp = target_tp then DB(i) :: rest else rest
+  in
+  scan 0 cxtm
+
+let vampire_reconstruct_current_goal_from_refutation claimtm cxtm cxpf proof proposition =
+  let rec try_proof depth proof proposition =
+    match vampire_check_current_goal_proof claimtm cxtm cxpf proof with
+    | Some _ as result -> result
+    | None ->
+        begin
+          match vampire_xm_double_negation_elim claimtm cxtm cxpf proof with
+          | Some _ as result -> result
+          | None ->
+              if depth <= 0 then None
+              else
+                match proposition with
+                | All(tp,body) ->
+                    let rec try_terms = function
+                      | [] -> None
+                      | tm :: rest ->
+                          begin
+                            match
+                              try_proof
+                                (depth - 1)
+                                (PTmAp(proof,tm))
+                                (tmsubst body 0 tm)
+                            with
+                            | Some _ as result -> result
+                            | None -> try_terms rest
+                          end
+                    in
+                    try_terms (vampire_context_terms_of_type cxtm tp)
+                | _ -> None
+        end
+  in
+  try_proof 8 proof proposition
+
+let vampire_instantiated_refutation_candidates cxtm proof proposition =
+  let rec collect depth proof proposition =
+    let current = [(proof,proposition)] in
+    if depth <= 0 then current
+    else
+      match proposition with
+      | All(tp,body) ->
+          current @
+          List.concat
+            (List.map
+               (fun tm ->
+                  collect
+                    (depth - 1)
+                    (PTmAp(proof,tm))
+                    (tmsubst body 0 tm))
+               (vampire_context_terms_of_type cxtm tp))
+      | _ -> current
+  in
+  collect 8 proof proposition
+
+let vampire_apply_local_source_bindings source_audit proof proposition bindings =
+  let rec apply proof proposition remaining =
+    match remaining with
+    | [] -> Some(proof,proposition,[])
+    | binding :: rest
+        when binding.Vampire_cert_v1.core_native_source_map_kind = "local_fact" ->
+        begin
+          match vampire_source_proof source_audit binding.Vampire_cert_v1.core_native_source_step,
+                proposition
+          with
+          | Some source_proof, Imp(_,target_prop) ->
+              apply (PPfAp(proof,source_proof)) target_prop rest
+          | _ -> None
+        end
+    | _ -> Some(proof,proposition,remaining)
+  in
+  apply proof proposition bindings
+
+let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map source_audit =
+  let source_proofs_for_core = vampire_core_source_proofs source_audit in
+  let native_core =
+    Vampire_cert_v1.elaborate_core_resolution_refutation_native
+      ~source_map
+      ~source_proofs:source_proofs_for_core
+      ~external_delta_table:(vampire_source_context_delta ())
+      cert
+  in
+  let remaining_bindings =
+    vampire_remaining_source_bindings_for_proofs
+      source_proofs_for_core
+      native_core.Vampire_cert_v1.core_native_source_bindings
+  in
+  let rec try_candidates = function
+    | [] -> None
+    | (proof,proposition) :: rest ->
+        begin
+          match
+            vampire_apply_local_source_bindings
+              source_audit
+              proof
+              proposition
+              remaining_bindings
+          with
+          | Some(proof,proposition,[binding])
+              when binding.Vampire_cert_v1.core_native_certificate_source_kind = "negated_conjecture" ->
+              let negated_goal_native = Imp(claimtm,vampire_native_core_false_tm) in
+              let negated_goal_context = Imp(claimtm,TmH(!fal)) in
+              begin
+                match
+                  conv
+                    binding.Vampire_cert_v1.core_native_source_proposition
+                    negated_goal_native
+                    sigdelta
+                    [],
+                  conv
+                    binding.Vampire_cert_v1.core_native_source_proposition
+                    negated_goal_context
+                    sigdelta
+                    []
+                with
+                | Some _, _ | _, Some _ ->
+                    begin
+                      match
+                        vampire_reconstruct_current_goal_from_refutation
+                          claimtm
+                          cxtm
+                          cxpf
+                          proof
+                          proposition
+                      with
+                      | Some _ as result -> result
+                      | None -> try_candidates rest
+                    end
+                | None, None -> try_candidates rest
+              end
+          | _ -> try_candidates rest
+        end
+  in
+  try_candidates
+    (vampire_instantiated_refutation_candidates
+       cxtm
+       native_core.Vampire_cert_v1.core_native_proof
+       native_core.Vampire_cert_v1.core_native_proposition)
+
+let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) content output proof_file =
   if !vampireabyproof = "megalodon" then
     match native_certificate_payload output with
     | None ->
@@ -632,6 +863,37 @@ let check_vampire_aby_native_certificate ?(cxtm=[]) ?(cxpf=[]) content output pr
               (vampire_aby_source_context cxtm cxpf)
               source_bindings
           in
+          let reconstructed =
+            match claimtm with
+            | None -> None
+            | Some claimtm ->
+                try
+                  vampire_certificate_reconstruct_aby_goal
+                    claimtm cxtm cxpf cert source_map source_audit
+                with
+                | Vampire_cert_v1.Error msg ->
+                    if !verbosity > 8 then
+                      begin
+                        Printf.printf
+                          "Vampire native certificate did not reconstruct current aby goal at line %d char %d: %s.\n"
+                          !lineno
+                          !charno
+                          msg;
+                        flush stdout
+                      end;
+                    None
+                | Failure msg ->
+                    if !verbosity > 8 then
+                      begin
+                        Printf.printf
+                          "Vampire native certificate proof candidate did not check for current aby goal at line %d char %d: %s.\n"
+                          !lineno
+                          !charno
+                          msg;
+                        flush stdout
+                      end;
+                    None
+          in
           if !verbosity > 8 then
             begin
               Printf.printf
@@ -647,6 +909,19 @@ let check_vampire_aby_native_certificate ?(cxtm=[]) ?(cxpf=[]) content output pr
                 source_audit.Vampire_source_context.unresolved;
               flush stdout
             end
+          else
+            ();
+          begin
+            match reconstructed with
+            | Some _ when !verbosity > 2 ->
+                Printf.printf
+                  "Vampire native certificate reconstructed aby proof term at line %d char %d.\n"
+                  !lineno
+                  !charno;
+                flush stdout
+            | _ -> ()
+          end;
+          reconstructed
         with Vampire_cert_v1.Error msg ->
           raise
             (Failure
@@ -654,10 +929,12 @@ let check_vampire_aby_native_certificate ?(cxtm=[]) ?(cxpf=[]) content output pr
                   "Vampire megalodon proof output %s failed native certificate check: %s"
                   proof_file
                   msg))
+  else
+    None
 
-let run_vampire_aby_certificate ?(cxtm=[]) ?(cxpf=[]) content =
+let run_vampire_aby_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) content =
   match !vampireaby with
-  | None -> ()
+  | None -> None
   | Some(vampire) ->
      ensure_directory !vampireabyoutdir;
      let digest = Hash.hashval_hexstring (Hash.sha256 content) in
@@ -685,10 +962,13 @@ let run_vampire_aby_certificate ?(cxtm=[]) ?(cxpf=[]) content =
          || (!vampireabyproof = "megalodon" && vampire_output_has_native_certificate out))
         && vampire_output_has_proof_payload out then
        begin
-         check_vampire_aby_native_certificate ~cxtm ~cxpf content out proof_file;
+         let reconstructed =
+           check_vampire_aby_native_certificate ?claimtm ~cxtm ~cxpf content out proof_file
+         in
          if !verbosity > 2 then
            Printf.printf "Vampire certified aby at line %d char %d (%s)\n" !lineno !charno digest;
-         flush stdout
+         flush stdout;
+         reconstructed
        end
      else
        raise
@@ -5750,6 +6030,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                else
                  None
              in
+             let vampire_native_result = ref None in
              begin
                match !vampireaby with
                | None -> ()
@@ -5757,7 +6038,8 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                   let conjn = stable_aby_obligation_name () in
                   let content = th0_aby_problem_content claimtm cxtm cxpf xl conjn in
                   try
-                    run_vampire_aby_certificate ~cxtm ~cxpf content
+                    vampire_native_result :=
+                      run_vampire_aby_certificate ~claimtm ~cxtm ~cxpf content
                   with
                   | Failure(msg) ->
                      begin
@@ -5775,6 +6057,11 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
              end;
              begin
                if !vampireabynative then
+                 let native_aby_result =
+                   match !vampire_native_result with
+                   | Some _ as result -> result
+                   | None -> native_aby_result
+                 in
                  match native_aby_result with
                  | Some(d) ->
                     let currprooffun = !prooffun in

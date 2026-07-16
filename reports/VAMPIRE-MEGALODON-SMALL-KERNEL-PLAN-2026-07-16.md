@@ -280,9 +280,33 @@ Implementation update:
 - The smoke suite includes a generated core fixture proving that one
   hash-backed source is consumed this way.
 
-This is still partial original-context reconstruction: global source facts can
-now be discharged, but local theorem hypotheses, local definitions, conjecture
-negation, and Smolka-style preprocessing proofs remain open.
+Branch `vampire/megalodon5` adds the first live original-context composition
+for `vampireaby`:
+
+- hash-backed global facts are still discharged inside the native core checker
+  as `Known hash`;
+- local theorem hypotheses are deliberately *not* inserted under Vampire's
+  closed variable binders, because doing so shifts them under certificate-local
+  `forall`s and makes a live `Hyp` prove the wrong de Bruijn variable;
+- instead, local facts remain explicit source assumptions in the certificate
+  proposition, Vampire variables are instantiated with matching live context
+  variables, and the local `Hyp` proofs are applied at the Megalodon boundary;
+- when the only remaining certificate source is the negated conjecture, the
+  resulting `~~goal` proof is converted to `goal` using the loaded `xm`
+  theorem.
+
+The smoke suite now has a live fake-Vampire fixture that checks this path:
+`source_context known=0 local=1 unresolved=1` followed by `Vampire native
+certificate reconstructed aby proof term`.  The fixture uses a local axiom for
+`xm`, so it intentionally stops at Megalodon's existing "depends on non-proved
+xm" boundary after the handoff is demonstrated.  Real library runs should use
+the already-proved/imported `xm`.
+
+This is still partial original-context reconstruction: local facts and
+conjecture negation now compose in the simple core case, but local definitions,
+multiple/mixed source assumptions, quantified source matching beyond direct
+context-variable instantiation, and Smolka-style preprocessing proofs remain
+open.
 
 ## Design Principles
 

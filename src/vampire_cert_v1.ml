@@ -9410,11 +9410,18 @@ let elaborate_core_resolution_refutation_native
       | _ -> ())
     typed_steps;
   let source_count = List.length !source_inputs in
+  let shifted_source_proofs =
+    if source_count = 0 then source_proofs
+    else
+      List.map
+        (fun (id, proof) -> (id, pfshift 0 source_count proof))
+        source_proofs
+  in
   let source_hyp_index id =
     let rec find index = function
       | [] -> None
     | (input_id, _, _) :: rest ->
-          if input_id = id then Some (List.length external_hypotheses + source_count - index - 1)
+          if input_id = id then Some (source_count - index - 1)
           else find (index + 1) rest
     in
     match find 0 !source_inputs with
@@ -9423,10 +9430,10 @@ let elaborate_core_resolution_refutation_native
   in
   let variable_types = List.rev (List.map snd variables) in
   let closed_source_context =
-    external_hypotheses @
     (!source_inputs
     |> List.map (fun (_, prop, _) -> prop)
     |> List.rev)
+    @ external_hypotheses
   in
   let proof_delta, definition_delta = native_core_certificate_sgdelta cert symbol_table in
   let proof_delta = native_core_merge_external_delta proof_delta external_delta_table in
@@ -9480,7 +9487,7 @@ let elaborate_core_resolution_refutation_native
       | Input (id, _, clause) ->
           let _ = native_core_clause_prop id clause in
           let proof =
-            match native_core_source_proof source_proofs id with
+            match native_core_source_proof shifted_source_proofs id with
             | Some proof -> proof
             | None -> Hyp (source_hyp_index id)
           in
@@ -9655,11 +9662,18 @@ let elaborate_preprocess_refutation_native
       | _ -> ())
     typed_steps;
   let source_count = List.length !source_inputs in
+  let shifted_source_proofs =
+    if source_count = 0 then source_proofs
+    else
+      List.map
+        (fun (id, proof) -> (id, pfshift 0 source_count proof))
+        source_proofs
+  in
   let source_hyp_index id =
     let rec find index = function
       | [] -> None
       | (input_id, _, _) :: rest ->
-          if input_id = id then Some (List.length external_hypotheses + source_count - index - 1)
+          if input_id = id then Some (source_count - index - 1)
           else find (index + 1) rest
     in
     match find 0 !source_inputs with
@@ -9668,10 +9682,10 @@ let elaborate_preprocess_refutation_native
   in
   let variable_types = List.rev (List.map snd variables) in
   let closed_source_context =
-    external_hypotheses @
     (!source_inputs
     |> List.map (fun (_, prop, _) -> prop)
     |> List.rev)
+    @ external_hypotheses
   in
   let proof_delta, definition_delta = native_core_certificate_sgdelta cert symbol_table in
   let proof_delta = native_core_merge_external_delta proof_delta external_delta_table in
@@ -9833,7 +9847,7 @@ let elaborate_preprocess_refutation_native
           store_clause id clause proof
       | Input (id, _, clause) ->
           let proof =
-            match native_core_source_proof source_proofs id with
+            match native_core_source_proof shifted_source_proofs id with
             | Some proof -> proof
             | None -> Hyp (source_hyp_index id)
           in
@@ -9845,7 +9859,7 @@ let elaborate_preprocess_refutation_native
           store_formula id (native_core_literal_prop literal) proof
       | FormulaInput (id, _, literal) ->
           let proof =
-            match native_core_source_proof source_proofs id with
+            match native_core_source_proof shifted_source_proofs id with
             | Some proof -> proof
             | None -> Hyp (source_hyp_index id)
           in
@@ -9856,7 +9870,7 @@ let elaborate_preprocess_refutation_native
           store_formula id formula (native_core_set_reflexivity_atom_proof id formula)
       | FormulaTermInput (id, _, formula) ->
           let proof =
-            match native_core_source_proof source_proofs id with
+            match native_core_source_proof shifted_source_proofs id with
             | Some proof -> proof
             | None -> Hyp (source_hyp_index id)
           in

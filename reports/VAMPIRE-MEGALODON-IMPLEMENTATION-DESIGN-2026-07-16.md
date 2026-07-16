@@ -340,9 +340,17 @@ Implementation update, 2026-07-16:
 - Live `vampireaby` certificate validation passes the current theorem-local
   proof context into this resolver, so `local_fact` source-map entries can be
   checked against original Megalodon hypotheses and represented as `Hyp i`.
-- This is source binding infrastructure, not full original theorem
-  reconstruction yet: the final refutation-to-goal composition still has to
-  consume these resolved source proofs in the live proof-term path.
+- Branch `vampire/megalodon5` consumes this information in the first live
+  proof-term composition path.  Hash-backed global facts are passed into the
+  native core elaborator as source proofs, but local `Hyp` facts are left as
+  explicit certificate assumptions.  The importer then instantiates leading
+  Vampire variables with live Megalodon context variables, applies the local
+  `Hyp` proofs at the original-context boundary, and uses loaded `xm` to turn
+  the remaining negated-conjecture refutation into the current goal.
+- This is still partial original theorem reconstruction: it handles the simple
+  core shape `local facts -> negated conjecture -> False`, but not local
+  definitions, generated preprocessing facts, Skolemization, or general
+  Smolka-style transformation chains.
 
 Acceptance rule for Megalodon-side work:
 
@@ -377,8 +385,10 @@ The importer should resolve each certificate input by source kind:
   contradiction;
 - generated transformation: use the preprocessing proof chain.
 
-This is the main Tier 1 gap. Exported-THF source checking is useful Tier 2
-evidence, but it is not enough to claim original Megalodon reconstruction.
+This remains the main Tier 1 gap. The branch-5 live path closes the first
+small piece of it for local facts plus conjecture negation, while exported-THF
+source checking by itself remains Tier 2 evidence and is not enough to claim
+general original Megalodon reconstruction.
 
 ## Smolka-Style Transformation Plan
 

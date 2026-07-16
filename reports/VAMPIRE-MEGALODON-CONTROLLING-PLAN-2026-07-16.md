@@ -154,6 +154,12 @@ Responsibilities:
 This layer must not hide generated transformation facts as ordinary source
 axioms.
 
+Branch `vampire/megalodon5` implements the first live use of this layer inside
+`vampireaby`: global source facts can be consumed as checked `Known` proofs,
+while local hypotheses are kept as explicit source assumptions and applied only
+after Vampire variables are instantiated into the live Megalodon context.  This
+avoids shifting live `Hyp` proofs under certificate-local binders.
+
 ### Layer 2: Source-to-Clause Transformations
 
 Input:
@@ -414,6 +420,12 @@ Resolution policy:
 
 The current exported-THF formula comparison remains useful, but it is Tier 2
 evidence. It is not enough for original-context reconstruction.
+
+The current live composition covers only the small core case where local facts
+plus the negated conjecture refute to `False`; `xm` then converts `~~goal` to
+`goal`.  Full Layer 2 work still requires proof-producing Smolka-style
+transformations, local definitions, set-command generated equalities, and
+Skolemization.
 
 ### Skolemization
 

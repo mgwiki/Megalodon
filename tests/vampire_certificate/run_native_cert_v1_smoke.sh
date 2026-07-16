@@ -407,24 +407,43 @@ CERT
 EOF_LOCAL_SOURCE_FAKE_VAMPIRE
 chmod +x "$local_source_live_dir/fake_vampire"
 cat >"$local_source_live_dir/local_source_live.mg" <<'EOF_LOCAL_SOURCE_LIVE_MG'
+Definition False : prop := forall p:prop, p.
+Definition not : prop -> prop := fun A:prop => A -> False.
+Prefix ~ 700 := not.
+Definition or : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> p) -> (B -> p) -> p.
+Infix \/ 785 left := or.
+Axiom xm : forall P:prop, P \/ ~P.
 Variable p:prop.
 Theorem local_source_live:p -> p.
 assume Hp:p.
 aby Hp.
 Qed.
 EOF_LOCAL_SOURCE_LIVE_MG
-bin/megalodon \
-  -v 9 \
-  -vampireaby "$local_source_live_dir/fake_vampire" \
-  -vampireabyproof megalodon \
-  -vampireabynative \
-  -vampireabyoutdir "$local_source_live_dir/out" \
-  "$local_source_live_dir/local_source_live.mg" \
-  >"$WORK_DIR/native_cert_v1_live_local_source_context.log"
+if ! bin/megalodon \
+    -v 9 \
+    -vampireaby "$local_source_live_dir/fake_vampire" \
+    -vampireabyproof megalodon \
+    -vampireabynative \
+    -vampireabyoutdir "$local_source_live_dir/out" \
+    "$local_source_live_dir/local_source_live.mg" \
+    >"$WORK_DIR/native_cert_v1_live_local_source_context.log" \
+    2>"$WORK_DIR/native_cert_v1_live_local_source_context.err"; then
+  if ! rg -q 'depends on non-proved xm' \
+      "$WORK_DIR/native_cert_v1_live_local_source_context.log" \
+      "$WORK_DIR/native_cert_v1_live_local_source_context.err"; then
+    echo "live vampireaby source-context fixture failed before the expected xm dependency boundary" >&2
+    exit 1
+  fi
+fi
 
 if ! rg -q 'source_context known=0 local=1 unresolved=1' \
     "$WORK_DIR/native_cert_v1_live_local_source_context.log"; then
   echo "live vampireaby source-context resolver did not bind the local Hp hypothesis" >&2
+  exit 1
+fi
+if ! rg -q 'Vampire native certificate reconstructed aby proof term' \
+    "$WORK_DIR/native_cert_v1_live_local_source_context.log"; then
+  echo "live vampireaby did not compose the native certificate proof into the current Megalodon goal" >&2
   exit 1
 fi
 
