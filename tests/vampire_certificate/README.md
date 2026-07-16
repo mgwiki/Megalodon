@@ -148,16 +148,19 @@ certificate so the certificate audit can resolve `known`/`axiom` source hashes
 through the real `sigdelta` environment. The audit reports resolved knowns,
 missing knowns, mismatches, resolved definition hashes, missing definition
 hashes, and local/unhashed sources. This is the first original-context source
-resolver gate; local hypotheses and conjectures still need theorem-local
-source proof binding before they can be removed as assumptions.
+resolver gate. Standalone certificate checks can resolve hash-backed globals;
+the live `vampireaby` path also passes the current theorem-local proof context
+to the resolver, so `local_fact` entries can be checked as `Hyp i` bindings.
+Conjecture composition and complete original-goal reconstruction remain open.
 
 When native proof-term checking is also enabled, resolved hash-backed source
 inputs are passed into the elaborator as `Known hash` proofs and are not added
 as lambda-bound source assumptions. The smoke suite covers this with a generated
 Megalodon axiom whose real hash is inserted into a tiny THF source map and then
-used by `-vampirecertv1corepfcheck`. This currently handles global
-`known`/`axiom` entries; local theorem hypotheses remain to be connected by a
-separate theorem-local source context.
+used by `-vampirecertv1corepfcheck`. This currently consumes global
+`known`/`axiom` entries in standalone certificate checking. Local theorem
+hypotheses are resolved only when the certificate is checked from the live proof
+state, where Megalodon still has the original `cxpf` hypothesis list.
 
 For repeatable non-overlapping corpus slices, use:
 

@@ -632,8 +632,9 @@ Also reject the patch if it:
    unless it shares the same root cause.
 5. Start the C++ primitive builder as soon as the current frontier is stable,
    so the next macro fix does not add another local printer branch.
-6. In parallel with clausal cleanup, design the original-context source object
-   and the set-equality reflexivity rule.
+6. In parallel with clausal cleanup, continue extracting the
+   original-context source object now seeded in `src/vampire_source_context.ml`,
+   and add the set-equality reflexivity rule.
 7. Treat Skolemization as the first major Smolka-style transformation milestone
    after original source binding is in place.
 

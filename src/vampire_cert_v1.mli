@@ -203,12 +203,14 @@ val approved_native_sgdelta : unit -> (string, int * Syntax.tm) Hashtbl.t
 val elaborate_core_resolution_refutation_native :
   ?source_map:source_map_entry list ->
   ?source_proofs:(string * Syntax.pf) list ->
+  ?external_hypotheses:Syntax.tm list ->
   ?external_delta_table:(string, int * Syntax.tm) Hashtbl.t ->
   certificate ->
   core_native_proof
 val elaborate_preprocess_refutation_native :
   ?source_map:source_map_entry list ->
   ?source_proofs:(string * Syntax.pf) list ->
+  ?external_hypotheses:Syntax.tm list ->
   ?external_delta_table:(string, int * Syntax.tm) Hashtbl.t ->
   certificate ->
   core_native_proof

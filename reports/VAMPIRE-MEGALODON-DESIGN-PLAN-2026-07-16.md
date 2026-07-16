@@ -403,7 +403,10 @@ Tasks:
 - Resolve theorem, lemma, definition, hypothesis, conjecture, and set-command
   origins in the original Megalodon context.
 - Prove set-command equalities by reflexivity/definitional conversion.
-- Implement a concrete source-context API:
+- Implement and keep isolating a concrete source-context API. The current
+  implementation seed is `src/vampire_source_context.ml`; it resolves
+  hash-backed globals to `Known hash` and theorem-local `local_fact` bindings
+  to `Hyp i` when Megalodon is still inside the live proof state:
 
 ```ocaml
 type source_proof =
@@ -418,6 +421,10 @@ type source_context = source_id -> source_proof
 - Specify how local hypotheses survive export/import, how binder scopes are
   represented, how definitions are supplied to conversion, and how a refutation
   of the negated conjecture becomes a proof of the original goal.
+- Finish the composition step: after certificate checking consumes `LocalHyp`
+  and `GlobalKnown` inputs, the returned proof term still has to be plugged
+  into Megalodon's current proof goal rather than merely checked as a standalone
+  exported refutation.
 
 Acceptance:
 

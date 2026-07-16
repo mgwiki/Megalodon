@@ -587,7 +587,23 @@ let status_to_string status =
   | Unix.WSIGNALED n -> Printf.sprintf "signal %d" n
   | Unix.WSTOPPED n -> Printf.sprintf "stopped %d" n
 
-let check_vampire_aby_native_certificate content output proof_file =
+let vampire_source_context_delta () =
+  let delta = Hashtbl.copy sigdelta in
+  Hashtbl.iter
+    (fun h v ->
+       if not (Hashtbl.mem delta h) then Hashtbl.add delta h v)
+    sigdelta_opaque;
+  delta
+
+let vampire_aby_source_context cxtm cxpf =
+  {
+    Vampire_source_context.proof_delta = vampire_source_context_delta ();
+    symbol_table = sigtmof;
+    term_context = List.map (fun (_, (tp, _)) -> tp) cxtm;
+    local_hypotheses = cxpf;
+  }
+
+let check_vampire_aby_native_certificate ?(cxtm=[]) ?(cxpf=[]) content output proof_file =
   if !vampireabyproof = "megalodon" then
     match native_certificate_payload output with
     | None ->
@@ -607,16 +623,28 @@ let check_vampire_aby_native_certificate content output proof_file =
               source_map
               cert
           in
+          let source_bindings =
+            Vampire_cert_v1.native_certificate_source_bindings ~source_map cert
+          in
+          let source_audit =
+            Vampire_source_context.resolve
+              ~strict:(!vampireabynativestrict && cxpf <> [])
+              (vampire_aby_source_context cxtm cxpf)
+              source_bindings
+          in
           if !verbosity > 8 then
             begin
               Printf.printf
-                "Vampire native certificate checked %d step%s and %d source%s at line %d char %d.\n"
+                "Vampire native certificate checked %d step%s and %d source%s at line %d char %d; source_context known=%d local=%d unresolved=%d.\n"
                 (List.length checked)
                 (if List.length checked = 1 then "" else "s")
                 source_count
                 (if source_count = 1 then "" else "s")
                 !lineno
-                !charno;
+                !charno
+                source_audit.Vampire_source_context.known_checked
+                source_audit.Vampire_source_context.local_checked
+                source_audit.Vampire_source_context.unresolved;
               flush stdout
             end
         with Vampire_cert_v1.Error msg ->
@@ -627,7 +655,7 @@ let check_vampire_aby_native_certificate content output proof_file =
                   proof_file
                   msg))
 
-let run_vampire_aby_certificate content =
+let run_vampire_aby_certificate ?(cxtm=[]) ?(cxpf=[]) content =
   match !vampireaby with
   | None -> ()
   | Some(vampire) ->
@@ -657,7 +685,7 @@ let run_vampire_aby_certificate content =
          || (!vampireabyproof = "megalodon" && vampire_output_has_native_certificate out))
         && vampire_output_has_proof_payload out then
        begin
-         check_vampire_aby_native_certificate content out proof_file;
+         check_vampire_aby_native_certificate ~cxtm ~cxpf content out proof_file;
          if !verbosity > 2 then
            Printf.printf "Vampire certified aby at line %d char %d (%s)\n" !lineno !charno digest;
          flush stdout
@@ -5729,7 +5757,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                   let conjn = stable_aby_obligation_name () in
                   let content = th0_aby_problem_content claimtm cxtm cxpf xl conjn in
                   try
-                    run_vampire_aby_certificate content
+                    run_vampire_aby_certificate ~cxtm ~cxpf content
                   with
                   | Failure(msg) ->
                      begin
@@ -7024,87 +7052,39 @@ let audit_vampire_cert_v1_source_context cert source_map =
   let bindings =
     Vampire_cert_v1.native_certificate_source_bindings ~source_map cert
   in
-  let total = ref 0 in
-  let known_checked = ref 0 in
-  let known_missing = ref 0 in
-  let known_mismatch = ref 0 in
-  let definition_resolved = ref 0 in
-  let definition_missing = ref 0 in
-  let local_or_unhashed = ref 0 in
-  let source_proofs = ref [] in
-  let known_source_kind kind =
-    kind = "known" || kind = "axiom"
+  let context =
+    {
+      Vampire_source_context.proof_delta = vampire_source_context_delta ();
+      symbol_table = sigtmof;
+      term_context = [];
+      local_hypotheses = [];
+    }
   in
-  let definition_source_kind kind =
-    kind = "def" || kind = "definition" || kind = "local_definition"
+  let audit = Vampire_source_context.resolve context bindings in
+  let local_or_unhashed =
+    audit.Vampire_source_context.local_checked
+    + audit.Vampire_source_context.local_missing
+    + audit.Vampire_source_context.local_mismatch
+    + audit.Vampire_source_context.generated_checked
+    + audit.Vampire_source_context.unresolved
   in
-  let known_hash_proves hash proposition =
-    try
-      match check_propofpf sigdelta sigtmof [] [] (Known hash) proposition [] with
-      | Some _ -> true
-      | None -> false
-    with _ -> false
-  in
-  let debug_source_context_mismatch hash proposition =
-    if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
-      let known_prop =
-        try
-          let (_, prop) = Hashtbl.find sigdelta hash in
-          tm_to_str prop
-        with Not_found -> "<missing>"
-      in
-      prerr_endline ("vampire certificate source-context mismatch for " ^ hash);
-      prerr_endline ("known proposition: " ^ known_prop);
-      prerr_endline ("certificate proposition: " ^ tm_to_str proposition)
-  in
-  List.iter
-    (fun binding ->
-       incr total;
-       let hash = binding.Vampire_cert_v1.core_native_source_hash in
-       let kind = binding.Vampire_cert_v1.core_native_source_map_kind in
-       if hash = "" then
-         incr local_or_unhashed
-       else if known_source_kind kind then
-         begin
-           if not (Hashtbl.mem sigdelta hash) then
-             incr known_missing
-           else if known_hash_proves hash binding.Vampire_cert_v1.core_native_source_proposition then
-             begin
-               incr known_checked;
-               source_proofs :=
-                 (binding.Vampire_cert_v1.core_native_source_step, Known hash)
-                 :: !source_proofs
-             end
-           else begin
-             debug_source_context_mismatch hash binding.Vampire_cert_v1.core_native_source_proposition;
-             incr known_mismatch
-           end
-         end
-       else if definition_source_kind kind then
-         begin
-           if Hashtbl.mem sigdelta hash || Hashtbl.mem sigdelta_opaque hash then
-             incr definition_resolved
-           else
-             incr definition_missing
-         end
-       else
-         incr local_or_unhashed)
-    bindings;
   Printf.printf
     "Vampire certificate v1 source context audited total=%d known_checked=%d known_missing=%d known_mismatch=%d definition_resolved=%d definition_missing=%d local_or_unhashed=%d.\n"
-    !total
-    !known_checked
-    !known_missing
-    !known_mismatch
-    !definition_resolved
-    !definition_missing
-    !local_or_unhashed;
+    audit.Vampire_source_context.total
+    audit.Vampire_source_context.known_checked
+    audit.Vampire_source_context.known_missing
+    audit.Vampire_source_context.known_mismatch
+    audit.Vampire_source_context.definition_resolved
+    audit.Vampire_source_context.definition_missing
+    local_or_unhashed;
   if !vampirecertv1sourcecontextstrict
-     && (!known_missing > 0 || !known_mismatch > 0 || !definition_missing > 0) then
+     && (audit.Vampire_source_context.known_missing > 0
+         || audit.Vampire_source_context.known_mismatch > 0
+         || audit.Vampire_source_context.definition_missing > 0) then
     raise
       (Vampire_cert_v1.Error
          "strict source-context audit failed: at least one hash-backed source did not resolve in the loaded Megalodon context");
-  List.rev !source_proofs
+  audit.Vampire_source_context.source_proofs
 
 let check_vampire_cert_v1_file fn =
   try

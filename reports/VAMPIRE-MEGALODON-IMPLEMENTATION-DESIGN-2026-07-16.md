@@ -331,6 +331,19 @@ Near-term Megalodon tasks:
 8. Add Skolemization as an explicit preprocessing proof rule with generated
    symbol, dependency vector, sorts, and the classical/choice principle used.
 
+Implementation update, 2026-07-16:
+
+- `src/vampire_source_context.ml` now contains the concrete source-context
+  resolver seed.
+- Standalone certificate checks use it to consume hash-backed global source
+  facts as `Known hash` proofs.
+- Live `vampireaby` certificate validation passes the current theorem-local
+  proof context into this resolver, so `local_fact` source-map entries can be
+  checked against original Megalodon hypotheses and represented as `Hyp i`.
+- This is source binding infrastructure, not full original theorem
+  reconstruction yet: the final refutation-to-goal composition still has to
+  consume these resolved source proofs in the live proof-term path.
+
 Acceptance rule for Megalodon-side work:
 
 - adding a new OCaml checker case is acceptable only if the certificate already

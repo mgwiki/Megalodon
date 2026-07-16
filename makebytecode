@@ -99,6 +99,16 @@ if [ $? -gt 0 ]
 then
     exit 1
 fi
+$OCAMLC -I bin -o bin/vampire_source_context.cmi -c src/vampire_source_context.mli
+if [ $? -gt 0 ]
+then
+    exit 1
+fi
+$OCAMLC -I bin -o bin/vampire_source_context.cmo -c src/vampire_source_context.ml
+if [ $? -gt 0 ]
+then
+    exit 1
+fi
 $OCAMLC -I bin -o bin/parser.cmi -c src/parser.mli
 if [ $? -gt 0 ]
 then
@@ -139,7 +149,7 @@ if [ $? -gt 0 ]
 then
     exit 1
 fi
-$OCAMLC -custom -o bin/megalodon unix.cma -I bin btc.cma bin/ser.cmo bin/hashaux.cmo bin/hash.cmo bin/hashold.cmo bin/mathdata.cmo bin/mathdatapfg.cmo bin/syntax.cmo bin/vampire_cert_v1.cmo bin/parser.cmo bin/lexer.cmo bin/megaauto.cmo bin/interpret.cmo bin/megalodon.cmo
+$OCAMLC -custom -o bin/megalodon unix.cma -I bin btc.cma bin/ser.cmo bin/hashaux.cmo bin/hash.cmo bin/hashold.cmo bin/mathdata.cmo bin/mathdatapfg.cmo bin/syntax.cmo bin/vampire_cert_v1.cmo bin/vampire_source_context.cmo bin/parser.cmo bin/lexer.cmo bin/megaauto.cmo bin/interpret.cmo bin/megalodon.cmo
 if [ $? -gt 0 ]
 then
     exit 1

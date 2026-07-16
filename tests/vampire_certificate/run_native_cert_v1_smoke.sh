@@ -384,6 +384,50 @@ if ! rg -q 'Vampire certificate v1 native core proof term checked 4 steps' \
   exit 1
 fi
 
+local_source_live_dir="$WORK_DIR/local_source_live"
+mkdir -p "$local_source_live_dir"
+cat >"$local_source_live_dir/fake_vampire" <<'EOF_LOCAL_SOURCE_FAKE_VAMPIRE'
+#!/usr/bin/env bash
+problem="${@: -1}"
+conj=$(sed -n 's/^% megalodon_source_map (conjecture "\([^"]*\)" .*/\1/p' "$problem" | head -1)
+cat <<CERT
+% SZS status Theorem
+% SZS output start Proof
+megalodon_certificate_native_sexpr_start.
+(certificate vampire-megalodon 1
+  (problem "local-source-live")
+  (symbol_declaration "Variable p:prop.")
+  (input "u0" (source axiom "c_Hp") (clause (pos (TMH "p"))))
+  (input "u1" (source negated_conjecture "$conj") (clause (neg (TMH "p"))))
+  (resolve "u2" (parents "u0" "u1") (pivot 0 0) (result (clause)))
+)
+megalodon_certificate_native_sexpr_end.
+% SZS output end Proof
+CERT
+EOF_LOCAL_SOURCE_FAKE_VAMPIRE
+chmod +x "$local_source_live_dir/fake_vampire"
+cat >"$local_source_live_dir/local_source_live.mg" <<'EOF_LOCAL_SOURCE_LIVE_MG'
+Variable p:prop.
+Theorem local_source_live:p -> p.
+assume Hp:p.
+aby Hp.
+Qed.
+EOF_LOCAL_SOURCE_LIVE_MG
+bin/megalodon \
+  -v 9 \
+  -vampireaby "$local_source_live_dir/fake_vampire" \
+  -vampireabyproof megalodon \
+  -vampireabynative \
+  -vampireabyoutdir "$local_source_live_dir/out" \
+  "$local_source_live_dir/local_source_live.mg" \
+  >"$WORK_DIR/native_cert_v1_live_local_source_context.log"
+
+if ! rg -q 'source_context known=0 local=1 unresolved=1' \
+    "$WORK_DIR/native_cert_v1_live_local_source_context.log"; then
+  echo "live vampireaby source-context resolver did not bind the local Hp hypothesis" >&2
+  exit 1
+fi
+
 bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_synthetic_valid.th0.p \

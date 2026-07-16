@@ -9383,6 +9383,7 @@ let native_certificate_source_bindings ?(source_map=[]) cert =
 let elaborate_core_resolution_refutation_native
     ?(source_map=[])
     ?(source_proofs=[])
+    ?(external_hypotheses=[])
     ?(external_delta_table=Hashtbl.create 0)
     cert =
   let core_steps = validate_certificate_core_fragment cert in
@@ -9413,7 +9414,7 @@ let elaborate_core_resolution_refutation_native
     let rec find index = function
       | [] -> None
     | (input_id, _, _) :: rest ->
-          if input_id = id then Some (source_count - index - 1)
+          if input_id = id then Some (List.length external_hypotheses + source_count - index - 1)
           else find (index + 1) rest
     in
     match find 0 !source_inputs with
@@ -9422,9 +9423,10 @@ let elaborate_core_resolution_refutation_native
   in
   let variable_types = List.rev (List.map snd variables) in
   let closed_source_context =
-    !source_inputs
+    external_hypotheses @
+    (!source_inputs
     |> List.map (fun (_, prop, _) -> prop)
-    |> List.rev
+    |> List.rev)
   in
   let proof_delta, definition_delta = native_core_certificate_sgdelta cert symbol_table in
   let proof_delta = native_core_merge_external_delta proof_delta external_delta_table in
@@ -9615,6 +9617,7 @@ let native_preprocess_step_formula_prop cert variables id formula =
 let elaborate_preprocess_refutation_native
     ?(source_map=[])
     ?(source_proofs=[])
+    ?(external_hypotheses=[])
     ?(external_delta_table=Hashtbl.create 0)
     cert =
   ignore (check_certificate_strict cert);
@@ -9656,7 +9659,7 @@ let elaborate_preprocess_refutation_native
     let rec find index = function
       | [] -> None
       | (input_id, _, _) :: rest ->
-          if input_id = id then Some (source_count - index - 1)
+          if input_id = id then Some (List.length external_hypotheses + source_count - index - 1)
           else find (index + 1) rest
     in
     match find 0 !source_inputs with
@@ -9665,9 +9668,10 @@ let elaborate_preprocess_refutation_native
   in
   let variable_types = List.rev (List.map snd variables) in
   let closed_source_context =
-    !source_inputs
+    external_hypotheses @
+    (!source_inputs
     |> List.map (fun (_, prop, _) -> prop)
-    |> List.rev
+    |> List.rev)
   in
   let proof_delta, definition_delta = native_core_certificate_sgdelta cert symbol_table in
   let proof_delta = native_core_merge_external_delta proof_delta external_delta_table in
