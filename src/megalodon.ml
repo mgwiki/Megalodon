@@ -663,6 +663,20 @@ let vampire_remaining_source_bindings_for_proofs source_proofs source_bindings =
                binding.Vampire_cert_v1.core_native_source_map_kind))
     source_bindings
 
+let vampire_debug_source_binding prefix binding =
+  if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+    begin
+      Printf.printf
+        "%s step=%s cert_kind=%s map_kind=%s source=%s proposition=%s\n"
+        prefix
+        binding.Vampire_cert_v1.core_native_source_step
+        binding.Vampire_cert_v1.core_native_certificate_source_kind
+        binding.Vampire_cert_v1.core_native_source_map_kind
+        binding.Vampire_cert_v1.core_native_source_name
+        (tm_to_str binding.Vampire_cert_v1.core_native_source_proposition);
+      flush stdout
+    end
+
 let vampire_core_source_proofs source_audit =
   List.filter
     (fun (step, _) ->
@@ -765,9 +779,16 @@ let vampire_reconstruct_current_goal_from_refutation claimtm cxtm cxpf proof pro
   in
   try_proof 8 proof proposition
 
-let vampire_instantiated_refutation_candidates cxtm proof proposition =
-  let rec collect depth proof proposition =
-    let current = [(proof,proposition)] in
+let vampire_instantiate_source_binding binding tm =
+  {
+    binding with
+    Vampire_cert_v1.core_native_source_proposition =
+      tmsubst binding.Vampire_cert_v1.core_native_source_proposition 0 tm;
+  }
+
+let vampire_instantiated_refutation_candidates cxtm proof proposition source_bindings =
+  let rec collect depth proof proposition source_bindings =
+    let current = [(proof,proposition,source_bindings)] in
     if depth <= 0 then current
     else
       match proposition with
@@ -779,11 +800,14 @@ let vampire_instantiated_refutation_candidates cxtm proof proposition =
                   collect
                     (depth - 1)
                     (PTmAp(proof,tm))
-                    (tmsubst body 0 tm))
+                    (tmsubst body 0 tm)
+                    (List.map
+                       (fun binding -> vampire_instantiate_source_binding binding tm)
+                       source_bindings))
                (vampire_context_terms_of_type cxtm tp))
       | _ -> current
   in
-  collect 8 proof proposition
+  collect 8 proof proposition source_bindings
 
 let vampire_apply_local_source_bindings source_audit proof proposition bindings =
   let rec apply proof proposition remaining =
@@ -817,16 +841,22 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
       source_proofs_for_core
       native_core.Vampire_cert_v1.core_native_source_bindings
   in
+  List.iter
+    (vampire_debug_source_binding "Vampire native core source")
+    native_core.Vampire_cert_v1.core_native_source_bindings;
+  List.iter
+    (vampire_debug_source_binding "Vampire native remaining source")
+    remaining_bindings;
   let rec try_candidates = function
     | [] -> None
-    | (proof,proposition) :: rest ->
+    | (proof,proposition,candidate_remaining_bindings) :: rest ->
         begin
           match
             vampire_apply_local_source_bindings
               source_audit
               proof
               proposition
-              remaining_bindings
+              candidate_remaining_bindings
           with
           | Some(proof,proposition,[binding])
               when binding.Vampire_cert_v1.core_native_certificate_source_kind = "negated_conjecture" ->
@@ -867,7 +897,8 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
     (vampire_instantiated_refutation_candidates
        cxtm
        native_core.Vampire_cert_v1.core_native_proof
-       native_core.Vampire_cert_v1.core_native_proposition)
+       native_core.Vampire_cert_v1.core_native_proposition
+       remaining_bindings)
 
 let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) content output proof_file =
   if !vampireabyproof = "megalodon" then

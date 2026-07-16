@@ -178,17 +178,38 @@ original named claim.
 The resolver now also carries theorem-local definitions from the live proof
 context and reports `local_definition_matched` when a `local_definition`
 source-map entry corresponds to a proof-local `set` binding. These bindings are
-not yet proof-producing, so strict source-context mode fails closed instead of
-counting them as completed reconstruction.
+not yet proof-producing merely because they are present in the source map.
+
+The native live replay path now separates source-map presence from actual
+refutation dependency. `elaborate_core_resolution_refutation_native` computes
+the dependency closure of the empty-clause root and records only source inputs
+that are on that proof path. This matters for `set` commands: Vampire may see a
+local definition such as `r = p` in the exported THF problem even when the
+refutation of the current goal uses only `Hp : p` and the negated conjecture.
+In that case strict live replay is allowed to proceed, while still reporting
+`local_definition_matched=1` in the source-context audit.
+
+If a matched local definition is actually used by the empty-clause dependency
+closure, it remains a real proof obligation. The current implementation does
+not count that case as solved by name matching alone; it must be discharged by
+definitional conversion/reflexivity or by a later source/preprocessing proof
+term.
 
 Local hypothesis matching now projects certificate/source de Bruijn indices
 through proof-local definitions. This lets hypotheses after a `set` command
 resolve against the Megalodon proof context, where definition entries are not
 ordinary proof variables.
 
-Local and conjecture-backed sources are deliberately not discharged by this
-mechanism yet. They need theorem-local source-context bindings rather than a
-global `Known` hash.
+The final live `aby` composition also instantiates remaining source-obligation
+propositions together with each candidate refutation proof. Without this, a
+certificate whose native proof variables are instantiated into the live
+Megalodon context can compare the negated conjecture against the wrong
+de Bruijn view of the goal.
+
+Conjecture-backed sources are still not discharged by global source-context
+lookup. They are handled at the final refutation-to-goal composition boundary,
+where the remaining negated conjecture must convert to the current `aby` goal's
+negation.
 
 ## Accepted Audit Corrections
 

@@ -234,7 +234,6 @@ let resolve ?(strict=false) context bindings =
          || audit.known_mismatch > 0
          || audit.local_missing > 0
          || audit.local_mismatch > 0
-         || audit.local_definition_matched > 0
          || audit.definition_missing > 0) then
     raise
       (Vampire_cert_v1.Error

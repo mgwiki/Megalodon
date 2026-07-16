@@ -30,6 +30,15 @@ missing clausal proof-term templates. This document therefore treats
 source/preprocessing proof production as the next qualifying gate, with
 Vampire-side clausal primitive lowering proceeding in parallel.
 
+Third post-audit note, 2026-07-16: live original-context replay now has a
+stricter source-obligation invariant. Source-map entries are audited, but only
+inputs in the dependency closure of an empty-clause root become proof
+obligations for the native clausal core. This avoids treating unused exported
+local definitions from Megalodon `set` commands as premises of the proof. The
+remaining source obligations are instantiated together with each candidate
+native refutation proof before local hypotheses and the negated conjecture are
+composed back into the current Megalodon goal.
+
 The purpose is to stop ad-hoc growth. A new change is aligned with this plan
 only if it does one of the following:
 
@@ -110,8 +119,12 @@ Current limitations:
 - `formula_input` and `formula_term_input` are the immediate real-case
   blockers and must be linked to original Megalodon facts or generated
   preprocessing proofs before downstream clausal reconstruction can count.
-- Set-command generated equalities still need explicit original-context
-  reflexivity handling.
+- Generated set-command equalities that are exported as
+  `set_reflexivity`/`local_set_reflexivity` now have native reflexivity proofs.
+  Matched theorem-local definitions from `set` commands are audited and ignored
+  when unused by the empty-clause proof dependency closure, but still need
+  explicit definitional proof production when a refutation actually depends on
+  them.
 - AVATAR/split proof composition remains transitional.
 
 The current work should therefore be treated as a regression oracle and
@@ -131,6 +144,8 @@ Responsibilities:
 - map exported TPTP names back to original Megalodon theorem, lemma,
   hypothesis, definition, or conjecture origins;
 - prove `set`-generated equalities by reflexivity or definitional conversion;
+- distinguish exported but unused source facts from source facts on the actual
+  empty-clause dependency path;
 - handle conjecture negation;
 - prove rectification, FOOL, ENNF, CNF, definition introduction, and
   Skolemization transformations;
@@ -145,6 +160,9 @@ Immediate scope:
   used by the THF export.
 - set-command equalities: do not look for a source claim; prove them by
   reflexivity or definitional conversion in the original Megalodon context.
+- local definitions: source-map matching is only an audit result. A matched
+  local definition becomes a proof obligation only if the clausal proof
+  dependency closure uses its input step.
 - Skolemization: introduce a transformation certificate carrying the source
   formula, result formula, introduced symbols, replaced variables, and the
   freshness/dependency data needed for a Megalodon proof term.

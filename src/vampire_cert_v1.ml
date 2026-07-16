@@ -1021,6 +1021,101 @@ let step_rule_name = function
   | Superposition _ -> "superposition"
   | Contradiction _ -> "contradiction"
 
+let step_parent_ids = function
+  | Input _ | FormulaInput _ | FormulaTermInput _
+  | PredicateDefinition _ | DefinitionInput _
+  | AvatarComponent _ | FoolExhaustiveness _
+  | FoolDistinctness _ | InequalityNameIntro _ -> []
+  | FormulaTermCopy (_, parent_id, _)
+  | RectifyFormula (_, parent_id, _, _)
+  | FoolFormula (_, parent_id, _)
+  | EnnfFormula (_, parent_id, _, _, _)
+  | SkolemFormula (_, parent_id, _, _, _, _)
+  | SkolemFormulaComputed (_, parent_id, _)
+  | CnfFormulaClause (_, parent_id, _, _, _)
+  | FormulaCopy (_, parent_id, _)
+  | FoolBool (_, parent_id, _)
+  | CnfLiteral (_, parent_id, _)
+  | DefinitionRewriteChain (_, parent_id, _, _)
+  | SplitDependency (_, parent_id, _, _)
+  | InequalitySplit (_, parent_id, _, _)
+  | Substitute (_, parent_id, _, _)
+  | Condensation (_, parent_id, _, _)
+  | UnitResultingResolution (_, parent_id, _, _)
+  | Factor (_, parent_id, _, _, _)
+  | EqualityResolution (_, parent_id, _, _)
+  | EqualityResolutionConstraints (_, parent_id, _, _, _, _)
+  | EqualityFactoring (_, parent_id, _, _, _, _, _)
+  | EqualityFactoringConstraints (_, parent_id, _, _, _, _, _, _)
+  | TruthConflict (_, parent_id, _, _)
+  | EqualitySymmetry (_, parent_id, _, _)
+  | BoolSimplify (_, parent_id, _, _, _, _, _)
+  | Contradiction (_, parent_id) -> [parent_id]
+  | PredicateDefinitionFold (_, source_id, definition_id, _) ->
+      [source_id; definition_id]
+  | PredicateDefinitionFoldChain (_, source_id, definition_ids, _) ->
+      source_id :: definition_ids
+  | AvatarDefinition _ -> []
+  | AvatarSplit (_, parent_ids, _)
+  | AvatarContradiction (_, parent_ids, _) -> parent_ids
+  | AvatarRefutation (_, parent_ids, _, _, _) -> parent_ids
+  | Resolve (_, left_id, right_id, _, _, _)
+  | SubsumptionResolution (_, left_id, right_id, _, _, _, _)
+  | Paramodulate (_, left_id, right_id, _, _, _, _, _, _) ->
+      [left_id; right_id]
+  | Superposition (_, left_id, right_id, _, _, _, _, _, _, _, _) ->
+      [left_id; right_id]
+  | FoolAtomLift _ -> []
+
+let step_empty_clause_root = function
+  | Input (_, _, clause)
+  | DefinitionInput (_, clause)
+  | AvatarComponent (_, clause)
+  | AvatarDefinition (_, _, _, clause)
+  | SplitDependency (_, _, _, clause)
+  | AvatarSplit (_, _, clause)
+  | AvatarContradiction (_, _, clause)
+  | AvatarRefutation (_, _, _, _, clause)
+  | FoolExhaustiveness (_, clause)
+  | FoolDistinctness (_, clause)
+  | InequalityNameIntro (_, clause)
+  | InequalitySplit (_, _, _, clause)
+  | Substitute (_, _, _, clause)
+  | Condensation (_, _, _, clause)
+  | UnitResultingResolution (_, _, _, clause)
+  | Resolve (_, _, _, _, _, clause)
+  | SubsumptionResolution (_, _, _, _, _, _, clause)
+  | Factor (_, _, _, _, clause)
+  | EqualityResolution (_, _, _, clause)
+  | EqualityResolutionConstraints (_, _, _, _, _, clause)
+  | EqualityFactoring (_, _, _, _, _, _, clause)
+  | EqualityFactoringConstraints (_, _, _, _, _, _, _, clause)
+  | TruthConflict (_, _, _, clause)
+  | EqualitySymmetry (_, _, _, clause)
+  | BoolSimplify (_, _, _, _, _, _, clause)
+  | Paramodulate (_, _, _, _, _, _, _, _, clause)
+  | Superposition (_, _, _, _, _, _, _, _, _, _, clause) -> clause = []
+  | Contradiction _ -> true
+  | _ -> false
+
+let proof_dependency_closure steps =
+  let by_id = Hashtbl.create 101 in
+  List.iter (fun step -> Hashtbl.replace by_id (step_id step) step) steps;
+  let used = Hashtbl.create 101 in
+  let rec mark id =
+    if not (Hashtbl.mem used id) then begin
+      Hashtbl.replace used id true;
+      match Hashtbl.find_opt by_id id with
+      | Some step -> List.iter mark (step_parent_ids step)
+      | None -> ()
+    end
+  in
+  List.iter
+    (fun step ->
+       if step_empty_clause_root step then mark (step_id step))
+    steps;
+  used
+
 let check_duplicate_ids steps =
   let seen = Hashtbl.create 17 in
   List.iter
@@ -9403,6 +9498,8 @@ let elaborate_core_resolution_refutation_native
       (native_core_type_raw_equalities_step cert variables symbol_table)
       cert.steps
   in
+  let used_steps = proof_dependency_closure typed_steps in
+  let step_is_used id = Hashtbl.mem used_steps id in
   let source_inputs = ref [] in
   let source_bindings = ref [] in
   List.iter
@@ -9410,8 +9507,10 @@ let elaborate_core_resolution_refutation_native
       | Input (id, source, clause) ->
           let proposition = native_core_step_clause_prop cert variables id clause in
           let binding = native_core_source_binding source_map id source proposition in
-          source_bindings := !source_bindings @ [binding];
-          if not (native_core_source_is_set_reflexivity source_map source)
+          if step_is_used id then
+            source_bindings := !source_bindings @ [binding];
+          if step_is_used id
+             && not (native_core_source_is_set_reflexivity source_map source)
              && native_core_source_proof source_proofs id = None then
             source_inputs :=
               !source_inputs @ [(id, proposition, binding)]
@@ -9490,20 +9589,23 @@ let elaborate_core_resolution_refutation_native
     (function
       | Input (id, source, clause)
           when native_core_source_is_set_reflexivity source_map source ->
-          let proof =
-            match native_core_source_proof shifted_source_proofs id with
-            | Some proof -> proof
-            | None -> native_core_set_reflexivity_clause_proof id clause
-          in
-          store id clause proof
+          if step_is_used id then
+            let proof =
+              match native_core_source_proof shifted_source_proofs id with
+              | Some proof -> proof
+              | None -> native_core_set_reflexivity_clause_proof id clause
+            in
+            store id clause proof
       | Input (id, _, clause) ->
-          let _ = native_core_clause_prop id clause in
-          let proof =
-            match native_core_source_proof shifted_source_proofs id with
-            | Some proof -> proof
-            | None -> Hyp (source_hyp_index id)
-          in
-          store id clause proof
+          if step_is_used id then begin
+            let _ = native_core_clause_prop id clause in
+            let proof =
+              match native_core_source_proof shifted_source_proofs id with
+              | Some proof -> proof
+              | None -> Hyp (source_hyp_index id)
+            in
+            store id clause proof
+          end
       | Substitute (id, parent_id, [], result) ->
           let parent_clause, parent_proof = lookup parent_id in
           let proof =

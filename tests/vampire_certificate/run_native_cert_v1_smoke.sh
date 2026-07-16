@@ -503,22 +503,24 @@ if ! rg -q 'Everything looks good' \
   echo "live vampireaby local-definition fixture did not close via non-strict fallback" >&2
   exit 1
 fi
-if bin/megalodon \
-    -vampireaby "$local_definition_live_dir/fake_vampire" \
-    -vampireabyproof megalodon \
-    -vampireabynative \
-    -vampireabynativestrict \
-    -vampireabyoutdir "$local_definition_live_dir/strict_out" \
-    "$local_definition_live_dir/local_definition_live.mg" \
-    >"$WORK_DIR/native_cert_v1_live_local_definition_strict_bad.out" \
-    2>"$WORK_DIR/native_cert_v1_live_local_definition_strict_bad.err"; then
-  echo "strict live vampireaby accepted a matched local definition without a checked definition proof" >&2
+bin/megalodon \
+  -v 9 \
+  -vampireaby "$local_definition_live_dir/fake_vampire" \
+  -vampireabyproof megalodon \
+  -vampireabynative \
+  -vampireabynativestrict \
+  -vampireabyoutdir "$local_definition_live_dir/strict_out" \
+  "$local_definition_live_dir/local_definition_live.mg" \
+  >"$WORK_DIR/native_cert_v1_live_local_definition_strict.log" \
+  2>"$WORK_DIR/native_cert_v1_live_local_definition_strict.err"
+if ! rg -q 'source_context known=0 local=1 local_definition=1 unresolved=1' \
+    "$WORK_DIR/native_cert_v1_live_local_definition_strict.log"; then
+  echo "strict live vampireaby did not preserve the local-definition source-context audit" >&2
   exit 1
 fi
-if ! rg -q 'definition source did not resolve to a checked proof|did not resolve to a checked proof' \
-    "$WORK_DIR/native_cert_v1_live_local_definition_strict_bad.out" \
-    "$WORK_DIR/native_cert_v1_live_local_definition_strict_bad.err"; then
-  echo "strict live vampireaby local-definition failure did not explain the proof-producing gap" >&2
+if ! rg -q 'Everything looks good' \
+    "$WORK_DIR/native_cert_v1_live_local_definition_strict.log"; then
+  echo "strict live vampireaby did not close when the matched local definition was unused by the refutation" >&2
   exit 1
 fi
 
