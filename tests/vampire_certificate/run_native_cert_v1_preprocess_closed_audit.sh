@@ -31,6 +31,7 @@ formula_term_copy
 formula_copy
 rectify_formula
 fool_formula
+fool_atom_lift
 fool_bool
 fool_exhaustiveness
 truth_conflict
@@ -53,6 +54,7 @@ preprocess_rules=$(
   cat <<'RULES'
 rectify_formula
 fool_formula
+fool_atom_lift
 fool_bool
 fool_exhaustiveness
 truth_conflict
