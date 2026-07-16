@@ -1763,6 +1763,33 @@ if ! rg -q 'superposition rewritten_target does not match from/to rewrite' \
 fi
 
 bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_rewrite_kernel_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_rewrite_kernel_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_rewrite_kernel_valid.log"
+
+if ! rg -q 'Vampire certificate v1 strict checked 6 steps' \
+    "$WORK_DIR/native_cert_v1_rewrite_kernel_valid.log"; then
+  echo "strict native certificate v1 checker did not accept valid rewrite kernel metadata" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_rewrite_kernel_rewritten_target_bad.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_rewrite_kernel_rewritten_target_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_rewrite_kernel_rewritten_target_bad.err"; then
+  echo "strict native certificate v1 checker accepted rewrite metadata with a wrong rewritten target" >&2
+  exit 1
+fi
+
+if ! rg -q 'rewrite rewritten_target does not match from/to rewrite' \
+    "$WORK_DIR/native_cert_v1_rewrite_kernel_rewritten_target_bad.err"; then
+  echo "strict native certificate v1 rewrite metadata failure did not explain the wrong rewritten target" >&2
+  exit 1
+fi
+
+bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_bool_simplify_valid.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_bool_simplify_valid.log"
 

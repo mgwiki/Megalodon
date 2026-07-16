@@ -3854,11 +3854,10 @@ let validate_kernel_v1_metadata_contracts cert =
     | PredicateDefinition (_, _, formula)
     | PredicateDefinitionFold (_, _, _, formula)
     | PredicateDefinitionFoldChain (_, _, _, formula) -> Some formula
-    | FormulaInput (_, _, Pos formula)
-    | FormulaCopy (_, _, Pos formula)
-    | FoolBool (_, _, Pos formula) -> Some formula
+    | FormulaInput (_, _, literal)
+    | FormulaCopy (_, _, literal)
+    | FoolBool (_, _, literal) -> Some (formula_tm_of_literal literal)
     | Input _
-    | FormulaInput (_, _, Neg _)
     | FoolAtomLift _
     | SkolemFormulaComputed (_, _, _)
     | CnfFormulaClause _
@@ -3890,8 +3889,6 @@ let validate_kernel_v1_metadata_contracts cert =
     | BoolSimplify _
     | Paramodulate _
     | Superposition _
-    | FormulaCopy (_, _, Neg _)
-    | FoolBool (_, _, Neg _)
     | Contradiction _ -> None
   in
   let require_formula_parent id parent_id =
@@ -4891,6 +4888,183 @@ let validate_kernel_v1_metadata_contracts cert =
                  error
                    (id ^ ": strict certificate v1 kernel_v1 superposition metadata has no matching certificate step")
              end
+             end
+         | "rewrite" ->
+             require_rule_fields id fields kernel_rule
+               ["rule_lhs";
+                "redex";
+                "parent_count";
+                "result_clause";
+                "result_literal_count"];
+             begin match Hashtbl.find_opt step_by_id id with
+             | Some step ->
+                 begin match step_clause_opt step with
+                 | Some result ->
+                     require_field_clause id fields "result_clause" result;
+                     begin match field_value "conclusion_clause" fields with
+                     | Some _ -> require_field_clause id fields "conclusion_clause" result
+                     | None -> ()
+                     end;
+                     require_field_int id fields "result_literal_count" (List.length result)
+                 | None ->
+                     error
+                       (id ^ ": strict certificate v1 kernel_v1 rewrite metadata must annotate a clause-bearing step")
+                 end
+             | None ->
+                 error
+                   (id ^ ": strict certificate v1 kernel_v1 rewrite metadata has no matching certificate step")
+             end;
+             begin match field_value "target_substituted" fields, field_value "rewritten_target" fields with
+             | Some _, Some _ ->
+                 require_rule_fields id fields kernel_rule
+                   ["equality_substituted";
+                    "equality_parent_index";
+                    "equality_literal_index";
+                    "from";
+                    "to";
+                    "target_parent_index";
+                    "target_literal_index";
+                    "rewrite_position";
+                    "parent_0_unit";
+                    "parent_1_unit"];
+                 let parent_count = field_int id fields "parent_count" in
+                 if parent_count < 2 then
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 rewrite parent_count must be at least 2");
+                 let parent_unit index =
+                   field_required id fields ("parent_" ^ string_of_int index ^ "_unit")
+                 in
+                 let parent_substitution index =
+                   parse_field id fields
+                     ("parent_" ^ string_of_int index ^ "_substitution")
+                     parse_substitution
+                 in
+                 let target_parent_index = field_int id fields "target_parent_index" in
+                 let equality_parent_index = field_int id fields "equality_parent_index" in
+                 if target_parent_index < 0 || target_parent_index >= parent_count then
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 rewrite target_parent_index is outside parent_count");
+                 if equality_parent_index < 0 || equality_parent_index >= parent_count then
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 rewrite equality_parent_index is outside parent_count");
+                 let target_literal_index = field_int id fields "target_literal_index" in
+                 let equality_literal_index = field_int id fields "equality_literal_index" in
+                 let target_parent_id = parent_unit target_parent_index in
+                 let equality_parent_id = parent_unit equality_parent_index in
+                 let target_subst = parent_substitution target_parent_index in
+                 let equality_subst = parent_substitution equality_parent_index in
+                 let parent_clause parent_id role =
+                   begin match Hashtbl.find_opt step_by_id parent_id with
+                   | Some parent_step ->
+                       begin match step_clause_opt parent_step with
+                       | Some clause -> clause
+                       | None ->
+                           error
+                             (id ^ ": strict certificate v1 kernel_v1 rewrite "
+                              ^ role ^ " parent " ^ parent_id
+                              ^ " is not a clause-bearing step")
+                       end
+                   | None ->
+                       error
+                         (id ^ ": strict certificate v1 kernel_v1 rewrite references missing "
+                          ^ role ^ " parent " ^ parent_id)
+                   end
+                 in
+                 let target_clause = parent_clause target_parent_id "target" in
+                 let equality_clause = parent_clause equality_parent_id "equality" in
+                 let target_literal =
+                   nth target_literal_index target_clause
+                     (id ^ " strict kernel_v1 rewrite target literal")
+                 in
+                 let equality_literal =
+                   nth equality_literal_index equality_clause
+                     (id ^ " strict kernel_v1 rewrite equality literal")
+                 in
+                 let target_substituted = subst_literal target_subst target_literal in
+                 let equality_substituted = subst_literal equality_subst equality_literal in
+                 require_field_literal id fields "target_substituted" target_substituted;
+                 require_field_literal id fields "equality_substituted" equality_substituted;
+                 let from_tm = parse_field id fields "from" parse_tm in
+                 let to_tm = parse_field id fields "to" parse_tm in
+                 begin match field_value "replay_redex" fields with
+                 | Some _ -> require_field_formula id fields "replay_redex" from_tm
+                 | None -> ()
+                 end;
+                 begin match field_value "replay_replacement" fields with
+                 | Some _ -> require_field_formula id fields "replay_replacement" to_tm
+                 | None -> ()
+                 end;
+                 begin match equality_substituted with
+                 | Pos atom ->
+                     begin match equality_sides atom with
+                     | Some (left, right)
+                         when (left = from_tm && right = to_tm)
+                           || (right = from_tm && left = to_tm) -> ()
+                     | Some _ ->
+                         error
+                           (id ^ ": strict certificate v1 kernel_v1 rewrite from/to terms do not match equality literal")
+                     | None ->
+                         error
+                           (id ^ ": strict certificate v1 kernel_v1 rewrite equality literal is not an equality")
+                     end
+                 | Neg _ ->
+                     error
+                       (id ^ ": strict certificate v1 kernel_v1 rewrite equality literal must be positive")
+                 end;
+                 let rewrite_position = parse_field id fields "rewrite_position" parse_position in
+                 let rewritten_target = parse_field id fields "rewritten_target" parse_literal in
+                 let target_atom = literal_atom target_substituted in
+                 let rewrite_position =
+                   let rec select = function
+                     | [] ->
+                         error
+                           (id ^ ": strict certificate v1 kernel_v1 rewrite rewrite_position does not contain from term")
+                     | candidate :: rest ->
+                         begin match try_tm_at_position target_atom candidate with
+                         | Some found when found = from_tm -> candidate
+                         | _ -> select rest
+                         end
+                   in
+                   select (paramodulation_position_candidates target_atom rewrite_position)
+                 in
+                 let rewritten_atom =
+                   replace_tm_at_position target_atom rewrite_position to_tm
+                     (id ^ " strict kernel_v1 rewrite target")
+                 in
+                 let expected_rewritten = replace_literal_atom target_substituted rewritten_atom in
+                 if not (same_literal_mod_vampire_vars rewritten_target expected_rewritten) then
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 rewrite rewritten_target does not match from/to rewrite");
+                 begin match Hashtbl.find_opt step_by_id id with
+                 | Some step ->
+                     begin match step_clause_opt step with
+                     | Some result ->
+                         let equality_rest =
+                           remove_at equality_literal_index
+                             (subst_clause equality_subst equality_clause)
+                             (id ^ " rewrite equality literal")
+                         in
+                         let target_rest =
+                           remove_at target_literal_index
+                             (subst_clause target_subst target_clause)
+                             (id ^ " rewrite target literal")
+                         in
+                         let expected = equality_rest @ target_rest @ [rewritten_target] in
+                         if not (same_clause_multiset expected result
+                                 || same_clause_set_mod_equality expected result
+                                 || same_clause_mod_vampire_var_renaming expected result
+                                 || same_clause_mod_vampire_var_renaming_and_equality expected result) then
+                           error
+                             (id ^ ": strict certificate v1 kernel_v1 rewrite result_clause does not match explicit rewrite")
+                     | None -> ()
+                     end
+                 | None -> ()
+                 end
+             | Some _, None
+             | None, Some _ ->
+                 error
+                   (id ^ ": strict certificate v1 kernel_v1 rewrite metadata must provide both target_substituted and rewritten_target")
+             | None, None -> ()
              end
          | "equality_factoring" ->
              require_rule_fields id fields kernel_rule
