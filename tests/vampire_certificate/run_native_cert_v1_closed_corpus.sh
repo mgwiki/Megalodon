@@ -8,6 +8,7 @@ export TMPDIR
 MEGALODON=${MEGALODON:-"$ROOT/bin/megalodon"}
 CASES_DIR=${CASES_DIR:-"$ROOT/tests/vampire_certificate/closed_cases"}
 CASE_LIST=${CASE_LIST:-}
+DEFAULT_CASE_LIST=${DEFAULT_CASE_LIST:-"$ROOT/tests/vampire_certificate/closed_textual_pass_cases.list"}
 JOBS=${JOBS:-7}
 WORK_DIR=${WORK_DIR:-"$(mktemp -d "$TMPDIR/native_cert_v1_closed_corpus.XXXXXX")"}
 CORE_CERT_V1=${CORE_CERT_V1:-0}
@@ -186,6 +187,10 @@ export -f resolve_origin_file read_origin_field check_origin_consistency run_one
 
 selected_cases="$WORK_DIR/selected_native_cases.list"
 : > "$selected_cases"
+if [[ -z "$CASE_LIST" && -s "$DEFAULT_CASE_LIST" ]]; then
+  CASE_LIST="$DEFAULT_CASE_LIST"
+fi
+
 if [[ -n "$CASE_LIST" ]]; then
   while IFS= read -r raw || [[ -n "$raw" ]]; do
     raw="${raw%%#*}"

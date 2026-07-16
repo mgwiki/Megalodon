@@ -298,6 +298,16 @@ audit-preferred endpoint is to resolve approved logical principles from the
 original Megalodon context or an exact indexed-hash basis, not to grow this
 allowlist.
 
+`run_native_cert_v1_closed_corpus.sh` defaults to the committed
+`closed_textual_pass_cases.list`, which records the cases that currently pass
+the transitional textual closed-emission gate. The larger
+`closed_cases/` directory also contains frontier certificates that are useful
+for native proof-term and primitive-certificate development but still fail the
+textual emitter because they would require bridge premises. To audit any other
+subset, pass `CASE_LIST=...`; to deliberately run the full frontier, provide a
+case list containing all tracked case names instead of relying on the default
+pass list.
+
 Use `-vampirecertv1coreclosed` for the audit/MVP clausal fragment. This implies
 strict and closed checking, then rejects every certificate constructor outside
 the core clause proof language before emission. The shell audit below still
@@ -516,12 +526,11 @@ tests/vampire_certificate/run_native_cert_v1_layered_closed_audit.sh
 
 This aggregate gate runs the core, preprocessing, Skolemization, definition,
 AVATAR, inequality, and definition-rewrite audits, then compares their selected
-case lists with all tracked `*.native.sexp` closed fixtures.  It fails if any
-tracked closed case is missing from the layer partition, appears in more than
-one layer, or if a layer selects a case outside the committed corpus.  This is
-the preferred one-command regression check for the current 169-case closed
-certificate suite; it is still not a substitute for fresh live larger-library
-evaluation.
+case lists with all tracked `*.native.sexp` fixtures. It is a staged frontier
+check, not a claim that every tracked fixture currently passes the transitional
+textual closed-emission gate. The separate `closed_textual_pass_cases.list`
+records that smaller textual pass set. The aggregate gate is still not a
+substitute for fresh live larger-library evaluation.
 
 To export a Megalodon development once and then check the resulting source-mapped
 TH0 corpus in parallel, use:
