@@ -321,6 +321,11 @@ let rec parse_tm = function
   | List [Atom "TMH"; h] -> TmH (atom h)
   | List [Atom "PRIM"; n] -> Prim (int_atom n)
   | List [Atom "TPAP"; m; a] -> TpAp (parse_tm m, parse_tp a)
+  | List [Atom "AP"; List [Atom "TMH"; exists_head]; List [Atom binder; name; a; m]]
+      when atom exists_head = "vampire_exists_prop"
+           && (binder = "LAMV" || binder = "VLAMV") ->
+      let tp = parse_tp a in
+      Ap (TmH "vampire_exists_prop", Lam (tp, subst_named_tm (atom name) (parse_tm m)))
   | List [Atom "AP"; m; n] -> Ap (parse_tm m, parse_tm n)
   | List [Atom "LAM"; a; m] -> Lam (parse_tp a, parse_tm m)
   | List [Atom "LAMV"; name; a; m]
@@ -7210,12 +7215,7 @@ let native_core_ennf_formula_proof id variables step_variables source target pro
             native_core_formula_prop target_right
             |> native_core_normalize_bool_constants
           in
-          if target_left_prop <> source_left_prop then
-            debug_certificate_mismatch id source_left_prop target_left_prop;
-          if target_left_prop <> source_left_prop then
-            error
-              (id ^ ": native preprocess proof-term ennf_formula expected not-implication to conjunction");
-          let left_proof =
+          let source_left_proof =
             PPfAp
               (PTmAp (Known native_core_dneg_hash, source_left_prop),
                PLam
@@ -7226,6 +7226,10 @@ let native_core_ennf_formula_proof id variables step_variables source target pro
                        PTmAp (PPfAp (Hyp 1, Hyp 0), source_right_prop))
                   in
                   PPfAp (pfshift 0 1 proof, imp_proof)))
+          in
+          let left_proof =
+            if target_left_prop = source_left_prop then source_left_proof
+            else convert source_left target_left source_left_proof
           in
           let not_right_proof =
             PLam
@@ -7243,7 +7247,7 @@ let native_core_ennf_formula_proof id variables step_variables source target pro
                 not_right_proof
           in
           native_core_and_intro
-            source_left_prop target_right_prop left_proof right_proof
+            target_left_prop target_right_prop left_proof right_proof
       | Imp (All (source_tp, source_body), source_false), target
           when source_false = native_core_false ->
           begin match native_core_exists_body source_tp target with
