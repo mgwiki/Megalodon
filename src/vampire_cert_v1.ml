@@ -6632,6 +6632,22 @@ let native_core_resolve_clause_clause id left_clause left_proof left_index right
   in
   consume_left right_proof (Some left_index) left_clause left_proof
 
+let native_core_validate_resolve_step id left_clause right_clause left_index right_index result =
+  let left_pivot =
+    nth left_index left_clause (id ^ " native resolve left pivot")
+  in
+  let right_pivot =
+    nth right_index right_clause (id ^ " native resolve right pivot")
+  in
+  if not (native_core_complement left_pivot right_pivot) then
+    error (id ^ ": native preprocess proof-term resolve expected complementary pivots");
+  let expected =
+    remove_at left_index left_clause (id ^ " native resolve left pivot")
+    @ remove_at right_index right_clause (id ^ " native resolve right pivot")
+  in
+  if not (same_clause_multiset expected result) then
+    error (id ^ ": native preprocess proof-term resolve result does not remove exactly the selected pivots")
+
 let native_core_factor id parent_clause parent_proof left_index right_index result =
   if left_index = right_index then
     error (id ^ ": native core proof-term factor literal indices must be distinct");
@@ -6667,6 +6683,20 @@ let native_core_factor id parent_clause parent_proof left_index right_index resu
         PPfAp (PPfAp (PTmAp (proof, target_prop), head_branch), tail_branch)
   in
   consume parent_clause parent_proof
+
+let native_core_validate_factor_step id parent_clause left_index right_index result =
+  if left_index = right_index then
+    error (id ^ ": native preprocess proof-term factor literal indices must be distinct");
+  let left = nth left_index parent_clause (id ^ " native factor left literal") in
+  let right = nth right_index parent_clause (id ^ " native factor right literal") in
+  if left <> right then
+    error (id ^ ": native preprocess proof-term factor literals are not identical");
+  let remove_index = if left_index > right_index then left_index else right_index in
+  let expected =
+    remove_at remove_index parent_clause (id ^ " native factor removed literal")
+  in
+  if not (same_clause_multiset expected result) then
+    error (id ^ ": native preprocess proof-term factor result does not remove one duplicate literal")
 
 let native_core_reflexive_eq_proof = function
   | Ap (Ap (TpAp (TmH h, tp), left), right)
@@ -8288,6 +8318,19 @@ let native_core_equality_symmetry id parent_clause parent_proof literal_index re
   in
   consume (Some literal_index) parent_clause parent_proof
 
+let native_core_validate_equality_symmetry_step id parent_clause literal_index result =
+  let selected = nth literal_index parent_clause (id ^ " native equality-symmetry literal") in
+  let swapped =
+    match native_core_swapped_eq_literal selected with
+    | Some literal -> literal
+    | None -> error (id ^ ": native preprocess proof-term equality_symmetry requires typed Megalodon equality")
+  in
+  let expected =
+    remove_at literal_index parent_clause (id ^ " native equality-symmetry literal") @ [swapped]
+  in
+  if not (same_clause_multiset expected result) then
+    error (id ^ ": native preprocess proof-term equality_symmetry result does not match the swapped selected literal")
+
 let native_core_equality_symmetry_in_result_context
     cert id variables parent_id parent_clause parent_proof literal_index result =
   let result_step_variables = native_core_step_variables cert id in
@@ -9458,16 +9501,44 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
       | Resolve (id, left_id, right_id, left_index, right_index, result) ->
           let left_clause, left_proof = lookup_clause left_id in
           let right_clause, right_proof = lookup_clause right_id in
-          let proof =
-            native_core_resolve_in_result_context
-              cert id variables left_id left_clause left_proof right_id right_clause right_proof
-              left_index right_index result
+          native_core_validate_resolve_step
+            id left_clause right_clause left_index right_index result;
+          let left_prop =
+            native_core_step_clause_prop cert variables left_id left_clause
           in
-          store_clause id result proof
+          let right_prop =
+            native_core_step_clause_prop cert variables right_id right_clause
+          in
+          let result_prop =
+            native_core_step_clause_prop cert variables id result
+          in
+          let primitive = "vampire_resolve_" ^ id in
+          let primitive_prop = Imp (left_prop, Imp (right_prop, result_prop)) in
+          Hashtbl.replace proof_delta primitive (0, primitive_prop);
+          Hashtbl.replace definition_delta primitive (0, primitive_prop);
+          Hashtbl.replace transitional_primitive_clause_steps id true;
+          store_clause id result
+            (PPfAp (PPfAp (Known primitive, left_proof), right_proof))
       | Factor (id, parent_id, left_index, right_index, result) ->
           let parent_clause, parent_proof = lookup_clause parent_id in
-          store_clause id result
-            (native_core_factor id parent_clause parent_proof left_index right_index result)
+          if Hashtbl.mem transitional_primitive_clause_steps parent_id then begin
+            native_core_validate_factor_step
+              id parent_clause left_index right_index result;
+            let parent_prop =
+              native_core_step_clause_prop cert variables parent_id parent_clause
+            in
+            let result_prop =
+              native_core_step_clause_prop cert variables id result
+            in
+            let primitive = "vampire_factor_" ^ id in
+            let primitive_prop = Imp (parent_prop, result_prop) in
+            Hashtbl.replace proof_delta primitive (0, primitive_prop);
+            Hashtbl.replace definition_delta primitive (0, primitive_prop);
+            Hashtbl.replace transitional_primitive_clause_steps id true;
+            store_clause id result (PPfAp (Known primitive, parent_proof))
+          end else
+            store_clause id result
+              (native_core_factor id parent_clause parent_proof left_index right_index result)
       | EqualityResolution (id, parent_id, literal_index, result) ->
           let parent_clause, parent_proof = lookup_clause parent_id in
           if Hashtbl.mem transitional_primitive_clause_steps parent_id then begin
@@ -9492,9 +9563,25 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
                  cert id variables parent_id parent_clause parent_proof literal_index result)
       | EqualitySymmetry (id, parent_id, literal_index, result) ->
           let parent_clause, parent_proof = lookup_clause parent_id in
-          store_clause id result
-            (native_core_equality_symmetry_in_result_context
-               cert id variables parent_id parent_clause parent_proof literal_index result)
+          if Hashtbl.mem transitional_primitive_clause_steps parent_id then begin
+            native_core_validate_equality_symmetry_step
+              id parent_clause literal_index result;
+            let parent_prop =
+              native_core_step_clause_prop cert variables parent_id parent_clause
+            in
+            let result_prop =
+              native_core_step_clause_prop cert variables id result
+            in
+            let primitive = "vampire_equality_symmetry_" ^ id in
+            let primitive_prop = Imp (parent_prop, result_prop) in
+            Hashtbl.replace proof_delta primitive (0, primitive_prop);
+            Hashtbl.replace definition_delta primitive (0, primitive_prop);
+            Hashtbl.replace transitional_primitive_clause_steps id true;
+            store_clause id result (PPfAp (Known primitive, parent_proof))
+          end else
+            store_clause id result
+              (native_core_equality_symmetry_in_result_context
+                 cert id variables parent_id parent_clause parent_proof literal_index result)
 	      | TruthConflict (id, parent_id, literal_index, result) ->
 	          let parent_clause, parent_proof = lookup_clause parent_id in
 	          store_clause id result
