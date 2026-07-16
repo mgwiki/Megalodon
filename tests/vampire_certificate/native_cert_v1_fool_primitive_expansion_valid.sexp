@@ -1,5 +1,7 @@
 (certificate vampire-megalodon 1
   (problem "native-cert-v1-fool-primitive-expansion-valid")
+  (symbol_declaration "Variable p:prop.")
+  (symbol_declaration "Variable f__true:prop.")
   (step_extra f1 "kernel_v1"
     ("schema=prover9-small-kernel-v1"
      "rule=fool_formula"

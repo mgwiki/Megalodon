@@ -1063,31 +1063,51 @@ if ! rg -q 'requires primitive_expansion=prefix for kernel rule fool_formula' \
   exit 1
 fi
 
-if bin/megalodon \
+bin/megalodon \
   -vampirecertv1preprocesspfcheck \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_primitive_expansion_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_fool_primitive_expansion_origin_valid.th0.p \
   "$dummy" >"$WORK_DIR/native_cert_v1_fool_preprocess_pf_frontier.out" \
-  2>"$WORK_DIR/native_cert_v1_fool_preprocess_pf_frontier.err"; then
-  echo "native preprocess proof-term checker unexpectedly accepted FOOL formula macro replay" >&2
+  2>"$WORK_DIR/native_cert_v1_fool_preprocess_pf_frontier.err"
+
+if ! rg -q 'Vampire certificate v1 native preprocess proof term checked 7 steps' \
+    "$WORK_DIR/native_cert_v1_fool_preprocess_pf_frontier.out"; then
+  echo "native preprocess proof-term checker did not accept the typed FOOL primitive fixture" >&2
   exit 1
 fi
 
-if rg -q 'f1_fool_atom_0: native preprocess proof-term checker has no proof-term rule for fool_atom_lift' \
-    "$WORK_DIR/native_cert_v1_fool_preprocess_pf_frontier.err"; then
-  echo "native preprocess proof-term checker did not recognize the FOOL atom-lift primitive" >&2
+if ! rg -q 'Vampire certificate v1 native preprocess source bindings checked 2 assumptions' \
+    "$WORK_DIR/native_cert_v1_fool_preprocess_pf_frontier.out"; then
+  echo "native preprocess proof-term checker did not validate FOOL primitive source bindings" >&2
   exit 1
 fi
 
-if rg -q 'f1: native preprocess proof-term checker has no proof-term rule for fool_formula' \
+if rg -q 'admit|aby|-allowincompleteqed' \
+    "$WORK_DIR/native_cert_v1_fool_preprocess_pf_frontier.out" \
     "$WORK_DIR/native_cert_v1_fool_preprocess_pf_frontier.err"; then
-  echo "native preprocess proof-term checker did not recognize the FOOL formula primitive" >&2
+  echo "native preprocess proof-term checker reported an admission marker for the FOOL primitive fixture" >&2
   exit 1
 fi
 
-if ! rg -q 'f1: native preprocess proof-term fool_formula cannot lift atom' \
-    "$WORK_DIR/native_cert_v1_fool_preprocess_pf_frontier.err"; then
-  echo "native preprocess proof-term checker did not advance from FOOL formula macro replay to the typed-atom frontier" >&2
+if bin/megalodon \
+  -vampirecertv1preprocesspfcheck \
+  -vampirecertv1 tests/vampire_certificate/closed_cases/hammer.1032.16.native.sexp \
+  -vampirecertv1source tests/vampire_certificate/closed_cases/hammer.1032.16.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_raw_prop_eq_fool_bool_frontier.out" \
+  2>"$WORK_DIR/native_cert_v1_raw_prop_eq_fool_bool_frontier.err"; then
+  echo "native preprocess proof-term checker unexpectedly accepted the raw-prop-equality FOOL frontier case" >&2
+  exit 1
+fi
+
+if rg -q 'u85: native preprocess proof-term fool_bool cannot lift positive atom' \
+    "$WORK_DIR/native_cert_v1_raw_prop_eq_fool_bool_frontier.err"; then
+  echo "native preprocess proof-term checker still rejects raw propositional equality in FOOL Boolean lifting" >&2
+  exit 1
+fi
+
+if ! rg -q 'u120_symmetry: native core proof-term equality-symmetry requires typed Megalodon equality' \
+    "$WORK_DIR/native_cert_v1_raw_prop_eq_fool_bool_frontier.err"; then
+  echo "native preprocess proof-term checker did not advance from raw propositional equality to the typed equality-symmetry frontier" >&2
   exit 1
 fi
 

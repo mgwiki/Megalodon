@@ -4982,6 +4982,22 @@ let native_core_close_pf variables proof =
   in
   close 0 proof
 
+let native_core_equality_sides = function
+  | Ap (Ap (TpAp (TmH h, tp), left), right)
+      when h = megalodon_eq_poly_hash ->
+      Some (tp,
+            native_core_normalize_bool_constants left,
+            native_core_normalize_bool_constants right)
+  | Ap (Ap (TmH h, left), right) when h = "=" || h = "eq" ->
+      let left = native_core_normalize_bool_constants left in
+      let right = native_core_normalize_bool_constants right in
+      if left = native_core_true || left = native_core_false
+         || right = native_core_true || right = native_core_false then
+        Some (Prop, left, right)
+      else
+        None
+  | _ -> None
+
 let native_core_or left right =
   All
     (Prop,
@@ -5003,15 +5019,15 @@ let native_core_exists tp body =
        (All (tp, Imp (tmshift 1 1 body, DB 1)),
         DB 0))
 
-let native_core_expand_eq_atom = function
-  | Ap (Ap (TpAp (TmH h, tp), left), right)
-      when h = megalodon_eq_poly_hash ->
+let native_core_expand_eq_atom tm =
+  match native_core_equality_sides tm with
+  | Some (tp, left, right) ->
       All
         (Ar (tp, Ar (tp, Prop)),
          Imp
            (Ap (Ap (DB 0, tmshift 0 1 left), tmshift 0 1 right),
             Ap (Ap (DB 0, tmshift 0 1 right), tmshift 0 1 left)))
-  | tm -> tm
+  | None -> tm
 
 let rec native_core_formula_prop = function
   | Imp (left, right) ->
@@ -5676,7 +5692,7 @@ let native_core_prop_ext_eq left right left_to_right right_to_left =
      right_to_left)
 
 let native_core_true_eq_from_proof source target proof =
-  match megalodon_eq_poly_sides target with
+  match native_core_equality_sides target with
   | Some (Prop, left, right) when left = source && right = native_core_true ->
       let atom = left in
       let atom_to_true = PLam (atom, native_core_true_proof) in
@@ -5690,7 +5706,7 @@ let native_core_true_eq_from_proof source target proof =
   | _ -> None
 
 let native_core_proof_from_true_eq source target proof =
-  match megalodon_eq_poly_sides target with
+  match native_core_equality_sides target with
   | Some (Prop, left, right) when left = source && right = native_core_true ->
       let atom = left in
       let atom_to_true = PLam (atom, native_core_true_proof) in
