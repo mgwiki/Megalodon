@@ -12,6 +12,7 @@ Primary repositories:
 
 Related documents:
 
+- `reports/VAMPIRE-MEGALODON-IMPLEMENTATION-DESIGN-2026-07-16.md`
 - `reports/vampire-megalodon-certificate-spec.md`
 - `reports/PROVER9-IVY-ANALYSIS-2026-07-13.md`
 - `reports/REPORT-2026-07-16.md`
