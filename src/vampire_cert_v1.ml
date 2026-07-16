@@ -4719,6 +4719,179 @@ let validate_kernel_v1_metadata_contracts cert =
                  error
                    (id ^ ": strict certificate v1 kernel_v1 equality_resolution metadata has no matching certificate step")
              end
+         | "superposition" ->
+             begin match field_value "primitive_expansion" fields with
+             | None -> ()
+             | Some _ ->
+             require_rule_fields id fields kernel_rule
+               ["selected";
+                "selected_substituted";
+                "selected_parent_index";
+                "selected_literal_index";
+                "selected_parent_unit";
+                "other";
+                "other_substituted";
+                "other_parent_index";
+                "other_literal_index";
+                "other_parent_unit";
+                "target_substituted";
+                "equality_substituted";
+                "target_parent_index";
+                "target_literal_index";
+                "equality_parent_index";
+                "equality_literal_index";
+                "rewrite_position";
+                "from";
+                "to";
+                "rewritten_target";
+                "primitive_parent_0_substitution";
+                "primitive_parent_1_substitution";
+                "parent_count";
+                "result_clause";
+                "result_literal_count"];
+             require_field_int id fields "parent_count" 2;
+             let target_parent_index = field_int id fields "target_parent_index" in
+             let equality_parent_index = field_int id fields "equality_parent_index" in
+             if target_parent_index = equality_parent_index then
+               error
+                 (id ^ ": strict certificate v1 kernel_v1 superposition target and equality parent indices must differ");
+             require_field_int id fields "selected_parent_index" target_parent_index;
+             require_field_int id fields "other_parent_index" equality_parent_index;
+             let target_literal_index = field_int id fields "target_literal_index" in
+             let equality_literal_index = field_int id fields "equality_literal_index" in
+             require_field_int id fields "selected_literal_index" target_literal_index;
+             require_field_int id fields "other_literal_index" equality_literal_index;
+             let parent_unit index =
+               field_required id fields ("parent_" ^ string_of_int index ^ "_unit")
+             in
+             let target_parent_id = parent_unit target_parent_index in
+             let equality_parent_id = parent_unit equality_parent_index in
+             let selected_parent_unit = field_required id fields "selected_parent_unit" in
+             if selected_parent_unit <> target_parent_id then
+               error
+                 (id ^ ": strict certificate v1 kernel_v1 superposition selected_parent_unit "
+                  ^ selected_parent_unit ^ " does not match target parent " ^ target_parent_id);
+             let other_parent_unit = field_required id fields "other_parent_unit" in
+             if other_parent_unit <> equality_parent_id then
+               error
+                 (id ^ ": strict certificate v1 kernel_v1 superposition other_parent_unit "
+                  ^ other_parent_unit ^ " does not match equality parent " ^ equality_parent_id);
+             let target_subst =
+               parse_field id fields
+                 ("primitive_parent_" ^ string_of_int target_parent_index ^ "_substitution")
+                 parse_substitution
+             in
+             let equality_subst =
+               parse_field id fields
+                 ("primitive_parent_" ^ string_of_int equality_parent_index ^ "_substitution")
+                 parse_substitution
+             in
+             let target_literal =
+               begin match Hashtbl.find_opt step_by_id target_parent_id with
+               | Some parent_step ->
+                   begin match step_clause_opt parent_step with
+                   | Some parent_clause ->
+                       nth target_literal_index parent_clause
+                         (id ^ " strict kernel_v1 superposition target literal")
+                   | None ->
+                       error
+                         (id ^ ": strict certificate v1 kernel_v1 superposition target parent "
+                          ^ target_parent_id ^ " is not a clause-bearing step")
+                   end
+               | None ->
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 superposition references missing target parent "
+                      ^ target_parent_id)
+               end
+             in
+             let equality_literal =
+               begin match Hashtbl.find_opt step_by_id equality_parent_id with
+               | Some parent_step ->
+                   begin match step_clause_opt parent_step with
+                   | Some parent_clause ->
+                       nth equality_literal_index parent_clause
+                         (id ^ " strict kernel_v1 superposition equality literal")
+                   | None ->
+                       error
+                         (id ^ ": strict certificate v1 kernel_v1 superposition equality parent "
+                          ^ equality_parent_id ^ " is not a clause-bearing step")
+                   end
+               | None ->
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 superposition references missing equality parent "
+                      ^ equality_parent_id)
+               end
+             in
+             let target_substituted = subst_literal target_subst target_literal in
+             let equality_substituted = subst_literal equality_subst equality_literal in
+             require_field_literal id fields "selected" target_literal;
+             require_field_literal id fields "selected_substituted" target_substituted;
+             require_field_literal id fields "target_substituted" target_substituted;
+             require_field_literal id fields "other" equality_literal;
+             require_field_literal id fields "other_substituted" equality_substituted;
+             require_field_literal id fields "equality_substituted" equality_substituted;
+             let from_tm = parse_field id fields "from" parse_tm in
+             let to_tm = parse_field id fields "to" parse_tm in
+             begin match equality_substituted with
+             | Pos atom ->
+                 begin match equality_sides atom with
+                 | Some (left, right)
+                     when (left = from_tm && right = to_tm)
+                       || (right = from_tm && left = to_tm) -> ()
+                 | Some _ ->
+                     error
+                       (id ^ ": strict certificate v1 kernel_v1 superposition from/to terms do not match equality literal")
+                 | None ->
+                     error
+                       (id ^ ": strict certificate v1 kernel_v1 superposition equality literal is not an equality")
+                 end
+             | Neg _ ->
+                 error
+                   (id ^ ": strict certificate v1 kernel_v1 superposition equality literal must be positive")
+             end;
+             let rewrite_position = parse_field id fields "rewrite_position" parse_position in
+             let rewritten_target = parse_field id fields "rewritten_target" parse_literal in
+             let target_atom = literal_atom target_substituted in
+             let rewrite_position =
+               let rec select = function
+                 | [] ->
+                     error
+                       (id ^ ": strict certificate v1 kernel_v1 superposition rewrite_position does not contain from term")
+                 | candidate :: rest ->
+                     begin match try_tm_at_position target_atom candidate with
+                     | Some found when found = from_tm -> candidate
+                     | _ -> select rest
+                     end
+               in
+               select (paramodulation_position_candidates target_atom rewrite_position)
+             in
+             let rewritten_atom =
+               replace_tm_at_position target_atom rewrite_position to_tm
+                 (id ^ " strict kernel_v1 superposition target")
+             in
+             let expected_rewritten = replace_literal_atom target_substituted rewritten_atom in
+             if not (same_literal_mod_vampire_vars rewritten_target expected_rewritten) then
+               error
+                 (id ^ ": strict certificate v1 kernel_v1 superposition rewritten_target does not match from/to rewrite");
+             begin match Hashtbl.find_opt step_by_id id with
+             | Some step ->
+                 begin match step_clause_opt step with
+                 | Some result ->
+                     require_field_clause id fields "result_clause" result;
+                     begin match field_value "conclusion_clause" fields with
+                     | Some _ -> require_field_clause id fields "conclusion_clause" result
+                     | None -> ()
+                     end;
+                     require_field_int id fields "result_literal_count" (List.length result)
+                 | None ->
+                     error
+                       (id ^ ": strict certificate v1 kernel_v1 superposition metadata must annotate a clause-bearing step")
+                 end
+             | None ->
+                 error
+                   (id ^ ": strict certificate v1 kernel_v1 superposition metadata has no matching certificate step")
+             end
+             end
          | "equality_factoring" ->
              require_rule_fields id fields kernel_rule
                ["selected";

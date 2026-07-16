@@ -1747,6 +1747,21 @@ if ! rg -q 'Vampire certificate v1 checked 6 steps' "$WORK_DIR/native_cert_v1_su
   exit 1
 fi
 
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_superposition_kernel_rewritten_target_bad.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_superposition_kernel_rewritten_target_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_superposition_kernel_rewritten_target_bad.err"; then
+  echo "strict native certificate v1 checker accepted superposition metadata with a wrong rewritten target" >&2
+  exit 1
+fi
+
+if ! rg -q 'superposition rewritten_target does not match from/to rewrite' \
+    "$WORK_DIR/native_cert_v1_superposition_kernel_rewritten_target_bad.err"; then
+  echo "strict native certificate v1 superposition metadata failure did not explain the wrong rewritten target" >&2
+  exit 1
+fi
+
 bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_bool_simplify_valid.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_bool_simplify_valid.log"
