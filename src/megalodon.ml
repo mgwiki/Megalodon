@@ -6040,8 +6040,11 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                end;
              end;
            begin
+             let require_vampire_native_certificate =
+               !vampireabynativestrict && !vampireaby <> None
+             in
              let native_aby_result =
-               if !vampireabynative then
+               if !vampireabynative && not require_vampire_native_certificate then
                  native_aby_reconstruct claimtm cxtm cxpf xl
                else
                  None
@@ -6058,6 +6061,9 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                       run_vampire_aby_certificate ~claimtm ~cxtm ~cxpf content
                   with
                   | Failure(msg) ->
+                     if require_vampire_native_certificate then
+                       raise (Failure(msg))
+                     else
                      begin
                        match native_aby_result with
                        | Some(_) ->
@@ -6076,7 +6082,15 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                  let native_aby_result =
                    match !vampire_native_result with
                    | Some _ as result -> result
-                   | None -> native_aby_result
+                   | None ->
+                      if require_vampire_native_certificate then
+                        raise
+                          (Failure
+                             (Printf.sprintf
+                                "Vampire native certificate did not reconstruct current aby goal at line %d char %d"
+                                !lineno !charno))
+                      else
+                        native_aby_result
                  in
                  match native_aby_result with
                  | Some(d) ->

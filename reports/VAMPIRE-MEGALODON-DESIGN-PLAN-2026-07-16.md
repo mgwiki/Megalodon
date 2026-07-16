@@ -335,12 +335,17 @@ Tasks:
 - Add comments and tests marking Python/JSON/text replay as non-qualifying.
 - Keep strict modes rejecting bridges, derived premises, admits, `aby`, and
   unsupported source labels.
+- In strict live `vampireaby` mode, require the certificate-derived native
+  proof to close the current goal; direct native reconstruction may not mask a
+  missing or unusable Vampire certificate.
 - Make unsupported proof-term constructors fail closed.
 
 Acceptance:
 
 - Running the qualifying harness cannot silently fall back to textual replay or
   Python.
+- A configured strict live Vampire run cannot silently fall back to direct
+  native `aby` reconstruction.
 - A new broad constructor requires an explicit design exception.
 
 ### WP1: Vampire Primitive Builder

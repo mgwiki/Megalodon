@@ -46,6 +46,18 @@ MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN=1
 
 This is not a qualifying proof-reconstruction mode.
 
+### Strict Live Certificate Fallback Removed
+
+`-vampireabynativestrict` now treats a configured `-vampireaby` prover as a
+certificate obligation. If Vampire emits no native certificate, or if the
+native certificate cannot be composed into the current Megalodon goal, the
+command fails instead of falling back to direct native `aby` reconstruction.
+
+The smoke suite includes a deliberately trivial `p -> p` theorem with a fake
+Vampire binary that emits no native certificate. This theorem would be solvable
+by direct native reconstruction, but strict live certificate mode must reject
+it because no certificate-derived proof was supplied.
+
 ### Preprocessing Harnesses Are Reclassified
 
 The preprocessing frontier/audit harnesses now opt in to the transitional
@@ -236,6 +248,9 @@ Completed in this response:
 - original-context source resolver added for hash-backed source inputs.
 - native proof-term elaborators can consume context-resolved global source
   proofs instead of adding them as source assumptions.
+- strict live `vampireaby` no longer falls back to direct native
+  reconstruction when a configured Vampire run fails to provide a usable
+  native certificate.
 
 Not completed:
 

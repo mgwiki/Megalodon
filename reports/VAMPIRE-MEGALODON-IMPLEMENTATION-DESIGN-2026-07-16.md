@@ -353,6 +353,10 @@ Implementation update, 2026-07-16:
   same live certificate theorem appended after an `UpToOctonions` library
   prelude that declares `xm`.  It also checks a multi-local source case where
   two local facts are resolved and applied at the Megalodon boundary.
+- Strict live `vampireaby` now fails closed when a configured Vampire run does
+  not provide a native certificate, or when the certificate cannot be composed
+  into the current goal.  Direct native `aby` reconstruction remains a
+  development fallback only outside that strict certificate path.
 - This is still partial original theorem reconstruction: it handles the simple
   core shape `local facts -> negated conjecture -> False`, including multiple
   local facts, but not local

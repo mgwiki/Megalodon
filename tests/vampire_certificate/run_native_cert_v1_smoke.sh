@@ -445,6 +445,50 @@ if ! rg -q 'Everything looks good' \
   exit 1
 fi
 
+strict_no_fallback_dir="$WORK_DIR/strict_no_fallback"
+mkdir -p "$strict_no_fallback_dir"
+cat >"$strict_no_fallback_dir/fake_vampire_no_certificate" <<'EOF_STRICT_NO_FALLBACK_FAKE'
+#!/usr/bin/env bash
+cat <<'CERT'
+% SZS status Theorem
+% SZS output start Proof
+% no Megalodon native certificate block
+% SZS output end Proof
+CERT
+EOF_STRICT_NO_FALLBACK_FAKE
+chmod +x "$strict_no_fallback_dir/fake_vampire_no_certificate"
+cat >"$strict_no_fallback_dir/strict_no_fallback.mg" <<'EOF_STRICT_NO_FALLBACK_MG'
+Definition False : prop := forall p:prop, p.
+Definition not : prop -> prop := fun A:prop => A -> False.
+Prefix ~ 700 := not.
+Definition or : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> p) -> (B -> p) -> p.
+Infix \/ 785 left := or.
+Axiom xm : forall P:prop, P \/ ~P.
+Variable p:prop.
+Theorem strict_no_fallback:p -> p.
+assume Hp:p.
+aby Hp.
+Qed.
+EOF_STRICT_NO_FALLBACK_MG
+if bin/megalodon \
+    -vampireaby "$strict_no_fallback_dir/fake_vampire_no_certificate" \
+    -vampireabyproof megalodon \
+    -vampireabynative \
+    -vampireabynativestrict \
+    -vampireabyoutdir "$strict_no_fallback_dir/out" \
+    "$strict_no_fallback_dir/strict_no_fallback.mg" \
+    >"$WORK_DIR/native_cert_v1_strict_no_fallback.out" \
+    2>"$WORK_DIR/native_cert_v1_strict_no_fallback.err"; then
+  echo "strict live vampireaby accepted direct native reconstruction after Vampire produced no native certificate" >&2
+  exit 1
+fi
+if ! rg -q 'has no native certificate block|did not reconstruct current aby goal' \
+    "$WORK_DIR/native_cert_v1_strict_no_fallback.out" \
+    "$WORK_DIR/native_cert_v1_strict_no_fallback.err"; then
+  echo "strict live vampireaby failure did not explain the missing certificate-derived proof" >&2
+  exit 1
+fi
+
 cat >"$WORK_DIR/native_cert_v1_bad_xm_shape.mg" <<'EOF_BAD_XM_SHAPE'
 Definition False : prop := forall p:prop, p.
 Definition not : prop -> prop := fun A:prop => A -> False.
