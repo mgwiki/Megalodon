@@ -493,7 +493,7 @@ bin/megalodon \
   "$local_definition_live_dir/local_definition_live.mg" \
   >"$WORK_DIR/native_cert_v1_live_local_definition_source_context.log" \
   2>"$WORK_DIR/native_cert_v1_live_local_definition_source_context.err"
-if ! rg -q 'source_context known=0 local=0 local_definition=1 unresolved=1' \
+if ! rg -q 'source_context known=0 local=1 local_definition=1 unresolved=1' \
     "$WORK_DIR/native_cert_v1_live_local_definition_source_context.log"; then
   echo "live vampireaby source-context resolver did not identify the local set definition" >&2
   exit 1

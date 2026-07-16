@@ -368,6 +368,9 @@ Implementation update, 2026-07-16:
   deliberately not counted as proof reconstruction yet: strict mode fails
   closed until the definition equality can be converted into a checked proof
   and composed with the certificate.
+- Local fact matching now projects certificate/source term indices through
+  proof-local definitions, so facts introduced before or after `set` commands
+  are checked against the same proof context that Megalodon uses internally.
 - This is still partial original theorem reconstruction: it handles the simple
   core shape `local facts -> negated conjecture -> False`, including multiple
   local facts, but not local

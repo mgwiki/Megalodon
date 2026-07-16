@@ -12,6 +12,7 @@ type source_context = {
   proof_delta : (string, int * tm) Hashtbl.t;
   symbol_table : (string, int * tp) Hashtbl.t;
   term_context : tp list;
+  local_term_projection : int option list;
   local_hypotheses : (string * tm) list;
   local_definitions : (string * tp * tm) list;
 }
@@ -83,6 +84,36 @@ let known_hash_proves context hash proposition =
     | None -> false
   with _ -> false
 
+let project_local_term_context context tm =
+  let rec project depth tm =
+    match tm with
+    | DB index when index < depth -> Some tm
+    | DB index ->
+        let source_index = index - depth in
+        begin match List.nth_opt context.local_term_projection source_index with
+        | Some (Some target_index) -> Some (DB (target_index + depth))
+        | _ -> None
+        end
+    | TmH _ | Prim _ -> Some tm
+    | TpAp (body, tp) ->
+        Option.map (fun body -> TpAp (body, tp)) (project depth body)
+    | Ap (left, right) ->
+        begin match project depth left, project depth right with
+        | Some left, Some right -> Some (Ap (left, right))
+        | _ -> None
+        end
+    | Lam (tp, body) ->
+        Option.map (fun body -> Lam (tp, body)) (project (depth + 1) body)
+    | Imp (left, right) ->
+        begin match project depth left, project depth right with
+        | Some left, Some right -> Some (Imp (left, right))
+        | _ -> None
+        end
+    | All (tp, body) ->
+        Option.map (fun body -> All (tp, body)) (project (depth + 1) body)
+  in
+  project 0 tm
+
 let hyp_proves context index proposition =
   try
     let local_props = List.map snd context.local_hypotheses in
@@ -92,13 +123,32 @@ let hyp_proves context index proposition =
   with _ -> false
 
 let local_hyp_index context name proposition =
+  let projected_proposition =
+    match project_local_term_context context proposition with
+    | Some proposition -> proposition
+    | None -> proposition
+  in
   let rec scan i = function
     | [] -> None
     | (local_name, local_prop) :: rest ->
         if local_name = name then
-          match conv local_prop proposition context.proof_delta [] with
+          match conv local_prop projected_proposition context.proof_delta [] with
           | Some _ -> Some i
-          | None -> if hyp_proves context i proposition then Some i else None
+          | None ->
+              if hyp_proves context i projected_proposition then Some i
+              else begin
+                if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+                  prerr_endline
+                    ("source-context local hypothesis mismatch for "
+                     ^ name
+                     ^ ": local="
+                     ^ tm_to_str local_prop
+                     ^ " certificate="
+                     ^ tm_to_str proposition
+                     ^ " projected="
+                     ^ tm_to_str projected_proposition);
+                None
+              end
         else
           scan (i + 1) rest
   in

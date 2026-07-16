@@ -181,6 +181,11 @@ source-map entry corresponds to a proof-local `set` binding. These bindings are
 not yet proof-producing, so strict source-context mode fails closed instead of
 counting them as completed reconstruction.
 
+Local hypothesis matching now projects certificate/source de Bruijn indices
+through proof-local definitions. This lets hypotheses after a `set` command
+resolve against the Megalodon proof context, where definition entries are not
+ordinary proof variables.
+
 Local and conjecture-backed sources are deliberately not discharged by this
 mechanism yet. They need theorem-local source-context bindings rather than a
 global `Known` hash.

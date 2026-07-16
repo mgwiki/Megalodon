@@ -610,10 +610,24 @@ let vampire_source_context_delta () =
   delta
 
 let vampire_aby_source_context cxtm cxpf =
+  let rec local_term_projection proof_index = function
+    | [] -> []
+    | (_, (_, Some _)) :: rest ->
+        None :: local_term_projection proof_index rest
+    | (_, (_, None)) :: rest ->
+        Some proof_index :: local_term_projection (proof_index + 1) rest
+  in
   {
     Vampire_source_context.proof_delta = vampire_source_context_delta ();
     symbol_table = sigtmof;
-    term_context = List.map (fun (_, (tp, _)) -> tp) cxtm;
+    term_context =
+      List.filter_map
+        (fun (_, (tp, definition)) ->
+           match definition with
+           | None -> Some tp
+           | Some _ -> None)
+        cxtm;
+    local_term_projection = local_term_projection 0 cxtm;
     local_hypotheses = cxpf;
     local_definitions =
       List.filter_map
@@ -7382,6 +7396,7 @@ let audit_vampire_cert_v1_source_context cert source_map =
       Vampire_source_context.proof_delta = vampire_source_context_delta ();
       symbol_table = sigtmof;
       term_context = [];
+      local_term_projection = [];
       local_hypotheses = [];
       local_definitions = [];
     }

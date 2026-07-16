@@ -10,6 +10,7 @@ type source_context = {
   proof_delta : (string, int * Syntax.tm) Hashtbl.t;
   symbol_table : (string, int * Syntax.tp) Hashtbl.t;
   term_context : Syntax.tp list;
+  local_term_projection : int option list;
   local_hypotheses : (string * Syntax.tm) list;
   local_definitions : (string * Syntax.tp * Syntax.tm) list;
 }
