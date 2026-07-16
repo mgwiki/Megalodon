@@ -4793,7 +4793,18 @@ let native_core_step_variables cert id =
            String.sub sort (colon + 1) (String.length sort - colon - 1))
     | _ -> None
   in
-  match List.assoc_opt id cert.metadata.step_variable_sorts with
+  let primitive_expansion_sort_record () =
+    match String.index_opt id '_' with
+    | Some index when index > 0 ->
+        let prefix = String.sub id 0 index in
+        List.assoc_opt prefix cert.metadata.step_variable_sorts
+    | _ -> None
+  in
+  match
+    match List.assoc_opt id cert.metadata.step_variable_sorts with
+    | Some sorts -> Some sorts
+    | None -> primitive_expansion_sort_record ()
+  with
   | None -> []
   | Some sorts ->
       sorts
@@ -4919,6 +4930,213 @@ let native_core_symbol_type symbol_table name =
   with Not_found ->
     error
       ("native core proof-term checker cannot find declared type for generated definition symbol " ^ name)
+
+let native_core_assoc_opt key xs =
+  try Some (List.assoc key xs) with Not_found -> None
+
+let rec native_core_nth_opt xs index =
+  match xs, index with
+  | x :: _, 0 -> Some x
+  | _ :: rest, n when n > 0 -> native_core_nth_opt rest (n - 1)
+  | _ -> None
+
+let native_core_tm_type symbol_table env tm =
+  let rec infer db_tps = function
+    | TmH name ->
+        begin match native_core_ident_opt name with
+        | Some ident ->
+            begin match native_core_assoc_opt ident env with
+            | Some tp -> Some tp
+            | None ->
+                begin match Hashtbl.find_opt symbol_table ident with
+                | Some (0, tp) -> Some tp
+                | _ -> None
+                end
+            end
+        | None -> None
+        end
+    | DB index -> native_core_nth_opt db_tps index
+    | Prim _ -> None
+    | TpAp (TmH h, tp) when h = megalodon_eq_poly_hash ->
+        Some (Ar (tp, Ar (tp, Prop)))
+    | TpAp (tm, _) -> infer db_tps tm
+    | Ap (fn, _arg) ->
+        begin match infer db_tps fn with
+        | Some (Ar (_, result_tp)) -> Some result_tp
+        | _ -> None
+        end
+    | Lam (tp, body) ->
+        Option.map (fun body_tp -> Ar (tp, body_tp)) (infer (tp :: db_tps) body)
+    | Imp _ | All _ -> Some Prop
+  in
+  infer [] tm
+
+let native_core_common_tm_type symbol_table env left right =
+  match native_core_tm_type symbol_table env left,
+        native_core_tm_type symbol_table env right with
+  | Some left_tp, Some right_tp when left_tp = right_tp -> Some left_tp
+  | Some tp, None | None, Some tp -> Some tp
+  | None, None -> None
+  | Some _, Some _ -> None
+
+let native_core_raw_bool_constant = function
+  | TmH ("f__true" | "f__false" | "vampire_true" | "vampire_false") -> true
+  | _ -> false
+
+let native_core_type_raw_equalities symbol_table env tm =
+  let rec normalize db_tps tm =
+    match tm with
+    | Ap (Ap (TpAp (TmH h, tp), left), right)
+        when h = megalodon_eq_poly_hash ->
+        Ap
+          (Ap (TpAp (TmH h, tp), normalize db_tps left),
+           normalize db_tps right)
+    | Ap (Ap (TmH h, left), right) when h = "=" || h = "eq" ->
+        let left = normalize db_tps left in
+        let right = normalize db_tps right in
+        let tp =
+          if native_core_raw_bool_constant left
+             || native_core_raw_bool_constant right then
+            Some Prop
+          else
+            native_core_common_tm_type symbol_table env left right
+        in
+        begin match tp with
+        | Some tp ->
+            Ap (Ap (TpAp (TmH megalodon_eq_poly_hash, tp), left), right)
+        | None -> Ap (Ap (TmH h, left), right)
+        end
+    | TpAp (tm, tp) -> TpAp (normalize db_tps tm, tp)
+    | Ap (left, right) -> Ap (normalize db_tps left, normalize db_tps right)
+    | Lam (tp, body) -> Lam (tp, normalize (tp :: db_tps) body)
+    | Imp (left, right) -> Imp (normalize db_tps left, normalize db_tps right)
+    | All (tp, body) -> All (tp, normalize (tp :: db_tps) body)
+    | DB _ | TmH _ | Prim _ -> tm
+  in
+  normalize [] tm
+
+let native_core_type_raw_equalities_literal symbol_table env = function
+  | Pos atom -> Pos (native_core_type_raw_equalities symbol_table env atom)
+  | Neg atom -> Neg (native_core_type_raw_equalities symbol_table env atom)
+
+let native_core_type_raw_equalities_clause symbol_table env clause =
+  List.map (native_core_type_raw_equalities_literal symbol_table env) clause
+
+let native_core_type_raw_equalities_subst symbol_table env subst =
+  List.map
+    (fun (name, tm) -> (name, native_core_type_raw_equalities symbol_table env tm))
+    subst
+
+let native_core_step_type_env cert id variables =
+  variables @ native_core_step_variables cert id
+
+let native_core_type_raw_equalities_step cert variables symbol_table step =
+  let env id = native_core_step_type_env cert id variables in
+  let tm id = native_core_type_raw_equalities symbol_table (env id) in
+  let literal id = native_core_type_raw_equalities_literal symbol_table (env id) in
+  let clause id = native_core_type_raw_equalities_clause symbol_table (env id) in
+  let subst id = native_core_type_raw_equalities_subst symbol_table (env id) in
+  let ennf_pair id pair =
+    {
+      pair with
+      ennf_pair_source = tm id pair.ennf_pair_source;
+      ennf_pair_target = tm id pair.ennf_pair_target;
+    }
+  in
+  match step with
+  | Input (id, source, result) -> Input (id, source, clause id result)
+  | FormulaInput (id, source, result) -> FormulaInput (id, source, literal id result)
+  | FormulaTermInput (id, source, result) -> FormulaTermInput (id, source, tm id result)
+  | FormulaTermCopy (id, parent_id, result) -> FormulaTermCopy (id, parent_id, tm id result)
+  | RectifyFormula (id, parent_id, renamings, result) ->
+      RectifyFormula (id, parent_id, renamings, tm id result)
+  | FoolAtomLift (id, source, target, path) ->
+      FoolAtomLift (id, tm id source, tm id target, path)
+  | FoolFormula (id, parent_id, result) -> FoolFormula (id, parent_id, tm id result)
+  | EnnfFormula (id, parent_id, source, pairs, result) ->
+      EnnfFormula
+        (id, parent_id, Option.map (tm id) source,
+         List.map (ennf_pair id) pairs, tm id result)
+  | SkolemFormula (id, parent_id, source, introductions, substitution, result) ->
+      SkolemFormula
+        (id, parent_id, Option.map (tm id) source, introductions,
+         subst id substitution, tm id result)
+  | SkolemFormulaComputed (id, parent_id, substitution) ->
+      SkolemFormulaComputed (id, parent_id, subst id substitution)
+  | CnfFormulaClause (id, parent_id, index, count, result) ->
+      CnfFormulaClause (id, parent_id, index, count, clause id result)
+  | FormulaCopy (id, parent_id, result) -> FormulaCopy (id, parent_id, literal id result)
+  | FoolBool (id, parent_id, result) -> FoolBool (id, parent_id, literal id result)
+  | CnfLiteral (id, parent_id, result) -> CnfLiteral (id, parent_id, clause id result)
+  | PredicateDefinition (id, symbol, result) -> PredicateDefinition (id, symbol, tm id result)
+  | PredicateDefinitionFold (id, source, definition, result) ->
+      PredicateDefinitionFold (id, source, definition, tm id result)
+  | PredicateDefinitionFoldChain (id, source, definitions, result) ->
+      PredicateDefinitionFoldChain (id, source, definitions, tm id result)
+  | DefinitionInput (id, result) -> DefinitionInput (id, clause id result)
+  | DefinitionRewriteChain (id, parent_id, rewrites, result) ->
+      DefinitionRewriteChain (id, parent_id, rewrites, clause id result)
+  | AvatarComponent (id, result) -> AvatarComponent (id, clause id result)
+  | AvatarDefinition (id, split_var, split_positive, result) ->
+      AvatarDefinition (id, split_var, split_positive, clause id result)
+  | SplitDependency (id, owner_id, dependencies, result) ->
+      SplitDependency (id, owner_id, dependencies, clause id result)
+  | AvatarSplit (id, parent_ids, result) -> AvatarSplit (id, parent_ids, clause id result)
+  | AvatarContradiction (id, parent_ids, result) ->
+      AvatarContradiction (id, parent_ids, clause id result)
+  | AvatarRefutation (id, parent_ids, sat_clauses, sat_proof, result) ->
+      AvatarRefutation (id, parent_ids, sat_clauses, sat_proof, clause id result)
+  | FoolExhaustiveness (id, result) -> FoolExhaustiveness (id, clause id result)
+  | FoolDistinctness (id, result) -> FoolDistinctness (id, clause id result)
+  | InequalityNameIntro (id, result) -> InequalityNameIntro (id, clause id result)
+  | InequalitySplit (id, parent_id, splits, result) ->
+      InequalitySplit (id, parent_id, splits, clause id result)
+  | Substitute (id, parent_id, substitution, result) ->
+      Substitute (id, parent_id, subst id substitution, clause id result)
+  | Condensation (id, parent_id, substitution, result) ->
+      Condensation (id, parent_id, subst id substitution, clause id result)
+  | UnitResultingResolution (id, parent_id, trace, result) ->
+      UnitResultingResolution (id, parent_id, trace, clause id result)
+  | Resolve (id, left_id, right_id, left_index, right_index, result) ->
+      Resolve (id, left_id, right_id, left_index, right_index, clause id result)
+  | SubsumptionResolution (id, main_parent_id, side_parent_id, selected, side_pivot, side_subst, result) ->
+      SubsumptionResolution
+        (id, main_parent_id, side_parent_id, literal id selected,
+         literal id side_pivot, subst id side_subst, clause id result)
+  | Factor (id, parent_id, left_index, right_index, result) ->
+      Factor (id, parent_id, left_index, right_index, clause id result)
+  | EqualityResolution (id, parent_id, literal_index, result) ->
+      EqualityResolution (id, parent_id, literal_index, clause id result)
+  | EqualityResolutionConstraints (id, parent_id, literal_index, selected, constraints, result) ->
+      EqualityResolutionConstraints
+        (id, parent_id, literal_index, literal id selected,
+         clause id constraints, clause id result)
+  | EqualityFactoring (id, parent_id, selected_index, other_index, substitution, result) ->
+      EqualityFactoring
+        (id, parent_id, selected_index, other_index, subst id substitution,
+         clause id result)
+  | EqualityFactoringConstraints (id, parent_id, selected_index, other_index, substitution, constraints, result) ->
+      EqualityFactoringConstraints
+        (id, parent_id, selected_index, other_index, subst id substitution,
+         clause id constraints, clause id result)
+  | TruthConflict (id, parent_id, literal_index, result) ->
+      TruthConflict (id, parent_id, literal_index, clause id result)
+  | EqualitySymmetry (id, parent_id, literal_index, result) ->
+      EqualitySymmetry (id, parent_id, literal_index, clause id result)
+  | BoolSimplify (id, parent_id, literal_index, positions, source, target, result) ->
+      BoolSimplify
+        (id, parent_id, literal_index, positions, tm id source, tm id target,
+         clause id result)
+  | Paramodulate (id, equality_parent_id, target_parent_id, equality_index, target_index, position, from_tm, to_tm, result) ->
+      Paramodulate
+        (id, equality_parent_id, target_parent_id, equality_index, target_index,
+         position, tm id from_tm, tm id to_tm, clause id result)
+  | Superposition (id, left_id, right_id, left_index, right_index, left_subst, right_subst, position, from_tm, to_tm, result) ->
+      Superposition
+        (id, left_id, right_id, left_index, right_index, subst id left_subst,
+         subst id right_subst, position, tm id from_tm, tm id to_tm,
+         clause id result)
+  | Contradiction _ as step -> step
 
 let native_core_abstract_named_arguments args body =
   let count = List.length args in
@@ -6649,6 +6867,34 @@ let native_core_instantiate_step_proof_in_result_context
   in
   List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
 
+let native_core_substitute_in_result_context
+    cert id variables parent_id parent_clause subst parent_proof result =
+  let result_step_variables = native_core_step_variables cert id in
+  let close_tm = native_core_close_tm (variables @ result_step_variables) in
+  let close_literal = function
+    | Pos atom -> Pos (close_tm atom)
+    | Neg atom -> Neg (close_tm atom)
+  in
+  let source_clause =
+    subst_clause subst parent_clause
+    |> List.map close_literal
+  in
+  let result =
+    List.map close_literal result
+  in
+  if not (same_clause_multiset source_clause result) then
+    error
+      (id ^ ": native proof-term checker instantiation substitution does not produce result clause");
+  let body_proof =
+    native_core_instantiate_step_proof_body_in_result_context
+      cert id variables parent_id subst parent_proof
+  in
+  let body_proof =
+    if source_clause = result then body_proof
+    else native_core_prove_clause_to_clause id source_clause result body_proof
+  in
+  List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
+
 let native_core_resolve_in_result_context
     cert id variables left_id left_clause left_proof right_id right_clause right_proof
     left_index right_index result =
@@ -7279,6 +7525,12 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
   let core_steps = validate_certificate_core_fragment cert in
   ignore (check_certificate_strict cert);
   let variables = native_core_proof_variables cert in
+  let symbol_table = native_core_symbol_table cert in
+  let typed_steps =
+    List.map
+      (native_core_type_raw_equalities_step cert variables symbol_table)
+      cert.steps
+  in
   let source_inputs = ref [] in
   List.iter
     (function
@@ -7289,7 +7541,7 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
             @ [(id, proposition,
                 native_core_source_binding source_map id source proposition)]
       | _ -> ())
-    cert.steps;
+    typed_steps;
   let source_count = List.length !source_inputs in
   let source_hyp_index id =
     let rec find index = function
@@ -7308,7 +7560,6 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
     |> List.map (fun (_, prop, _) -> prop)
     |> List.rev
   in
-  let symbol_table = native_core_symbol_table cert in
   let proof_delta, definition_delta = native_core_certificate_sgdelta cert symbol_table in
   let check_step_proof id clause proof =
     let step_variables = native_core_step_variables cert id in
@@ -7358,19 +7609,16 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
           store id clause (Hyp (source_hyp_index id))
       | Substitute (id, parent_id, [], result) ->
           let parent_clause, parent_proof = lookup parent_id in
-          if result <> parent_clause then
-            error
-              (id ^ ": native core proof-term checker supports only identity substitution when the result clause is unchanged");
-          store id result parent_proof
+          let proof =
+            native_core_substitute_in_result_context
+              cert id variables parent_id parent_clause [] parent_proof result
+          in
+          store id result proof
       | Substitute (id, parent_id, subst, result) ->
           let parent_clause, parent_proof = lookup parent_id in
-          let expected = subst_clause subst parent_clause in
-          if not (same_clause_multiset expected result) then
-            error
-              (id ^ ": native core proof-term checker instantiation substitution does not produce result clause");
           let proof =
-            native_core_instantiate_step_proof_in_result_context
-              cert id variables parent_id subst parent_proof
+            native_core_substitute_in_result_context
+              cert id variables parent_id parent_clause subst parent_proof result
           in
           store id result proof
       | Resolve (id, left_id, right_id, left_index, right_index, result) ->
@@ -7440,7 +7688,7 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
           error
             (step_id step ^ ": native core proof-term checker has no proof-term rule for "
              ^ step_rule_name step))
-    cert.steps;
+    typed_steps;
   let proof =
     match !final_proof with
     | Some proof -> proof
@@ -7484,6 +7732,12 @@ let native_preprocess_step_formula_prop cert variables id formula =
 let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
   ignore (check_certificate_strict cert);
   let variables = native_core_proof_variables cert in
+  let symbol_table = native_core_symbol_table cert in
+  let typed_steps =
+    List.map
+      (native_core_type_raw_equalities_step cert variables symbol_table)
+      cert.steps
+  in
   let source_inputs = ref [] in
   List.iter
     (function
@@ -7510,7 +7764,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
             @ [(id, proposition,
                 native_core_source_binding source_map id source proposition)]
       | _ -> ())
-    cert.steps;
+    typed_steps;
   let source_count = List.length !source_inputs in
   let source_hyp_index id =
     let rec find index = function
@@ -7529,7 +7783,6 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
     |> List.map (fun (_, prop, _) -> prop)
     |> List.rev
   in
-  let symbol_table = native_core_symbol_table cert in
   let proof_delta, definition_delta = native_core_certificate_sgdelta cert symbol_table in
   let check_step_proof id prop proof =
     let step_variables = native_core_step_variables cert id in
@@ -7736,19 +7989,16 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
             (native_core_fool_exhaustiveness_proof cert id result)
       | Substitute (id, parent_id, [], result) ->
           let parent_clause, parent_proof = lookup_clause parent_id in
-          if result <> parent_clause then
-            error
-              (id ^ ": native preprocess proof-term checker supports only identity substitution when the result clause is unchanged");
-          store_clause id result parent_proof
+          let proof =
+            native_core_substitute_in_result_context
+              cert id variables parent_id parent_clause [] parent_proof result
+          in
+          store_clause id result proof
       | Substitute (id, parent_id, subst, result) ->
           let parent_clause, parent_proof = lookup_clause parent_id in
-          let expected = subst_clause subst parent_clause in
-          if not (same_clause_multiset expected result) then
-            error
-              (id ^ ": native preprocess proof-term checker instantiation substitution does not produce result clause");
           let proof =
-            native_core_instantiate_step_proof_in_result_context
-              cert id variables parent_id subst parent_proof
+            native_core_substitute_in_result_context
+              cert id variables parent_id parent_clause subst parent_proof result
           in
           store_clause id result proof
       | Resolve (id, left_id, right_id, left_index, right_index, result) ->
@@ -7806,7 +8056,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           error
             (step_id step ^ ": native preprocess proof-term checker has no proof-term rule for "
              ^ step_rule_name step))
-    cert.steps;
+    typed_steps;
   let proof =
     match !final_proof with
     | Some proof -> proof
