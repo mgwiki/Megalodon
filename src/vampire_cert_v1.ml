@@ -12601,6 +12601,15 @@ let simple_paramodulate_unit_split_proof
     in
     String.trim (rights ^ left ^ " exact " ^ proof ^ ".")
   in
+  let target_result_oriented_proof index lit proof =
+    match List.nth_opt target_result_clause index with
+    | None -> emit_error (id ^ ": target result literal index is out of bounds")
+    | Some actual ->
+        begin match orient_literal lit actual with
+        | Some (_, orient_proof) -> orient_proof proof
+        | None -> emit_error (id ^ ": target result literal orientation mismatch")
+        end
+  in
   let target_result_index source_index =
     if source_index = target_index then
       List.length target_rest
@@ -12625,7 +12634,10 @@ let simple_paramodulate_unit_split_proof
             (target_result_index index)
             (result_literal_proof "Hparamod_eq" assumption)
         else
-          target_result_injection_script (target_result_index index) assumption
+          let result_index = target_result_index index in
+          target_result_injection_script
+            result_index
+            (target_result_oriented_proof result_index lit assumption)
       in
       let rec cases depth index clause proof_name =
         match clause with
