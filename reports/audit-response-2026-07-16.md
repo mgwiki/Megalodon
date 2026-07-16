@@ -168,6 +168,13 @@ elaborators accept source proofs and an external delta table; context-resolved
 from the source-hypothesis spine. A smoke fixture checks this in the native
 core path with a generated Megalodon axiom and matching THF source map.
 
+Generated `set_reflexivity` and `local_set_reflexivity` source entries now
+produce native reflexivity proofs in the source resolver instead of being
+merely counted. The consuming native core/preprocess checker then checks those
+proofs with the certificate-local symbol table. This covers the common
+Megalodon `set`-command equality obligations that do not correspond to an
+original named claim.
+
 Local and conjecture-backed sources are deliberately not discharged by this
 mechanism yet. They need theorem-local source-context bindings rather than a
 global `Known` hash.
@@ -251,6 +258,9 @@ Completed in this response:
 - strict live `vampireaby` no longer falls back to direct native
   reconstruction when a configured Vampire run fails to provide a usable
   native certificate.
+- generated `set_reflexivity` source entries are discharged by native
+  reflexivity proofs produced by the source-context resolver and checked by
+  the consuming native elaborator.
 
 Not completed:
 

@@ -1964,6 +1964,19 @@ if ! rg -q 'source obligations audited total=2 .*set_reflexivity_checked=1' "$WO
 fi
 
 bin/megalodon \
+  -vampirecertv1sourcecontext \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_set_reflexivity_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_set_reflexivity_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_set_reflexivity_source_context.log"
+
+if ! rg -q 'source context audited total=2 .*generated_checked=1' \
+    "$WORK_DIR/native_cert_v1_source_map_set_reflexivity_source_context.log"; then
+  echo "native certificate v1 source-context resolver did not prove a generated set-reflexivity source" >&2
+  exit 1
+fi
+
+bin/megalodon \
+  -vampirecertv1sourcecontext \
   -vampirecertv1corepfcheck \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_set_reflexivity_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_set_reflexivity_valid.th0.p \

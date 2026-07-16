@@ -59,6 +59,17 @@ let local_source_kind kind =
 let generated_source_kind kind =
   kind = "set_reflexivity" || kind = "local_set_reflexivity"
 
+let rec generated_set_reflexivity_proof = function
+  | All (tp, body) ->
+      begin match generated_set_reflexivity_proof body with
+      | Some proof -> Some (TLam (tp, proof))
+      | None -> None
+      end
+  | Imp (left, right) when left = right ->
+      Some (PLam (left, Hyp 0))
+  | proposition ->
+      Vampire_cert_v1.native_core_reflexive_eq_proof proposition
+
 let known_hash_proves context hash proposition =
   try
     match check_propofpf context.proof_delta context.symbol_table [] [] (Known hash) proposition [] with
@@ -129,7 +140,19 @@ let resolve_one context audit binding =
     else
       { audit with definition_missing = audit.definition_missing + 1 }
   else if generated_source_kind kind then
-    { audit with generated_checked = audit.generated_checked + 1 }
+    begin match generated_set_reflexivity_proof proposition with
+    | Some proof ->
+        audit
+        |> add_source_proof step proof
+        |> add_resolved step (Generated (proposition, proof))
+        |> fun audit -> { audit with generated_checked = audit.generated_checked + 1 }
+    | _ ->
+        raise
+          (Vampire_cert_v1.Error
+             (step ^ ": generated source " ^ kind
+              ^ " is not a provable reflexive Megalodon equality: "
+              ^ tm_to_str proposition))
+    end
   else
     { audit with unresolved = audit.unresolved + 1 }
 

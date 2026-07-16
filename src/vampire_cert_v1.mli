@@ -196,6 +196,7 @@ val parse_source_origin : string -> source_origin option
 val audit_certificate_sources : ?require_formula_match:bool -> source_map_entry list -> certificate -> source_obligation_audit
 val validate_certificate_sources : ?require_formula_match:bool -> source_map_entry list -> certificate -> int
 val native_certificate_source_bindings : ?source_map:source_map_entry list -> certificate -> core_native_source_binding list
+val native_core_reflexive_eq_proof : Syntax.tm -> Syntax.pf option
 val check_certificate : certificate -> (string * checked_item) list
 val check_certificate_strict : certificate -> (string * checked_item) list
 val validate_certificate_core_fragment : certificate -> int

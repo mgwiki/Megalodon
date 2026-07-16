@@ -412,6 +412,10 @@ Tasks:
   implementation seed is `src/vampire_source_context.ml`; it resolves
   hash-backed globals to `Known hash` and theorem-local `local_fact` bindings
   to `Hyp i` when Megalodon is still inside the live proof state:
+- Generated `set_reflexivity` and `local_set_reflexivity` entries are now
+  resolved by native reflexivity proofs checked by the consuming elaborator, so
+  Megalodon `set`-command equality facts do not need to become bridge
+  assumptions.
 
 ```ocaml
 type source_proof =

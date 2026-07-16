@@ -357,6 +357,11 @@ Implementation update, 2026-07-16:
   not provide a native certificate, or when the certificate cannot be composed
   into the current goal.  Direct native `aby` reconstruction remains a
   development fallback only outside that strict certificate path.
+- Generated `set_reflexivity` and `local_set_reflexivity` source-map entries
+  now produce native reflexivity proofs in `src/vampire_source_context.ml`;
+  the consuming native elaborator checks them with the certificate-local symbol
+  table. These entries cover Megalodon `set`-command equality obligations that
+  have no corresponding original claim name.
 - This is still partial original theorem reconstruction: it handles the simple
   core shape `local facts -> negated conjecture -> False`, including multiple
   local facts, but not local

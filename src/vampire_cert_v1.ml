@@ -6842,6 +6842,14 @@ let native_core_reflexive_eq_proof = function
             PLam
               (Ap (Ap (DB 0, tmshift 0 1 left), tmshift 0 1 left),
            Hyp 0)))
+  | Ap (Ap (TmH h, left), right)
+      when (h = "=" || h = "eq") && left = right ->
+      Some
+        (TLam
+           (Ar (Set, Ar (Set, Prop)),
+            PLam
+              (Ap (Ap (DB 0, tmshift 0 1 left), tmshift 0 1 left),
+           Hyp 0)))
   | _ -> None
 
 let native_core_definition_input_proof sgdelta id clause =
@@ -9482,7 +9490,11 @@ let elaborate_core_resolution_refutation_native
     (function
       | Input (id, source, clause)
           when native_core_source_is_set_reflexivity source_map source ->
-          let proof = native_core_set_reflexivity_clause_proof id clause in
+          let proof =
+            match native_core_source_proof shifted_source_proofs id with
+            | Some proof -> proof
+            | None -> native_core_set_reflexivity_clause_proof id clause
+          in
           store id clause proof
       | Input (id, _, clause) ->
           let _ = native_core_clause_prop id clause in
@@ -9843,7 +9855,11 @@ let elaborate_preprocess_refutation_native
     (function
       | Input (id, source, clause)
           when native_core_source_is_set_reflexivity source_map source ->
-          let proof = native_core_set_reflexivity_clause_proof id clause in
+          let proof =
+            match native_core_source_proof shifted_source_proofs id with
+            | Some proof -> proof
+            | None -> native_core_set_reflexivity_clause_proof id clause
+          in
           store_clause id clause proof
       | Input (id, _, clause) ->
           let proof =
@@ -9854,7 +9870,11 @@ let elaborate_preprocess_refutation_native
           store_clause id clause proof
       | FormulaInput (id, source, literal)
           when native_core_source_is_set_reflexivity source_map source ->
-          let proof = native_core_set_reflexivity_literal_proof id literal in
+          let proof =
+            match native_core_source_proof shifted_source_proofs id with
+            | Some proof -> proof
+            | None -> native_core_set_reflexivity_literal_proof id literal
+          in
           store_clause id [literal] proof;
           store_formula id (native_core_literal_prop literal) proof
       | FormulaInput (id, _, literal) ->
@@ -9867,7 +9887,12 @@ let elaborate_preprocess_refutation_native
           store_formula id (native_core_literal_prop literal) proof
       | FormulaTermInput (id, source, formula)
           when native_core_source_is_set_reflexivity source_map source ->
-          store_formula id formula (native_core_set_reflexivity_atom_proof id formula)
+          let proof =
+            match native_core_source_proof shifted_source_proofs id with
+            | Some proof -> proof
+            | None -> native_core_set_reflexivity_atom_proof id formula
+          in
+          store_formula id formula proof
       | FormulaTermInput (id, _, formula) ->
           let proof =
             match native_core_source_proof shifted_source_proofs id with
