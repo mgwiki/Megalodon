@@ -351,9 +351,11 @@ Implementation update, 2026-07-16:
   `xm` has the standard excluded-middle proposition.  The smoke suite checks
   the positive live certificate path, a negative malformed-`xm` case, and the
   same live certificate theorem appended after an `UpToOctonions` library
-  prelude that declares `xm`.
+  prelude that declares `xm`.  It also checks a multi-local source case where
+  two local facts are resolved and applied at the Megalodon boundary.
 - This is still partial original theorem reconstruction: it handles the simple
-  core shape `local facts -> negated conjecture -> False`, but not local
+  core shape `local facts -> negated conjecture -> False`, including multiple
+  local facts, but not local
   definitions, generated preprocessing facts, Skolemization, or general
   Smolka-style transformation chains.
 

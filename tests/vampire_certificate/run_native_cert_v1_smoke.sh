@@ -498,6 +498,69 @@ if ! rg -q 'Everything looks good' \
   exit 1
 fi
 
+multi_local_source_live_dir="$WORK_DIR/multi_local_source_live"
+mkdir -p "$multi_local_source_live_dir"
+cat >"$multi_local_source_live_dir/fake_vampire" <<'EOF_MULTI_LOCAL_FAKE_VAMPIRE'
+#!/usr/bin/env bash
+problem="${@: -1}"
+conj=$(sed -n 's/^% megalodon_source_map (conjecture "\([^"]*\)" .*/\1/p' "$problem" | head -1)
+cat <<CERT
+% SZS status Theorem
+% SZS output start Proof
+megalodon_certificate_native_sexpr_start.
+(certificate vampire-megalodon 1
+  (problem "multi-local-source-live")
+  (symbol_declaration "Variable p:prop.")
+  (symbol_declaration "Variable q:prop.")
+  (input "u0" (source axiom "c_Hp") (clause (pos (TMH "p"))))
+  (input "u1" (source axiom "c_Hq") (clause (pos (TMH "q"))))
+  (input "u2" (source negated_conjecture "$conj") (clause (neg (TMH "p"))))
+  (resolve "u3" (parents "u0" "u2") (pivot 0 0) (result (clause)))
+)
+megalodon_certificate_native_sexpr_end.
+% SZS output end Proof
+CERT
+EOF_MULTI_LOCAL_FAKE_VAMPIRE
+chmod +x "$multi_local_source_live_dir/fake_vampire"
+cat >"$multi_local_source_live_dir/multi_local_source_live.mg" <<'EOF_MULTI_LOCAL_SOURCE_LIVE_MG'
+Definition False : prop := forall p:prop, p.
+Definition not : prop -> prop := fun A:prop => A -> False.
+Prefix ~ 700 := not.
+Definition or : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> p) -> (B -> p) -> p.
+Infix \/ 785 left := or.
+Axiom xm : forall P:prop, P \/ ~P.
+Variable p q:prop.
+Theorem live_multi_local:p -> q -> p.
+assume Hp:p.
+assume Hq:q.
+aby Hp Hq.
+Qed.
+EOF_MULTI_LOCAL_SOURCE_LIVE_MG
+bin/megalodon \
+  -v 9 \
+  -vampireaby "$multi_local_source_live_dir/fake_vampire" \
+  -vampireabyproof megalodon \
+  -vampireabynative \
+  -vampireabyoutdir "$multi_local_source_live_dir/out" \
+  "$multi_local_source_live_dir/multi_local_source_live.mg" \
+  >"$WORK_DIR/native_cert_v1_live_multi_local_source_context.log" \
+  2>"$WORK_DIR/native_cert_v1_live_multi_local_source_context.err"
+if ! rg -q 'source_context known=0 local=2 unresolved=1' \
+    "$WORK_DIR/native_cert_v1_live_multi_local_source_context.log"; then
+  echo "live vampireaby multi-local fixture did not bind both local hypotheses" >&2
+  exit 1
+fi
+if ! rg -q 'Vampire native certificate reconstructed aby proof term' \
+    "$WORK_DIR/native_cert_v1_live_multi_local_source_context.log"; then
+  echo "live vampireaby did not compose the multi-local native certificate proof" >&2
+  exit 1
+fi
+if ! rg -q 'Everything looks good' \
+    "$WORK_DIR/native_cert_v1_live_multi_local_source_context.log"; then
+  echo "live vampireaby multi-local fixture did not close" >&2
+  exit 1
+fi
+
 bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_synthetic_valid.th0.p \

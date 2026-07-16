@@ -304,13 +304,15 @@ proposition is convertible to the standard excluded-middle shape
 `forall P:prop, P \/ ~P`; a negative fixture checks that a malformed `xm` is
 not trusted.  A second live fixture appends the same certificate-reconstructed
 theorem after the `xm` declaration in an `UpToOctonions` library prelude and
-checks that it also closes.
+checks that it also closes.  A third fixture checks a multi-local case with
+two local source facts plus the negated conjecture, ensuring the boundary
+application handles more than one local `Hyp`.
 
 This is still partial original-context reconstruction: local facts and
-conjecture negation now compose in the simple core case, but local definitions,
-multiple/mixed source assumptions, quantified source matching beyond direct
-context-variable instantiation, and Smolka-style preprocessing proofs remain
-open.
+conjecture negation now compose in simple core cases, including multiple local
+facts, but local definitions, generated source transformations, quantified
+source matching beyond direct context-variable instantiation, and
+Smolka-style preprocessing proofs remain open.
 
 ## Design Principles
 
