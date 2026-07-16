@@ -43,6 +43,9 @@ for dir in "${native_run_dirs[@]}"; do
   if [[ -d "$dir/cases" ]]; then
     find -L "$dir/cases" -maxdepth 2 -type f -name native.sexp -size +0 \
       >> "$WORK_DIR/native_files.txt"
+  elif [[ -d "$dir" ]]; then
+    find -L "$dir" -maxdepth 1 -type f \( -name '*.native.sexp' -o -name 'native.sexp' \) -size +0 \
+      >> "$WORK_DIR/native_files.txt"
   elif [[ -f "$dir" ]]; then
     printf '%s\n' "$dir" >> "$WORK_DIR/native_files.txt"
   else
