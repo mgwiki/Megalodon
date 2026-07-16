@@ -59,12 +59,43 @@ if [[ ! -s "$WORK_DIR/native_files.txt" ]]; then
   exit 2
 fi
 
-collect_rule() {
-  local rule=$1
-  local out=$2
-  : > "$out"
+primitive_rules=(
+  substitute
+  paramodulate
+  equality_symmetry
+  equality_resolution
+  equality_resolution_constraints
+  equality_factoring
+  equality_factoring_constraints
+  resolve
+  factor
+  fool_atom_lift
+  ennf_formula
+  skolem_formula
+  cnf_literal
+  cnf_formula_clause
+  formula_copy
+  formula_term_copy
+  rectify_formula
+  fool_exhaustiveness
+  truth_conflict
+  avatar_component
+  avatar_definition
+  avatar_split
+  avatar_refutation
+  split_dependency
+)
+
+collect_all_rules() {
+  local all_records="$WORK_DIR/all_primitive_records.tsv"
+  : > "$all_records"
+  local rule
+  for rule in "${primitive_rules[@]}"; do
+    : > "$WORK_DIR/$rule.tsv"
+  done
+
   while IFS= read -r native_file; do
-    awk -v source="$native_file" -v wanted="$rule" '
+    awk -v source="$native_file" '
       function paren_delta(text,    i, c, delta) {
         delta = 0
         for (i = 1; i <= length(text); ++i) {
@@ -78,26 +109,25 @@ collect_rule() {
         return delta
       }
 
+      function emit_record(    step) {
+        if (match(record, /^  \(([[:alnum:]_]+) "[^"]+"/, step)) {
+          gsub(/[[:space:]]+/, " ", record)
+          print step[1] "\t" source ":" start_line ":" record
+        }
+      }
+
       /^  \([[:alnum:]_]+ "[^"]+"/ {
         if (collecting) {
-          gsub(/[[:space:]]+/, " ", record)
-          print source ":" start_line ":" record
+          emit_record()
         }
-        collecting = 0
-        record = ""
-        depth = 0
-
-        if (match($0, "^  \\(" wanted " ")) {
-          collecting = 1
-          start_line = FNR
-          record = $0
-          depth = paren_delta($0)
-          if (depth <= 0) {
-            gsub(/[[:space:]]+/, " ", record)
-            print source ":" start_line ":" record
-            collecting = 0
-            record = ""
-          }
+        collecting = 1
+        start_line = FNR
+        record = $0
+        depth = paren_delta($0)
+        if (depth <= 0) {
+          emit_record()
+          collecting = 0
+          record = ""
         }
         next
       }
@@ -106,8 +136,7 @@ collect_rule() {
         record = record " " $0
         depth += paren_delta($0)
         if (depth <= 0) {
-          gsub(/[[:space:]]+/, " ", record)
-          print source ":" start_line ":" record
+          emit_record()
           collecting = 0
           record = ""
         }
@@ -115,12 +144,30 @@ collect_rule() {
 
       END {
         if (collecting) {
-          gsub(/[[:space:]]+/, " ", record)
-          print source ":" start_line ":" record
+          emit_record()
         }
       }
-    ' "$native_file" >> "$out"
+    ' "$native_file" >> "$all_records"
   done < "$WORK_DIR/native_files.txt"
+
+  awk -v work_dir="$WORK_DIR" -v rules="${primitive_rules[*]}" '
+    BEGIN {
+      rule_count = split(rules, rule_names, " ")
+      for (i = 1; i <= rule_count; ++i) {
+        output[rule_names[i]] = work_dir "/" rule_names[i] ".tsv"
+      }
+    }
+    {
+      tab = index($0, "\t")
+      if (tab == 0) {
+        next
+      }
+      rule = substr($0, 1, tab - 1)
+      if (rule in output) {
+        print substr($0, tab + 1) >> output[rule]
+      }
+    }
+  ' "$all_records"
 }
 
 require_min() {
@@ -159,30 +206,7 @@ require_fields() {
 
 : > "$WORK_DIR/rule_counts.txt"
 
-collect_rule substitute "$WORK_DIR/substitute.tsv"
-collect_rule paramodulate "$WORK_DIR/paramodulate.tsv"
-collect_rule equality_symmetry "$WORK_DIR/equality_symmetry.tsv"
-collect_rule equality_resolution "$WORK_DIR/equality_resolution.tsv"
-collect_rule equality_resolution_constraints "$WORK_DIR/equality_resolution_constraints.tsv"
-collect_rule equality_factoring "$WORK_DIR/equality_factoring.tsv"
-collect_rule equality_factoring_constraints "$WORK_DIR/equality_factoring_constraints.tsv"
-collect_rule resolve "$WORK_DIR/resolve.tsv"
-collect_rule factor "$WORK_DIR/factor.tsv"
-collect_rule fool_atom_lift "$WORK_DIR/fool_atom_lift.tsv"
-collect_rule ennf_formula "$WORK_DIR/ennf_formula.tsv"
-collect_rule skolem_formula "$WORK_DIR/skolem_formula.tsv"
-collect_rule cnf_literal "$WORK_DIR/cnf_literal.tsv"
-collect_rule cnf_formula_clause "$WORK_DIR/cnf_formula_clause.tsv"
-collect_rule formula_copy "$WORK_DIR/formula_copy.tsv"
-collect_rule formula_term_copy "$WORK_DIR/formula_term_copy.tsv"
-collect_rule rectify_formula "$WORK_DIR/rectify_formula.tsv"
-collect_rule fool_exhaustiveness "$WORK_DIR/fool_exhaustiveness.tsv"
-collect_rule truth_conflict "$WORK_DIR/truth_conflict.tsv"
-collect_rule avatar_component "$WORK_DIR/avatar_component.tsv"
-collect_rule avatar_definition "$WORK_DIR/avatar_definition.tsv"
-collect_rule avatar_split "$WORK_DIR/avatar_split.tsv"
-collect_rule avatar_refutation "$WORK_DIR/avatar_refutation.tsv"
-collect_rule split_dependency "$WORK_DIR/split_dependency.tsv"
+collect_all_rules
 
 require_min substitute "$WORK_DIR/substitute.tsv" "$MIN_SUBSTITUTE"
 require_fields substitute "$WORK_DIR/substitute.tsv" \
