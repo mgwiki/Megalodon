@@ -164,6 +164,11 @@ literals, and the `primitive_expansion_requires=substitute` contract.  This is
 the Prover9/Ivy-style replacement target for opaque non-identity `substitute`
 replay: the checker should receive typed instantiation data from Vampire rather
 than reconstructing it heuristically.
+Set `REQUIRE_SUBSTITUTE_METADATA=1` when auditing freshly regenerated Vampire
+certificates to require every first-class `substitute` step to have such an
+instantiation record. This stricter mode is intentionally not the default for
+older cached fixtures produced before Vampire emitted metadata for generated
+substitution helpers.
 For macro kernel rules currently expanded into first-class certificate steps
 (`superposition`, demodulation `rewrite`, `unit_resulting_resolution`,
 `subsumption_resolution`, `resolution`, `factoring`, `equality_resolution`,

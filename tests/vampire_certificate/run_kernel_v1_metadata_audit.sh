@@ -7,6 +7,7 @@ export TMPDIR
 WORK_DIR=${WORK_DIR:-"$(mktemp -d "$TMPDIR/kernel_v1_metadata_audit.XXXXXX")"}
 MIN_KERNEL_V1=${MIN_KERNEL_V1:-1}
 MIN_REWRITE_POSITION=${MIN_REWRITE_POSITION:-1}
+REQUIRE_SUBSTITUTE_METADATA=${REQUIRE_SUBSTITUTE_METADATA:-0}
 
 mkdir -p "$WORK_DIR"
 ln -sfn "$WORK_DIR" "$TMPDIR/latest_kernel_v1_metadata_audit"
@@ -315,6 +316,35 @@ if [[ -s "$WORK_DIR/instantiation.tsv" ]]; then
   if [[ -s "$WORK_DIR/missing_instantiation_fields.tsv" ]]; then
     echo "kernel_v1 metadata audit found instantiation records missing substitution fields" >&2
     sed -n '1,40p' "$WORK_DIR/missing_instantiation_fields.tsv" >&2
+    exit 1
+  fi
+fi
+
+if [[ "$REQUIRE_SUBSTITUTE_METADATA" == "1" ]]; then
+  : > "$WORK_DIR/substitute_steps_without_instantiation_metadata.tsv"
+  while IFS= read -r native_file; do
+    awk -v source="$native_file" '
+      match($0, /step_extra "([^"]+)" "kernel_v1"/, extra_match) &&
+      index($0, "rule=instantiation") != 0 {
+        instantiation[extra_match[1]] = 1
+      }
+      match($0, /^  \(substitute "([^"]+)"/, step_match) {
+        substitute_line[step_match[1]] = FNR
+        substitute_text[step_match[1]] = $0
+      }
+      END {
+        for (id in substitute_line) {
+          if (!(id in instantiation)) {
+            print source ":" substitute_line[id] "\t" id "\t" substitute_text[id]
+          }
+        }
+      }
+    ' "$native_file" >> "$WORK_DIR/substitute_steps_without_instantiation_metadata.tsv"
+  done < "$WORK_DIR/native_files.txt"
+
+  if [[ -s "$WORK_DIR/substitute_steps_without_instantiation_metadata.tsv" ]]; then
+    echo "kernel_v1 metadata audit found substitute steps without instantiation metadata" >&2
+    sed -n '1,40p' "$WORK_DIR/substitute_steps_without_instantiation_metadata.tsv" >&2
     exit 1
   fi
 fi
