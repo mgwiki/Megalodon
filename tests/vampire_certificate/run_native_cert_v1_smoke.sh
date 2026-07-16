@@ -338,6 +338,7 @@ if [[ -z "$source_context_hash" ]]; then
   exit 1
 fi
 cat > "$source_context_th0" <<EOF_SOURCE_CONTEXT_TH0
+% megalodon_origin ((file "$source_context_mg") (line "1") (char "1") (kind "generated_source_context_smoke"))
 % megalodon_source_map (type "p" "p" "")
 thf(p,type,(p : \$o)).
 % megalodon_source_map (known "a1" "original_a1" "$source_context_hash")
@@ -351,7 +352,7 @@ cat > "$source_context_cert" <<'EOF_SOURCE_CONTEXT_CERT'
 (certificate vampire-megalodon 1
   (problem "source-context")
   (symbol_declaration "Variable p:prop.")
-  (formula_term_input "u0" (source axiom "a1") (formula (ALL (PROP) (ALL (PROP) (IMP (DB 0) (DB 0))))))
+  (input "u0" (source axiom "a1") (clause (pos (ALL (PROP) (ALL (PROP) (IMP (DB 0) (DB 0)))))))
   (input "u2" (source axiom "a2") (clause (neg (TMH "p"))))
   (input "u3" (source axiom "a3") (clause (pos (TMH "p"))))
   (resolve "u4" (parents "u2" "u3") (pivot 0 0) (result (clause)))
@@ -367,6 +368,19 @@ bin/megalodon \
 if ! rg -q 'source context audited total=3 known_checked=1 known_missing=0 known_mismatch=0 .*local_or_unhashed=2' \
     "$WORK_DIR/native_cert_v1_source_context_checked.log"; then
   echo "native certificate v1 source-context audit did not resolve a real hash-backed known" >&2
+  exit 1
+fi
+
+bin/megalodon \
+  -vampirecertv1sourcecontextstrict \
+  -vampirecertv1corepfcheck \
+  -vampirecertv1 "$source_context_cert" \
+  -vampirecertv1source "$source_context_th0" \
+  "$source_context_mg" >"$WORK_DIR/native_cert_v1_source_context_core_pf.log"
+
+if ! rg -q 'Vampire certificate v1 native core proof term checked 4 steps' \
+    "$WORK_DIR/native_cert_v1_source_context_core_pf.log"; then
+  echo "native certificate v1 core checker did not accept a context-resolved source proof" >&2
   exit 1
 fi
 

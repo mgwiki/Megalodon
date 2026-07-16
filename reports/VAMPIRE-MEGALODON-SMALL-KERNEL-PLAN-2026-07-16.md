@@ -269,6 +269,21 @@ for replacing global source hypotheses by `Known hash` proofs while preserving
 the audit's trust boundary: the proposition must already be in the loaded
 Megalodon context and cannot be installed from the certificate.
 
+Implementation update:
+
+- The core and preprocess native proof-term elaborators now accept a
+  source-proof table plus an external delta table.
+- `-vampirecertv1sourcecontext` populates that table for hash-backed sources
+  that successfully check as `Known hash` in the loaded Megalodon context.
+- Those sources are omitted from the generated source-hypothesis spine and are
+  checked internally as ordinary proof terms.
+- The smoke suite includes a generated core fixture proving that one
+  hash-backed source is consumed this way.
+
+This is still partial original-context reconstruction: global source facts can
+now be discharged, but local theorem hypotheses, local definitions, conjecture
+negation, and Smolka-style preprocessing proofs remain open.
+
 ## Design Principles
 
 ### 1. Vampire explains, Megalodon checks

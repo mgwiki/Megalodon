@@ -7031,6 +7031,7 @@ let audit_vampire_cert_v1_source_context cert source_map =
   let definition_resolved = ref 0 in
   let definition_missing = ref 0 in
   let local_or_unhashed = ref 0 in
+  let source_proofs = ref [] in
   let known_source_kind kind =
     kind = "known" || kind = "axiom"
   in
@@ -7068,7 +7069,12 @@ let audit_vampire_cert_v1_source_context cert source_map =
            if not (Hashtbl.mem sigdelta hash) then
              incr known_missing
            else if known_hash_proves hash binding.Vampire_cert_v1.core_native_source_proposition then
-             incr known_checked
+             begin
+               incr known_checked;
+               source_proofs :=
+                 (binding.Vampire_cert_v1.core_native_source_step, Known hash)
+                 :: !source_proofs
+             end
            else begin
              debug_source_context_mismatch hash binding.Vampire_cert_v1.core_native_source_proposition;
              incr known_mismatch
@@ -7097,7 +7103,8 @@ let audit_vampire_cert_v1_source_context cert source_map =
      && (!known_missing > 0 || !known_mismatch > 0 || !definition_missing > 0) then
     raise
       (Vampire_cert_v1.Error
-         "strict source-context audit failed: at least one hash-backed source did not resolve in the loaded Megalodon context")
+         "strict source-context audit failed: at least one hash-backed source did not resolve in the loaded Megalodon context");
+  List.rev !source_proofs
 
 let check_vampire_cert_v1_file fn =
   try
@@ -7114,6 +7121,7 @@ let check_vampire_cert_v1_file fn =
     in
     let source_map_for_emit = ref [] in
     let source_origin_for_emit = ref None in
+    let source_proofs_for_native = ref [] in
     begin match !vampirecertv1source with
     | None ->
         if !vampirecertv1corepfcheck || !vampirecertv1preprocesspfcheck then
@@ -7160,7 +7168,8 @@ let check_vampire_cert_v1_file fn =
           source_count
           (if source_count = 1 then "" else "s");
         if !vampirecertv1sourcecontext || !vampirecertv1sourcecontextstrict then
-          audit_vampire_cert_v1_source_context cert source_map;
+          source_proofs_for_native :=
+            audit_vampire_cert_v1_source_context cert source_map;
         if !vampirecertv1sourceaudit then
           Printf.printf
             "Vampire certificate v1 source obligations audited total=%d formula_checked=%d formula_unsupported=%d formula_missing=%d equality_checked=%d set_reflexivity_checked=%d true_checked=%d.\n"
@@ -7203,6 +7212,8 @@ let check_vampire_cert_v1_file fn =
       let native_core =
         Vampire_cert_v1.elaborate_core_resolution_refutation_native
           ~source_map:!source_map_for_emit
+          ~source_proofs:!source_proofs_for_native
+          ~external_delta_table:sigdelta
           cert
       in
       match
@@ -7236,6 +7247,8 @@ let check_vampire_cert_v1_file fn =
       let native_preprocess =
         Vampire_cert_v1.elaborate_preprocess_refutation_native
           ~source_map:!source_map_for_emit
+          ~source_proofs:!source_proofs_for_native
+          ~external_delta_table:sigdelta
           cert
       in
       match

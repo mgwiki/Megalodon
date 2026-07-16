@@ -9336,6 +9336,17 @@ let native_core_set_reflexivity_clause_proof id = function
       error
         (id ^ ": native proof-term source set_reflexivity expects a unit equality clause")
 
+let native_core_source_proof source_proofs id =
+  List.assoc_opt id source_proofs
+
+let native_core_merge_external_delta proof_delta external_delta_table =
+  let merged = Hashtbl.copy proof_delta in
+  Hashtbl.iter
+    (fun h v ->
+       if not (Hashtbl.mem merged h) then Hashtbl.add merged h v)
+    external_delta_table;
+  merged
+
 let native_certificate_source_bindings ?(source_map=[]) cert =
   ignore (check_certificate_strict cert);
   let variables = native_core_proof_variables cert in
@@ -9369,7 +9380,11 @@ let native_certificate_source_bindings ?(source_map=[]) cert =
     []
     typed_steps
 
-let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
+let elaborate_core_resolution_refutation_native
+    ?(source_map=[])
+    ?(source_proofs=[])
+    ?(external_delta_table=Hashtbl.create 0)
+    cert =
   let core_steps = validate_certificate_core_fragment cert in
   ignore (check_certificate_strict cert);
   let variables = native_core_proof_variables cert in
@@ -9387,7 +9402,8 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
           let proposition = native_core_step_clause_prop cert variables id clause in
           let binding = native_core_source_binding source_map id source proposition in
           source_bindings := !source_bindings @ [binding];
-          if not (native_core_source_is_set_reflexivity source_map source) then
+          if not (native_core_source_is_set_reflexivity source_map source)
+             && native_core_source_proof source_proofs id = None then
             source_inputs :=
               !source_inputs @ [(id, proposition, binding)]
       | _ -> ())
@@ -9411,6 +9427,7 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
     |> List.rev
   in
   let proof_delta, definition_delta = native_core_certificate_sgdelta cert symbol_table in
+  let proof_delta = native_core_merge_external_delta proof_delta external_delta_table in
   let check_step_proof id clause proof =
     let step_variables = native_core_step_variables cert id in
     let prop = native_core_step_clause_prop cert variables id clause in
@@ -9460,7 +9477,12 @@ let elaborate_core_resolution_refutation_native ?(source_map=[]) cert =
           store id clause proof
       | Input (id, _, clause) ->
           let _ = native_core_clause_prop id clause in
-          store id clause (Hyp (source_hyp_index id))
+          let proof =
+            match native_core_source_proof source_proofs id with
+            | Some proof -> proof
+            | None -> Hyp (source_hyp_index id)
+          in
+          store id clause proof
       | Substitute (id, parent_id, [], result) ->
           let parent_clause, parent_proof = lookup parent_id in
           let proof =
@@ -9590,7 +9612,11 @@ let native_preprocess_step_formula_prop cert variables id formula =
   in
   List.fold_right (fun (_, tp) prop -> All (tp, prop)) step_variables prop
 
-let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
+let elaborate_preprocess_refutation_native
+    ?(source_map=[])
+    ?(source_proofs=[])
+    ?(external_delta_table=Hashtbl.create 0)
+    cert =
   ignore (check_certificate_strict cert);
   let variables = native_core_proof_variables cert in
   let symbol_table = native_core_symbol_table cert in
@@ -9604,7 +9630,8 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
   let add_source_input id source proposition =
     let binding = native_core_source_binding source_map id source proposition in
     source_bindings := !source_bindings @ [binding];
-    if not (native_core_source_is_set_reflexivity source_map source) then
+    if not (native_core_source_is_set_reflexivity source_map source)
+       && native_core_source_proof source_proofs id = None then
       source_inputs := !source_inputs @ [(id, proposition, binding)]
   in
   List.iter
@@ -9643,6 +9670,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
     |> List.rev
   in
   let proof_delta, definition_delta = native_core_certificate_sgdelta cert symbol_table in
+  let proof_delta = native_core_merge_external_delta proof_delta external_delta_table in
   let check_step_proof id prop proof =
     let step_variables = native_core_step_variables cert id in
     let proof = native_core_close_pf (variables @ step_variables) proof in
@@ -9800,21 +9828,35 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           let proof = native_core_set_reflexivity_clause_proof id clause in
           store_clause id clause proof
       | Input (id, _, clause) ->
-          store_clause id clause (Hyp (source_hyp_index id))
+          let proof =
+            match native_core_source_proof source_proofs id with
+            | Some proof -> proof
+            | None -> Hyp (source_hyp_index id)
+          in
+          store_clause id clause proof
       | FormulaInput (id, source, literal)
           when native_core_source_is_set_reflexivity source_map source ->
           let proof = native_core_set_reflexivity_literal_proof id literal in
           store_clause id [literal] proof;
           store_formula id (native_core_literal_prop literal) proof
       | FormulaInput (id, _, literal) ->
-          let proof = Hyp (source_hyp_index id) in
+          let proof =
+            match native_core_source_proof source_proofs id with
+            | Some proof -> proof
+            | None -> Hyp (source_hyp_index id)
+          in
           store_clause id [literal] proof;
           store_formula id (native_core_literal_prop literal) proof
       | FormulaTermInput (id, source, formula)
           when native_core_source_is_set_reflexivity source_map source ->
           store_formula id formula (native_core_set_reflexivity_atom_proof id formula)
       | FormulaTermInput (id, _, formula) ->
-          store_formula id formula (Hyp (source_hyp_index id))
+          let proof =
+            match native_core_source_proof source_proofs id with
+            | Some proof -> proof
+            | None -> Hyp (source_hyp_index id)
+          in
+          store_formula id formula proof
       | PredicateDefinition (id, symbol, result) ->
           check_predicate_definition id symbol result;
           let prop = native_formula_step_prop id result in

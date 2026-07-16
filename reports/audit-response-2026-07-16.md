@@ -150,6 +150,16 @@ This is still not full original-context reconstruction. It is the first
 mechanical resolver for global source facts and a fail-closed gate before
 using those facts to discharge source assumptions in the final proof term.
 
+The resolver is now used by native proof-term checking. The core and preprocess
+elaborators accept source proofs and an external delta table; context-resolved
+`known`/`axiom` bindings are supplied as `Known hash` proofs and are omitted
+from the source-hypothesis spine. A smoke fixture checks this in the native
+core path with a generated Megalodon axiom and matching THF source map.
+
+Local and conjecture-backed sources are deliberately not discharged by this
+mechanism yet. They need theorem-local source-context bindings rather than a
+global `Known` hash.
+
 ## Accepted Audit Corrections
 
 ### 1. The 100 Strict Live Run Is Integration Evidence
@@ -224,6 +234,8 @@ Completed in this response:
 - source-obligation auditing added for source-map inputs and committed
   closed-corpus measurement.
 - original-context source resolver added for hash-backed source inputs.
+- native proof-term elaborators can consume context-resolved global source
+  proofs instead of adding them as source assumptions.
 
 Not completed:
 
