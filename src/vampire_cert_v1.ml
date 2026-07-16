@@ -4066,9 +4066,120 @@ let validate_kernel_v1_metadata_contracts cert =
                  | None -> ()
                  end;
                  require_field_int id fields "result_literal_count" (List.length result)
-             | Some _ ->
-                 error
-                   (id ^ ": strict certificate v1 kernel_v1 subsumption_resolution metadata must annotate a subsumption_resolution step or its resolve primitive")
+             | Some (Substitute (_, final_parent_id, [], result))
+                 when field_value "primitive_expansion" fields = Some "prefix"
+                      && field_value "primitive_expansion_requires" fields = Some "resolve" ->
+                 let prefix = field_required id fields "primitive_expansion_prefix" in
+                 if prefix <> id then
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 subsumption_resolution primitive_expansion_prefix "
+                      ^ prefix ^ " does not match macro step id");
+                 if not (has_id_prefix final_parent_id prefix) then
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 subsumption_resolution final substitute parent "
+                      ^ final_parent_id ^ " is outside the primitive expansion prefix");
+                 require_field_int id fields "parent_count" 2;
+                 let main_parent_index = field_int id fields "main_parent_index" in
+                 let side_parent_index = field_int id fields "side_parent_index" in
+                 if main_parent_index = side_parent_index then
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 subsumption_resolution main and side parent indices must differ");
+                 let parent_unit index =
+                   field_required id fields ("parent_" ^ string_of_int index ^ "_unit")
+                 in
+                 let main_parent_id = parent_unit main_parent_index in
+                 let side_parent_id = parent_unit side_parent_index in
+                 require_field_int id fields "selected_parent_index" main_parent_index;
+                 require_field_int id fields "side_pivot_parent_index" side_parent_index;
+                 let selected_index = field_int id fields "selected_literal_index" in
+                 let side_pivot_index = field_int id fields "side_pivot_literal_index" in
+                 let selected_parent_unit = field_required id fields "selected_parent_unit" in
+                 if selected_parent_unit <> main_parent_id then
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 subsumption_resolution selected_parent_unit "
+                      ^ selected_parent_unit ^ " does not match certificate main parent " ^ main_parent_id);
+                 let side_pivot_parent_unit = field_required id fields "side_pivot_parent_unit" in
+                 if side_pivot_parent_unit <> side_parent_id then
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 subsumption_resolution side_pivot_parent_unit "
+                      ^ side_pivot_parent_unit ^ " does not match certificate side parent " ^ side_parent_id);
+                 let side_subst =
+                   parse_field id fields "side_substitution" parse_substitution
+                 in
+                 begin match Hashtbl.find_opt step_by_id main_parent_id with
+                 | Some parent_step ->
+                     begin match step_clause_opt parent_step with
+                     | Some parent_clause ->
+                         let selected =
+                           nth selected_index parent_clause
+                             (id ^ " strict kernel_v1 subsumption_resolution selected literal")
+                         in
+                         require_field_literal id fields "selected" selected;
+                         require_field_literal id fields "selected_substituted" selected
+                     | None ->
+                         error
+                           (id ^ ": strict certificate v1 kernel_v1 subsumption_resolution main parent "
+                            ^ main_parent_id ^ " is not a clause-bearing step")
+                     end
+                 | None ->
+                     error
+                       (id ^ ": strict certificate v1 kernel_v1 subsumption_resolution references missing main parent "
+                        ^ main_parent_id)
+                 end;
+                 begin match Hashtbl.find_opt step_by_id side_parent_id with
+                 | Some parent_step ->
+                     begin match step_clause_opt parent_step with
+                     | Some parent_clause ->
+                         let side_pivot =
+                           nth side_pivot_index parent_clause
+                             (id ^ " strict kernel_v1 subsumption_resolution side pivot literal")
+                         in
+                         require_field_literal id fields "side_pivot" side_pivot;
+                         require_field_literal id fields "side_pivot_substituted" (subst_literal side_subst side_pivot)
+                     | None ->
+                         error
+                           (id ^ ": strict certificate v1 kernel_v1 subsumption_resolution side parent "
+                            ^ side_parent_id ^ " is not a clause-bearing step")
+                     end
+                 | None ->
+                     error
+                       (id ^ ": strict certificate v1 kernel_v1 subsumption_resolution references missing side parent "
+                        ^ side_parent_id)
+                 end;
+                 require_field_clause id fields "result_clause" result;
+                 begin match field_value "conclusion_clause" fields with
+                 | Some _ -> require_field_clause id fields "conclusion_clause" result
+                 | None -> ()
+                 end;
+                 require_field_int id fields "result_literal_count" (List.length result);
+                 let side_parent_matches resolve_side_parent =
+                   if side_subst = [] then
+                     resolve_side_parent = side_parent_id
+                   else
+                     match Hashtbl.find_opt step_by_id resolve_side_parent with
+                     | Some (Substitute (_, subst_parent_id, subst, _)) ->
+                         subst_parent_id = side_parent_id && subst = side_subst
+                     | _ -> false
+                 in
+                 let has_matching_resolve =
+                   List.exists
+                     (function
+                       | Resolve (resolve_id, resolve_main_parent, resolve_side_parent,
+                                  resolve_selected_index, resolve_side_pivot_index, _)
+                           when has_id_prefix resolve_id prefix
+                                && resolve_main_parent = main_parent_id
+                                && resolve_selected_index = selected_index
+                                && resolve_side_pivot_index = side_pivot_index
+                                && side_parent_matches resolve_side_parent -> true
+                       | _ -> false)
+                     cert.steps
+                 in
+                 if not has_matching_resolve then
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 subsumption_resolution primitive expansion has no matching resolve step")
+	             | Some _ ->
+	                 error
+	                   (id ^ ": strict certificate v1 kernel_v1 subsumption_resolution metadata must annotate a subsumption_resolution step or its resolve primitive")
              | None ->
                  error
                    (id ^ ": strict certificate v1 kernel_v1 subsumption_resolution metadata has no matching certificate step")
