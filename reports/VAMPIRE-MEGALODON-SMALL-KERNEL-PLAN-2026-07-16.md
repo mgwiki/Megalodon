@@ -18,6 +18,35 @@ Related documents:
 - `reports/audit-REPORT-2026-07-15.md`
 - `reports/audit-response-2026-07-15.md`
 
+## Executive Plan
+
+The overall plan is to turn Vampire's proof into a small certificate that is
+checked by Megalodon, not to build a second theorem prover in Megalodon.
+
+The work is organized around three explicit boundaries:
+
+1. Vampire expands its own complex inferences while it still has exact
+   substitutions, selected literals, positions, sorts, and parent clauses.
+2. Megalodon checks a fixed clausal kernel and elaborates it to native
+   `Syntax.pf` proof terms.
+3. A separate source/preprocessing layer connects the clausal inputs back to
+   original Megalodon theorems, lemmas, definitions, set-generated equalities,
+   conjecture negation, and Smolka-style transformations.
+
+The current branch has useful regression infrastructure, but the broad textual
+replay engine is no longer the architectural target. It is a temporary oracle
+and debugging tool. Counted success should increasingly move to the native
+`Syntax.pf` path and then to original-context reconstruction.
+
+The immediate sequencing is:
+
+1. Stabilize the existing primitive certificate frontier and metadata audits.
+2. Move frequent Vampire macros onto a shared Vampire-side primitive builder.
+3. Expand native Megalodon proof-term checking for the same primitive kernel.
+4. Add original-context source glue and set-equality/reflexivity handling.
+5. Add certified preprocessing transformations, including Skolemization.
+6. Only then run the final fresh 100-theorem gate as a qualifying result.
+
 ## Purpose
 
 This document is the implementation plan for moving the project away from
@@ -52,8 +81,9 @@ The project has made real progress:
 - Source formulas are checked for the supported exported THF fragment.
 - The branch has a native `Syntax.pf` seed via `-vampirecertv1corepfcheck`.
 - A strict live 100-case artifact has all 100 certificates passing Megalodon
-  checking, modulo a still-open metadata audit issue for non-identity helper
-  substitutions.
+  checking with source linkage, primitive metadata audit, and substitute
+  metadata audit enabled.
+- A 23-case core-closed frontier now passes the native proof-term audit.
 
 But the architecture is not yet clean:
 
@@ -62,13 +92,85 @@ But the architecture is not yet clean:
   native proof-term path.
 - Some Vampire-side expansions are implemented locally inside
   `MegalodonChecker.cpp`, but there is no clean internal primitive proof IR.
-- Some non-identity helper substitutions are still emitted as certificate
-  steps without matching `kernel_v1 rule=instantiation` metadata.
+- Non-identity helper substitutions have metadata in the current 100-case
+  live gate, but the certificate vocabulary still exposes `substitute` as a
+  transitional surface constructor rather than a first-class `instantiate`
+  primitive.
 - Original-context reconstruction is not complete.
 - Smolka-style preprocessing transformations are not yet a separate small
   proof-producing layer.
 
 The plan below addresses these gaps.
+
+## Measured Baseline on 2026-07-16
+
+The following results define the current local baseline on
+`vampire/megalodon4`.
+
+Strict live 100-case gate:
+
+```sh
+TMPDIR=/project/tmp \
+PROBLEM_DIR=/project/Megalodon/tests/vampire_certificate/closed_cases \
+PROBLEMS_FILE=/project/Megalodon/tests/vampire_certificate/source_linked_strict_100.list \
+LIMIT=100 JOBS=20 VAMPIRE_SECONDS=10 WALL_SECONDS=15 MIN_PASS=100 \
+CHECK_SOURCE_MAP=1 REQUIRE_SOURCE_ORIGIN=1 STRICT_CERT_V1=1 \
+AUDIT_NATIVE_PRIMITIVES=1 AUDIT_KERNEL_V1_METADATA=1 \
+AUDIT_SUBSTITUTE_METADATA=1 \
+WORK_DIR=/project/tmp/live_strict_100_metadata_fix \
+tests/vampire_certificate/run_native_live_parallel.sh
+```
+
+Result:
+
+- `PASS 100`
+- `kernel_v1 records: 3143`
+- `instantiation: 375`
+- `rewrite: 99`
+- `superposition: 338`
+- `unit_resulting_resolution: 1`
+
+This is strong Tier 2 evidence: exported-THF-bound, source-linked, closed
+certificate checking. It is not yet Tier 1 original-context proof
+reconstruction.
+
+Core native proof-term gate:
+
+```sh
+TMPDIR=/project/tmp JOBS=10 \
+tests/vampire_certificate/run_native_cert_v1_core_closed_audit.sh
+```
+
+Result:
+
+- `CORE_ELIGIBLE 23`
+- `CLOSED_PASS 23`
+- `CORE_CLOSED_PASS 23`
+- `CORE_PF_PASS 23`
+
+Artifacts:
+
+- `/project/tmp/native_cert_v1_core_closed_audit.aoXKNK`
+- `/project/tmp/latest_native_cert_v1_core_closed_audit`
+
+The first blockers beyond this frontier are not clausal primitive failures.
+They are mostly source/preprocessing and macro territory:
+
+- `formula_term_input`
+- `formula_input`
+- `rectify_formula`
+- `fool_formula`
+- `cnf_formula_clause`
+- `nonidentity_substitute`
+- `ennf_formula`
+- `cnf_literal`
+- `skolem_formula`
+- AVATAR/split rules
+
+This confirms the next architectural split: do not grow broad Megalodon
+reconstruction to handle these as opaque replay tricks. Push clausal macros
+down to Vampire-side primitive steps, and handle source transformations in a
+separate certified preprocessing layer.
 
 ## Design Principles
 
@@ -389,14 +491,16 @@ Megalodon proof:
 Current state:
 
 - `substitute` steps exist.
-- Some non-identity helper substitutes still lack metadata.
+- The current strict 100-case live gate has metadata for non-identity helper
+  substitutes.
 - `corepfcheck` has support for explicit instantiation/substitution when
   enough data is present.
 
 Immediate implementation target:
 
-- every non-identity emitted `substitute` step must carry instantiation
-  metadata or become an `instantiate` primitive directly.
+- keep the audit that rejects unmetadataed non-identity `substitute` steps;
+- migrate the surface constructor toward a first-class `instantiate`
+  primitive emitted by the Vampire primitive builder.
 
 ### `rename`
 
@@ -631,8 +735,9 @@ Megalodon proof:
 Current issue:
 
 - helper steps like `u459_current_subst0` are non-identity `substitute` steps.
-- Some lack `rule=instantiation` metadata because they are emitted from a
-  synthetic-current-clause path.
+- The previous missing-metadata issue for synthetic-current-clause helpers is
+  fixed on the current branch, but the expansion is still implemented as
+  local exporter code rather than through a reusable primitive builder.
 
 Target expansion:
 
@@ -660,15 +765,15 @@ Required Vampire data:
 
 Immediate task:
 
-- add instantiation metadata for synthetic current-clause substitutes;
-- then move the URR expansion into a reusable primitive-step builder.
+- move the URR expansion into a reusable Vampire-side primitive-step builder;
+- keep the existing metadata audit as a guard against regressions.
 
 ### Demodulation and rewrite
 
 Current issue:
 
-- current uncommitted work fixed one repeated-target case by tracking target
-  literal index through the primitive chain.
+- repeated-target rewriting is handled by tracking the target literal index
+  through the primitive chain;
 - this is correct but still implemented locally in the exporter.
 
 Target expansion:
@@ -694,9 +799,9 @@ Required Vampire data:
 
 Immediate task:
 
-- keep the target-index fix;
-- remove temporary debug tracing before commit;
-- add regression tests for repeated occurrence rewrites.
+- move the target-index-aware rewrite expansion onto the shared primitive
+  builder;
+- add or preserve regression tests for repeated occurrence rewrites.
 
 ### Superposition
 
@@ -883,23 +988,32 @@ Goal:
 
 - no non-identity `substitute` certificate step without instantiation metadata.
 
+Status: complete for the current strict 100-case live gate; keep as a
+regression invariant.
+
 Actions:
 
-- fix synthetic current-clause substitutes in URR expansion;
 - audit all `certificateSubstituteStepSexpr` call sites;
 - ensure every emitted non-identity substitute is either:
   - a kernel `instantiate` step; or
   - accompanied by complete `kernel_v1 rule=instantiation` metadata.
 
-Gates:
+Regression gates:
 
 ```sh
-TMPDIR=/project/tmp REQUIRE_SUBSTITUTE_METADATA=1 \
-  tests/vampire_certificate/run_kernel_v1_metadata_audit.sh \
-    /project/tmp/live_strict_100_after_fool_demod_fix
+TMPDIR=/project/tmp \
+PROBLEM_DIR=/project/Megalodon/tests/vampire_certificate/closed_cases \
+PROBLEMS_FILE=/project/Megalodon/tests/vampire_certificate/source_linked_strict_100.list \
+LIMIT=100 JOBS=20 VAMPIRE_SECONDS=10 WALL_SECONDS=15 MIN_PASS=100 \
+CHECK_SOURCE_MAP=1 REQUIRE_SOURCE_ORIGIN=1 STRICT_CERT_V1=1 \
+AUDIT_NATIVE_PRIMITIVES=1 AUDIT_KERNEL_V1_METADATA=1 \
+AUDIT_SUBSTITUTE_METADATA=1 \
+WORK_DIR=/project/tmp/live_strict_100_metadata_fix \
+tests/vampire_certificate/run_native_live_parallel.sh
 ```
 
-and a fresh focused live rerun for the failing `hammer.11453.77.th0`.
+and focused live reruns for known substitute-heavy examples such as
+`hammer.11453.77.th0`.
 
 ### Phase 2: Factor a primitive builder in Vampire
 
@@ -1124,23 +1238,21 @@ Report results by tier:
 
 The immediate engineering queue should be:
 
-1. Fix non-identity helper substitute metadata for synthetic URR current
-   clauses.
-2. Remove temporary demodulation debug tracing from the Vampire diff.
-3. Keep the demodulation target-index fix.
-4. Rerun:
-
-   ```sh
-   TMPDIR=/project/tmp REQUIRE_SUBSTITUTE_METADATA=1 \
-     tests/vampire_certificate/run_kernel_v1_metadata_audit.sh \
-       /project/tmp/live_strict_100_after_fool_demod_fix
-   ```
-
-5. Rerun focused live `hammer.11453.77.th0`.
-6. Commit the scoped Vampire/Megalodon fixes.
-7. Start factoring the Vampire primitive builder.
-8. Move URR and demodulation onto that builder.
-9. Add first original-context `corepfcheck` examples.
+1. Factor the Vampire primitive builder for instantiate, flip, resolve,
+   factor, paramodulate, equality resolution, equality factoring, and
+   contradiction.
+2. Move URR and demodulation/rewrite expansion onto that builder.
+3. Preserve the substitute metadata, native primitive, and core proof-term
+   audits as non-negotiable regression gates.
+4. Extend the core proof-term frontier only through fixed primitive rules, not
+   through broader textual replay.
+5. Add the first original-context `corepfcheck` examples after `xm` in the
+   library.
+6. Implement set-generated equality inputs by reflexivity/definitional
+   conversion.
+7. Define the first preprocessing certificate rules for conjecture negation,
+   simple definition unfolding, FOOL/ENNF fragments, CNF projection, and then
+   Skolemization.
 
 ## Alignment Checklist
 
