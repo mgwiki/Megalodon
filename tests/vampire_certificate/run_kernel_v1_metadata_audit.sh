@@ -328,7 +328,7 @@ if [[ "$REQUIRE_SUBSTITUTE_METADATA" == "1" ]]; then
       index($0, "rule=instantiation") != 0 {
         instantiation[extra_match[1]] = 1
       }
-      match($0, /^  \(substitute "([^"]+)"/, step_match) {
+      match($0, /^  \(substitute "([^"]+)"/, step_match) && $0 !~ /\(subst\)/ {
         substitute_line[step_match[1]] = FNR
         substitute_text[step_match[1]] = $0
       }
@@ -343,7 +343,7 @@ if [[ "$REQUIRE_SUBSTITUTE_METADATA" == "1" ]]; then
   done < "$WORK_DIR/native_files.txt"
 
   if [[ -s "$WORK_DIR/substitute_steps_without_instantiation_metadata.tsv" ]]; then
-    echo "kernel_v1 metadata audit found substitute steps without instantiation metadata" >&2
+    echo "kernel_v1 metadata audit found non-identity substitute steps without instantiation metadata" >&2
     sed -n '1,40p' "$WORK_DIR/substitute_steps_without_instantiation_metadata.tsv" >&2
     exit 1
   fi

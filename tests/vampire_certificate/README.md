@@ -165,10 +165,11 @@ the Prover9/Ivy-style replacement target for opaque non-identity `substitute`
 replay: the checker should receive typed instantiation data from Vampire rather
 than reconstructing it heuristically.
 Set `REQUIRE_SUBSTITUTE_METADATA=1` when auditing freshly regenerated Vampire
-certificates to require every first-class `substitute` step to have such an
-instantiation record. This stricter mode is intentionally not the default for
-older cached fixtures produced before Vampire emitted metadata for generated
-substitution helpers.
+certificates to require every non-identity first-class `substitute` step to
+have such an instantiation record. Empty `(subst)` aliases are allowed because
+they close primitive chains without performing an instantiation. This stricter
+mode is intentionally not the default for older cached fixtures produced before
+Vampire emitted metadata for generated substitution helpers.
 For macro kernel rules currently expanded into first-class certificate steps
 (`superposition`, demodulation `rewrite`, `unit_resulting_resolution`,
 `subsumption_resolution`, `resolution`, `factoring`, `equality_resolution`,
@@ -291,8 +292,9 @@ focused coverage of the equality-factoring primitive records.
 Because live runs regenerate certificates with the current Vampire exporter,
 they also default to `AUDIT_SUBSTITUTE_METADATA=1`, which makes the
 `kernel_v1` audit require explicit instantiation metadata for every
-first-class `substitute` step. Set it to `0` only when comparing against older
-cached certificates that predate the substitution-helper metadata emitter.
+non-identity first-class `substitute` step. Set it to `0` only when comparing
+against older cached certificates that predate the substitution-helper metadata
+emitter.
 
 Set `CLOSED_CERT_V1=1` on the cached emitter harness to request
 `-vampirecertv1closed`. In that mode a case passes only when emission introduces

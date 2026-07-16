@@ -1707,6 +1707,8 @@ let rec fool_formula_tm tm =
 
 let rec typed_fool_bool_lifts tm =
   match tm with
+  | Ap (Ap (TmH "=", TmH b), right) when b = "f__true" || b = "f__false" ->
+      typed_prop_equality_to_true (typed_fool_bool_lifts right)
   | Ap (Ap (TmH "=", left), TmH "f__true") ->
       typed_prop_equality_to_true (typed_fool_bool_lifts left)
   | TpAp (m, a) -> TpAp (typed_fool_bool_lifts m, a)
@@ -5225,31 +5227,41 @@ let validate_kernel_v1_metadata_contracts cert =
                  if not (same_literal_mod_vampire_vars rewritten_target expected_rewritten) then
                    error
                      (id ^ ": strict certificate v1 kernel_v1 rewrite rewritten_target does not match from/to rewrite");
-                 begin match Hashtbl.find_opt step_by_id id with
-                 | Some step ->
-                     begin match step_clause_opt step with
-                     | Some result ->
-                         let equality_rest =
-                           remove_at equality_literal_index
-                             (subst_clause equality_subst equality_clause)
-                             (id ^ " rewrite equality literal")
-                         in
-                         let target_rest =
-                           remove_at target_literal_index
-                             (subst_clause target_subst target_clause)
-                             (id ^ " rewrite target literal")
-                         in
-                         let expected = equality_rest @ target_rest @ [rewritten_target] in
-                         if not (same_clause_multiset expected result
-                                 || same_clause_set_mod_equality expected result
-                                 || same_clause_mod_vampire_var_renaming expected result
-                                 || same_clause_mod_vampire_var_renaming_and_equality expected result) then
-                           error
-                             (id ^ ": strict certificate v1 kernel_v1 rewrite result_clause does not match explicit rewrite")
-                     | None -> ()
-                     end
-                 | None -> ()
-                 end
+                 let equality_rest =
+                   remove_at equality_literal_index
+                     (subst_clause equality_subst equality_clause)
+                     (id ^ " rewrite equality literal")
+                 in
+                 let target_rest =
+                   remove_at target_literal_index
+                     (subst_clause target_subst target_clause)
+                     (id ^ " rewrite target literal")
+                 in
+                 let expected = equality_rest @ target_rest @ [rewritten_target] in
+                 let step_matches_explicit_rewrite step =
+                   match step_clause_opt step with
+                   | Some result ->
+                       same_clause_multiset expected result
+                       || same_clause_set_mod_equality expected result
+                       || same_clause_mod_vampire_var_renaming expected result
+                       || same_clause_mod_vampire_var_renaming_and_equality expected result
+                   | None -> false
+                 in
+                 let explicit_rewrite_present =
+                   match Hashtbl.find_opt step_by_id id with
+                   | Some step when step_rule_name step = "paramodulate" ->
+                       step_matches_explicit_rewrite step
+                   | _ ->
+                       List.exists
+                         (fun step ->
+                            step_rule_name step = "paramodulate"
+                            && has_id_prefix (step_id step) id
+                            && step_matches_explicit_rewrite step)
+                         cert.steps
+                 in
+                 if not explicit_rewrite_present then
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 rewrite result_clause does not match explicit rewrite")
              | Some _, None
              | None, Some _ ->
                  error
