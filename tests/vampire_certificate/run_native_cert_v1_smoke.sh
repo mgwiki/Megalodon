@@ -659,18 +659,15 @@ if ! rg -q 'core closed certificate v1 permits only the clausal MVP fragment' \
   exit 1
 fi
 
-if bin/megalodon \
-  -vampirecertv1coreclosed \
-  -vampirecertv1 tests/vampire_certificate/native_cert_v1_equality_factoring_core_closed_bad.sexp \
-  "$dummy" >"$WORK_DIR/native_cert_v1_equality_factoring_core_closed_bad.out" \
-  2>"$WORK_DIR/native_cert_v1_equality_factoring_core_closed_bad.err"; then
-  echo "core closed native certificate v1 checker accepted equality_factoring without native proof-term support" >&2
-  exit 1
-fi
+bin/megalodon \
+  -vampirecertv1corepfcheck \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_equality_factoring_core_pf_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_equality_factoring_core_pf_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_equality_factoring_core_pf_valid.log"
 
-if ! rg -q 'u2:equality_factoring' \
-    "$WORK_DIR/native_cert_v1_equality_factoring_core_closed_bad.err"; then
-  echo "core closed native certificate v1 equality_factoring rejection did not name the unsupported rule" >&2
+if ! rg -q 'Vampire certificate v1 native core proof term checked 6 steps' \
+    "$WORK_DIR/native_cert_v1_equality_factoring_core_pf_valid.log"; then
+  echo "native core proof-term checker did not accept equality_factoring" >&2
   exit 1
 fi
 
