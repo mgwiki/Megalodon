@@ -1573,6 +1573,19 @@ let is_equality_atom tm =
   | Some _ -> true
   | None -> false
 
+let rec vampire_vlam_body_tm tm =
+  match tm with
+  | DB i -> TmH ("db" ^ string_of_int i)
+  | TpAp (m, a) -> TpAp (vampire_vlam_body_tm m, a)
+  | Ap (m, n) -> Ap (vampire_vlam_body_tm m, vampire_vlam_body_tm n)
+  | Lam (_, body) ->
+      Ap (TmH "vLAM", vampire_vlam_body_tm (bind_anonymous_lambda_body body))
+  | Imp (left, right) ->
+      Imp (vampire_vlam_body_tm left, vampire_vlam_body_tm right)
+  | All (_, body) ->
+      Ap (TmH "vPI", Ap (TmH "vLAM", vampire_vlam_body_tm (bind_anonymous_forall_body body)))
+  | tm -> tm
+
 let rec fool_term_tm tm =
   match tm with
   | TmH "vampire_true" -> TmH "f__true"
@@ -1582,11 +1595,15 @@ let rec fool_term_tm tm =
   | Imp (left, right) ->
       Ap (Ap (TmH "vIMP", fool_term_tm left), fool_term_tm right)
   | All (_, body) ->
-      Ap (TmH "vPI", Ap (TmH "vLAM", fool_term_tm (bind_anonymous_forall_body body)))
+      Ap (TmH "vPI",
+          Ap (TmH "vLAM",
+              vampire_vlam_body_tm (fool_term_tm (bind_anonymous_forall_body body))))
   | Ap (TmH "vampire_exists_prop", Lam (_, body)) ->
-      Ap (TmH "vSIGMA", Ap (TmH "vLAM", fool_term_tm (bind_anonymous_lambda_body body)))
+      Ap (TmH "vSIGMA",
+          Ap (TmH "vLAM",
+              vampire_vlam_body_tm (fool_term_tm (bind_anonymous_lambda_body body))))
   | Ap (TmH "vampire_exists_prop", Ap (TmH "vLAM", body)) ->
-      Ap (TmH "vSIGMA", Ap (TmH "vLAM", fool_term_tm body))
+      Ap (TmH "vSIGMA", Ap (TmH "vLAM", vampire_vlam_body_tm (fool_term_tm body)))
   | Ap (Ap (TmH "vampire_or", left), right) ->
       Ap (Ap (TmH "vOR", fool_term_tm left), fool_term_tm right)
   | Ap (Ap (TmH "vampire_and", left), right) ->
@@ -1595,7 +1612,8 @@ let rec fool_term_tm tm =
       Ap (Ap (TmH "vEQ", fool_term_tm left), fool_term_tm right)
   | TpAp (m, a) -> TpAp (fool_term_tm m, a)
   | Ap (m, n) -> Ap (fool_term_tm m, fool_term_tm n)
-  | Lam (tp, body) -> Lam (tp, fool_term_tm body)
+  | Lam (_, body) ->
+      Ap (TmH "vLAM", vampire_vlam_body_tm (fool_term_tm (bind_anonymous_lambda_body body)))
   | _ -> tm
 
 let rec fool_formula_tm tm =
@@ -2097,8 +2115,11 @@ let check_fool_atom_lift id source target path =
   if path = "" then
     error (id ^ ": fool_atom_lift path is empty");
   let candidates = fool_formula_tm_candidates source in
-  if not (List.exists (fun expected -> same_fool_formula_lift expected target) candidates) then
+  if not (List.exists (fun expected -> same_fool_formula_lift expected target) candidates) then begin
+    let expected = List.hd candidates in
+    debug_certificate_mismatch id expected target;
     error (id ^ ": fool_atom_lift target does not match the explicit FOOL Boolean lift")
+  end
 
 let negated_body_tm = function
   | Imp (body, false_tm) when is_vampire_false false_tm -> Some body
@@ -20613,9 +20634,18 @@ let rec simple_tptp_clause text =
       end
 
 let rec source_tm_equiv left right =
+  let db_name_index name =
+    let len = String.length name in
+    if len > 2 && String.sub name 0 2 = "db" then
+      try Some (int_of_string (String.sub name 2 (len - 2)))
+      with Failure _ -> None
+    else None
+  in
   left = right ||
   same_mod_scoped_vampire_var_renaming_and_equality left right ||
   match left, right with
+  | DB i, TmH name when db_name_index name = Some i -> true
+  | TmH name, DB i when db_name_index name = Some i -> true
   | TmH left_name, TmH right_name
       when (List.mem left_name ["$true"; "vampire_true"; "f__true"]
             && List.mem right_name ["$true"; "vampire_true"; "f__true"])
@@ -20643,6 +20673,10 @@ let rec source_tm_equiv left right =
       left_a = right_a && source_tm_equiv left_m right_m
   | Ap (left_m, left_n), Ap (right_m, right_n) ->
       source_tm_equiv left_m right_m && source_tm_equiv left_n right_n
+  | Lam (_, left_m), Ap (TmH "vLAM", right_m) ->
+      source_tm_equiv left_m right_m
+  | Ap (TmH "vLAM", left_m), Lam (_, right_m) ->
+      source_tm_equiv left_m right_m
   | Lam (left_a, left_m), Lam (right_a, right_m) ->
       left_a = right_a && source_tm_equiv left_m right_m
   | Imp (left_m, left_n), Imp (right_m, right_n) ->
