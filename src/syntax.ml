@@ -4245,10 +4245,11 @@ let rec extr_propofpf sgdelta sgtmof cxtm cxpf d dl =
 	match headnorm q sgdelta dl with
 	| (Imp(p1,p2),dl) ->
 	    begin
-	      match check_propofpf sgdelta sgtmof cxtm cxpf d2 p1 dl with
+	      let (q2,dl2) = extr_propofpf sgdelta sgtmof cxtm cxpf d2 dl in
+	      match conv q2 p1 sgdelta dl2 with
 	      | Some(dl) -> (p2,dl)
 	      | None ->
-		  raise (Failure("Proof term for an implication applied to a proof term for the wrong proposition"))
+		  raise (Failure(Printf.sprintf "Proof term for an implication applied to a proof term for the wrong proposition\nexpected: %s\nactual: %s" (tm_to_str p1) (tm_to_str q2)))
 	    end
 	| (p,_) ->
 	    raise (Failure("Proof term does not prove an implication but is applied to a proof term"))
