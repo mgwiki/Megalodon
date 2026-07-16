@@ -10716,6 +10716,38 @@ let simple_apply_forall_witnesses proof sorts =
     proof
     sorts
 
+let simple_named_witness_ok name sort =
+  let sort = String.trim sort in
+  sort <> "prop"
+  && not (String.contains sort '-')
+  && name <> ""
+  && name <> "Eps_i"
+  && name <> "vampire_true"
+  && name <> "vampire_false"
+  && name <> "f__true"
+  && name <> "f__false"
+  && not (string_starts_with "vampire_" name)
+  && not (string_starts_with "vdb" name)
+  && not (is_db_ident name)
+  && not (is_vampire_var_name name)
+
+let simple_witness_from_env type_env sort =
+  let sort = String.trim sort in
+  match
+    type_env
+    |> List.find_opt
+         (fun (name, known_sort) ->
+            String.trim known_sort = sort && simple_named_witness_ok name sort)
+  with
+  | Some (name, _) -> name
+  | None -> simple_witness_for_sort sort
+
+let simple_apply_forall_witnesses_from_env type_env proof sorts =
+  List.fold_left
+    (fun acc (_, sort) -> "(" ^ acc ^ " " ^ simple_witness_from_env type_env sort ^ ")")
+    proof
+    sorts
+
 let simple_apply_forall_result_vars_or_witnesses proof result_sorts parent_sorts =
   let result_name_sorts =
     List.map (fun (name, sort) -> (megalodon_ident name, sort)) result_sorts
@@ -12222,8 +12254,8 @@ let simple_paramodulate_unit_proof
 	  let rec consume_target equality_lit_proof selected_index source_clause source_proof depth =
 	    match source_clause with
 	    | [] -> emit_error "cannot paramodulate from the empty clause"
-	    | [lit] ->
-	        begin match selected_index with
+    | [lit] ->
+        begin match selected_index with
         | Some 0 ->
             simple_clause_intro_proof result result_literal
               (result_literal_proof equality_lit_proof source_proof)
@@ -12319,24 +12351,111 @@ let simple_paramodulate_unit_split_proof
   in
   let rewritten_atom = replace_tm_at_position target_atom rewrite_position to_tm (id ^ " target") in
   let rewritten_literal = replace_literal_atom target_literal rewritten_atom in
-  let result_literal, result_literal_needs_symmetry, result_layout =
-    let suffix lit = equality_rest @ target_rest @ [lit] in
-    let head lit = [lit] @ target_rest @ equality_rest in
-    if suffix rewritten_literal = result then
-      rewritten_literal, false, `Suffix
-    else if head rewritten_literal = result then
-      rewritten_literal, false, `Head
+  let orient_literal source actual =
+    if source = actual then
+      Some (actual, fun proof -> proof)
     else
-      match swap_literal_equality rewritten_literal with
-      | Some swapped_literal when suffix swapped_literal = result ->
-          swapped_literal, true, `Suffix
-      | Some swapped_literal when head swapped_literal = result ->
-          swapped_literal, true, `Head
-      | _ ->
-          emit_error
-            (id ^ ": split paramodulation requires a supported result order")
+      match swap_literal_equality source with
+      | Some swapped when swapped = actual ->
+          Some
+            (actual,
+             fun proof -> "(" ^ simple_literal_equality_symmetry_proof type_env source proof ^ ")")
+      | _ -> None
+  in
+  let rec orient_literals sources actuals =
+    match sources, actuals with
+    | [], [] -> Some ([], [])
+    | source :: sources, actual :: actuals ->
+        begin match orient_literal source actual, orient_literals sources actuals with
+        | Some (oriented, orient_proof), Some (oriented_rest, orient_proofs) ->
+            Some (oriented :: oriented_rest, orient_proof :: orient_proofs)
+        | _ -> None
+        end
+    | _ -> None
+  in
+  let split_prefix n items =
+    let rec loop n prefix rest =
+      if n = 0 then Some (List.rev prefix, rest)
+      else
+        match rest with
+        | head :: tail -> loop (n - 1) (head :: prefix) tail
+        | [] -> None
+    in
+    loop n [] items
+  in
+  let result_literal, result_literal_needs_symmetry, result_layout,
+      target_rest, equality_rest, _orient_target_rest_proofs, _orient_equality_rest_proofs =
+    let try_suffix lit needs_symmetry =
+      match split_prefix (List.length equality_rest) result with
+      | Some (actual_equality_rest, rest) ->
+          begin match split_prefix (List.length target_rest) rest with
+          | Some (actual_target_rest, [actual_lit]) when actual_lit = lit ->
+              begin match
+                orient_literals equality_rest actual_equality_rest,
+                orient_literals target_rest actual_target_rest
+              with
+              | Some (oriented_equality_rest, orient_equality_rest_proofs),
+                Some (oriented_target_rest, orient_target_rest_proofs) ->
+                  Some
+                    (lit, needs_symmetry, `Suffix,
+                     oriented_target_rest, oriented_equality_rest,
+                     orient_target_rest_proofs, orient_equality_rest_proofs)
+              | _ -> None
+              end
+          | _ -> None
+          end
+      | None -> None
+    in
+    let try_head lit needs_symmetry =
+      match result with
+      | actual_lit :: rest when actual_lit = lit ->
+          begin match split_prefix (List.length target_rest) rest with
+          | Some (actual_target_rest, actual_equality_rest)
+              when List.length actual_equality_rest = List.length equality_rest ->
+              begin match
+                orient_literals target_rest actual_target_rest,
+                orient_literals equality_rest actual_equality_rest
+              with
+              | Some (oriented_target_rest, orient_target_rest_proofs),
+                Some (oriented_equality_rest, orient_equality_rest_proofs) ->
+                  Some
+                    (lit, needs_symmetry, `Head,
+                     oriented_target_rest, oriented_equality_rest,
+                     orient_target_rest_proofs, orient_equality_rest_proofs)
+              | _ -> None
+              end
+          | _ -> None
+          end
+      | _ -> None
+    in
+    match try_suffix rewritten_literal false with
+    | Some result -> result
+    | None ->
+    match try_head rewritten_literal false with
+    | Some result -> result
+    | None ->
+    match swap_literal_equality rewritten_literal with
+    | Some swapped_literal ->
+        begin match try_suffix swapped_literal true with
+        | Some result -> result
+        | None ->
+        match try_head swapped_literal true with
+        | Some result -> result
+        | None -> emit_error (id ^ ": split paramodulation requires a supported result order")
+        end
+    | None -> emit_error (id ^ ": split paramodulation requires a supported result order")
   in
   let target_result_clause = target_rest @ [result_literal] in
+  let simple_clause_intro_oriented target_clause lit proof =
+    if List.exists ((=) lit) target_clause then
+      simple_clause_intro_proof target_clause lit proof
+    else
+      match swap_literal_equality lit with
+      | Some swapped when List.exists ((=) swapped) target_clause ->
+          simple_clause_intro_proof target_clause swapped
+            ("(" ^ simple_literal_equality_symmetry_proof type_env lit proof ^ ")")
+      | _ -> simple_clause_intro_proof target_clause lit proof
+  in
   begin match result_layout with
   | `Suffix ->
       if result <> equality_rest @ target_result_clause then
@@ -12429,7 +12548,7 @@ let simple_paramodulate_unit_split_proof
             simple_clause_intro_proof target_result_clause result_literal
               (result_literal_proof equality_lit_proof source_proof)
         | Some _ -> emit_error "paramodulation selected target index is out of bounds"
-        | None -> simple_clause_intro_proof target_result_clause lit source_proof
+        | None -> simple_clause_intro_oriented target_result_clause lit source_proof
         end
     | lit :: rest ->
         let head_name = "Hparamod_lit_" ^ string_of_int depth in
@@ -12439,7 +12558,7 @@ let simple_paramodulate_unit_split_proof
           | Some 0 ->
               simple_clause_intro_proof target_result_clause result_literal
                 (result_literal_proof equality_lit_proof head_name)
-          | _ -> simple_clause_intro_proof target_result_clause lit head_name
+          | _ -> simple_clause_intro_oriented target_result_clause lit head_name
         in
         let rest_selected =
           match selected_index with
@@ -12592,12 +12711,12 @@ let simple_paramodulate_unit_split_proof
     | _ ->
     match source_clause with
     | [] -> emit_error "cannot paramodulate from an empty equality clause"
-    | [lit] ->
-        begin match selected_index with
+	    | [lit] ->
+	        begin match selected_index with
         | Some 0 ->
             introduce_target_result ("(" ^ helper_expr ^ " " ^ source_proof ^ ")")
         | Some _ -> emit_error "paramodulation equality index is out of bounds"
-        | None -> simple_clause_intro_proof result lit source_proof
+        | None -> simple_clause_intro_oriented result lit source_proof
         end
     | lit :: rest ->
         let head_name = "Hparamod_eq_lit_" ^ string_of_int depth in
@@ -12606,7 +12725,7 @@ let simple_paramodulate_unit_split_proof
           match selected_index with
           | Some 0 ->
               introduce_target_result ("(" ^ helper_expr ^ " " ^ head_name ^ ")")
-          | _ -> simple_clause_intro_proof result lit head_name
+          | _ -> simple_clause_intro_oriented result lit head_name
         in
         let rest_selected =
           match selected_index with
@@ -13028,10 +13147,15 @@ let simple_bool_true_tm = function
   | _ -> false
 
 let simple_fool_eq_to_true source target =
+  let source_variants =
+    let normalized = vampire_vlam_body_tm source in
+    if normalized = source then [source] else [source; normalized]
+  in
+  let is_source tm = List.exists ((=) tm) source_variants in
   match equality_sides target with
-  | Some (left, right) when left = source && simple_bool_true_tm right ->
+  | Some (left, right) when is_source left && simple_bool_true_tm right ->
       Some (`SourceLeft, left, right)
-  | Some (left, right) when right = source && simple_bool_true_tm left ->
+  | Some (left, right) when is_source right && simple_bool_true_tm left ->
       Some (`SourceRight, left, right)
   | _ -> None
 
@@ -13430,13 +13554,13 @@ let simple_fool_formula_proof type_env id parent_sorts result_sorts source targe
         | `Backward -> simple_fool_atom_backward_proof type_env source target proof
         end
   in
-  let expected = fool_formula_tm source in
   if not (simple_fool_prefix_imp_shape source target) then
     emit_error (id ^ ": FOOL formula proof supports only prefix-universal atomic lifting");
-  if expected <> target
-     && normalize_bool_equality_orientation expected <> normalize_bool_equality_orientation target
-     && normalize_equality_orientation expected <> normalize_equality_orientation target
-     && normalize_fool_formula_shape expected <> normalize_fool_formula_shape target then
+  if not
+       (List.exists
+          (fun expected -> same_fool_formula_lift expected target)
+          (fool_formula_tm_candidates source))
+  then
     emit_error (id ^ ": FOOL formula proof target does not match recursive lifting");
   convert `Forward [] source target parent_name
 
@@ -18275,9 +18399,15 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             in
             if parent_vars_unused
                && (parent_formula = formula
-                   || same_mod_scoped_vampire_var_renaming parent_formula formula) then
+                   || same_mod_scoped_vampire_var_renaming parent_formula formula
+                   || strip_forall parent_formula = formula
+                   || vampire_vlam_body_tm (strip_forall parent_formula) = formula
+                   || same_mod_scoped_vampire_var_renaming
+                        (strip_forall parent_formula) formula
+                   || same_mod_scoped_vampire_var_renaming
+                        (vampire_vlam_body_tm (strip_forall parent_formula)) formula) then
               let parent_name = lookup_simple_name !emitted_names parent_id in
-              Some (simple_apply_forall_witnesses parent_name parent_sorts)
+              Some (simple_apply_forall_witnesses_from_env symbol_type_env parent_name parent_sorts)
             else None
           in
           begin match
@@ -18312,7 +18442,9 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
               simple_vlam_name_counter := saved_vlam_counter;
               Some
                 proof
-            with Error _ -> None
+            with Error msg ->
+              debug_emit_error ("fool_formula " ^ id ^ " proof") msg;
+              None
           with
           | Some proof ->
               uses_vampire_eq_prop_ext := true;
@@ -19751,13 +19883,28 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
             || simple_prop_equal_mod_cnf_defs emitted structural
             || simple_prop_equal_mod_cnf_defs emitted formula
           in
-          let structurally_safe =
-            simple_sorts_instantiable_from_result equality_sorts sorts
-            && simple_sorts_instantiable_from_result target_sorts sorts
-            && emitted_parent_matches equality_parent_id equality_sorts equality_clause
-            && emitted_parent_matches target_parent_id target_sorts target_clause
-            && prop = structural_clause_prop sorts result
+          let equality_sorts_ok = simple_sorts_instantiable_from_result equality_sorts sorts in
+          let target_sorts_ok = simple_sorts_instantiable_from_result target_sorts sorts in
+          let equality_parent_ok =
+            emitted_parent_matches equality_parent_id equality_sorts equality_clause
           in
+          let target_parent_ok =
+            emitted_parent_matches target_parent_id target_sorts target_clause
+          in
+          let result_prop_ok = prop = structural_clause_prop sorts result in
+          let structurally_safe =
+            equality_sorts_ok
+            && target_sorts_ok
+            && equality_parent_ok
+            && target_parent_ok
+            && result_prop_ok
+          in
+          if not structurally_safe then
+            debug_emit_error
+              ("paramodulate " ^ id)
+              (Printf.sprintf
+                 "structural guard failed equality_sorts=%b target_sorts=%b equality_parent=%b target_parent=%b result_prop=%b"
+                 equality_sorts_ok target_sorts_ok equality_parent_ok target_parent_ok result_prop_ok);
 	          begin match
 	            if not structurally_safe then None
 	            else
@@ -19767,7 +19914,8 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
 	                       clause_body_prop type_env id (name ^ "_target")
 	                       equality_parent_id target_parent_id equality_index target_index position
 	                       from_tm to_tm result equality_sorts target_sorts sorts !checked !emitted_names)
-	              with Error _ ->
+	              with Error msg ->
+	                debug_emit_error ("paramodulate " ^ id ^ " split") msg;
 	                try
 	                  let proof =
 	                    simple_paramodulate_unit_proof
@@ -19775,7 +19923,9 @@ let emit_simple_megalodon ?(theorem_name="vampire_certificate_native") ?(source_
 	                      from_tm to_tm result equality_sorts target_sorts sorts !checked !emitted_names
 	                  in
 	                  Some ([], proof)
-	                with Error _ -> None
+	                with Error msg ->
+	                  debug_emit_error ("paramodulate " ^ id ^ " unit") msg;
+	                  None
 	          with
 	          | Some (extra_claims, proof) ->
 	              let name = derived_name id in
