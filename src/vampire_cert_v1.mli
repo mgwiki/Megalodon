@@ -177,12 +177,23 @@ type source_origin = {
   source_origin_kind : string;
 }
 
+type source_obligation_audit = {
+  source_obligations_total : int;
+  source_obligations_formula_checked : int;
+  source_obligations_formula_unsupported : int;
+  source_obligations_formula_missing : int;
+  source_obligations_equality_checked : int;
+  source_obligations_set_reflexivity_checked : int;
+  source_obligations_true_checked : int;
+}
+
 val parse_sexpr : string -> sexpr
 val parse_certificate : string -> certificate
 val step_id : step -> string
 val certificate_source_count : certificate -> int
 val parse_source_map : string -> source_map_entry list
 val parse_source_origin : string -> source_origin option
+val audit_certificate_sources : ?require_formula_match:bool -> source_map_entry list -> certificate -> source_obligation_audit
 val validate_certificate_sources : ?require_formula_match:bool -> source_map_entry list -> certificate -> int
 val check_certificate : certificate -> (string * checked_item) list
 val check_certificate_strict : certificate -> (string * checked_item) list

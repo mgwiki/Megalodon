@@ -187,6 +187,16 @@ type source_origin = {
   source_origin_kind : string;
 }
 
+type source_obligation_audit = {
+  source_obligations_total : int;
+  source_obligations_formula_checked : int;
+  source_obligations_formula_unsupported : int;
+  source_obligations_formula_missing : int;
+  source_obligations_equality_checked : int;
+  source_obligations_set_reflexivity_checked : int;
+  source_obligations_true_checked : int;
+}
+
 let error msg = raise (Error msg)
 
 let is_space = function
@@ -22173,7 +22183,7 @@ let source_step_matches_tptp_formula_checked ?(negated=false) step formula =
   | Some matched -> Some matched
   | None -> source_step_matches_simple_tptp_formula ~negated step formula
 
-let validate_certificate_sources ?(require_formula_match=false) source_map cert =
+let audit_certificate_sources ?(require_formula_match=false) source_map cert =
   let table = Hashtbl.create 101 in
   List.iter
     (fun entry ->
@@ -22182,7 +22192,13 @@ let validate_certificate_sources ?(require_formula_match=false) source_map cert 
         error ("duplicate Megalodon source-map entry for " ^ entry.source_map_tptp_name);
       Hashtbl.add table entry.source_map_tptp_name entry)
     source_map;
-  let checked = ref 0 in
+  let total = ref 0 in
+  let formula_checked = ref 0 in
+  let formula_unsupported = ref 0 in
+  let formula_missing = ref 0 in
+  let equality_checked = ref 0 in
+  let set_reflexivity_checked = ref 0 in
+  let true_checked = ref 0 in
   List.iter
     (fun step ->
       match source_of_step step with
@@ -22210,12 +22226,16 @@ let validate_certificate_sources ?(require_formula_match=false) source_map cert 
               (id ^ ": certificate source " ^ name
                ^ " maps to " ^ entry.source_map_kind
                ^ " but is not an equality input");
+          if source_map_entry_requires_equality entry then
+            incr equality_checked;
           if source_map_entry_requires_reflexive_equality entry
              && not (step_is_reflexive_equality_source step) then
             error
               (id ^ ": certificate source " ^ name
                ^ " maps to " ^ entry.source_map_kind
                ^ " but is not a reflexive equality input");
+          if source_map_entry_requires_reflexive_equality entry then
+            incr set_reflexivity_checked;
           if source_map_entry_requires_true_formula_check entry then
             begin match entry.source_map_decl_formula with
             | Some formula
@@ -22224,6 +22244,8 @@ let validate_certificate_sources ?(require_formula_match=false) source_map cert 
                 error
                   (id ^ ": certificate source " ^ name
                    ^ " maps to THF $true but the certificate input is not true")
+            | Some formula when normalize_tptp_formula_text formula = "$true" ->
+                incr true_checked
             | _ -> ()
             end;
           begin match entry.source_map_decl_formula with
@@ -22235,7 +22257,7 @@ let validate_certificate_sources ?(require_formula_match=false) source_map cert 
                 | _ -> false
               in
               begin match source_step_matches_tptp_formula_checked ~negated step formula with
-              | Some true -> ()
+              | Some true -> incr formula_checked
               | Some false ->
                   error
                     (id ^ ": certificate source " ^ name
@@ -22244,14 +22266,26 @@ let validate_certificate_sources ?(require_formula_match=false) source_map cert 
                   error
                     (id ^ ": certificate source " ^ name
                      ^ " uses a THF declaration formula outside the checked source-linking fragment")
-              | None -> ()
+              | None -> incr formula_unsupported
               end
           | None when require_formula_match ->
               error
                 (id ^ ": certificate source " ^ name
                  ^ " has no THF declaration formula to check")
-          | None -> ()
+          | None -> incr formula_missing
           end;
-          incr checked)
+          incr total)
     cert.steps;
-  !checked
+  {
+    source_obligations_total = !total;
+    source_obligations_formula_checked = !formula_checked;
+    source_obligations_formula_unsupported = !formula_unsupported;
+    source_obligations_formula_missing = !formula_missing;
+    source_obligations_equality_checked = !equality_checked;
+    source_obligations_set_reflexivity_checked = !set_reflexivity_checked;
+    source_obligations_true_checked = !true_checked;
+  }
+
+let validate_certificate_sources ?(require_formula_match=false) source_map cert =
+  let audit = audit_certificate_sources ~require_formula_match source_map cert in
+  audit.source_obligations_total

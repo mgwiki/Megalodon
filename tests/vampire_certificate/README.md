@@ -117,6 +117,19 @@ classifies an input as `set_reflexivity` or `local_set_reflexivity`, the native
 proof-term checker proves the reflexive Megalodon equality directly instead of
 adding it as a source hypothesis.
 
+To audit source-input obligations without rerunning Vampire, use:
+
+```sh
+TMPDIR=/project/tmp JOBS=10 \
+tests/vampire_certificate/run_native_cert_v1_source_obligation_audit.sh
+```
+
+This runs over the committed closed-corpus list by default and reports how many
+certificate source inputs have declaration formulas checked by the supported
+THF fragment, how many are unsupported or missing formulas, and how many are
+generated equality/`set_reflexivity` obligations. This is a source-linking
+measurement gate, not proof reconstruction evidence by itself.
+
 For repeatable non-overlapping corpus slices, use:
 
 ```sh

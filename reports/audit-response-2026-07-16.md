@@ -75,6 +75,55 @@ Affected files:
 - define separate evidence classes E1-E4 and test stages T0-T4;
 - specify a concrete `source_context` API shape.
 
+### Source-Obligation Audit Added
+
+The source validator now exposes a structured audit record:
+
+```ocaml
+type source_obligation_audit = {
+  source_obligations_total : int;
+  source_obligations_formula_checked : int;
+  source_obligations_formula_unsupported : int;
+  source_obligations_formula_missing : int;
+  source_obligations_equality_checked : int;
+  source_obligations_set_reflexivity_checked : int;
+  source_obligations_true_checked : int;
+}
+```
+
+The new CLI flag:
+
+```sh
+-vampirecertv1sourceaudit
+```
+
+prints those counts for a certificate/source-map pair. The new parallel
+harness:
+
+```sh
+TMPDIR=/project/tmp JOBS=10 \
+tests/vampire_certificate/run_native_cert_v1_source_obligation_audit.sh
+```
+
+ran over the default 96-case committed closed-corpus selection and reported:
+
+```text
+AUDIT_PASS 96
+cases 96
+total 388
+formula_checked 388
+formula_unsupported 0
+formula_missing 0
+equality_checked 2
+set_reflexivity_checked 0
+true_checked 0
+```
+
+This is not counted as proof reconstruction. It is an audit boundary for the
+next source/preprocessing milestone: the checked source formulas are now
+measured explicitly, and generated equality/set-reflexivity obligations are
+separated from ordinary source claims.
+
 ## Accepted Audit Corrections
 
 ### 1. The 100 Strict Live Run Is Integration Evidence
@@ -146,6 +195,8 @@ Completed in this response:
 - dynamic preprocessing `Known` insertion made fail-closed by default;
 - old preprocessing pass labels changed to structural diagnostics;
 - design plan updated to match the audit.
+- source-obligation auditing added for source-map inputs and committed
+  closed-corpus measurement.
 
 Not completed:
 

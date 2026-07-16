@@ -222,6 +222,37 @@ source/preprocessing layer proof-producing for real inputs; in parallel, push
 clausal macros down to Vampire-side primitive steps so the already justified
 clauses can be checked by the small kernel.
 
+Source-obligation audit:
+
+```sh
+TMPDIR=/project/tmp JOBS=10 \
+tests/vampire_certificate/run_native_cert_v1_source_obligation_audit.sh
+```
+
+Result on the default 96-case closed-corpus selection:
+
+- `AUDIT_PASS 96`
+- `total 388`
+- `formula_checked 388`
+- `formula_unsupported 0`
+- `formula_missing 0`
+- `equality_checked 2`
+- `set_reflexivity_checked 0`
+- `true_checked 0`
+
+Artifacts:
+
+- `/project/tmp/native_cert_v1_source_obligations.1CaqDj`
+- `/project/tmp/latest_native_cert_v1_source_obligations`
+
+This is a source-linking measurement, not proof reconstruction evidence. It
+shows that the selected committed source inputs are within the currently
+checked exported THF fragment, while the real-core frontier still shows that
+their first proof-producing blocker is `formula_input`/`formula_term_input`.
+The next implementation step is to turn these audited source obligations into
+native Megalodon proof bindings instead of treating them merely as validated
+certificate inputs.
+
 ## Design Principles
 
 ### 1. Vampire explains, Megalodon checks

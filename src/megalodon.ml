@@ -30,6 +30,7 @@ let vampireabynative : bool ref = ref false;;
 let vampireabynativestrict : bool ref = ref false;;
 let vampirecertv1 : string option ref = ref None;;
 let vampirecertv1source : string option ref = ref None;;
+let vampirecertv1sourceaudit : bool ref = ref false;;
 let vampirecertv1strict : bool ref = ref false;;
 let vampirecertv1closed : bool ref = ref false;;
 let vampirecertv1coreclosed : bool ref = ref false;;
@@ -7065,15 +7066,28 @@ let check_vampire_cert_v1_file fn =
                    "native proof-term checking requires Megalodon origin metadata in -vampirecertv1source")
         end;
         source_map_for_emit := source_map;
-        let source_count =
-          Vampire_cert_v1.validate_certificate_sources
+        let source_audit =
+          Vampire_cert_v1.audit_certificate_sources
             ~require_formula_match:(!vampirecertv1strict || !vampirecertv1closed)
             source_map
             cert
         in
+        let source_count =
+          source_audit.Vampire_cert_v1.source_obligations_total
+        in
         Printf.printf "Vampire certificate v1 source map checked %d source%s.\n"
           source_count
-          (if source_count = 1 then "" else "s")
+          (if source_count = 1 then "" else "s");
+        if !vampirecertv1sourceaudit then
+          Printf.printf
+            "Vampire certificate v1 source obligations audited total=%d formula_checked=%d formula_unsupported=%d formula_missing=%d equality_checked=%d set_reflexivity_checked=%d true_checked=%d.\n"
+            source_audit.Vampire_cert_v1.source_obligations_total
+            source_audit.Vampire_cert_v1.source_obligations_formula_checked
+            source_audit.Vampire_cert_v1.source_obligations_formula_unsupported
+            source_audit.Vampire_cert_v1.source_obligations_formula_missing
+            source_audit.Vampire_cert_v1.source_obligations_equality_checked
+            source_audit.Vampire_cert_v1.source_obligations_set_reflexivity_checked
+            source_audit.Vampire_cert_v1.source_obligations_true_checked
     end;
     Printf.printf "Vampire certificate v1%s checked %d step%s.\n"
       (if !vampirecertv1coreclosed then " core closed"
@@ -7450,6 +7464,8 @@ let _ =
 	    else
 	      raise (Failure("Expected -vampirecertv1source <problem.th0.p>"))
           end
+        else if Sys.argv.(!j) = "-vampirecertv1sourceaudit" then
+          vampirecertv1sourceaudit := true
         else if Sys.argv.(!j) = "-vampirecertv1emit" then
           begin
 	    if !j < i-2 then
