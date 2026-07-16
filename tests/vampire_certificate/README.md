@@ -378,11 +378,11 @@ as explicit small-kernel proof steps.
 Use `-vampirecertv1preprocesspfcheck` for the first native preprocessing
 proof-term seed. This mode does not claim the full Smolka-style preprocessing
 layer. It currently checks source-linked formula-term inputs, identity
-formula-term copies, formula-copy into a matching unit clause, selected ENNF
-and Skolemization primitives, and then the native clausal proof-term fragment
-above. Unsupported transformations such as
-FOOL, CNF projection, and AVATAR still fail instead of
-falling back to textual replay. The focused audit is:
+formula-term copies, formula-copy into a matching unit clause, selected
+rectification, FOOL, ENNF, CNF projection, Skolemization, definition-input,
+and AVATAR split primitives, and then the native clausal proof-term fragment
+above. Unsupported transformations still fail instead of falling back to
+textual replay. The focused audit is:
 
 ```sh
 tests/vampire_certificate/run_native_cert_v1_preprocess_pf_audit.sh
@@ -402,6 +402,18 @@ are classified by the first missing proof-term rule or proof-term checker
 failure. This is the preferred small-kernel frontier report for preprocessing
 work: it identifies the next repeated constructor to elaborate natively instead
 of adding more broad textual replay logic.
+
+For live THF problems, use:
+
+```sh
+tests/vampire_certificate/run_native_live_preprocess_pf_frontier.sh
+```
+
+On the July 16 100-case source-linked list, this live frontier currently checks
+94/100 generated certificates by native preprocess proof terms. The remaining
+known classes are subsumption-resolution pivot orientation, two ill-formed
+paramodulation/equality proof terms, one inequality-name-introduction
+preprocessing rule, and one wrong-proposition case.
 
 For the audit-recommended restricted milestone, use:
 

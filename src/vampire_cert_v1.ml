@@ -6122,21 +6122,18 @@ let native_core_definition_delta_table cert symbol_table =
   definitions
 
 let native_core_avatar_definition_clause cert id split_var split_positive clause =
-  match native_core_step_variables cert id with
-  | _ :: _ -> None
-  | [] ->
-      let split_name = "split_" ^ string_of_int split_var in
-      let is_split_literal = function
-        | Neg (TmH name) when split_positive && name = split_name -> true
-        | Pos (TmH name) when (not split_positive) && name = split_name -> true
-        | _ -> false
-      in
-      let split_literals, component_literals =
-        List.partition is_split_literal clause
-      in
-      match split_literals, component_literals with
-      | [_], _ :: _ -> Some (split_name, component_literals)
-      | _ -> None
+  let split_name = "split_" ^ string_of_int split_var in
+  let is_split_literal = function
+    | Neg (TmH name) when split_positive && name = split_name -> true
+    | Pos (TmH name) when (not split_positive) && name = split_name -> true
+    | _ -> false
+  in
+  let split_literals, component_literals =
+    List.partition is_split_literal clause
+  in
+  match split_literals, component_literals with
+  | [_], _ :: _ -> Some (split_name, component_literals)
+  | _ -> None
 
 let native_core_true =
   All (Prop, Imp (DB 0, DB 0))
