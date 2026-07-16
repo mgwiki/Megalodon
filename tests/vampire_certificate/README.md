@@ -375,14 +375,18 @@ intended to have native proof-term support; structurally checked macro rules
 such as `equality_factoring` stay outside this gate until they are elaborated
 as explicit small-kernel proof steps.
 
-Use `-vampirecertv1preprocesspfcheck` for the first native preprocessing
-proof-term seed. This mode does not claim the full Smolka-style preprocessing
-layer. It currently checks source-linked formula-term inputs, identity
-formula-term copies, formula-copy into a matching unit clause, selected
-rectification, FOOL, ENNF, CNF projection, Skolemization, definition-input,
-and AVATAR split primitives, and then the native clausal proof-term fragment
-above. Unsupported transformations still fail instead of falling back to
-textual replay. The focused audit is:
+Use `-vampirecertv1preprocesspfcheck` only as a fail-closed native
+preprocessing checker. Unlike the older transitional frontier runs, this mode
+must not install certificate-derived `Known` propositions. If it reaches a
+preprocessing or macro step that still needs such a trusted implication, it
+fails and names the offending primitive. This is intentional: the July 16 audit
+reclassified the old preprocessing pass counts as structural plumbing evidence,
+not proof reconstruction evidence.
+
+The legacy structural diagnostic harnesses may opt in to the old trusted
+primitive behavior by setting
+`MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN=1`; they report
+`PREPROCESS_STRUCTURAL_PASS`, not proof-term passes. The focused diagnostic is:
 
 ```sh
 tests/vampire_certificate/run_native_cert_v1_preprocess_pf_audit.sh
@@ -397,11 +401,12 @@ tests/vampire_certificate/run_native_cert_v1_preprocess_pf_frontier.sh
 
 This first selects the `run_native_cert_v1_preprocess_closed_audit.sh`
 eligible cases, then runs `-vampirecertv1preprocesspfcheck` over them in
-parallel. Passing cases are already on the native `Syntax.pf` path; failures
-are classified by the first missing proof-term rule or proof-term checker
-failure. This is the preferred small-kernel frontier report for preprocessing
-work: it identifies the next repeated constructor to elaborate natively instead
-of adding more broad textual replay logic.
+parallel with the explicit transitional-known diagnostic opt-in. Passing cases
+are structural/native-AST plumbing checks, not counted reconstruction proofs.
+Failures are still useful for classifying the next missing real proof-term rule
+or Vampire-side primitive expansion, but the qualifying path is
+`-vampirecertv1corepfcheck` plus future certified preprocessing steps that do
+not use the transitional-known escape hatch.
 
 For live THF problems, use:
 
@@ -409,11 +414,11 @@ For live THF problems, use:
 tests/vampire_certificate/run_native_live_preprocess_pf_frontier.sh
 ```
 
-On the July 16 100-case source-linked list, this live frontier currently checks
-94/100 generated certificates by native preprocess proof terms. The remaining
-known classes are subsumption-resolution pivot orientation, two ill-formed
-paramodulation/equality proof terms, one inequality-name-introduction
-preprocessing rule, and one wrong-proposition case.
+On the July 16 100-case source-linked list, the old live frontier structurally
+checked 94/100 generated certificates with transitional `Known` primitives
+enabled. This is E4 structural evidence only. It should be used to classify
+missing transformations and macro expansions, not as proof reconstruction
+evidence.
 
 For the audit-recommended restricted milestone, use:
 

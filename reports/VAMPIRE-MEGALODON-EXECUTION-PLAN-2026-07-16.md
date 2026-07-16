@@ -13,6 +13,14 @@ Vampire-to-Megalodon reconstruction project. It is intentionally stricter than
 the status reports. A future change should be judged by whether it moves the
 system toward this plan.
 
+Post-audit note, 2026-07-16: the execution order below is superseded where it
+prioritizes growing the native preprocessing frontier. The first step is now
+the trust reset from `reports/audit-REPORT-2026-07-16.md`: no
+certificate-derived `Known` propositions on counted native paths. Use evidence
+classes E1-E4 and test stages T0-T4 from
+`reports/VAMPIRE-MEGALODON-DESIGN-PLAN-2026-07-16.md` to avoid confusing
+integration evidence with proof reconstruction.
+
 ## One-Sentence Plan
 
 Make Vampire emit a Prover9/Ivy-style sequence of explicit primitive proof

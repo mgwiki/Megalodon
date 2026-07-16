@@ -628,17 +628,17 @@ EOF
 if CASES_DIR="$WORK_DIR/preprocess_pf_missing_source_cases" \
     CASE_LIST="$WORK_DIR/preprocess_pf_missing_source_cases.list" \
     WORK_DIR="$WORK_DIR/preprocess_pf_missing_source_audit" \
-    MIN_PREPROCESS_PF=1 \
+    MIN_PREPROCESS_STRUCTURAL=1 \
     tests/vampire_certificate/run_native_cert_v1_preprocess_pf_audit.sh \
     >"$WORK_DIR/preprocess_pf_missing_source_audit.out" \
     2>"$WORK_DIR/preprocess_pf_missing_source_audit.err"; then
-  echo "native preprocess proof-term audit accepted a selected certificate without a source file" >&2
+  echo "native preprocess structural audit accepted a selected certificate without a source file" >&2
   exit 1
 fi
 
-if ! rg -q $'missing_preprocess_source\tPREPROCESS_PF_MISSING_SOURCE' \
+if ! rg -q $'missing_preprocess_source\tPREPROCESS_STRUCTURAL_MISSING_SOURCE' \
     "$WORK_DIR/preprocess_pf_missing_source_audit/summary.tsv"; then
-  echo "native preprocess proof-term audit did not classify missing source files explicitly" >&2
+  echo "native preprocess structural audit did not classify missing source files explicitly" >&2
   exit 1
 fi
 
@@ -1060,7 +1060,23 @@ if ! rg -q 'requires primitive_expansion=prefix for kernel rule fool_formula' \
   exit 1
 fi
 
-bin/megalodon \
+if bin/megalodon \
+  -vampirecertv1preprocesspfcheck \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_primitive_expansion_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_fool_primitive_expansion_origin_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_fool_preprocess_dynamic_known_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_fool_preprocess_dynamic_known_bad.err"; then
+  echo "native preprocess checker accepted a certificate-derived Known primitive without the structural opt-in" >&2
+  exit 1
+fi
+
+if ! rg -q 'refuses certificate-derived Known primitive vampire_fool_formula_f1' \
+    "$WORK_DIR/native_cert_v1_fool_preprocess_dynamic_known_bad.err"; then
+  echo "native preprocess checker did not explain rejected certificate-derived Known primitive" >&2
+  exit 1
+fi
+
+MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN=1 bin/megalodon \
   -vampirecertv1preprocesspfcheck \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_primitive_expansion_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_fool_primitive_expansion_origin_valid.th0.p \
@@ -1069,24 +1085,24 @@ bin/megalodon \
 
 if ! rg -q 'Vampire certificate v1 native preprocess proof term checked 7 steps' \
     "$WORK_DIR/native_cert_v1_fool_preprocess_pf_frontier.out"; then
-  echo "native preprocess proof-term checker did not accept the typed FOOL primitive fixture" >&2
+  echo "native preprocess structural checker did not accept the typed FOOL primitive fixture" >&2
   exit 1
 fi
 
 if ! rg -q 'Vampire certificate v1 native preprocess source bindings checked 2 assumptions' \
     "$WORK_DIR/native_cert_v1_fool_preprocess_pf_frontier.out"; then
-  echo "native preprocess proof-term checker did not validate FOOL primitive source bindings" >&2
+  echo "native preprocess structural checker did not validate FOOL primitive source bindings" >&2
   exit 1
 fi
 
 if rg -q 'admit|aby|-allowincompleteqed' \
     "$WORK_DIR/native_cert_v1_fool_preprocess_pf_frontier.out" \
     "$WORK_DIR/native_cert_v1_fool_preprocess_pf_frontier.err"; then
-  echo "native preprocess proof-term checker reported an admission marker for the FOOL primitive fixture" >&2
+  echo "native preprocess structural checker reported an admission marker for the FOOL primitive fixture" >&2
   exit 1
 fi
 
-bin/megalodon \
+MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN=1 bin/megalodon \
   -vampirecertv1preprocesspfcheck \
   -vampirecertv1 tests/vampire_certificate/closed_cases/hammer.1032.16.native.sexp \
   -vampirecertv1source tests/vampire_certificate/closed_cases/hammer.1032.16.th0.p \
@@ -1095,14 +1111,14 @@ bin/megalodon \
 
 if ! rg -q 'Vampire certificate v1 native preprocess proof term checked 15 steps' \
     "$WORK_DIR/native_cert_v1_raw_prop_eq_fool_bool_frontier.out"; then
-  echo "native preprocess proof-term checker did not accept the refreshed typed-equality hammer FOOL case" >&2
+  echo "native preprocess structural checker did not accept the refreshed typed-equality hammer FOOL case" >&2
   exit 1
 fi
 
 if rg -q 'native preprocess proof-term fool_bool cannot lift positive atom|equality-symmetry requires typed Megalodon equality|admit|-allowincompleteqed' \
     "$WORK_DIR/native_cert_v1_raw_prop_eq_fool_bool_frontier.out" \
     "$WORK_DIR/native_cert_v1_raw_prop_eq_fool_bool_frontier.err"; then
-  echo "native preprocess proof-term checker regressed on the refreshed typed-equality hammer FOOL case" >&2
+  echo "native preprocess structural checker regressed on the refreshed typed-equality hammer FOOL case" >&2
   exit 1
 fi
 

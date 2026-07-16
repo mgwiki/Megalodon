@@ -4,6 +4,14 @@ Date: 2026-07-16
 
 Status: design plan for the `vampire/megalodon4` branch and successors
 
+Post-audit note, 2026-07-16: `reports/audit-REPORT-2026-07-16.md`
+changes the milestone order. The native preprocessing frontier described
+below is no longer qualifying proof-term evidence because it relied on
+certificate-derived `Known` propositions. The first milestone is now a trust
+reset: dynamic known-theorem insertion must be absent from counted native
+paths. The strict live 100 run is integration/metadata evidence, not closed
+proof reconstruction.
+
 Primary repositories:
 
 - Megalodon: `/project/Megalodon`
@@ -131,8 +139,9 @@ Result:
 - `superposition: 338`
 - `unit_resulting_resolution: 1`
 
-This is strong Tier 2 evidence: exported-THF-bound, source-linked, closed
-certificate checking. It is not yet Tier 1 original-context proof
+After the July 16 audit this is classified as integration/metadata evidence:
+exported-THF-bound, source-linked, structurally checked certificate data. It
+is not closed proof reconstruction and not Tier 1 original-context proof
 reconstruction.
 
 Core native proof-term gate:

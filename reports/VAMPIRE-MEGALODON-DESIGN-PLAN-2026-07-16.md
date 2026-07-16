@@ -54,11 +54,13 @@ The branch has real infrastructure:
 - Source formulas are structurally checked for the supported exported THF
   fragment.
 - Parallel live harnesses use `/project/tmp` and 10 second Vampire timeouts.
-- A native proof-term path exists in Megalodon for a growing clausal and
-  preprocessing fragment.
+- A genuine native proof-term path exists for a small synthetic clausal core.
+- A broader native preprocessing path exists, but the July 16 audit found that
+  it was using certificate-derived `Known` propositions for many
+  transformations. That path is now classified as structural/transitional
+  diagnostics unless it runs without such dynamic known-theorem insertion.
 
-The best recent native preprocessing proof-term run on the 100-case source
-linked list is:
+The old native preprocessing run on the 100-case source-linked list was:
 
 ```text
 PREPROCESS_PF_PASS       97
@@ -67,7 +69,15 @@ WRONG_PROPOSITION         1
 artifact: /project/tmp/live_preprocess_pf_100_after_multi_superposition_chain
 ```
 
-The remaining failures in that run were:
+That result must not be cited as proof reconstruction evidence. It is now
+reclassified as:
+
+```text
+PREPROCESS_STRUCTURAL_PASS 97
+```
+
+with transitional trusted primitives enabled. The remaining structural
+failures in that run were:
 
 ```text
 hammer.10806.144.th0.p  WRONG_PROPOSITION      u445
@@ -75,10 +85,11 @@ hammer.11405.35.th0.p   ILL_FORMED_PROOF_TERM  u283
 hammer.11497.79.th0.p   ILL_FORMED_PROOF_TERM  u573
 ```
 
-This is useful progress, but it is not the final target. The current success
-is still largely exported-THF-bound. The next target is original-context
-proof reconstruction with a small primitive certificate and no broad replay
-fallback.
+The current trustworthy proof-term evidence is the small `corepfcheck` seed,
+mostly synthetic fixtures. The 100 strict live certificates are useful
+integration and metadata evidence. The next target is not a 100/100
+preprocessing frontier; it is a trust reset, an isolated clausal kernel, real
+live core proofs, and then original-context source binding.
 
 ## Non-Negotiable Trust Boundary
 
@@ -126,6 +137,19 @@ Existing broad replay code can remain as:
 - a temporary debug printer.
 
 It should not be treated as the proof checker we are trying to finish.
+
+Concrete freeze rule:
+
+- no new qualifying implementation should be added to `src/vampire_cert_v1.ml`
+  except security/trust-boundary fixes and temporary plumbing needed to extract
+  code;
+- new Megalodon work should be split into modules such as
+  `vampire_kernel_syntax.ml`, `vampire_kernel_check.ml`,
+  `vampire_kernel_elab.ml`, and `vampire_source_context.ml`;
+- the kernel elaborator must not depend on textual replay helpers;
+- Vampire primitive construction should move out of scattered
+  `MegalodonChecker.cpp` string-building code into a primitive builder and
+  single printer.
 
 ## Layered Design
 
@@ -357,10 +381,12 @@ Tasks:
 
 Acceptance:
 
-- The 100-case native preprocess proof-term run reaches 100/100 on the current
-  source-linked list.
-- Failures, if any, are unsupported source/preprocessing transformations, not
-  clausal primitive proof-term bugs.
+- At least ten live regenerated Vampire proofs whose certificates contain only
+  the primitive clausal kernel pass native `Syntax.pf` checking.
+- The checker rejects any certificate-derived `Known` proposition not already
+  in the reviewed logical basis or original source context.
+- Failures, if any, are missing explicit primitive expansion or unsupported
+  preprocessing transformations, not hidden dynamic theorem insertion.
 
 ### WP3: Original-Context Source Binding
 
@@ -377,6 +403,21 @@ Tasks:
 - Resolve theorem, lemma, definition, hypothesis, conjecture, and set-command
   origins in the original Megalodon context.
 - Prove set-command equalities by reflexivity/definitional conversion.
+- Implement a concrete source-context API:
+
+```ocaml
+type source_proof =
+  | GlobalKnown of string * Syntax.tm
+  | LocalHyp of int * Syntax.tm
+  | Definitional of Syntax.tm * Syntax.pf
+  | Generated of Syntax.tm * Syntax.pf
+
+type source_context = source_id -> source_proof
+```
+
+- Specify how local hypotheses survive export/import, how binder scopes are
+  represented, how definitions are supplied to conversion, and how a refutation
+  of the negated conjecture becomes a proof of the original goal.
 
 Acceptance:
 
@@ -438,15 +479,23 @@ Goal:
 
 Have fast iteration and meaningful final evidence.
 
-Test tiers:
+Test stages:
 
-- Tier 0: one focused failing proof, no Vampire rerun if an existing
+- T0: one focused failing proof, no Vampire rerun if an existing
   certificate suffices.
-- Tier 1: 5-10 focused frontier cases in parallel.
-- Tier 2: current 100-case source-linked live list, Vampire timeout 10s,
+- T1: 5-10 focused frontier cases in parallel.
+- T2: current 100-case source-linked live list, Vampire timeout 10s,
   10-20 parallel jobs.
-- Tier 3: held-out or freshly regenerated 100+ theorem run.
-- Tier 4: committed original-context regression suite.
+- T3: held-out or freshly regenerated 100+ theorem run.
+- T4: committed original-context regression suite.
+
+Evidence classes:
+
+- E1: original-context, source-bound, closed native proof terms.
+- E2: exported-THF-bound closed checked proofs.
+- E3: synthetic or live primitive-kernel native proof-term checks.
+- E4: structural certificate/source/metadata validation and transitional
+  preprocessing diagnostics.
 
 Rules:
 
@@ -454,14 +503,13 @@ Rules:
 - Do not rerun unsolved Vampire searches repeatedly.
 - Cache the list of Vampire-solvable THF problems for iteration.
 - Run broad tests only after focused tests pass.
-- Treat pass counts separately:
-  - exported-THF-bound closed pass;
-  - native proof-term pass;
-  - original-context pass.
+- Treat pass counts separately and always name the evidence class.
+- `PREPROCESS_STRUCTURAL_PASS` is E4 evidence, not native proof
+  reconstruction evidence.
 
 Acceptance:
 
-- Final claims report exact tier and artifact directory.
+- Final claims report exact evidence class, test stage, and artifact directory.
 - The qualifying suite has at least 100 theorems, no admits, no `aby`, no
   incomplete QED, and no non-source premises.
 
@@ -469,19 +517,23 @@ Acceptance:
 
 The next engineering sequence should be:
 
-1. Fix the three remaining native proof-term failures on the current 100-case
-   frontier only when the fix is a general primitive proof-term or Vampire
-   primitive emission fix.
-2. Introduce or start extracting the Vampire primitive builder so future macro
+1. Eliminate certificate-derived `Known` declarations from counted native
+   paths. The preprocessing path must fail closed unless it uses real proof
+   terms or an explicitly marked structural diagnostic escape hatch.
+2. Extract the genuine clausal `corepfcheck` seed into isolated kernel modules
+   instead of growing `src/vampire_cert_v1.ml`.
+3. Introduce or start extracting the Vampire primitive builder so future macro
    expansions stop adding scattered printer fragments.
-3. Move `substitute`/`equality_symmetry` terminology toward
+4. Move `substitute`/`equality_symmetry` terminology toward
    `instantiate`/`flip`.
-4. Add original-context source binding for a small committed set of examples,
+5. Find at least ten real live Vampire proofs that are already primitive-core
+   or can be made primitive-core by Vampire-side lowering.
+6. Add original-context source binding for a small committed set of examples,
    including at least one set-command equality.
-5. Specify and implement the first proof-producing Smolka transformations in a
+7. Specify and implement the first proof-producing Smolka transformations in a
    separate layer, starting with the transformations most common in the
    current corpus.
-6. Only after those are in place, run a fresh 100-theorem gate and report it as
+8. Only after those are in place, run a fresh 100-theorem gate and report it as
    original-context or exported-THF-bound, as appropriate.
 
 ## Risk Register

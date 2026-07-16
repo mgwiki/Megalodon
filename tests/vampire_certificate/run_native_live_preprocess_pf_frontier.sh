@@ -163,12 +163,13 @@ run_one() {
   fi
   check_args+=(-vampirecertv1 "$case_dir/native.sexp" -vampirecertv1source "$problem")
 
-  if "$MEGALODON" "${check_args[@]}" "$case_dir/dummy.mg" \
+  if MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN=1 \
+      "$MEGALODON" "${check_args[@]}" "$case_dir/dummy.mg" \
       > "$case_dir/check.out" 2> "$case_dir/check.err"; then
     if rg -q 'native preprocess proof term checked' "$case_dir/check.out"; then
-      printf '%s\tPREPROCESS_PF_PASS\n' "$name" > "$case_dir/result.tsv"
+      printf '%s\tPREPROCESS_STRUCTURAL_PASS\n' "$name" > "$case_dir/result.tsv"
     else
-      printf '%s\tPREPROCESS_PF_MISSING_CONFIRMATION\n' "$name" > "$case_dir/result.tsv"
+      printf '%s\tPREPROCESS_STRUCTURAL_MISSING_CONFIRMATION\n' "$name" > "$case_dir/result.tsv"
     fi
     return 0
   fi
@@ -192,10 +193,10 @@ find "$WORK_DIR/cases" -name result.tsv -type f -print0 \
 awk -F '\t' '{count[$2]++} END {for (status in count) print status, count[status]}' \
   "$WORK_DIR/summary.tsv" | sort > "$WORK_DIR/counts.txt"
 
-awk -F '\t' '$2 != "PREPROCESS_PF_PASS"' "$WORK_DIR/summary.tsv" \
+awk -F '\t' '$2 != "PREPROCESS_STRUCTURAL_PASS"' "$WORK_DIR/summary.tsv" \
   > "$WORK_DIR/frontier_failures.tsv"
 
-awk -F '\t' '$2 != "PREPROCESS_PF_PASS" {print $2}' "$WORK_DIR/summary.tsv" \
+awk -F '\t' '$2 != "PREPROCESS_STRUCTURAL_PASS" {print $2}' "$WORK_DIR/summary.tsv" \
   | sort | uniq -c | sort -nr > "$WORK_DIR/frontier_failure_counts.txt"
 
 find "$WORK_DIR/cases" -name native.sexp -type f -size +0 -print0 \
@@ -217,14 +218,14 @@ find "$WORK_DIR/cases" -name native.sexp -type f -size +0 -print0 \
   | sort > "$WORK_DIR/rule_counts.txt"
 
 cat "$WORK_DIR/counts.txt"
-echo "native live preprocess proof-term frontier artifacts: $WORK_DIR"
-echo "native live preprocess proof-term frontier latest link: $TMPDIR/latest_native_live_preprocess_pf_frontier"
-echo "native live preprocess proof-term frontier failures: $WORK_DIR/frontier_failures.tsv"
-echo "native live preprocess proof-term frontier failure counts: $WORK_DIR/frontier_failure_counts.txt"
-echo "native live preprocess proof-term frontier rule counts: $WORK_DIR/rule_counts.txt"
+echo "native live preprocess structural frontier artifacts: $WORK_DIR"
+echo "native live preprocess structural frontier latest link: $TMPDIR/latest_native_live_preprocess_pf_frontier"
+echo "native live preprocess structural frontier failures: $WORK_DIR/frontier_failures.tsv"
+echo "native live preprocess structural frontier failure counts: $WORK_DIR/frontier_failure_counts.txt"
+echo "native live preprocess structural frontier rule counts: $WORK_DIR/rule_counts.txt"
 
 certs=$(find "$WORK_DIR/cases" -name native.sexp -type f -size +0 | wc -l | tr -d ' ')
 if (( certs < MIN_CERT )); then
-  echo "native live preprocess proof-term frontier produced $certs certificates, below MIN_CERT=$MIN_CERT" >&2
+  echo "native live preprocess structural frontier produced $certs certificates, below MIN_CERT=$MIN_CERT" >&2
   exit 1
 fi

@@ -13,6 +13,15 @@ Vampire-to-Megalodon proof reconstruction project. It consolidates the prior
 reports, audits, the Prover9/Ivy analysis, and the current small-kernel plan
 into a concrete implementation contract.
 
+Post-audit note, 2026-07-16: `reports/audit-REPORT-2026-07-16.md`
+supersedes the evidence classification in this document where it describes
+the 94/100 native preprocessing frontier or the strict live 100 run. The
+preprocessing frontier is structural/transitional evidence because it used
+certificate-derived `Known` propositions. The strict live 100 run is
+integration and metadata evidence. Counted proof reconstruction now starts
+from the genuine `-vampirecertv1corepfcheck` seed and from future
+preprocessing transformations that do not use dynamic known-theorem insertion.
+
 The purpose is to stop ad-hoc growth. A new change is aligned with this plan
 only if it does one of the following:
 
@@ -59,15 +68,17 @@ related logical constants.
 
 The branch has useful evidence, but it is not finished.
 
-Current positive evidence:
+Current positive evidence, as reclassified by the July 16 audit:
 
 - Vampire emits native S-expression certificates.
 - Megalodon parses and structurally validates those certificates.
-- Strict source-linked live 100-case checking passes in the exported-THF
-  setting with primitive and kernel metadata audits enabled.
+- Strict source-linked live 100-case checking passes as integration and
+  metadata evidence. It is not a checked proof-reconstruction result.
 - The current live strict 100-case run reports 3143 `kernel_v1` records,
   including 375 instantiation records.
-- The native preprocess proof-term frontier is 94/100 on the same live list.
+- The native preprocess frontier was 94/100 as structural/transitional
+  native-AST plumbing. It is not qualifying proof-term evidence while it relies
+  on certificate-derived `Known` propositions.
 - The native core proof-term audit passes on the current 23 eligible
   core-closed cases.
 - Source formulas are checked for the supported THF fragment.
@@ -379,9 +390,11 @@ Test tiers:
    - `tests/vampire_certificate/run_native_cert_v1_core_closed_audit.sh`
    - counts only certificates on the small clausal core path.
 
-3. Native preprocess proof-term frontier:
+3. Native preprocess structural frontier:
    - `tests/vampire_certificate/run_native_live_preprocess_pf_frontier.sh`
-   - runs live Vampire in parallel over the fixed solvable 100-case list.
+   - runs live Vampire in parallel over the fixed solvable 100-case list with
+     explicit transitional-known diagnostic opt-in;
+   - this is structural evidence only, not counted proof reconstruction.
 
 4. Strict live 100-case gate:
    - `tests/vampire_certificate/run_native_live_parallel.sh`
@@ -395,8 +408,8 @@ Test tiers:
    - constructs `Syntax.pf` for the original theorem;
    - rejects exported-THF-only assumptions.
 
-Progress should be reported by tier. A Tier 2 pass must not be described as a
-Tier 1 original-context proof.
+Progress should be reported by evidence class and test stage. Use the E1-E4
+and T0-T4 terminology from `VAMPIRE-MEGALODON-DESIGN-PLAN-2026-07-16.md`.
 
 ## Immediate Work Queue
 
@@ -417,15 +430,17 @@ Success criterion:
 - everyone can identify the next proof-term blocker without rerunning Vampire
   search.
 
-### Milestone 2: Finish the six remaining live preprocess proof-term failures
+### Milestone 2: Trust reset and core extraction
 
-Current known failures after the latest 94/100 run:
+The July 16 audit supersedes the old instruction to drive the preprocessing
+frontier to 100/100. Current priority:
 
-- subsumption-resolution side pivot mismatch;
-- wrong proposition in one preprocessing proof term;
-- two ill-formed proof terms from nonfunction application;
-- missing `inequality_name_intro` proof-term rule;
-- paramodulation target mismatch.
+- remove certificate-derived `Known` propositions from counted native paths;
+- keep the old preprocessing frontier as `PREPROCESS_STRUCTURAL_PASS`
+  diagnostics only;
+- extract the genuine `corepfcheck` seed into isolated kernel modules;
+- find real live core certificates before resuming preprocessing pass-count
+  work.
 
 Decision rule:
 
@@ -437,8 +452,8 @@ Decision rule:
 
 Success criterion:
 
-- live preprocess proof-term frontier reaches 100/100 on the fixed list, with
-  no `admit`, `aby`, or bridge assumptions.
+- counted native paths contain no dynamic known-theorem insertion;
+- the real clausal core has at least ten live regenerated Vampire examples.
 
 ### Milestone 3: Replace `kernel_v1` metadata with first-class primitives
 

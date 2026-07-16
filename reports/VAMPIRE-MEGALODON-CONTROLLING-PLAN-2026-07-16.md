@@ -13,6 +13,14 @@ Vampire-to-Megalodon proof reconstruction project. It is meant to make the
 work less ad hoc. A future patch should be easy to classify against this
 document before it is written.
 
+Post-audit note, 2026-07-16: `reports/audit-REPORT-2026-07-16.md` supersedes
+the evidence classification below for preprocessing proof-term frontiers. Those
+frontiers used certificate-derived `Known` propositions and are now structural
+diagnostics only. The active plan is
+`reports/VAMPIRE-MEGALODON-DESIGN-PLAN-2026-07-16.md`, which puts trust reset,
+core extraction, real live core proofs, and original-context binding before
+any renewed preprocessing pass-count work.
+
 ## Short Answer
 
 The project should follow a Prover9/Ivy-style architecture:

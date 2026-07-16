@@ -9651,6 +9651,17 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
   let apply_primitive primitive proofs =
     List.fold_left (fun proof parent_proof -> PPfAp (proof, parent_proof)) (Known primitive) proofs
   in
+  let install_transitional_known id primitive prop =
+    match Sys.getenv_opt "MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN" with
+    | Some "1" ->
+        Hashtbl.replace proof_delta primitive (0, prop);
+        Hashtbl.replace definition_delta primitive (0, prop)
+    | _ ->
+        error
+          (id ^ ": native preprocess proof-term checker refuses certificate-derived Known primitive "
+           ^ primitive
+           ^ "; implement a real proof term or run a structural diagnostic with MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN=1")
+  in
   let step_by_id id =
     List.find_opt (fun step -> step_id step = id) typed_steps
   in
@@ -9691,8 +9702,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
       in
       let primitive = "vampire_substitute_" ^ id in
       let primitive_prop = Imp (parent_prop, result_prop) in
-      Hashtbl.replace proof_delta primitive (0, primitive_prop);
-      Hashtbl.replace definition_delta primitive (0, primitive_prop);
+      install_transitional_known id primitive primitive_prop;
       Hashtbl.replace transitional_primitive_clause_steps id true;
       PPfAp (Known primitive, parent_proof)
     end else
@@ -9719,8 +9729,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           check_predicate_definition id symbol result;
           let prop = native_formula_step_prop id result in
           let primitive = "vampire_predicate_definition_" ^ id in
-          Hashtbl.replace proof_delta primitive (0, prop);
-          Hashtbl.replace definition_delta primitive (0, prop);
+          install_transitional_known id primitive prop;
           Hashtbl.replace transitional_primitive_formula_steps id true;
           store_formula id result (Known primitive)
       | PredicateDefinitionFold (id, source_id, definition_id, result) ->
@@ -9734,8 +9743,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           let primitive_prop =
             primitive_implication [source_prop; definition_prop] result_prop
           in
-          Hashtbl.replace proof_delta primitive (0, primitive_prop);
-          Hashtbl.replace definition_delta primitive (0, primitive_prop);
+          install_transitional_known id primitive primitive_prop;
           Hashtbl.replace transitional_primitive_formula_steps id true;
           store_formula id result
             (apply_primitive primitive [source_proof; definition_proof])
@@ -9762,8 +9770,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           let result_prop = native_formula_step_prop id result in
           let primitive = "vampire_predicate_definition_fold_chain_" ^ id in
           let primitive_prop = primitive_implication parent_props result_prop in
-          Hashtbl.replace proof_delta primitive (0, primitive_prop);
-          Hashtbl.replace definition_delta primitive (0, primitive_prop);
+          install_transitional_known id primitive primitive_prop;
           Hashtbl.replace transitional_primitive_formula_steps id true;
           store_formula id result (apply_primitive primitive parent_proofs)
       | FormulaTermCopy (id, parent_id, result) ->
@@ -9783,8 +9790,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           in
           let primitive = "vampire_rectify_formula_" ^ id in
           let primitive_prop = Imp (parent_prop, result_prop) in
-          Hashtbl.replace proof_delta primitive (0, primitive_prop);
-          Hashtbl.replace definition_delta primitive (0, primitive_prop);
+          install_transitional_known id primitive primitive_prop;
           Hashtbl.replace transitional_primitive_formula_steps id true;
           store_formula id result (PPfAp (Known primitive, parent_proof))
       | FoolBool (id, parent_id, result) ->
@@ -9802,8 +9808,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           let result_prop = native_formula_step_prop id result in
           let primitive = "vampire_fool_formula_" ^ id in
           let primitive_prop = Imp (parent_prop, result_prop) in
-          Hashtbl.replace proof_delta primitive (0, primitive_prop);
-          Hashtbl.replace definition_delta primitive (0, primitive_prop);
+          install_transitional_known id primitive primitive_prop;
           Hashtbl.replace transitional_primitive_formula_steps id true;
           store_formula id result (PPfAp (Known primitive, parent_proof))
       | EnnfFormula (id, parent_id, _source, _pairs, result) ->
@@ -9815,8 +9820,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           let result_prop = native_formula_step_prop id result in
           let primitive = "vampire_ennf_formula_" ^ id in
           let primitive_prop = Imp (parent_prop, result_prop) in
-          Hashtbl.replace proof_delta primitive (0, primitive_prop);
-          Hashtbl.replace definition_delta primitive (0, primitive_prop);
+          install_transitional_known id primitive primitive_prop;
           Hashtbl.replace transitional_primitive_formula_steps id true;
           store_formula id result (PPfAp (Known primitive, parent_proof))
       | SkolemFormula (id, parent_id, source, introductions, subst, result) ->
@@ -9838,8 +9842,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
             "vampire_skolem_formula_" ^ id
           in
           let primitive_prop = Imp (parent_prop, result_prop) in
-          Hashtbl.replace proof_delta primitive (0, primitive_prop);
-          Hashtbl.replace definition_delta primitive (0, primitive_prop);
+          install_transitional_known id primitive primitive_prop;
           Hashtbl.replace transitional_primitive_formula_steps id true;
           store_formula id result (PPfAp (Known primitive, parent_proof))
       | FormulaCopy (id, parent_id, result) ->
@@ -9885,8 +9888,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
             in
             let primitive = "vampire_cnf_formula_clause_" ^ id in
             let primitive_prop = Imp (parent_prop, result_prop) in
-            Hashtbl.replace proof_delta primitive (0, primitive_prop);
-            Hashtbl.replace definition_delta primitive (0, primitive_prop);
+            install_transitional_known id primitive primitive_prop;
             Hashtbl.replace transitional_primitive_clause_steps id true;
             store_clause id result (PPfAp (Known primitive, parent_proof))
           end else
@@ -9909,8 +9911,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
                 |> native_core_normalize_bool_constants
               in
               let primitive = "vampire_avatar_definition_" ^ id in
-              Hashtbl.replace proof_delta primitive (0, prop);
-              Hashtbl.replace definition_delta primitive (0, prop);
+              install_transitional_known id primitive prop;
               store_avatar_definition
                 id
                 split_name
@@ -9924,8 +9925,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           check_avatar_component_strict id result;
           let prop = native_core_step_clause_prop cert variables id result in
           let primitive = "vampire_avatar_component_" ^ id in
-          Hashtbl.replace proof_delta primitive (0, prop);
-          Hashtbl.replace definition_delta primitive (0, prop);
+          install_transitional_known id primitive prop;
           Hashtbl.replace transitional_primitive_clause_steps id true;
           store_clause id result (Known primitive)
       | SplitDependency (id, owner_id, _dependencies, result) ->
@@ -9963,8 +9963,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           let result_prop = native_core_step_clause_prop cert variables id result in
           let primitive = "vampire_avatar_split_" ^ id in
           let primitive_prop = primitive_implication parent_props result_prop in
-          Hashtbl.replace proof_delta primitive (0, primitive_prop);
-          Hashtbl.replace definition_delta primitive (0, primitive_prop);
+          install_transitional_known id primitive primitive_prop;
           Hashtbl.replace transitional_primitive_clause_steps id true;
           store_clause id result
             (apply_primitive
@@ -9991,8 +9990,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           let result_prop = native_core_step_clause_prop cert variables id result in
           let primitive = "vampire_avatar_refutation_" ^ id in
           let primitive_prop = primitive_implication parent_props result_prop in
-          Hashtbl.replace proof_delta primitive (0, primitive_prop);
-          Hashtbl.replace definition_delta primitive (0, primitive_prop);
+          install_transitional_known id primitive primitive_prop;
           Hashtbl.replace transitional_primitive_clause_steps id true;
           store_clause id result
             (apply_primitive
@@ -10036,8 +10034,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           in
           let primitive = "vampire_resolve_" ^ id in
           let primitive_prop = Imp (left_prop, Imp (right_prop, result_prop)) in
-          Hashtbl.replace proof_delta primitive (0, primitive_prop);
-          Hashtbl.replace definition_delta primitive (0, primitive_prop);
+          install_transitional_known id primitive primitive_prop;
           Hashtbl.replace transitional_primitive_clause_steps id true;
           store_clause id result
             (PPfAp (PPfAp (Known primitive, left_proof), right_proof))
@@ -10054,8 +10051,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
             in
             let primitive = "vampire_factor_" ^ id in
             let primitive_prop = Imp (parent_prop, result_prop) in
-            Hashtbl.replace proof_delta primitive (0, primitive_prop);
-            Hashtbl.replace definition_delta primitive (0, primitive_prop);
+            install_transitional_known id primitive primitive_prop;
             Hashtbl.replace transitional_primitive_clause_steps id true;
             store_clause id result (PPfAp (Known primitive, parent_proof))
           end else
@@ -10075,8 +10071,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
             in
             let primitive = "vampire_equality_resolution_" ^ id in
             let primitive_prop = Imp (parent_prop, result_prop) in
-            Hashtbl.replace proof_delta primitive (0, primitive_prop);
-            Hashtbl.replace definition_delta primitive (0, primitive_prop);
+            install_transitional_known id primitive primitive_prop;
             Hashtbl.replace transitional_primitive_clause_steps id true;
             store_clause id result (PPfAp (Known primitive, parent_proof))
           end else
@@ -10095,8 +10090,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
           in
           let primitive = "vampire_equality_symmetry_" ^ id in
           let primitive_prop = Imp (parent_prop, result_prop) in
-          Hashtbl.replace proof_delta primitive (0, primitive_prop);
-          Hashtbl.replace definition_delta primitive (0, primitive_prop);
+          install_transitional_known id primitive primitive_prop;
           Hashtbl.replace transitional_primitive_clause_steps id true;
           store_clause id result (PPfAp (Known primitive, parent_proof))
 	      | TruthConflict (id, parent_id, literal_index, result) ->
@@ -10131,8 +10125,7 @@ let elaborate_preprocess_refutation_native ?(source_map=[]) cert =
             in
             let primitive = "vampire_paramodulate_" ^ id in
             let primitive_prop = Imp (equality_prop, Imp (target_prop, result_prop)) in
-            Hashtbl.replace proof_delta primitive (0, primitive_prop);
-            Hashtbl.replace definition_delta primitive (0, primitive_prop);
+            install_transitional_known id primitive primitive_prop;
             Hashtbl.replace transitional_primitive_clause_steps id true;
             store_clause id result
               (PPfAp (PPfAp (Known primitive, equality_proof), target_proof))

@@ -26,13 +26,13 @@ JOBS="$JOBS" \
 
 frontier_cases="$preprocess_audit_dir/preprocess_closed_cases.list"
 if [[ ! -s "$frontier_cases" ]]; then
-  echo "preprocess proof-term frontier has no preprocessing-closed cases" >&2
+  echo "preprocess structural frontier has no preprocessing-closed cases" >&2
   exit 2
 fi
 
 case_count=$(wc -l < "$frontier_cases" | tr -d ' ')
 if (( case_count < MIN_FRONTIER_CASES )); then
-  echo "preprocess proof-term frontier has fewer than $MIN_FRONTIER_CASES cases" >&2
+  echo "preprocess structural frontier has fewer than $MIN_FRONTIER_CASES cases" >&2
   exit 1
 fi
 
@@ -83,15 +83,15 @@ run_one() {
     return 0
   fi
 
-  if "$MEGALODON" \
+  if MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN=1 "$MEGALODON" \
       -vampirecertv1preprocesspfcheck \
       -vampirecertv1 "$native" \
       -vampirecertv1source "$source" \
       "$case_dir/dummy.mg" > "$case_dir/check.out" 2> "$case_dir/check.err"; then
     if rg -q 'native preprocess proof term checked' "$case_dir/check.out"; then
-      printf '%s\tPREPROCESS_PF_PASS\n' "$base" > "$case_dir/result.tsv"
+      printf '%s\tPREPROCESS_STRUCTURAL_PASS\n' "$base" > "$case_dir/result.tsv"
     else
-      printf '%s\tPREPROCESS_PF_MISSING_CONFIRMATION\n' "$base" > "$case_dir/result.tsv"
+      printf '%s\tPREPROCESS_STRUCTURAL_MISSING_CONFIRMATION\n' "$base" > "$case_dir/result.tsv"
     fi
     return 0
   fi
@@ -115,14 +115,14 @@ find "$WORK_DIR/cases" -name result.tsv -type f -print0 \
 awk -F '\t' '{count[$2]++} END {for (status in count) print status, count[status]}' \
   "$WORK_DIR/summary.tsv" | sort > "$WORK_DIR/counts.txt"
 
-awk -F '\t' '$2 != "PREPROCESS_PF_PASS"' "$WORK_DIR/summary.tsv" \
+awk -F '\t' '$2 != "PREPROCESS_STRUCTURAL_PASS"' "$WORK_DIR/summary.tsv" \
   > "$WORK_DIR/frontier_failures.tsv"
 
-awk -F '\t' '$2 != "PREPROCESS_PF_PASS" {print $2}' "$WORK_DIR/summary.tsv" \
+awk -F '\t' '$2 != "PREPROCESS_STRUCTURAL_PASS" {print $2}' "$WORK_DIR/summary.tsv" \
   | sort | uniq -c | sort -nr > "$WORK_DIR/frontier_failure_counts.txt"
 
 cat "$WORK_DIR/counts.txt"
-echo "native certificate v1 preprocess proof-term frontier artifacts: $WORK_DIR"
-echo "native certificate v1 preprocess proof-term frontier latest link: $TMPDIR/latest_native_cert_v1_preprocess_pf_frontier"
-echo "native certificate v1 preprocess proof-term frontier failures: $WORK_DIR/frontier_failures.tsv"
-echo "native certificate v1 preprocess proof-term frontier failure counts: $WORK_DIR/frontier_failure_counts.txt"
+echo "native certificate v1 preprocess structural frontier artifacts: $WORK_DIR"
+echo "native certificate v1 preprocess structural frontier latest link: $TMPDIR/latest_native_cert_v1_preprocess_pf_frontier"
+echo "native certificate v1 preprocess structural frontier failures: $WORK_DIR/frontier_failures.tsv"
+echo "native certificate v1 preprocess structural frontier failure counts: $WORK_DIR/frontier_failure_counts.txt"

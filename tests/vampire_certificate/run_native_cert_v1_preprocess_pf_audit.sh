@@ -10,7 +10,7 @@ CASES_DIR=${CASES_DIR:-"$ROOT/tests/vampire_certificate/closed_cases"}
 CASE_LIST=${CASE_LIST:-}
 WORK_DIR=${WORK_DIR:-"$(mktemp -d "$TMPDIR/native_cert_v1_preprocess_pf_audit.XXXXXX")"}
 JOBS=${JOBS:-10}
-MIN_PREPROCESS_PF=${MIN_PREPROCESS_PF:-1}
+MIN_PREPROCESS_STRUCTURAL=${MIN_PREPROCESS_STRUCTURAL:-1}
 
 mkdir -p "$WORK_DIR/cases"
 ln -sfn "$WORK_DIR" "$TMPDIR/latest_native_cert_v1_preprocess_pf_audit"
@@ -33,7 +33,7 @@ if [[ -n "$CASE_LIST" ]]; then
       native="$CASES_DIR/$raw.native.sexp"
     fi
     if [[ ! -s "$native" ]]; then
-      echo "listed native preprocess proof-term certificate does not exist: $raw" >&2
+      echo "listed native preprocess structural certificate does not exist: $raw" >&2
       exit 2
     fi
     printf '%s\n' "$native" >> "$case_list"
@@ -43,7 +43,7 @@ else
 fi
 
 if [[ ! -s "$case_list" ]]; then
-  echo "no native preprocess proof-term cases selected" >&2
+  echo "no native preprocess structural cases selected" >&2
   exit 2
 fi
 
@@ -57,42 +57,42 @@ run_one() {
   : > "$case_dir/dummy.mg"
 
   if [[ ! -s "$source" ]]; then
-    printf '%s\tPREPROCESS_PF_MISSING_SOURCE\n' "$base" > "$case_dir/result.tsv"
+    printf '%s\tPREPROCESS_STRUCTURAL_MISSING_SOURCE\n' "$base" > "$case_dir/result.tsv"
     return 0
   fi
 
-  if ! "$MEGALODON" \
+  if ! MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN=1 "$MEGALODON" \
       -vampirecertv1preprocesspfcheck \
       -vampirecertv1 "$native" \
       -vampirecertv1source "$source" \
       "$case_dir/dummy.mg" > "$case_dir/check.out" 2> "$case_dir/check.err"; then
     local err
     err=$(tail -1 "$case_dir/check.err" | tr '\t' ' ')
-    printf '%s\tPREPROCESS_PF_FAIL\t%s\n' "$base" "$err" > "$case_dir/result.tsv"
+    printf '%s\tPREPROCESS_STRUCTURAL_FAIL\t%s\n' "$base" "$err" > "$case_dir/result.tsv"
     return 0
   fi
 
   if ! rg -q 'native preprocess proof term checked' "$case_dir/check.out"; then
-    printf '%s\tPREPROCESS_PF_MISSING_CONFIRMATION\n' "$base" > "$case_dir/result.tsv"
+    printf '%s\tPREPROCESS_STRUCTURAL_MISSING_CONFIRMATION\n' "$base" > "$case_dir/result.tsv"
     return 0
   fi
 
   if ! rg -q 'Vampire certificate v1 source origin ' "$case_dir/check.out"; then
-    printf '%s\tPREPROCESS_PF_MISSING_ORIGIN\n' "$base" > "$case_dir/result.tsv"
+    printf '%s\tPREPROCESS_STRUCTURAL_MISSING_ORIGIN\n' "$base" > "$case_dir/result.tsv"
     return 0
   fi
 
   if ! rg -q 'Vampire certificate v1 native preprocess source bindings checked ' "$case_dir/check.out"; then
-    printf '%s\tPREPROCESS_PF_MISSING_SOURCE_BINDINGS\n' "$base" > "$case_dir/result.tsv"
+    printf '%s\tPREPROCESS_STRUCTURAL_MISSING_SOURCE_BINDINGS\n' "$base" > "$case_dir/result.tsv"
     return 0
   fi
 
   if ! rg -q 'Vampire certificate v1 native preprocess source propositions recorded ' "$case_dir/check.out"; then
-    printf '%s\tPREPROCESS_PF_MISSING_SOURCE_PROPOSITIONS\n' "$base" > "$case_dir/result.tsv"
+    printf '%s\tPREPROCESS_STRUCTURAL_MISSING_SOURCE_PROPOSITIONS\n' "$base" > "$case_dir/result.tsv"
     return 0
   fi
 
-  printf '%s\tPREPROCESS_PF_PASS\n' "$base" > "$case_dir/result.tsv"
+  printf '%s\tPREPROCESS_STRUCTURAL_PASS\n' "$base" > "$case_dir/result.tsv"
 }
 
 export MEGALODON CASES_DIR WORK_DIR
@@ -108,18 +108,18 @@ find "$WORK_DIR/cases" -name result.tsv -type f -print0 \
 awk -F '\t' '{count[$2]++} END {for (status in count) print status, count[status]}' \
   "$WORK_DIR/summary.tsv" | sort | tee "$WORK_DIR/counts.txt"
 
-pass_count=$(awk -F '\t' '$2 == "PREPROCESS_PF_PASS" {count++} END {print count + 0}' "$WORK_DIR/summary.tsv")
-if (( pass_count < MIN_PREPROCESS_PF )); then
-  echo "native certificate v1 preprocess proof-term audit has fewer than $MIN_PREPROCESS_PF passes" >&2
+pass_count=$(awk -F '\t' '$2 == "PREPROCESS_STRUCTURAL_PASS" {count++} END {print count + 0}' "$WORK_DIR/summary.tsv")
+if (( pass_count < MIN_PREPROCESS_STRUCTURAL )); then
+  echo "native certificate v1 preprocess structural audit has fewer than $MIN_PREPROCESS_STRUCTURAL passes" >&2
   sed -n '1,40p' "$WORK_DIR/summary.tsv" >&2
   exit 1
 fi
 
-if awk -F '\t' '$2 != "PREPROCESS_PF_PASS" {bad=1} END {exit bad ? 0 : 1}' "$WORK_DIR/summary.tsv"; then
-  echo "native certificate v1 preprocess proof-term audit has failures" >&2
+if awk -F '\t' '$2 != "PREPROCESS_STRUCTURAL_PASS" {bad=1} END {exit bad ? 0 : 1}' "$WORK_DIR/summary.tsv"; then
+  echo "native certificate v1 preprocess structural audit has failures" >&2
   sed -n '1,80p' "$WORK_DIR/summary.tsv" >&2
   exit 1
 fi
 
-echo "native certificate v1 preprocess proof-term audit artifacts: $WORK_DIR"
-echo "native certificate v1 preprocess proof-term audit latest link: $TMPDIR/latest_native_cert_v1_preprocess_pf_audit"
+echo "native certificate v1 preprocess structural audit artifacts: $WORK_DIR"
+echo "native certificate v1 preprocess structural audit latest link: $TMPDIR/latest_native_cert_v1_preprocess_pf_audit"
