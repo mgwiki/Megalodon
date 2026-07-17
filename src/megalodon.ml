@@ -7779,7 +7779,6 @@ let audit_vampire_cert_v1_source_context cert source_map =
   if !vampirecertv1sourcecontextstrict
      && (audit.Vampire_source_context.known_missing > 0
          || audit.Vampire_source_context.known_mismatch > 0
-         || audit.Vampire_source_context.local_definition_matched > 0
          || audit.Vampire_source_context.definition_missing > 0
          || audit.Vampire_source_context.unresolved > 0) then
     raise

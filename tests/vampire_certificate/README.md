@@ -168,6 +168,9 @@ Native proof-term checker output also reports the number of source assumptions
 remaining after source-context proofs are consumed; the smoke suite asserts
 that hash-backed knowns and generated `set_reflexivity` equalities reduce that
 count.
+Strict source-context mode fails on missing, mismatched, or unresolved source
+obligations. A matched `local_definition` is accepted because it has already
+been turned into a checked source proof by the resolver.
 
 For repeatable non-overlapping corpus slices, use:
 
