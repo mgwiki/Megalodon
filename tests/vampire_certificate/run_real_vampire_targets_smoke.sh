@@ -61,6 +61,8 @@ cat <<'TARGETS' | xargs -P "$JOBS" -I{} bash -c 'run_one_target "$1"' bash "{}"
 11453	11453	77	65	8	known=6 local=0 local_definition=0 conjecture=2 unresolved=0
 11555	11555	42	11	3	known=1 local=0 local_definition=0 conjecture=2 unresolved=0
 11560	11560	31	5	2	known=0 local=0 local_definition=0 conjecture=2 unresolved=0
+11572	11572	88	11	3	known=0 local=1 local_definition=0 conjecture=2 unresolved=0
+11578	11578	57	15	4	known=0 local=2 local_definition=0 conjecture=2 unresolved=0
 11696	11696	239	11	3	known=0 local=1 local_definition=0 conjecture=2 unresolved=0
 11703	11703	242	44	7	known=1 local=4 local_definition=0 conjecture=2 unresolved=0
 11706	11706	270	13	3	known=0 local=1 local_definition=0 conjecture=2 unresolved=0
@@ -75,8 +77,8 @@ if rg -q $'\tFAIL_' "$WORK_DIR/summary.tsv"; then
 fi
 
 pass_count=$(rg -c $'\tPASS\t' "$WORK_DIR/summary.tsv")
-if [[ "$pass_count" != "8" ]]; then
-  echo "real Vampire target batch expected 8 passes, got $pass_count" >&2
+if [[ "$pass_count" != "10" ]]; then
+  echo "real Vampire target batch expected 10 passes, got $pass_count" >&2
   exit 1
 fi
 

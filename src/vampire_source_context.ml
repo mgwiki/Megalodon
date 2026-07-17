@@ -269,12 +269,24 @@ let proof_proves context proof proposition =
     | None -> false
   with _ -> false
 
-let proof_proves_in_context context term_context proof proposition =
+let proof_proves_in_context_with_props context term_context proof_context proof proposition =
   try
-    match check_propofpf context.proof_delta context.symbol_table term_context [] proof proposition [] with
+    match
+      check_propofpf
+        context.proof_delta
+        context.symbol_table
+        term_context
+        proof_context
+        proof
+        proposition
+        []
+    with
     | Some _ -> true
     | None -> false
   with _ -> false
+
+let proof_proves_in_context context term_context proof proposition =
+  proof_proves_in_context_with_props context term_context [] proof proposition
 
 let proof_prop_in_context context term_context proof =
   try Some (fst (extr_propofpf context.proof_delta context.symbol_table term_context [] proof []))
@@ -364,7 +376,7 @@ let closed_terms_of_type context tp proposition =
   in
   collect [] (Some Prop) proposition [] |> List.rev |> take_prefix 12
 
-let equality_symmetry_proof context term_context proof proposition =
+let equality_symmetry_proof ?(proof_context=[]) context term_context proof proposition =
   let target_candidates =
     match collapse_expanded_equality proposition with
     | Some collapsed when collapsed <> proposition -> [proposition; collapsed]
@@ -377,13 +389,13 @@ let equality_symmetry_proof context term_context proof proposition =
         | Some (tp, left, right) ->
             let source = equality_atom tp right left in
             let expanded_source = expanded_equality_prop tp right left in
-            if proof_proves_in_context context term_context proof source
-               || proof_proves_in_context context term_context proof expanded_source
+            if proof_proves_in_context_with_props context term_context proof_context proof source
+               || proof_proves_in_context_with_props context term_context proof_context proof expanded_source
             then
               let symmetry_proof = positive_equality_symmetry_proof tp right left proof in
-              if proof_proves_in_context context term_context symmetry_proof proposition then
+              if proof_proves_in_context_with_props context term_context proof_context symmetry_proof proposition then
                 Some symmetry_proof
-              else if proof_proves_in_context context term_context symmetry_proof target then
+              else if proof_proves_in_context_with_props context term_context proof_context symmetry_proof target then
                 Some symmetry_proof
               else
                 search rest
@@ -394,8 +406,8 @@ let equality_symmetry_proof context term_context proof proposition =
   in
   search target_candidates
 
-let rec proof_for_prop context term_context proof proposition =
-  if proof_proves_in_context context term_context proof proposition then
+let rec proof_for_prop ?(proof_context=[]) context term_context proof proposition =
+  if proof_proves_in_context_with_props context term_context proof_context proof proposition then
     Some proof
   else
     let collapsed_or_symmetry =
@@ -405,11 +417,11 @@ let rec proof_for_prop context term_context proof proposition =
             prerr_endline
               ("source-context collapsed expanded equality proposition: "
                ^ tm_to_str collapsed);
-          if proof_proves_in_context context term_context proof collapsed
-             && proof_proves_in_context context term_context proof proposition
+          if proof_proves_in_context_with_props context term_context proof_context proof collapsed
+             && proof_proves_in_context_with_props context term_context proof_context proof proposition
           then Some proof
-          else equality_symmetry_proof context term_context proof proposition
-      | _ -> equality_symmetry_proof context term_context proof proposition
+          else equality_symmetry_proof ~proof_context context term_context proof proposition
+      | _ -> equality_symmetry_proof ~proof_context context term_context proof proposition
     in
     match collapsed_or_symmetry with
     | Some proof -> Some proof
@@ -420,7 +432,12 @@ let rec proof_for_prop context term_context proof proposition =
           closed_terms_of_type context tp proposition
           |> List.find_map
                (fun tm ->
-                  proof_for_prop context term_context (PTmAp (proof, tm)) proposition)
+                  proof_for_prop
+                    ~proof_context
+                    context
+                    term_context
+                    (PTmAp (proof, tm))
+                    proposition)
       | _ -> None
     in
     match instantiate_loaded_forall () with
@@ -429,10 +446,10 @@ let rec proof_for_prop context term_context proof proposition =
     match proposition with
     | All (tp, body) ->
         let applied = PTmAp (pftmshift 0 1 proof, DB 0) in
-        begin match proof_for_prop context (tp :: term_context) applied body with
+        begin match proof_for_prop ~proof_context context (tp :: term_context) applied body with
         | Some body_proof ->
             let wrapped = TLam (tp, body_proof) in
-            if proof_proves_in_context context term_context wrapped proposition then
+            if proof_proves_in_context_with_props context term_context proof_context wrapped proposition then
               Some wrapped
             else
               None
@@ -440,10 +457,10 @@ let rec proof_for_prop context term_context proof proposition =
             begin
               try
                 let body_without_unused = tmshift 0 (-1) body in
-                match proof_for_prop context term_context proof body_without_unused with
+                match proof_for_prop ~proof_context context term_context proof body_without_unused with
                 | Some body_proof ->
                     let wrapped = TLam (tp, body_proof) in
-                    if proof_proves_in_context context term_context wrapped proposition then
+                    if proof_proves_in_context_with_props context term_context proof_context wrapped proposition then
                       Some wrapped
                     else
                       None
@@ -558,23 +575,19 @@ let project_local_term_context context tm =
   in
   project 0 tm
 
-let hyp_proves context index proposition =
-  try
-    let local_props = List.map snd context.local_hypotheses in
-    match check_propofpf
-            (local_definition_delta context)
-            context.symbol_table
-            context.term_context
-            local_props
-            (Hyp index)
-            proposition
-            []
-    with
-    | Some _ -> true
-    | None -> false
-  with _ -> false
+let hyp_proof context index proposition =
+  let context =
+    { context with proof_delta = local_definition_delta context }
+  in
+  let local_props = List.map snd context.local_hypotheses in
+  proof_for_prop
+    ~proof_context:local_props
+    context
+    context.term_context
+    (Hyp index)
+    proposition
 
-let local_hyp_index context name proposition =
+let local_hyp_proof context name proposition =
   let projected_proposition =
     match project_local_term_context context proposition with
     | Some proposition -> proposition
@@ -585,10 +598,11 @@ let local_hyp_index context name proposition =
     | (local_name, local_prop) :: rest ->
         if local_name = name then
           match conv local_prop projected_proposition (local_definition_delta context) [] with
-          | Some _ -> Some i
+          | Some _ -> Some (i, Hyp i)
           | None ->
-              if hyp_proves context i projected_proposition then Some i
-              else begin
+              begin match hyp_proof context i projected_proposition with
+              | Some proof -> Some (i, proof)
+              | None ->
                 if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
                   prerr_endline
                     ("source-context local hypothesis mismatch for "
@@ -668,10 +682,10 @@ let resolve_one context audit binding =
         { audit with known_mismatch = audit.known_mismatch + 1 }
         |> add_issue binding "known_mismatch"
   else if local_source_kind kind then
-    begin match local_hyp_index context binding.core_native_source_name proposition with
-    | Some index ->
+    begin match local_hyp_proof context binding.core_native_source_name proposition with
+    | Some (index, proof) ->
         audit
-        |> add_source_proof step (Hyp index)
+        |> add_source_proof step proof
         |> add_resolved step (LocalHyp (index, proposition))
         |> fun audit -> { audit with local_checked = audit.local_checked + 1 }
     | None ->
