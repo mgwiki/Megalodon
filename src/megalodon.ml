@@ -1401,6 +1401,55 @@ let vampire_context_terms_of_type cxtm target_tp =
         (candidates @ [TmH(!fal); vampire_native_core_false_tm])
   | _ -> candidates
 
+let vampire_symbol_table ?extra_symbols source_map =
+  let symbol_table = vampire_source_context_symbol_table_with_source_map source_map in
+  begin match extra_symbols with
+  | None -> ()
+  | Some extra_symbols ->
+      Hashtbl.iter
+        (fun h v ->
+           if not (Hashtbl.mem symbol_table h) then Hashtbl.add symbol_table h v)
+        extra_symbols
+  end;
+  symbol_table
+
+let vampire_candidate_terms_from_props ?extra_symbols cxtm source_map props target_tp =
+  let rec term_size = function
+    | DB _ | TmH _ | Prim _ -> 1
+    | TpAp (body, _) -> 1 + term_size body
+    | Ap (fn, arg) -> 1 + term_size fn + term_size arg
+    | Lam (_, body) | All (_, body) -> 1 + term_size body
+    | Imp (left, right) -> 1 + term_size left + term_size right
+  in
+  let cx =
+    List.filter_map
+      (fun (_, (tp, definition)) ->
+         match definition with
+         | None -> Some tp
+         | Some _ -> None)
+      cxtm
+  in
+  let symbol_table = vampire_symbol_table ?extra_symbols source_map in
+  let add tm terms =
+    try
+      if extr_tpoftm symbol_table cx tm = target_tp then tm :: terms else terms
+    with _ -> terms
+  in
+  let rec scan tm terms =
+    let terms = add tm terms in
+    match tm with
+    | TpAp (body, _) -> scan body terms
+    | Ap (fn, arg) -> scan arg (scan fn terms)
+    | Imp (left, right) -> scan right (scan left terms)
+    | Lam _ | All _ -> terms
+    | DB _ | TmH _ | Prim _ -> terms
+  in
+  props
+  |> List.fold_left (fun terms prop -> scan prop terms) []
+  |> List.rev_append (vampire_context_terms_of_type cxtm target_tp)
+  |> List.sort_uniq compare
+  |> List.sort (fun left right -> compare (term_size left) (term_size right))
+
 let vampire_reconstruct_current_goal_from_refutation ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf proof proposition =
   let rec try_proof depth proof proposition =
     match vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf proof with
@@ -1649,6 +1698,121 @@ let vampire_apply_available_source_bindings cxtm cxpf source_map source_audit pr
   in
   apply proof proposition bindings
 
+let vampire_source_proof_props ?extra_symbols cxtm cxpf source_map source_audit =
+  let cx =
+    List.filter_map
+      (fun (_, (tp, definition)) ->
+         match definition with
+         | None -> Some tp
+         | Some _ -> None)
+      cxtm
+  in
+  let hyps = List.map snd cxpf in
+  let proof_delta = vampire_source_context_delta_with_source_map ~cxtm source_map in
+  let symbol_table = vampire_symbol_table ?extra_symbols source_map in
+  List.filter_map
+    (fun (_, proof) ->
+       try
+         let proof = vampire_loaded_prop_ext_expander proof in
+         let (prop, _) = extr_propofpf proof_delta symbol_table cx hyps proof [] in
+         Some (proof, prop)
+       with _ -> None)
+    source_audit.Vampire_source_context.source_proofs
+
+let vampire_reconstruct_goal_from_source_audit
+    ?extra_delta
+    ?extra_symbols
+    claimtm
+    cxtm
+    cxpf
+    source_map
+    source_audit =
+  let source_proofs =
+    vampire_source_proof_props ?extra_symbols cxtm cxpf source_map source_audit
+  in
+  let source_props = claimtm :: List.map snd source_proofs in
+  let term_candidates tp =
+    vampire_candidate_terms_from_props ?extra_symbols cxtm source_map source_props tp
+  in
+  let source_proofs_for expected =
+    source_proofs
+    |> List.filter_map
+         (fun (proof, _) ->
+            vampire_check_proof_of_prop
+              ?source_map:(Some source_map)
+              ?extra_delta
+              ?extra_symbols
+              cxtm
+              cxpf
+              expected
+              proof)
+  in
+  let rec try_proof depth proof proposition =
+    match
+      vampire_check_current_goal_proof
+        ?source_map:(Some source_map)
+        ?extra_delta
+        ?extra_symbols
+        claimtm
+        cxtm
+        cxpf
+        proof
+    with
+    | Some _ as result -> result
+    | None ->
+        if depth <= 0 then None
+        else
+          begin match proposition with
+          | All (tp, body) ->
+              let rec try_terms = function
+                | [] -> None
+                | tm :: rest ->
+                    begin match
+                      try_proof
+                        (depth - 1)
+                        (PTmAp (proof, tm))
+                        (tmsubst body 0 tm)
+                    with
+                    | Some _ as result -> result
+                    | None -> try_terms rest
+                    end
+              in
+              try_terms (term_candidates tp)
+          | Imp (expected, target) ->
+              let rec try_source_proofs = function
+                | [] -> None
+                | source_proof :: rest ->
+                    begin match
+                      try_proof
+                        (depth - 1)
+                        (PPfAp (proof, source_proof))
+                        target
+                    with
+                    | Some _ as result -> result
+                    | None -> try_source_proofs rest
+                    end
+              in
+              try_source_proofs (source_proofs_for expected)
+          | _ -> None
+          end
+  in
+  let rec try_sources = function
+    | [] -> None
+    | (proof, proposition) :: rest ->
+        begin match try_proof 12 proof proposition with
+        | Some _ as result -> result
+        | None -> try_sources rest
+        end
+  in
+  let result = try_sources source_proofs in
+  if result = None && Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+    begin
+      Printf.printf
+        "Vampire native source-context direct goal reconstruction did not find a proof.\n";
+      flush stdout
+    end;
+  result
+
 let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map source_audit =
   let source_proofs_for_core = vampire_core_source_proofs source_audit in
   let external_definition_names =
@@ -1681,9 +1845,10 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
   List.iter
     (vampire_debug_source_binding "Vampire native remaining source")
     remaining_bindings;
-  let rec try_candidates = function
-    | [] -> None
-    | (proof,proposition,candidate_remaining_bindings) :: rest ->
+  let rec reconstruct_from_refutation () =
+    let rec try_candidates = function
+      | [] -> None
+      | (proof,proposition,candidate_remaining_bindings) :: rest ->
         begin
           let negated_goal_native = Imp(claimtm,vampire_native_core_false_tm) in
           let negated_goal_context = Imp(claimtm,TmH(!fal)) in
@@ -1743,13 +1908,26 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
                proposition
                candidate_remaining_bindings)
         end
+    in
+    try_candidates
+      (vampire_instantiated_refutation_candidates
+         cxtm
+         native_core.Vampire_cert_v1.core_native_proof
+         native_core.Vampire_cert_v1.core_native_proposition
+         remaining_bindings)
   in
-  try_candidates
-    (vampire_instantiated_refutation_candidates
-       cxtm
-       native_core.Vampire_cert_v1.core_native_proof
-       native_core.Vampire_cert_v1.core_native_proposition
-       remaining_bindings)
+  match
+    vampire_reconstruct_goal_from_source_audit
+      ~extra_delta:native_core.Vampire_cert_v1.core_native_delta_table
+      ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
+      claimtm
+      cxtm
+      cxpf
+      source_map
+      source_audit
+  with
+  | Some _ as result -> result
+  | None -> reconstruct_from_refutation ()
 
 let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) content output proof_file =
   if !vampireabyproof = "megalodon" then

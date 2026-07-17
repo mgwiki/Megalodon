@@ -713,6 +713,87 @@ if ! rg -q 'Everything looks good' \
   exit 1
 fi
 
+source_direct_11703_dir="$WORK_DIR/source_direct_11703_live"
+mkdir -p "$source_direct_11703_dir"
+cat >"$source_direct_11703_dir/fake_vampire" <<'EOF_SOURCE_DIRECT_11703_FAKE_VAMPIRE'
+#!/usr/bin/env bash
+problem="${@: -1}"
+case_file="tests/vampire_certificate/closed_cases/hammer.11703.242.native.sexp"
+conj=$(sed -n 's/^% megalodon_source_map (conjecture "\([^"]*\)" .*/\1/p' "$problem" | head -1)
+old=$(sed -n 's/.*(source negated_conjecture "\([^"]*\)").*/\1/p' "$case_file" | head -1)
+printf '%% SZS status Theorem\n%% SZS output start Proof\nmegalodon_certificate_native_sexpr_start.\n'
+sed "s/$old/$conj/g" "$case_file"
+printf 'megalodon_certificate_native_sexpr_end.\n%% SZS output end Proof\n'
+EOF_SOURCE_DIRECT_11703_FAKE_VAMPIRE
+chmod +x "$source_direct_11703_dir/fake_vampire"
+cat >"$source_direct_11703_dir/source_direct_11703_live.mg" <<'EOF_SOURCE_DIRECT_11703_LIVE_MG'
+Definition True : prop := forall p:prop, p -> p.
+Definition False : prop := forall p:prop, p.
+Definition not : prop -> prop := fun A:prop => A -> False.
+Prefix ~ 700 := not.
+Definition and : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> B -> p) -> p.
+Infix /\ 780 left := and.
+Definition or : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> p) -> (B -> p) -> p.
+Infix \/ 785 left := or.
+Definition iff : prop -> prop -> prop := fun A B:prop => and (A -> B) (B -> A).
+Infix <-> 805 := iff.
+Section Eq.
+Variable A:SType.
+Definition eq : A->A->prop := fun x y:A => forall Q:A->A->prop, Q x y -> Q y x.
+Definition neq : A->A->prop := fun x y:A => ~ eq x y.
+End Eq.
+Infix = 502 := eq.
+Parameter Empty : set.
+(* Parameter binintersect "8cf6b1f490ef8eb37db39c526ab9d7c756e98b0eb12143156198f1956deb5036" "b2abd2e5215c0170efe42d2fa0fb8a62cdafe2c8fbd0d37ca14e3497e54ba729" *)
+Parameter binintersect : set -> set -> set.
+(* Parameter ordsucc "9db634daee7fc36315ddda5f5f694934869921e9c5f55e8b25c91c0a07c5cbec" "65d8837d7b0172ae830bed36c8407fcd41b7d875033d2284eb2df245b42295a6" *)
+Parameter ordsucc : set -> set.
+(* Parameter SNo "87d7604c7ea9a2ae0537066afb358a94e6ac0cd80ba277e6b064422035a620cf" "11faa7a742daf8e4f9aaf08e90b175467e22d0e6ad3ed089af1be90cfc17314b" *)
+Parameter SNo : set -> prop.
+(* Parameter add_SNo "29b9b279a7a5b776b777d842e678a4acaf3b85b17a0223605e4cc68025e9b2a7" "127d043261bd13d57aaeb99e7d2c02cae2bd0698c0d689b03e69f1ac89b3c2c6" *)
+Parameter add_SNo : set -> set -> set.
+(* Parameter SNoElts_ "1e55e667ef0bb79beeaf1a09548d003a4ce4f951cd8eb679eb1fed9bde85b91c" "c0ec73850ee5ffe522788630e90a685ec9dc80b04347c892d62880c5e108ba10" *)
+Parameter SNoElts_ : set -> set.
+(* Parameter exp_SNo_nat "6ec032f955c377b8953cff1c37d3572125487a6587167afb5fdec25c2350b3c3" "cc51438984361070fa0036749984849f690f86f00488651aabd635e92983c745" *)
+Parameter exp_SNo_nat : set -> set -> set.
+Axiom add_SNo_cancel_L : forall x y z:set, SNo x -> SNo y -> SNo z -> add_SNo x y = add_SNo x z -> y = z.
+Theorem source_direct_11703_live : forall n:set, forall f:set->set, forall g:set->set, forall u v:set,
+  SNo (exp_SNo_nat (ordsucc (ordsucc Empty)) n) ->
+  SNo (f (binintersect u (SNoElts_ n))) ->
+  SNo (f (binintersect v (SNoElts_ n))) ->
+  add_SNo (exp_SNo_nat (ordsucc (ordsucc Empty)) n) (f (binintersect u (SNoElts_ n))) =
+  add_SNo (exp_SNo_nat (ordsucc (ordsucc Empty)) n) (f (binintersect v (SNoElts_ n))) ->
+  f (binintersect u (SNoElts_ n)) = f (binintersect v (SNoElts_ n)).
+let n f g u v.
+assume L2n3 : SNo (exp_SNo_nat (ordsucc (ordsucc Empty)) n).
+assume Lfu3 : SNo (f (binintersect u (SNoElts_ n))).
+assume Lfv3 : SNo (f (binintersect v (SNoElts_ n))).
+assume Hguv : add_SNo (exp_SNo_nat (ordsucc (ordsucc Empty)) n) (f (binintersect u (SNoElts_ n))) = add_SNo (exp_SNo_nat (ordsucc (ordsucc Empty)) n) (f (binintersect v (SNoElts_ n))).
+aby add_SNo_cancel_L L2n3 Lfu3 Lfv3 Hguv.
+Qed.
+EOF_SOURCE_DIRECT_11703_LIVE_MG
+bin/megalodon \
+  -allowincompleteqed \
+  -v 9 \
+  -vampireaby "$source_direct_11703_dir/fake_vampire" \
+  -vampireabyproof megalodon \
+  -vampireabynative \
+  -vampireabynativestrict \
+  -vampireabyoutdir "$source_direct_11703_dir/out" \
+  "$source_direct_11703_dir/source_direct_11703_live.mg" \
+  >"$WORK_DIR/native_cert_v1_live_source_direct_11703.log" \
+  2>"$WORK_DIR/native_cert_v1_live_source_direct_11703.err"
+if ! rg -q 'source_context known=1 local=4 local_definition=0 conjecture=2 unresolved=0' \
+    "$WORK_DIR/native_cert_v1_live_source_direct_11703.log"; then
+  echo "live vampireaby 11703 source-direct fixture did not resolve known/local/conjecture sources" >&2
+  exit 1
+fi
+if ! rg -q 'Vampire native certificate reconstructed aby proof term' \
+    "$WORK_DIR/native_cert_v1_live_source_direct_11703.log"; then
+  echo "live vampireaby 11703 source-direct fixture did not reconstruct the current goal from checked source proofs" >&2
+  exit 1
+fi
+
 local_equality_transport_dir="$WORK_DIR/local_equality_transport_live"
 mkdir -p "$local_equality_transport_dir"
 cat >"$local_equality_transport_dir/fake_vampire" <<'EOF_LOCAL_EQUALITY_TRANSPORT_FAKE_VAMPIRE'
