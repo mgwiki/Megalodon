@@ -1,5 +1,5 @@
 (certificate vampire-megalodon 1
-  (problem "native-cert-v1-primitive-expansion-valid")
+  (problem "native-cert-v1-urr-primitive-chain-final-bad")
   (step_extra c3 "kernel_v1"
     ("schema=prover9-small-kernel-v1"
      "rule=unit_resulting_resolution"
@@ -17,7 +17,7 @@
      "primitive_expansion_requires=resolve"
      "primitive_expansion_step_count=1"
      "primitive_expansion_step_0_rule=resolve"
-     "primitive_expansion_step_0_id=c3"
+     "primitive_expansion_step_0_id=c3_resolve"
      "primitive_expansion_requires_count=1"
      "primitive_expansion_requires_0=resolve"))
   (input c1 (source axiom "a1")
@@ -27,9 +27,15 @@
   (input c2 (source axiom "a2")
     (clause
       (neg (TMH "p"))))
-  (resolve c3
+  (resolve c3_resolve
     (parents c1 c2)
     (pivot 0 0)
+    (result
+      (clause
+        (pos (TMH "q")))))
+  (substitute c3
+    (parent c3_resolve)
+    (subst)
     (result
       (clause
         (pos (TMH "q")))))

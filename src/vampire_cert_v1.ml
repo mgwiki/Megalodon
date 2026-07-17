@@ -6706,6 +6706,32 @@ let validate_primitive_expansion_contracts cert =
         (Printf.sprintf
            "unit_resulting_resolution primitive resolve step count %d does not match trace_step_count %d"
            !resolve_steps trace_count);
+    ignore (field_required "trace_main_parent_unit");
+    ignore (field_required "trace_remaining");
+    for index = 0 to trace_count - 1 do
+      let key_prefix = "trace_step_" ^ string_of_int index in
+      ignore (field_required (key_prefix ^ "_unit_parent"));
+      ignore (field_required (key_prefix ^ "_selected"));
+      ignore (field_required (key_prefix ^ "_selected_substituted"));
+      ignore (field_required (key_prefix ^ "_unit_substituted"));
+      ignore (field_required (key_prefix ^ "_remaining_after"))
+    done;
+    let final_step_id =
+      field_required
+        ("primitive_expansion_step_"
+         ^ string_of_int (step_count - 1) ^ "_id")
+    in
+    if final_step_id <> id then
+      fail
+        ("unit_resulting_resolution final primitive step "
+         ^ final_step_id ^ " does not match kernel unit id " ^ id);
+    begin match step_by_id id with
+    | Some step when step_rule_name step = "unit_resulting_resolution" ->
+        fail
+          "unit_resulting_resolution must be lowered to primitive final step"
+    | Some _ -> ()
+    | None -> fail "requires a final certificate step with the kernel unit id"
+    end;
     let requires_count = field_int "primitive_expansion_requires_count" in
     if requires_count <= 0 then
       fail "unit_resulting_resolution primitive_expansion_requires_count must be positive";
@@ -11961,6 +11987,10 @@ let elaborate_core_resolution_refutation_native
           if parent_clause <> [] then
             error (id ^ ": native core proof-term contradiction parent is not empty");
           store id [] parent_proof
+      | UnitResultingResolution (id, _, _, _) ->
+          error
+            (id
+             ^ ": native core proof-term checker requires unit_resulting_resolution to be lowered to primitive certificate steps")
       | step ->
           error
             (step_id step ^ ": native core proof-term checker has no proof-term rule for "
@@ -12615,6 +12645,10 @@ let elaborate_preprocess_refutation_native
           if parent_clause <> [] then
             error (id ^ ": native preprocess proof-term contradiction parent is not empty");
           store_clause id [] parent_proof
+      | UnitResultingResolution (id, _, _, _) ->
+          error
+            (id
+             ^ ": native preprocess proof-term checker requires unit_resulting_resolution to be lowered to primitive certificate steps")
       | step ->
           error
             (step_id step ^ ": native preprocess proof-term checker has no proof-term rule for "
