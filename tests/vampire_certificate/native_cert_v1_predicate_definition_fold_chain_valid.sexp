@@ -1,5 +1,9 @@
 (certificate vampire-megalodon 1
   (problem "native-cert-v1-predicate-definition-fold-chain-valid")
+  (symbol_declaration "Variable r:prop.")
+  (symbol_declaration "Variable q:prop.")
+  (symbol_declaration "Variable pdef:prop.")
+  (symbol_declaration "Variable qdef:prop.")
   (predicate_definition d1
     (symbol "pdef")
     (result

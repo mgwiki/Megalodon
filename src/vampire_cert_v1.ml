@@ -3340,36 +3340,43 @@ let unique_terms terms =
   in
   loop [] terms
 
-let check_predicate_definition_fold_chain checked id source_id definition_ids result =
+let predicate_definition_fold_chain_path checked id source_id definition_ids result =
   if definition_ids = [] then error (id ^ ": predicate_definition_fold_chain needs at least one definition");
   let source = lookup_formula checked source_id in
-  let candidates =
-    List.fold_left
-      (fun candidates definition_id ->
-         let definition = lookup_formula checked definition_id in
-         let _, definiendum, body = predicate_definition_parts definition_id definition in
-         let base_depth = universal_binder_count definition in
-         let patterns = predicate_definition_fold_patterns base_depth body definiendum in
-         let next =
-           unique_terms
-             (List.fold_left
-                (fun acc candidate ->
-                   List.fold_left
-                     (fun acc (needle, replacement) ->
-                        tm_one_replacement_results ~base_depth candidate needle replacement @ acc)
-                     acc
-                     patterns)
-                [] candidates)
-         in
-         if next = [] then begin
-           error (id ^ ": predicate_definition_fold_chain could not apply definition " ^ definition_id)
-         end;
-         next)
-      [source]
-      definition_ids
+  let rec search current = function
+    | [] -> if current = result then Some [] else None
+    | definition_id :: remaining ->
+        let definition = lookup_formula checked definition_id in
+        let _, definiendum, body = predicate_definition_parts definition_id definition in
+        let base_depth = universal_binder_count definition in
+        let patterns = predicate_definition_fold_patterns base_depth body definiendum in
+        let next =
+          patterns
+          |> List.concat_map
+               (fun (needle, replacement) ->
+                  tm_one_replacement_results ~base_depth current needle replacement)
+          |> unique_terms
+        in
+        if next = [] then
+          error (id ^ ": predicate_definition_fold_chain could not apply definition " ^ definition_id);
+        let rec try_next = function
+          | [] -> None
+          | candidate :: rest ->
+              begin match search candidate remaining with
+              | Some path ->
+                  Some ((definition_id, definition, current, candidate) :: path)
+              | None -> try_next rest
+              end
+        in
+        try_next next
   in
-  if not (List.exists ((=) result) candidates) then
-    error (id ^ ": predicate_definition_fold_chain result is not a sequence of definition-body replacements")
+  match search source definition_ids with
+  | Some path -> path
+  | None ->
+      error (id ^ ": predicate_definition_fold_chain result is not a sequence of definition-body replacements")
+
+let check_predicate_definition_fold_chain checked id source_id definition_ids result =
+  ignore (predicate_definition_fold_chain_path checked id source_id definition_ids result)
 
 let true_false_equality_var = function
   | Pos atom ->
@@ -11460,6 +11467,209 @@ let native_core_formula_orientation_proof
   let body_proof = convert `Forward source target parent_proof in
   native_core_bind_result_step_variables variables result_step_variables body_proof
 
+let native_core_predicate_definition_fold_step_proof
+    id variables parent_step_variables result_step_variables definition source target proof =
+  let _, definiendum, body = predicate_definition_parts id definition in
+  let base_depth = universal_binder_count definition in
+  let patterns = predicate_definition_fold_patterns base_depth body definiendum in
+  let result_variable_count = List.length result_step_variables in
+  let db_for_result_variable name tp =
+    let rec find index = function
+      | [] -> None
+      | (candidate_name, candidate_tp) :: rest ->
+          if candidate_name = name && candidate_tp = tp then
+            Some (DB (result_variable_count - index - 1))
+          else find (index + 1) rest
+    in
+    find 0 result_step_variables
+  in
+  let fallback_result_variable tp =
+    let rec find index = function
+      | [] -> None
+      | (_, candidate_tp) :: rest ->
+          if candidate_tp = tp then Some (DB (result_variable_count - index - 1))
+          else find (index + 1) rest
+    in
+    find 0 result_step_variables
+  in
+  let fallback_declared_variable tp =
+    variables
+    |> List.find_opt (fun (_, candidate_tp) -> candidate_tp = tp)
+    |> Option.map (fun (name, _) -> TmH name)
+  in
+  let fallback_variable tp =
+    match fallback_result_variable tp with
+    | Some tm -> Some tm
+    | None ->
+        begin match fallback_declared_variable tp with
+        | Some tm -> Some tm
+        | None -> native_core_default_witness tp
+        end
+  in
+  let parent_proof =
+    List.fold_left
+      (fun proof (name, tp) ->
+         let arg =
+           match db_for_result_variable name tp with
+           | Some tm -> tm
+           | None ->
+               begin match fallback_variable tp with
+               | Some tm -> tm
+               | None ->
+                   error
+                     (id ^ ": native preprocess proof-term predicate fold cannot instantiate dropped parent variable " ^ name)
+               end
+         in
+         PTmAp (proof, arg))
+      (pftmshift 0 result_variable_count proof)
+      parent_step_variables
+  in
+  let close_tm tm = native_core_close_tm (variables @ result_step_variables) tm in
+  let source = close_tm source in
+  let target = close_tm target in
+  let patterns = List.map (fun (needle, replacement) -> (close_tm needle, close_tm replacement)) patterns in
+  let root_replacement depth source target =
+    let shift = max 0 (depth - base_depth) in
+    List.exists
+      (fun (needle, replacement) ->
+         let shifted_needle = tmshift 0 shift needle in
+         let shifted_replacement = tmshift 0 shift replacement in
+         match tm_pattern_replacement_result base_depth source needle replacement with
+         | Some instantiated when target = instantiated -> true
+         | _ -> source = shifted_needle && target = shifted_replacement)
+      patterns
+  in
+  let proof_for_replacement target_atom proof =
+    let target_prop =
+      native_core_formula_prop target_atom
+      |> native_core_normalize_bool_constants
+    in
+    let underlying_prop =
+      match native_core_equality_sides target_atom with
+      | Some (Prop, left, right) when left = native_core_true ->
+          native_core_formula_prop right |> native_core_normalize_bool_constants
+      | Some (Prop, left, right) when right = native_core_true ->
+          native_core_formula_prop left |> native_core_normalize_bool_constants
+      | _ -> target_prop
+    in
+    if target_prop = underlying_prop then proof
+    else
+      match native_core_true_eq_from_proof underlying_prop target_atom proof with
+      | Some proof -> proof
+      | None ->
+          error
+            (id ^ ": native preprocess proof-term predicate fold cannot introduce target equality")
+  in
+  let rec convert depth source target proof =
+    let source_prop =
+      native_core_formula_prop source
+      |> native_core_normalize_bool_constants
+    in
+    let target_prop =
+      native_core_formula_prop target
+      |> native_core_normalize_bool_constants
+    in
+    if source_prop = target_prop then proof
+    else if root_replacement depth source target then
+      proof_for_replacement target proof
+    else
+      match source, target with
+      | All (source_tp, source_body), All (target_tp, target_body)
+          when source_tp = target_tp ->
+          TLam
+            (source_tp,
+             convert
+               (depth + 1)
+               source_body
+               target_body
+               (PTmAp (pftmshift 0 1 proof, DB 0)))
+      | Imp (source_left, source_right), Imp (target_left, target_right)
+          when native_core_formula_prop source_left = native_core_formula_prop target_left ->
+          PLam
+            (native_core_formula_prop target_left,
+             convert
+               depth
+               source_right
+               target_right
+               (PPfAp (pfshift 0 1 proof, Hyp 0)))
+      | Ap (Ap (TmH "vampire_or", source_left), source_right),
+        Ap (Ap (TmH "vampire_or", target_left), target_right) ->
+          let source_left_prop = native_core_formula_prop source_left in
+          let source_right_prop = native_core_formula_prop source_right in
+          let target_left_prop = native_core_formula_prop target_left in
+          let target_right_prop = native_core_formula_prop target_right in
+          let target_prop = native_core_or target_left_prop target_right_prop in
+          let left_branch =
+            PLam
+              (source_left_prop,
+               native_core_or_intro_left
+                 target_left_prop
+                 target_right_prop
+                 (convert depth source_left target_left (Hyp 0)))
+          in
+          let right_branch =
+            PLam
+              (source_right_prop,
+               native_core_or_intro_right
+                 target_left_prop
+                 target_right_prop
+                 (convert depth source_right target_right (Hyp 0)))
+          in
+          PPfAp (PPfAp (PTmAp (proof, target_prop), left_branch), right_branch)
+      | Ap (Ap (TmH "vampire_and", source_left), source_right),
+        Ap (Ap (TmH "vampire_and", target_left), target_right) ->
+          let source_left_prop = native_core_formula_prop source_left in
+          let source_right_prop = native_core_formula_prop source_right in
+          let target_left_prop = native_core_formula_prop target_left in
+          let target_right_prop = native_core_formula_prop target_right in
+          let source_left_proof =
+            native_core_and_elim_left source_left_prop source_right_prop proof
+          in
+          let source_right_proof =
+            native_core_and_elim_right source_left_prop source_right_prop proof
+          in
+          native_core_and_intro
+            target_left_prop
+            target_right_prop
+            (convert depth source_left target_left source_left_proof)
+            (convert depth source_right target_right source_right_proof)
+      | Ap (TmH "vampire_exists_prop", Lam (source_tp, source_body)),
+        Ap (TmH "vampire_exists_prop", Lam (target_tp, target_body))
+          when source_tp = target_tp ->
+          TLam
+            (Prop,
+             PLam
+               (All (target_tp, Imp (tmshift 1 1 (native_core_formula_prop target_body), DB 1)),
+                let continuation =
+                  TLam
+                    (source_tp,
+                     PLam
+                       (native_core_formula_prop (tmshift 1 1 source_body),
+                        let target_body_proof =
+                          convert
+                            (depth + 1)
+                            (tmshift 1 1 source_body)
+                            (tmshift 1 1 target_body)
+                            (Hyp 0)
+                        in
+                        PPfAp
+                          (PTmAp (pftmshift 0 1 (Hyp 1), DB 0),
+                           target_body_proof)))
+                in
+                PPfAp
+                  (PTmAp (pfshift 0 1 (pftmshift 0 1 proof), DB 0),
+                   continuation)))
+      | _ ->
+          if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+            prerr_endline ("native predicate fold debug source: " ^ tm_to_str source);
+            prerr_endline ("native predicate fold debug target: " ^ tm_to_str target)
+          end;
+          error
+            (id ^ ": native preprocess proof-term predicate fold does not support this formula context")
+  in
+  let body_proof = convert 0 source target parent_proof in
+  native_core_bind_result_step_variables variables result_step_variables body_proof
+
 let native_core_skolem_target_witness id source target =
   let merge left right =
     match left, right with
@@ -13726,15 +13936,6 @@ let elaborate_preprocess_refutation_native
       formula_table
       []
   in
-  let native_formula_step_prop formula_id formula =
-    native_preprocess_step_formula_prop cert variables formula_id formula
-  in
-  let primitive_implication parents result =
-    List.fold_right (fun parent acc -> Imp (parent, acc)) parents result
-  in
-  let apply_primitive primitive proofs =
-    List.fold_left (fun proof parent_proof -> PPfAp (proof, parent_proof)) (Known primitive) proofs
-  in
   let install_transitional_known id primitive prop =
     match Sys.getenv_opt "MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN" with
     | Some "1" ->
@@ -13861,30 +14062,32 @@ let elaborate_preprocess_refutation_native
                source_formula result source_proof)
       | PredicateDefinitionFoldChain (id, source_id, definition_ids, result) ->
           let source_formula, source_proof = lookup_formula source_id in
-          let definition_formulas_and_proofs =
-            List.map
-              (fun definition_id ->
-                 let formula, proof = lookup_formula definition_id in
-                 (definition_id, formula, proof))
-              definition_ids
+          let path =
+            predicate_definition_fold_chain_path
+              (checked_formulas ()) id source_id definition_ids result
           in
-          check_predicate_definition_fold_chain (checked_formulas ()) id source_id definition_ids result;
-          let parent_props =
-            native_formula_step_prop source_id source_formula
-            :: List.map
-                 (fun (definition_id, formula, _) ->
-                    native_formula_step_prop definition_id formula)
-                 definition_formulas_and_proofs
+          let result_step_variables = native_core_step_variables cert id in
+          let proof =
+            let rec replay current_formula current_proof parent_step_variables = function
+              | [] -> current_proof
+              | (_definition_id, definition_formula, path_source, path_target) :: rest ->
+                  if current_formula <> path_source then
+                    error
+                      (id ^ ": native preprocess proof-term predicate fold-chain replay lost its source formula");
+                  let step_proof =
+                    native_core_predicate_definition_fold_step_proof
+                      id variables parent_step_variables result_step_variables
+                      definition_formula path_source path_target current_proof
+                  in
+                  replay path_target step_proof result_step_variables rest
+            in
+            replay
+              source_formula
+              source_proof
+              (native_core_step_variables cert source_id)
+              path
           in
-          let parent_proofs =
-            source_proof :: List.map (fun (_, _, proof) -> proof) definition_formulas_and_proofs
-          in
-          let result_prop = native_formula_step_prop id result in
-          let primitive = "vampire_predicate_definition_fold_chain_" ^ id in
-          let primitive_prop = primitive_implication parent_props result_prop in
-          install_transitional_known id primitive primitive_prop;
-          Hashtbl.replace transitional_primitive_formula_steps id true;
-          store_formula id result (apply_primitive primitive parent_proofs)
+          store_formula id result proof
       | FormulaTermCopy (id, parent_id, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
           if parent_formula <> result then
