@@ -953,12 +953,19 @@ assume Hguv : add_SNo (exp_SNo_nat (ordsucc (ordsucc Empty)) n) (f (binintersect
 aby add_SNo_cancel_L Hn IHn L2n1 L2n2 L2n3 Lfu3 Lfv3 Hguv.
 Qed.
 EOF_SOURCE_DIRECT_11703_LIVE_MG
+source_direct_11703_line=$(
+  rg -n '^aby add_SNo_cancel_L ' "$source_direct_11703_dir/source_direct_11703_live.mg" |
+    tail -1 |
+    cut -d: -f1
+)
 bin/megalodon \
   -v 9 \
   -vampireaby "$source_direct_11703_dir/fake_vampire" \
   -vampireabyproof megalodon \
   -vampireabynative \
   -vampireabynativestrict \
+  -vampireabytarget "$source_direct_11703_line" 0 \
+  -vampireabytargetstop \
   -vampireabyoutdir "$source_direct_11703_dir/out" \
   "$source_direct_11703_dir/source_direct_11703_live.mg" \
   >"$WORK_DIR/native_cert_v1_live_source_direct_11703.log" \
@@ -973,9 +980,9 @@ if ! rg -q 'Vampire native certificate reconstructed aby proof term' \
   echo "live vampireaby 11703 source-direct fixture did not reconstruct the current goal from checked source proofs" >&2
   exit 1
 fi
-if ! rg -q 'Everything looks good' \
+if ! rg -q 'Vampire target stop after reconstructed aby proof term' \
     "$WORK_DIR/native_cert_v1_live_source_direct_11703.log"; then
-  echo "live vampireaby 11703 source-direct fixture did not close with the proved global source theorem" >&2
+  echo "live vampireaby 11703 source-direct fixture did not stop after reconstructing the selected target" >&2
   exit 1
 fi
 

@@ -1133,19 +1133,28 @@ let vampire_loaded_prop_ext_expander proof =
             (PPfAp
                (PTmAp (PTmAp (Known h, left), right), left_to_right),
              right_to_left)
-            when h = prop_ext_hash ->
+            when h = prop_ext_hash || h = Vampire_cert_v1.native_core_prop_ext_hash ->
             let left_to_right = expand left_to_right in
             let right_to_left = expand right_to_left in
-            let iff_proof =
-              vampire_iff_intro_proof
-                left
-                right
-                left_to_right
-                right_to_left
-            in
-            PPfAp
-              (PTmAp (PTmAp (Known prop_ext_hash, left), right),
-               iff_proof)
+            begin match Hashtbl.find_opt sigknh "prop_ext_2" with
+            | Some prop_ext_2_hash ->
+                PPfAp
+                  (PPfAp
+                     (PTmAp (PTmAp (Known prop_ext_2_hash, left), right),
+                      left_to_right),
+                   right_to_left)
+            | None ->
+                let iff_proof =
+                  vampire_iff_intro_proof
+                    left
+                    right
+                    left_to_right
+                    right_to_left
+                in
+                PPfAp
+                  (PTmAp (PTmAp (Known prop_ext_hash, left), right),
+                   iff_proof)
+            end
         | PTpAp (body, tp) -> PTpAp (expand body, tp)
         | PTmAp (body, tm) -> PTmAp (expand body, tm)
         | PPfAp (left, right) -> PPfAp (expand left, expand right)
@@ -1173,10 +1182,17 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
   in
   begin match extra_delta with
   | None -> ()
+  | Some _ ->
+      Hashtbl.iter
+        (fun h v -> Hashtbl.replace proof_delta h v)
+        (Vampire_cert_v1.approved_native_sgdelta ())
+  end;
+  begin match extra_delta with
+  | None -> ()
   | Some extra_delta ->
       Hashtbl.iter
         (fun h v ->
-           if not (Hashtbl.mem proof_delta h) then Hashtbl.add proof_delta h v)
+           Hashtbl.replace proof_delta h v)
         extra_delta
   end;
   let symbol_table =
@@ -1198,36 +1214,40 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
     | Some source_map -> vampire_source_map_expander cxtm source_map
   in
   let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
-  try
-    let proof_for_check = vampire_loaded_prop_ext_expander proof in
-    let (actual,dl) = extr_propofpf proof_delta symbol_table cx hyps proof_for_check [] in
-    match conv actual claimtm proof_delta dl with
-    | Some _ -> Some (proof_expander proof_for_check)
-    | None ->
-        if debug then
-          begin
-            Printf.printf
-              "Vampire native certificate current-goal proof candidate has wrong proposition at line %d char %d.\nexpected: %s\nactual: %s\n"
-              !lineno
-              !charno
-              (tm_to_str claimtm)
-              (tm_to_str actual);
-            flush stdout
-          end;
-        None
-  with
-  | Failure msg ->
-      if debug then
-        begin
-          Printf.printf
-            "Vampire native certificate current-goal proof candidate rejected at line %d char %d: %s.\n"
-            !lineno
-            !charno
-            msg;
-          flush stdout
-        end;
-      None
-  | _ -> None
+  let rec try_variants = function
+    | [] -> None
+    | proof_for_check :: rest ->
+        try
+          let (actual,dl) = extr_propofpf proof_delta symbol_table cx hyps proof_for_check [] in
+          match conv actual claimtm proof_delta dl with
+          | Some _ -> Some (proof_expander proof_for_check)
+          | None ->
+              if debug then
+                begin
+                  Printf.printf
+                    "Vampire native certificate current-goal proof candidate has wrong proposition at line %d char %d.\nexpected: %s\nactual: %s\n"
+                    !lineno
+                    !charno
+                    (tm_to_str claimtm)
+                    (tm_to_str actual);
+                  flush stdout
+                end;
+              try_variants rest
+        with
+        | Failure msg ->
+            if debug then
+              begin
+                Printf.printf
+                  "Vampire native certificate current-goal proof candidate rejected at line %d char %d: %s.\n"
+                  !lineno
+                  !charno
+                  msg;
+                flush stdout
+              end;
+            try_variants rest
+        | _ -> try_variants rest
+  in
+  try_variants [vampire_loaded_prop_ext_expander proof; proof]
 
 let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxpf expected proof =
   let cx =
@@ -1247,10 +1267,17 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
   in
   begin match extra_delta with
   | None -> ()
+  | Some _ ->
+      Hashtbl.iter
+        (fun h v -> Hashtbl.replace proof_delta h v)
+        (Vampire_cert_v1.approved_native_sgdelta ())
+  end;
+  begin match extra_delta with
+  | None -> ()
   | Some extra_delta ->
       Hashtbl.iter
         (fun h v ->
-           if not (Hashtbl.mem proof_delta h) then Hashtbl.add proof_delta h v)
+           Hashtbl.replace proof_delta h v)
         extra_delta
   end;
   let symbol_table =
@@ -1271,52 +1298,153 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
     | None -> vampire_local_definition_expander cxtm
     | Some source_map -> vampire_source_map_expander cxtm source_map
   in
-  try
-    let proof_for_check = vampire_loaded_prop_ext_expander proof in
-    let (actual,dl) = extr_propofpf proof_delta symbol_table cx hyps proof_for_check [] in
-    match conv actual expected proof_delta dl with
-    | Some _ -> Some (proof_expander proof_for_check)
-    | None ->
-        if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
-          begin
-            Printf.printf
-              "Vampire native proof-of-prop candidate has wrong proposition at line %d char %d.\nexpected: %s\nactual: %s\n"
-              !lineno
-              !charno
-              (tm_to_str expected)
-              (tm_to_str actual);
-            flush stdout
-          end;
-        None
-  with
-  | Failure msg ->
-      if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
-        begin
-          Printf.printf
-            "Vampire native proof-of-prop candidate rejected at line %d char %d: %s.\n"
-            !lineno
-            !charno
-            msg;
-          flush stdout
-        end;
-      None
-  | _ -> None
+  let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
+  let rec try_variants = function
+    | [] -> None
+    | proof_for_check :: rest ->
+        try
+          let (actual,dl) = extr_propofpf proof_delta symbol_table cx hyps proof_for_check [] in
+          match conv actual expected proof_delta dl with
+          | Some _ -> Some (proof_expander proof_for_check)
+          | None ->
+              if debug then
+                begin
+                  Printf.printf
+                    "Vampire native proof-of-prop candidate has wrong proposition at line %d char %d.\nexpected: %s\nactual: %s\n"
+                    !lineno
+                    !charno
+                    (tm_to_str expected)
+                    (tm_to_str actual);
+                  flush stdout
+                end;
+              try_variants rest
+        with
+        | Failure msg ->
+            if debug then
+              begin
+                Printf.printf
+                  "Vampire native proof-of-prop candidate rejected at line %d char %d: %s.\n"
+                  !lineno
+                  !charno
+                  msg;
+                flush stdout
+              end;
+            try_variants rest
+        | _ -> try_variants rest
+  in
+  try_variants [vampire_loaded_prop_ext_expander proof; proof]
+
+let vampire_actual_prop_of_proof ?source_map ?extra_delta ?extra_symbols cxtm cxpf proof =
+  let cx =
+    List.filter_map
+      (fun (_, (tp, definition)) ->
+         match definition with
+         | None -> Some tp
+         | Some _ -> None)
+      cxtm
+  in
+  let hyps = List.map snd cxpf in
+  let proof_delta =
+    match source_map with
+    | None -> vampire_source_context_delta_with_locals cxtm
+    | Some source_map ->
+        vampire_source_context_delta_with_source_map ~cxtm source_map
+  in
+  begin match extra_delta with
+  | None -> ()
+  | Some _ ->
+      Hashtbl.iter
+        (fun h v -> Hashtbl.replace proof_delta h v)
+        (Vampire_cert_v1.approved_native_sgdelta ())
+  end;
+  begin match extra_delta with
+  | None -> ()
+  | Some extra_delta ->
+      Hashtbl.iter
+        (fun h v ->
+           Hashtbl.replace proof_delta h v)
+        extra_delta
+  end;
+  let symbol_table =
+    match source_map with
+    | None -> sigtmof
+    | Some source_map -> vampire_source_context_symbol_table_with_source_map source_map
+  in
+  begin match extra_symbols with
+  | None -> ()
+  | Some extra_symbols ->
+      Hashtbl.iter
+        (fun h v ->
+           if not (Hashtbl.mem symbol_table h) then Hashtbl.add symbol_table h v)
+        extra_symbols
+  end;
+  let rec try_variants = function
+    | [] -> None
+    | proof_for_check :: rest ->
+        try
+          let actual, _ = extr_propofpf proof_delta symbol_table cx hyps proof_for_check [] in
+          Some actual
+        with
+        | Failure _ -> try_variants rest
+        | _ -> try_variants rest
+  in
+  try_variants [vampire_loaded_prop_ext_expander proof; proof]
 
 let vampire_xm_double_negation_elim_to ?source_map ?extra_delta ?extra_symbols target cxtm cxpf dnotnot =
+  let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
   let check candidate =
     vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxpf target candidate
   in
+  let false_elim proof target =
+    match Hashtbl.find_opt sigknh "FalseE" with
+    | Some false_elim_hash -> PTmAp (PPfAp (Known false_elim_hash, proof), target)
+    | None -> PTmAp (proof, target)
+  in
+  let native_false_to proof target =
+    PTmAp (proof, target)
+  in
+  let not_claim = Imp(target,TmH(!fal)) in
+  let native_not_from_live_not =
+    PLam
+      (target,
+       false_elim (PPfAp (Hyp 1, Hyp 0)) vampire_native_core_false_tm)
+  in
+  let native_false_from_live_not dnotnot =
+    PPfAp (pfshift 0 1 dnotnot, native_not_from_live_not)
+  in
+  let live_notnot_from_native_notnot =
+    PLam
+      (not_claim,
+       native_false_to
+         (native_false_from_live_not dnotnot)
+         (TmH(!fal)))
+  in
   let try_dneg () =
-    match Hashtbl.find_opt sigknh "dneg" with
-    | Some dneg_hash -> check (PPfAp (PTmAp (Known dneg_hash, target), dnotnot))
-    | None -> None
+    begin match
+      check
+        (PPfAp (PTmAp (Known Vampire_cert_v1.native_core_dneg_hash, target), dnotnot))
+    with
+    | Some _ as result -> result
+    | None ->
+        match Hashtbl.find_opt sigknh "dneg" with
+        | Some dneg_hash ->
+            begin match check (PPfAp (PTmAp (Known dneg_hash, target), dnotnot)) with
+            | Some _ as result -> result
+            | None ->
+                check
+                  (PPfAp
+                     (PTmAp (Known dneg_hash, target),
+                      live_notnot_from_native_notnot))
+            end
+        | None -> None
+    end
   in
   match Hashtbl.find_opt sigknh "xm" with
   | None ->
       begin match try_dneg () with
       | Some _ as result -> result
       | None ->
-          if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+          if debug then
             begin
               Printf.printf
                 "Vampire native certificate double-negation elimination has no xm/dneg proof for target: %s\n"
@@ -1326,7 +1454,6 @@ let vampire_xm_double_negation_elim_to ?source_map ?extra_delta ?extra_symbols t
           None
       end
   | Some xm_hash ->
-      let not_claim = Imp(target,TmH(!fal)) in
       let dfalse = PPfAp(pfshift 0 1 dnotnot,Hyp(0)) in
       let candidate =
         PPfAp
@@ -1335,8 +1462,23 @@ let vampire_xm_double_negation_elim_to ?source_map ?extra_delta ?extra_symbols t
               PLam(target,Hyp(0))),
            PLam(not_claim,PTmAp(dfalse,target)))
       in
-      let result = check candidate in
-      if result = None && Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+      let converted_false_candidate =
+        PPfAp
+          (PPfAp
+             (PTmAp(PTmAp(Known(xm_hash),target),target),
+              PLam(target,Hyp(0))),
+           PLam
+             (not_claim,
+              native_false_to
+                (native_false_from_live_not dnotnot)
+                target))
+      in
+      let result =
+        match check candidate with
+        | Some _ as result -> result
+        | None -> check converted_false_candidate
+      in
+      if result = None && debug then
         begin
           Printf.printf
             "Vampire native certificate double-negation elimination candidate rejected for target: %s\n"
@@ -1549,6 +1691,10 @@ let vampire_candidate_terms_from_props ?extra_symbols cxtm source_map props targ
 
 let vampire_reconstruct_current_goal_from_refutation ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf proof proposition =
   let rec try_proof depth proof proposition =
+    match vampire_actual_prop_of_proof ?source_map ?extra_delta ?extra_symbols cxtm cxpf proof with
+    | None -> None
+    | Some actual_proposition ->
+    let proposition = actual_proposition in
     match vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf proof with
     | Some _ as result -> result
     | None ->
@@ -1751,7 +1897,7 @@ let vampire_source_application_proofs cxtm cxpf source_map expected source_proof
        | _ -> false)
     source_proofs
 
-let vampire_apply_available_source_bindings cxtm cxpf source_map source_audit proof proposition bindings =
+let vampire_apply_available_source_bindings ?extra_delta ?extra_symbols cxtm cxpf source_map source_audit proof proposition bindings =
   let rec apply proof proposition remaining =
     match remaining with
     | [] -> [(proof,proposition,[])]
@@ -1782,7 +1928,19 @@ let vampire_apply_available_source_bindings cxtm cxpf source_map source_audit pr
               List.concat
                 (List.map
                    (fun source_proof ->
-                      apply (PPfAp(proof,source_proof)) target_prop rest)
+                      let next_proof = PPfAp(proof,source_proof) in
+                      match
+                        vampire_actual_prop_of_proof
+                          ~source_map
+                          ?extra_delta
+                          ?extra_symbols
+                          cxtm
+                          cxpf
+                          next_proof
+                      with
+                      | Some actual_target_prop ->
+                          apply next_proof actual_target_prop rest
+                      | None -> [])
                    (vampire_source_application_proofs
                       cxtm
                       cxpf
@@ -1934,6 +2092,23 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
       Printf.printf
         "Vampire native core proposition after source composition: %s\n"
         (tm_to_str native_core.Vampire_cert_v1.core_native_proposition);
+      begin match
+        vampire_actual_prop_of_proof
+          ~source_map
+          ~extra_delta:native_core.Vampire_cert_v1.core_native_delta_table
+          ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
+          cxtm
+          cxpf
+          native_core.Vampire_cert_v1.core_native_proof
+      with
+      | Some actual ->
+          Printf.printf
+            "Vampire native core actual proof proposition: %s\n"
+            (tm_to_str actual)
+      | None ->
+          Printf.printf
+            "Vampire native core actual proof proposition could not be extracted.\n"
+      end;
       flush stdout
     end;
   List.iter
@@ -1997,6 +2172,8 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
           in
           try_applied
             (vampire_apply_available_source_bindings
+               ~extra_delta:native_core.Vampire_cert_v1.core_native_delta_table
+               ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
                cxtm
                cxpf
                source_map
