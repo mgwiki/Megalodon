@@ -266,3 +266,25 @@ Validation:
 - native primitive audit on the artifact
 - kernel-v1 metadata audit on the artifact, covering 280 `kernel_v1` records
   and 37 rewrite-position records
+
+Vampire commit `9719c7960` extracts the recurring selected-literal field
+cluster into `RenderedKernelLiteralSelection`. The local exporter still
+discovers and renders the literal, but the standard `prefix=...`,
+`prefix_parent_index=...`, `prefix_literal_index=...`,
+`prefix_parent_unit=...`, and `prefix_substituted=...` layout is now owned by
+`MegalodonKernelSyntax`.
+
+This continues the audit-aligned move away from scattered printer branches.
+The next more substantive step is to replace rendered selections, rewrite
+positions, substitutions, and URR traces with typed records rather than only
+centralizing their string serialization.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel`
+- 5-case live THF run with
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11049`:
+  `PASS 5`
+- native primitive audit on the artifact
+- kernel-v1 metadata audit on the artifact, covering 280 `kernel_v1` records
+  and 37 rewrite-position records

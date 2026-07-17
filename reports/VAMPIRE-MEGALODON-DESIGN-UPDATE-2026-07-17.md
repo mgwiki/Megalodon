@@ -353,3 +353,25 @@ Validation:
 - The focused native primitive audit passed on the artifact.
 - The kernel-v1 metadata audit passed over 280 `kernel_v1` records, including
   37 rewrite-position records.
+
+Additional follow-up: Vampire commit `9719c7960` adds
+`RenderedKernelLiteralSelection` to `MegalodonKernelSyntax` and routes the
+shared selected-literal helper through it. The general emitter now constructs a
+record for fields such as `selected`, `other`, `condition`, `then`, and
+`else`, including parent index, literal index, parent unit, and substituted
+literal when available. `MegalodonKernelSyntax::appendLiteralSelection`
+serializes the standard field cluster.
+
+This is still rendered data, not a typed literal IR. It is a useful migration
+step because selected-literal metadata now has a single Vampire-side field
+layout owner and can later be backed by typed literal/parent references without
+changing all call sites.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` passed and produced
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11049`.
+- A 5-case live THF run with that binary produced `PASS 5`.
+- The focused native primitive audit passed on the artifact.
+- The kernel-v1 metadata audit passed over 280 `kernel_v1` records, including
+  37 rewrite-position records.
