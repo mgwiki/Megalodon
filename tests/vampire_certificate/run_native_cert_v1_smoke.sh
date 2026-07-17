@@ -2578,6 +2578,21 @@ if ! rg -q 'Vampire certificate v1 strict checked 5 steps' "$WORK_DIR/native_cer
   exit 1
 fi
 
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_avatar_refutation_kernel_bad_parent.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_avatar_refutation_kernel_bad_parent.out" \
+  2>"$WORK_DIR/native_cert_v1_avatar_refutation_kernel_bad_parent.err"; then
+  echo "strict native certificate v1 checker accepted AVATAR refutation metadata with a bad SAT parent id" >&2
+  exit 1
+fi
+
+if ! rg -q 'avatar_refutation SAT RUP parent is not an earlier proof step' \
+    "$WORK_DIR/native_cert_v1_avatar_refutation_kernel_bad_parent.err"; then
+  echo "strict native certificate v1 AVATAR refutation metadata failure did not explain the bad SAT parent id" >&2
+  exit 1
+fi
+
 bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_equality_symmetry_valid.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_equality_symmetry_valid.log"

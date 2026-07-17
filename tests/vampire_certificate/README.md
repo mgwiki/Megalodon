@@ -295,6 +295,14 @@ reconstruction. The literal-class and parent-variable-binding counts must
 enumerate complete indexed maps.
 For AVATAR refutations, it requires the empty result clause, SAT input clauses,
 input origin units, and SAT proof steps emitted by Vampire.
+The strict Megalodon importer also parses those `avatar_refutation` fields as
+typed SAT certificate data: input origin units must refer to earlier
+certificate steps, the input clauses must match the certificate step, SAT proof
+ids must be positive and unique, RUP parents must be earlier SAT proof steps,
+recorded RUP parent clauses must match the referenced steps, the RUP
+side-condition must hold, and the final SAT proof step must be the empty SAT
+clause. `native_cert_v1_avatar_refutation_kernel_bad_parent.sexp` is the
+negative regression for this boundary.
 For truth conflicts, it requires the selected true/false conflict literal,
 selected literal index, parent clause, and result clause.
 For predicate definitions and folds, it requires the introduced/defined symbol,

@@ -747,3 +747,33 @@ Validation:
 - native primitive audit on that strict artifact, including 2
   `avatar_refutation`, 10 `avatar_split`, 47 `split_dependency`, 8
   `avatar_definition`, and 8 `avatar_component` records
+
+Megalodon now has the corresponding first typed consumption pass for those
+`avatar_refutation` records. `validate_kernel_v1_metadata_contracts` parses
+the SAT input map and SAT proof trace from `kernel_v1` fields instead of
+treating them as opaque audit strings. It checks input origin units against
+earlier certificate steps, compares input clauses with the certificate
+`avatar_refutation` step, checks input/RUP proof-step ids, checks that RUP
+parents are earlier SAT proof steps, verifies recorded parent clauses, runs
+the existing RUP side-condition checker, and requires the final SAT proof step
+to be the empty clause.
+
+This directly addresses the audit's complaint that useful proof information
+was being exported but not consumed at a typed boundary. It still does not
+turn AVATAR into a completed proof-term reconstruction path. The corrected
+classification is:
+
+- Vampire-side AVATAR metadata objects: implemented for component,
+  definition, split dependency, split, and refutation.
+- Megalodon-side typed SAT trace validation for `avatar_refutation`:
+  started and tested.
+- Megalodon proof-term lowering for AVATAR/SAT: still open.
+
+Validation:
+
+- `TMPDIR=/project/tmp ./makeopt`
+- `TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh`
+- 20-case strict live THF run, `JOBS=10`, `VAMPIRE_SECONDS=10`: `PASS 20`
+- kernel-v1 metadata audit: 738 records, including 2 `avatar_refutation`
+- native primitive audit: includes 2 `avatar_refutation`, 10 `avatar_split`,
+  47 `split_dependency`, 8 `avatar_definition`, and 8 `avatar_component`

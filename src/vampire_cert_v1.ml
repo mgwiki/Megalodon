@@ -4341,6 +4341,179 @@ let validate_kernel_v1_metadata_contracts cert =
         (id ^ ": strict certificate v1 kernel_v1 metadata field "
          ^ key ^ " does not match the certificate substitution")
   in
+  let require_nonnegative_field_int id fields key =
+    let value = field_int id fields key in
+    if value < 0 then
+      error
+        (id ^ ": strict certificate v1 kernel_v1 metadata field "
+         ^ key ^ " is negative");
+    value
+  in
+  let require_field_sat_clause id fields key expected =
+    let actual = parse_field id fields key parse_sat_clause in
+    if normalize_sat_clause actual <> normalize_sat_clause expected then
+      error
+        (id ^ ": strict certificate v1 kernel_v1 metadata field "
+         ^ key ^ " does not match the certificate SAT clause")
+  in
+  let require_sat_clause_in id key clause clauses =
+    let normalized = normalize_sat_clause clause in
+    if not (List.exists (fun candidate -> normalize_sat_clause candidate = normalized) clauses) then
+      error
+        (id ^ ": strict certificate v1 kernel_v1 metadata field "
+         ^ key ^ " is not one of the AVATAR SAT input clauses")
+  in
+  let require_earlier_step id owner_index field_name step_id =
+    match Hashtbl.find_opt step_indices step_id, owner_index with
+    | None, _ ->
+        error
+          (id ^ ": strict certificate v1 kernel_v1 metadata field "
+           ^ field_name ^ " references missing unit " ^ step_id)
+    | Some ref_index, Some owner_index when ref_index >= owner_index ->
+        error
+          (id ^ ": strict certificate v1 kernel_v1 metadata field "
+           ^ field_name ^ " references non-earlier unit " ^ step_id)
+    | Some _, _ -> ()
+  in
+  let validate_avatar_refutation_metadata id fields owner_index =
+    require_rule_fields id fields "avatar_refutation"
+      ["result_clause";
+       "sat_refutation_clause";
+       "sat_input_count";
+       "sat_proof_step_count"];
+    begin match Hashtbl.find_opt step_by_id id with
+    | Some (AvatarRefutation (_, parent_ids, sat_clauses, proof, result)) ->
+        if result <> [] then
+          error
+            (id ^ ": strict certificate v1 kernel_v1 avatar_refutation result is not empty");
+        require_field_clause id fields "result_clause" result;
+        require_field_sat_clause id fields "sat_refutation_clause" [];
+        let input_count = require_nonnegative_field_int id fields "sat_input_count" in
+        if input_count <> List.length sat_clauses then
+          error
+            (Printf.sprintf
+               "%s: strict certificate v1 kernel_v1 avatar_refutation sat_input_count expected %d but got %d"
+               id (List.length sat_clauses) input_count);
+        let metadata_inputs =
+          List.init input_count
+            (fun index ->
+               let prefix = "sat_input_" ^ string_of_int index in
+               let clause =
+                 parse_field id fields (prefix ^ "_clause") parse_sat_clause
+               in
+               let origin = field_required id fields (prefix ^ "_origin_unit") in
+               require_earlier_step id owner_index (prefix ^ "_origin_unit") origin;
+               (origin, clause))
+        in
+        if parent_ids <> [] then begin
+          let origins = List.map fst metadata_inputs in
+          if origins <> parent_ids then
+            error
+              (id ^ ": strict certificate v1 kernel_v1 avatar_refutation SAT input origin units do not match certificate parents")
+        end;
+        List.iter2
+          (fun (_, metadata_clause) certificate_clause ->
+             if normalize_sat_clause metadata_clause
+                <> normalize_sat_clause certificate_clause then
+               error
+                 (id ^ ": strict certificate v1 kernel_v1 avatar_refutation SAT input clause does not match certificate step"))
+          metadata_inputs
+          sat_clauses;
+        let proof_step_count =
+          require_nonnegative_field_int id fields "sat_proof_step_count"
+        in
+        if proof_step_count = 0 then
+          error
+            (id ^ ": strict certificate v1 kernel_v1 avatar_refutation SAT proof is empty");
+        let checked = ref [] in
+        let input_clauses = ref [] in
+        let metadata_proof = ref [] in
+        for index = 0 to proof_step_count - 1 do
+          let prefix = "sat_proof_step_" ^ string_of_int index in
+          let step_id = field_int id fields (prefix ^ "_id") in
+          if step_id <= 0 then
+            error
+              (id ^ ": strict certificate v1 kernel_v1 avatar_refutation SAT proof step ids must be positive");
+          if List.mem_assoc step_id !checked then
+            error
+              (id ^ ": strict certificate v1 kernel_v1 avatar_refutation duplicate SAT proof step id");
+          let clause =
+            parse_field id fields (prefix ^ "_clause") parse_sat_clause
+          in
+          let kind = field_required id fields (prefix ^ "_kind") in
+          begin match kind with
+          | "input" ->
+              let origin = field_required id fields (prefix ^ "_origin_unit") in
+              require_earlier_step id owner_index (prefix ^ "_origin_unit") origin;
+              require_sat_clause_in id (prefix ^ "_clause") clause sat_clauses;
+              checked := (step_id, clause) :: !checked;
+              input_clauses := clause :: !input_clauses;
+              metadata_proof := !metadata_proof @ [SatInput (step_id, clause)]
+          | "rup" ->
+              let parent_count =
+                require_nonnegative_field_int id fields (prefix ^ "_parent_count")
+              in
+              if parent_count = 0 then
+                error
+                  (id ^ ": strict certificate v1 kernel_v1 avatar_refutation SAT RUP step has no parents");
+              let parents =
+                List.init parent_count
+                  (fun parent_index ->
+                     let parent_prefix =
+                       prefix ^ "_parent_" ^ string_of_int parent_index
+                     in
+                     let parent_id = field_int id fields (parent_prefix ^ "_id") in
+                     let parent_clause =
+                       parse_field id fields (parent_prefix ^ "_clause") parse_sat_clause
+                     in
+                     begin match List.assoc_opt parent_id !checked with
+                     | Some expected_clause ->
+                         if normalize_sat_clause parent_clause
+                            <> normalize_sat_clause expected_clause then
+                           error
+                             (id ^ ": strict certificate v1 kernel_v1 avatar_refutation SAT RUP parent clause does not match the earlier proof step");
+                         (parent_id, parent_clause)
+                     | None ->
+                         error
+                           (id ^ ": strict certificate v1 kernel_v1 avatar_refutation SAT RUP parent is not an earlier proof step")
+                     end)
+              in
+              let antecedents = List.map snd parents in
+              if not (sat_rup_holds antecedents clause) then
+                error
+                  (id ^ ": strict certificate v1 kernel_v1 avatar_refutation SAT RUP step does not follow from its parents");
+              let parent_ids = List.map fst parents in
+              checked := (step_id, clause) :: !checked;
+              metadata_proof := !metadata_proof @ [SatRup (step_id, parent_ids, clause)]
+          | _ ->
+              error
+                (id ^ ": strict certificate v1 kernel_v1 avatar_refutation unsupported SAT proof step kind " ^ kind)
+          end
+        done;
+        if normalize_sat_clauses !input_clauses
+           <> normalize_sat_clauses sat_clauses then
+          error
+            (id ^ ": strict certificate v1 kernel_v1 avatar_refutation SAT proof inputs do not match certificate SAT clauses");
+        begin match !checked with
+        | (_, []) :: _ -> ()
+        | _ ->
+            error
+              (id ^ ": strict certificate v1 kernel_v1 avatar_refutation SAT proof final step is not the empty clause")
+        end;
+        begin match proof with
+        | Some proof when proof <> !metadata_proof ->
+            error
+              (id ^ ": strict certificate v1 kernel_v1 avatar_refutation SAT proof metadata does not match the certificate step")
+        | Some _ | None -> ()
+        end
+    | Some _ ->
+        error
+          (id ^ ": strict certificate v1 kernel_v1 avatar_refutation metadata must annotate an avatar_refutation step")
+    | None ->
+        error
+          (id ^ ": strict certificate v1 kernel_v1 avatar_refutation metadata has no matching certificate step")
+    end
+  in
   let step_clause_opt = function
     | Input (_, _, clause)
     | CnfFormulaClause (_, _, _, _, clause)
@@ -5946,6 +6119,8 @@ let validate_kernel_v1_metadata_contracts cert =
                  error
                    (id ^ ": strict certificate v1 kernel_v1 equality_factoring metadata has no matching certificate step")
              end
+         | "avatar_refutation" ->
+             validate_avatar_refutation_metadata id fields owner_index
          | _ -> ()
          end;
          List.iter

@@ -879,3 +879,40 @@ Validation:
 - The native primitive audit passed on the same artifact, including 2
   `avatar_refutation`, 10 `avatar_split`, 47 `split_dependency`, 8
   `avatar_definition`, and 8 `avatar_component` records.
+
+Additional follow-up: Megalodon now validates the structured
+`avatar_refutation` `kernel_v1` metadata as typed SAT certificate data before
+the ordinary strict step checker runs. The importer parses and checks the
+empty result clause, empty SAT refutation clause, ordered SAT input clauses,
+input origin units, SAT proof-step ids, input/RUP step kinds, RUP parent ids,
+RUP parent clauses, and the final empty SAT clause. RUP parents must refer to
+earlier SAT proof steps and the recorded parent clauses must match those
+earlier steps. Input origins are checked against earlier certificate units and
+against the `avatar_refutation` parent list when the certificate step carries
+one.
+
+This is the first Megalodon-side typed consumption pass for the
+AVATAR/SAT data emitted by the named Vampire-side `RenderedKernelAvatar*`
+objects. It is deliberately classified as certificate checking, not as
+completed Megalodon proof-term reconstruction: the SAT/RUP trace is now a
+checked object at the importer boundary, but it still has to be lowered into
+Megalodon proof terms or into a small dedicated AVATAR/SAT kernel whose
+checker constructs proof terms.
+
+Validation:
+
+- `TMPDIR=/project/tmp ./makeopt` passed in `/project/Megalodon`.
+- A new negative regression
+  `tests/vampire_certificate/native_cert_v1_avatar_refutation_kernel_bad_parent.sexp`
+  is rejected because a recorded SAT RUP parent id is not an earlier proof
+  step.
+- `TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh`
+  passed.
+- A fresh 20-case strict source-linked live THF run with `JOBS=10` and
+  `VAMPIRE_SECONDS=10` produced `PASS 20` using
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11067`.
+- The kernel-v1 metadata audit passed on that artifact, covering 738
+  `kernel_v1` records and 2 `avatar_refutation` records.
+- The native primitive audit passed on the same artifact, including 2
+  `avatar_refutation`, 10 `avatar_split`, 47 `split_dependency`, 8
+  `avatar_definition`, and 8 `avatar_component` records.

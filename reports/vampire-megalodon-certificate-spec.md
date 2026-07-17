@@ -366,11 +366,26 @@ Required data when added:
 
 The importer must not infer dependencies from generated names.
 
-## Explicitly Deferred: AVATAR
+## Deferred from the Clausal Kernel: AVATAR
 
-AVATAR is disabled in the first qualifying Vampire schedule. Later it should be
-represented by a separate propositional certificate layer, for example a small
-resolution proof or LRAT-like object, connected to first-order split clauses.
+AVATAR is not part of the first clausal small-kernel milestone. It is handled
+as a separate SAT/split certificate layer connected to first-order split
+clauses.
+
+The current branch has started that separate layer. Vampire emits named
+`kernel_v1` objects for AVATAR component, definition, split dependency, split,
+and refutation records. Megalodon now parses the `avatar_refutation` SAT input
+map and SAT proof trace as typed certificate data: input origins must name
+earlier certificate units, SAT proof ids must be positive and unique, RUP
+parents must be earlier SAT proof steps, recorded parent clauses must match,
+RUP side conditions are checked, and the final SAT proof step must be the
+empty clause.
+
+This is still not the final proof reconstruction result. The next spec step is
+to define how the checked AVATAR/SAT object is elaborated into Megalodon proof
+terms, or to define a tiny dedicated AVATAR/SAT proof kernel whose checker
+constructs those terms. Counted proof-reconstruction milestones must not count
+AVATAR records merely because their metadata structurally validates.
 
 The focused `hammer.981.15` issue around `S296` is an example of why AVATAR is
 not in the MVP: SAT-level nullary split propositions and first-order component
