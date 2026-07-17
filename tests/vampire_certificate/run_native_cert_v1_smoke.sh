@@ -847,6 +847,30 @@ if ! rg -q 'Everything looks good' \
   exit 1
 fi
 
+if [[ "${SOURCE_CONTEXT_ONLY:-0}" = "1" ]]; then
+  bin/megalodon \
+    -vampirecertv1sourcecontext \
+    -vampirecertv1corepfcheck \
+    -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_set_reflexivity_valid.sexp \
+    -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_set_reflexivity_valid.th0.p \
+    "$dummy" >"$WORK_DIR/native_cert_v1_source_map_set_reflexivity_corepf.log"
+
+  if ! rg -q 'Vampire certificate v1 native core proof term checked 4 steps' \
+      "$WORK_DIR/native_cert_v1_source_map_set_reflexivity_corepf.log"; then
+    echo "focused source-context smoke did not prove a reflexive generated set source" >&2
+    exit 1
+  fi
+  if ! rg -q 'Vampire certificate v1 native core source assumptions remaining 1' \
+      "$WORK_DIR/native_cert_v1_source_map_set_reflexivity_corepf.log"; then
+    echo "focused source-context smoke did not discharge generated set-reflexivity correctly" >&2
+    exit 1
+  fi
+
+  echo "native certificate v1 source-context focused smoke test passed"
+  echo "native certificate v1 source-context focused smoke artifacts: $WORK_DIR"
+  exit 0
+fi
+
 bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_synthetic_valid.th0.p \
