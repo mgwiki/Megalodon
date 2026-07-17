@@ -6742,6 +6742,22 @@ let validate_primitive_expansion_contracts cert =
             ("unit_resulting_resolution field " ^ key
              ^ " is malformed: " ^ msg)
     in
+    let parse_substitution_field key =
+      let value = field_required key in
+      try parse_substitution (parse_sexpr value) with
+      | Error msg ->
+          fail
+            ("unit_resulting_resolution field " ^ key
+             ^ " is malformed: " ^ msg)
+    in
+    let require_int_field key expected =
+      let actual = field_int key in
+      if actual <> expected then
+        fail
+          (Printf.sprintf
+             "field %s has value %d but expected %d"
+             key actual expected)
+    in
     let trace_count = field_int "trace_step_count" in
     if trace_count <= 0 then
       fail "unit_resulting_resolution trace_step_count must be positive";
@@ -6866,6 +6882,45 @@ let validate_primitive_expansion_contracts cert =
           fail
             ("unit_resulting_resolution primitive step " ^ step_id
              ^ " is not present in certificate")
+      end;
+      begin match rule, step_by_id step_id with
+      | "substitute", Some (Substitute (_, _, subst, _)) ->
+          let actual =
+            parse_substitution_field (key_prefix ^ "_substitution")
+          in
+          if actual <> subst then
+            fail
+              ("unit_resulting_resolution primitive substitute step "
+               ^ step_id ^ " substitution payload does not match certificate step")
+      | "resolve", Some (Resolve (_, _, _, left_index, right_index, _)) ->
+          require_int_field (key_prefix ^ "_pivot_left") left_index;
+          require_int_field (key_prefix ^ "_pivot_right") right_index
+      | "equality_symmetry", Some (EqualitySymmetry (_, _, literal_index, _)) ->
+          require_int_field (key_prefix ^ "_literal") literal_index
+      | "factor", Some (Factor (_, _, left_index, right_index, _)) ->
+          require_int_field (key_prefix ^ "_literal_left") left_index;
+          require_int_field (key_prefix ^ "_literal_right") right_index
+      | "substitute", Some _ ->
+          fail
+            ("unit_resulting_resolution primitive step " ^ step_id
+             ^ " declares substitute but is not a substitute certificate step")
+      | "resolve", Some _ ->
+          fail
+            ("unit_resulting_resolution primitive step " ^ step_id
+             ^ " declares resolve but is not a resolve certificate step")
+      | "equality_symmetry", Some _ ->
+          fail
+            ("unit_resulting_resolution primitive step " ^ step_id
+             ^ " declares equality_symmetry but is not an equality_symmetry certificate step")
+      | "factor", Some _ ->
+          fail
+            ("unit_resulting_resolution primitive step " ^ step_id
+             ^ " declares factor but is not a factor certificate step")
+      | _, None ->
+          fail
+            ("unit_resulting_resolution primitive step " ^ step_id
+             ^ " is not present in certificate")
+      | _ -> ()
       end
     done;
     let final_step_result =

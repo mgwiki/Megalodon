@@ -27,6 +27,8 @@
      "primitive_expansion_step_0_parent_0_id=c1"
      "primitive_expansion_step_0_parent_1_id=c2"
      "primitive_expansion_step_0_result_clause=(clause (pos (TMH \"q\")))"
+     "primitive_expansion_step_0_pivot_left=0"
+     "primitive_expansion_step_0_pivot_right=0"
      "primitive_expansion_requires_count=1"
      "primitive_expansion_requires_0=resolve"))
   (input c1 (source axiom "a1")

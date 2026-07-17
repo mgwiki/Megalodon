@@ -703,6 +703,29 @@ if [[ -s "$WORK_DIR/unit_resulting_resolution.tsv" ]]; then
         if (!has_field($0, prefix "_result_clause")) {
           print prefix "_result_clause\t" $0
         }
+        if (rule == "substitute") {
+          if (!has_field($0, prefix "_substitution")) {
+            print prefix "_substitution\t" $0
+          }
+        } else if (rule == "resolve") {
+          if (!has_field($0, prefix "_pivot_left")) {
+            print prefix "_pivot_left\t" $0
+          }
+          if (!has_field($0, prefix "_pivot_right")) {
+            print prefix "_pivot_right\t" $0
+          }
+        } else if (rule == "equality_symmetry") {
+          if (!has_field($0, prefix "_literal")) {
+            print prefix "_literal\t" $0
+          }
+        } else if (rule == "factor") {
+          if (!has_field($0, prefix "_literal_left")) {
+            print prefix "_literal_left\t" $0
+          }
+          if (!has_field($0, prefix "_literal_right")) {
+            print prefix "_literal_right\t" $0
+          }
+        }
       }
     }
   ' "$WORK_DIR/unit_resulting_resolution.tsv" >> "$WORK_DIR/missing_urr_fields.tsv"
