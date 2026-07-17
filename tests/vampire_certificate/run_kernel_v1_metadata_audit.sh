@@ -646,17 +646,63 @@ if [[ -s "$WORK_DIR/unit_resulting_resolution.tsv" ]]; then
     'trace_step_0_remaining_after=' \
     'trace_remaining=' \
     'primitive_expansion_step_count=' \
+    'primitive_expansion_step_0_parent_count=' \
+    'primitive_expansion_step_0_parent_0_id=' \
+    'primitive_expansion_step_0_result_clause=' \
     'primitive_expansion_requires_count='; do
     awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
       "$WORK_DIR/unit_resulting_resolution.tsv" >> "$WORK_DIR/missing_urr_fields.tsv"
   done
 
   awk '
+    function value_for(line, key, pattern, match_out) {
+      pattern = key "=([^\" ]+)"
+      if (match(line, pattern, match_out)) {
+        return match_out[1]
+      }
+      return ""
+    }
+    function has_field(line, key, pattern) {
+      pattern = key "="
+      return index(line, pattern) != 0
+    }
     $0 !~ /primitive_expansion_requires_[0-9]+=resolve/ {
       print "primitive_expansion_requires_N=resolve\t" $0
     }
     $0 !~ /primitive_expansion_step_[0-9]+_rule=resolve/ {
       print "primitive_expansion_step_N_rule=resolve\t" $0
+    }
+    {
+      step_count = value_for($0, "primitive_expansion_step_count")
+      if (step_count == "" || step_count !~ /^[0-9]+$/) {
+        next
+      }
+      for (i = 0; i < step_count; i++) {
+        prefix = "primitive_expansion_step_" i
+        rule = value_for($0, prefix "_rule")
+        parent_count = value_for($0, prefix "_parent_count")
+        if (parent_count == "" || parent_count !~ /^[0-9]+$/) {
+          print prefix "_parent_count\t" $0
+          continue
+        }
+        expected = ""
+        if (rule == "resolve") {
+          expected = 2
+        } else if (rule == "substitute" || rule == "equality_symmetry" || rule == "factor") {
+          expected = 1
+        }
+        if (expected != "" && parent_count + 0 != expected) {
+          print prefix "_parent_count_expected_" expected "\t" $0
+        }
+        for (j = 0; j < parent_count; j++) {
+          if (!has_field($0, prefix "_parent_" j "_id")) {
+            print prefix "_parent_" j "_id\t" $0
+          }
+        }
+        if (!has_field($0, prefix "_result_clause")) {
+          print prefix "_result_clause\t" $0
+        }
+      }
     }
   ' "$WORK_DIR/unit_resulting_resolution.tsv" >> "$WORK_DIR/missing_urr_fields.tsv"
 

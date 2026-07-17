@@ -6601,6 +6601,53 @@ let validate_primitive_expansion_contracts cert =
   let step_by_id id =
     List.find_opt (fun step -> step_id step = id) steps
   in
+  let step_clause_opt = function
+    | Input (_, _, clause)
+    | CnfFormulaClause (_, _, _, _, clause)
+    | CnfLiteral (_, _, clause)
+    | DefinitionInput (_, clause)
+    | DefinitionRewriteChain (_, _, _, clause)
+    | AvatarComponent (_, clause)
+    | AvatarDefinition (_, _, _, clause)
+    | SplitDependency (_, _, _, clause)
+    | AvatarSplit (_, _, clause)
+    | AvatarContradiction (_, _, clause)
+    | AvatarRefutation (_, _, _, _, clause)
+    | FoolExhaustiveness (_, clause)
+    | FoolDistinctness (_, clause)
+    | InequalityNameIntro (_, clause)
+    | InequalitySplit (_, _, _, clause)
+    | Substitute (_, _, _, clause)
+    | Condensation (_, _, _, clause)
+    | UnitResultingResolution (_, _, _, clause)
+    | Resolve (_, _, _, _, _, clause)
+    | SubsumptionResolution (_, _, _, _, _, _, clause)
+    | Factor (_, _, _, _, clause)
+    | EqualityResolution (_, _, _, clause)
+    | EqualityResolutionConstraints (_, _, _, _, _, clause)
+    | EqualityFactoring (_, _, _, _, _, _, clause)
+    | EqualityFactoringConstraints (_, _, _, _, _, _, _, clause)
+    | TruthConflict (_, _, _, clause)
+    | EqualitySymmetry (_, _, _, clause)
+    | BoolSimplify (_, _, _, _, _, _, clause)
+    | Paramodulate (_, _, _, _, _, _, _, _, clause)
+    | Superposition (_, _, _, _, _, _, _, _, _, _, clause) -> Some clause
+    | Contradiction (_, _) -> Some []
+    | FormulaInput _
+    | FormulaTermInput _
+    | FormulaTermCopy _
+    | RectifyFormula _
+    | FoolAtomLift _
+    | FoolFormula _
+    | EnnfFormula _
+    | SkolemFormula _
+    | SkolemFormulaComputed _
+    | FormulaCopy _
+    | FoolBool _
+    | PredicateDefinition _
+    | PredicateDefinitionFold _
+    | PredicateDefinitionFoldChain _ -> None
+  in
   let has_prefixed_primitive prefix primitive =
     List.exists
       (fun step ->
@@ -6735,6 +6782,67 @@ let validate_primitive_expansion_contracts cert =
     let requires_count = field_int "primitive_expansion_requires_count" in
     if requires_count <= 0 then
       fail "unit_resulting_resolution primitive_expansion_requires_count must be positive";
+    let expected_parent_count = function
+      | "resolve" -> 2
+      | "substitute" | "equality_symmetry" | "factor" -> 1
+      | rule ->
+          fail
+            ("unit_resulting_resolution primitive expansion uses unsupported primitive rule "
+             ^ rule)
+    in
+    for index = 0 to step_count - 1 do
+      let key_prefix =
+        "primitive_expansion_step_" ^ string_of_int index
+      in
+      let rule = field_required (key_prefix ^ "_rule") in
+      let step_id = field_required (key_prefix ^ "_id") in
+      let parent_count = field_int (key_prefix ^ "_parent_count") in
+      let expected = expected_parent_count rule in
+      if parent_count <> expected then
+        fail
+          (Printf.sprintf
+             "unit_resulting_resolution primitive step %s rule %s expected %d parents but got %d"
+             step_id rule expected parent_count);
+      for parent_index = 0 to parent_count - 1 do
+        let parent_id =
+          field_required
+            (key_prefix ^ "_parent_" ^ string_of_int parent_index ^ "_id")
+        in
+        begin match step_by_id parent_id with
+        | Some _ -> ()
+        | None ->
+            fail
+              ("unit_resulting_resolution primitive step " ^ step_id
+               ^ " references missing parent " ^ parent_id)
+        end
+      done;
+      let result_clause =
+        let value = field_required (key_prefix ^ "_result_clause") in
+        try parse_clause (parse_sexpr value) with
+        | Error msg ->
+            fail
+              ("unit_resulting_resolution primitive step " ^ step_id
+               ^ " malformed result clause: " ^ msg)
+      in
+      begin match step_by_id step_id with
+      | Some step ->
+          begin match step_clause_opt step with
+          | Some clause when same_clause_multiset result_clause clause -> ()
+          | Some _ ->
+              fail
+                ("unit_resulting_resolution primitive step " ^ step_id
+                 ^ " result_clause does not match certificate step")
+          | None ->
+              fail
+                ("unit_resulting_resolution primitive step " ^ step_id
+                 ^ " does not have a clause result")
+          end
+      | None ->
+          fail
+            ("unit_resulting_resolution primitive step " ^ step_id
+             ^ " is not present in certificate")
+      end
+    done;
     let has_required_resolve = ref false in
     for index = 0 to requires_count - 1 do
       let key =

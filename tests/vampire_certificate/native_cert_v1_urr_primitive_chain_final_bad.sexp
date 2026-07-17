@@ -18,6 +18,10 @@
      "primitive_expansion_step_count=1"
      "primitive_expansion_step_0_rule=resolve"
      "primitive_expansion_step_0_id=c3_resolve"
+     "primitive_expansion_step_0_parent_count=2"
+     "primitive_expansion_step_0_parent_0_id=c1"
+     "primitive_expansion_step_0_parent_1_id=c2"
+     "primitive_expansion_step_0_result_clause=(clause (pos (TMH \"q\")))"
      "primitive_expansion_requires_count=1"
      "primitive_expansion_requires_0=resolve"))
   (input c1 (source axiom "a1")
