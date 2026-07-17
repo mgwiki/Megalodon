@@ -303,3 +303,29 @@ Validation:
 - The focused native primitive audit passed on the artifact.
 - The kernel-v1 metadata audit passed over 280 `kernel_v1` records, including
   37 rewrite-position records.
+
+Additional follow-up: Vampire commit `770e929fa` introduces the first
+`MegalodonKernelStep` builder object in
+`Shell/MegalodonChecker/MegalodonKernelSyntax`. The object currently carries:
+
+- the step id;
+- the kernel rule name;
+- zero or more `PrimitiveExpansion` records;
+- the remaining string fields needed by the existing migration certificate.
+
+The main exporter now builds a `MegalodonKernelStep` for the general
+`emitKernelV1` path and for the standalone instantiation kernel metadata path,
+then renders it through `MegalodonKernelSyntax::kernelStepFields`. This is the
+first implementation step for the audit's requested Prover9/Ivy-style
+primitive IR. It still preserves the current `step_extra "kernel_v1"` output
+shape, and it does not yet move selected literals, substitutions, rewrite
+positions, or clauses into typed C++ fields.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` passed and produced
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11047`.
+- A 5-case live THF run with that binary produced `PASS 5`.
+- The focused native primitive audit passed on the final artifact.
+- The kernel-v1 metadata audit passed over 280 `kernel_v1` records, including
+  37 rewrite-position records.

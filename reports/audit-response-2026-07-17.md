@@ -219,3 +219,27 @@ Validation:
 - native primitive audit on that artifact
 - kernel-v1 metadata audit on that artifact, covering 280 `kernel_v1` records
   and 37 rewrite-position records
+
+Vampire commit `770e929fa` starts the actual `MegalodonKernelStep` builder
+requested in the audit. The new record lives in
+`Shell/MegalodonChecker/MegalodonKernelSyntax` and currently owns the step id,
+kernel rule, primitive-expansion list, and migration payload fields. Both the
+general `emitKernelV1` path and the standalone instantiation metadata path now
+construct this record before rendering `step_extra "kernel_v1"`.
+
+This is intentionally not counted as a completed primitive certificate IR. The
+remaining fields are still strings, so selected literals, parent references,
+substitutions, rewrite positions, Skolem introductions, and result clauses
+still need to be pulled into typed fields. The value of this commit is that
+macro lowerings now have a concrete Vampire-side object to grow instead of
+adding more direct string splicing in `MegalodonChecker.cpp`.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel`
+- 5-case live THF run with
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11047`:
+  `PASS 5`
+- native primitive audit on the final artifact
+- kernel-v1 metadata audit on the final artifact, covering 280 `kernel_v1`
+  records and 37 rewrite-position records
