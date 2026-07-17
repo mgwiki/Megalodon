@@ -521,6 +521,35 @@ Validation:
   `paramodulate`, 53 `substitute`, 43 `equality_resolution`, 11 `resolve`,
   and 2 `equality_symmetry` records.
 
+Additional follow-up: Vampire commit `c105b6e53` extracts Skolem
+introduced-symbol metadata into `RenderedKernelSkolemIntroducedSymbol` and
+`RenderedKernelSkolemDependency` records. The `kernel_v1` Skolem serializer
+now owns the `introduced_count`, `introduced_N_kind`, raw symbol id, recovered
+symbol/declaration, replaced variable, replaced-variable sort, witness
+term/sort, source-variable application count, dependency term/variable/sort,
+and `classical_choice` fields.
+
+This is directly relevant to the Smolka-style transformation layer. The
+records still carry rendered s-expressions rather than fully typed Vampire
+terms, but the Skolem proof-critical data is no longer a long sequence of
+free-form migration strings inside `MegalodonChecker.cpp`. The next step is
+to replace these rendered Skolem records with typed Vampire term/type/symbol
+references and connect the corresponding Megalodon proof term to the
+source-context Skolemization proof.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` passed and produced
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11057`.
+- A fresh 20-case live THF run with 10-way parallelism and a 10-second Vampire
+  cap produced `PASS 20`.
+- The kernel-v1 metadata audit passed on that artifact, covering 738
+  `kernel_v1` records, 106 rewrite-position records, and 18 `skolemize`
+  records.
+- The native primitive audit passed on the same artifact, including 18
+  `skolem_formula`, 122 `paramodulate`, 102 `substitute`, 88
+  `equality_resolution`, and 25 `resolve` records.
+
 Additional follow-up: Vampire commit `05fe04c5d` extracts
 subsumption-resolution pivot metadata into
 `RenderedKernelSubsumptionResolutionPivot`. The main/side parent indexes,

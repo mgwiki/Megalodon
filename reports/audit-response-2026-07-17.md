@@ -449,3 +449,28 @@ Validation:
 - kernel-v1 metadata audit on that artifact: 361 `kernel_v1` records, 47
   rewrite-position records, and 10 `subsumption_resolution` records
 - native primitive audit on that artifact with the same primitive counts
+
+Vampire commit `c105b6e53` then moves the Skolem introduced-symbol and
+dependency metadata out of free-form `migrationFields`. The builder now
+contains `RenderedKernelSkolemIntroducedSymbol` and
+`RenderedKernelSkolemDependency` records, with centralized serialization for
+the existing `introduced_N_*` fields.
+
+This addresses one of the audit's high-priority areas, but only at the
+certificate-object boundary. The Skolem fields still hold rendered terms,
+types, names, and declarations. The remaining proof-reconstruction work is to
+make those records carry typed Vampire-side objects and consume them in the
+Megalodon source/preprocessing proof layer, so Skolemization is justified by
+the classical choice proof rather than merely structurally accepted.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` for
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11057`
+- fresh 20-case live THF run with `JOBS=10` and `VAMPIRE_SECONDS=10`:
+  `PASS 20`
+- kernel-v1 metadata audit on that artifact: 738 `kernel_v1` records, 106
+  rewrite-position records, and 18 `skolemize` records
+- native primitive audit on the same artifact, including 18 `skolem_formula`,
+  122 `paramodulate`, 102 `substitute`, 88 `equality_resolution`, and 25
+  `resolve` records
