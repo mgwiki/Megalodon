@@ -8901,26 +8901,107 @@ let native_core_certificate_sgdelta cert symbol_table =
   let definitions = native_core_definition_delta_table cert symbol_table in
   let avatar_definitions = native_core_avatar_delta_table cert in
   let add_sequential_skolem_definitions id source subst =
-    let rec add source subst =
-      match source, subst with
-      | Ap (TmH "vampire_exists_prop", Lam (tp, body)), (_, witness) :: rest ->
-          begin match native_core_flatten_value_application witness with
-          | TmH symbol, [] ->
-              let eps = native_core_eps_symbol tp in
+    let step_variables = native_core_step_variables cert id in
+    let variable_name index tp =
+      match List.nth_opt step_variables index with
+      | Some (name, declared_tp) when declared_tp = tp -> name
+      | Some (name, _) -> name
+      | None -> "__skolem_context_" ^ string_of_int index
+    in
+    let dependency_arg_name = function
+      | TmH raw_name -> native_core_ident_opt raw_name
+      | _ -> None
+    in
+    let dependency_type context name =
+      match List.assoc_opt name context with
+      | Some tp -> Some tp
+      | None -> List.assoc_opt name step_variables
+    in
+    let add_definition context witness_tp body witness =
+      match native_core_flatten_value_application witness with
+      | TmH symbol, args ->
+          let dependency_names =
+            List.filter_map dependency_arg_name args
+          in
+          if List.length dependency_names <> List.length args then ()
+          else
+            let dependency_tps =
+              List.filter_map (dependency_type context) dependency_names
+            in
+            if List.length dependency_tps <> List.length dependency_names then ()
+            else
+              let context_count = List.length context in
+              let dependency_count = List.length dependency_names in
+              let dependency_index name =
+                let rec find index = function
+                  | [] -> None
+                  | candidate :: rest ->
+                      if candidate = name then Some index
+                      else find (index + 1) rest
+                in
+                find 0 dependency_names
+              in
+              let rec translate depth = function
+                | DB index when index >= depth ->
+                    let external_index = index - depth in
+                    if external_index = 0 then DB (depth + 0)
+                    else
+                      let context_index = context_count - external_index in
+                      begin match List.nth_opt context context_index with
+                      | Some (name, _) ->
+                          begin match dependency_index name with
+                          | Some dep_index ->
+                              DB (depth + dependency_count - dep_index)
+                          | None ->
+                              error
+                                (id ^ ": native core proof-term skolemization body mentions a non-dependency context variable")
+                          end
+                      | None ->
+                          error
+                            (id ^ ": native core proof-term skolemization body has an out-of-scope de Bruijn index")
+                      end
+                | TpAp (tm, tp) -> TpAp (translate depth tm, tp)
+                | Ap (left, right) ->
+                    Ap (translate depth left, translate depth right)
+                | Lam (tp, body) -> Lam (tp, translate (depth + 1) body)
+                | Imp (left, right) ->
+                    Imp (translate depth left, translate depth right)
+                | All (tp, body) -> All (tp, translate (depth + 1) body)
+                | tm -> tm
+              in
+              let eps = native_core_eps_symbol witness_tp in
               if eps = "Eps_unsupported" then
                 error
                   (id ^ ": native core proof-term skolemization has no epsilon operator for witness sort");
-              let predicate = Lam (tp, native_core_formula_prop body) in
+              let predicate =
+                Lam (witness_tp, native_core_formula_prop body |> translate 0)
+              in
+              let definition =
+                Ap (TmH eps, predicate) |> tm_beta_eta_norm
+              in
               Hashtbl.replace
                 definitions
                 symbol
-                (0, Ap (TmH eps, predicate) |> tm_beta_eta_norm);
-              add (tmsubst body 0 witness) rest
-          | _ -> ()
-          end
+                (0, List.fold_right (fun tp tm -> Lam (tp, tm)) dependency_tps definition)
       | _ -> ()
     in
-    add source subst
+    let rec add all_index context source subst =
+      match source, subst with
+      | Ap (TmH "vampire_exists_prop", Lam (tp, body)), (_, witness) :: rest ->
+          add_definition context tp body witness;
+          add all_index context (tmsubst body 0 witness) rest
+      | All (tp, body), _ ->
+          let name = variable_name all_index tp in
+          add (all_index + 1) (context @ [(name, tp)]) body subst
+      | Ap (Ap (TmH ("vampire_or" | "vampire_and"), left), right), _ ->
+          let rest = add all_index context left subst in
+          add all_index context right rest
+      | Imp (left, right), _ ->
+          let rest = add all_index context left subst in
+          add all_index context right rest
+      | _ -> subst
+    in
+    ignore (add 0 [] source subst)
   in
   let add_skolem_definition id symbol source =
     Hashtbl.replace
@@ -10593,6 +10674,29 @@ let native_core_formula_orientation_proof
                     PPfAp
                       (PTmAp (pfshift 0 1 (pftmshift 0 1 proof), DB 0),
                        continuation)))
+          end
+      | Ap (TmH "vampire_exists_prop", Lam (tp, body)), _ ->
+          begin match direction with
+          | `Forward ->
+              let choice = native_core_exists_choice_hash tp in
+              if choice = "vampire_exists_unsupported_choice" then
+                error
+                  (id ^ ": native preprocess proof-term formula orientation has no choice theorem for nested existential");
+              let predicate = Lam (tp, native_core_formula_prop body) in
+              let epsilon_witness = Ap (TmH (native_core_eps_symbol tp), predicate) in
+              let choice_proof = PPfAp (PTmAp (Known choice, predicate), proof) in
+              convert
+                `Forward
+                (tmsubst body 0 epsilon_witness)
+                target
+                choice_proof
+          | `Backward ->
+              if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+                prerr_endline ("native core formula orientation debug source: " ^ tm_to_str source);
+                prerr_endline ("native core formula orientation debug target: " ^ tm_to_str target)
+              end;
+              error
+                (id ^ ": native preprocess proof-term formula orientation does not synthesize existential introductions")
           end
       | _ ->
           begin match direction with

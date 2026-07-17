@@ -70,6 +70,8 @@ classify_error() {
     printf 'FORMULA_ORIENTATION_UNSUPPORTED'
   elif [[ "$msg" =~ rectify_formula ]]; then
     printf 'RECTIFY_UNSUPPORTED'
+  elif [[ "$msg" =~ cannot\ instantiate\ parent\ variable ]]; then
+    printf 'CNF_PARENT_INSTANTIATION_UNSUPPORTED'
   elif [[ "$msg" =~ no\ proof-term\ rule\ for\ ([a-z_]+) ]]; then
     printf 'UNSUPPORTED_RULE_%s' "${BASH_REMATCH[1]}"
   elif [[ "$msg" =~ built\ a\ proof\ of\ the\ wrong\ proposition ]]; then
