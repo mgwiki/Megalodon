@@ -7842,16 +7842,20 @@ let audit_vampire_cert_v1_source_context cert source_map =
     + audit.Vampire_source_context.unresolved
   in
   Printf.printf
-    "Vampire certificate v1 source context audited total=%d known_checked=%d known_missing=%d known_mismatch=%d definition_resolved=%d local_definition_matched=%d definition_missing=%d generated_checked=%d conjecture_checked=%d local_or_unhashed=%d.\n"
+    "Vampire certificate v1 source context audited total=%d known_checked=%d known_missing=%d known_mismatch=%d local_checked=%d local_missing=%d local_mismatch=%d definition_resolved=%d local_definition_matched=%d definition_missing=%d generated_checked=%d conjecture_checked=%d unresolved=%d local_or_unhashed=%d.\n"
     audit.Vampire_source_context.total
     audit.Vampire_source_context.known_checked
     audit.Vampire_source_context.known_missing
     audit.Vampire_source_context.known_mismatch
+    audit.Vampire_source_context.local_checked
+    audit.Vampire_source_context.local_missing
+    audit.Vampire_source_context.local_mismatch
     audit.Vampire_source_context.definition_resolved
     audit.Vampire_source_context.local_definition_matched
     audit.Vampire_source_context.definition_missing
     audit.Vampire_source_context.generated_checked
     audit.Vampire_source_context.conjecture_checked
+    audit.Vampire_source_context.unresolved
     local_or_unhashed;
   if !vampirecertv1sourcecontextstrict
      && (audit.Vampire_source_context.known_missing > 0

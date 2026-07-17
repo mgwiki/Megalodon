@@ -370,6 +370,11 @@ if ! rg -q 'source context audited total=3 known_checked=1 known_missing=0 known
   echo "native certificate v1 source-context audit did not resolve a real hash-backed known" >&2
   exit 1
 fi
+if ! rg -q 'local_checked=0 local_missing=2 local_mismatch=0' \
+    "$WORK_DIR/native_cert_v1_source_context_checked.log"; then
+  echo "native certificate v1 source-context audit did not expose unresolved local facts" >&2
+  exit 1
+fi
 
 bin/megalodon \
   -vampirecertv1sourcecontextstrict \
@@ -430,6 +435,11 @@ bin/megalodon \
 if ! rg -q 'source context audited total=1 known_checked=1 known_missing=0 known_mismatch=0' \
     "$WORK_DIR/native_cert_v1_known_false_source_context_core_pf.log"; then
   echo "native certificate v1 known-false source-context audit did not resolve the hash-backed false source" >&2
+  exit 1
+fi
+if ! rg -q 'local_checked=0 local_missing=0 local_mismatch=0 .*unresolved=0' \
+    "$WORK_DIR/native_cert_v1_known_false_source_context_core_pf.log"; then
+  echo "native certificate v1 known-false source-context audit reported unexpected local or unresolved sources" >&2
   exit 1
 fi
 if ! rg -q 'Vampire certificate v1 native core source assumptions remaining 0' \
