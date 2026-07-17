@@ -644,10 +644,21 @@ if [[ -s "$WORK_DIR/unit_resulting_resolution.tsv" ]]; then
     'trace_step_0_selected_substituted=' \
     'trace_step_0_unit_substituted=' \
     'trace_step_0_remaining_after=' \
-    'trace_remaining='; do
+    'trace_remaining=' \
+    'primitive_expansion_step_count=' \
+    'primitive_expansion_requires_count='; do
     awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
       "$WORK_DIR/unit_resulting_resolution.tsv" >> "$WORK_DIR/missing_urr_fields.tsv"
   done
+
+  awk '
+    $0 !~ /primitive_expansion_requires_[0-9]+=resolve/ {
+      print "primitive_expansion_requires_N=resolve\t" $0
+    }
+    $0 !~ /primitive_expansion_step_[0-9]+_rule=resolve/ {
+      print "primitive_expansion_step_N_rule=resolve\t" $0
+    }
+  ' "$WORK_DIR/unit_resulting_resolution.tsv" >> "$WORK_DIR/missing_urr_fields.tsv"
 
   if [[ -s "$WORK_DIR/missing_urr_fields.tsv" ]]; then
     echo "kernel_v1 metadata audit found unit-resulting-resolution records missing trace fields" >&2

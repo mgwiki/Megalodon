@@ -200,3 +200,22 @@ unless they are live exported proofs that also pass the closed proof-term gate.
 This is intentionally stricter than the earlier pass-count-oriented plan. It
 prioritizes a small auditable proof object over broader but non-qualifying
 frontier numbers.
+
+## 2026-07-17 URR Increment
+
+The URR migration step is now more explicit: when Vampire can lower a
+`unit_resulting_resolution` inference to primitive certificate steps, the
+corresponding `kernel_v1` macro metadata must include the primitive expansion
+chain summary:
+
+- `primitive_expansion_step_count`;
+- ordered `primitive_expansion_step_N_rule` / `primitive_expansion_step_N_id`;
+- `primitive_expansion_requires_count`;
+- at least one `primitive_expansion_step_N_rule=resolve`;
+- at least one `primitive_expansion_requires_N=resolve`.
+
+The focused kernel metadata audit requires those fields for every emitted URR
+macro record. This still does not make URR a completed Megalodon `Syntax.pf`
+macro proof by itself; it makes the Vampire-side lowering contract visible and
+checkable so the Megalodon elaborator can consume the primitive chain instead
+of relying on a broad URR replay rule.
