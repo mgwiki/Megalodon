@@ -547,3 +547,39 @@ Validation:
 - native primitive audit on the same artifact, including 71
   `cnf_formula_clause`, 30 `cnf_literal`, 77 `rectify_formula`, 43
   `ennf_formula`, 122 `paramodulate`, and 102 `substitute` records
+
+Vampire commit `46ac092f5` extracts predicate definition-fold metadata into
+`RenderedKernelDefinitionFold` and `RenderedKernelDefinitionParent`. The
+Vampire-side builder now owns the source unit, optional source formula,
+ordered definition parents, definition formulas, definition symbols, and
+result formula for `predicate_definition_fold` and
+`predicate_definition_fold_chain`.
+
+This is an audit-aligned migration away from Python/OCaml guessing and away
+from unstructured exporter strings. It still does not complete the
+Prover9/Ivy-style reconstruction layer: the definition-fold record carries
+rendered formula and symbol payloads, and Megalodon still needs typed
+consumption and native proof-term generation for the fold itself. The next
+step is to consume this object as part of the Smolka-style source/preprocess
+proof layer, instead of treating it as checker-only metadata.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` for
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11061`
+- fresh 20-case strict source-linked live THF run with `JOBS=10` and
+  `VAMPIRE_SECONDS=10`: `PASS 20`
+- kernel-v1 metadata audit on that strict artifact: 738 `kernel_v1` records
+  and 106 rewrite-position records
+- native primitive audit on that strict artifact, including 18
+  `skolem_formula`, 122 `paramodulate`, 102 `substitute`, 88
+  `equality_resolution`, and 25 `resolve` records
+- focused non-strict live smoke run for `hammer.11364.33.th0.p`: `PASS 1`
+  with 2 `predicate_definition_fold` records in
+  `/project/tmp/live_definition_fold_focus_vampire_nonstrict`
+- focused kernel-v1 metadata audit on that artifact: 214 `kernel_v1`
+  records, 20 rewrite-position records, and 2 `predicate_definition_fold`
+  records
+- focused native primitive audit was intentionally not treated as a failure
+  signal because this one proof has no `equality_symmetry` record, while the
+  broader strict 20-case primitive audit passed

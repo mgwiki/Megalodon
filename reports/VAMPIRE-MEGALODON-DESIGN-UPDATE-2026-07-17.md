@@ -657,3 +657,41 @@ Validation:
 - The native primitive audit passed on the same artifact, including 55
   `paramodulate`, 53 `substitute`, 43 `equality_resolution`, 11 `resolve`,
   and 2 `equality_symmetry` records.
+
+Additional follow-up: Vampire commit `46ac092f5` extracts predicate
+definition-fold metadata into explicit certificate records:
+`RenderedKernelDefinitionFold` and `RenderedKernelDefinitionParent`. The
+`predicate_definition_fold` and `predicate_definition_fold_chain` kernel
+records now serialize `source_unit`, optional source formula, ordered
+definition parents, definition formulas, definition symbols, and result
+formula through `MegalodonKernelSyntax` instead of assembling those fields in
+the large exporter branch.
+
+This follows the same direction as the CNF, rectification, Skolem, and
+source-formula transform extractions. It is not yet a native Megalodon proof
+of predicate definition folding: the formulas and symbols are still rendered
+certificate payloads, and Megalodon still needs a typed importer that turns
+these definition-fold objects into proof terms. The important design change
+is that the boundary is now a named Vampire-side record rather than another
+free-form migration-field cluster.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` passed and produced
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11061`.
+- A fresh 20-case strict source-linked live THF run with `JOBS=10` and
+  `VAMPIRE_SECONDS=10` produced `PASS 20`.
+- The kernel-v1 metadata audit passed on that strict artifact, covering 738
+  `kernel_v1` records and 106 rewrite-position records.
+- The native primitive audit passed on the same strict artifact, including
+  18 `skolem_formula`, 122 `paramodulate`, 102 `substitute`, 88
+  `equality_resolution`, and 25 `resolve` records.
+- The strict 20-case sample did not contain predicate definition folding, so
+  a focused non-strict smoke run was made for `hammer.11364.33.th0.p`, which
+  produced `PASS 1` and two `predicate_definition_fold` records in
+  `/project/tmp/live_definition_fold_focus_vampire_nonstrict`.
+- The focused kernel-v1 metadata audit passed on that artifact, covering 214
+  `kernel_v1` records, 20 rewrite-position records, and 2
+  `predicate_definition_fold` records. The focused native primitive audit was
+  not used as a pass/fail signal because its fixed one-sample minima require
+  an `equality_symmetry` record that this particular proof does not contain.
