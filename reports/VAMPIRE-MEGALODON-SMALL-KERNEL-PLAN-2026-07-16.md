@@ -1486,3 +1486,39 @@ The project should be considered complete only when:
 - set-generated equalities are proved, not assumed;
 - skolemization and other preprocessing steps are certified where present;
 - tests and artifacts are committed or reproducibly generated.
+
+## 2026-07-17 Implementation Update
+
+No `reports/audit-REPORT-2026-07-16.md` file was present in the workspace when
+this update was made. The implementation work therefore followed the standing
+small-kernel plan above and the cached frontier data.
+
+Committed Megalodon change `c2b11a4` extends the native certificate checker in
+the planned direction:
+
+- generated Skolem symbols are no longer treated as original proof variables;
+- Vampire's `kernel_v1` Skolem metadata is used to admit metadata-backed
+  Skolem steps into the core fragment;
+- Skolem definitions are built from explicit dependency metadata and classical
+  choice, including dependent Skolem functions;
+- the core Skolem proof path now handles universal/disjunctive context around
+  an existential and uses the formula-orientation proof builder for equality
+  orientation;
+- `RectifyFormula` in the core proof path now uses the general formula
+  orientation proof builder instead of a variable-only wrapper.
+
+The fast regression gates passed after this change:
+
+- `TMPDIR=/project/tmp ./makeopt`
+- `TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh`
+- `TMPDIR=/project/tmp VAMPIRE_BIN=/project/tmp/vampire-build-megalodon5/vampire tests/vampire_certificate/run_vampire_skolem_metadata_smoke.sh`
+- `TMPDIR=/project/tmp JOBS=10 tests/vampire_certificate/run_native_cert_v1_core_pf_audit.sh`
+- `TMPDIR=/project/tmp JOBS=10 MIN_CORE=114 tests/vampire_certificate/run_native_cert_v1_core_closed_audit.sh`
+- `TMPDIR=/project/tmp JOBS=10 MIN_REAL_CORE=91 tests/vampire_certificate/run_native_cert_v1_real_core_frontier.sh`
+
+The focused regenerated `hammer.1007.43` certificate now passes the first
+metadata-backed Skolem step and the following rectify step, but still fails
+later at `u210`, a paramodulation step over an expanded dependent Skolem. The
+next work item is to avoid ad hoc expansion in later clausal steps and instead
+make the paramodulation/transport primitive handle dependent Skolem definitions
+with the correct local de Bruijn context.
