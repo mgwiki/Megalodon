@@ -4231,6 +4231,17 @@ let field_value key fields =
        else None)
     fields
 
+let kernel_v1_field_value cert id key =
+  cert.metadata.step_extras
+  |> List.find_map
+       (fun (step_id, kind, fields) ->
+          if step_id = id && kind = "kernel_v1" then field_value key fields else None)
+
+let kernel_v1_substitution_field cert id key =
+  match kernel_v1_field_value cert id key with
+  | None -> []
+  | Some value -> parse_substitution (parse_sexpr value)
+
 let required_primitives_for_kernel_rule =
   Vampire_kernel_syntax.required_primitives_for_rule
 
@@ -11103,6 +11114,7 @@ let native_core_eq_symmetry_proof id literal proof =
 let native_core_formula_orientation_proof
     ?(normalize_formula_for_match=(fun tm -> tm))
     ?(definition_symbols=[])
+    ?(parent_variable_map=[])
     id variables parent_step_variables result_step_variables source target proof =
   let is_definition_term tm =
     match head_symbol tm with
@@ -11143,10 +11155,19 @@ let native_core_formula_orientation_proof
         | None -> native_core_default_witness tp
         end
   in
+  let mapped_parent_variable name tp =
+    match List.assoc_opt name parent_variable_map with
+    | None -> None
+    | Some (TmH target_name) -> db_for_result_variable target_name tp
+    | Some tm -> Some (native_core_close_tm (variables @ result_step_variables) tm)
+  in
   let parent_proof =
     List.fold_left
       (fun proof (name, tp) ->
          let arg =
+           match mapped_parent_variable name tp with
+           | Some tm -> tm
+           | None ->
            match db_for_result_variable name tp with
            | Some tm -> tm
            | None ->
@@ -13601,8 +13622,12 @@ let elaborate_core_resolution_refutation_native
           check_native_rectify_formula id parent_id renamings parent_formula result;
           let parent_step_variables = native_core_step_variables cert parent_id in
           let result_step_variables = native_core_step_variables cert id in
+          let parent_variable_map =
+            kernel_v1_substitution_field cert id "rectify_variable_map"
+          in
           store_formula id result
             (native_core_formula_orientation_proof
+               ~parent_variable_map
                id variables parent_step_variables result_step_variables
                parent_formula result parent_proof)
       | FoolAtomLift (id, source, target, path) ->
@@ -14146,10 +14171,14 @@ let elaborate_preprocess_refutation_native
           check_native_rectify_formula id parent_id renamings parent_formula result;
           let parent_step_variables = native_core_step_variables cert parent_id in
           let result_step_variables = native_core_step_variables cert id in
+          let parent_variable_map =
+            kernel_v1_substitution_field cert id "rectify_variable_map"
+          in
           if Hashtbl.mem transitional_primitive_formula_steps parent_id then
             Hashtbl.replace transitional_primitive_formula_steps id true;
           store_formula id result
             (native_core_formula_orientation_proof
+               ~parent_variable_map
                id variables parent_step_variables result_step_variables
                parent_formula result parent_proof)
       | FoolBool (id, parent_id, result) ->
