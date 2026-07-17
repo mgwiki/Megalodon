@@ -2592,6 +2592,32 @@ fi
 
 bin/megalodon \
   -vampirecertv1preprocesspfcheck \
+  -vampirecertv1 tests/vampire_certificate/closed_cases/hammer.10806.144.native.sexp \
+  -vampirecertv1source tests/vampire_certificate/closed_cases/hammer.10806.144.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_compact_skolem_definition_pf_valid.out" \
+  2>"$WORK_DIR/native_cert_v1_compact_skolem_definition_pf_valid.err"
+
+if ! rg -q 'Vampire certificate v1 native preprocess proof term checked 45 steps' \
+    "$WORK_DIR/native_cert_v1_compact_skolem_definition_pf_valid.out"; then
+  echo "native preprocess checker did not accept compact-source Skolem and generated-definition proof terms" >&2
+  exit 1
+fi
+
+if ! rg -q 'Vampire certificate v1 native preprocess source bindings checked 2 assumptions' \
+    "$WORK_DIR/native_cert_v1_compact_skolem_definition_pf_valid.out"; then
+  echo "native preprocess checker did not report source bindings for the compact-source Skolem case" >&2
+  exit 1
+fi
+
+if rg -q 'needs an explicit source formula|formula orientation supports only|built an ill-formed proof term|built a proof of the wrong proposition|refuses certificate-derived Known primitive vampire_|admit|-allowincompleteqed' \
+    "$WORK_DIR/native_cert_v1_compact_skolem_definition_pf_valid.out" \
+    "$WORK_DIR/native_cert_v1_compact_skolem_definition_pf_valid.err"; then
+  echo "native preprocess checker regressed on compact-source Skolem or generated-definition proof terms" >&2
+  exit 1
+fi
+
+bin/megalodon \
+  -vampirecertv1preprocesspfcheck \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_primitive_expansion_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_fool_primitive_expansion_origin_valid.th0.p \
   "$dummy" >"$WORK_DIR/native_cert_v1_fool_preprocess_pf_frontier.out" \

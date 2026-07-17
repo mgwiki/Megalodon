@@ -8898,9 +8898,11 @@ let native_core_reflexive_eq_proof = function
            Hyp 0)))
   | _ -> None
 
-let native_core_definition_input_proof sgdelta id clause =
+let native_core_definition_input_proof sgdelta id variables result_step_variables clause =
+  let close_tm tm = native_core_close_tm (variables @ result_step_variables) tm in
   match clause with
   | [Pos atom] ->
+      let atom = close_tm atom in
       begin match megalodon_eq_poly_sides atom with
       | Some (tp, left, right) ->
           begin match conv left right sgdelta [] with
@@ -8909,7 +8911,14 @@ let native_core_definition_input_proof sgdelta id clause =
                 native_core_reflexive_eq_proof
                   (Ap (Ap (TpAp (TmH megalodon_eq_poly_hash, tp), left), left))
               with
-              | Some proof -> proof
+              | Some proof ->
+                  let proof =
+                    native_core_close_pf (variables @ result_step_variables) proof
+                  in
+                  List.fold_right
+                    (fun (_, tp) proof -> TLam (tp, proof))
+                    result_step_variables
+                    proof
               | None ->
                   error
                     (id ^ ": native preprocess proof-term definition_input cannot build reflexivity proof")
@@ -10642,9 +10651,6 @@ let native_core_rectify_formula_proof
 let native_core_cnf_formula_clause_proof
     ?(shift_parent_proof=true)
     id variables parent_step_variables result_step_variables parent_formula result proof =
-  let parent_formula =
-    native_core_close_tm (variables @ result_step_variables) parent_formula
-  in
   let close_literal = function
     | Pos atom -> Pos (native_core_close_tm (variables @ result_step_variables) atom)
     | Neg atom -> Neg (native_core_close_tm (variables @ result_step_variables) atom)
@@ -10685,20 +10691,30 @@ let native_core_cnf_formula_clause_proof
         | None -> native_core_default_witness tp
         end
   in
+  let parent_variable_arg name tp =
+    match db_for_result_variable name tp with
+    | Some tm -> tm
+    | None ->
+        begin match fallback_variable tp with
+        | Some tm -> tm
+        | None ->
+            error
+              (id ^ ": native preprocess proof-term cnf_formula_clause cannot instantiate parent variable " ^ name)
+        end
+  in
+  let parent_variable_args =
+    List.map
+      (fun (name, tp) -> (name, parent_variable_arg name tp))
+      parent_step_variables
+  in
+  let parent_formula =
+    native_core_close_tm (variables @ result_step_variables) parent_formula
+    |> subst_tm parent_variable_args
+  in
   let parent_proof =
     List.fold_left
       (fun proof (name, tp) ->
-         let arg =
-           match db_for_result_variable name tp with
-           | Some tm -> tm
-           | None ->
-               begin match fallback_variable tp with
-               | Some tm -> tm
-               | None ->
-                   error
-                     (id ^ ": native preprocess proof-term cnf_formula_clause cannot instantiate parent variable " ^ name)
-               end
-         in
+         let arg = List.assoc name parent_variable_args in
          PTmAp (proof, arg))
       (if shift_parent_proof then pftmshift 0 result_variable_count proof else proof)
       parent_step_variables
@@ -11751,6 +11767,13 @@ let native_core_skolem_target_witness id source target =
 let native_core_direct_skolem_formula_proof
     ?(normalize_formula_for_match=(fun tm -> tm))
     id substitution source target proof =
+  let rec contains_named name = function
+    | TmH candidate -> candidate = name
+    | TpAp (m, _) -> contains_named name m
+    | Ap (m, n) | Imp (m, n) -> contains_named name m || contains_named name n
+    | Lam (_, body) | All (_, body) -> contains_named name body
+    | DB _ | Prim _ -> false
+  in
   let rec rewrite_witnesses replacements depth tm =
     match
       List.find_opt
@@ -11775,32 +11798,54 @@ let native_core_direct_skolem_formula_proof
             All (a, rewrite_witnesses replacements (depth + 1) body)
         | DB _ | TmH _ | Prim _ -> tm
   in
-  let rec choose remaining_substitution source proof replacements =
+  let rec choose remaining_substitution source proof replacements used_choice =
     match source with
     | Ap (TmH "vampire_exists_prop", Lam (tp, body)) ->
         let choice = native_core_exists_choice_hash tp in
         if choice = "vampire_exists_unsupported_choice" then
           error
             (id ^ ": native core proof-term skolemization has no choice theorem for witness sort");
-        let predicate = Lam (tp, native_core_formula_prop body) in
-        let target_witness, remaining_substitution =
+        let substitution_name, target_witness, remaining_substitution =
           match remaining_substitution with
-          | (_, witness) :: rest -> witness, rest
-          | [] -> native_core_skolem_target_witness id body target, []
+          | (name, witness) :: rest -> Some name, witness, rest
+          | [] -> None, native_core_skolem_target_witness id body target, []
         in
+        let compact_named_body =
+          match substitution_name with
+          | Some name -> contains_named name body
+          | None -> false
+        in
+        let body, replacements =
+          match substitution_name with
+          | Some name when compact_named_body ->
+              subst_tm [(name, target_witness)] body, replacements
+          | Some name ->
+              subst_named_tm name body,
+              (target_witness, Ap (TmH (native_core_eps_symbol tp),
+                                Lam (tp, native_core_formula_prop (subst_named_tm name body))))
+              :: replacements
+          | None ->
+              body,
+              (target_witness, Ap (TmH (native_core_eps_symbol tp),
+                                Lam (tp, native_core_formula_prop body)))
+              :: replacements
+        in
+        let predicate = Lam (tp, native_core_formula_prop body) in
         let epsilon_witness = Ap (TmH (native_core_eps_symbol tp), predicate) in
         let choice_proof = PPfAp (PTmAp (Known choice, predicate), proof) in
+        let instantiated_body = tmsubst body 0 epsilon_witness in
         choose
           remaining_substitution
-          (tmsubst body 0 epsilon_witness)
+          instantiated_body
           choice_proof
-          ((target_witness, epsilon_witness) :: replacements)
-    | _ -> source, proof, replacements
+          replacements
+          true
+    | _ -> source, proof, replacements, used_choice
   in
-  let orientation_source, choice_proof, replacements =
-    choose substitution source proof []
+  let orientation_source, choice_proof, replacements, used_choice =
+    choose substitution source proof [] false
   in
-  if replacements = [] then
+  if not used_choice then
     error
       (id ^ ": native core proof-term skolemization supports only existential sources");
   let orientation_target =
@@ -13593,19 +13638,18 @@ let elaborate_core_resolution_refutation_native
           check_skolem_formula
             [(parent_id, CheckedFormula check_parent_formula)]
             id parent_id source introductions subst result;
-          begin match source with
-          | Some source ->
-              let parent_step_variables = native_core_step_variables cert parent_id in
-              let result_step_variables = native_core_step_variables cert id in
-              store_formula id result
-                (native_core_skolem_formula_proof
-                   ~normalize_formula_for_match:normalize_generated_skolems
-                   id variables parent_step_variables result_step_variables
-                   subst source result parent_proof)
-          | None ->
-              error
-                (id ^ ": native core proof-term skolemization needs an explicit source formula")
-          end
+          let source_formula =
+            match source with
+            | Some source -> source
+            | None -> parent_formula
+          in
+          let parent_step_variables = native_core_step_variables cert parent_id in
+          let result_step_variables = native_core_step_variables cert id in
+          store_formula id result
+            (native_core_skolem_formula_proof
+               ~normalize_formula_for_match:normalize_generated_skolems
+               id variables parent_step_variables result_step_variables
+               subst source_formula result parent_proof)
       | FormulaCopy (id, parent_id, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
           if native_core_normalize_bool_constants (native_core_literal_prop result)
@@ -13637,8 +13681,10 @@ let elaborate_core_resolution_refutation_native
                parent_formula result parent_proof)
       | DefinitionInput (id, result) ->
           check_definition_input id result;
+          let result_step_variables = native_core_step_variables cert id in
           store id result
-            (native_core_definition_input_proof proof_delta id result)
+            (native_core_definition_input_proof
+               proof_delta id variables result_step_variables result)
       | FoolExhaustiveness (id, result) ->
           check_fool_exhaustiveness id result;
           store id result
@@ -14146,19 +14192,18 @@ let elaborate_preprocess_refutation_native
           check_skolem_formula
             [(parent_id, CheckedFormula check_parent_formula)]
             id parent_id source introductions subst result;
-          begin match source with
-          | Some source ->
-              let parent_step_variables = native_core_step_variables cert parent_id in
-              let result_step_variables = native_core_step_variables cert id in
-              store_formula id result
-                (native_core_skolem_formula_proof
-                   ~normalize_formula_for_match:normalize_generated_skolems
-                   id variables parent_step_variables result_step_variables
-                   subst source result parent_proof)
-          | None ->
-              error
-                (id ^ ": native preprocess proof-term skolemization needs an explicit source formula")
-          end
+          let source_formula =
+            match source with
+            | Some source -> source
+            | None -> parent_formula
+          in
+          let parent_step_variables = native_core_step_variables cert parent_id in
+          let result_step_variables = native_core_step_variables cert id in
+          store_formula id result
+            (native_core_skolem_formula_proof
+               ~normalize_formula_for_match:normalize_generated_skolems
+               id variables parent_step_variables result_step_variables
+               subst source_formula result parent_proof)
       | FormulaCopy (id, parent_id, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
           if native_core_normalize_bool_constants (native_core_literal_prop result)
@@ -14202,8 +14247,10 @@ let elaborate_preprocess_refutation_native
                  id variables parent_step_variables result_step_variables
                  parent_formula result parent_proof)
       | DefinitionInput (id, result) ->
+          let result_step_variables = native_core_step_variables cert id in
           store_clause id result
-            (native_core_definition_input_proof proof_delta id result)
+            (native_core_definition_input_proof
+               proof_delta id variables result_step_variables result)
       | AvatarDefinition (id, split_var, split_positive, result) ->
           begin match native_core_avatar_definition_clause cert id split_var split_positive result with
           | Some (split_name, component_literals) ->
