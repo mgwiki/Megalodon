@@ -1104,6 +1104,10 @@ let parse_pftacitem tl =
      let (xl,ts) = parse_Names tr in
      let tv = read_expected_ts [DOT] ts in
      (Aby(xl),tv)
+  | (NAM "vampire",tr) ->
+     let (xl,ts) = parse_Names tr in
+     let tv = read_expected_ts [DOT] ts in
+     (VampireTac(xl),tv)
   | (EXACT,tr) ->
       let (a,tu) = parse_ltree tr in
       let tv = read_expected_ts [DOT] tu in

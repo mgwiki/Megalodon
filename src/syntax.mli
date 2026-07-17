@@ -161,6 +161,7 @@ type pftacitem =
   | Admitted
   | Admit
   | Aby of string list
+  | VampireTac of string list
 
 (*
 type docorpftacitem =

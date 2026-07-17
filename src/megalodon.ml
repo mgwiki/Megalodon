@@ -2202,7 +2202,7 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
         source_map
         source_audit
 
-let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) content output proof_file =
+let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_command_label="aby") content output proof_file =
   if !vampireabyproof = "megalodon" then
     match native_certificate_payload output with
     | None ->
@@ -2257,7 +2257,8 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) content 
                     if !verbosity > 8 then
                       begin
                         Printf.printf
-                          "Vampire native certificate did not reconstruct current aby goal at line %d char %d: %s.\n"
+                          "Vampire native certificate did not reconstruct current %s goal at line %d char %d: %s.\n"
+                          proof_command_label
                           !lineno
                           !charno
                           msg;
@@ -2268,7 +2269,8 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) content 
                     if !verbosity > 8 then
                       begin
                         Printf.printf
-                          "Vampire native certificate proof candidate did not check for current aby goal at line %d char %d: %s.\n"
+                          "Vampire native certificate proof candidate did not check for current %s goal at line %d char %d: %s.\n"
+                          proof_command_label
                           !lineno
                           !charno
                           msg;
@@ -2299,7 +2301,8 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) content 
             match reconstructed with
             | Some _ when !verbosity > 2 ->
                 Printf.printf
-                  "Vampire native certificate reconstructed aby proof term at line %d char %d.\n"
+                  "Vampire native certificate reconstructed %s proof term at line %d char %d.\n"
+                  proof_command_label
                   !lineno
                   !charno;
                 flush stdout
@@ -2316,7 +2319,7 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) content 
   else
     None
 
-let run_vampire_aby_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) content =
+let run_vampire_aby_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_command_label="aby") content =
   match !vampireaby with
   | None -> None
   | Some(vampire) ->
@@ -2347,10 +2350,10 @@ let run_vampire_aby_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) content =
         && vampire_output_has_proof_payload out then
        begin
          let reconstructed =
-           check_vampire_aby_native_certificate ?claimtm ~cxtm ~cxpf content out proof_file
+           check_vampire_aby_native_certificate ?claimtm ~cxtm ~cxpf ~proof_command_label content out proof_file
          in
          if !verbosity > 2 then
-           Printf.printf "Vampire certified aby at line %d char %d (%s)\n" !lineno !charno digest;
+           Printf.printf "Vampire certified %s at line %d char %d (%s)\n" proof_command_label !lineno !charno digest;
          flush stdout;
          reconstructed
        end
@@ -2358,8 +2361,8 @@ let run_vampire_aby_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) content =
        raise
          (Failure
             (Printf.sprintf
-               "Vampire failed to certify aby at line %d char %d (%s, proof output %s)"
-               !lineno !charno (status_to_string status) proof_file))
+               "Vampire failed to certify %s at line %d char %d (%s, proof output %s)"
+               proof_command_label !lineno !charno (status_to_string status) proof_file))
 
 let rec th0_aby_head_expand m =
   let m0 = tm_beta_eta_norm m in
@@ -6207,12 +6210,24 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
              match !pfstate with
              | PfStateGoal(startpos,atm,cxtm,cxpf)::_ ->
                 begin
+                  begin match pitem with
+                  | VampireTac _ when !vampireaby = None ->
+                     raise (Failure("vampire proof command requires -vampireaby"))
+                  | VampireTac _ when !vampireabyproof <> "megalodon" ->
+                     raise (Failure("vampire proof command requires -vampireabyproof megalodon"))
+                  | _ -> ()
+                  end;
                   let fn =
                     Printf.sprintf "%s.th0.p" c
                   in
                   let ch = open_out fn in
                   begin match pitem with
-                  | Aby xl ->
+                  | Aby xl | VampireTac xl ->
+                     let certified_vampire_tac =
+                       match pitem with
+                       | VampireTac _ -> true
+                       | _ -> false
+                     in
                      let conjn = stable_aby_obligation_name () in
                      let content = th0_aby_problem_content atm cxtm cxpf xl conjn in
                      Printf.fprintf ch "%s" content;
@@ -6222,9 +6237,14 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                        | None -> ()
                        | Some(_) ->
                           let reconstructed =
-                            run_vampire_aby_certificate ~claimtm:atm ~cxtm ~cxpf content
+                            run_vampire_aby_certificate
+                              ~claimtm:atm
+                              ~cxtm
+                              ~cxpf
+                              ~proof_command_label:(if certified_vampire_tac then "vampire" else "aby")
+                              content
                           in
-                          if !vampireabynative then
+                          if !vampireabynative || certified_vampire_tac then
                             match reconstructed with
                             | Some(_) ->
                                if !verbosity > 2 then
@@ -6235,7 +6255,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                                      !charno;
                                    flush stdout
                                  end
-                            | None when !vampireabynativestrict ->
+                            | None when !vampireabynativestrict || certified_vampire_tac ->
                                raise
                                  (Failure
                                     (Printf.sprintf
@@ -7359,10 +7379,19 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
 		   prooffun := (fun _ -> raise AdmittedPf)
 	| [] -> raise (Failure("No goal to admit"))
       end
-  | Aby(xl) ->
+  | Aby(xl) | VampireTac(xl) ->
       begin
+        let certified_vampire_tac =
+          match pitem with
+          | VampireTac _ -> true
+          | _ -> false
+        in
 	match !pfstate with
         | (PfStateGoal(startpos,claimtm,cxtm,cxpf) as pfst)::pfstr ->
+           if certified_vampire_tac && !vampireaby = None then
+             raise (Failure("vampire proof command requires -vampireaby"));
+           if certified_vampire_tac && !vampireabyproof <> "megalodon" then
+             raise (Failure("vampire proof command requires -vampireabyproof megalodon"));
            List.iter
              (fun x ->
                try
@@ -7459,8 +7488,15 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
              let skip_targeted_vampireaby =
                th0single_targeting || vampireaby_targeting
              in
+             if certified_vampire_tac && skip_targeted_vampireaby then
+               raise
+                 (Failure
+                    (Printf.sprintf
+                       "vampire proof command at line %d char %d cannot be skipped by Vampire targeting"
+                       !lineno
+                       !charno));
              let require_vampire_native_certificate =
-               !vampireabynativestrict && !vampireaby <> None && not skip_targeted_vampireaby
+               (certified_vampire_tac || !vampireabynativestrict) && !vampireaby <> None && not skip_targeted_vampireaby
              in
              let native_aby_result =
                if !vampireabynative
@@ -7480,7 +7516,12 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                   let content = th0_aby_problem_content claimtm cxtm cxpf xl conjn in
                   try
                     vampire_native_result :=
-                      run_vampire_aby_certificate ~claimtm ~cxtm ~cxpf content
+                      run_vampire_aby_certificate
+                        ~claimtm
+                        ~cxtm
+                        ~cxpf
+                        ~proof_command_label:(if certified_vampire_tac then "vampire" else "aby")
+                        content
                   with
                   | Failure(msg) ->
                      if require_vampire_native_certificate then
@@ -7500,7 +7541,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                      end
              end;
              begin
-               if !vampireabynative && not skip_targeted_vampireaby then
+               if (!vampireabynative || certified_vampire_tac) && not skip_targeted_vampireaby then
                  let native_aby_result =
                    match !vampire_native_result with
                    | Some _ as result -> result
@@ -7509,7 +7550,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                         raise
                           (Failure
                              (Printf.sprintf
-                                "Vampire native certificate did not reconstruct current aby goal at line %d char %d"
+                                "Vampire native certificate did not reconstruct current proof goal at line %d char %d"
                                 !lineno !charno))
                       else
                         native_aby_result
@@ -7520,18 +7561,37 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                     let endpos = Some(!lineno,!charno) in
                     prooffun := (fun dl -> currprooffun ((endpos,d)::dl));
                     pfstate := pfstr;
-                    if !vampireabytargetstop then
+                    if certified_vampire_tac && !verbosity > 2 then
                       begin
                         Printf.printf
-                          "Vampire target stop after reconstructed aby proof term at line %d char %d.\n"
+                          "Vampire proof command reconstructed proof term at line %d char %d.\n"
                           !lineno
                           !charno;
+                        flush stdout
+                      end;
+                    if !vampireabytargetstop then
+                      begin
+                        if certified_vampire_tac then
+                          Printf.printf
+                            "Vampire target stop after reconstructed proof term at line %d char %d.\n"
+                            !lineno
+                            !charno
+                        else
+                          Printf.printf
+                            "Vampire target stop after reconstructed aby proof term at line %d char %d.\n"
+                            !lineno
+                            !charno;
                         flush stdout;
                         exit 0
                       end
                  | None ->
-                    if !vampireabynativestrict then
-                      raise (Failure(Printf.sprintf "Native reconstruction failed for certified aby at line %d char %d" !lineno !charno))
+                    if certified_vampire_tac || !vampireabynativestrict then
+                      raise
+                        (Failure
+                           (if certified_vampire_tac then
+                              Printf.sprintf "Native reconstruction failed for certified Vampire proof at line %d char %d" !lineno !charno
+                            else
+                              Printf.sprintf "Native reconstruction failed for certified aby at line %d char %d" !lineno !charno))
                     else
                       begin
 	                admitpfstateatp pfst;
@@ -7546,7 +7606,11 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
 	                 end
 	             end
            end
-	| _ -> raise (Failure("No goal to aby"))
+	| _ ->
+           if certified_vampire_tac then
+             raise (Failure("No goal for Vampire proof command"))
+           else
+             raise (Failure("No goal to aby"))
       end
   | SpecialTac(x,[]) when x = "distinct" ->
      begin

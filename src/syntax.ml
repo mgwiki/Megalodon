@@ -3457,6 +3457,7 @@ type pftacitem =
   | Admitted
   | Admit
   | Aby of string list
+  | VampireTac of string list
 
 (*
 type docorpftacitem =
@@ -6196,7 +6197,7 @@ Printf.fprintf ch "<textarea id='pf%dcodetext' rows=%d cols=%d>%s</textarea><br/
   | Admit ->
       output_string ch "<div class='admit'>The rest of this subproof is missing.</div>"
   | Aby(xl) ->
-     match List.rev xl with
+     begin match List.rev xl with
      | [] -> Printf.fprintf ch "<div class='aby'>The rest of this subproof can be completed by an ATP.</div>\n"
      | [x] -> Printf.fprintf ch "<div class='aby'>The rest of this subproof can be completed by an ATP using %s.</div>\n" x
      | [x;y] -> Printf.fprintf ch "<div class='aby'>The rest of this subproof can be completed by an ATP using %s and %s.</div>\n" y x
@@ -6204,6 +6205,17 @@ Printf.fprintf ch "<textarea id='pf%dcodetext' rows=%d cols=%d>%s</textarea><br/
         Printf.fprintf ch "<div class='aby'>The rest of this subproof can be completed by an ATP using ";
         List.iter (fun z -> Printf.fprintf ch "%s, " z) (List.rev zr);
         Printf.fprintf ch "%s and %s.</div>\n" y x
+     end
+  | VampireTac(xl) ->
+     begin match List.rev xl with
+     | [] -> Printf.fprintf ch "<div class='vampire'>This subproof is checked by a Vampire certificate.</div>\n"
+     | [x] -> Printf.fprintf ch "<div class='vampire'>This subproof is checked by a Vampire certificate using %s.</div>\n" x
+     | [x;y] -> Printf.fprintf ch "<div class='vampire'>This subproof is checked by a Vampire certificate using %s and %s.</div>\n" y x
+     | x::y::zr ->
+        Printf.fprintf ch "<div class='vampire'>This subproof is checked by a Vampire certificate using ";
+        List.iter (fun z -> Printf.fprintf ch "%s, " z) (List.rev zr);
+        Printf.fprintf ch "%s and %s.</div>\n" y x
+     end
 
 let rec stp_html_string_1 a p =
   match a with
@@ -7035,7 +7047,7 @@ let output_pftacitem_latex ch pftac stmh sknh laststructact =
   | Admit ->
      Printf.fprintf ch "{\\it{Subproof unfinished.}}\n"
   | Aby(xl) ->
-     match List.rev xl with
+     begin match List.rev xl with
      | [] -> Printf.fprintf ch "{\\it{Subproof by an ATP.}}\n"
      | [x] -> Printf.fprintf ch "{\\it{Subproof by an ATP using %s.}}\n" x
      | [x;y] -> Printf.fprintf ch "{\\it{Subproof by an ATP using %s and %s.}}\n" y x
@@ -7043,6 +7055,17 @@ let output_pftacitem_latex ch pftac stmh sknh laststructact =
         Printf.fprintf ch "{\\it{Subproof by an ATP using ";
         List.iter (fun z -> Printf.fprintf ch "%s, " z) (List.rev zr);
         Printf.fprintf ch "%s and %s.}}\n" y x
+     end
+  | VampireTac(xl) ->
+     begin match List.rev xl with
+     | [] -> Printf.fprintf ch "{\\it{Subproof checked by a Vampire certificate.}}\n"
+     | [x] -> Printf.fprintf ch "{\\it{Subproof checked by a Vampire certificate using %s.}}\n" x
+     | [x;y] -> Printf.fprintf ch "{\\it{Subproof checked by a Vampire certificate using %s and %s.}}\n" y x
+     | x::y::zr ->
+        Printf.fprintf ch "{\\it{Subproof checked by a Vampire certificate using ";
+        List.iter (fun z -> Printf.fprintf ch "%s, " z) (List.rev zr);
+        Printf.fprintf ch "%s and %s.}}\n" y x
+     end
 
 let rec tp_pfgset_str a =
   match a with

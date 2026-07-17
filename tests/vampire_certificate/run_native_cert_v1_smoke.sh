@@ -713,6 +713,74 @@ if ! rg -q 'Everything looks good' \
   exit 1
 fi
 
+certified_vampire_live_dir="$WORK_DIR/certified_vampire_live"
+mkdir -p "$certified_vampire_live_dir"
+cp "$local_source_live_dir/fake_vampire" "$certified_vampire_live_dir/fake_vampire"
+cat >"$certified_vampire_live_dir/certified_vampire_live.mg" <<'EOF_CERTIFIED_VAMPIRE_LIVE_MG'
+Definition False : prop := forall p:prop, p.
+Definition not : prop -> prop := fun A:prop => A -> False.
+Prefix ~ 700 := not.
+Definition or : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> p) -> (B -> p) -> p.
+Infix \/ 785 left := or.
+Axiom xm : forall P:prop, P \/ ~P.
+Variable p:prop.
+Theorem certified_vampire_live:p -> p.
+assume Hp:p.
+vampire Hp.
+Qed.
+EOF_CERTIFIED_VAMPIRE_LIVE_MG
+if awk '$0 !~ /^\/\// && ($0 ~ /(^|[^[:alnum:]_])(admit|aby)([^[:alnum:]_]|$)/ || $0 ~ /-allowincompleteqed/) {print FNR ":" $0}' \
+    "$certified_vampire_live_dir/certified_vampire_live.mg" |
+    rg . >&2; then
+  echo "certified vampire source fixture contains an admission-shaped token" >&2
+  exit 1
+fi
+bin/megalodon \
+  -v 9 \
+  -vampireaby "$certified_vampire_live_dir/fake_vampire" \
+  -vampireabyproof megalodon \
+  -vampireabynative \
+  -vampireabyoutdir "$certified_vampire_live_dir/out" \
+  "$certified_vampire_live_dir/certified_vampire_live.mg" \
+  >"$WORK_DIR/native_cert_v1_live_certified_vampire_context.log" \
+  2>"$WORK_DIR/native_cert_v1_live_certified_vampire_context.err"
+
+if ! rg -q 'source_context known=0 local=1 local_definition=0 conjecture=1 unresolved=0' \
+    "$WORK_DIR/native_cert_v1_live_certified_vampire_context.log"; then
+  echo "certified vampire command did not bind the local Hp hypothesis" >&2
+  exit 1
+fi
+if ! rg -q 'Vampire proof command reconstructed proof term' \
+    "$WORK_DIR/native_cert_v1_live_certified_vampire_context.log"; then
+  echo "certified vampire command did not compose the native certificate proof into the current Megalodon goal" >&2
+  exit 1
+fi
+if rg -q 'Vampire (certified|native certificate reconstructed) aby' \
+    "$WORK_DIR/native_cert_v1_live_certified_vampire_context.log"; then
+  echo "certified vampire command log used legacy aby wording" >&2
+  exit 1
+fi
+if ! rg -q 'Everything looks good' \
+    "$WORK_DIR/native_cert_v1_live_certified_vampire_context.log"; then
+  echo "certified vampire command fixture did not close after composing the native certificate proof" >&2
+  exit 1
+fi
+if bin/megalodon \
+    -v 9 \
+    -vampireabyproof megalodon \
+    "$certified_vampire_live_dir/certified_vampire_live.mg" \
+    >"$WORK_DIR/native_cert_v1_live_certified_vampire_without_executable.log" \
+    2>"$WORK_DIR/native_cert_v1_live_certified_vampire_without_executable.err"; then
+  echo "certified vampire command unexpectedly succeeded without -vampireaby" >&2
+  exit 1
+fi
+if ! (cat "$WORK_DIR/native_cert_v1_live_certified_vampire_without_executable.log" \
+         "$WORK_DIR/native_cert_v1_live_certified_vampire_without_executable.err" |
+       rg -q 'vampire proof command requires -vampireaby'); then
+  echo "certified vampire command did not fail closed without -vampireaby" >&2
+  exit 1
+fi
+
 targeted_live_dir="$WORK_DIR/targeted_vampireaby_live"
 mkdir -p "$targeted_live_dir"
 cat >"$targeted_live_dir/targeted_vampireaby_live.mg" <<'EOF_TARGETED_VAMPIREABY_LIVE_MG'
