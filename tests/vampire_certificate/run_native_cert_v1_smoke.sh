@@ -1559,6 +1559,30 @@ if ! rg -q 'Vampire certificate v1 native core proof term checked 6 steps' \
 fi
 
 bin/megalodon \
+  -vampirecertv1corepfcheck \
+  -vampirecertv1 tests/vampire_certificate/closed_cases/hammer.11453.77.native.sexp \
+  -vampirecertv1source tests/vampire_certificate/closed_cases/hammer.11453.77.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_urr_primitive_core_pf_hammer_11453_77.log"
+
+if ! rg -q 'Vampire certificate v1 native core proof term checked 65 steps' \
+    "$WORK_DIR/native_cert_v1_urr_primitive_core_pf_hammer_11453_77.log"; then
+  echo "native core proof-term checker did not validate lowered URR primitive chain for hammer.11453.77" >&2
+  exit 1
+fi
+
+bin/megalodon \
+  -vampirecertv1corepfcheck \
+  -vampirecertv1 tests/vampire_certificate/closed_cases/hammer.11703.242.native.sexp \
+  -vampirecertv1source tests/vampire_certificate/closed_cases/hammer.11703.242.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_urr_primitive_core_pf_hammer_11703_242.log"
+
+if ! rg -q 'Vampire certificate v1 native core proof term checked 44 steps' \
+    "$WORK_DIR/native_cert_v1_urr_primitive_core_pf_hammer_11703_242.log"; then
+  echo "native core proof-term checker did not validate lowered URR primitive chain for hammer.11703.242" >&2
+  exit 1
+fi
+
+bin/megalodon \
   -vampirecertv1strict \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_factoring_kernel_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_factoring_kernel_valid.th0.p \
@@ -2066,6 +2090,22 @@ fi
 if ! rg -q 'unit_resulting_resolution final primitive step c3_resolve does not match kernel unit id c3' \
     "$WORK_DIR/native_cert_v1_urr_primitive_chain_final_bad.err"; then
   echo "strict native certificate v1 URR primitive-chain failure did not explain the final-step mismatch" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_urr_primitive_payload_bad.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_urr_primitive_payload_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_urr_primitive_payload_bad.err"; then
+  echo "strict native certificate v1 checker accepted mismatched URR primitive payload metadata" >&2
+  exit 1
+fi
+
+if ! rg -q 'field primitive_expansion_step_0_pivot_left has value 1 but expected 0' \
+    "$WORK_DIR/native_cert_v1_urr_primitive_payload_bad.err"; then
+  echo "strict native certificate v1 checker did not explain bad URR primitive payload metadata" >&2
   exit 1
 fi
 
