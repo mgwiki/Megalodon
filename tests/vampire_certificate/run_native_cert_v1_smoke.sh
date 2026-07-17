@@ -1085,6 +1085,68 @@ if ! rg -q 'Everything looks good' \
   exit 1
 fi
 
+local_term_source_live_dir="$WORK_DIR/local_term_source_live"
+mkdir -p "$local_term_source_live_dir"
+cat >"$local_term_source_live_dir/fake_vampire" <<'EOF_LOCAL_TERM_SOURCE_FAKE_VAMPIRE'
+#!/usr/bin/env bash
+problem="${@: -1}"
+fact=$(sed -n 's/^% megalodon_source_map (local_fact "\([^"]*\)" .*/\1/p' "$problem" | head -1)
+conj=$(sed -n 's/^% megalodon_source_map (conjecture "\([^"]*\)" .*/\1/p' "$problem" | head -1)
+cat <<CERT
+% SZS status Theorem
+% SZS output start Proof
+megalodon_certificate_native_sexpr_start.
+(certificate vampire-megalodon 1
+  (problem "local-term-source-live")
+  (symbol_declaration "Variable p:set->prop.")
+  (symbol_declaration "Variable x:set.")
+  (input "u0" (source axiom "$fact") (clause (pos (AP (TMH "p") (TMH "x")))))
+  (input "u1" (source negated_conjecture "$conj") (clause (neg (AP (TMH "p") (TMH "x")))))
+  (resolve "u2" (parents "u0" "u1") (pivot 0 0) (result (clause)))
+)
+megalodon_certificate_native_sexpr_end.
+% SZS output end Proof
+CERT
+EOF_LOCAL_TERM_SOURCE_FAKE_VAMPIRE
+chmod +x "$local_term_source_live_dir/fake_vampire"
+cat >"$local_term_source_live_dir/local_term_source_live.mg" <<'EOF_LOCAL_TERM_SOURCE_LIVE_MG'
+Definition False : prop := forall p:prop, p.
+Definition not : prop -> prop := fun A:prop => A -> False.
+Prefix ~ 700 := not.
+Definition or : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> p) -> (B -> p) -> p.
+Infix \/ 785 left := or.
+Axiom xm : forall P:prop, P \/ ~P.
+Theorem local_term_source_live : forall p:set->prop, forall x:set, p x -> p x.
+let p x.
+assume Hpx:p x.
+aby Hpx.
+Qed.
+EOF_LOCAL_TERM_SOURCE_LIVE_MG
+bin/megalodon \
+  -v 9 \
+  -vampireaby "$local_term_source_live_dir/fake_vampire" \
+  -vampireabyproof megalodon \
+  -vampireabynative \
+  -vampireabyoutdir "$local_term_source_live_dir/out" \
+  "$local_term_source_live_dir/local_term_source_live.mg" \
+  >"$WORK_DIR/native_cert_v1_live_local_term_source_context.log" \
+  2>"$WORK_DIR/native_cert_v1_live_local_term_source_context.err"
+if ! rg -q 'source_context known=0 local=1 local_definition=0 conjecture=1 unresolved=0' \
+    "$WORK_DIR/native_cert_v1_live_local_term_source_context.log"; then
+  echo "live vampireaby local-term fixture did not bind the local term-dependent hypothesis" >&2
+  exit 1
+fi
+if ! rg -q 'Vampire native certificate reconstructed aby proof term' \
+    "$WORK_DIR/native_cert_v1_live_local_term_source_context.log"; then
+  echo "live vampireaby did not compose the local term-dependent native certificate proof" >&2
+  exit 1
+fi
+if ! rg -q 'Everything looks good' \
+    "$WORK_DIR/native_cert_v1_live_local_term_source_context.log"; then
+  echo "live vampireaby local-term fixture did not close" >&2
+  exit 1
+fi
+
 if [[ "${SOURCE_CONTEXT_ONLY:-0}" = "1" ]]; then
   bin/megalodon \
     -vampirecertv1sourcecontext \

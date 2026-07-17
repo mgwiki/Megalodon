@@ -721,7 +721,7 @@ let vampire_source_map_type_decl entry =
   match entry.Vampire_cert_v1.source_map_kind,
         entry.Vampire_cert_v1.source_map_decl_formula
   with
-  | "type", Some formula ->
+  | ("type" | "local_type"), Some formula ->
       begin
         try
           let colon = String.index formula ':' in
