@@ -175,3 +175,21 @@ This remains a boundary extraction, not a completed audit response. The larger
 work still has to extract the typed kernel syntax/checker/elaborator, remove
 certificate-derived `Known` from every counted native path, and add the
 Vampire-side primitive builder.
+
+The same boundary was then extracted on the Vampire side. Commit
+`2b095b0ae` in `/project/vampire-leancheck` adds
+`Shell/MegalodonChecker/MegalodonKernelSyntax.{hpp,cpp}` and makes
+`MegalodonChecker.cpp` consume it for the schema string and
+rule-to-required-primitive contract. This removes one hardcoded contract
+if-chain from the large exporter without changing the emitted certificate
+format.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel`
+- 5-case live THF run with the new binary:
+  `PASS 5`
+- `run_native_primitive_audit.sh` on the 5-case artifact with small-sample
+  minima
+- `run_kernel_v1_metadata_audit.sh` on the same artifact, covering 280
+  `kernel_v1` records

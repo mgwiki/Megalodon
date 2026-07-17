@@ -238,3 +238,26 @@ This is deliberately a boundary commit, not a proof-power claim. The next
 extractions should move term/clause kernel syntax and theorem-opening logic
 out of the monolithic importer, and the Vampire side still needs a real
 primitive-step builder instead of metadata assembled in the large exporter.
+
+Follow-up: Vampire now has the corresponding small C++ extraction in
+`Shell/MegalodonChecker/MegalodonKernelSyntax.{hpp,cpp}`. That helper owns the
+same schema string and rule-to-required-primitive table used while emitting
+`kernel_v1` metadata. `Shell/MegalodonChecker/MegalodonChecker.cpp` consumes
+the helper instead of carrying the full primitive-contract if-chain inline.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` passed in
+  `/project/vampire-leancheck` after wiring the new object into both
+  `Makefile` and `cmake/sources.cmake`.
+- A 5-case live THF run with the new Vampire binary
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11044` produced
+  `PASS 5`.
+- The focused native primitive audit passed on that 5-case artifact with
+  small-sample minima.
+- The kernel-v1 metadata audit passed on that artifact over 280
+  `kernel_v1` records.
+
+This still is not the full Vampire primitive-step builder requested by the
+audit. It is the first shared contract extraction needed before that builder
+can be made explicit and tested independently.
