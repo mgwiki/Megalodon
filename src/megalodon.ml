@@ -5938,30 +5938,36 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                     Printf.sprintf "%s.th0.p" c
                   in
                   let ch = open_out fn in
-                  List.iter
-                    (fun (_,_,_,a) -> Printf.fprintf ch "%s\n" a)
-                    (List.rev !th0sg);
-                  let rec th0_cx cxtm =
-                    match cxtm with
-                    | [] -> ()
-                    | (x,(a,d))::cxtmr ->
-                       th0_cx cxtmr;
-                       Printf.fprintf ch "thf(%s_tp,type,(%s : %s)).\n" (tptpize_name x) (tptpize_name x) (th0_stp_str a);
-                       match d with
-                       | Some(d) ->
-                          Printf.fprintf ch "thf(%s_def,definition,(%s = %s)).\n" (tptpize_name x) (tptpize_name x) (th0_str d (tptpizecxtm cxtmr))
-                       | None -> ()
-                  in
-                  th0_cx cxtm;
-                  let cnt = ref 0 in
-                  List.iter
-                    (fun (x,p) ->
-                      incr cnt;
-                      if not !bushy || Hashtbl.mem bushyhdeps !cnt then
-                        let a = th0_str p (tptpizecxtm cxtm) in
-                        Printf.fprintf ch "thf(%s,axiom,%s).\n" (tptpize_name x) a)
-                    (List.rev cxpf);
-                  Printf.fprintf ch "thf(conj_%s,conjecture,%s).\n" c (th0_str atm (tptpizecxtm cxtm));
+                  begin match pitem with
+                  | Aby xl ->
+                     let conjn = stable_aby_obligation_name () in
+                     Printf.fprintf ch "%s" (th0_aby_problem_content atm cxtm cxpf xl conjn)
+                  | _ ->
+                     List.iter
+                       (fun (_,_,_,a) -> Printf.fprintf ch "%s\n" a)
+                       (List.rev !th0sg);
+                     let rec th0_cx cxtm =
+                       match cxtm with
+                       | [] -> ()
+                       | (x,(a,d))::cxtmr ->
+                          th0_cx cxtmr;
+                          Printf.fprintf ch "thf(%s_tp,type,(%s : %s)).\n" (tptpize_name x) (tptpize_name x) (th0_stp_str a);
+                          match d with
+                          | Some(d) ->
+                             Printf.fprintf ch "thf(%s_def,definition,(%s = %s)).\n" (tptpize_name x) (tptpize_name x) (th0_str d (tptpizecxtm cxtmr))
+                          | None -> ()
+                     in
+                     th0_cx cxtm;
+                     let cnt = ref 0 in
+                     List.iter
+                       (fun (x,p) ->
+                         incr cnt;
+                         if not !bushy || Hashtbl.mem bushyhdeps !cnt then
+                           let a = th0_str p (tptpizecxtm cxtm) in
+                           Printf.fprintf ch "thf(%s,axiom,%s).\n" (tptpize_name x) a)
+                       (List.rev cxpf);
+                     Printf.fprintf ch "thf(conj_%s,conjecture,%s).\n" c (th0_str atm (tptpizecxtm cxtm))
+                  end;
                   close_out ch;
                   exit 0
                 end
