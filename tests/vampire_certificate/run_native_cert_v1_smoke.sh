@@ -429,7 +429,7 @@ bin/megalodon \
   >"$WORK_DIR/native_cert_v1_live_local_source_context.log" \
   2>"$WORK_DIR/native_cert_v1_live_local_source_context.err"
 
-if ! rg -q 'source_context known=0 local=1 local_definition=0 unresolved=1' \
+if ! rg -q 'source_context known=0 local=1 local_definition=0 conjecture=1 unresolved=0' \
     "$WORK_DIR/native_cert_v1_live_local_source_context.log"; then
   echo "live vampireaby source-context resolver did not bind the local Hp hypothesis" >&2
   exit 1
@@ -493,7 +493,7 @@ bin/megalodon \
   "$local_definition_live_dir/local_definition_live.mg" \
   >"$WORK_DIR/native_cert_v1_live_local_definition_source_context.log" \
   2>"$WORK_DIR/native_cert_v1_live_local_definition_source_context.err"
-if ! rg -q 'source_context known=0 local=1 local_definition=1 unresolved=1' \
+if ! rg -q 'source_context known=0 local=1 local_definition=1 conjecture=1 unresolved=0' \
     "$WORK_DIR/native_cert_v1_live_local_definition_source_context.log"; then
   echo "live vampireaby source-context resolver did not identify the local set definition" >&2
   exit 1
@@ -513,7 +513,7 @@ bin/megalodon \
   "$local_definition_live_dir/local_definition_live.mg" \
   >"$WORK_DIR/native_cert_v1_live_local_definition_strict.log" \
   2>"$WORK_DIR/native_cert_v1_live_local_definition_strict.err"
-if ! rg -q 'source_context known=0 local=1 local_definition=1 unresolved=1' \
+if ! rg -q 'source_context known=0 local=1 local_definition=1 conjecture=1 unresolved=0' \
     "$WORK_DIR/native_cert_v1_live_local_definition_strict.log"; then
   echo "strict live vampireaby did not preserve the local-definition source-context audit" >&2
   exit 1
@@ -668,7 +668,7 @@ bin/megalodon \
   "$multi_local_source_live_dir/multi_local_source_live.mg" \
   >"$WORK_DIR/native_cert_v1_live_multi_local_source_context.log" \
   2>"$WORK_DIR/native_cert_v1_live_multi_local_source_context.err"
-if ! rg -q 'source_context known=0 local=2 local_definition=0 unresolved=1' \
+if ! rg -q 'source_context known=0 local=2 local_definition=0 conjecture=1 unresolved=0' \
     "$WORK_DIR/native_cert_v1_live_multi_local_source_context.log"; then
   echo "live vampireaby multi-local fixture did not bind both local hypotheses" >&2
   exit 1

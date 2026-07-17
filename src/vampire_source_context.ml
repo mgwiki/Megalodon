@@ -29,6 +29,7 @@ type audit = {
   local_definition_matched : int;
   definition_missing : int;
   generated_checked : int;
+  conjecture_checked : int;
   unresolved : int;
   source_proofs : (string * pf) list;
   resolved : (string * source_proof) list;
@@ -46,6 +47,7 @@ let empty_audit = {
   local_definition_matched = 0;
   definition_missing = 0;
   generated_checked = 0;
+  conjecture_checked = 0;
   unresolved = 0;
   source_proofs = [];
   resolved = [];
@@ -65,6 +67,9 @@ let local_source_kind kind =
 
 let generated_source_kind kind =
   kind = "set_reflexivity" || kind = "local_set_reflexivity"
+
+let conjecture_source_kind kind =
+  kind = "conjecture" || kind = "negated_conjecture"
 
 let rec generated_set_reflexivity_proof = function
   | All (tp, body) ->
@@ -217,6 +222,9 @@ let resolve_one context audit binding =
               ^ " is not a provable reflexive Megalodon equality: "
               ^ tm_to_str proposition))
     end
+  else if binding.core_native_certificate_source_kind = "negated_conjecture"
+          && conjecture_source_kind kind then
+    { audit with conjecture_checked = audit.conjecture_checked + 1 }
   else
     { audit with unresolved = audit.unresolved + 1 }
 
@@ -234,7 +242,8 @@ let resolve ?(strict=false) context bindings =
          || audit.known_mismatch > 0
          || audit.local_missing > 0
          || audit.local_mismatch > 0
-         || audit.definition_missing > 0) then
+         || audit.definition_missing > 0
+         || audit.unresolved > 0) then
     raise
       (Vampire_cert_v1.Error
          "strict source-context audit failed: at least one source did not resolve to a checked proof in the Megalodon context");

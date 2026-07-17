@@ -27,6 +27,7 @@ type audit = {
   local_definition_matched : int;
   definition_missing : int;
   generated_checked : int;
+  conjecture_checked : int;
   unresolved : int;
   source_proofs : (string * Syntax.pf) list;
   resolved : (string * source_proof) list;

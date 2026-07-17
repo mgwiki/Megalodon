@@ -332,7 +332,7 @@ for `vampireaby`:
   theorem.
 
 The smoke suite now has a live fake-Vampire fixture that checks this path:
-`source_context known=0 local=1 unresolved=1` followed by `Vampire native
+`source_context known=0 local=1 conjecture=1 unresolved=0` followed by `Vampire native
 certificate reconstructed aby proof term` and a closing `Everything looks
 good`.  Because the project setting assumes classical reasoning, an axiom
 named `xm` is treated as a trusted classical principle only when its
