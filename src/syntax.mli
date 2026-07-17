@@ -3,6 +3,7 @@
 (*** Jan 18 2014 ***)
 
 val set_html_item_start_line : int -> unit
+val get_html_item_start_line : unit -> int
 val set_show_pfglinks : bool -> unit
 
 val pfgsummary2 : bool ref;;
@@ -162,6 +163,28 @@ type pftacitem =
   | Admit
   | Aby of string list
 
+(** A checked proof-tactic node plus the state needed for AST-level proof
+    presentation.  Goal counts are measured immediately before and after the
+    node is checked. *)
+type pftacitem_info = {
+  pfti_item : pftacitem;
+  pfti_context : string list;
+  pfti_proof_context : string list;
+  pfti_term_context : string list;
+  pfti_line : int;
+  pfti_laststructact : int;
+  pfti_goals_before : int;
+  pfti_goals_after : int;
+}
+
+(** A presentation tree recovered from checked proof-tactic nodes. *)
+type compact_pftacitem =
+  | CompactStep of pftacitem_info
+  | CompactClaim of pftacitem_info * string * ltree * compact_pftacitem list
+  | CompactThus of pftacitem_info * ltree * compact_pftacitem list
+
+val compact_pftacitems : pftacitem_info list -> compact_pftacitem list
+
 (*
 type docorpftacitem =
   | DocItem : docitem -> docorpftacitem
@@ -283,13 +306,17 @@ val globalhrefs : bool ref
 val url_friendly_name : string -> string
 val output_ltree_html : string list -> out_channel -> ltree -> (string,string) Hashtbl.t -> (string,string) Hashtbl.t -> unit
 val output_docitem_html : string list -> out_channel -> docitem -> (string,string) Hashtbl.t -> (string,string) Hashtbl.t -> unit
+val output_docitem_terse_html : string list -> out_channel -> docitem -> (string,string) Hashtbl.t -> (string,string) Hashtbl.t -> unit
 val output_pftacitem_html : string list -> out_channel -> pftacitem -> (string,string) Hashtbl.t -> (string,string) Hashtbl.t -> int -> unit
+val output_pftacitems_mizar_html : out_channel -> compact_pftacitem list -> (string,string) Hashtbl.t -> (string,string) Hashtbl.t -> unit
+val output_pftacitems_terse_html : out_channel -> compact_pftacitem list -> (string,string) Hashtbl.t -> (string,string) Hashtbl.t -> unit
                                  
 val stp_html_string : tp -> string
                               
 val output_ltree_latex : out_channel -> ltree -> (string,string) Hashtbl.t -> (string,string) Hashtbl.t -> unit
 val output_docitem_latex : out_channel -> docitem -> (string,string) Hashtbl.t -> (string,string) Hashtbl.t -> unit
 val output_pftacitem_latex : out_channel -> pftacitem -> (string,string) Hashtbl.t -> (string,string) Hashtbl.t -> int -> unit
+val output_pftacitems_mizar_latex : out_channel -> compact_pftacitem list -> (string,string) Hashtbl.t -> (string,string) Hashtbl.t -> unit
 
 val pfgtmh : (string,string) Hashtbl.t
 val pfgtmhh : (string,Hash.hashval) Hashtbl.t

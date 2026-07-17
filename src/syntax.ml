@@ -3458,6 +3458,173 @@ type pftacitem =
   | Admit
   | Aby of string list
 
+(** A checked proof-tactic node plus the state needed for AST-level proof
+    presentation.  Goal counts are measured immediately before and after the
+    node is checked. *)
+type pftacitem_info = {
+  pfti_item : pftacitem;
+  pfti_context : string list;
+  pfti_proof_context : string list;
+  pfti_term_context : string list;
+  pfti_line : int;
+  pfti_laststructact : int;
+  pfti_goals_before : int;
+  pfti_goals_after : int;
+}
+
+(** A presentation tree recovered from checked proof-tactic nodes. *)
+type compact_pftacitem =
+  | CompactStep of pftacitem_info
+  | CompactClaim of pftacitem_info * string * ltree * compact_pftacitem list
+  | CompactThus of pftacitem_info * ltree * compact_pftacitem list
+
+
+let pftacitem_is_structural p =
+  match p with
+  | PfStruct _ -> true
+  | _ -> false
+
+let pftacitem_structural_delta e =
+  match e.pfti_item with
+  | PfStruct 4 -> 1
+  | PfStruct 5 -> -1
+  | PfStruct i when i < 4 ->
+      if e.pfti_laststructact = 1 then 1
+      else if e.pfti_laststructact = 3 then -1
+      else 0
+  | _ -> 0
+
+(** Split off exactly the tactics which discharge the goal introduced by a
+    claim.  Structural tokens remain in the body until braces/bullets opened
+    inside that body have balanced. *)
+let split_compact_claim_body goal_depth events =
+  let rec split closed struct_depth acc rest =
+    match rest with
+    | [] -> (List.rev acc,[])
+    | e::er ->
+        if closed && struct_depth = 0 then
+          (List.rev acc,rest)
+        else
+          let struct_depth' = struct_depth + pftacitem_structural_delta e in
+          let closed' =
+            closed
+            || (not (pftacitem_is_structural e.pfti_item)
+                && e.pfti_goals_after <= goal_depth)
+          in
+          let acc' = e::acc in
+          if closed' && struct_depth' = 0 then
+            (List.rev acc',er)
+          else
+            split closed' struct_depth' acc' er
+  in
+  split false 0 [] events
+
+let rec compact_pftacitems_raw events =
+  match events with
+  | [] -> []
+  | e::er ->
+      begin
+        match e.pfti_item with
+        | ClaimTac(x,a) when e.pfti_goals_after = e.pfti_goals_before + 1 ->
+            let (body,rest) = split_compact_claim_body e.pfti_goals_before er in
+            CompactClaim(e,x,a,compact_pftacitems_raw body)
+            :: compact_pftacitems_raw rest
+        | _ -> CompactStep(e)::compact_pftacitems_raw er
+      end
+
+let compact_step_is_pfstruct n = function
+  | CompactStep({pfti_item = PfStruct m; _}) when n = m -> true
+  | _ -> false
+
+let rec strip_compact_outer_braces nodes =
+  match nodes with
+  | first::rest when compact_step_is_pfstruct 4 first ->
+      begin
+        match List.rev rest with
+        | last::middle_rev when compact_step_is_pfstruct 5 last ->
+            strip_compact_outer_braces (List.rev middle_rev)
+        | _ -> nodes
+      end
+  | _ -> nodes
+
+let rec compact_ltree_bare_name a =
+  match a with
+  | NaL x -> Some x
+  | ParenL(b,[]) -> compact_ltree_bare_name b
+  | _ -> None
+
+let merge_compact_steps nodes =
+  let rec merge acc rest =
+    match rest with
+    | CompactStep(e1)::CompactStep(e2)::er ->
+        begin
+          match e1.pfti_item,e2.pfti_item with
+          | LetTac(xl,None),LetTac(yl,None)
+              when e1.pfti_goals_after = e2.pfti_goals_before ->
+              let e =
+                { e1 with
+                  pfti_item = LetTac(xl @ yl,None);
+                  pfti_goals_after = e2.pfti_goals_after }
+              in
+              merge acc (CompactStep(e)::er)
+          | AssumeTac(xl,None),AssumeTac(yl,None)
+              when e1.pfti_goals_after = e2.pfti_goals_before ->
+              let e =
+                { e1 with
+                  pfti_item = AssumeTac(xl @ yl,None);
+                  pfti_goals_after = e2.pfti_goals_after }
+              in
+              merge acc (CompactStep(e)::er)
+          | _ -> merge (CompactStep(e1)::acc) (CompactStep(e2)::er)
+        end
+    | n::nr -> merge (n::acc) nr
+    | [] -> List.rev acc
+  in
+  merge [] nodes
+
+let rec normalize_compact_pftacitems nodes =
+  let nodes =
+    List.map
+      (function
+        | CompactClaim(e,x,a,body) ->
+            CompactClaim(e,x,a,
+              strip_compact_outer_braces (normalize_compact_pftacitems body))
+        | CompactThus(e,a,body) ->
+            CompactThus(e,a,
+              strip_compact_outer_braces (normalize_compact_pftacitems body))
+        | CompactStep _ as n -> n)
+      nodes
+  in
+  let rec eliminate_claim_aliases acc rest =
+    match rest with
+    | CompactClaim(e,x,a,body)::CompactStep(ex)::nr ->
+        begin
+          match ex.pfti_item with
+          | Exact d ->
+              begin
+                match compact_ltree_bare_name d with
+                | Some y
+                    when x = y
+                         && e.pfti_goals_before > 0
+                         && ex.pfti_goals_before = e.pfti_goals_before
+                         && ex.pfti_goals_after = e.pfti_goals_before - 1 ->
+                    eliminate_claim_aliases (CompactThus(e,a,body)::acc) nr
+                | _ ->
+                    eliminate_claim_aliases
+                      (CompactClaim(e,x,a,body)::acc) (CompactStep(ex)::nr)
+              end
+          | _ ->
+              eliminate_claim_aliases
+                (CompactClaim(e,x,a,body)::acc) (CompactStep(ex)::nr)
+        end
+    | n::nr -> eliminate_claim_aliases (n::acc) nr
+    | [] -> List.rev acc
+  in
+  merge_compact_steps (eliminate_claim_aliases [] nodes)
+
+let compact_pftacitems events =
+  normalize_compact_pftacitems (compact_pftacitems_raw events)
+
 (*
 type docorpftacitem =
   | DocItem : docitem -> docorpftacitem
@@ -4863,6 +5030,9 @@ let html_item_start_line : int ref = ref 1
 let set_html_item_start_line (l:int) =
   html_item_start_line := l
 
+let get_html_item_start_line () =
+  !html_item_start_line
+
 let output_srcline_html ch =
   (* You can style this with CSS; using data-line makes it easy to target in JS too *)
   Printf.fprintf ch "<span class='srcline' data-line='%d' style='display:none;'>L%d</span>"
@@ -6075,6 +6245,1533 @@ Printf.fprintf ch "<textarea id='pf%dcodetext' rows=%d cols=%d>%s</textarea><br/
         List.iter (fun z -> Printf.fprintf ch "%s, " z) (List.rev zr);
         Printf.fprintf ch "%s and %s.</div>\n" y x
 
+
+(* Compact/Mizar-style HTML rendering from the checked proof AST. *)
+
+let output_mizar_keyword_html ch x =
+  Printf.fprintf ch "<span class='pftackeyword'>%s</span>" x
+
+let output_mizar_wrap_html ch e cls k =
+  set_html_item_start_line e.pfti_line;
+  output_string ch "<div class='pftacwrap compactpftacwrap'>";
+  output_srcline_html ch;
+  Printf.fprintf ch "<div class='%s'>" cls;
+  k ();
+  output_string ch "</div></div>\n"
+
+let output_mizar_name_list_html ch xl =
+  let rec out = function
+    | [] -> ()
+    | [x] -> output_name_html ch x
+    | x::xr ->
+        output_name_html ch x;
+        output_string ch ", ";
+        out xr
+  in
+  out xl
+
+let output_mizar_ltree_list_html cx ch al stmh sknh =
+  let rec out = function
+    | [] -> ()
+    | [a] -> output_ltree_html cx ch a stmh sknh
+    | a::ar ->
+        output_ltree_html cx ch a stmh sknh;
+        output_string ch ", ";
+        out ar
+  in
+  out al
+
+let output_mizar_positions_html ch il =
+  match il with
+  | [] -> ()
+  | [i] -> Printf.fprintf ch " at %d" i
+  | _ ->
+      output_string ch " at ";
+      let rec out = function
+        | [] -> ()
+        | [i] -> output_string ch (string_of_int i)
+        | [i;j] -> Printf.fprintf ch "%d and %d" i j
+        | i::ir -> Printf.fprintf ch "%d, " i; out ir
+      in
+      out il
+
+let mizar_inline_proof_item p =
+  match p with
+  | Exact _ | ApplyTac _ | WitnessTac _ | RewriteTac _ | SpecialTac _
+  | Admit | Aby _ -> true
+  | _ -> false
+
+let output_mizar_inline_tactic_html e ch stmh sknh =
+  let cx = e.pfti_context in
+  match e.pfti_item with
+  | Exact a ->
+      output_mizar_keyword_html ch "exact";
+      output_char ch ' ';
+      output_ltree_html cx ch a stmh sknh
+  | ApplyTac a ->
+      output_mizar_keyword_html ch "apply";
+      output_char ch ' ';
+      output_ltree_html cx ch a stmh sknh
+  | WitnessTac a ->
+      output_mizar_keyword_html ch "take";
+      output_char ch ' ';
+      output_ltree_html cx ch a stmh sknh
+  | RewriteTac(sym,a,il) ->
+      output_mizar_keyword_html ch "rewrite";
+      output_char ch ' ';
+      if sym then output_string ch "&lt;- ";
+      output_ltree_html cx ch a stmh sknh;
+      output_mizar_positions_html ch il
+  | SpecialTac(x,al) ->
+      output_mizar_keyword_html ch x;
+      begin
+        match al with
+        | [] -> ()
+        | _ ->
+            output_char ch ' ';
+            output_mizar_ltree_list_html cx ch al stmh sknh
+      end
+  | Admit -> output_mizar_keyword_html ch "admit"
+  | Aby xl ->
+      output_mizar_keyword_html ch "auto";
+      begin
+        match xl with
+        | [] -> ()
+        | _ ->
+            output_string ch " using ";
+            output_mizar_name_list_html ch xl
+      end
+  | _ -> raise (Failure "proof item is not an inline Mizar-style tactic")
+
+let output_mizar_step_html ch e stmh sknh =
+  let cx = e.pfti_context in
+  match e.pfti_item with
+  | PfStruct _ | Qed | Admitted ->
+      set_html_item_start_line e.pfti_line;
+      output_pftacitem_html cx ch e.pfti_item stmh sknh e.pfti_laststructact
+  | Exact _ | ApplyTac _ | WitnessTac _ | RewriteTac _ | SpecialTac _
+  | Admit | Aby _ ->
+      output_mizar_wrap_html ch e "compacttac"
+        (fun () ->
+          output_mizar_inline_tactic_html e ch stmh sknh;
+          output_char ch ';')
+  | LetTac(xl,None) ->
+      output_mizar_wrap_html ch e "lettac compactlettac"
+        (fun () ->
+          output_mizar_keyword_html ch "let";
+          output_char ch ' ';
+          output_mizar_name_list_html ch xl;
+          output_char ch ';')
+  | LetTac(xl,Some a) ->
+      output_mizar_wrap_html ch e "lettac compactlettac"
+        (fun () ->
+          output_mizar_keyword_html ch "let";
+          output_char ch ' ';
+          output_mizar_name_list_html ch xl;
+          output_string ch " : ";
+          output_ltree_html cx ch a stmh sknh;
+          output_char ch ';')
+  | AssumeTac(xl,None) ->
+      output_mizar_wrap_html ch e "assumetac compactassumetac"
+        (fun () ->
+          output_mizar_keyword_html ch "assume";
+          output_char ch ' ';
+          output_mizar_name_list_html ch xl;
+          output_char ch ';')
+  | AssumeTac(xl,Some a) ->
+      output_mizar_wrap_html ch e "assumetac compactassumetac"
+        (fun () ->
+          output_mizar_keyword_html ch "assume";
+          output_char ch ' ';
+          output_mizar_name_list_html ch xl;
+          output_string ch ": ";
+          output_ltree_html cx ch a stmh sknh;
+          output_char ch ';')
+  | SetTac(x,None,a) ->
+      output_mizar_wrap_html ch e "settac compactsettac"
+        (fun () ->
+          output_mizar_keyword_html ch "set";
+          Printf.fprintf ch " %s = " x;
+          output_ltree_html cx ch a stmh sknh;
+          output_char ch ';')
+  | SetTac(x,Some b,a) ->
+      output_mizar_wrap_html ch e "settac compactsettac"
+        (fun () ->
+          output_mizar_keyword_html ch "set";
+          Printf.fprintf ch " %s : " x;
+          output_ltree_html cx ch b stmh sknh;
+          output_string ch " = ";
+          output_ltree_html cx ch a stmh sknh;
+          output_char ch ';')
+  | ClaimTac(x,a) ->
+      output_mizar_wrap_html ch e "claimtac compacthave"
+        (fun () ->
+          output_mizar_keyword_html ch "have";
+          output_char ch ' ';
+          output_name_html ch x;
+          output_string ch ": ";
+          output_ltree_html cx ch a stmh sknh;
+          output_char ch ';')
+  | ProveTac(a,bl) ->
+      output_mizar_wrap_html ch e "provetac compactshow"
+        (fun () ->
+          output_mizar_keyword_html ch "show";
+          output_char ch ' ';
+          output_ltree_html cx ch a stmh sknh;
+          List.iter
+            (fun b ->
+              output_string ch ", ";
+              output_ltree_html cx ch b stmh sknh)
+            bl;
+          output_char ch ';')
+  | CasesTac _ -> raise (Failure "Cases tactic not yet implemented")
+
+let output_mizar_thus_step_html ch e stmh sknh =
+  output_mizar_wrap_html ch e "compactthus"
+    (fun () ->
+      output_mizar_keyword_html ch "thus";
+      output_string ch " <span class='ltree'>thesis</span> ";
+      output_mizar_keyword_html ch "by";
+      output_char ch ' ';
+      output_mizar_inline_tactic_html e ch stmh sknh;
+      output_char ch ';')
+
+let split_compact_trailing_structures nodes =
+  let rec split acc = function
+    | CompactStep({pfti_item = (PfStruct _ | Qed | Admitted); _} as e)::nr ->
+        split (CompactStep(e)::acc) nr
+    | revrest -> (List.rev revrest,acc)
+  in
+  split [] (List.rev nodes)
+
+let compact_inline_body claim body =
+  match body with
+  | [CompactStep e]
+      when mizar_inline_proof_item e.pfti_item
+           && e.pfti_goals_after <= claim.pfti_goals_before -> Some e
+  | _ -> None
+
+let rec output_mizar_nodes_html ch nodes stmh sknh =
+  List.iter (fun n -> output_mizar_node_html ch n stmh sknh) nodes
+and output_mizar_node_html ch node stmh sknh =
+  match node with
+  | CompactStep e -> output_mizar_step_html ch e stmh sknh
+  | CompactClaim(e,x,a,body) ->
+      begin
+        match compact_inline_body e body with
+        | Some proof ->
+            output_mizar_wrap_html ch e "claimtac compacthave compacthaveby"
+              (fun () ->
+                output_mizar_keyword_html ch "have";
+                output_char ch ' ';
+                output_name_html ch x;
+                output_string ch ": ";
+                output_ltree_html e.pfti_context ch a stmh sknh;
+                output_char ch ' ';
+                output_mizar_keyword_html ch "by";
+                output_char ch ' ';
+                output_mizar_inline_tactic_html proof ch stmh sknh;
+                output_char ch ';')
+        | None ->
+            output_mizar_wrap_html ch e "claimtac compacthave"
+              (fun () ->
+                output_mizar_keyword_html ch "have";
+                output_char ch ' ';
+                output_name_html ch x;
+                output_string ch ": ";
+                output_ltree_html e.pfti_context ch a stmh sknh;
+                output_char ch ';');
+            output_string ch "<div class='subproof compactsubproof'>\n";
+            output_mizar_nodes_as_thus_html ch body stmh sknh;
+            output_string ch "</div>\n"
+      end
+  | CompactThus(_,_,body) ->
+      output_mizar_nodes_as_thus_html ch body stmh sknh
+and output_mizar_nodes_as_thus_html ch nodes stmh sknh =
+  let (main,trailing) = split_compact_trailing_structures nodes in
+  begin
+    match List.rev main with
+    | CompactStep e::prefix_rev
+        when mizar_inline_proof_item e.pfti_item
+             && e.pfti_goals_after < e.pfti_goals_before ->
+        output_mizar_nodes_html ch (List.rev prefix_rev) stmh sknh;
+        output_mizar_thus_step_html ch e stmh sknh
+    | CompactThus(_,_,body)::prefix_rev ->
+        output_mizar_nodes_html ch (List.rev prefix_rev) stmh sknh;
+        output_mizar_nodes_as_thus_html ch body stmh sknh
+    | _ -> output_mizar_nodes_html ch main stmh sknh
+  end;
+  output_mizar_nodes_html ch trailing stmh sknh
+
+let output_pftacitems_mizar_html ch nodes stmh sknh =
+  output_mizar_nodes_as_thus_html ch nodes stmh sknh
+
+(* Radically compact proof presentation.  Long propositions and proof terms
+   stay available in native HTML <details> elements, while the visible proof
+   is a theorem/dependency outline derived from the checked AST. *)
+
+let rec compact_strip_parens = function
+  | ParenL(a,[]) -> compact_strip_parens a
+  | a -> a
+
+let compact_application a =
+  let rec spine args a =
+    match compact_strip_parens a with
+    | ImplopL(f,x) -> spine (x::args) f
+    | h -> (h,args)
+  in
+  spine [] a
+
+let compact_application_head a =
+  match compact_application a with
+  | (NaL x,args) -> Some(x,args)
+  | _ -> None
+
+let rec compact_ltree_size a =
+  match a with
+  | ByteL _ | StringL _ | QStringL _ | NaL _ | NuL _ -> 1
+  | LeL(_,None,a,c) -> 1 + compact_ltree_size a + compact_ltree_size c
+  | LeL(_,Some(_,b),a,c) ->
+      1 + compact_ltree_size b + compact_ltree_size a + compact_ltree_size c
+  | LeML(_,_,a,c) -> 1 + compact_ltree_size a + compact_ltree_size c
+  | BiL(_,_,vll,c) ->
+      1 + compact_ltree_size c
+      + List.fold_left
+          (fun n (_,o) ->
+            match o with None -> n | Some(_,b) -> n + compact_ltree_size b)
+          0 vll
+  | PreoL(_,a) | PostoL(_,a) -> 1 + compact_ltree_size a
+  | InfoL(_,a,b) | ImplopL(a,b) ->
+      1 + compact_ltree_size a + compact_ltree_size b
+  | SepL(_,_,a,b) | RepL(_,_,a,b) ->
+      1 + compact_ltree_size a + compact_ltree_size b
+  | SepRepL(_,_,a,b,c) ->
+      1 + compact_ltree_size a + compact_ltree_size b + compact_ltree_size c
+  | SetEnumL al ->
+      1 + List.fold_left (fun n a -> n + compact_ltree_size a) 0 al
+  | MTupleL(a,al) | ParenL(a,al) ->
+      1 + compact_ltree_size a
+      + List.fold_left (fun n b -> n + compact_ltree_size b) 0 al
+  | IfThenElseL(a,b,c) ->
+      1 + compact_ltree_size a + compact_ltree_size b + compact_ltree_size c
+
+let compact_nth_opt xl n =
+  try Some(List.nth xl n) with Failure _ -> None
+
+let compact_last_opt = function
+  | [] -> None
+  | xl -> Some(List.hd (List.rev xl))
+
+let compact_is_zero a =
+  match compact_strip_parens a with
+  | NuL(false,"0",None,None) -> true
+  | _ -> false
+
+let compact_is_name x a =
+  match compact_strip_parens a with
+  | NaL y -> x = y
+  | _ -> false
+
+let compact_equality_sides a =
+  match compact_strip_parens a with
+  | InfoL(InfNam "=",l,r) -> Some(l,r)
+  | _ -> None
+
+let compact_two_family a =
+  match compact_strip_parens a with
+  | BiL(_,_,[([i],None)],IfThenElseL(c,e,f)) ->
+      begin match compact_equality_sides c with
+      | Some(l,r)
+          when (compact_is_name i l && compact_is_zero r)
+               || (compact_is_zero l && compact_is_name i r) -> Some(e,f)
+      | _ -> None
+      end
+  | BiL(_,_,[([i],Some(_, _))],IfThenElseL(c,e,f)) ->
+      begin match compact_equality_sides c with
+      | Some(l,r)
+          when (compact_is_name i l && compact_is_zero r)
+               || (compact_is_zero l && compact_is_name i r) -> Some(e,f)
+      | _ -> None
+      end
+  | _ -> None
+
+let rec compact_fact_names_of_nodes h nodes =
+  List.iter
+    (function
+      | CompactStep {pfti_item = AssumeTac(xl,_); _} ->
+          List.iter (fun x -> Hashtbl.replace h x ()) xl
+      | CompactStep _ -> ()
+      | CompactClaim(_,x,_,body) ->
+          Hashtbl.replace h x ();
+          compact_fact_names_of_nodes h body
+      | CompactThus(_,_,body) -> compact_fact_names_of_nodes h body)
+    nodes
+
+let compact_add_unique x acc =
+  if List.mem x !acc then () else acc := !acc @ [x]
+
+let compact_facts_in_term facts a =
+  let acc = ref [] in
+  let rec walk bound a =
+    match a with
+    | NaL x ->
+        if not (List.mem x bound) && Hashtbl.mem facts x then
+          compact_add_unique x acc
+    | ByteL _ | StringL _ | QStringL _ | NuL _ -> ()
+    | LeL(x,None,b,c) -> walk bound b; walk (x::bound) c
+    | LeL(x,Some(_,t),b,c) ->
+        walk bound t; walk bound b; walk (x::bound) c
+    | LeML(x,xl,b,c) ->
+        walk bound b; walk (x::xl @ bound) c
+    | BiL(_,_,vll,c) ->
+        List.iter
+          (fun (_,o) -> match o with None -> () | Some(_,b) -> walk bound b)
+          vll;
+        let bound' =
+          List.fold_left (fun bd (xl,_) -> xl @ bd) bound vll
+        in
+        walk bound' c
+    | PreoL(_,b) | PostoL(_,b) -> walk bound b
+    | InfoL(_,b,c) | ImplopL(b,c) -> walk bound b; walk bound c
+    | SepL(x,_,b,c) -> walk bound b; walk (x::bound) c
+    | RepL(x,_,b,c) -> walk (x::bound) b; walk bound c
+    | SepRepL(x,_,b,c,d) ->
+        walk (x::bound) b; walk bound c; walk (x::bound) d
+    | SetEnumL al -> List.iter (walk bound) al
+    | MTupleL(b,bl) | ParenL(b,bl) ->
+        walk bound b; List.iter (walk bound) bl
+    | IfThenElseL(b,c,d) -> walk bound b; walk bound c; walk bound d
+  in
+  begin match compact_application a with
+  | (NaL _,args) -> List.iter (walk []) args
+  | _ -> walk [] a
+  end;
+  !acc
+
+let compact_reason_of_term facts a =
+  let head =
+    match compact_application_head a with
+    | Some(x,_) -> Some x
+    | None ->
+        let rec under_binders a =
+          match compact_strip_parens a with
+          | BiL(_,_,_,b) -> under_binders b
+          | LeL(_,_,_,b) | LeML(_,_,_,b) -> under_binders b
+          | b ->
+              begin match compact_application_head b with
+              | Some(x,_) -> Some x
+              | None -> None
+              end
+        in
+        under_binders a
+  in
+  (head,compact_facts_in_term facts a)
+
+let compact_output_name_term_html cx ch x stmh sknh =
+  output_ltree_html cx ch (NaL x) stmh sknh
+
+let compact_output_fact_list_html cx ch xl stmh sknh =
+  let rec out = function
+    | [] -> ()
+    | [x] -> compact_output_name_term_html cx ch x stmh sknh
+    | x::xr ->
+        compact_output_name_term_html cx ch x stmh sknh;
+        output_string ch ", ";
+        out xr
+  in
+  out xl
+
+let compact_output_small_term_html cx ch a stmh sknh =
+  output_ltree_html cx ch a stmh sknh
+
+let rec compact_output_object_html depth cx ch a stmh sknh =
+  let a = compact_strip_parens a in
+  if depth <= 0 then
+    output_string ch "&hellip;"
+  else
+    match a with
+    | NaL _ | NuL _ | ByteL _ | StringL _ | QStringL _ ->
+        compact_output_small_term_html cx ch a stmh sknh
+    | SepL(x,InfMem,e,InfoL(InfSet InfMem,NaL y,f)) when x = y ->
+        compact_output_object_html (depth-1) cx ch e stmh sknh;
+        output_string ch " &#x2229; ";
+        compact_output_object_html (depth-1) cx ch f stmh sknh
+    | InfoL(InfSet InfMem,l,r) ->
+        compact_output_object_html (depth-1) cx ch l stmh sknh;
+        output_string ch " &#x2208; ";
+        compact_output_object_html (depth-1) cx ch r stmh sknh
+    | InfoL(InfSet InfSubq,l,r) ->
+        compact_output_object_html (depth-1) cx ch l stmh sknh;
+        output_string ch " &#x2286; ";
+        compact_output_object_html (depth-1) cx ch r stmh sknh
+    | InfoL(InfNam op,l,r) when op = "=" ->
+        compact_output_object_html (depth-1) cx ch l stmh sknh;
+        output_string ch " = ";
+        compact_output_object_html (depth-1) cx ch r stmh sknh
+    | _ ->
+        begin match compact_application_head a with
+        | Some("opposite_ring_multiplication",[m]) ->
+            compact_output_object_html (depth-1) cx ch m stmh sknh;
+            output_string ch "<sup>op</sup>"
+        | Some("module_homomorphism_image",[_;f]) ->
+            output_string ch "im(";
+            compact_output_object_html (depth-1) cx ch f stmh sknh;
+            output_char ch ')'
+        | Some("module_homomorphism_kernel",args) ->
+            output_string ch "ker(";
+            begin match compact_last_opt args with
+            | Some f -> compact_output_object_html depth cx ch f stmh sknh
+            | None -> output_string ch "&hellip;"
+            end;
+            output_char ch ')'
+        | Some("module_product_projection",[i]) ->
+            output_string ch "&#x03c0;<sub>";
+            compact_output_object_html (depth-1) cx ch i stmh sknh;
+            output_string ch "</sub>"
+        | Some("module_product_projection",[i;u]) ->
+            output_string ch "&#x03c0;<sub>";
+            compact_output_object_html (depth-1) cx ch i stmh sknh;
+            output_string ch "</sub>(";
+            compact_output_object_html (depth-1) cx ch u stmh sknh;
+            output_char ch ')'
+        | Some("module_zero",m::_) ->
+            output_string ch "0<sub>";
+            compact_output_object_html (depth-1) cx ch m stmh sknh;
+            output_string ch "</sub>"
+        | Some("module_negation",[_;_;x]) ->
+            output_string ch "&#x2212;";
+            compact_output_object_html (depth-1) cx ch x stmh sknh
+        | Some("submodule_sum",args) ->
+            begin match List.rev args with
+            | f::e::_ ->
+                compact_output_object_html (depth-1) cx ch e stmh sknh;
+                output_string ch " + ";
+                compact_output_object_html (depth-1) cx ch f stmh sknh
+            | _ -> output_string ch "submodule_sum&hellip;"
+            end
+        | Some("submodule_family_sum_map",[_;_;n]) ->
+            output_string ch "&#x03a3;<sub>";
+            compact_output_object_html (depth-1) cx ch n stmh sknh;
+            output_string ch "</sub>"
+        | Some("submodule_family_sum_map",[_;_;n;u]) ->
+            output_string ch "&#x03a3;<sub>";
+            compact_output_object_html (depth-1) cx ch n stmh sknh;
+            output_string ch "</sub>(";
+            compact_output_object_html (depth-1) cx ch u stmh sknh;
+            output_char ch ')'
+        | Some("indexed_module_product",[_;fam]) ->
+            begin match compact_two_family fam with
+            | Some(e,f) ->
+                compact_output_object_html (depth-1) cx ch e stmh sknh;
+                output_string ch " &#xd7; ";
+                compact_output_object_html (depth-1) cx ch f stmh sknh
+            | None -> output_string ch "&#x220f;&hellip;"
+            end
+        | Some("indexed_module_product_addition",[_;_]) ->
+            output_string ch "+<sub>&#xd7;</sub>"
+        | Some("indexed_module_product_addition",[_;_;u;v]) ->
+            compact_output_object_html (depth-1) cx ch u stmh sknh;
+            output_string ch " +<sub>&#xd7;</sub> ";
+            compact_output_object_html (depth-1) cx ch v stmh sknh
+        | Some("indexed_module_product_left_scalar",[_;_]) ->
+            output_string ch "&#x22c5;<sub>&#xd7;</sub>"
+        | Some("indexed_module_product_left_scalar",[_;_;scalar;u]) ->
+            compact_output_object_html (depth-1) cx ch scalar stmh sknh;
+            output_string ch " &#x22c5;<sub>&#xd7;</sub> ";
+            compact_output_object_html (depth-1) cx ch u stmh sknh
+        | Some("submodule_family_sum",args) ->
+            begin match compact_last_opt args with
+            | Some fam ->
+                begin match compact_two_family fam with
+                | Some(e,f) ->
+                    output_string ch "&#x03a3;(";
+                    compact_output_object_html (depth-1) cx ch e stmh sknh;
+                    output_string ch ", ";
+                    compact_output_object_html (depth-1) cx ch f stmh sknh;
+                    output_char ch ')'
+                | None -> output_string ch "&#x2211;&hellip;"
+                end
+            | None -> output_string ch "&#x2211;&hellip;"
+            end
+        | Some(x,args) when compact_ltree_size a > 10 ->
+            compact_output_name_term_html cx ch x stmh sknh;
+            begin match compact_last_opt args with
+            | Some z when compact_ltree_size z <= 5 ->
+                output_string ch "(&hellip;, ";
+                compact_output_object_html (depth-1) cx ch z stmh sknh;
+                output_char ch ')'
+            | _ -> output_string ch "&hellip;"
+            end
+        | _ ->
+            if compact_ltree_size a <= 14 then
+              compact_output_small_term_html cx ch a stmh sknh
+            else
+              output_string ch "&hellip;"
+        end
+
+let compact_output_binder_preview_html cx ch x vll body stmh sknh =
+  let q =
+    if x = "forall" then "&#x2200;"
+    else if x = "exists" then "&#x2203;"
+    else x
+  in
+  output_string ch q;
+  output_char ch ' ';
+  let first = ref true in
+  List.iter
+    (fun (xl,o) ->
+      if not !first then output_string ch ", ";
+      first := false;
+      output_mizar_name_list_html ch xl;
+      begin match o with
+      | None -> ()
+      | Some(AscTp,b) ->
+          output_string ch ": ";
+          compact_output_object_html 2 cx ch b stmh sknh
+      | Some(AscSet,b) ->
+          output_string ch " &#x2208; ";
+          compact_output_object_html 2 cx ch b stmh sknh
+      | Some(AscSubeq,b) ->
+          output_string ch " &#x2286; ";
+          compact_output_object_html 2 cx ch b stmh sknh
+      end)
+    vll;
+  output_string ch ", ";
+  compact_output_object_html 3 cx ch body stmh sknh
+
+let rec compact_output_goal_preview_html e ch a stmh sknh =
+  let cx = e.pfti_context in
+  if compact_ltree_size a <= 18 then
+    output_ltree_html cx ch a stmh sknh
+  else
+    match compact_strip_parens a with
+    | BiL(x,_,vll,b) ->
+        compact_output_binder_preview_html cx ch x vll b stmh sknh
+    | InfoL(InfNam op,l,r) when op = "and" || op = "iff" ->
+        compact_output_goal_preview_html e ch l stmh sknh;
+        output_char ch ' ';
+        compact_output_name_term_html cx ch op stmh sknh;
+        output_char ch ' ';
+        compact_output_goal_preview_html e ch r stmh sknh
+    | InfoL(InfNam op,l,r) when op = "=" ->
+        compact_output_object_html 3 cx ch l stmh sknh;
+        output_char ch ' ';
+        compact_output_name_term_html cx ch op stmh sknh;
+        output_char ch ' ';
+        compact_output_object_html 3 cx ch r stmh sknh
+    | InfoL(InfSet _,_,_) as b ->
+        compact_output_object_html 3 cx ch b stmh sknh
+    | b ->
+        begin match compact_application_head b with
+        | Some("left_module",args) ->
+            output_string ch "module(";
+            begin match compact_nth_opt args 3 with
+            | Some m -> compact_output_object_html 2 cx ch m stmh sknh
+            | None -> output_string ch "&hellip;"
+            end;
+            output_char ch ')'
+        | Some("group",m::_) ->
+            output_string ch "group(";
+            compact_output_object_html 2 cx ch m stmh sknh;
+            output_char ch ')'
+        | Some("submodule",args) ->
+            begin match compact_last_opt args,compact_nth_opt args 3 with
+            | Some s,Some m ->
+                compact_output_object_html 2 cx ch s stmh sknh;
+                output_string ch " &#x2264; ";
+                compact_output_object_html 2 cx ch m stmh sknh
+            | _ -> output_string ch "submodule&hellip;"
+            end
+        | Some("module_homomorphism",args) ->
+            begin match compact_last_opt args,compact_nth_opt args 3,compact_nth_opt args 6 with
+            | Some f,Some x,Some y ->
+                compact_output_object_html 2 cx ch f stmh sknh;
+                output_string ch ": ";
+                compact_output_object_html 2 cx ch x stmh sknh;
+                output_string ch " &#x2192;<sub>lin</sub> ";
+                compact_output_object_html 2 cx ch y stmh sknh
+            | _ -> output_string ch "homomorphism&hellip;"
+            end
+        | Some("right_module_homomorphism",args) ->
+            begin match compact_last_opt args,compact_nth_opt args 3,compact_nth_opt args 6 with
+            | Some f,Some x,Some y ->
+                compact_output_object_html 2 cx ch f stmh sknh;
+                output_string ch ": ";
+                compact_output_object_html 2 cx ch x stmh sknh;
+                output_string ch " &#x2192;<sub>R-lin</sub> ";
+                compact_output_object_html 2 cx ch y stmh sknh
+            | _ -> output_string ch "right homomorphism&hellip;"
+            end
+        | Some(("isomorphic_modules" | "module_isomorphism"),args) ->
+            begin match compact_nth_opt args 3,compact_nth_opt args 6 with
+            | Some x,Some y ->
+                compact_output_object_html 2 cx ch x stmh sknh;
+                output_string ch " &#x2245; ";
+                compact_output_object_html 2 cx ch y stmh sknh
+            | _ -> output_string ch "isomorphism&hellip;"
+            end
+        | Some("bij",[x;y;f]) ->
+            compact_output_object_html 2 cx ch f stmh sknh;
+            output_string ch ": ";
+            compact_output_object_html 2 cx ch x stmh sknh;
+            output_string ch " &#x2243; ";
+            compact_output_object_html 2 cx ch y stmh sknh
+        | _ -> compact_output_object_html 3 cx ch b stmh sknh
+        end
+
+type compact_terse_expansion =
+  | CompactAliasFact of string
+  | CompactRuleFact of string * string list
+
+type compact_terse_omission = {
+  cto_node : compact_pftacitem;
+  cto_reason : string;
+}
+
+let compact_all_facts_in_term facts a =
+  let acc = ref [] in
+  let rec walk bound a =
+    match a with
+    | NaL x ->
+        if not (List.mem x bound) && Hashtbl.mem facts x then
+          compact_add_unique x acc
+    | ByteL _ | StringL _ | QStringL _ | NuL _ -> ()
+    | LeL(x,None,b,c) -> walk bound b; walk (x::bound) c
+    | LeL(x,Some(_,t),b,c) ->
+        walk bound t; walk bound b; walk (x::bound) c
+    | LeML(x,xl,b,c) ->
+        walk bound b; walk (x::xl @ bound) c
+    | BiL(_,_,vll,c) ->
+        List.iter
+          (fun (_,o) -> match o with None -> () | Some(_,b) -> walk bound b)
+          vll;
+        let bound' = List.fold_left (fun bd (xl,_) -> xl @ bd) bound vll in
+        walk bound' c
+    | PreoL(_,b) | PostoL(_,b) -> walk bound b
+    | InfoL(_,b,c) | ImplopL(b,c) -> walk bound b; walk bound c
+    | SepL(x,_,b,c) -> walk bound b; walk (x::bound) c
+    | RepL(x,_,b,c) -> walk (x::bound) b; walk bound c
+    | SepRepL(x,_,b,c,d) ->
+        walk (x::bound) b; walk bound c; walk (x::bound) d
+    | SetEnumL al -> List.iter (walk bound) al
+    | MTupleL(b,bl) | ParenL(b,bl) ->
+        walk bound b; List.iter (walk bound) bl
+    | IfThenElseL(b,c,d) -> walk bound b; walk bound c; walk bound d
+  in
+  walk [] a;
+  !acc
+
+let compact_iter_tactic_terms f = function
+  | Exact a | ApplyTac a | WitnessTac a | RewriteTac(_,a,_) -> f a
+  | SpecialTac(_,al) -> List.iter f al
+  | _ -> ()
+
+let compact_scope_reference_counts facts nodes =
+  let counts = Hashtbl.create 101 in
+  let add x =
+    let n = try Hashtbl.find counts x with Not_found -> 0 in
+    Hashtbl.replace counts x (n+1)
+  in
+  let rec walk_nodes = function
+    | [] -> ()
+    | CompactStep e::nr ->
+        compact_iter_tactic_terms
+          (fun a -> List.iter add (compact_all_facts_in_term facts a))
+          e.pfti_item;
+        begin match e.pfti_item with
+        | Aby xl -> List.iter (fun x -> if Hashtbl.mem facts x then add x) xl
+        | _ -> ()
+        end;
+        walk_nodes nr
+    | CompactClaim(_,_,_,body)::nr
+    | CompactThus(_,_,body)::nr ->
+        walk_nodes body;
+        walk_nodes nr
+  in
+  walk_nodes nodes;
+  counts
+
+let compact_reference_count counts x =
+  try Hashtbl.find counts x with Not_found -> 0
+
+let compact_inline_exact_term claim body =
+  match compact_inline_body claim body with
+  | Some ({pfti_item = Exact a; _} as e) -> Some(e,a)
+  | _ -> None
+
+let compact_prepare_terse_scope facts nodes =
+  let counts = compact_scope_reference_counts facts nodes in
+  let expansions = Hashtbl.create 17 in
+  let omitted = ref [] in
+  let keep = ref [] in
+  let omit node reason =
+    omitted := {cto_node = node; cto_reason = reason} :: !omitted
+  in
+  List.iter
+    (fun node ->
+      match node with
+      | CompactClaim(e,x,_,body) ->
+          let uses = compact_reference_count counts x in
+          if uses = 0 then
+            omit node "unused helper"
+          else
+            begin match compact_inline_exact_term e body with
+            | Some(_,a) when uses <= 1 ->
+                begin match compact_strip_parens a with
+                | NaL y when Hashtbl.mem facts y ->
+                    Hashtbl.replace expansions x (CompactAliasFact y);
+                    omit node "alias"
+                | _ ->
+                    begin match compact_application_head a with
+                    | Some("andI",_) ->
+                        let deps = compact_facts_in_term facts a in
+                        if List.length deps >= 2 then
+                          begin
+                            Hashtbl.replace expansions x
+                              (CompactRuleFact("andI",deps));
+                            omit node "conjunction assembly"
+                          end
+                        else
+                          keep := node :: !keep
+                    | _ -> keep := node :: !keep
+                    end
+                end
+            | _ -> keep := node :: !keep
+            end
+      | _ -> keep := node :: !keep)
+    nodes;
+  (List.rev !keep,expansions,List.rev !omitted)
+
+let compact_merge_expansions parent local =
+  let h = Hashtbl.copy parent in
+  Hashtbl.iter (fun x v -> Hashtbl.replace h x v) local;
+  h
+
+let compact_resolve_facts expansions xl =
+  let out = ref [] in
+  let rec resolve seen x =
+    if List.mem x seen then
+      compact_add_unique x out
+    else
+      try
+        match Hashtbl.find expansions x with
+        | CompactAliasFact y -> resolve (x::seen) y
+        | CompactRuleFact(_,yl) -> List.iter (resolve (x::seen)) yl
+      with Not_found -> compact_add_unique x out
+  in
+  List.iter (resolve []) xl;
+  !out
+
+let compact_resolve_reason facts expansions a =
+  let (head,deps0) = compact_reason_of_term facts a in
+  let deps = compact_resolve_facts expansions deps0 in
+  let rec resolve_head seen = function
+    | Some x when Hashtbl.mem facts x && not (List.mem x seen) ->
+        begin
+          try
+            match Hashtbl.find expansions x with
+            | CompactAliasFact y -> resolve_head (x::seen) (Some y)
+            | CompactRuleFact(rule,yl) ->
+                (Some rule,compact_resolve_facts expansions (yl @ deps))
+          with Not_found -> (Some x,deps)
+        end
+    | h -> (h,deps)
+  in
+  resolve_head [] head
+
+let compact_string_starts_with s p =
+  String.length s >= String.length p
+  && String.sub s 0 (String.length p) = p
+
+let compact_string_ends_with s p =
+  String.length s >= String.length p
+  && String.sub s (String.length s - String.length p) (String.length p) = p
+
+let compact_short_reason_name x =
+  let x =
+    if compact_string_starts_with x "god1_" then
+      String.sub x 5 (String.length x - 5)
+    else x
+  in
+  if compact_string_ends_with x "_interface" then
+    String.sub x 0 (String.length x - 10)
+  else x
+
+let rec compact_first_name p a =
+  match a with
+  | NaL x when p x -> Some x
+  | _ ->
+      let rec find = function
+        | [] -> None
+        | b::br ->
+            begin match compact_first_name p b with
+            | Some _ as r -> r
+            | None -> find br
+            end
+      in
+      find
+        (match a with
+         | ByteL _ | StringL _ | QStringL _ | NaL _ | NuL _ -> []
+         | LeL(_,None,b,c) -> [b;c]
+         | LeL(_,Some(_,d),b,c) -> [d;b;c]
+         | LeML(_,_,b,c) -> [b;c]
+         | BiL(_,_,vll,c) ->
+             List.fold_right
+               (fun (_,o) r -> match o with None -> r | Some(_,b) -> b::r)
+               vll [c]
+         | PreoL(_,b) | PostoL(_,b) -> [b]
+         | InfoL(_,b,c) | ImplopL(b,c) -> [b;c]
+         | SepL(_,_,b,c) | RepL(_,_,b,c) -> [b;c]
+         | SepRepL(_,_,b,c,d) -> [b;c;d]
+         | SetEnumL al -> al
+         | MTupleL(b,bl) | ParenL(b,bl) -> b::bl
+         | IfThenElseL(b,c,d) -> [b;c;d])
+
+let compact_logic_rule = function
+  | "eq_i_tra" -> Some "transitivity"
+  | "eq_sym" -> Some "symmetry"
+  | "set_ext" | "Pi_ext" -> Some "extensionality"
+  | "f_eq_i" | "mem_eq_substL" | "mem_eq_substR" -> Some "substitution"
+  | "exandE_i" -> Some "choose"
+  | "cases_2" -> Some "cases on 2"
+  | "bijI" -> Some "bijectivity"
+  | "SepI" -> Some "set introduction"
+  | "ReplI" -> Some "image introduction"
+  | "ReplE_impred" -> Some "image elimination"
+  | "ex_intro" | "ex_intro_setfun" -> Some "witness"
+  | "If_i_0" | "If_i_1" -> Some "simplification"
+  | _ -> None
+
+let compact_logic_plumbing = function
+  | "andI" | "andEL" | "andER" | "iffEL" | "iffER"
+  | "SepE1" | "SepE2" | "eq_i_tra" | "eq_sym" | "set_ext"
+  | "Pi_ext" | "f_eq_i" | "mem_eq_substL" | "mem_eq_substR"
+  | "exandE_i" | "cases_2" | "bijI" | "SepI" | "ReplI"
+  | "ReplE_impred" | "ex_intro" | "ex_intro_setfun" -> true
+  | _ -> false
+
+type compact_reason_view = {
+  crv_fact : string option;
+  crv_rule : string option;
+  crv_theorem : string option;
+  crv_dependencies : string list;
+  crv_witness : ltree option;
+}
+
+let compact_reason_view facts expansions a =
+  let (head,deps) = compact_resolve_reason facts expansions a in
+  let fact =
+    match head with
+    | Some x when Hashtbl.mem facts x -> Some x
+    | _ -> None
+  in
+  let nested_theorem =
+    compact_first_name (fun x -> compact_string_starts_with x "god1_") a
+  in
+  let theorem =
+    match fact,head with
+    | Some _,_ -> None
+    | None,Some x when compact_string_starts_with x "god1_" -> Some x
+    | None,Some("andI" | "bijI") -> None
+    | None,_ ->
+        begin match nested_theorem with
+        | Some _ as r -> r
+        | None ->
+            begin match head with
+            | Some x when not (compact_logic_plumbing x)
+                          && compact_logic_rule x = None -> Some x
+            | _ -> None
+            end
+        end
+  in
+  let rule =
+    match fact,head with
+    | Some _,_ -> None
+    | None,Some x when compact_string_starts_with x "god1_" -> None
+    | None,Some("andI" | "andEL" | "andER" | "iffEL" | "iffER"
+               | "SepE1" | "SepE2") -> None
+    | None,Some x -> compact_logic_rule x
+    | None,None -> None
+  in
+  let witness =
+    match compact_application_head a with
+    | Some(("ex_intro" | "ex_intro_setfun"),_predicate::w::_) -> Some w
+    | _ -> None
+  in
+  { crv_fact = fact;
+    crv_rule = rule;
+    crv_theorem = theorem;
+    crv_dependencies = deps;
+    crv_witness = witness }
+
+let compact_html_escape_attr x =
+  let b = Buffer.create (String.length x) in
+  String.iter
+    (function
+      | '&' -> Buffer.add_string b "&amp;"
+      | '<' -> Buffer.add_string b "&lt;"
+      | '>' -> Buffer.add_string b "&gt;"
+      | '"' -> Buffer.add_string b "&quot;"
+      | '\'' -> Buffer.add_string b "&#39;"
+      | c -> Buffer.add_char b c)
+    x;
+  Buffer.contents b
+
+let compact_output_reason_reference_html cx ch x stmh sknh =
+  let y = compact_short_reason_name x in
+  let title = compact_html_escape_attr x in
+  let visible () = output_name_html ch y in
+  if List.mem x cx then visible ()
+  else
+    begin
+      try
+        if not !globalhrefs then raise Not_found;
+        let hid = Hashtbl.find stmh x in
+        Printf.fprintf ch
+          "<a class='anamelink compactreasonref' title='%s' href='term.php?h=%s'>"
+          title hid;
+        visible ();
+        output_string ch "</a>"
+      with Not_found ->
+        try
+          if not !globalhrefs then raise Not_found;
+          let hid = Hashtbl.find sknh x in
+          Printf.fprintf ch
+            "<a class='anamelink compactreasonref' title='%s' href='term.php?h=%s'>"
+            title hid;
+          visible ();
+          output_string ch "</a>"
+        with Not_found ->
+          if Hashtbl.mem localhrefh x then
+            begin
+              Printf.fprintf ch
+                "<a class='anamelink compactreasonref' title='%s' href='#%s'>"
+                title (url_friendly_name x);
+              visible ();
+              output_string ch "</a>"
+            end
+          else
+            begin
+              Printf.fprintf ch "<span class='compactreasonref' title='%s'>" title;
+              visible ();
+              output_string ch "</span>"
+            end
+    end
+
+let compact_output_reason_html facts expansions e ch a stmh sknh =
+  let r = compact_reason_view facts expansions a in
+  let wrote = ref false in
+  let start sep =
+    if !wrote then output_string ch sep else wrote := true
+  in
+  begin match r.crv_fact with
+  | Some x ->
+      start "";
+      compact_output_name_term_html e.pfti_context ch x stmh sknh
+  | None -> ()
+  end;
+  begin match r.crv_rule,r.crv_witness with
+  | Some "witness",Some w ->
+      start "";
+      output_mizar_keyword_html ch "witness";
+      output_char ch ' ';
+      compact_output_object_html 3 e.pfti_context ch w stmh sknh
+  | Some x,_ ->
+      start "";
+      output_mizar_keyword_html ch x
+  | None,_ -> ()
+  end;
+  begin match r.crv_theorem with
+  | Some x ->
+      start " using ";
+      compact_output_reason_reference_html e.pfti_context ch x stmh sknh
+  | None -> ()
+  end;
+  begin match r.crv_dependencies with
+  | [] -> ()
+  | deps ->
+      if !wrote then
+        begin
+          output_char ch ' ';
+          output_mizar_keyword_html ch "from";
+          output_char ch ' '
+        end
+      else
+        wrote := true;
+      compact_output_fact_list_html e.pfti_context ch deps stmh sknh
+  end;
+  if not !wrote then
+    begin
+      if compact_ltree_size a <= 10 then
+        output_ltree_html e.pfti_context ch a stmh sknh
+      else
+        output_mizar_keyword_html ch "calculation"
+    end
+
+let compact_tactic_term = function
+  | Exact a | ApplyTac a | WitnessTac a -> Some a
+  | RewriteTac(_,a,_) -> Some a
+  | SpecialTac(_,a::_) -> Some a
+  | _ -> None
+
+
+let compact_collect_forall_names a =
+  let rec collect acc b =
+    match compact_strip_parens b with
+    | BiL("forall",_,vll,c) ->
+        let names = List.fold_left (fun r (xl,_) -> r @ xl) [] vll in
+        collect (acc @ names) c
+    | c -> (acc,c)
+  in
+  collect [] a
+
+let compact_strip_premises a =
+  let rec strip n b =
+    match compact_strip_parens b with
+    | InfoL(InfNam "->",_,c) -> strip (n+1) c
+    | c -> (n,c)
+  in
+  strip 0 a
+
+let compact_output_name_list_limited_html ch xl =
+  let rec take n acc = function
+    | [] -> (List.rev acc,false)
+    | _ when n = 0 -> (List.rev acc,true)
+    | x::xr -> take (n-1) (x::acc) xr
+  in
+  let (shown,more) = take 10 [] xl in
+  let rec out = function
+    | [] -> ()
+    | [x] -> output_name_html ch x
+    | x::xr -> output_name_html ch x; output_string ch ", "; out xr
+  in
+  out shown;
+  if more then output_string ch ", &#x2026;"
+
+let compact_output_theorem_synopsis_html cx ch a stmh sknh =
+  let (names,body) = compact_collect_forall_names a in
+  let (premises,conclusion) = compact_strip_premises body in
+  let e =
+    { pfti_item = ClaimTac("",conclusion);
+      pfti_context = cx;
+      pfti_proof_context = [];
+      pfti_term_context = cx;
+      pfti_line = get_html_item_start_line ();
+      pfti_laststructact = 0;
+      pfti_goals_before = 1;
+      pfti_goals_after = 2 }
+  in
+  output_string ch "<span class='ltree compacttheoremsynopsis'>";
+  begin match names with
+  | [] -> ()
+  | _ ->
+      output_string ch "&#x2200; ";
+      compact_output_name_list_limited_html ch names;
+      output_string ch "; "
+  end;
+  if premises > 0 then
+    Printf.fprintf ch "<span class='compactpremises'>assuming %d premise%s:</span> "
+      premises (if premises = 1 then "" else "s");
+  compact_output_goal_preview_html e ch conclusion stmh sknh;
+  output_string ch "</span>"
+
+let output_docitem_terse_html cx ch ditem stmh sknh =
+  match ditem with
+  | ThmDecl(c,x,a) ->
+      output_string ch "<div class='docitemwrap compactdocitemwrap'>";
+      output_srcline_html ch;
+      Hashtbl.add localhrefh x ();
+      output_string ch "<a name='";
+      output_string ch (url_friendly_name x);
+      output_string ch "'/>";
+      output_string ch "<div class='thmandproof'><div class='thmdecl compactthmdecl'><b>";
+      output_string ch c;
+      output_string ch ".</b> (<span class='ltree'>";
+      output_name_whrefa_html cx ch x stmh sknh;
+      output_string ch "</span>) <div class='thmprop compactthmprop'>";
+      compact_output_theorem_synopsis_html cx ch a stmh sknh;
+      output_string ch " <details class='compactstatementdetails compactinlinedetails' style='display:inline;margin-left:.4em'><summary title='Show the full formal theorem statement' style='display:inline;cursor:pointer;font-size:.85em'>formal</summary><div class='compactfullstatement'>";
+      output_ltree_html cx ch a stmh sknh;
+      output_string ch "</div></details></div></div>\n";
+      if !show_pfglinks then
+        begin
+          try
+            let xpfgtmroot = Hashtbl.find pfgtmroot x in
+            let xpfgpropid = Hashtbl.find pfgpropid x in
+            Printf.fprintf ch "<div class='pfglinks'>In Proofgold the corresponding term root is <a href='%s?b=%s'>%s...</a> and proposition id is <a href='%s?b=%s'>%s...</a></div>\n"
+              !explorerurl xpfgtmroot (String.sub xpfgtmroot 0 6)
+              !explorerurl xpfgpropid (String.sub xpfgpropid 0 6)
+          with Not_found -> ()
+        end;
+      incr thmcount;
+      Buffer.reset pftext;
+      Printf.fprintf ch
+        "<div id='pf%d' class='proof'><div class='proofpres' onclick='g(this)'><b>Proof:</b><br/>"
+        !thmcount;
+      output_string ch "</div>\n"
+  | _ -> output_docitem_html cx ch ditem stmh sknh
+
+let compact_output_full_tactic_html e ch stmh sknh =
+  match e.pfti_item with
+  | Exact a ->
+      output_mizar_keyword_html ch "exact";
+      output_char ch ' ';
+      output_ltree_html e.pfti_context ch a stmh sknh
+  | ApplyTac a ->
+      output_mizar_keyword_html ch "apply";
+      output_char ch ' ';
+      output_ltree_html e.pfti_context ch a stmh sknh
+  | WitnessTac a ->
+      output_mizar_keyword_html ch "take";
+      output_char ch ' ';
+      output_ltree_html e.pfti_context ch a stmh sknh
+  | RewriteTac(sym,a,il) ->
+      output_mizar_keyword_html ch "rewrite";
+      output_char ch ' ';
+      if sym then output_string ch "&lt;- ";
+      output_ltree_html e.pfti_context ch a stmh sknh;
+      output_mizar_positions_html ch il
+  | SpecialTac(x,al) ->
+      output_mizar_keyword_html ch x;
+      begin match al with
+      | [] -> ()
+      | _ ->
+          output_char ch ' ';
+          output_mizar_ltree_list_html e.pfti_context ch al stmh sknh
+      end
+  | Admit -> output_mizar_keyword_html ch "admit"
+  | Aby xl ->
+      output_mizar_keyword_html ch "auto";
+      begin match xl with
+      | [] -> ()
+      | _ ->
+          output_string ch " using ";
+          output_mizar_name_list_html ch xl
+      end
+  | _ -> ()
+
+let output_terse_sources_html ch el =
+  List.iter
+    (fun e ->
+      set_html_item_start_line e.pfti_line;
+      output_srcline_html ch)
+    el
+
+let output_terse_wrap_html ch el cls k =
+  output_string ch "<div class='pftacwrap compactpftacwrap compacttersewrap'>";
+  output_terse_sources_html ch el;
+  Printf.fprintf ch "<div class='%s'>" cls;
+  k ();
+  output_string ch "</div></div>\n"
+
+let compact_details_needed a proof =
+  compact_ltree_size a > 18
+  || match compact_tactic_term proof.pfti_item with
+     | Some t -> compact_ltree_size t > 12
+     | None -> false
+
+let output_terse_inline_details_html claim goal proof ch stmh sknh =
+  if compact_details_needed goal proof then
+    begin
+      output_string ch " <details class='compactproofdetails compactinlinedetails' style='display:inline;margin-left:.4em'>";
+      output_string ch "<summary title='Show the full checked statement and proof term' style='display:inline;cursor:pointer;font-size:.85em'>formal</summary>";
+      output_string ch "<div class='compactfullstatement'><span class='pftackeyword'>statement</span>: ";
+      output_ltree_html claim.pfti_context ch goal stmh sknh;
+      output_string ch ";</div>";
+      output_string ch "<div class='compactfullproof'><span class='pftackeyword'>proof term</span>: ";
+      compact_output_full_tactic_html proof ch stmh sknh;
+      output_string ch ";</div></details>"
+    end
+
+let compact_is_intro = function
+  | CompactStep {pfti_item = (LetTac _ | AssumeTac _); _} -> true
+  | _ -> false
+
+let compact_take_intro_run nodes =
+  let rec take acc = function
+    | n::nr when compact_is_intro n -> take (n::acc) nr
+    | rest -> (List.rev acc,rest)
+  in
+  take [] nodes
+
+let compact_info_of_node = function
+  | CompactStep e -> e
+  | CompactClaim(e,_,_,_) -> e
+  | CompactThus(e,_,_) -> e
+
+let output_terse_intro_run_html ch run stmh sknh =
+  let el = List.map compact_info_of_node run in
+  output_terse_wrap_html ch el "compactintro" (fun () ->
+    let first_clause = ref true in
+    List.iter
+      (function
+        | CompactStep e ->
+            if not !first_clause then output_char ch ' ';
+            first_clause := false;
+            begin match e.pfti_item with
+            | LetTac(xl,None) ->
+                output_mizar_keyword_html ch "let";
+                output_char ch ' ';
+                output_mizar_name_list_html ch xl;
+                output_char ch ';'
+            | LetTac(xl,Some a) ->
+                output_mizar_keyword_html ch "let";
+                output_char ch ' ';
+                output_mizar_name_list_html ch xl;
+                output_string ch ": ";
+                compact_output_goal_preview_html e ch a stmh sknh;
+                output_char ch ';'
+            | AssumeTac(xl,None) ->
+                output_mizar_keyword_html ch "assume";
+                output_char ch ' ';
+                output_mizar_name_list_html ch xl;
+                output_char ch ';'
+            | AssumeTac(xl,Some a) ->
+                output_mizar_keyword_html ch "assume";
+                output_char ch ' ';
+                output_mizar_name_list_html ch xl;
+                output_string ch ": ";
+                compact_output_goal_preview_html e ch a stmh sknh;
+                output_char ch ';'
+            | _ -> ()
+            end
+        | _ -> ())
+      run)
+
+let output_terse_have_line_html facts expansions ch e x goal proof_opt stmh sknh =
+  let el = match proof_opt with None -> [e] | Some p -> [e;p] in
+  output_terse_wrap_html ch el "claimtac compacthave compacttersehave" (fun () ->
+    output_mizar_keyword_html ch "have";
+    output_char ch ' ';
+    output_name_html ch x;
+    output_string ch ": ";
+    compact_output_goal_preview_html e ch goal stmh sknh;
+    begin match proof_opt with
+    | None -> ()
+    | Some p ->
+        output_char ch ' ';
+        output_mizar_keyword_html ch "by";
+        output_char ch ' ';
+        begin match p.pfti_item with
+        | Exact a | ApplyTac a ->
+            compact_output_reason_html facts expansions p ch a stmh sknh
+        | WitnessTac a ->
+            output_mizar_keyword_html ch "taking";
+            output_char ch ' ';
+            compact_output_object_html 3 p.pfti_context ch a stmh sknh
+        | RewriteTac _ | SpecialTac _ | Admit | Aby _ ->
+            compact_output_full_tactic_html p ch stmh sknh
+        | _ -> compact_output_full_tactic_html p ch stmh sknh
+        end
+    end;
+    output_char ch ';';
+    begin match proof_opt with
+    | Some p -> output_terse_inline_details_html e goal p ch stmh sknh
+    | None -> ()
+    end)
+
+let output_terse_thus_html facts expansions ch e stmh sknh =
+  output_terse_wrap_html ch [e] "compactthus compacttersethus" (fun () ->
+    output_mizar_keyword_html ch "thus";
+    output_string ch " <span class='ltree'>thesis</span>";
+    begin match e.pfti_item with
+    | Exact a | ApplyTac a ->
+        output_char ch ' ';
+        output_mizar_keyword_html ch "by";
+        output_char ch ' ';
+        compact_output_reason_html facts expansions e ch a stmh sknh
+    | _ ->
+        output_char ch ' ';
+        output_mizar_keyword_html ch "by";
+        output_char ch ' ';
+        compact_output_full_tactic_html e ch stmh sknh
+    end;
+    output_char ch ';';
+    begin match compact_tactic_term e.pfti_item with
+    | Some t when compact_ltree_size t > 12 ->
+        output_string ch " <details class='compactproofdetails compactinlinedetails' style='display:inline;margin-left:.4em'>";
+        output_string ch "<summary title='Show the full checked proof term' style='display:inline;cursor:pointer;font-size:.85em'>formal</summary>";
+        output_string ch "<div class='compactfullproof'>";
+        compact_output_full_tactic_html e ch stmh sknh;
+        output_string ch ";</div></details>"
+    | _ -> ()
+    end)
+
+let output_terse_omitted_html facts expansions ch omitted stmh sknh =
+  match omitted with
+  | [] -> ()
+  | _ ->
+      let n = List.length omitted in
+      output_string ch "<details class='compactomittedfacts' style='margin-left:1.5em'>";
+      Printf.fprintf ch
+        "<summary style='cursor:pointer'>%d source-level helper%s folded</summary>\n"
+        n (if n = 1 then "" else "s");
+      List.iter
+        (fun o ->
+          match o.cto_node with
+          | CompactClaim(e,x,goal,body) ->
+              output_string ch "<div class='compactomittedfact'>";
+              output_name_html ch x;
+              output_string ch ": ";
+              compact_output_goal_preview_html e ch goal stmh sknh;
+              begin match compact_inline_body e body with
+              | Some p ->
+                  begin match p.pfti_item with
+                  | Exact a | ApplyTac a ->
+                      output_string ch " <span class='pftackeyword'>by</span> ";
+                      compact_output_reason_html facts expansions p ch a stmh sknh
+                  | _ -> output_string ch " <span class='pftackeyword'>proof folded</span>"
+                  end
+              | None -> output_string ch " <span class='pftackeyword'>proof folded</span>"
+              end;
+              Printf.fprintf ch " <span class='compactomissionreason'>(%s)</span>;</div>\n"
+                o.cto_reason
+          | _ -> ())
+        omitted;
+      output_string ch "</details>\n"
+
+let compact_scope_dependencies facts expansions claim body =
+  let outer_facts = Hashtbl.create 31 in
+  List.iter
+    (fun x -> if Hashtbl.mem facts x then Hashtbl.replace outer_facts x ())
+    claim.pfti_context;
+  let seen = Hashtbl.create 31 in
+  let acc = ref [] in
+  let add_name x =
+    if Hashtbl.mem outer_facts x && not (Hashtbl.mem seen x) then
+      begin Hashtbl.add seen x (); acc := x::!acc end
+  in
+  let add_term a = List.iter add_name (compact_all_facts_in_term facts a) in
+  let rec scan nodes =
+    List.iter
+      (function
+        | CompactStep e ->
+            begin match e.pfti_item with
+            | Exact a | ApplyTac a | WitnessTac a | RewriteTac(_,a,_) -> add_term a
+            | SpecialTac(_,al) -> List.iter add_term al
+            | CasesTac(a,bll) ->
+                add_term a;
+                List.iter (List.iter (fun (_,b) -> add_term b)) bll
+            | Aby xl -> List.iter add_name xl
+            | _ -> ()
+            end
+        | CompactClaim(_,_,_,b) | CompactThus(_,_,b) -> scan b)
+      nodes
+  in
+  scan body;
+  compact_resolve_facts expansions (List.rev !acc)
+
+let rec compact_proof_step_count nodes =
+  List.fold_left
+    (fun n -> function
+      | CompactStep e ->
+          begin match e.pfti_item with
+          | PfStruct _ | Qed | Admitted -> n
+          | _ -> n + 1
+          end
+      | CompactClaim(_,_,_,body) -> n + 1 + compact_proof_step_count body
+      | CompactThus(_,_,body) -> n + compact_proof_step_count body)
+    0 nodes
+
+let rec output_pftacitems_terse_html ch nodes stmh sknh =
+  let facts = Hashtbl.create 101 in
+  compact_fact_names_of_nodes facts nodes;
+  let empty_expansions = Hashtbl.create 1 in
+  let rec render_scope_as_thus inherited nodes =
+    let (nodes,local,omitted) = compact_prepare_terse_scope facts nodes in
+    let expansions = compact_merge_expansions inherited local in
+    render_as_thus expansions omitted nodes
+  and render_nodes expansions nodes =
+    match nodes with
+    | [] -> ()
+    | n::_ when compact_is_intro n ->
+        let (run,rest) = compact_take_intro_run nodes in
+        output_terse_intro_run_html ch run stmh sknh;
+        render_nodes expansions rest
+    | CompactStep e::rest ->
+        begin match e.pfti_item with
+        | PfStruct _ | Qed | Admitted ->
+            output_mizar_step_html ch e stmh sknh
+        | Exact a | ApplyTac a ->
+            output_terse_wrap_html ch [e] "compacttac compacttersetac" (fun () ->
+              begin match e.pfti_item with
+              | Exact _ -> output_mizar_keyword_html ch "exact"
+              | ApplyTac _ -> output_mizar_keyword_html ch "apply"
+              | _ -> ()
+              end;
+              output_char ch ' ';
+              compact_output_reason_html facts expansions e ch a stmh sknh;
+              output_char ch ';')
+        | WitnessTac a ->
+            output_terse_wrap_html ch [e] "witnesstac compacttersetac" (fun () ->
+              output_mizar_keyword_html ch "take";
+              output_char ch ' ';
+              compact_output_object_html 3 e.pfti_context ch a stmh sknh;
+              output_char ch ';')
+        | RewriteTac _ | SpecialTac _ | Admit | Aby _ | SetTac _
+        | ProveTac _ | ClaimTac _ | CasesTac _ ->
+            output_mizar_step_html ch e stmh sknh
+        | LetTac _ | AssumeTac _ -> ()
+        end;
+        render_nodes expansions rest
+    | CompactClaim(e,x,goal,body)::rest ->
+        begin match compact_inline_body e body with
+        | Some proof ->
+            output_terse_have_line_html facts expansions ch e x goal
+              (Some proof) stmh sknh
+        | None ->
+            output_terse_wrap_html ch [e]
+              "claimtac compacthave compacttersehave compacthaveproof"
+              (fun () ->
+                output_mizar_keyword_html ch "have";
+                output_char ch ' ';
+                output_name_html ch x;
+                output_string ch ": ";
+                compact_output_goal_preview_html e ch goal stmh sknh;
+                output_char ch ';';
+                output_string ch " <details class='compactsubproofdetails compactinlinedetails' style='display:inline;margin-left:.4em'>";
+                output_string ch "<summary title='Show the checked subproof' style='display:inline;cursor:pointer;font-size:.9em'><span class='pftackeyword'>proof</span>";
+                let dependencies = compact_scope_dependencies facts expansions e body in
+                begin match dependencies with
+                | [] -> ()
+                | _ ->
+                    output_string ch " <span class='pftackeyword'>from</span> ";
+                    compact_output_fact_list_html e.pfti_context ch dependencies stmh sknh
+                end;
+                Printf.fprintf ch " <span class='compactstepcount'>(%d steps)</span></summary>\n"
+                  (compact_proof_step_count body);
+                if compact_ltree_size goal > 18 then
+                  begin
+                    output_string ch "<div class='compactfullstatement'><span class='pftackeyword'>statement</span>: ";
+                    output_ltree_html e.pfti_context ch goal stmh sknh;
+                    output_string ch ";</div>\n"
+                  end;
+                output_string ch "<div class='subproof compactsubproof compacttersesubproof'>\n";
+                render_scope_as_thus expansions body;
+                output_string ch "</div><div class='compactproofend'><span class='pftackeyword'>end</span>;</div></details>")
+        end;
+        render_nodes expansions rest
+    | CompactThus(_,_,body)::rest ->
+        render_scope_as_thus expansions body;
+        render_nodes expansions rest
+  and render_as_thus expansions omitted nodes =
+    let (main,trailing) = split_compact_trailing_structures nodes in
+    begin match List.rev main with
+    | CompactStep e::prefix_rev
+        when mizar_inline_proof_item e.pfti_item
+             && e.pfti_goals_after < e.pfti_goals_before ->
+        render_nodes expansions (List.rev prefix_rev);
+        output_terse_thus_html facts expansions ch e stmh sknh
+    | CompactThus(_,_,body)::prefix_rev ->
+        render_nodes expansions (List.rev prefix_rev);
+        render_scope_as_thus expansions body
+    | _ -> render_nodes expansions main
+    end;
+    output_terse_omitted_html facts expansions ch omitted stmh sknh;
+    render_nodes expansions trailing
+  in
+  render_scope_as_thus empty_expansions nodes
+
 let rec stp_html_string_1 a p =
   match a with
   | TpVar 0 -> "&#x3b1;"
@@ -6913,6 +8610,218 @@ let output_pftacitem_latex ch pftac stmh sknh laststructact =
         Printf.fprintf ch "{\\it{Subproof by an ATP using ";
         List.iter (fun z -> Printf.fprintf ch "%s, " z) (List.rev zr);
         Printf.fprintf ch "%s and %s.}}\n" y x
+
+
+(* Compact/Mizar-style LaTeX rendering from the same checked proof AST. *)
+
+let output_mizar_keyword_latex ch x =
+  Printf.fprintf ch "\\textbf{%s}" x
+
+let output_mizar_name_list_latex ch xl =
+  let rec out = function
+    | [] -> ()
+    | [x] -> output_name_latex ch x
+    | x::xr ->
+        output_name_latex ch x;
+        output_string ch ", ";
+        out xr
+  in
+  out xl
+
+let output_mizar_ltree_list_latex ch al stmh sknh =
+  let rec out = function
+    | [] -> ()
+    | [a] -> output_ltree_latex ch a stmh sknh
+    | a::ar ->
+        output_ltree_latex ch a stmh sknh;
+        output_string ch ", ";
+        out ar
+  in
+  out al
+
+let output_mizar_positions_latex ch il =
+  match il with
+  | [] -> ()
+  | [i] -> Printf.fprintf ch " at %d" i
+  | _ ->
+      output_string ch " at ";
+      let rec out = function
+        | [] -> ()
+        | [i] -> output_string ch (string_of_int i)
+        | [i;j] -> Printf.fprintf ch "%d and %d" i j
+        | i::ir -> Printf.fprintf ch "%d, " i; out ir
+      in
+      out il
+
+let output_mizar_inline_tactic_latex e ch stmh sknh =
+  match e.pfti_item with
+  | Exact a ->
+      output_mizar_keyword_latex ch "exact";
+      output_string ch " $";
+      output_ltree_latex ch a stmh sknh;
+      output_char ch '$'
+  | ApplyTac a ->
+      output_mizar_keyword_latex ch "apply";
+      output_string ch " $";
+      output_ltree_latex ch a stmh sknh;
+      output_char ch '$'
+  | WitnessTac a ->
+      output_mizar_keyword_latex ch "take";
+      output_string ch " $";
+      output_ltree_latex ch a stmh sknh;
+      output_char ch '$'
+  | RewriteTac(sym,a,il) ->
+      output_mizar_keyword_latex ch "rewrite";
+      output_string ch " $";
+      if sym then output_string ch "\\leftarrow ";
+      output_ltree_latex ch a stmh sknh;
+      output_char ch '$';
+      output_mizar_positions_latex ch il
+  | SpecialTac(x,al) ->
+      output_mizar_keyword_latex ch x;
+      begin
+        match al with
+        | [] -> ()
+        | _ ->
+            output_string ch " $";
+            output_mizar_ltree_list_latex ch al stmh sknh;
+            output_char ch '$'
+      end
+  | Admit -> output_mizar_keyword_latex ch "admit"
+  | Aby xl ->
+      output_mizar_keyword_latex ch "auto";
+      begin
+        match xl with
+        | [] -> ()
+        | _ ->
+            output_string ch " using $";
+            output_mizar_name_list_latex ch xl;
+            output_char ch '$'
+      end
+  | _ -> raise (Failure "proof item is not an inline Mizar-style tactic")
+
+let output_mizar_step_latex ch e stmh sknh =
+  match e.pfti_item with
+  | PfStruct _ | Qed | Admitted ->
+      output_pftacitem_latex ch e.pfti_item stmh sknh e.pfti_laststructact
+  | Exact _ | ApplyTac _ | WitnessTac _ | RewriteTac _ | SpecialTac _
+  | Admit | Aby _ ->
+      output_mizar_inline_tactic_latex e ch stmh sknh;
+      output_string ch ";\n"
+  | LetTac(xl,None) ->
+      output_mizar_keyword_latex ch "let";
+      output_string ch " $";
+      output_mizar_name_list_latex ch xl;
+      output_string ch "$;\n"
+  | LetTac(xl,Some a) ->
+      output_mizar_keyword_latex ch "let";
+      output_string ch " $";
+      output_mizar_name_list_latex ch xl;
+      output_string ch " : ";
+      output_ltree_latex ch a stmh sknh;
+      output_string ch "$;\n"
+  | AssumeTac(xl,None) ->
+      output_mizar_keyword_latex ch "assume";
+      output_string ch " $";
+      output_mizar_name_list_latex ch xl;
+      output_string ch "$;\n"
+  | AssumeTac(xl,Some a) ->
+      output_mizar_keyword_latex ch "assume";
+      output_string ch " $";
+      output_mizar_name_list_latex ch xl;
+      output_string ch ": ";
+      output_ltree_latex ch a stmh sknh;
+      output_string ch "$;\n"
+  | SetTac(x,None,a) ->
+      output_mizar_keyword_latex ch "set";
+      Printf.fprintf ch " $%s = " x;
+      output_ltree_latex ch a stmh sknh;
+      output_string ch "$;\n"
+  | SetTac(x,Some b,a) ->
+      output_mizar_keyword_latex ch "set";
+      Printf.fprintf ch " $%s : " x;
+      output_ltree_latex ch b stmh sknh;
+      output_string ch " = ";
+      output_ltree_latex ch a stmh sknh;
+      output_string ch "$;\n"
+  | ClaimTac(x,a) ->
+      output_mizar_keyword_latex ch "have";
+      output_string ch " $";
+      output_name_latex ch x;
+      output_string ch ": ";
+      output_ltree_latex ch a stmh sknh;
+      output_string ch "$;\n"
+  | ProveTac(a,bl) ->
+      output_mizar_keyword_latex ch "show";
+      output_string ch " $";
+      output_ltree_latex ch a stmh sknh;
+      List.iter
+        (fun b ->
+          output_string ch ", ";
+          output_ltree_latex ch b stmh sknh)
+        bl;
+      output_string ch "$;\n"
+  | CasesTac _ -> raise (Failure "Cases tactic not yet implemented")
+
+let output_mizar_thus_step_latex ch e stmh sknh =
+  output_mizar_keyword_latex ch "thus";
+  output_string ch " $\\mathit{thesis}$ ";
+  output_mizar_keyword_latex ch "by";
+  output_char ch ' ';
+  output_mizar_inline_tactic_latex e ch stmh sknh;
+  output_string ch ";\n"
+
+let rec output_mizar_nodes_latex ch nodes stmh sknh =
+  List.iter (fun n -> output_mizar_node_latex ch n stmh sknh) nodes
+and output_mizar_node_latex ch node stmh sknh =
+  match node with
+  | CompactStep e -> output_mizar_step_latex ch e stmh sknh
+  | CompactClaim(e,x,a,body) ->
+      begin
+        match compact_inline_body e body with
+        | Some proof ->
+            output_mizar_keyword_latex ch "have";
+            output_string ch " $";
+            output_name_latex ch x;
+            output_string ch ": ";
+            output_ltree_latex ch a stmh sknh;
+            output_string ch "$ ";
+            output_mizar_keyword_latex ch "by";
+            output_char ch ' ';
+            output_mizar_inline_tactic_latex proof ch stmh sknh;
+            output_string ch ";\n"
+        | None ->
+            output_mizar_keyword_latex ch "have";
+            output_string ch " $";
+            output_name_latex ch x;
+            output_string ch ": ";
+            output_ltree_latex ch a stmh sknh;
+            output_string ch "$;\n\\begin{quote}\n";
+            output_mizar_nodes_as_thus_latex ch body stmh sknh;
+            output_string ch "\\end{quote}\n"
+      end
+  | CompactThus(_,_,body) ->
+      output_mizar_nodes_as_thus_latex ch body stmh sknh
+and output_mizar_nodes_as_thus_latex ch nodes stmh sknh =
+  let (main,trailing) = split_compact_trailing_structures nodes in
+  begin
+    match List.rev main with
+    | CompactStep e::prefix_rev
+        when mizar_inline_proof_item e.pfti_item
+             && e.pfti_goals_after < e.pfti_goals_before ->
+        output_mizar_nodes_latex ch (List.rev prefix_rev) stmh sknh;
+        output_mizar_thus_step_latex ch e stmh sknh
+    | CompactThus(_,_,body)::prefix_rev ->
+        output_mizar_nodes_latex ch (List.rev prefix_rev) stmh sknh;
+        output_mizar_nodes_as_thus_latex ch body stmh sknh
+    | _ -> output_mizar_nodes_latex ch main stmh sknh
+  end;
+  output_mizar_nodes_latex ch trailing stmh sknh
+
+let output_pftacitems_mizar_latex ch nodes stmh sknh =
+  output_mizar_nodes_as_thus_latex ch nodes stmh sknh
+
+let output_pftacitems_reader_latex = output_pftacitems_mizar_latex
 
 let rec tp_pfgset_str a =
   match a with

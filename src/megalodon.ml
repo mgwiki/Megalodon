@@ -94,6 +94,9 @@ let ajaxpffile : string ref = ref ""
 let sqlout : bool ref = ref false
 let sqltermout : bool ref = ref false
 let presentationonly : bool ref = ref false
+let compactproofs : bool ref = ref false
+let terseproofs : bool ref = ref true
+let compact_pftac_buffer : pftacitem_info list ref = ref []
 let mainfilehash : string option ref = ref None
 let solvesproblemfile : string option ref = ref None
 
@@ -842,7 +845,10 @@ let render_docitem_html_fragment cx ditem =
   in
   try
     let ch = open_out fn in
-    output_docitem_html cx ch ditem sigtmh sigknh;
+    if !compactproofs && !terseproofs then
+      output_docitem_terse_html cx ch ditem sigtmh sigknh
+    else
+      output_docitem_html cx ch ditem sigtmh sigknh;
     close_out ch;
     let c = open_in fn in
     let n = in_channel_length c in
@@ -869,6 +875,68 @@ let pftac_html_channels () =
     | None -> ()
   end;
   List.rev !cl
+
+let pftac_goal_count st =
+  List.fold_left
+    (fun n -> function PfStateGoal _ -> n + 1 | PfStateSep _ -> n)
+    0 st
+
+let pftac_local_context st =
+  let rec find = function
+    | PfStateGoal(_,_,cxtm,cxpf)::_ ->
+        let proofs = List.map (fun (x,_) -> x) cxpf in
+        let terms = (List.map (fun (x,_) -> x) cxtm) @ !ctxtp in
+        (proofs @ terms,proofs,terms)
+    | _::r -> find r
+    | [] ->
+        let proofs = List.map (fun (x,_) -> x) !ctxpf in
+        let terms = (List.map (fun (x,_) -> x) !ctxtm) @ !ctxtp in
+        (proofs @ terms,proofs,terms)
+  in
+  find st
+
+let emit_pftac_output e =
+  if !compactproofs then
+    compact_pftac_buffer := e::!compact_pftac_buffer
+  else
+    begin
+      Syntax.set_html_item_start_line e.pfti_line;
+      List.iter
+        (fun hc ->
+          output_pftacitem_html (html_context ()) hc e.pfti_item
+            sigtmh sigknh e.pfti_laststructact)
+        (pftac_html_channels ());
+      begin
+        match !latex with
+        | Some hc ->
+            output_pftacitem_latex hc e.pfti_item sigtmh sigknh
+              e.pfti_laststructact
+        | None -> ()
+      end
+    end
+
+let flush_compact_pftac_output () =
+  if !compactproofs then
+    begin
+      let events = List.rev !compact_pftac_buffer in
+      compact_pftac_buffer := [];
+      let nodes = compact_pftacitems events in
+      List.iter
+        (fun hc ->
+          if !terseproofs then
+            output_pftacitems_terse_html hc nodes sigtmh sigknh
+          else
+            output_pftacitems_mizar_html hc nodes sigtmh sigknh)
+        (pftac_html_channels ());
+      begin
+        match !latex with
+        | Some hc -> output_pftacitems_mizar_latex hc nodes sigtmh sigknh
+        | None -> ()
+      end
+    end
+
+let reset_compact_pftac_output () =
+  compact_pftac_buffer := []
 
 let tparclos = ref (fun a -> a)
 let tmallclos = ref (fun m -> m)
@@ -1980,6 +2048,11 @@ let evaluate_docitem_1 ditem =
       laststructaction := -1
 
 let evaluate_docitem ditem =
+  begin
+    match ditem with
+    | ThmDecl _ when !compactproofs -> reset_compact_pftac_output ()
+    | _ -> ()
+  end;
   evaluate_docitem_1 ditem;
   begin
     let cx = html_context () in
@@ -2036,7 +2109,10 @@ let evaluate_docitem ditem =
         match html_targets with
         | [] -> ()
         | [(hc,_,_)] ->
-           output_docitem_html cx hc ditem sigtmh sigknh
+           if !compactproofs && !terseproofs then
+             output_docitem_terse_html cx hc ditem sigtmh sigknh
+           else
+             output_docitem_html cx hc ditem sigtmh sigknh
         | _ -> ()
     end;
     List.iter
@@ -4114,21 +4190,28 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
 let rec evaluate_pftac_2 () =
   match !pfstate with
   | PfStateSep(j,false)::pfstr ->
-      begin
-        List.iter
-          (fun hc -> output_pftacitem_html (html_context ()) hc (PfStruct(j)) sigtmh sigknh 3)
-          (pftac_html_channels ())
-      end;
-      begin
-	match !latex with
-	| Some hc -> output_pftacitem_latex hc (PfStruct(j)) sigtmh sigknh 3
-	| None -> ()
-      end;
-      pfstate := pos_fst_pfst pfstr;
+      let next_state = pos_fst_pfst pfstr in
+      let (cx,pcx,tcx) = pftac_local_context next_state in
+      let e =
+        { pfti_item = PfStruct(j);
+          pfti_context = cx;
+          pfti_proof_context = pcx;
+          pfti_term_context = tcx;
+          pfti_line = Syntax.get_html_item_start_line ();
+          pfti_laststructact = 3;
+          pfti_goals_before = pftac_goal_count !pfstate;
+          pfti_goals_after = pftac_goal_count next_state }
+      in
+      emit_pftac_output e;
+      pfstate := next_state;
       evaluate_pftac_2 ()
   | _ -> ()
 
 let evaluate_pftac pitem thmname i gpgtm gphv pfggphv =
+  let goals_before = pftac_goal_count !pfstate in
+  let (context_before,proof_context_before,term_context_before) =
+    pftac_local_context !pfstate
+  in
   if !verbosity > 19 then (Printf.printf "pre1 pfstruct %d\nLength of pfstate stack: %d\n" i (List.length !pfstate); print_pfstate (); flush stdout);
   begin
     match !sexprallsubgoals with
@@ -4150,31 +4233,24 @@ let evaluate_pftac pitem thmname i gpgtm gphv pfggphv =
        | _ -> ()
   end;
   let megawiki_target = evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv in
-  begin
-(*    if pitem = Qed || pitem = Admitted then
-      begin
-        match !inchan with
-        | Some(c) -> buffer_to_line_char c pftext inchanline inchanchar !lineno !charno
-        | None -> ()
-      end; *)
-    List.iter
-      (fun hc -> output_pftacitem_html (html_context ()) hc pitem sigtmh sigknh !laststructaction)
-      (pftac_html_channels ())
-  end;
-  begin
-    match !latex with
-    | Some hc ->
-(*	if pitem = Qed || pitem = Admitted then
-	  begin
-	    match !inchan with
-	    | Some(c) -> buffer_to_line_char c pftext inchanline inchanchar !lineno !charno
-	    | None -> ()
-	  end; *)
-	output_pftacitem_latex hc pitem sigtmh sigknh !laststructaction
-    | None -> ()
-  end;
+  let e =
+    { pfti_item = pitem;
+      pfti_context = context_before;
+      pfti_proof_context = proof_context_before;
+      pfti_term_context = term_context_before;
+      pfti_line = Syntax.get_html_item_start_line ();
+      pfti_laststructact = !laststructaction;
+      pfti_goals_before = goals_before;
+      pfti_goals_after = pftac_goal_count !pfstate }
+  in
+  emit_pftac_output e;
   if !verbosity > 19 then (Printf.printf "pre2 pfstruct %d\nLength of pfstate stack: %d\n" i (List.length !pfstate); print_pfstate (); flush stdout);
   evaluate_pftac_2 ();
+  begin
+    match pitem with
+    | Qed | Admitted -> flush_compact_pftac_output ()
+    | _ -> ()
+  end;
   begin
     match megawiki_target with
     | Some(b) -> finalize_megawiki_theorem b
@@ -4182,6 +4258,7 @@ let evaluate_pftac pitem thmname i gpgtm gphv pfggphv =
   end
 
 let init_env () =
+  reset_compact_pftac_output ();
   ctxtp := [];
   ctxtm := [];
   ctxpf := [];
@@ -4815,6 +4892,20 @@ let _ =
               end
             else
               raise (Failure "-htmlonlypfgsupp should be followed by a pfg summary2 file")
+          end
+        else if Sys.argv.(!j) = "-compactproofs"
+             || Sys.argv.(!j) = "-terseproofs"
+             || Sys.argv.(!j) = "-radicalproofs"
+             || Sys.argv.(!j) = "-mizarizeproofs"
+             || Sys.argv.(!j) = "-mizarizehtml" then
+          begin
+            compactproofs := true;
+            terseproofs := true
+          end
+        else if Sys.argv.(!j) = "-compactproofs-expanded" then
+          begin
+            compactproofs := true;
+            terseproofs := false
           end
         else if Sys.argv.(!j) = "-html" then
           begin
