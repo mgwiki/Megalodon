@@ -913,6 +913,38 @@ Validation:
   `avatar_component`, 8 `avatar_definition`, 2 `avatar_refutation`, 10
   `avatar_split`, and 47 `split_dependency` records.
 
+Additional follow-up: Megalodon now validates structured
+`avatar_definition` `kernel_v1` metadata as typed certificate data. The
+importer checks `component_split_level`, `component_split_var`,
+`component_split_positive`, `component_clause_sexpr`,
+`component_clause_variable_sort_count`, `component_clause_db_sort_count`, and
+`result_clause` against the parsed `avatar_definition` step. The split
+variable and polarity must match the certificate constructor, the component
+clause sexpr must match the result clause, and the variable/de-Bruijn sort
+counts must enumerate concrete fields.
+
+This moves another AVATAR object from shell-audited string payloads into the
+Megalodon typed certificate boundary. It remains a validation step, not final
+proof-term lowering for AVATAR definitions.
+
+Validation:
+
+- `TMPDIR=/project/tmp ./makeopt` passed in `/project/Megalodon`.
+- New focused fixtures
+  `native_cert_v1_avatar_definition_kernel_valid.sexp` and
+  `native_cert_v1_avatar_definition_kernel_polarity_bad.sexp` cover the valid
+  metadata path and a bad split polarity.
+- `TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh`
+  passed.
+- A fresh 20-case strict source-linked live THF run with `JOBS=10` and
+  `VAMPIRE_SECONDS=10` produced `PASS 20` using
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11067`.
+- The kernel-v1 metadata audit passed on that artifact, covering 738
+  `kernel_v1` records and 8 `avatar_definition` records.
+- The native primitive audit passed on the same artifact, including 8
+  `avatar_definition`, 8 `avatar_component`, 2 `avatar_refutation`, 10
+  `avatar_split`, and 47 `split_dependency` records.
+
 Additional follow-up: Megalodon now validates the structured
 `avatar_refutation` `kernel_v1` metadata as typed SAT certificate data before
 the ordinary strict step checker runs. The importer parses and checks the

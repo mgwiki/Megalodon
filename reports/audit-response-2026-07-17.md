@@ -799,3 +799,24 @@ Validation:
 - native primitive audit: includes 8 `avatar_component`, 8
   `avatar_definition`, 2 `avatar_refutation`, 10 `avatar_split`, and 47
   `split_dependency`
+
+`avatar_definition` now has the same importer-side typed validation. The
+checker validates the component split level/variable/polarity, component
+clause sexpr, variable sort count, de-Bruijn sort count, and result clause
+against the parsed `AvatarDefinition` certificate step. The negative fixture
+`native_cert_v1_avatar_definition_kernel_polarity_bad.sexp` rejects metadata
+whose split polarity contradicts the certificate constructor.
+
+This continues the audit-directed movement of proof data into explicit
+certificate objects consumed by Megalodon. It does not close the larger proof
+reconstruction gap: AVATAR definition proof-term lowering is still open.
+
+Validation:
+
+- `TMPDIR=/project/tmp ./makeopt`
+- `TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh`
+- 20-case strict live THF run, `JOBS=10`, `VAMPIRE_SECONDS=10`: `PASS 20`
+- kernel-v1 metadata audit: 738 records, including 8 `avatar_definition`
+- native primitive audit: includes 8 `avatar_definition`, 8
+  `avatar_component`, 2 `avatar_refutation`, 10 `avatar_split`, and 47
+  `split_dependency`

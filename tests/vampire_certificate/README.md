@@ -294,6 +294,10 @@ is the negative regression for this boundary.
 For AVATAR definitions and split dependencies, it requires the component split
 level/variable/sign, structured component clause, component variable/de-Bruijn
 sort metadata, dependency count, and dependent result clause.
+The strict importer validates `avatar_definition` `kernel_v1` records against
+the parsed certificate step: split variable and polarity must match, the
+component clause sexpr must match the result clause, and the variable and
+de-Bruijn sort counts must enumerate present fields.
 For AVATAR split clauses, it requires the source clause, result clause or
 formula, SAT literals, previous split count, component-parent count,
 zero-indexed `component_parent_ref_i` unit/split/clause fields, literal-class

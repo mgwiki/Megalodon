@@ -377,11 +377,13 @@ The current branch has started that separate layer. Vampire emits named
 and refutation records. Megalodon now parses selected AVATAR records as typed
 certificate data. For `avatar_component`, the result/conclusion clauses,
 component literals, and single split descriptor must match the parsed
-certificate step. For `avatar_refutation`, the SAT input map and SAT proof
-trace are checked: input origins must name earlier certificate units, SAT
-proof ids must be positive and unique, RUP parents must be earlier SAT proof
-steps, recorded parent clauses must match, RUP side conditions are checked,
-and the final SAT proof step must be the empty clause.
+certificate step. For `avatar_definition`, the component split descriptor,
+component clause sexpr, variable sort count, de-Bruijn sort count, and result
+clause must match the parsed certificate step. For `avatar_refutation`, the
+SAT input map and SAT proof trace are checked: input origins must name earlier
+certificate units, SAT proof ids must be positive and unique, RUP parents must
+be earlier SAT proof steps, recorded parent clauses must match, RUP side
+conditions are checked, and the final SAT proof step must be the empty clause.
 
 This is still not the final proof reconstruction result. The next spec step is
 to define how the checked AVATAR/SAT object is elaborated into Megalodon proof

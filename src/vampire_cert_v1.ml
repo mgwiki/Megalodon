@@ -4444,6 +4444,77 @@ let validate_kernel_v1_metadata_contracts cert =
           (id ^ ": strict certificate v1 kernel_v1 avatar_component metadata has no matching certificate step")
     end
   in
+  let validate_avatar_definition_metadata id fields =
+    require_rule_fields id fields "avatar_definition"
+      ["component_split_level";
+       "component_split_var";
+       "component_split_positive";
+       "component_clause_sexpr";
+       "component_clause_variable_sort_count";
+       "component_clause_db_sort_count";
+       "result_clause"];
+    begin match Hashtbl.find_opt step_by_id id with
+    | Some (AvatarDefinition (_, split_var, split_positive, result)) ->
+        require_field_clause id fields "result_clause" result;
+        begin match field_value "conclusion_clause" fields with
+        | Some _ -> require_field_clause id fields "conclusion_clause" result
+        | None -> ()
+        end;
+        begin match field_value "result_literal_count" fields with
+        | Some _ -> require_field_int id fields "result_literal_count" (List.length result)
+        | None -> ()
+        end;
+        List.iteri
+          (fun index literal ->
+             let key = "result_literal_" ^ string_of_int index in
+             match field_value key fields with
+             | Some _ -> require_field_literal id fields key literal
+             | None -> ())
+          result;
+        let split_level = field_int id fields "component_split_level" in
+        if split_level < 0 then
+          error
+            (id ^ ": strict certificate v1 kernel_v1 avatar_definition component_split_level is negative");
+        require_field_int id fields "component_split_var" split_var;
+        let metadata_split_positive =
+          match field_int id fields "component_split_positive" with
+          | 0 -> false
+          | 1 -> true
+          | _ ->
+              error
+                (id ^ ": strict certificate v1 kernel_v1 avatar_definition component_split_positive must be 0 or 1")
+        in
+        if metadata_split_positive <> split_positive then
+          error
+            (id ^ ": strict certificate v1 kernel_v1 avatar_definition split polarity does not match the certificate step");
+        require_field_clause id fields "component_clause_sexpr" result;
+        check_avatar_component_split id split_var split_positive result;
+        let variable_sort_count =
+          require_nonnegative_field_int id fields "component_clause_variable_sort_count"
+        in
+        for index = 0 to variable_sort_count - 1 do
+          ignore
+            (field_required id fields
+               ("component_clause_variable_sort_" ^ string_of_int index)
+             : string)
+        done;
+        let db_sort_count =
+          require_nonnegative_field_int id fields "component_clause_db_sort_count"
+        in
+        for index = 0 to db_sort_count - 1 do
+          ignore
+            (field_required id fields
+               ("component_clause_db_sort_" ^ string_of_int index)
+             : string)
+        done
+    | Some _ ->
+        error
+          (id ^ ": strict certificate v1 kernel_v1 avatar_definition metadata must annotate an avatar_definition step")
+    | None ->
+        error
+          (id ^ ": strict certificate v1 kernel_v1 avatar_definition metadata has no matching certificate step")
+    end
+  in
   let validate_avatar_refutation_metadata id fields owner_index =
     require_rule_fields id fields "avatar_refutation"
       ["result_clause";
@@ -6190,6 +6261,8 @@ let validate_kernel_v1_metadata_contracts cert =
              end
          | "avatar_component" ->
              validate_avatar_component_metadata id fields
+         | "avatar_definition" ->
+             validate_avatar_definition_metadata id fields
          | "avatar_refutation" ->
              validate_avatar_refutation_metadata id fields owner_index
          | _ -> ()

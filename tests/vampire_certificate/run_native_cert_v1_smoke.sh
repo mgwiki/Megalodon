@@ -2509,6 +2509,31 @@ if ! rg -q 'avatar_component split metadata does not match the certificate split
 fi
 
 bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_avatar_definition_kernel_valid.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_avatar_definition_kernel_valid.log"
+
+if ! rg -q 'Vampire certificate v1 strict checked 5 steps' "$WORK_DIR/native_cert_v1_avatar_definition_kernel_valid.log"; then
+  echo "strict native certificate v1 checker did not accept AVATAR definition kernel metadata" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_avatar_definition_kernel_polarity_bad.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_avatar_definition_kernel_polarity_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_avatar_definition_kernel_polarity_bad.err"; then
+  echo "strict native certificate v1 checker accepted AVATAR definition metadata with bad split polarity" >&2
+  exit 1
+fi
+
+if ! rg -q 'avatar_definition split polarity does not match the certificate step' \
+    "$WORK_DIR/native_cert_v1_avatar_definition_kernel_polarity_bad.err"; then
+  echo "strict native certificate v1 AVATAR definition metadata failure did not explain the bad split polarity" >&2
+  exit 1
+fi
+
+bin/megalodon \
   -vampirecertv1closed \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_avatar_component_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_avatar_component_valid.th0.p \
