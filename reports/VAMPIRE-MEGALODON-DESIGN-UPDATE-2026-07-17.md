@@ -791,3 +791,31 @@ Validation:
 - The native primitive audit passed on the same artifact, including 8
   `avatar_definition`, 8 `avatar_component`, 2 `avatar_refutation`, 10
   `avatar_split`, and 47 `split_dependency` records.
+
+Additional follow-up: Vampire commit `f4f4ecf59` extracts
+`split_dependency` metadata into `RenderedKernelSplitDependency` and
+`RenderedKernelSplitDependencyItem`. The strict kernel record now owns the
+dependency split descriptors, optional component clauses, component kernel
+clause sexprs, component variable/db sort annotations, preserved lambda and
+scoped-split annotations, dependency count, and result clause through
+`MegalodonKernelSyntax`.
+
+This is a higher-frequency AVATAR-side boundary than `avatar_definition`: the
+20-case strict sample contains 47 `split_dependency` records. The change
+keeps the legacy diagnostic `split_dependency` `step_extra` stable, but the
+`kernel_v1` record no longer depends on copying the legacy field vector.
+This still does not prove split dependencies in Megalodon; the data is now
+organized for a later typed AVATAR/SAT proof layer or primitive lowering.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` passed and produced
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11065`.
+- A fresh 20-case strict source-linked live THF run with `JOBS=10` and
+  `VAMPIRE_SECONDS=10` produced `PASS 20`.
+- The strict run included 47 `split_dependency` records.
+- The kernel-v1 metadata audit passed on that artifact, covering 738
+  `kernel_v1` records and 47 `split_dependency` records.
+- The native primitive audit passed on the same artifact, including 47
+  `split_dependency`, 8 `avatar_definition`, 8 `avatar_component`, 2
+  `avatar_refutation`, and 10 `avatar_split` records.

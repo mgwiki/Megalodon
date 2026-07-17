@@ -668,3 +668,29 @@ Validation:
 - native primitive audit on that strict artifact, including 8
   `avatar_definition`, 8 `avatar_component`, 2 `avatar_refutation`, 10
   `avatar_split`, and 47 `split_dependency` records
+
+Vampire commit `f4f4ecf59` extracts `split_dependency` metadata into
+`RenderedKernelSplitDependency` and `RenderedKernelSplitDependencyItem`.
+The strict `kernel_v1` record now gets dependency split descriptors,
+component clauses, component kernel clause sexprs, component variable/db sort
+annotations, preserved lambda/scoped-split annotations, dependency count, and
+result clause from the named Vampire-side record.
+
+This removes the most frequent AVATAR-side cluster in the 20-case strict
+sample from the legacy field-copy path: that sample has 47
+`split_dependency` records. It remains a certificate-object improvement, not
+a checked Megalodon proof of split dependencies. The next audit-aligned work
+is to extract `avatar_split` and `avatar_refutation`, then define the typed
+AVATAR/SAT checker or macro lowering that consumes these objects.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` for
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11065`
+- fresh 20-case strict source-linked live THF run with `JOBS=10` and
+  `VAMPIRE_SECONDS=10`: `PASS 20`
+- kernel-v1 metadata audit on that strict artifact: 738 `kernel_v1` records
+  and 47 `split_dependency` records
+- native primitive audit on that strict artifact, including 47
+  `split_dependency`, 8 `avatar_definition`, 8 `avatar_component`, 2
+  `avatar_refutation`, and 10 `avatar_split` records
