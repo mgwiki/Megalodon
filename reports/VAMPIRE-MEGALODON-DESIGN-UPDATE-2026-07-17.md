@@ -447,3 +447,32 @@ Validation:
 - The focused URR primitive audit passed with small-sample minima relaxed; the
   two-case sample contains no equality-resolution records, which is expected
   for that artifact rather than a regression.
+
+Additional follow-up: Vampire commit `453f734c9` introduces rendered-domain
+wrapper types in `MegalodonKernelSyntax`: unit references, terms, formulas,
+literals, clauses, substitutions, and positions are no longer stored in the
+builder records as undifferentiated `std::string` fields. The external
+`step_extra "kernel_v1"` format is intentionally unchanged, but
+`RenderedKernelParent`, `RenderedKernelConclusion`,
+`RenderedKernelLiteralSelection`, `RenderedKernelRewrite`, and
+`RenderedKernelUrrTraceStep` now expose which certificate fields are clauses,
+literals, substitutions, positions, and units.
+
+This is a small but important migration step toward the audit's requested
+Prover9/Ivy-style object. It does not yet make the fields fully typed Vampire
+kernel terms or lower macro inferences into primitive proof objects. It does
+make the next replacement mechanical and reviewable: each rendered wrapper can
+be replaced by a typed term/literal/clause/position record without re-auditing
+the whole string serializer.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` passed and produced
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11053`.
+- A fresh 20-case live THF run with 10-way parallelism and a 10-second Vampire
+  cap produced `PASS 20`.
+- The native primitive audit passed on that artifact, including 122
+  `paramodulate`, 102 `substitute`, 88 `equality_resolution`, and 25
+  `resolve` primitive records.
+- The kernel-v1 metadata audit passed on that artifact, covering 738
+  `kernel_v1` records and 106 rewrite-position records.
