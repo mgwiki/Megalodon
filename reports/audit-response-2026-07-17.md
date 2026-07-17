@@ -721,3 +721,29 @@ Validation:
 - native primitive audit on that strict artifact, including 10
   `avatar_split`, 47 `split_dependency`, 8 `avatar_definition`, 8
   `avatar_component`, and 2 `avatar_refutation` records
+
+Vampire commit `cc64aa131` extracts `avatar_refutation` metadata into
+`RenderedKernelAvatarRefutation`, with explicit SAT input, SAT proof-step,
+and SAT proof-parent subrecords. The strict `kernel_v1` record now gets the
+empty result clause, optional SAT refutation clause, SAT inputs and origins,
+SAT proof step count, input/RUP kinds, parent ids, parent clauses, and parent
+counts from a named Vampire-side object.
+
+This completes the AVATAR metadata extraction pass requested by the audit's
+small-certificate direction. The result is not yet a checked Megalodon proof
+of SAT refutation: it is a structured certificate object layer. The next
+architectural move should be typed consumption of these AVATAR/SAT records,
+either as a small checked SAT/AVATAR kernel or as a lowering into primitive
+clausal proof steps.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` for
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11067`
+- fresh 20-case strict source-linked live THF run with `JOBS=10` and
+  `VAMPIRE_SECONDS=10`: `PASS 20`
+- kernel-v1 metadata audit on that strict artifact: 738 `kernel_v1` records
+  and 2 `avatar_refutation` records
+- native primitive audit on that strict artifact, including 2
+  `avatar_refutation`, 10 `avatar_split`, 47 `split_dependency`, 8
+  `avatar_definition`, and 8 `avatar_component` records

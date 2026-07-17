@@ -849,3 +849,33 @@ Validation:
 - The native primitive audit passed on the same artifact, including 10
   `avatar_split`, 47 `split_dependency`, 8 `avatar_definition`, 8
   `avatar_component`, and 2 `avatar_refutation` records.
+
+Additional follow-up: Vampire commit `cc64aa131` extracts
+`avatar_refutation` metadata into `RenderedKernelAvatarRefutation` and SAT
+subrecords for inputs, proof steps, and proof parents. The strict kernel
+record now owns the empty result clause, optional SAT refutation clause,
+ordered SAT inputs with origin units, SAT proof step count, input/RUP step
+kinds, RUP parent ids, parent clauses, and parent counts through
+`MegalodonKernelSyntax`.
+
+This completes the first AVATAR metadata-object extraction pass:
+`avatar_component`, `avatar_definition`, `split_dependency`, `avatar_split`,
+and `avatar_refutation` are now represented as named Vampire-side kernel
+objects for `kernel_v1` serialization. This is still not a proof-completion
+claim. The AVATAR/SAT payloads remain rendered certificate data, and
+Megalodon still needs a typed checked SAT/AVATAR proof layer or a lowering of
+these records into the small primitive kernel.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` passed and produced
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11067`.
+- A fresh 20-case strict source-linked live THF run with `JOBS=10` and
+  `VAMPIRE_SECONDS=10` produced `PASS 20`.
+- The strict run included 2 native `avatar_refutation` records and 2
+  `kernel_v1` `avatar_refutation` records.
+- The kernel-v1 metadata audit passed on that artifact, covering 738
+  `kernel_v1` records and 2 `avatar_refutation` records.
+- The native primitive audit passed on the same artifact, including 2
+  `avatar_refutation`, 10 `avatar_split`, 47 `split_dependency`, 8
+  `avatar_definition`, and 8 `avatar_component` records.
