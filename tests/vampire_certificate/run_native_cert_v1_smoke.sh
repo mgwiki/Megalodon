@@ -765,6 +765,20 @@ if ! rg -q 'Everything looks good' \
   echo "certified vampire command fixture did not close after composing the native certificate proof" >&2
   exit 1
 fi
+certified_vampire_problem_count=$(find "$certified_vampire_live_dir/out" -name 'vampire.*.thf.p' | wc -l | tr -d ' ')
+if [[ "$certified_vampire_problem_count" != "1" ]]; then
+  echo "certified vampire command wrote $certified_vampire_problem_count vampire THF artifacts instead of one" >&2
+  exit 1
+fi
+certified_vampire_problem=$(find "$certified_vampire_live_dir/out" -name 'vampire.*.thf.p' | head -1)
+if ! rg -q '^% megalodon_origin .* \(kind "vampire"\)' "$certified_vampire_problem"; then
+  echo "certified vampire command did not export vampire origin kind" >&2
+  exit 1
+fi
+if find "$certified_vampire_live_dir/out" -name 'aby.*.thf.p' | rg . >&2; then
+  echo "certified vampire command wrote a legacy aby-named THF artifact" >&2
+  exit 1
+fi
 if bin/megalodon \
     -v 9 \
     -vampireabyproof megalodon \

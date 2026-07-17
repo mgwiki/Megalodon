@@ -2326,7 +2326,7 @@ let run_vampire_aby_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) ?(proof_command_l
      ensure_directory !vampireabyoutdir;
      let digest = Hash.hashval_hexstring (Hash.sha256 content) in
      let short_digest = String.sub digest 0 16 in
-     let base = Printf.sprintf "aby.%d.%d.%s" !lineno !charno short_digest in
+     let base = Printf.sprintf "%s.%d.%d.%s" proof_command_label !lineno !charno short_digest in
      let problem_file = Filename.concat !vampireabyoutdir (base ^ ".thf.p") in
      let proof_file = Filename.concat !vampireabyoutdir (base ^ "." ^ !vampireabyproof ^ ".out") in
      let ch = open_out problem_file in
@@ -2408,9 +2408,9 @@ let stable_aby_obligation_name () =
   in
   Printf.sprintf "%s_line%d_char%d" stem !lineno !charno
 
-let th0_aby_problem_content claimtm cxtm cxpf xl conjn =
+let th0_aby_problem_content ?(origin_kind="aby") claimtm cxtm cxpf xl conjn =
   Buffer.clear sb;
-  Buffer.add_string sb (tptp_origin_comment "aby");
+  Buffer.add_string sb (tptp_origin_comment origin_kind);
   let used_source_formula_names = Hashtbl.create 101 in
   let fresh_source_formula_name base =
     let rec try_index i =
@@ -6229,7 +6229,8 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                        | _ -> false
                      in
                      let conjn = stable_aby_obligation_name () in
-                     let content = th0_aby_problem_content atm cxtm cxpf xl conjn in
+                     let proof_command_label = if certified_vampire_tac then "vampire" else "aby" in
+                     let content = th0_aby_problem_content ~origin_kind:proof_command_label atm cxtm cxpf xl conjn in
                      Printf.fprintf ch "%s" content;
                      close_out ch;
                      begin
@@ -6241,7 +6242,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                               ~claimtm:atm
                               ~cxtm
                               ~cxpf
-                              ~proof_command_label:(if certified_vampire_tac then "vampire" else "aby")
+                              ~proof_command_label
                               content
                           in
                           if !vampireabynative || certified_vampire_tac then
@@ -7456,7 +7457,8 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                  | None -> ()
                  | Some(c) ->
                     let conjn = stable_aby_obligation_name () in
-                    let content = th0_aby_problem_content claimtm cxtm cxpf xl conjn in
+                    let proof_command_label = if certified_vampire_tac then "vampire" else "aby" in
+                    let content = th0_aby_problem_content ~origin_kind:proof_command_label claimtm cxtm cxpf xl conjn in
                     if !abyproblemscached then
                       let fn = "cache/" ^ Hash.hashval_hexstring (Hash.sha256 content) ^ ".thf.p" in
                       if checkfail (fn ^ ".out") then Printf.printf "ERROR: aby at line %i char %i fails\n" !lineno !charno else
@@ -7513,14 +7515,15 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                | None -> ()
                | Some(_) ->
                   let conjn = stable_aby_obligation_name () in
-                  let content = th0_aby_problem_content claimtm cxtm cxpf xl conjn in
+                  let proof_command_label = if certified_vampire_tac then "vampire" else "aby" in
+                  let content = th0_aby_problem_content ~origin_kind:proof_command_label claimtm cxtm cxpf xl conjn in
                   try
                     vampire_native_result :=
                       run_vampire_aby_certificate
                         ~claimtm
                         ~cxtm
                         ~cxpf
-                        ~proof_command_label:(if certified_vampire_tac then "vampire" else "aby")
+                        ~proof_command_label
                         content
                   with
                   | Failure(msg) ->
