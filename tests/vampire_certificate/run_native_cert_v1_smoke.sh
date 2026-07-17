@@ -713,6 +713,86 @@ if ! rg -q 'Everything looks good' \
   exit 1
 fi
 
+local_equality_transport_dir="$WORK_DIR/local_equality_transport_live"
+mkdir -p "$local_equality_transport_dir"
+cat >"$local_equality_transport_dir/fake_vampire" <<'EOF_LOCAL_EQUALITY_TRANSPORT_FAKE_VAMPIRE'
+#!/usr/bin/env bash
+problem="${@: -1}"
+fact=$(sed -n 's/^% megalodon_source_map (local_fact "\([^"]*\)" .*/\1/p' "$problem" | head -1)
+conj=$(sed -n 's/^% megalodon_source_map (conjecture "\([^"]*\)" .*/\1/p' "$problem" | head -1)
+cat <<CERT
+% SZS status Theorem
+% SZS output start Proof
+megalodon_certificate_native_sexpr_start.
+(certificate vampire-megalodon 1
+  (problem "local-equality-transport-live")
+  (symbol_declaration "Variable x:set.")
+  (symbol_declaration "Variable y:set.")
+  (input "u0" (source axiom "$fact") (clause (pos (AP (AP (TMH "=") (TMH "x")) (TMH "y")))))
+  (input "u1" (source negated_conjecture "$conj") (clause (neg (AP (AP (TMH "=") (TMH "x")) (TMH "y")))))
+  (resolve "u2" (parents "u0" "u1") (pivot 0 0) (result (clause)))
+)
+megalodon_certificate_native_sexpr_end.
+% SZS output end Proof
+CERT
+EOF_LOCAL_EQUALITY_TRANSPORT_FAKE_VAMPIRE
+chmod +x "$local_equality_transport_dir/fake_vampire"
+cat >"$local_equality_transport_dir/local_equality_transport_live.mg" <<'EOF_LOCAL_EQUALITY_TRANSPORT_LIVE_MG'
+Definition False : prop := forall p:prop, p.
+Definition not : prop -> prop := fun A:prop => A -> False.
+Prefix ~ 700 := not.
+Definition or : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> p) -> (B -> p) -> p.
+Infix \/ 785 left := or.
+Axiom xm : forall P:prop, P \/ ~P.
+Section Eq.
+Variable A:SType.
+Definition eq : A->A->prop := fun x y:A => forall Q:A->A->prop, Q x y -> Q y x.
+End Eq.
+Infix = 502 := eq.
+Theorem local_equality_transport_live : forall x y:set, x = y -> y = x.
+let x y.
+assume Hxy.
+aby Hxy.
+Qed.
+EOF_LOCAL_EQUALITY_TRANSPORT_LIVE_MG
+MEGALODON_CERT_DEBUG=1 bin/megalodon \
+  -v 9 \
+  -vampireaby "$local_equality_transport_dir/fake_vampire" \
+  -vampireabyproof megalodon \
+  -vampireabynative \
+  -vampireabynativestrict \
+  -vampireabyoutdir "$local_equality_transport_dir/out" \
+  "$local_equality_transport_dir/local_equality_transport_live.mg" \
+  >"$WORK_DIR/native_cert_v1_live_local_equality_transport.log" \
+  2>"$WORK_DIR/native_cert_v1_live_local_equality_transport.err"
+
+if ! rg -q 'source_context known=0 local=1 local_definition=0 conjecture=1 unresolved=0' \
+    "$WORK_DIR/native_cert_v1_live_local_equality_transport.log"; then
+  echo "live vampireaby equality-transport fixture did not bind local source and conjecture facts" >&2
+  exit 1
+fi
+if ! rg -q 'Vampire native certificate trying equality-symmetry goal transport' \
+    "$WORK_DIR/native_cert_v1_live_local_equality_transport.log"; then
+  echo "live vampireaby did not exercise checked equality-symmetry goal transport" >&2
+  exit 1
+fi
+if ! rg -q 'Vampire native certificate reconstructed aby proof term' \
+    "$WORK_DIR/native_cert_v1_live_local_equality_transport.log"; then
+  echo "live vampireaby did not reconstruct the equality-transport proof term" >&2
+  exit 1
+fi
+if rg -q 'depends on non-proved dneg' \
+    "$WORK_DIR/native_cert_v1_live_local_equality_transport.log" \
+    "$WORK_DIR/native_cert_v1_live_local_equality_transport.err"; then
+  echo "live vampireaby equality-transport fixture unexpectedly used an unproved dneg axiom" >&2
+  exit 1
+fi
+if ! rg -q 'Everything looks good' \
+    "$WORK_DIR/native_cert_v1_live_local_equality_transport.log"; then
+  echo "live vampireaby equality-transport fixture did not close after composing the native certificate proof" >&2
+  exit 1
+fi
+
 local_definition_live_dir="$WORK_DIR/local_definition_live"
 mkdir -p "$local_definition_live_dir"
 cat >"$local_definition_live_dir/fake_vampire" <<'EOF_LOCAL_DEFINITION_FAKE_VAMPIRE'
