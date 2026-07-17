@@ -6719,8 +6719,10 @@ let native_core_close_tm ?(depth=0) variables tm =
   let rec variable_index index = function
     | [] -> None
     | (name, _) :: rest ->
-        if name = index then Some 0
-        else Option.map (fun i -> i + 1) (variable_index index rest)
+        begin match variable_index index rest with
+        | Some i -> Some (i + 1)
+        | None -> if name = index then Some 0 else None
+        end
   in
   let rec close depth = function
     | TmH name ->
@@ -7959,6 +7961,15 @@ let native_core_proof_from_true_eq source target proof =
       Some (PPfAp (PPfAp (PTmAp (proof, motive), atom_to_true), native_core_true_proof))
   | _ -> None
 
+let native_core_bind_result_step_variables variables result_step_variables body_proof =
+  let body_proof =
+    native_core_close_pf (variables @ result_step_variables) body_proof
+  in
+  List.fold_right
+    (fun (_, tp) proof -> TLam (tp, proof))
+    result_step_variables
+    body_proof
+
 let native_core_fool_formula_proof
     id variables parent_step_variables result_step_variables source target proof =
   let source = native_core_close_tm (variables @ result_step_variables) source in
@@ -8121,7 +8132,7 @@ let native_core_fool_formula_proof
   let body_proof =
     convert initial_context `Forward source target parent_proof
   in
-  List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
+  native_core_bind_result_step_variables variables result_step_variables body_proof
 
 let native_core_ennf_formula_proof id variables step_variables source target proof =
   let source = native_core_close_tm (variables @ step_variables) source in
@@ -8476,7 +8487,7 @@ let native_core_cnf_formula_clause_proof
   let body_proof =
     eliminate parent_step_variables parent_formula parent_proof
   in
-  List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
+  native_core_bind_result_step_variables variables result_step_variables body_proof
 
 let native_core_fool_exhaustiveness_proof cert id result =
   let step_variables = native_core_step_variables cert id in
@@ -8688,7 +8699,7 @@ let native_core_inequality_name_intro_proof cert symbol_table id variables resul
   let body_proof =
     native_core_prove_literal_to_clause id result_clause closed_literal proof
   in
-  List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
+  native_core_bind_result_step_variables variables result_step_variables body_proof
 
 let native_core_bool_name_literal value = function
   | Pos atom ->
@@ -9014,7 +9025,7 @@ let native_core_formula_orientation_proof
           end
   in
   let body_proof = convert `Forward source target parent_proof in
-  List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
+  native_core_bind_result_step_variables variables result_step_variables body_proof
 
 let native_core_skolem_target_witness id source target =
   let merge left right =
@@ -9218,7 +9229,7 @@ let native_core_skolem_formula_proof
             (id ^ ": native core proof-term skolemization supports only existential, forall, and disjunction contexts")
   in
   let body_proof = convert source target parent_proof in
-  List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
+  native_core_bind_result_step_variables variables result_step_variables body_proof
 
 let native_core_truth_conflict_false_proof id literal proof =
   let is_true = function
@@ -9334,7 +9345,7 @@ let native_core_instantiate_step_proof_in_result_context
     native_core_instantiate_step_proof_body_in_result_context
       cert id variables parent_id subst proof
   in
-  List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
+  native_core_bind_result_step_variables variables result_step_variables body_proof
 
 let native_core_inequality_split_proof
     cert id variables source_id source_clause source_proof splits result =
@@ -9474,7 +9485,7 @@ let native_core_inequality_split_proof
         PPfAp (PPfAp (PTmAp (proof, target_prop), head_branch), tail_branch)
   in
   let body_proof = consume source_clause source_proof in
-  List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
+  native_core_bind_result_step_variables variables result_step_variables body_proof
 
 let native_core_substitute_in_result_context
     ?(shift_parent_proof=true)
@@ -9504,7 +9515,7 @@ let native_core_substitute_in_result_context
     if source_clause = result then body_proof
     else native_core_prove_clause_to_clause id source_clause result body_proof
   in
-  List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
+  native_core_bind_result_step_variables variables result_step_variables body_proof
 
 let native_core_resolve_in_result_context
     cert id variables left_id left_clause left_proof right_id right_clause right_proof
@@ -9551,7 +9562,7 @@ let native_core_resolve_in_result_context
         native_core_resolve_clause_clause
           id left_clause left_proof left_index right_clause right_proof right_index result
   in
-  List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
+  native_core_bind_result_step_variables variables result_step_variables body_proof
 
 let native_core_equality_resolution id parent_clause parent_proof literal_index result =
   let selected = nth literal_index parent_clause (id ^ " native equality-resolution literal") in
@@ -9627,7 +9638,7 @@ let native_core_equality_resolution_in_result_context
   let body_proof =
     native_core_equality_resolution id parent_clause parent_proof literal_index result
   in
-  List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
+  native_core_bind_result_step_variables variables result_step_variables body_proof
 
 let native_core_equality_symmetry id parent_clause parent_proof literal_index result =
   let selected = nth literal_index parent_clause (id ^ " native equality-symmetry literal") in
@@ -9712,7 +9723,7 @@ let native_core_equality_symmetry_in_result_context
   let body_proof =
     native_core_equality_symmetry id parent_clause parent_proof literal_index result
   in
-  List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
+  native_core_bind_result_step_variables variables result_step_variables body_proof
 
 let native_core_equality_factoring_other_proof
     id selected_atom selected_proof other_atom introduced_atom introduced_proof =
@@ -9860,7 +9871,7 @@ let native_core_equality_factoring_in_result_context
     native_core_equality_factoring
       id parent_clause parent_proof selected_index other_index result
   in
-  List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
+  native_core_bind_result_step_variables variables result_step_variables body_proof
 
 let native_core_literal_index id rule selected clause =
   let rec find index = function
@@ -10241,7 +10252,7 @@ let native_core_paramodulate_unit_in_result_context
       id equality_clause equality_proof target_clause target_proof
       equality_index target_index position from_tm to_tm result
   in
-  List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
+  native_core_bind_result_step_variables variables result_step_variables body_proof
 
 let native_core_source_kind_and_tptp_name = function
   | SourceAxiom name -> ("axiom", name)
