@@ -11391,6 +11391,49 @@ let native_core_merge_external_delta proof_delta external_delta_table =
     external_delta_table;
   merged
 
+let native_core_allow_transitional_known () =
+  Sys.getenv_opt "MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN" = Some "1"
+
+let native_core_has_prefix prefix text =
+  let prefix_len = String.length prefix in
+  String.length text >= prefix_len
+  && String.sub text 0 prefix_len = prefix
+
+let native_core_fixed_logical_known h =
+  match h with
+  | "vampire_exists_set_choice"
+  | "vampire_exists_prop_choice"
+  | "vampire_exists_set_prop_choice"
+  | "vampire_exists_set_set_choice"
+  | "vampire_exists_set_set_prop_choice"
+  | "vampire_not_forall_exists_set"
+  | "vampire_not_forall_exists_prop"
+  | "vampire_not_forall_exists_set_prop"
+  | "vampire_not_forall_exists_set_set"
+  | "vampire_not_forall_exists_set_set_prop" -> true
+  | _ -> false
+
+let native_core_reject_certificate_knowns mode step_id proof =
+  if not (native_core_allow_transitional_known ()) then begin
+    let rec scan = function
+      | Known h
+          when native_core_has_prefix "vampire_" h
+               && not (native_core_fixed_logical_known h) ->
+          error
+            (step_id ^ ": native " ^ mode
+             ^ " proof-term checker refuses certificate-derived Known primitive "
+             ^ h
+             ^ "; implement a real proof term or run a structural diagnostic with MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN=1")
+      | PTpAp (proof, _) -> scan proof
+      | PTmAp (proof, _) -> scan proof
+      | PPfAp (left, right) -> scan left; scan right
+      | PLam (_, proof) -> scan proof
+      | TLam (_, proof) -> scan proof
+      | Hyp _ | Known _ -> ()
+    in
+    scan proof
+  end
+
 let native_certificate_source_bindings
     ?(source_map=[])
     ?(external_definition_names=[])
@@ -11512,6 +11555,7 @@ let elaborate_core_resolution_refutation_native
     let step_variables = native_core_step_variables cert id in
     let prop = native_core_step_clause_prop cert variables id clause in
     let proof = native_core_close_pf (variables @ step_variables) proof in
+    native_core_reject_certificate_knowns "core" id proof;
     let debug_failure msg =
       if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
         prerr_endline ("native core proof-term debug step " ^ id ^ ": " ^ msg);
@@ -11951,6 +11995,7 @@ let elaborate_preprocess_refutation_native
   let check_step_proof id prop proof =
     let step_variables = native_core_step_variables cert id in
     let proof = native_core_close_pf (variables @ step_variables) proof in
+    native_core_reject_certificate_knowns "preprocess" id proof;
     let debug_failure msg =
       if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
         prerr_endline ("native preprocess proof-term debug step " ^ id ^ ": " ^ msg);

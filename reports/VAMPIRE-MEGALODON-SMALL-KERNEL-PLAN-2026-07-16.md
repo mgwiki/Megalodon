@@ -1568,3 +1568,12 @@ general implementation work should specify and extract the shared
 `open_step_theorem` operation for retained/substituted step variables, then use
 that operation across `resolve`, `paramodulate`, equality rules, and related
 primitive openings.
+
+Trust-boundary follow-up: the proof-term checker now performs a direct
+`Known`-provenance scan on every native core/preprocess step proof. In counted
+mode it rejects generated `vampire_*` certificate proof constants, while
+allowing only the fixed logical-basis families
+`vampire_exists_*_choice` and `vampire_not_forall_exists_*`. This guard does
+not solve theorem opening or preprocessing reconstruction by itself; it
+prevents future proof-producing code from accidentally reintroducing hidden
+bridge assumptions under a different call path.

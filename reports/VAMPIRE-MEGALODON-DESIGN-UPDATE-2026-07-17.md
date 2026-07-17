@@ -180,6 +180,18 @@ proof-term path. It is still not a claim of project completion: E1
 original-context proof composition for larger Megalodon developments remains
 the main unfinished requirement.
 
+Additional trust-boundary guard: native core and native preprocess proof-term
+checking now traverses every checked proof term before `check_propofpf` and
+rejects generated certificate-derived proof constants whose names start with
+`vampire_`, except for the fixed logical basis names
+`vampire_exists_*_choice` and `vampire_not_forall_exists_*`. The old
+transitional behavior is still available only when
+`MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN=1` is set, and remains E4
+structural diagnostics. This makes the July 16 audit invariant mechanically
+harder to bypass: even if future code directly constructs a forbidden
+`Known "vampire_*"` proof instead of going through `install_transitional_known`,
+counted proof-term checking fails closed.
+
 ## Later July 17 Certificate-Checker Update
 
 The current `vampire/megalodon5` work also improves strict certificate
