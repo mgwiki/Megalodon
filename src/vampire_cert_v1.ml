@@ -1886,6 +1886,48 @@ let rec skolemize_formula_tm subst tm =
   | Lam (tp, body) -> Lam (tp, skolemize_formula_tm subst body)
   | _ -> tm
 
+let skolemize_formula_tm_ordered subst tm =
+  let rec go subst tm =
+    match tm with
+    | Imp (left, right) ->
+        let left, subst = go subst left in
+        let right, subst = go subst right in
+        (Imp (left, right), subst)
+    | All (tp, body) ->
+        let body, subst = go subst body in
+        (All (tp, body), subst)
+    | Ap (Ap (TmH "vampire_or", left), right) ->
+        let left, subst = go subst left in
+        let right, subst = go subst right in
+        (vampire_or left right, subst)
+    | Ap (Ap (TmH "vampire_and", left), right) ->
+        let left, subst = go subst left in
+        let right, subst = go subst right in
+        (vampire_and left right, subst)
+    | Ap (TmH "vampire_exists_prop", Lam (_, body)) ->
+        begin match subst with
+        | (_, witness) :: rest -> go rest (tmsubst body 0 witness)
+        | [] -> go [] body
+        end
+    | Ap (TmH "vampire_exists_prop", Ap (TmH "vLAM", body)) ->
+        begin match subst with
+        | (_, witness) :: rest -> go rest (subst_tm [("db0", witness)] body)
+        | [] -> go [] body
+        end
+    | TpAp (m, a) ->
+        let m, subst = go subst m in
+        (TpAp (m, a), subst)
+    | Ap (m, n) ->
+        let m, subst = go subst m in
+        let n, subst = go subst n in
+        (Ap (m, n), subst)
+    | Lam (tp, body) ->
+        let body, subst = go subst body in
+        (Lam (tp, body), subst)
+    | tm -> (tm, subst)
+  in
+  fst (go subst tm)
+
 let bounded_append limit left right =
   let rec add acc count = function
     | [] -> List.rev acc
@@ -2436,7 +2478,10 @@ let check_skolem_formula checked id parent_id source introductions subst result 
   end;
   check_skolem_introductions id subst introductions;
   let expected = skolemize_formula_tm subst parent_formula in
-  let candidates = skolemize_formula_tm_candidates subst parent_formula in
+  let candidates =
+    skolemize_formula_tm_ordered subst parent_formula
+    :: skolemize_formula_tm_candidates subst parent_formula
+  in
   let matches candidate =
     candidate = result
     || normalize_bool_equality_orientation candidate = normalize_bool_equality_orientation result
@@ -2966,6 +3011,23 @@ let rec strip_universal_binders = function
   | All (_, body) -> strip_universal_binders body
   | tm -> tm
 
+let rec universal_binder_count = function
+  | All (_, body) -> 1 + universal_binder_count body
+  | _ -> 0
+
+let remap_stripped_universal_params arity tm =
+  let rec remap depth = function
+    | DB index when index >= depth && index < depth + arity ->
+        DB (depth + arity - 1 - (index - depth))
+    | TpAp (m, a) -> TpAp (remap depth m, a)
+    | Ap (m, n) -> Ap (remap depth m, remap depth n)
+    | Lam (tp, body) -> Lam (tp, remap (depth + 1) body)
+    | Imp (m, n) -> Imp (remap depth m, remap depth n)
+    | All (tp, body) -> All (tp, remap (depth + 1) body)
+    | tm -> tm
+  in
+  remap 0 tm
+
 let predicate_definition_parts id formula =
   let body = strip_universal_binders formula in
   let is_negated_definiendum = function
@@ -3035,50 +3097,238 @@ let combine_replacement left right =
       if left_replaced && right_replaced then None
       else Some (left_replaced || right_replaced)
 
-let rec tm_matches_one_replacement source target needle replacement =
-  if source = needle && target = replacement then Some true
+let tm_contains_db_below cutoff tm =
+  let rec contains cutoff = function
+    | DB index -> index < cutoff
+    | TpAp (m, _) -> contains cutoff m
+    | Ap (m, n) | Imp (m, n) -> contains cutoff m || contains cutoff n
+    | Lam (_, body) | All (_, body) -> contains (cutoff + 1) body
+    | _ -> false
+  in
+  contains cutoff tm
+
+let tm_abstract_outer_context depth tm =
+  if tm_contains_db_below depth tm then None
+  else
+    let rec lower = function
+      | DB index -> DB (index - depth)
+      | TpAp (m, a) -> TpAp (lower m, a)
+      | Ap (m, n) -> Ap (lower m, lower n)
+      | Imp (m, n) -> Imp (lower m, lower n)
+      | Lam (tp, body) -> Lam (tp, lower body)
+      | All (tp, body) -> All (tp, lower body)
+      | tm -> tm
+    in
+    Some (lower tm)
+
+let tm_match_definition_params arity pattern actual =
+  let param_index depth index =
+    if index >= depth && index < depth + arity then Some (index - depth)
+    else None
+  in
+  let rec match_tm depth subst pattern actual =
+    match pattern with
+    | DB index ->
+        begin match param_index depth index with
+        | Some param ->
+            begin match tm_abstract_outer_context depth actual with
+            | None -> None
+            | Some abstracted ->
+                begin match List.assoc_opt param subst with
+                | Some previous when previous = abstracted -> Some subst
+                | Some _ -> None
+                | None -> Some ((param, abstracted) :: subst)
+                end
+            end
+        | None when pattern = actual -> Some subst
+        | None -> None
+        end
+    | TpAp (pattern_tm, pattern_tp) ->
+        begin match actual with
+        | TpAp (actual_tm, actual_tp) when pattern_tp = actual_tp ->
+            match_tm depth subst pattern_tm actual_tm
+        | _ -> None
+        end
+    | Ap (pattern_left, pattern_right) ->
+        begin match actual with
+        | Ap (actual_left, actual_right) ->
+            begin match match_tm depth subst pattern_left actual_left with
+            | Some subst -> match_tm depth subst pattern_right actual_right
+            | None -> None
+            end
+        | _ -> None
+        end
+    | Imp (pattern_left, pattern_right) ->
+        begin match actual with
+        | Imp (actual_left, actual_right) ->
+            begin match match_tm depth subst pattern_left actual_left with
+            | Some subst -> match_tm depth subst pattern_right actual_right
+            | None -> None
+            end
+        | _ -> None
+        end
+    | Lam (pattern_tp, pattern_body) ->
+        begin match actual with
+        | Lam (actual_tp, actual_body) when pattern_tp = actual_tp ->
+            match_tm (depth + 1) subst pattern_body actual_body
+        | _ -> None
+        end
+    | All (pattern_tp, pattern_body) ->
+        begin match actual with
+        | All (actual_tp, actual_body) when pattern_tp = actual_tp ->
+            match_tm (depth + 1) subst pattern_body actual_body
+        | _ -> None
+        end
+    | _ when pattern = actual -> Some subst
+    | _ -> None
+  in
+  match_tm 0 [] pattern actual
+
+let tm_instantiate_definition_params arity subst tm =
+  let param_index depth index =
+    if index >= depth && index < depth + arity then Some (index - depth)
+    else None
+  in
+  let rec inst depth = function
+    | DB index ->
+        begin match param_index depth index with
+        | Some param ->
+            begin match List.assoc_opt param subst with
+            | Some replacement -> tmshift 0 depth replacement
+            | None -> DB index
+            end
+        | None -> DB index
+        end
+    | TpAp (m, a) -> TpAp (inst depth m, a)
+    | Ap (m, n) -> Ap (inst depth m, inst depth n)
+    | Imp (m, n) -> Imp (inst depth m, inst depth n)
+    | Lam (tp, body) -> Lam (tp, inst (depth + 1) body)
+    | All (tp, body) -> All (tp, inst (depth + 1) body)
+    | tm -> tm
+  in
+  inst 0 tm
+
+let tm_pattern_replacement_result arity source needle replacement =
+  match tm_match_definition_params arity needle source with
+  | None -> None
+  | Some subst -> Some (tm_instantiate_definition_params arity subst replacement)
+
+let rec tm_matches_one_replacement_at base_depth depth source target needle replacement =
+  let shift = max 0 (depth - base_depth) in
+  let shifted_needle = tmshift 0 shift needle in
+  let shifted_replacement = tmshift 0 shift replacement in
+  match tm_pattern_replacement_result base_depth source needle replacement with
+  | Some instantiated when target = instantiated -> Some true
+  | _ ->
+  if source = shifted_needle && target = shifted_replacement then Some true
   else if source = target then Some false
   else
     match source, target with
     | TpAp (source_tm, source_tp), TpAp (target_tm, target_tp) when source_tp = target_tp ->
-        tm_matches_one_replacement source_tm target_tm needle replacement
+        tm_matches_one_replacement_at base_depth depth source_tm target_tm needle replacement
     | Ap (source_left, source_right), Ap (target_left, target_right)
     | Imp (source_left, source_right), Imp (target_left, target_right) ->
         combine_replacement
-          (tm_matches_one_replacement source_left target_left needle replacement)
-          (tm_matches_one_replacement source_right target_right needle replacement)
+          (tm_matches_one_replacement_at base_depth depth source_left target_left needle replacement)
+          (tm_matches_one_replacement_at base_depth depth source_right target_right needle replacement)
     | Lam (source_tp, source_body), Lam (target_tp, target_body)
     | All (source_tp, source_body), All (target_tp, target_body) when source_tp = target_tp ->
-        tm_matches_one_replacement source_body target_body needle replacement
+        tm_matches_one_replacement_at base_depth (depth + 1) source_body target_body needle replacement
     | _ -> None
+
+let tm_matches_one_replacement ?(base_depth=0) source target needle replacement =
+  tm_matches_one_replacement_at base_depth 0 source target needle replacement
+
+let predicate_definition_fold_replacements definiendum =
+  let typed_prop_eq left right =
+    Ap (Ap (TpAp (TmH megalodon_eq_poly_hash, Prop), left), right)
+  in
+  [
+    definiendum;
+    Ap (Ap (TmH "=", TmH "f__true"), definiendum);
+    Ap (Ap (TmH "=", definiendum), TmH "f__true");
+    Ap (Ap (TmH "=", TmH "vampire_true"), definiendum);
+    Ap (Ap (TmH "=", definiendum), TmH "vampire_true");
+    Ap (Ap (TmH "vampire_eq_prop", TmH "f__true"), definiendum);
+    Ap (Ap (TmH "vampire_eq_prop", definiendum), TmH "f__true");
+    Ap (Ap (TmH "vampire_eq_prop", TmH "vampire_true"), definiendum);
+    Ap (Ap (TmH "vampire_eq_prop", definiendum), TmH "vampire_true");
+    typed_prop_eq (TmH "f__true") definiendum;
+    typed_prop_eq definiendum (TmH "f__true");
+    typed_prop_eq (TmH "vampire_true") definiendum;
+    typed_prop_eq definiendum (TmH "vampire_true");
+  ]
+
+let predicate_definition_fold_patterns arity body definiendum =
+  let base_patterns =
+    List.map
+      (fun replacement -> (body, replacement))
+      (predicate_definition_fold_replacements definiendum)
+  in
+  if arity <= 1 then base_patterns
+  else
+    let remapped_body = remap_stripped_universal_params arity body in
+    let remapped_definiendum = remap_stripped_universal_params arity definiendum in
+    let rec unique_pairs seen = function
+      | [] -> List.rev seen
+      | pattern :: rest ->
+          if List.exists ((=) pattern) seen then unique_pairs seen rest
+          else unique_pairs (pattern :: seen) rest
+    in
+    unique_pairs []
+      (base_patterns
+       @ List.map
+           (fun replacement -> (remapped_body, replacement))
+           (predicate_definition_fold_replacements remapped_definiendum))
 
 let check_predicate_definition_fold checked id source_id definition_id result =
   let source = lookup_formula checked source_id in
   let definition = lookup_formula checked definition_id in
   let _, definiendum, body = predicate_definition_parts definition_id definition in
-  match tm_matches_one_replacement source result body definiendum with
-  | Some true -> ()
-  | _ -> error (id ^ ": predicate_definition_fold result is not one definition-body replacement")
+  let base_depth = universal_binder_count definition in
+  if
+    List.exists
+      (fun (needle, replacement) ->
+         match tm_matches_one_replacement ~base_depth source result needle replacement with
+         | Some true -> true
+         | _ -> false)
+      (predicate_definition_fold_patterns base_depth body definiendum)
+  then ()
+  else error (id ^ ": predicate_definition_fold result is not one definition-body replacement")
 
-let rec tm_one_replacement_results source needle replacement =
-  let here = if source = needle then [replacement] else [] in
+let rec tm_one_replacement_results_at base_depth depth source needle replacement =
+  let shift = max 0 (depth - base_depth) in
+  let shifted_needle = tmshift 0 shift needle in
+  let shifted_replacement = tmshift 0 shift replacement in
+  let here =
+    let pattern_results =
+      match tm_pattern_replacement_result base_depth source needle replacement with
+      | Some instantiated -> [instantiated]
+      | None -> []
+    in
+    if source = shifted_needle then shifted_replacement :: pattern_results
+    else pattern_results
+  in
   let below =
     match source with
     | TpAp (m, a) ->
-        List.map (fun m' -> TpAp (m', a)) (tm_one_replacement_results m needle replacement)
+        List.map (fun m' -> TpAp (m', a)) (tm_one_replacement_results_at base_depth depth m needle replacement)
     | Ap (m, n) ->
-        List.map (fun m' -> Ap (m', n)) (tm_one_replacement_results m needle replacement)
-        @ List.map (fun n' -> Ap (m, n')) (tm_one_replacement_results n needle replacement)
+        List.map (fun m' -> Ap (m', n)) (tm_one_replacement_results_at base_depth depth m needle replacement)
+        @ List.map (fun n' -> Ap (m, n')) (tm_one_replacement_results_at base_depth depth n needle replacement)
     | Lam (tp, body) ->
-        List.map (fun body' -> Lam (tp, body')) (tm_one_replacement_results body needle replacement)
+        List.map (fun body' -> Lam (tp, body')) (tm_one_replacement_results_at base_depth (depth + 1) body needle replacement)
     | Imp (left, right) ->
-        List.map (fun left' -> Imp (left', right)) (tm_one_replacement_results left needle replacement)
-        @ List.map (fun right' -> Imp (left, right')) (tm_one_replacement_results right needle replacement)
+        List.map (fun left' -> Imp (left', right)) (tm_one_replacement_results_at base_depth depth left needle replacement)
+        @ List.map (fun right' -> Imp (left, right')) (tm_one_replacement_results_at base_depth depth right needle replacement)
     | All (tp, body) ->
-        List.map (fun body' -> All (tp, body')) (tm_one_replacement_results body needle replacement)
+        List.map (fun body' -> All (tp, body')) (tm_one_replacement_results_at base_depth (depth + 1) body needle replacement)
     | _ -> []
   in
   here @ below
+
+let tm_one_replacement_results ?(base_depth=0) source needle replacement =
+  tm_one_replacement_results_at base_depth 0 source needle replacement
 
 let unique_terms terms =
   let rec loop seen = function
@@ -3097,15 +3347,22 @@ let check_predicate_definition_fold_chain checked id source_id definition_ids re
       (fun candidates definition_id ->
          let definition = lookup_formula checked definition_id in
          let _, definiendum, body = predicate_definition_parts definition_id definition in
+         let base_depth = universal_binder_count definition in
+         let patterns = predicate_definition_fold_patterns base_depth body definiendum in
          let next =
            unique_terms
              (List.fold_left
                 (fun acc candidate ->
-                   tm_one_replacement_results candidate body definiendum @ acc)
+                   List.fold_left
+                     (fun acc (needle, replacement) ->
+                        tm_one_replacement_results ~base_depth candidate needle replacement @ acc)
+                     acc
+                     patterns)
                 [] candidates)
          in
-         if next = [] then
-           error (id ^ ": predicate_definition_fold_chain could not apply definition " ^ definition_id);
+         if next = [] then begin
+           error (id ^ ": predicate_definition_fold_chain could not apply definition " ^ definition_id)
+         end;
          next)
       [source]
       definition_ids
@@ -23126,6 +23383,9 @@ let rec source_tm_equiv left right =
            || (List.mem left_name ["$false"; "vampire_false"; "f__false"]
                && List.mem right_name ["$false"; "vampire_false"; "f__false"]) ->
       true
+  | TmH left_name, TmH right_name
+      when decode_megalodon_tptp_name left_name = decode_megalodon_tptp_name right_name ->
+      true
   | DB _, TmH name
   | TmH name, DB _ when is_vampire_var_name name ->
       true
@@ -23414,7 +23674,7 @@ let parse_simple_thf_formula_term text =
           (fun binders ->
              let body, k = parse_formula j in
              (List.fold_right
-                (fun (name, _tp) acc -> Ap (TmH "vLAM", subst_named_tm name acc))
+                (fun (name, tp) acc -> Lam (tp, subst_named_tm name acc))
                 binders
                 body,
               k))

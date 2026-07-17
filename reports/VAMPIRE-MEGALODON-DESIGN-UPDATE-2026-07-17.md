@@ -162,3 +162,48 @@ This is stronger E2/E4 evidence and some E3 evidence for the native core
 proof-term path. It is still not a claim of project completion: E1
 original-context proof composition for larger Megalodon developments remains
 the main unfinished requirement.
+
+## Later July 17 Certificate-Checker Update
+
+The current `vampire/megalodon5` work also improves strict certificate
+validation for real hammer proofs, but this remains E4 structural evidence
+unless the checked path constructs native proof terms without transitional
+`Known` insertion.
+
+Implemented changes:
+
+- Predicate-definition folding now treats stripped universal binders as scoped
+  definition parameters. The checker matches the definition body as a pattern,
+  binds those parameters to the actual source-context terms, and instantiates
+  the definiendum instead of relying on literal de Bruijn equality.
+- Predicate-definition folds also accept the boolean/proposition equality
+  wrappers that Vampire emits around folded predicate atoms.
+- Fold chains use the same scoped matcher at each step, so macro folding can
+  proceed through a sequence of generated predicates.
+- Skolem formula checking now includes an ordered candidate that consumes
+  Vampire's explicit substitution list through nested existential binders.
+- THF source parsing now maps formula lambdas to real Megalodon lambdas for
+  source comparison instead of introducing a synthetic `vLAM` application.
+
+Validation after these changes:
+
+- `TMPDIR=/project/tmp ./makeopt` passed.
+- `TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh`
+  passed.
+- The cached predicate-definition fold frontier from the previous 300-case
+  run moved from `1 PASS / 5 FAIL` to `6 PASS / 0 FAIL`.
+- A cached recheck of the previous 300-case directory, without rerunning
+  Vampire, reports `118 PASS`, `12` real checker failures, and `170`
+  non-certificate placeholders from the old timeout/unavailable cases. The
+  previous strict live run had `111 PASS`, so this is a concrete structural
+  improvement on the cached corpus.
+- A fresh strict live run over `source_linked_strict_100.list`, using THF,
+  20-way parallelism, and a 10-second Vampire cap, again reports `PASS 100`.
+  The native primitive audit and kernel-v1 metadata audit also pass.
+
+This does not relax the audit response. The next qualifying milestone is
+still to isolate the small clausal kernel and eliminate all certificate-derived
+`Known` declarations from counted native proof-term paths. These fold and
+Skolem changes are useful because they reduce structural rejection before that
+kernel boundary, but they are not a substitute for the Vampire-side primitive
+IR or the original-source context API.

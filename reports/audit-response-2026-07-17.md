@@ -113,3 +113,40 @@ should therefore be local and principled: specify how stored theorem proofs
 with step-variable `TLam`s are opened into a result-variable context, then
 apply that rule uniformly to paramodulation and the other clausal kernel
 rules.
+
+## Later July 17 Structural Certificate Update
+
+A subsequent checker change improved the strict certificate-validation
+frontier, but it should be counted as E4 structural progress rather than as
+native proof-term reconstruction.
+
+The change adds scoped parameter matching for Vampire
+`predicate_definition_fold` and `predicate_definition_fold_chain` steps. The
+checker now treats the stripped universal binders of a predicate definition as
+pattern parameters, matches the definition body against the actual source
+subterm, and instantiates the folded predicate atom with the terms found in
+that source context. This handles generated definitions whose parameters are
+separated by unrelated source binders. The checker also accepts Vampire's
+boolean/proposition equality wrappers around folded predicate atoms.
+
+The same batch adds an ordered Skolemization candidate for structural formula
+checking. It consumes Vampire's explicit substitution list through nested
+existential binders, which fixes the representative failure that appeared
+after the fold-chain blocker was removed.
+
+Validation:
+
+- optimized build passed;
+- native certificate v1 smoke passed;
+- the cached predicate-definition fold frontier now passes all 6 former
+  failures;
+- cached recheck of the previous 300-case directory reports 118 real
+  certificate passes, 12 real checker failures, and 170 old non-certificate
+  placeholders;
+- fresh strict live 100 still reports `PASS 100`, with native primitive and
+  kernel-v1 metadata audits passing.
+
+This update does not change the revised work order above. It reduces
+structural rejection in front of the kernel, but the qualifying path still
+requires isolated primitive proof terms, no certificate-derived `Known`
+insertion, and original-context source binding.
