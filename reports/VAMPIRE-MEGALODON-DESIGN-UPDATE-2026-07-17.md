@@ -197,8 +197,12 @@ same result-context helper used by `resolve`, `substitute`,
 `equality_resolution`, `equality_factoring`, and `paramodulate`. The regression
 fixture `native_cert_v1_open_derived_resolve_valid` covers the counted-core
 case where a quantified clause is first derived by factor and then resolved
-with a closed unit. This is a small piece of the planned `open_step_theorem`
-work, not the full extraction of that operation into a separate kernel module.
+with a closed unit. The helper is now explicitly named
+`native_core_open_step_theorem_body_in_result_context`, and
+`native_cert_v1_open_dropped_parent_bad` verifies that dropping a parent step
+variable without an explicit Vampire substitution fails closed. This is a
+small piece of the planned `open_step_theorem` work, not the full extraction
+of that operation into a separate kernel module.
 
 ## Later July 17 Certificate-Checker Update
 

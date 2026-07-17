@@ -10346,9 +10346,12 @@ let native_core_truth_conflict id parent_clause parent_proof literal_index resul
   in
   consume (Some literal_index) parent_clause parent_proof
 
-let native_core_instantiate_step_proof_body_in_result_context
+let native_core_open_step_theorem_body_in_result_context
     ?(shift_parent_proof=true)
     cert id variables parent_id subst proof =
+  (* Open a stored parent theorem under the result step binders. Parent
+     variables must either be retained in the result step or explicitly
+     substituted by Vampire metadata. *)
   let parent_step_variables = native_core_step_variables cert parent_id in
   let result_step_variables = native_core_step_variables cert id in
   let result_variable_count = List.length result_step_variables in
@@ -10375,7 +10378,8 @@ let native_core_instantiate_step_proof_body_in_result_context
              | Some tm -> tm
              | None ->
                  error
-                   (id ^ ": native core proof-term substitute cannot instantiate retained parent variable " ^ name)
+                   (id ^ ": native core open_step_theorem cannot instantiate dropped parent variable "
+                    ^ name ^ " without an explicit substitution")
              end
        in
        PTmAp (proof, witness))
@@ -10386,7 +10390,7 @@ let native_core_instantiate_step_proof_in_result_context
     cert id variables parent_id subst proof =
   let result_step_variables = native_core_step_variables cert id in
   let body_proof =
-    native_core_instantiate_step_proof_body_in_result_context
+    native_core_open_step_theorem_body_in_result_context
       cert id variables parent_id subst proof
   in
   native_core_bind_result_step_variables variables result_step_variables body_proof
@@ -10411,7 +10415,7 @@ let native_core_inequality_split_proof
   let result = List.map close_literal result in
   let splits = List.map close_split splits in
   let source_proof =
-    native_core_instantiate_step_proof_body_in_result_context
+    native_core_open_step_theorem_body_in_result_context
       cert id variables source_id [] source_proof
   in
   let rec split_for_source lit = function
@@ -10551,7 +10555,7 @@ let native_core_substitute_in_result_context
     error
       (id ^ ": native proof-term checker instantiation substitution does not produce result clause");
   let body_proof =
-    native_core_instantiate_step_proof_body_in_result_context
+    native_core_open_step_theorem_body_in_result_context
       ~shift_parent_proof
       cert id variables parent_id subst parent_proof
   in
@@ -10572,7 +10576,7 @@ let native_core_factor_in_result_context
   let parent_clause = List.map close_literal parent_clause in
   let result = List.map close_literal result in
   let parent_proof =
-    native_core_instantiate_step_proof_body_in_result_context
+    native_core_open_step_theorem_body_in_result_context
       cert id variables parent_id [] parent_proof
   in
   let body_proof =
@@ -10593,11 +10597,11 @@ let native_core_resolve_in_result_context
   let right_clause = List.map close_literal right_clause in
   let result = List.map close_literal result in
   let left_proof =
-    native_core_instantiate_step_proof_body_in_result_context
+    native_core_open_step_theorem_body_in_result_context
       cert id variables left_id [] left_proof
   in
   let right_proof =
-    native_core_instantiate_step_proof_body_in_result_context
+    native_core_open_step_theorem_body_in_result_context
       cert id variables right_id [] right_proof
   in
   let body_proof =
@@ -10695,7 +10699,7 @@ let native_core_equality_resolution_in_result_context
   let parent_clause = List.map close_literal parent_clause in
   let result = List.map close_literal result in
   let parent_proof =
-    native_core_instantiate_step_proof_body_in_result_context
+    native_core_open_step_theorem_body_in_result_context
       cert id variables parent_id [] parent_proof
   in
   let body_proof =
@@ -10780,7 +10784,7 @@ let native_core_equality_symmetry_in_result_context
   let parent_clause = List.map close_literal parent_clause in
   let result = List.map close_literal result in
   let parent_proof =
-    native_core_instantiate_step_proof_body_in_result_context
+    native_core_open_step_theorem_body_in_result_context
       cert id variables parent_id [] parent_proof
   in
   let body_proof =
@@ -10927,7 +10931,7 @@ let native_core_equality_factoring_in_result_context
   in
   let result = List.map close_literal result in
   let parent_proof =
-    native_core_instantiate_step_proof_body_in_result_context
+    native_core_open_step_theorem_body_in_result_context
       cert id variables parent_id subst parent_proof
   in
   let body_proof =
@@ -11303,11 +11307,11 @@ let native_core_paramodulate_unit_in_result_context
   let from_tm = close_tm from_tm in
   let to_tm = close_tm to_tm in
   let equality_proof =
-    native_core_instantiate_step_proof_body_in_result_context
+    native_core_open_step_theorem_body_in_result_context
       cert id variables equality_parent_id [] equality_proof
   in
   let target_proof =
-    native_core_instantiate_step_proof_body_in_result_context
+    native_core_open_step_theorem_body_in_result_context
       cert id variables target_parent_id [] target_proof
   in
   let body_proof =

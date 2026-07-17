@@ -918,6 +918,22 @@ if ! rg -q 'Vampire certificate v1 native core proof term checked 8 steps' \
 fi
 
 if bin/megalodon \
+  -vampirecertv1corepfcheck \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_open_dropped_parent_bad.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_open_dropped_parent_bad.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_core_pf_open_dropped_parent_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_core_pf_open_dropped_parent_bad.err"; then
+  echo "native core proof-term checker accepted a dropped parent variable without a substitution" >&2
+  exit 1
+fi
+
+if ! rg -q 'open_step_theorem cannot instantiate dropped parent variable X0 without an explicit substitution' \
+    "$WORK_DIR/native_cert_v1_core_pf_open_dropped_parent_bad.err"; then
+  echo "native core proof-term checker rejected dropped parent variable for the wrong reason" >&2
+  exit 1
+fi
+
+if bin/megalodon \
   -vampirecertv1coreclosed \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_substitute_prop_changed_unsupported.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_core_closed_nonidentity_substitute_bad.out" \

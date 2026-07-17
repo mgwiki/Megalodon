@@ -1569,6 +1569,13 @@ general implementation work should specify and extract the shared
 that operation across `resolve`, `paramodulate`, equality rules, and related
 primitive openings.
 
+Additional theorem-opening guard: the existing result-context opening helper
+has been renamed to `native_core_open_step_theorem_body_in_result_context` and
+the smoke suite now includes `native_cert_v1_open_dropped_parent_bad`. That
+negative fixture proves the fail-closed side of the invariant: if a parent
+step variable is not retained by the result step, Vampire must provide an
+explicit substitution before the parent theorem can be opened.
+
 Trust-boundary follow-up: the proof-term checker now performs a direct
 `Known`-provenance scan on every native core/preprocess step proof. In counted
 mode it rejects generated `vampire_*` certificate proof constants, while

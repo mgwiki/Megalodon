@@ -483,7 +483,11 @@ result-context opening for `factor` steps with retained variables, because
 those steps are checked by native proof templates and do not use
 certificate-derived `Known` propositions. The focused
 `native_cert_v1_open_derived_resolve_valid` fixture covers a quantified parent
-derived by `factor`, then opened by `resolve` against a closed unit.
+derived by `factor`, then opened by `resolve` against a closed unit. The
+negative fixture `native_cert_v1_open_dropped_parent_bad` locks the opposite
+case: a parent step variable that is absent from the result context must be
+explained by an explicit Vampire substitution, otherwise theorem opening fails
+closed before the primitive rule is tried.
 
 Use `-vampirecertv1preprocesspfcheck` only as a fail-closed native
 preprocessing checker. Unlike the older transitional frontier runs, this mode
