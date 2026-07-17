@@ -9,7 +9,15 @@ val pfgsummary2 : bool ref;;
 val sexprinfo : bool ref;;
 val reportbushydeps : out_channel option ref;;
 
+val fakevars : int ref;;
+val allvars : int ref;;
+val fakehyps : int ref;;
+val allhyps : int ref;;
+
 val explorerurl : string ref;;
+
+val mgobjidname : (string,string) Hashtbl.t
+val mgpropidname : (string,string) Hashtbl.t
 
 val pfgtmroot : (string,string) Hashtbl.t;;
 val pfgobjid : (string,string) Hashtbl.t;;
@@ -49,6 +57,8 @@ type tm =
 
 type ptm = int * tm
 
+val bindvarname : (tm,string) Hashtbl.t
+
 type pf =
   | Hyp of int
   | Known of string
@@ -59,6 +69,9 @@ type pf =
   | TLam of tp * pf
 
 type ppf = int * pf
+
+val bindhypname : (pf,string) Hashtbl.t
+val pbindvarname : (pf,string) Hashtbl.t
 
 type setinfixop = InfMem | InfSubq
 
@@ -182,8 +195,8 @@ val tm_to_str : tm -> string
 val pf_to_str : pf -> string
 
 val tp_to_sexpr : tp -> string
-val tm_to_sexpr : tm -> string
-val pf_to_sexpr : pf -> string
+val tm_to_sexpr : tm -> string list -> string
+val pf_to_sexpr : pf -> string list -> string list -> string
 
 val position : 'a list -> 'a -> int
 

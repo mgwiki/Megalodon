@@ -6,8 +6,15 @@
 let pfgsummary2 = ref false
 let sexprinfo = ref false;;
 let reportbushydeps = ref None;;
+let fakevars = ref 0;;
+let allvars = ref 0;;
+let fakehyps = ref 0;;
+let allhyps = ref 0;;
 
 let explorerurl = ref "https://formalweb3.uibk.ac.at/pgbce/q.php"
+
+let mgobjidname : (string,string) Hashtbl.t = Hashtbl.create 100;;
+let mgpropidname : (string,string) Hashtbl.t = Hashtbl.create 100;;
 
 let pfgtmroot : (string,string) Hashtbl.t = Hashtbl.create 100;;
 let pfgobjid : (string,string) Hashtbl.t = Hashtbl.create 100;;
@@ -3106,6 +3113,8 @@ type tm =
 
 type ptm = int * tm
 
+let bindvarname : (tm,string) Hashtbl.t = Hashtbl.create 100;;
+
 type pf =
   | Hyp of int
   | Known of string
@@ -3116,6 +3125,9 @@ type pf =
   | TLam of tp * pf
 
 type ppf = int * pf
+
+let bindhypname : (pf,string) Hashtbl.t = Hashtbl.create 100;;
+let pbindvarname : (pf,string) Hashtbl.t = Hashtbl.create 100;;
 
 type setinfixop = InfMem | InfSubq
 
@@ -3526,26 +3538,236 @@ let rec tp_to_sexpr m =
   | Set -> "(SET)"
   | Ar(m1,m2) -> "(AR " ^ tp_to_sexpr m1 ^ " " ^ tp_to_sexpr m2 ^ ")"
 
-let rec tm_to_sexpr m =
-  match m with
-  | DB(i) -> "(DB " ^ string_of_int i ^ ")"
-  | TmH(h) -> "(TMH \"" ^ h ^ "\")"
-  | Prim(i) -> Printf.sprintf "(PRIM %d)" i
-  | TpAp(m1,m2) -> "(TPAP " ^ tm_to_sexpr m1 ^ " " ^ tp_to_sexpr m2 ^ ")"
-  | Ap(m1,m2) -> "(AP " ^ tm_to_sexpr m1 ^ " " ^ tm_to_sexpr m2 ^ ")"
-  | Lam(m1,m2) -> "(LAM " ^ tp_to_sexpr m1 ^ " " ^ tm_to_sexpr m2 ^ ")"
-  | Imp(m1,m2) -> "(IMP " ^ tm_to_sexpr m1 ^ " " ^ tm_to_sexpr m2 ^ ")"
-  | All(m1,m2) -> "(ALL " ^ tp_to_sexpr m1 ^ " " ^ tm_to_sexpr m2 ^ ")"
+let rec names_sexpr nl =
+  match nl with
+  | [] -> ""
+  | n::nr -> Printf.sprintf " \"%s\"%s" n (names_sexpr nr)
 
-let rec pf_to_sexpr m =
+let rec free_in_tm_p m j =
   match m with
-  | Hyp(i) -> "(HYP " ^ string_of_int i ^ ")"
-  | Known(h) -> "(KNOWN \"" ^ h ^ "\")"
-  | PTpAp(m1,m2) -> "(PTPAP " ^ pf_to_sexpr m1 ^ " " ^ tp_to_sexpr m2 ^ ")"
-  | PTmAp(m1,m2) -> "(PTMAP " ^ pf_to_sexpr m1 ^ " " ^ tm_to_sexpr m2 ^ ")"
-  | PPfAp(m1,m2) -> "(PPFAP " ^ pf_to_sexpr m1 ^ " " ^ pf_to_sexpr m2 ^ ")"
-  | PLam(m1,m2) -> "(PLAM " ^ tm_to_sexpr m1 ^ " " ^ pf_to_sexpr m2 ^ ")"
-  | TLam(m1,m2) -> "(TLAM " ^ tp_to_sexpr m1 ^ " " ^ pf_to_sexpr m2 ^ ")"
+  | DB(i) when i = j -> true
+  | Ap(m1,m2) -> free_in_tm_p m1 j || free_in_tm_p m2 j
+  | Lam(a,m1) -> free_in_tm_p m1 (j+1)
+  | Imp(m1,m2) -> free_in_tm_p m1 j || free_in_tm_p m2 j
+  | All(a,m1) -> free_in_tm_p m1 (j+1)
+  | TpAp(m1,a) -> false (*** invariant: m1 is closed ***)
+  | _ -> false
+
+let rec free_in_pf_p d j =
+  match d with
+  | PTpAp(d1,_) -> free_in_pf_p d1 j
+  | PTmAp(d1,m2) -> free_in_pf_p d1 j || free_in_tm_p m2 j
+  | PPfAp(d1,d2) -> free_in_pf_p d1 j || free_in_pf_p d2 j
+  | PLam(m1,d2) -> free_in_tm_p m1 j || free_in_pf_p d2 j
+  | TLam(a1,d2) -> free_in_pf_p d2 (j+1)
+  | _ -> false
+
+let rec hyp_in_pf_p d j =
+  match d with
+  | Hyp(i) -> i = j
+  | PTpAp(d1,_) -> hyp_in_pf_p d1 j
+  | PTmAp(d1,m2) -> hyp_in_pf_p d1 j
+  | PPfAp(d1,d2) -> hyp_in_pf_p d1 j || hyp_in_pf_p d2 j
+  | PLam(m1,d2) -> hyp_in_pf_p d2 (j+1)
+  | TLam(a1,d2) -> hyp_in_pf_p d2 j
+  | _ -> false
+
+let rec conflictedvar_p x m j vl =
+  match m with
+  | DB(i) -> i >= j && List.nth vl (i-j) = x
+  | TpAp(m1,_) -> conflictedvar_p x m1 j vl
+  | Ap(m1,m2) -> conflictedvar_p x m1 j vl || conflictedvar_p x m2 j vl
+  | Lam(_,m1) -> conflictedvar_p x m1 (j+1) vl
+  | Imp(m1,m2) -> conflictedvar_p x m1 j vl || conflictedvar_p x m2 j vl
+  | All(_,m1) -> conflictedvar_p x m1 (j+1) vl
+  | _ -> false
+
+let legalvar_p x mbody vl =
+  not (conflictedvar_p x mbody 1 vl)
+
+let rec freshvar_3 x i mbody vl =
+  let xi = Printf.sprintf "%s%d" x i in
+  if legalvar_p xi mbody vl then
+    xi
+  else
+    freshvar_3 x (i+1) mbody vl
+
+let rec freshvar_2 xl mbody vl =
+  match xl with
+  | x::xr ->
+     if x = "_" then
+       freshvar_2 xr mbody vl
+     else if legalvar_p x mbody vl then
+       x
+     else if xr = [] then
+       freshvar_3 x 0 mbody vl
+     else
+       freshvar_2 xr mbody vl
+  | [] ->
+     incr fakevars;
+     if legalvar_p "v" mbody vl then
+       "v"
+     else
+       freshvar_3 "v" 0 mbody vl
+
+let pfgbvarh : (tm,string) Hashtbl.t = Hashtbl.create 100
+
+exception NegDB
+
+let rec tmshift i j m =
+  match m with
+  | DB(k) when k < i -> DB(k)
+  | DB(k) ->
+      let l = k + j in
+      if l >= i then DB(l) else raise NegDB
+  | TpAp(m1,a) -> TpAp(tmshift i j m1,a)
+  | Ap(m1,m2) -> Ap(tmshift i j m1,tmshift i j m2)
+  | Lam(a1,m1) -> Lam(a1,tmshift (i+1) j m1)
+  | Imp(m1,m2) -> Imp(tmshift i j m1,tmshift i j m2)
+  | All(a1,m1) -> All(a1,tmshift (i+1) j m1)
+  | _ -> m
+
+let freshvar mbind mbody vl =
+  incr allvars;
+  if free_in_tm_p mbody 0 then
+    let xl = Hashtbl.find_all bindvarname mbind in
+    let yl = Hashtbl.find_all pfgbvarh mbind in
+    let zl = xl @ yl in
+    freshvar_2 zl mbody vl
+  else
+    "_"
+
+let rec tm_to_sexpr m vl =
+  match m with
+  | DB(i) -> "(DB " ^ string_of_int i ^ " \"" ^ (List.nth vl i) ^ "\")"
+  | TmH(h) -> "(TMH \"" ^ h ^ "\"" ^ names_sexpr (Hashtbl.find_all mgobjidname h) ^ ")"
+  | Prim(i) -> Printf.sprintf "(PRIM %d)" i
+  | TpAp(m1,m2) -> "(TPAP " ^ tm_to_sexpr m1 vl ^ " " ^ tp_to_sexpr m2 ^ ")"
+  | Ap(m1,m2) -> "(AP " ^ tm_to_sexpr m1 vl ^ " " ^ tm_to_sexpr m2 vl ^ ")"
+  | Lam(m1,m2) ->
+     let v = freshvar m m2 vl in
+     "(LAM \"" ^ v ^ "\" " ^ tp_to_sexpr m1 ^ " " ^ tm_to_sexpr m2 (v::vl) ^ ")"
+  | Imp(m1,m2) -> "(IMP " ^ tm_to_sexpr m1 vl ^ " " ^ tm_to_sexpr m2 vl ^ ")"
+  | All(m1,m2) ->
+     let v = freshvar m m2 vl in
+     "(ALL \"" ^ v ^ "\" " ^ tp_to_sexpr m1 ^ " " ^ tm_to_sexpr m2 (v::vl) ^ ")"
+
+let rec pconflictedvar_p x d j k vl hl =
+  match d with
+  | Hyp(i) -> i >= k && List.nth hl (i-k) = x
+  | PTpAp(d1,_) ->
+     pconflictedvar_p x d1 j k vl hl
+  | PTmAp(d1,m2) ->
+     pconflictedvar_p x d1 j k vl hl || conflictedvar_p x m2 j vl
+  | PPfAp(d1,d2) ->
+     pconflictedvar_p x d1 j k vl hl || pconflictedvar_p x d2 j k vl hl
+  | PLam(m1,d2) ->
+     conflictedvar_p x m1 j vl || pconflictedvar_p x d2 j (k+1) vl hl
+  | TLam(_,d2) ->
+     pconflictedvar_p x d2 (j+1) k vl hl
+  | _ -> false
+
+let plegalvar_p x dbody vl hl =
+  not (pconflictedvar_p x dbody 1 0 vl hl)
+
+let rec pfreshvar_3 x i dbody vl hl =
+  let xi = Printf.sprintf "%s%d" x i in
+  if plegalvar_p xi dbody vl hl then
+    xi
+  else
+    pfreshvar_3 x (i+1) dbody vl hl
+
+let rec pfreshvar_2 xl dbody vl hl =
+  match xl with
+  | x::xr ->
+     if x = "_" then
+       pfreshvar_2 xr dbody vl hl
+     else if plegalvar_p x dbody vl hl then
+       x
+     else if xr = [] then
+       pfreshvar_3 x 0 dbody vl hl
+     else
+       pfreshvar_2 xr dbody vl hl
+  | [] ->
+     incr fakevars;
+     if plegalvar_p "v" dbody vl hl then
+       "v"
+     else
+       pfreshvar_3 "v" 0 dbody vl hl
+
+let pfreshvar dbind dbody vl hl =
+  incr allvars;
+  if free_in_pf_p dbody 0 then
+    let xl = Hashtbl.find_all pbindvarname dbind in
+    pfreshvar_2 xl dbody vl hl
+  else
+    "_"
+
+let rec pconflictedhyp_p x d j k vl hl =
+  match d with
+  | Hyp(i) -> i >= k && List.nth hl (i-k) = x
+  | PTpAp(d1,_) ->
+     pconflictedhyp_p x d1 j k vl hl
+  | PTmAp(d1,m2) ->
+     pconflictedhyp_p x d1 j k vl hl || conflictedvar_p x m2 j vl
+  | PPfAp(d1,d2) ->
+     pconflictedhyp_p x d1 j k vl hl || pconflictedhyp_p x d2 j k vl hl
+  | PLam(m1,d2) ->
+     conflictedvar_p x m1 j vl || pconflictedhyp_p x d2 j (k+1) vl hl
+  | TLam(_,d2) ->
+     pconflictedhyp_p x d2 (j+1) k vl hl
+  | _ -> false
+
+let plegalhyp_p x dbody vl hl =
+  not (pconflictedhyp_p x dbody 0 1 vl hl)
+
+let rec pfreshhyp_3 x i dbody vl hl =
+  let xi = Printf.sprintf "%s%d" x i in
+  if plegalhyp_p xi dbody vl hl then
+    xi
+  else
+    pfreshhyp_3 x (i+1) dbody vl hl
+
+let rec pfreshhyp_2 xl dbody vl hl =
+  match xl with
+  | x::xr ->
+     if x = "_" then
+       pfreshhyp_2 xr dbody vl hl
+     else if plegalhyp_p x dbody vl hl then
+       x
+     else if xr = [] then
+       pfreshhyp_3 x 0 dbody vl hl
+     else
+       pfreshhyp_2 xr dbody vl hl
+  | [] ->
+     incr fakehyps;
+     if plegalhyp_p "G" dbody vl hl then
+       "G"
+     else
+       pfreshhyp_3 "G" 0 dbody vl hl
+
+let pfreshhyp dbind dbody vl hl =
+  incr allhyps;
+  if hyp_in_pf_p dbody 0 then
+    let xl = Hashtbl.find_all bindhypname dbind in
+    pfreshhyp_2 xl dbody vl hl
+  else
+    "_"
+
+let rec pf_to_sexpr m vl hl =
+  match m with
+  | Hyp(i) -> "(HYP " ^ string_of_int i ^ " \"" ^ (List.nth hl i) ^ "\")"
+  | Known(h) ->
+     "(KNOWN \"" ^ h ^ "\"" ^ names_sexpr (Hashtbl.find_all mgpropidname h) ^ ")"
+  | PTpAp(m1,m2) -> "(PTPAP " ^ pf_to_sexpr m1 vl hl ^ " " ^ tp_to_sexpr m2 ^ ")"
+  | PTmAp(m1,m2) -> "(PTMAP " ^ pf_to_sexpr m1 vl hl ^ " " ^ tm_to_sexpr m2 vl ^ ")"
+  | PPfAp(m1,m2) -> "(PPFAP " ^ pf_to_sexpr m1 vl hl ^ " " ^ pf_to_sexpr m2 vl  hl ^ ")"
+  | PLam(m1,m2) ->
+     let h = pfreshhyp m m2 vl hl in
+     "(PLAM \"" ^ h ^ "\" " ^ tm_to_sexpr m1 vl ^ " " ^ pf_to_sexpr m2 vl (h::hl) ^ ")"
+  | TLam(m1,m2) ->
+     let v = pfreshvar m m2 vl hl in
+     "(TLAM \"" ^ v ^ "\" " ^ tp_to_sexpr m1 ^ " " ^ pf_to_sexpr m2 (v::vl) hl ^ ")"
 
 (*** serialization code ***)
 let hex_char h =
@@ -3562,21 +3784,6 @@ let position l x = position_rec l x 0
 
 let tplookup ctxtp x =
   TpVar (position ctxtp x)
-
-exception NegDB
-
-let rec tmshift i j m =
-  match m with
-  | DB(k) when k < i -> DB(k)
-  | DB(k) ->
-      let l = k + j in
-      if l >= i then DB(l) else raise NegDB
-  | TpAp(m1,a) -> TpAp(tmshift i j m1,a)
-  | Ap(m1,m2) -> Ap(tmshift i j m1,tmshift i j m2)
-  | Lam(a1,m1) -> Lam(a1,tmshift (i+1) j m1)
-  | Imp(m1,m2) -> Imp(tmshift i j m1,tmshift i j m2)
-  | All(a1,m1) -> All(a1,tmshift (i+1) j m1)
-  | _ -> m
 
 let rec tmtplookup_rec ctxtm x i =
   match ctxtm with
@@ -3669,35 +3876,6 @@ let rec tmsubst m j n =
   | Imp(m1,m2) -> Imp(tmsubst m1 j n,tmsubst m2 j n)
   | All(a,m1) -> All(a,tmsubst m1 (j+1) n)
   | _ -> m
-
-let rec free_in_tm_p m j =
-  match m with
-  | DB(i) when i = j -> true
-  | Ap(m1,m2) -> free_in_tm_p m1 j || free_in_tm_p m2 j
-  | Lam(a,m1) -> free_in_tm_p m1 (j+1)
-  | Imp(m1,m2) -> free_in_tm_p m1 j || free_in_tm_p m2 j
-  | All(a,m1) -> free_in_tm_p m1 (j+1)
-  | TpAp(m1,a) -> false (*** invariant: m1 is closed ***)
-  | _ -> false
-
-let rec free_in_pf_p d j =
-  match d with
-  | PTpAp(d1,_) -> free_in_pf_p d1 j
-  | PTmAp(d1,m2) -> free_in_pf_p d1 j || free_in_tm_p m2 j
-  | PPfAp(d1,d2) -> free_in_pf_p d1 j || free_in_pf_p d2 j
-  | PLam(m1,d2) -> free_in_tm_p m1 j || free_in_pf_p d2 j
-  | TLam(a1,d2) -> free_in_pf_p d2 (j+1)
-  | _ -> false
-
-let rec hyp_in_pf_p d j =
-  match d with
-  | Hyp(i) -> i = j
-  | PTpAp(d1,_) -> hyp_in_pf_p d1 j
-  | PTmAp(d1,m2) -> hyp_in_pf_p d1 j
-  | PPfAp(d1,d2) -> hyp_in_pf_p d1 j || hyp_in_pf_p d2 j
-  | PLam(m1,d2) -> hyp_in_pf_p d2 (j+1)
-  | TLam(a1,d2) -> hyp_in_pf_p d2 j
-  | _ -> false
 
 let beta_count = ref None
 
@@ -6942,7 +7120,6 @@ let pfgtmh : (string,string) Hashtbl.t = Hashtbl.create 100
 let pfgtmhh : (string,Hash.hashval) Hashtbl.t = Hashtbl.create 100
 let pfgknh : (string,string) Hashtbl.t = Hashtbl.create 100
 let pfgknhh : (string,Hash.hashval) Hashtbl.t = Hashtbl.create 100
-let pfgbvarh : (tm,string) Hashtbl.t = Hashtbl.create 100
 let pfgpfbvarh : (pf,string) Hashtbl.t = Hashtbl.create 100
 let pfghyph : (pf,string) Hashtbl.t = Hashtbl.create 100
 

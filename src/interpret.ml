@@ -438,7 +438,9 @@ In the remaining cases, atp is monomorphic (no TpVars):
 		      | [([y],Some (AscTp,ya))] ->
 			  let ytp = extract_tp ya cxtp in
 			  let bodytm = check_tm_r body Prop poly sgtmof sgtm cxtp ((y,(ytp,None))::cxtm) in
-			  (Ap(TpAp(bindop,ytp),Lam(ytp,bodytm)),ytp)
+                          let r = Ap(TpAp(bindop,ytp),Lam(ytp,bodytm)) in
+                          Hashtbl.add bindvarname r y;
+			  (r,ytp)
 		      | _ -> raise (Failure(x ^ " should only bind one variable and that variable should be ascribed a type."))
 		    end
 		| (Ar(Ar(TpVar 0,Prop),TpVar 0),Some xc) -> (*** Case 1 ***)
@@ -447,7 +449,9 @@ In the remaining cases, atp is monomorphic (no TpVars):
 		      | [([y],Some (AscTp,ya))] ->
 			  let ytp = extract_tp ya cxtp in
 			  let bodytm = check_tm_r body Prop poly sgtmof sgtm cxtp ((y,(ytp,None))::cxtm) in
-			  (Ap(TpAp(bindop,ytp),Lam(ytp,bodytm)),ytp)
+                          let r = Ap(TpAp(bindop,ytp),Lam(ytp,bodytm)) in
+                          Hashtbl.add bindvarname r y;
+                          (r,ytp)
 		      | [([y],Some (AscSet,ya))] ->
 			  begin
 			    match !setIn with
@@ -456,7 +460,9 @@ In the remaining cases, atp is monomorphic (no TpVars):
 				let c = check_tm_r xc (Ar(Prop,Ar(Prop,Prop))) poly sgtmof sgtm cxtp cxtm in
 				let yatm = check_tm_r ya Set poly sgtmof sgtm cxtp cxtm in
 				let bodytm = check_tm_r body Prop poly sgtmof sgtm cxtp ((y,(Set,None))::cxtm) in
-				(Ap(TpAp(bindop,Set),Lam(Set,Ap(Ap(c,Ap(Ap(TmH(sIn),DB(0)),tmshift 0 1 yatm)),bodytm))),Set)
+                                let r = Ap(TpAp(bindop,Set),Lam(Set,Ap(Ap(c,Ap(Ap(TmH(sIn),DB(0)),tmshift 0 1 yatm)),bodytm))) in
+                                Hashtbl.add bindvarname r y;
+				(r,Set)
 			  end
 		      | [([y],Some (AscSubeq,ya))] ->
 			  begin
@@ -661,6 +667,7 @@ In the remaining cases, atp is monomorphic (no TpVars):
 	| Some rop ->
 	    let atm = check_tm_r a Set poly sgtmof sgtm cxtp ((x,(Set,None))::cxtm) in
 	    let btm = check_tm_r b Set poly sgtmof sgtm cxtp cxtm in
+            Hashtbl.add bindvarname (Lam(Set,atm)) x;
 	    (Ap(Ap(TmH(rop),btm),Lam(Set,atm)),Set)
 	| None -> raise (Failure("{..|x :e ..} notation can only be used after Notation Repl is declared"))
       end
@@ -670,6 +677,7 @@ In the remaining cases, atp is monomorphic (no TpVars):
 	| (Some rop,Some sPow) ->
 	    let atm = check_tm_r a Set poly sgtmof sgtm cxtp ((x,(Set,None))::cxtm) in
 	    let btm = check_tm_r b Set poly sgtmof sgtm cxtp cxtm in
+            Hashtbl.add bindvarname (Lam(Set,atm)) x;
 	    (Ap(Ap(TmH(rop),Ap(TmH(sPow),btm)),Lam(Set,atm)),Set)
 	| (None,_) -> raise (Failure("{..|x c= ..} notation can only be used after Notation Repl is declared"))
 	| (_,None) -> raise (Failure("{..|x c= ..} notation can only be used after Power is declared"))
@@ -680,6 +688,7 @@ In the remaining cases, atp is monomorphic (no TpVars):
 	| Some sop ->
 	    let atm = check_tm_r a Set poly sgtmof sgtm cxtp cxtm in
 	    let btm = check_tm_r b Prop poly sgtmof sgtm cxtp ((x,(Set,None))::cxtm) in
+            Hashtbl.add bindvarname (Lam(Set,btm)) x;
 	    (Ap(Ap(TmH(sop),atm),Lam(Set,btm)),Set)
 	| None -> raise (Failure("{x :e .. | ..} notation can only be used after Notation Sep is declared"))
       end
@@ -689,6 +698,7 @@ In the remaining cases, atp is monomorphic (no TpVars):
 	| (Some sop,Some sPow) ->
 	    let atm = check_tm_r a Set poly sgtmof sgtm cxtp cxtm in
 	    let btm = check_tm_r b Prop poly sgtmof sgtm cxtp ((x,(Set,None))::cxtm) in
+            Hashtbl.add bindvarname (Lam(Set,btm)) x;
 	    (Ap(Ap(TmH(sop),Ap(TmH(sPow),atm)),Lam(Set,btm)),Set)
 	| (None,_) -> raise (Failure("{x c= .. | ..} notation can only be used after Notation Sep is declared"))
 	| (_,None) -> raise (Failure("{x c= .. | ..} notation can only be used after Power is declared"))
@@ -700,6 +710,8 @@ In the remaining cases, atp is monomorphic (no TpVars):
 	    let atm = check_tm_r a Set poly sgtmof sgtm cxtp ((x,(Set,None))::cxtm) in
 	    let btm = check_tm_r b Set poly sgtmof sgtm cxtp cxtm in
 	    let ctm = check_tm_r c Prop poly sgtmof sgtm cxtp ((x,(Set,None))::cxtm) in
+            Hashtbl.add bindvarname (Lam(Set,ctm)) x;
+            Hashtbl.add bindvarname (Lam(Set,atm)) x;
 	    (Ap(Ap(Ap(TmH(rsop),btm),Lam(Set,ctm)),Lam(Set,atm)),Set)
 	| None -> raise (Failure("{.. |x :e .., ..} notation can only be used after Notation SepRepl is declared"))
       end
@@ -710,6 +722,8 @@ In the remaining cases, atp is monomorphic (no TpVars):
 	    let atm = check_tm_r a Set poly sgtmof sgtm cxtp ((x,(Set,None))::cxtm) in
 	    let btm = check_tm_r b Set poly sgtmof sgtm cxtp cxtm in
 	    let ctm = check_tm_r c Prop poly sgtmof sgtm cxtp ((x,(Set,None))::cxtm) in
+            Hashtbl.add bindvarname (Lam(Set,ctm)) x;
+            Hashtbl.add bindvarname (Lam(Set,atm)) x;
 	    (Ap(Ap(Ap(TmH(rsop),Ap(TmH(sPow),btm)),Lam(Set,ctm)),Lam(Set,atm)),Set)
 	| (None,_) -> raise (Failure("{.. |x c= .., ..} notation can only be used after Notation SepRepl is declared"))
 	| (_,None) -> raise (Failure("{.. |x c= .., ..} notation can only be used after Power is declared"))
@@ -1001,11 +1015,11 @@ and check_tm_r_all bvl body poly sgtmof sgtm cxtp cxtm =
   | ([],_)::bvr -> check_tm_r_all bvr body poly sgtmof sgtm cxtp cxtm
   | (xl,None)::bvr -> (*** if no ascription is given, assume it is Set ***)
       let n = check_tm_r_all bvr body poly sgtmof sgtm cxtp ((List.map (fun x -> (x,(Set,None))) (List.rev xl)) @ cxtm) in
-      List.fold_right (fun x n1 -> All(Set,n1)) xl n
+      List.fold_right (fun x n1 -> let r = All(Set,n1) in Hashtbl.add bindvarname r x; r) xl n
   | (xl,Some(AscTp,a1))::bvr ->
       let a1tp = extract_tp a1 cxtp in
       let n = check_tm_r_all bvr body poly sgtmof sgtm cxtp ((List.map (fun x -> (x,(a1tp,None))) (List.rev xl)) @ cxtm) in
-      List.fold_right (fun x n1 -> All(a1tp,n1)) xl n
+      List.fold_right (fun x n1 -> let r = All(a1tp,n1) in Hashtbl.add bindvarname r x; r) xl n
   | (xl,Some(AscSet,a1))::bvr ->
       begin
 	match !setIn with
@@ -1014,7 +1028,7 @@ and check_tm_r_all bvl body poly sgtmof sgtm cxtp cxtm =
 	    let a1s = check_tm_r a1 Set poly sgtmof sgtm cxtp cxtm in
 	    let n = check_tm_r_all bvr body poly sgtmof sgtm cxtp ((List.map (fun x -> (x,(Set,None))) (List.rev xl)) @ cxtm) in
 	    let sh = ref (1+(List.length xl)) in
-	    List.fold_right (fun x n1 -> decr sh; All(Set,Imp(Ap(Ap(TmH(sIn),DB(0)),tmshift 0 !sh a1s),n1))) xl n
+	    List.fold_right (fun x n1 -> decr sh; let r = All(Set,Imp(Ap(Ap(TmH(sIn),DB(0)),tmshift 0 !sh a1s),n1)) in Hashtbl.add bindvarname r x; r) xl n
       end
   | (xl,Some(AscSubeq,a1))::bvr ->
       begin
@@ -1024,7 +1038,7 @@ and check_tm_r_all bvl body poly sgtmof sgtm cxtp cxtm =
 	    let a1s = check_tm_r a1 Set poly sgtmof sgtm cxtp cxtm in
 	    let n = check_tm_r_all bvr body poly sgtmof sgtm cxtp ((List.map (fun x -> (x,(Set,None))) (List.rev xl)) @ cxtm) in
 	    let sh = ref (1+(List.length xl)) in
-	    List.fold_right (fun x n1 -> decr sh; All(Set,Imp(Ap(Ap(TmH(sSubeq),DB(0)),tmshift 0 !sh a1s),n1))) xl n
+	    List.fold_right (fun x n1 -> decr sh; let r = All(Set,Imp(Ap(Ap(TmH(sSubeq),DB(0)),tmshift 0 !sh a1s),n1)) in Hashtbl.add bindvarname r x; r) xl n
       end
 and extract_tm_r_lam bvl body poly sgtmof sgtm cxtp cxtm =
   match bvl with
@@ -1034,7 +1048,8 @@ and extract_tm_r_lam bvl body poly sgtmof sgtm cxtp cxtm =
   | (xl,Some(AscTp,a1))::bvr ->
       let a1tp = extract_tp a1 cxtp in
       let (n,ntp) = extract_tm_r_lam bvr body poly sgtmof sgtm cxtp ((List.map (fun x -> (x,(a1tp,None))) (List.rev xl)) @ cxtm) in
-      (List.fold_right (fun x n1 -> Lam(a1tp,n1)) xl n,List.fold_right (fun x n1tp -> Ar(a1tp,n1tp)) xl ntp)
+      (List.fold_right (fun x n1 -> let r = Lam(a1tp,n1) in Hashtbl.add bindvarname r x; r) xl n,
+       List.fold_right (fun x n1tp -> Ar(a1tp,n1tp)) xl ntp)
   | (xl,Some(AscSet,a1))::bvr ->
       begin
 	match !setlam with
@@ -1042,7 +1057,7 @@ and extract_tm_r_lam bvl body poly sgtmof sgtm cxtp cxtm =
 	| Some slam ->
 	    let a1s = check_tm_r a1 Set poly sgtmof sgtm cxtp cxtm in
 	    let n = check_tm_r_lam Set bvr body poly sgtmof sgtm cxtp ((List.map (fun x -> (x,(Set,None))) (List.rev xl)) @ cxtm) in
-	    (List.fold_right (fun x n1 -> Ap(Ap(TmH(slam),a1s),Lam(Set,n1))) xl n,Set)
+	    (List.fold_right (fun x n1 -> let r = Lam(Set,n1) in Hashtbl.add bindvarname r x; Ap(Ap(TmH(slam),a1s),r)) xl n,Set)
       end
   | (xl,Some(AscSubeq,a1))::bvr ->
       begin
@@ -1052,7 +1067,7 @@ and extract_tm_r_lam bvl body poly sgtmof sgtm cxtp cxtm =
 	| (Some slam,Some sPow) ->
 	    let a1s = check_tm_r a1 Set poly sgtmof sgtm cxtp cxtm in
 	    let n = check_tm_r_lam Set bvr body poly sgtmof sgtm cxtp ((List.map (fun x -> (x,(Set,None))) (List.rev xl)) @ cxtm) in
-	    (List.fold_right (fun x n1 -> Ap(Ap(TmH(slam),Ap(TmH(sPow),a1s)),Lam(Set,n1))) xl n,Set)
+	    (List.fold_right (fun x n1 -> let r = Lam(Set,n1) in Hashtbl.add bindvarname r x; Ap(Ap(TmH(slam),Ap(TmH(sPow),a1s)),r)) xl n,Set)
       end
 and check_tm_r_lam btp bvl body poly sgtmof sgtm cxtp cxtm =
   match bvl with
@@ -1064,7 +1079,9 @@ and check_tm_r_lam btp bvl body poly sgtmof sgtm cxtp cxtm =
 	| Ar(b1,b2) ->
 	    let n = check_tm_r_lam b2 ((xr,None)::bvr) body poly sgtmof sgtm cxtp ((x,(b1,None))::cxtm) in
 	    Hashtbl.add pfgbvarh (Lam(b1,n)) x;
-	    Lam(b1,n)
+	    let r = Lam(b1,n) in
+            Hashtbl.add bindvarname r x;
+            r
 	| _ ->
 	    raise (Failure "fun expected to be of non-functional type")
       end
@@ -1076,7 +1093,9 @@ and check_tm_r_lam btp bvl body poly sgtmof sgtm cxtp cxtm =
 	    if b1 = a1tp then
 	      let n = check_tm_r_lam b2 ((xr,None)::bvr) body poly sgtmof sgtm cxtp ((x,(b1,None))::cxtm) in
 	      Hashtbl.add pfgbvarh (Lam(b1,n)) x;
-	      Lam(b1,n)
+              let r = Lam(b1,n) in
+              Hashtbl.add bindvarname r x;
+	      r
 	    else
 	      raise (Failure ("domain of fun is expected to be " ^ (tp_to_str b1) ^ " but given as " ^ (tp_to_str a1tp)))
 	| _ ->
@@ -1091,6 +1110,7 @@ and check_tm_r_lam btp bvl body poly sgtmof sgtm cxtp cxtm =
 	      let a1s = check_tm_r a1 Set poly sgtmof sgtm cxtp cxtm in
 	      let n = check_tm_r_lam Set ((xr,None)::bvr) body poly sgtmof sgtm cxtp ((x,(Set,None))::cxtm) in
 	      Hashtbl.add pfgbvarh (Lam(Set,n)) x;
+	      Hashtbl.add bindvarname (Lam(Set,n)) x;
 	      Ap(Ap(TmH(slam),a1s),Lam(Set,n))
 	end
       else
@@ -1105,6 +1125,7 @@ and check_tm_r_lam btp bvl body poly sgtmof sgtm cxtp cxtm =
 	      let a1s = check_tm_r a1 Set poly sgtmof sgtm cxtp cxtm in
 	      let n = check_tm_r_lam Set ((xr,None)::bvr) body poly sgtmof sgtm cxtp ((x,(Set,None))::cxtm) in
 	      Hashtbl.add pfgbvarh (Lam(Set,n)) x;
+	      Hashtbl.add bindvarname (Lam(Set,n)) x;
 	      Ap(Ap(TmH(slam),Ap(TmH(sPow),a1s)),Lam(Set,n))
 	end
       else
@@ -1128,6 +1149,7 @@ and check_tm_r_bind2b x bindop beta yl ytp bvl body poly sgtmof sgtm cxtp cxtm =
   | y::yr ->
       let m = check_tm_r_bind2b x (tmshift 0 1 bindop) beta yr ytp bvl body poly sgtmof sgtm cxtp ((y,(ytp,None))::cxtm) in
       Hashtbl.add pfgbvarh (Lam(ytp,m)) y;
+      Hashtbl.add bindvarname (Lam(ytp,m)) y;
       Ap(TpAp(bindop,ytp),Lam(ytp,m))
 and check_tm_r_bind3 x bindop c bvl body poly sgtmof sgtm cxtp cxtm =
   match bvl with
@@ -1162,6 +1184,7 @@ and check_tm_r_bind3b x bindop c yl ytp bvl body poly sgtmof sgtm cxtp cxtm =
   | y::yr ->
       let m = check_tm_r_bind3b x (tmshift 0 1 bindop) c yr ytp bvl body poly sgtmof sgtm cxtp ((y,(ytp,None))::cxtm) in
       Hashtbl.add pfgbvarh (Lam(ytp,m)) y;
+      Hashtbl.add bindvarname (Lam(ytp,m)) y;
       Ap(TpAp(bindop,ytp),Lam(ytp,m))
 and check_tm_r_bind3c x bindop r c yl yset bvl body poly sgtmof sgtm cxtp cxtm =
   match yl with
@@ -1170,6 +1193,7 @@ and check_tm_r_bind3c x bindop r c yl yset bvl body poly sgtmof sgtm cxtp cxtm =
       let yset = tmshift 0 1 yset in
       let m = check_tm_r_bind3c x (tmshift 0 1 bindop) r (tmshift 0 1 c) yr yset bvl body poly sgtmof sgtm cxtp ((y,(Set,None))::cxtm) in
       Hashtbl.add pfgbvarh (Lam(Set,Ap(Ap(c,Ap(Ap(r,DB(0)),yset)),m))) y;
+      Hashtbl.add bindvarname (Lam(Set,Ap(Ap(c,Ap(Ap(r,DB(0)),yset)),m))) y;
       Ap(TpAp(bindop,Set),Lam(Set,Ap(Ap(c,Ap(Ap(r,DB(0)),yset)),m)))
 and check_tm_r_bind4 x bindop alpha beta bvl body poly sgtmof sgtm cxtp cxtm =
   match bvl with
@@ -1193,6 +1217,7 @@ and check_tm_r_bind4b x bindop alpha beta yl bvl body poly sgtmof sgtm cxtp cxtm
   | y::yr ->
       let m = check_tm_r_bind4b x (tmshift 0 1 bindop) alpha beta yr bvl body poly sgtmof sgtm cxtp ((y,(alpha,None))::cxtm) in
       Hashtbl.add pfgbvarh (Lam(alpha,m)) y;
+      Hashtbl.add bindvarname (Lam(alpha,m)) y;
       Ap(bindop,Lam(alpha,m))
 and check_tm_r_bind5 x bindop c bvl body poly sgtmof sgtm cxtp cxtm =
   match bvl with
@@ -1238,6 +1263,7 @@ and check_tm_r_bind5c x bindop r c yl yset bvl body poly sgtmof sgtm cxtp cxtm =
       let yset = tmshift 0 1 yset in
       let m = check_tm_r_bind5c x (tmshift 0 1 bindop) r (tmshift 0 1 c) yr yset bvl body poly sgtmof sgtm cxtp ((y,(Set,None))::cxtm) in
       Hashtbl.add pfgbvarh (Lam(Set,Ap(Ap(c,Ap(Ap(r,DB(0)),yset)),m))) y;
+      Hashtbl.add bindvarname (Lam(Set,Ap(Ap(c,Ap(Ap(r,DB(0)),yset)),m))) y;
       Ap(bindop,Lam(Set,Ap(Ap(c,Ap(Ap(r,DB(0)),yset)),m)))
 and check_tm_r_bind6 x bindop beta bvl body poly sgtmof sgtm cxtp cxtm =
   match bvl with
@@ -1268,6 +1294,7 @@ and check_tm_r_bind6b x bindop beta yl yset bvl body poly sgtmof sgtm cxtp cxtm 
   | y::yr ->
       let m = check_tm_r_bind6b x (tmshift 0 1 bindop) beta yr (tmshift 0 1 yset) bvl body poly sgtmof sgtm cxtp ((y,(Set,None))::cxtm) in
       Hashtbl.add pfgbvarh (Lam(Set,m)) y;
+      Hashtbl.add bindvarname (Lam(Set,m)) y;
       Ap(Ap(bindop,yset),Lam(Set,m))
 and check_tm_r_bind6c x bindop beta p yl yset bvl body poly sgtmof sgtm cxtp cxtm =
   match yl with
@@ -1275,6 +1302,7 @@ and check_tm_r_bind6c x bindop beta p yl yset bvl body poly sgtmof sgtm cxtp cxt
   | y::yr ->
       let m = check_tm_r_bind6c x (tmshift 0 1 bindop) beta p yr (tmshift 0 1 yset) bvl body poly sgtmof sgtm cxtp ((y,(Set,None))::cxtm) in
       Hashtbl.add pfgbvarh (Lam(Set,m)) y;
+      Hashtbl.add bindvarname (Lam(Set,m)) y;
       Ap(Ap(bindop,Ap(p,yset)),Lam(Set,m))
 
 let extract_tm a poly sgtmof sgtm cxtp cxtm =
@@ -1380,6 +1408,7 @@ let rec extract_pf_r a polyt polyp sgtmof sgdelta sgtm sgpf cxtp cxtm cxpf =
 	  let (bpf,btm) = extract_pf_r b polyt polyp sgtmof sgdelta sgtm sgpf cxtp cxtm cxpf in
 	  let (bodypf,bodytm) = extract_pf_r body polyt polyp sgtmof sgdelta sgtm sgpf cxtp cxtm ((x,btm)::cxpf) in
 	  Hashtbl.add pfghyph (PLam(btm,bodypf)) x;
+	  Hashtbl.add bindhypname (PLam(btm,bodypf)) x;
 	  (PPfAp(PLam(btm,bodypf),bpf),bodytm)
       end
   | Le(x,Some(AscTp,a),b,body) ->
@@ -1393,6 +1422,7 @@ let rec extract_pf_r a polyt polyp sgtmof sgdelta sgtm sgpf cxtp cxtm cxpf =
 	  let bpf = check_pf_r b atm polyt polyp sgtmof sgdelta sgtm sgpf cxtp cxtm cxpf in
 	  let (bodypf,bodytm) = extract_pf_r body polyt polyp sgtmof sgdelta sgtm sgpf cxtp cxtm ((x,atm)::cxpf) in
 	  Hashtbl.add pfghyph (PLam(atm,bodypf)) x;
+	  Hashtbl.add bindhypname (PLam(atm,bodypf)) x;
 	  (PPfAp(PLam(atm,bodypf),bpf),bodytm)
       end
   | Le(x,Some(_,a),b,body) ->
@@ -1429,11 +1459,13 @@ and extract_pf_r_lam bvl body polyt polyp sgtmof sgdelta sgtm sgpf cxtp cxtm cxp
 	try
 	  let b1tp = extract_tp b1 cxtp in
 	  let (d1,p1) = extract_pf_r_lam ((xr,Some(AscTp,b1))::bvr) body polyt polyp sgtmof sgdelta sgtm sgpf cxtp ((x,(b1tp,None))::cxtm) (List.map (fun (y,q) -> (y,tmshift 0 1 q)) cxpf) in
+          Hashtbl.add bindvarname (All(b1tp,p1)) x;
 	  (TLam(b1tp,d1),All(b1tp,p1))
 	with Failure(_) ->
 	  let b1tm = check_tm_r b1 Prop polyt sgtmof sgtm cxtp cxtm in
 	  let (d1,p1) = extract_pf_r_lam ((xr,None)::bvr) body polyt polyp sgtmof sgdelta sgtm sgpf cxtp cxtm ((x,b1tm)::cxpf) in
 	  Hashtbl.add pfghyph (PLam(b1tm,d1)) x;
+	  Hashtbl.add bindhypname (PLam(b1tm,d1)) x;
 	  (PLam(b1tm,d1),Imp(b1tm,p1))
       end
   | (x::xr,Some(AscSet,a1))::bvr ->
@@ -1506,10 +1538,13 @@ and check_pf_r_lam p bvl body polyt polyp sgtmof sgdelta sgtm sgpf cxtp cxtm cxp
 	| Imp(p1,p2) ->
 	    let d1 = check_pf_r_lam p2 ((xr,None)::bvr) body polyt polyp sgtmof sgdelta sgtm sgpf cxtp cxtm ((x,p1)::cxpf) in
 	    Hashtbl.add pfghyph (PLam(p1,d1)) x;
+            Hashtbl.add bindhypname (PLam(p1,d1)) x;
 	    PLam(p1,d1)
 	| All(a1,p2) ->
+            Hashtbl.add bindvarname p x;
 	    let d1 = check_pf_r_lam p2 ((xr,None)::bvr) body polyt polyp sgtmof sgdelta sgtm sgpf cxtp ((x,(a1,None))::cxtm) (List.map (fun (y,q) -> (y,tmshift 0 1 q)) cxpf) in
 	    Hashtbl.add pfgpfbvarh (TLam(a1,d1)) x;
+            Hashtbl.add pbindvarname (TLam(a1,d1)) x;
 	    TLam(a1,d1)
 	| _ -> raise (Failure("Lambda in proof term is expected to prove something other than an implication or universal quantifier: " ^ (tm_to_str p)))
       end
@@ -1530,15 +1565,18 @@ and check_pf_r_lam p bvl body polyt polyp sgtmof sgdelta sgtm sgpf cxtp cxtm cxp
 		  deltaset := dl;
 		  let d1 = check_pf_r_lam p2 ((xr,None)::bvr) body polyt polyp sgtmof sgdelta sgtm sgpf cxtp cxtm ((x,q1)::cxpf) in
 		  Hashtbl.add pfghyph (PLam(q1,d1)) x;
+                  Hashtbl.add bindhypname (PLam(q1,d1)) x;
 		  PLam(q1,d1)
 	      | None ->
 		  raise (Failure("Lambda bound variable " ^ x ^ " in proof term ascribed prop " ^ (tm_to_str q1) ^ " but expected " ^ (tm_to_str p1)))
 	    end
 	| All(a1,p2) ->
+            Hashtbl.add bindvarname p x;
 	    let b1tp = extract_tp b1 cxtp in (*** It's wasteful to recompute this for each bound variable. I should write an auxiliary function. A similar remark holds for the other cases below. ***)
 	    if b1tp = a1 then
 	      let d1 = check_pf_r_lam p2 ((xr,Some(AscTp,b1))::bvr) body polyt polyp sgtmof sgdelta sgtm sgpf cxtp ((x,(a1,None))::cxtm) (List.map (fun (y,q) -> (y,tmshift 0 1 q)) cxpf) in
 	      Hashtbl.add pfgpfbvarh (TLam(a1,d1)) x;
+              Hashtbl.add pbindvarname (TLam(a1,d1)) x;
 	      TLam(a1,d1)
 	    else
 	      raise (Failure("Lambda bound variable " ^ x ^ " in proof term ascribed type " ^ (tp_to_str b1tp) ^ " but expected " ^ (tp_to_str a1)))

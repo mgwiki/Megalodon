@@ -10,6 +10,7 @@ let preambleassig = ref false;;
 let stm = ref "";;
 let mycnt = ref 0;;
 let archivefile = ref None;;
+let allowunprovenaxiom = ref false;;
 let allowincompleteqed = ref false;;
 let doublecheckpf = ref true;;
 let maxbottlenecksreport = ref 3;;
@@ -1325,6 +1326,7 @@ let evaluate_docitem_1 ditem =
       if (!verbosity > 9) then (Printf.printf "ParamHash %s %s\n" x h; flush stdout);
       if !pfgtheory = SetMM && (x = "wi" || x = "wal") then raise (Failure (Printf.sprintf "%s is a reserved built-in name for SetMM" x));
       begin
+        Hashtbl.add mgobjidname h x;
         if !pfgtheory = HF then
           begin
             try
@@ -1361,6 +1363,7 @@ let evaluate_docitem_1 ditem =
 	  if (xi,xtp) <> (i,agtp) then raise (Failure(x ^ " is the name of a built-in primitive which does not have the given type."));
 	  if i > 6 then raise (Failure("It is forbidden to have more than 6 type variables."));
 	  let xhv = tm_id (Prim(xj)) sigtmof sigdelta in
+          Hashtbl.add mgobjidname xhv x;
           supported := Hashtbl.mem pfgsuppparam xhv;
           if !sexprinfo then Printf.printf "(PRIM %d \"%s\" \"%s\" %s %d)\n" xj x xhv (tp_to_sexpr agtp) !lineno;
 	  if x = "Empty" then set0 := Some(xhv);
@@ -1482,15 +1485,14 @@ let evaluate_docitem_1 ditem =
                        if !pfgsummary then Printf.printf "Param:%s:%s:%s\n" x (Hash.hashval_hexstring pfghpure) (Hash.hashval_hexstring pfghthy);
                        Hashtbl.add pfgtmroot x (Hash.hashval_hexstring pfghpure);
                        Hashtbl.add pfgobjid x (Hash.hashval_hexstring pfghthy);
-                       (*                       if not (Hashtbl.mem ownedobj pfghthy) then raise Not_found; (** proofgold knows it **) *)
+                       if not (Hashtbl.mem ownedobj pfghthy) then raise Not_found; (** proofgold knows it **)
 		       Hashtbl.add sigtmof xhv (i,agtp);
 		       let m = TmH xhv in
 		       Hashtbl.replace !sigtm x (!aptmloc m);
                        secstack := List.map (fun (y,f,atl,apl,st,sp) -> (y,f,atl,apl,((Hashtbl.replace st x (atl m)); st),sp)) !secstack
 		     with
                      | Not_found ->
-                         (* () *)
-                         raise (Failure("The given id " ^ xhv ^ " for " ^ x ^ " is not a known index for a term.")) (* this was commented out, but it really should be a failure right? *)
+		        raise (Failure("The given id " ^ xhv ^ " for " ^ x ^ " is not a known index for a term."))
 		end
    	      with Not_found ->
 		raise (Failure("Unknown id for " ^ x))
@@ -1511,6 +1513,7 @@ let evaluate_docitem_1 ditem =
 	  let bgtm = !tmlamclos btm in
 	  let bgtp = !tparclos btp in
 	  let xhv = ptm_lam_id (i,bgtm) sigtmof sigdelta in
+          Hashtbl.add mgobjidname xhv x;
           supported := Hashtbl.mem pfgsuppparam xhv || Hashtbl.mem pfgsuppdef xhv;
 	  if !pfgtheory = Egal then megaauto_set_item xhv true;
           if !pfgtheory = Egal && xhv = "7a7fd30507c2156eeace3d2784ada104fee81316a9d6f02db384ad7f0a180e26" then seqcons := Some(xhv);
@@ -1536,12 +1539,12 @@ let evaluate_docitem_1 ditem =
                   th0sg := ("def",xhv,x,Printf.sprintf "thf(%s_def,definition,%s). %% %s" (tptpize_name x) (th0_def_str bgtp xhv bgtm) xhv)::!th0sg
                 end
             end;
-          if !sexprinfo then Printf.printf "(DEF \"%s\" \"%s\" %d %s %s %d)\n" x xhv i (tp_to_sexpr bgtp) (tm_to_sexpr bgtm) !lineno;
+          if !sexprinfo then Printf.printf "(DEF \"%s\" \"%s\" %d %s %s %d)\n" x xhv i (tp_to_sexpr bgtp) (tm_to_sexpr bgtm []) !lineno;
           begin
             match !sexprallsubgoals_inclfile with
             | None -> ()
             | Some(f) ->
-               Printf.fprintf f "(DEF \"%s\" \"%s\" %d %s %s %d)\n" x xhv i (tp_to_sexpr bgtp) (tm_to_sexpr bgtm) !lineno
+               Printf.fprintf f "(DEF \"%s\" \"%s\" %d %s %s %d)\n" x xhv i (tp_to_sexpr bgtp) (tm_to_sexpr bgtm []) !lineno
           end;
           if !verbosity > 5 then Printf.printf "(MGID \"%s\" \"%s\")\n" x xhv;
           begin
@@ -1622,6 +1625,7 @@ let evaluate_docitem_1 ditem =
 	  let bgtm = !tmlamclos btm in
 	  let agtp = !tparclos atp in
 	  let xhv = ptm_lam_id (i,bgtm) sigtmof sigdelta in
+          Hashtbl.add mgobjidname xhv x;
           supported := Hashtbl.mem pfgsuppparam xhv || Hashtbl.mem pfgsuppdef xhv;
 	  if !pfgtheory = Egal then megaauto_set_item xhv true;
           if !pfgtheory = Egal && xhv = "7a7fd30507c2156eeace3d2784ada104fee81316a9d6f02db384ad7f0a180e26" then seqcons := Some(xhv);
@@ -1647,12 +1651,12 @@ let evaluate_docitem_1 ditem =
                   th0sg := ("def",xhv,x,Printf.sprintf "thf(%s_def,definition,%s). %% %s" (tptpize_name x) (th0_def_str agtp xhv bgtm) xhv)::!th0sg;
                 end
             end;
-          if !sexprinfo then Printf.printf "(DEF \"%s\" \"%s\" %d %s %s %d)\n" x xhv i (tp_to_sexpr agtp) (tm_to_sexpr bgtm) !lineno;
+          if !sexprinfo then Printf.printf "(DEF \"%s\" \"%s\" %d %s %s %d)\n" x xhv i (tp_to_sexpr agtp) (tm_to_sexpr bgtm []) !lineno;
           begin
             match !sexprallsubgoals_inclfile with
             | None -> ()
             | Some(f) ->
-               Printf.fprintf f "(DEF \"%s\" \"%s\" %d %s %s %d)\n" x xhv i (tp_to_sexpr agtp) (tm_to_sexpr bgtm) !lineno
+               Printf.fprintf f "(DEF \"%s\" \"%s\" %d %s %s %d)\n" x xhv i (tp_to_sexpr agtp) (tm_to_sexpr bgtm []) !lineno
           end;
           if !verbosity > 5 then Printf.printf "(MGID \"%s\" \"%s\")\n" x xhv;
           begin
@@ -1733,6 +1737,7 @@ let evaluate_docitem_1 ditem =
       let atm = check_tm a Prop !polytm sigtmof !sigtm !ctxtp !ctxtm in
       let agtm = !tmallclos atm in
       let ahv = ptm_all_id (i,agtm) sigtmof sigdelta in
+      Hashtbl.add mgpropidname ahv x;
       supported := Hashtbl.mem pfgsuppknown ahv || Hashtbl.mem pfgsuppthm ahv;
       if !pfgtheory = HF then
         begin
@@ -1751,12 +1756,12 @@ let evaluate_docitem_1 ditem =
             else
               th0sg := ("known",ahv,x,Printf.sprintf "thf(%s,axiom,%s). %% %s" (tptpize_name x) (th0_str agtm []) ahv)::!th0sg
         end;
-      if !sexprinfo then Printf.printf "(AXIOM \"%s\" \"%s\" %d %s %d)\n" x ahv i (tm_to_sexpr agtm) !lineno;
+      if !sexprinfo then Printf.printf "(AXIOM \"%s\" \"%s\" %d %s %d)\n" x ahv i (tm_to_sexpr agtm []) !lineno;
       begin
         match !sexprallsubgoals_inclfile with
         | None -> ()
         | Some(f) ->
-           Printf.fprintf f "(AXIOM \"%s\" \"%s\" %d %s %d)\n" x ahv i (tm_to_sexpr agtm) !lineno
+           Printf.fprintf f "(AXIOM \"%s\" \"%s\" %d %s %d)\n" x ahv i (tm_to_sexpr agtm []) !lineno
       end;
       if !verbosity > 5 then Printf.printf "(MGPROPID \"%s\" \"%s\")\n" x ahv;
       add_sigdelta ahv (i,agtm);
@@ -1801,10 +1806,10 @@ let evaluate_docitem_1 ditem =
              else
                false
            end
-      then
-        Printf.printf "WARNING: The id %s for the proposition for axiom %s [pfg %s] is not indexed as previously known.\n" ahv x (Hash.hashval_hexstring (pfg_propid agtm))
-        (* (Printf.printf "ERROR: The id %s for the proposition for axiom %s [pfg %s] is not indexed as previously known.\nYou have to prove it (or leave it as admitted).\n" ahv x (Hash.hashval_hexstring (pfg_propid agtm)); exit 1) *) (* Chad treats this as an error so he comments the warning and uncomments this error. If Chad wants to allow it, the next line outputting UNKNOWN so the instances are easier to find. *)
-        (*          (Printf.printf "(UNKNOWN \"%s\" \"%s\" \"%s\")\n" ahv x (Hash.hashval_hexstring (pfg_propid agtm)); flush stdout) *)
+      then if !allowunprovenaxiom then
+           (Printf.printf "(UNKNOWN \"%s\" \"%s\" \"%s\")\n" ahv x (Hash.hashval_hexstring (pfg_propid agtm)); flush stdout)
+        else
+             (Printf.printf "ERROR: The id %s for the proposition for axiom %s [pfg %s] is not indexed as previously known.\nYou have to prove it (or leave it as admitted).\n" ahv x (Hash.hashval_hexstring (pfg_propid agtm)); exit 1)
       else
         Hashtbl.replace istrustedhash ahv ();
       Hashtbl.replace indexknowns ahv ();
@@ -1822,17 +1827,18 @@ let evaluate_docitem_1 ditem =
       let atm = check_tm a Prop !polytm sigtmof !sigtm !ctxtp !ctxtm in
       let agtm = !tmallclos atm in
       let ahv = ptm_all_id (i,agtm) sigtmof sigdelta in
+      Hashtbl.add mgpropidname ahv x;
       supported := Hashtbl.mem pfgsuppknown ahv || Hashtbl.mem pfgsuppthm ahv;
       if !verbosity > 5 then Printf.printf "(MGPROPID \"%s\" \"%s\")\n" x ahv;
       let pfgahv = pfg_propid agtm in
       if !warnaboutreproven && (Hashtbl.mem indexknowns ahv || Hashtbl.mem ownedprop pfgahv) then
         begin
-          Printf.printf "WARNING: The proposition given in theorem %s is already known, so it should be included as an Axiom or ProofArchived declaration instead.\n" x;
+          Printf.printf "WARNING: The proposition given in theorem %s is already known, so it should be included as an Axiom declaration instead.\n" x;
           flush stdout;
         end;
       Hashtbl.add sigknh x ahv;
       Hashtbl.add sigknh_rev ahv x;
-      (** Hashtbl.add ownedprop pfgahv ()  This was a major bug! **)
+      Hashtbl.add ownedprop pfgahv ();
       if i = 0 && (!pfgsummary || not (!html = None) || not (!megawiki = None)) then
         begin
           let (pfgpure,pfgahv) = pfg_propid2 agtm in
@@ -1856,7 +1862,7 @@ let evaluate_docitem_1 ditem =
 	  | None -> ()
 	end;
       if (!verbosity > 3) then (Printf.printf "Proposition of %s %s : %s was assigned id %s\n" c x (tm_to_str agtm) ahv; flush stdout);
-      if !sexprinfo then Printf.printf "(THM \"%s\" \"%s\" \"%s\" %d %s %d)\n" x ahv (Hash.hashval_hexstring pfgahv) i (tm_to_sexpr agtm) !lineno;
+      if !sexprinfo then Printf.printf "(THM \"%s\" \"%s\" \"%s\" %d %s %d)\n" x ahv (Hash.hashval_hexstring pfgahv) i (tm_to_sexpr agtm []) !lineno;
       begin
         match !sexprallsubgoals_inclfile with
         | None -> ()
@@ -2587,6 +2593,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                         match dl with
                           (endpos,d1)::dr ->
                            let d = TLam(a,d1) in
+                           Hashtbl.add pbindvarname d x;
                            postprobs "let" startpos endpos claimtm cxtm cxpf d;
                            currprooffun ((endpos,d)::dr)
                         | _ -> raise (Failure("proof reconstruction problem")));
@@ -2601,6 +2608,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                               match dl with
                                 (endpos,d1)::dr ->
                                  let d = TLam(a,d1) in
+                                 Hashtbl.add pbindvarname d x;
                                  postprobs "let" startpos endpos claimtm cxtm cxpf d;
                                  currprooffun ((endpos,d)::dr)
                               | _ -> raise (Failure("proof reconstruction problem")));
@@ -2628,7 +2636,9 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
 		  | All(a,body) -> (*** If it's already an All, then don't call headnorm since headnorm will at least beta eta normalize and change the structure. ***)
 		      if a = btp then
 			let currprooffun = !prooffun in
-			prooffun := (fun dl -> match dl with (endpos,d)::dr -> currprooffun ((endpos,TLam(a,d))::dr) | _ -> raise (Failure("proof reconstruction problem")));
+			prooffun := (fun dl -> match dl with (endpos,d)::dr ->
+                                                              Hashtbl.add pbindvarname (TLam(a,d)) x;
+                                                              currprooffun ((endpos,TLam(a,d))::dr) | _ -> raise (Failure("proof reconstruction problem")));
 			let_tac_Some_r xr body ((x,(a,None))::cxtm) (List.map (fun (y,q) -> (y,tmshift 0 1 q)) cxpf)
 		      else
 			raise (Failure(x ^ " ascribe type " ^ (tp_to_str btp) ^ " but the claim is universally quantified over type " ^ (tp_to_str a)))
@@ -2638,7 +2648,9 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
 		      | All(a,body) ->
 			  if a = btp then
 			    let currprooffun = !prooffun in
-			    prooffun := (fun dl -> match dl with (endpos,d)::dr -> currprooffun ((endpos,TLam(a,d))::dr) | _ -> raise (Failure("proof reconstruction problem")));
+			    prooffun := (fun dl -> match dl with (endpos,d)::dr ->
+                                                                  Hashtbl.add pbindvarname (TLam(a,d)) x;
+                                                                  currprooffun ((endpos,TLam(a,d))::dr) | _ -> raise (Failure("proof reconstruction problem")));
 			    let_tac_Some_r xr body ((x,(a,None))::cxtm) (List.map (fun (y,q) -> (y,tmshift 0 1 q)) cxpf)
 			  else
 			    raise (Failure(x ^ " ascribe type " ^ (tp_to_str btp) ^ " but the claim is universally quantified over type " ^ (tp_to_str a)))
@@ -2662,14 +2674,18 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
 		  match claimtm with
 		  | Imp(p1,p2) -> (*** If it's already an Imp, then don't call headnorm since headnorm will at least beta eta normalize and change the structure. ***)
 		      let currprooffun = !prooffun in
-		      prooffun := (fun dl -> match dl with (endpos,d)::dr -> currprooffun ((endpos,PLam(p1,d))::dr) | _ -> raise (Failure("proof reconstruction problem")));
+		      prooffun := (fun dl -> match dl with (endpos,d)::dr ->
+                                                            Hashtbl.add bindhypname (PLam(p1,d)) x;
+                                                            currprooffun ((endpos,PLam(p1,d))::dr) | _ -> raise (Failure("proof reconstruction problem")));
 		      assume_tac_None_r xr p2 cxtm ((x,p1)::cxpf)
 		  | _ -> (*** If it's not an All, then call headnorm and try to expose an All. ***)
 		      let (p,dl) = headnorm claimtm sigdelta !deltaset in
 		      match p with
 		      | Imp(p1,p2) ->
 			  let currprooffun = !prooffun in
-			  prooffun := (fun dl -> match dl with (endpos,d)::dr -> currprooffun ((endpos,PLam(p1,d))::dr) | _ -> raise (Failure("proof reconstruction problem")));
+			  prooffun := (fun dl -> match dl with (endpos,d)::dr ->
+                                                                Hashtbl.add bindhypname (PLam(p1,d)) x;
+                                                                currprooffun ((endpos,PLam(p1,d))::dr) | _ -> raise (Failure("proof reconstruction problem")));
 			  assume_tac_None_r xr p2 cxtm ((x,p1)::cxpf)
 		      | _ ->
 			  raise (Failure("assume tactic used with " ^ x ^ " when claim is not an implication"))
@@ -2702,6 +2718,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                                 match dl with
                                   (endpos,d1)::dr ->
                                    let d = PLam(btm,d1) in
+                                   Hashtbl.add bindhypname d x;
                                    postprobs "assume" startpos endpos claimtm cxtm cxpf d;
                                    currprooffun ((endpos,d)::dr)
                                 | _ -> raise (Failure("proof reconstruction problem")));
@@ -2718,7 +2735,9 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
 			    | Some(dl) ->
 				deltaset := dl;
 				let currprooffun = !prooffun in
-				prooffun := (fun dl -> match dl with (endpos,d)::dr -> currprooffun ((endpos,PLam(btm,d))::dr) | _ -> raise (Failure("proof reconstruction problem")));
+				prooffun := (fun dl -> match dl with (endpos,d)::dr ->
+                                                                      Hashtbl.add bindhypname (PLam(btm,d)) x;
+                                                                      currprooffun ((endpos,PLam(btm,d))::dr) | _ -> raise (Failure("proof reconstruction problem")));
 				assume_tac_Some_r xr p2 cxtm ((x,btm)::cxpf)
 			    | None ->
 				raise (Failure(x ^ " ascribed prop " ^ (tm_to_str btm) ^ " but the antecendent of the claim is " ^ (tm_to_str p1)))
@@ -3252,7 +3271,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                    let fn = Printf.sprintf "%s_incl_%d.lisp" seaspre i in
                    let f = open_out fn in
                    if not (seasincl = "") then Printf.fprintf f "(INCLUDE \"%s\")\n" seasincl;
-                   Printf.fprintf f "(THM \"%s\" \"%s\" %d %s)\n" thmname gphv i (tm_to_sexpr gpgtm);
+                   Printf.fprintf f "(THM \"%s\" \"%s\" %d %s)\n" thmname gphv i (tm_to_sexpr gpgtm []);
                    sexprallsubgoals_inclfile := Some(f);
                    sexprallsubgoals := Some(seaspre,fn,i+1)
               end;
@@ -3296,7 +3315,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
 		  raise (Failure("Proof doesn't prove the proposition."))
 	      | Some(dl) ->
 		  deltaset := dl;
-                  if !sexprinfo then (List.iter (fun d -> Printf.printf "(DELTA \"%s\")\n" d) dl; Printf.printf "(QED)\n");
+                  if !sexprinfo then (List.iter (fun d -> Printf.printf "(DELTA \"%s\")\n" d) dl; Printf.printf "(QED %s)\n" (pf_to_sexpr dgpf [] []));
                   if !pfgout && not !includingsigfile then List.iter (fun d -> Hashtbl.add pfgdelta d ()) !deltaset;
 		  if (!verbosity > 19) then (Printf.printf "Delta Set:"; List.iter (fun h -> Printf.printf " %s" h) dl; Printf.printf "\n"; flush stdout);
 		  let dhv = ppf_id (i,dgpf) sigtmof sigdelta in
@@ -4138,14 +4157,14 @@ let evaluate_pftac pitem thmname i gpgtm gphv pfggphv =
        | PfStateGoal(startpos,atm,ctxtm,ctxpf)::_ ->
           let f = open_out (Printf.sprintf "%s_%d_%d.lisp" seaspre !lineno !charno) in
           if not (seasincl = "") then Printf.fprintf f "(INCLUDE \"%s\")\n" seasincl;
-          List.iter (fun (y,q) -> Printf.fprintf f "(HYP \"%s\" %s)\n" y (tm_to_sexpr q)) ctxpf;
+          List.iter (fun (y,q) -> Printf.fprintf f "(HYP \"%s\" %s)\n" y (tm_to_sexpr q [])) ctxpf;
           List.iter
             (fun (x,(a,od)) ->
               match od with
               | None -> Printf.fprintf f "(VAR \"%s\" %s)\n" x (tp_to_sexpr a)
-              | Some(d) -> Printf.fprintf f "(LET \"%s\" %s %s)\n" x (tp_to_sexpr a) (tm_to_sexpr d))
+              | Some(d) -> Printf.fprintf f "(LET \"%s\" %s %s)\n" x (tp_to_sexpr a) (tm_to_sexpr d []))
             ctxtm;
-          Printf.fprintf f "(GOAL %s)\n" (tm_to_sexpr atm);
+          Printf.fprintf f "(GOAL %s)\n" (tm_to_sexpr atm []);
           close_out f
        | _ -> ()
   end;
@@ -4866,6 +4885,8 @@ let _ =
           end
         else if Sys.argv.(!j) = "-allowincompleteqed" then
           allowincompleteqed := true
+        else if Sys.argv.(!j) = "-allowunprovenaxiom" then
+          allowunprovenaxiom := true
         else if Sys.argv.(!j) = "-fof" then
           begin
 	    if !j < i-2 then
@@ -5506,6 +5527,8 @@ let _ =
 	  ()
     end;
   Printf.printf "Everything looks good.\n";
+  (*  Printf.printf "fake vars %d out of %d\n" !fakevars !allvars; *)
+  (*  Printf.printf "fake hyps %d out of %d\n" !fakehyps !allhyps; *)
   if !countremovedpfs > 0 then
     Printf.printf "%d completed proof%s been removed for efficiency.\n" !countremovedpfs (if !countremovedpfs = 1 then " has" else "s have");
   let admittedthmsrecdeps : (string,string list) Hashtbl.t = Hashtbl.create 10 in
