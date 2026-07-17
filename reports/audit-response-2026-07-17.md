@@ -615,3 +615,30 @@ Validation:
 - focused native primitive audit was intentionally not treated as a failure
   signal because this two-proof sample has no `equality_resolution` record,
   while the broader strict primitive audit passed
+
+Vampire commit `96cce436a` extracts `avatar_component` metadata into
+`RenderedKernelAvatarComponent` and `RenderedKernelAvatarSplit`. The
+component result clause, component literals, split count, and split
+descriptors are now owned by a Vampire-side certificate object and serialized
+centrally by `MegalodonKernelSyntax`.
+
+This is aligned with the Prover9/Ivy-style direction, but only at the
+certificate-object boundary. It does not yet make AVATAR proof reconstruction
+complete: Megalodon still needs to check the corresponding SAT/refutation and
+split reasoning natively. The next AVATAR-related extraction should target
+`avatar_definition`, `avatar_split`, `split_dependency`, and
+`avatar_refutation`, after which the design must specify how those records
+lower to either primitive clausal steps or a small checked AVATAR kernel.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` for
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11063`
+- fresh 20-case strict source-linked live THF run with `JOBS=10` and
+  `VAMPIRE_SECONDS=10`: `PASS 20`
+- kernel-v1 metadata audit on that strict artifact: 738 `kernel_v1` records
+  and 8 `avatar_component` records
+- native primitive audit on that strict artifact, including 8
+  `avatar_component`, 8 `avatar_definition`, 2 `avatar_refutation`, 10
+  `avatar_split`, 47 `split_dependency`, 122 `paramodulate`, and 102
+  `substitute` records

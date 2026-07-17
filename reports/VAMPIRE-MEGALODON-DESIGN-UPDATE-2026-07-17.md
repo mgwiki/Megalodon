@@ -730,3 +730,33 @@ Validation:
   native primitive audit was not used as a pass/fail signal because this
   intentionally narrow sample has no `equality_resolution` record, while the
   broader strict primitive audit passed.
+
+Additional follow-up: Vampire commit `96cce436a` extracts
+`avatar_component` metadata into explicit `RenderedKernelAvatarComponent` and
+`RenderedKernelAvatarSplit` records. The exporter now builds one object for
+the AVATAR component result clause, component literal payloads, split count,
+and split descriptors (`level`, `var`, and polarity), and
+`MegalodonKernelSyntax` owns the serialization of those fields.
+
+This is a direct response to the audit's request to stop growing anonymous
+migration-field blobs. It is not yet a native Megalodon proof of AVATAR
+reasoning or SAT refutation. The value is that one AVATAR macro boundary now
+has a named Vampire-side certificate object that can later be lowered to a
+small primitive sequence or consumed by a dedicated Megalodon AVATAR proof
+layer. The remaining AVATAR work is still substantial: `avatar_definition`,
+`avatar_split`, `split_dependency`, and `avatar_refutation` need the same
+explicit treatment, and the SAT/refutation proof must eventually be checked
+rather than structurally accepted.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` passed and produced
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11063`.
+- A fresh 20-case strict source-linked live THF run with `JOBS=10` and
+  `VAMPIRE_SECONDS=10` produced `PASS 20`.
+- The kernel-v1 metadata audit passed on that artifact, covering 738
+  `kernel_v1` records and 8 `avatar_component` records.
+- The native primitive audit passed on the same artifact, including 8
+  `avatar_component`, 8 `avatar_definition`, 2 `avatar_refutation`, 10
+  `avatar_split`, 47 `split_dependency`, 122 `paramodulate`, and 102
+  `substitute` records.
