@@ -168,6 +168,10 @@ for base in $ORIGIN_CONTEXT_CASES; do
     printf '%s\tORIGIN_CORE_PF_UNEXPECTED_SOURCE_SUMMARY\n' "$base" >> "$origin_loaded_dir/summary.tsv"
     continue
   fi
+  if ! rg -q 'Vampire certificate v1 native core final conjecture proof term checked\.' "$case_dir/check.out"; then
+    printf '%s\tORIGIN_CORE_PF_MISSING_FINAL_CONJECTURE\n' "$base" >> "$origin_loaded_dir/summary.tsv"
+    continue
+  fi
   printf '%s\tORIGIN_CORE_PF_PASS\n' "$base" >> "$origin_loaded_dir/summary.tsv"
 done
 

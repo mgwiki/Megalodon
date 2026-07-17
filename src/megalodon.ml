@@ -972,6 +972,74 @@ let vampire_core_source_proofs source_audit =
 let vampire_source_proof source_audit step =
   List.assoc_opt step source_audit.Vampire_source_context.source_proofs
 
+let vampire_iff_intro_proof left right left_to_right right_to_left =
+  match Hashtbl.find_opt sigknh "iffI" with
+  | Some iffI_hash ->
+      PPfAp
+        (PPfAp
+           (PTmAp (PTmAp (Known iffI_hash, left), right),
+            left_to_right),
+         right_to_left)
+  | None ->
+      let and_intro_id =
+        "7f6246d08629eeb16eab93529ffe4f929f43344833ab88c7786393693520e82b"
+      in
+      let forward = Imp (left, right) in
+      let backward = Imp (right, left) in
+      if Hashtbl.mem sigdelta and_intro_id then
+        PPfAp
+          (PPfAp
+             (PTmAp (PTmAp (Known and_intro_id, forward), backward),
+              left_to_right),
+           right_to_left)
+      else
+        let shifted_forward_proof =
+          pfshift 0 1 (pftmshift 0 1 left_to_right)
+        in
+        let shifted_backward_proof =
+          pfshift 0 1 (pftmshift 0 1 right_to_left)
+        in
+        TLam
+          (Prop,
+           PLam
+             (Imp
+                (tmshift 0 1 forward,
+                 Imp (tmshift 0 1 backward, DB 0)),
+              PPfAp
+                (PPfAp (Hyp 0, shifted_forward_proof),
+                 shifted_backward_proof)))
+
+let vampire_loaded_prop_ext_expander proof =
+  match Hashtbl.find_opt sigknh "prop_ext" with
+  | None -> proof
+  | Some prop_ext_hash ->
+      let rec expand = function
+        | PPfAp
+            (PPfAp
+               (PTmAp (PTmAp (Known h, left), right), left_to_right),
+             right_to_left)
+            when h = prop_ext_hash ->
+            let left_to_right = expand left_to_right in
+            let right_to_left = expand right_to_left in
+            let iff_proof =
+              vampire_iff_intro_proof
+                left
+                right
+                left_to_right
+                right_to_left
+            in
+            PPfAp
+              (PTmAp (PTmAp (Known prop_ext_hash, left), right),
+               iff_proof)
+        | PTpAp (body, tp) -> PTpAp (expand body, tp)
+        | PTmAp (body, tm) -> PTmAp (expand body, tm)
+        | PPfAp (left, right) -> PPfAp (expand left, expand right)
+        | PLam (prop, body) -> PLam (prop, expand body)
+        | TLam (tp, body) -> TLam (tp, expand body)
+        | Hyp _ | Known _ as proof -> proof
+      in
+      expand proof
+
 let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf proof =
   let cx =
     List.filter_map
@@ -1016,9 +1084,10 @@ let vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols cla
   in
   let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
   try
-    let (actual,dl) = extr_propofpf proof_delta symbol_table cx hyps proof [] in
+    let proof_for_check = vampire_loaded_prop_ext_expander proof in
+    let (actual,dl) = extr_propofpf proof_delta symbol_table cx hyps proof_for_check [] in
     match conv actual claimtm proof_delta dl with
-    | Some _ -> Some (proof_expander proof)
+    | Some _ -> Some (proof_expander proof_for_check)
     | None ->
         if debug then
           begin
@@ -1088,9 +1157,10 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
     | Some source_map -> vampire_source_map_expander cxtm source_map
   in
   try
-    let (actual,dl) = extr_propofpf proof_delta symbol_table cx hyps proof [] in
+    let proof_for_check = vampire_loaded_prop_ext_expander proof in
+    let (actual,dl) = extr_propofpf proof_delta symbol_table cx hyps proof_for_check [] in
     match conv actual expected proof_delta dl with
-    | Some _ -> Some (proof_expander proof)
+    | Some _ -> Some (proof_expander proof_for_check)
     | None -> None
   with _ -> None
 
