@@ -1018,6 +1018,23 @@ if ! rg -q 'Vampire certificate v1 native core source bindings checked 2 assumpt
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1corepfcheck \
+  -vampirecertv1 tests/vampire_certificate/closed_cases/hammer.10455.26.native.sexp \
+  -vampirecertv1source tests/vampire_certificate/closed_cases/hammer.10455.26.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_core_pf_ennf_instantiation_hammer.log"
+
+if ! rg -q 'Vampire certificate v1 native core proof term checked 40 steps' \
+    "$WORK_DIR/native_cert_v1_core_pf_ennf_instantiation_hammer.log"; then
+  echo "native core proof-term checker did not validate the ENNF/instantiation hammer fixture" >&2
+  exit 1
+fi
+if ! rg -q 'Vampire certificate v1 native core source bindings checked 4 assumptions' \
+    "$WORK_DIR/native_cert_v1_core_pf_ennf_instantiation_hammer.log"; then
+  echo "native core proof-term checker did not retain ENNF/instantiation source assumptions" >&2
+  exit 1
+fi
+
 mkdir -p "$WORK_DIR/core_pf_missing_source_cases"
 cp tests/vampire_certificate/closed_cases/core.cnf.2.native.sexp \
   "$WORK_DIR/core_pf_missing_source_cases/missing_source.native.sexp"
@@ -1066,18 +1083,23 @@ fi
 
 if bin/megalodon \
   -vampirecertv1coreclosed \
-  -vampirecertv1 tests/vampire_certificate/native_cert_v1_formula_cnf_valid.sexp \
-  -vampirecertv1source tests/vampire_certificate/native_cert_v1_formula_cnf_valid.th0.p \
-  -vampirecertv1emit "$WORK_DIR/native_cert_v1_formula_cnf_core_closed_bad.mg" \
-  "$dummy" >"$WORK_DIR/native_cert_v1_formula_cnf_core_closed_bad.out" \
-  2>"$WORK_DIR/native_cert_v1_formula_cnf_core_closed_bad.err"; then
-  echo "core closed native certificate v1 checker accepted a preprocessing certificate" >&2
+  -vampirecertv1 tests/vampire_certificate/closed_cases/hammer.1007.43.native.sexp \
+  -vampirecertv1source tests/vampire_certificate/closed_cases/hammer.1007.43.th0.p \
+  -vampirecertv1emit "$WORK_DIR/native_cert_v1_skolem_core_closed_bad.mg" \
+  "$dummy" >"$WORK_DIR/native_cert_v1_skolem_core_closed_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_skolem_core_closed_bad.err"; then
+  echo "core closed native certificate v1 checker accepted an unsupported skolemization certificate" >&2
   exit 1
 fi
 
 if ! rg -q 'core closed certificate v1 permits only the proof-producing source-entry/core fragment' \
-    "$WORK_DIR/native_cert_v1_formula_cnf_core_closed_bad.err"; then
-  echo "core closed native certificate v1 preprocessing rejection did not explain the source-entry/core fragment boundary" >&2
+    "$WORK_DIR/native_cert_v1_skolem_core_closed_bad.err"; then
+  echo "core closed native certificate v1 skolemization rejection did not explain the source-entry/core fragment boundary" >&2
+  exit 1
+fi
+if ! rg -q 'skolem_formula' \
+    "$WORK_DIR/native_cert_v1_skolem_core_closed_bad.err"; then
+  echo "core closed native certificate v1 skolemization rejection did not name the unsupported step" >&2
   exit 1
 fi
 

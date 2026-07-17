@@ -70,6 +70,17 @@ cases. The first blockers are now `ennf_formula` and `definition_input`, so
 the next qualifying work is Smolka-style ENNF proof production and original
 source-definition composition.
 
+Seventh post-audit note, 2026-07-17: the counted core gate now includes
+checked `ennf_formula`, `definition_input`, `fool_exhaustiveness`,
+inequality intro/split, and annotated instantiation `substitute` steps. The
+instantiation change is primarily an audit correction: substitutions with
+explicit `kernel_v1` `rule=instantiation` metadata were already proof-producing
+in the native core elaborator, but the shell classifier was counting them as
+unsupported `nonidentity_substitute` steps. The closed-corpus audit now reports
+114 `CORE_PF_PASS` cases: 23 synthetic fixtures and 91 non-synthetic cases.
+The first blockers are now `skolem_formula`, unannotated non-identity
+substitutions, and AVATAR/definition macro composition.
+
 The purpose is to stop ad-hoc growth. A new change is aligned with this plan
 only if it does one of the following:
 
@@ -127,11 +138,11 @@ Current positive evidence, as reclassified by the July 16 audit:
 - The native preprocess frontier was 94/100 as structural/transitional
   native-AST plumbing. It is not qualifying proof-term evidence while it relies
   on certificate-derived `Known` propositions.
-- The native core proof-term audit passes on the current 32 eligible
+- The native core proof-term audit passes on the current 114 eligible
   core/source-entry closed cases. This includes 23 synthetic `core.cnf.*`
-  fixtures and 9 non-synthetic/source-entry/FOOL cases.
+  fixtures and 91 non-synthetic/source-entry/preprocessing cases.
 - The real closed hammer frontier is measured and reproducible:
-  `REAL_CORE_ELIGIBLE 9`, `SYNTHETIC_CORE_ELIGIBLE 23`, `EXCLUDED 140`.
+  `REAL_CORE_ELIGIBLE 91`, `SYNTHETIC_CORE_ELIGIBLE 23`, `EXCLUDED 58`.
   This is the first proof-producing real-hammer movement through the source
   entry gate, but most real cases still require Smolka-style preprocessing
   obligations before their clausal refutations can count.

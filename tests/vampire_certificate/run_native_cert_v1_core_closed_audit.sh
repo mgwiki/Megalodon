@@ -16,11 +16,11 @@ mkdir -p "$WORK_DIR"
 ln -sfn "$WORK_DIR" "$TMPDIR/latest_native_cert_v1_core_closed_audit"
 
 # This is the audit/MVP qualifying fragment.  It deliberately excludes
-# preprocessing and macro proof steps such as ENNF, Skolemization, definition
-# inputs, AVATAR, and theory facts.  Rectification and the currently checked
-# FOOL Boolean-lifting subset are counted only because the native core path
-# builds and immediately checks proof terms for them without certificate-derived
-# Known propositions.
+# preprocessing and macro proof steps such as Skolemization, AVATAR, and theory
+# facts.  Rectification, ENNF, definition inputs, and the currently checked
+# FOOL Boolean-lifting/exhaustiveness subset are counted only because the native
+# core path builds and immediately checks proof terms for them without
+# certificate-derived Known propositions.
 allowed_rules=$(
   cat <<'RULES'
 input
@@ -31,9 +31,14 @@ rectify_formula
 fool_atom_lift
 fool_formula
 fool_bool
+ennf_formula
 formula_copy
 cnf_literal
 cnf_formula_clause
+definition_input
+fool_exhaustiveness
+inequality_name_intro
+inequality_split
 substitute
 resolve
 subsumption_resolution
@@ -64,17 +69,40 @@ mkdir -p "$WORK_DIR/cases_by_first_blocker"
 find "$CASES_DIR" -maxdepth 1 -name '*.native.sexp' -type f | sort |
 while IFS= read -r native; do
   base=$(basename "$native" .native.sexp)
+  instantiation_steps_file="$WORK_DIR/$base.instantiation_steps"
   rules_order_file="$WORK_DIR/$base.rules_order"
   rules_file="$WORK_DIR/$base.rules"
   bad_file="$WORK_DIR/$base.bad_rules"
-  awk '
+  awk -v metadata="$metadata_rules" -v instantiation_steps="$instantiation_steps_file" '
+    /^  \(step_extra "[^"]+" "kernel_v1"/ && /"rule=instantiation"/ {
+      step = $0
+      sub(/^  \(step_extra "/, "", step)
+      sub(/".*$/, "", step)
+      print step
+    }
+  ' "$native" | sort -u > "$instantiation_steps_file"
+  awk -v metadata="$metadata_rules" -v instantiation_steps="$instantiation_steps_file" '
+    BEGIN {
+      while ((getline step < instantiation_steps) > 0) {
+        has_instantiation_metadata[step] = 1
+      }
+      close(instantiation_steps)
+    }
     match($0, /^  \(([a-z_]+)/, m) {
       if (m[1] !~ metadata) {
-        if (m[1] == "substitute" && $0 !~ /\(subst\)/) print "nonidentity_substitute"
-        else print m[1]
+        if (m[1] == "substitute" && $0 !~ /\(subst\)/) {
+          step_id = $0
+          sub(/^  \(substitute "/, "", step_id)
+          sub(/".*$/, "", step_id)
+          if (has_instantiation_metadata[step_id]) {
+            print "substitute"
+          } else {
+            print "nonidentity_substitute"
+          }
+        } else print m[1]
       }
     }
-  ' metadata="$metadata_rules" "$native" > "$rules_order_file"
+  ' "$native" > "$rules_order_file"
   sort -u "$rules_order_file" > "$rules_file"
   while IFS= read -r rule || [[ -n "$rule" ]]; do
     [[ -z "$rule" ]] && continue

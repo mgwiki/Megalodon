@@ -5654,9 +5654,14 @@ let validate_certificate_core_fragment cert =
     | FoolAtomLift _
     | FoolFormula _
     | FoolBool _
+    | EnnfFormula _
     | FormulaCopy _
     | CnfLiteral _
     | CnfFormulaClause _
+    | DefinitionInput _
+    | FoolExhaustiveness _
+    | InequalityNameIntro _
+    | InequalitySplit _
     | Substitute (_, _, [], _) -> true
     | Substitute (id, _, _, _) when has_kernel_instantiation_metadata id -> true
     | Resolve _
@@ -9742,6 +9747,13 @@ let elaborate_core_resolution_refutation_native
           check_fool_bool [(parent_id, CheckedFormula parent_formula)] id parent_id result;
           store_formula id (formula_tm_of_literal result)
             (native_core_fool_bool_proof id variables parent_formula parent_proof result)
+      | EnnfFormula (id, parent_id, source, pairs, result) ->
+          let parent_formula, parent_proof = lookup_formula parent_id in
+          check_ennf_formula [(parent_id, CheckedFormula parent_formula)] id parent_id source pairs result;
+          let result_step_variables = native_core_step_variables cert id in
+          store_formula id result
+            (native_core_ennf_formula_proof
+               id variables result_step_variables parent_formula result parent_proof)
       | FormulaCopy (id, parent_id, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
           if native_core_normalize_bool_constants (native_core_literal_prop result)
@@ -9771,6 +9783,26 @@ let elaborate_core_resolution_refutation_native
             (native_core_cnf_formula_clause_proof
                id variables parent_step_variables result_step_variables
                parent_formula result parent_proof)
+      | DefinitionInput (id, result) ->
+          check_definition_input id result;
+          store id result
+            (native_core_definition_input_proof proof_delta id result)
+      | FoolExhaustiveness (id, result) ->
+          check_fool_exhaustiveness id result;
+          store id result
+            (native_core_fool_exhaustiveness_proof cert id result)
+      | InequalityNameIntro (id, result) ->
+          check_inequality_name_intro id result;
+          store id result
+            (native_core_inequality_name_intro_proof cert symbol_table id variables result)
+      | InequalitySplit (id, source_id, splits, result) ->
+          List.iter
+            (fun split -> ignore (lookup split.split_name_parent))
+            splits;
+          let source_clause, source_proof = lookup source_id in
+          store id result
+            (native_core_inequality_split_proof
+               cert id variables source_id source_clause source_proof splits result)
       | Substitute (id, parent_id, [], result) ->
           let parent_clause, parent_proof = lookup parent_id in
           let proof =

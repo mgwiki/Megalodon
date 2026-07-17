@@ -168,14 +168,14 @@ tests/vampire_certificate/run_native_cert_v1_core_closed_audit.sh
 
 Result:
 
-- `CORE_ELIGIBLE 32`
-- `CLOSED_PASS 32`
-- `CORE_CLOSED_PASS 32`
-- `CORE_PF_PASS 32`
+- `CORE_ELIGIBLE 114`
+- `CLOSED_PASS 114`
+- `CORE_CLOSED_PASS 114`
+- `CORE_PF_PASS 114`
 
 Artifacts:
 
-- `/project/tmp/native_cert_v1_core_closed_audit.NyEQ0g`
+- `/project/tmp/native_cert_v1_core_closed_audit.8kHy49`
 - `/project/tmp/latest_native_cert_v1_core_closed_audit`
 
 Real closed hammer frontier:
@@ -187,36 +187,35 @@ tests/vampire_certificate/run_native_cert_v1_real_core_frontier.sh
 
 Result:
 
-- `REAL_CORE_ELIGIBLE 9`
+- `REAL_CORE_ELIGIBLE 91`
 - `SYNTHETIC_CORE_ELIGIBLE 23`
-- `EXCLUDED 140`
+- `EXCLUDED 58`
 
-The source-entry, checked-rectification, and checked FOOL Boolean-lifting
-updates moved the first simple `formula_input`, `formula_term_input`,
-`rectify_formula`, `fool_formula`, and `fool_bool` cases into the native
-proof-producing gate. These steps are accepted only when the native elaborator
-constructs checked `Syntax.pf` terms for the source entry, transformation, and
-identity/CNF entry step; they do not use dynamic `Known` propositions.
+The source-entry, checked-rectification, checked FOOL, checked ENNF,
+definition-input, inequality, and annotated-instantiation updates moved the
+first large real batch into the native proof-producing gate. These steps are
+accepted only when the native elaborator constructs checked `Syntax.pf` terms
+for the source entry, transformation, and identity/CNF/instantiation step; they
+do not use dynamic `Known` propositions.
 
-The first excluded-rule distribution is now dominated by ENNF and source
-definition inputs:
+The first excluded-rule distribution is now dominated by Skolemization and
+unannotated non-identity substitutions:
 
-- `ennf_formula`: 131
-- `definition_input`: 9
+- `skolem_formula`: 48
+- `nonidentity_substitute`: 9
+- `avatar_definition`: 1
 
 This is now the controlling blocker for most real examples. A real hammer proof
 cannot count merely because its later clausal steps contain `resolve`,
 `paramodulate`, `factor`, or `equality_resolution`; its formula and generated
-clausal inputs must first be proved from the original Megalodon context without
-dynamic `Known` insertion.
+clausal inputs must first be proved from the original Megalodon context and
+all macro substitutions must either carry explicit Vampire primitive metadata
+or be expanded before reaching the counted gate.
 
 The first blockers beyond this frontier are not clausal primitive failures.
 They are mostly source/preprocessing and macro territory:
 
-- `ennf_formula`
-- `definition_input`
 - `nonidentity_substitute`
-- `fool_exhaustiveness`
 - `skolem_formula`
 - AVATAR/split rules
 

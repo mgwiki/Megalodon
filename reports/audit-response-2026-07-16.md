@@ -299,11 +299,13 @@ Completed in this response:
 - the native core proof-term gate now includes a narrow proof-producing
   source-entry/preprocessing layer for `formula_input`, `formula_term_input`,
   identity formula copies, checked `rectify_formula`, checked FOOL Boolean
-  lifting, `cnf_literal`, and `cnf_formula_clause`.
-- the closed-corpus source-entry/core audit now reports `CORE_PF_PASS 32`,
-  with `REAL_CORE_ELIGIBLE 9`, `SYNTHETIC_CORE_ELIGIBLE 23`, and
-  `EXCLUDED 140`.
-- the first remaining blockers are `ennf_formula` and `definition_input`.
+  lifting/exhaustiveness, checked ENNF, checked definition inputs, annotated
+  instantiation substitutions, `cnf_literal`, and `cnf_formula_clause`.
+- the closed-corpus source-entry/core audit now reports `CORE_PF_PASS 114`,
+  with `REAL_CORE_ELIGIBLE 91`, `SYNTHETIC_CORE_ELIGIBLE 23`, and
+  `EXCLUDED 58`.
+- the first remaining blockers are `skolem_formula`, unannotated
+  `nonidentity_substitute`, and AVATAR/definition macro composition.
 
 Not completed:
 
