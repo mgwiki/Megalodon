@@ -310,3 +310,23 @@ Validation:
 - native primitive audit on the artifact
 - kernel-v1 metadata audit on the artifact, covering 280 `kernel_v1` records
   and 37 rewrite-position records
+
+Vampire commit `c7131a343` applies the same rewrite record to demodulation
+metadata. Superposition and demodulation now share `RenderedKernelRewrite` for
+target/equality locations, from/to terms, rewrite position, substituted
+literals, and rewritten target serialization.
+
+This is still not a typed small-kernel proof object, but it reduces duplicated
+rewrite printer logic and gives the next typed rewrite representation one
+Vampire-side boundary to replace. URR trace steps and typed substitution,
+term, literal, and position records remain open.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel`
+- 5-case live THF run with
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11051`:
+  `PASS 5`
+- native primitive audit on the artifact
+- kernel-v1 metadata audit on the artifact, covering 280 `kernel_v1` records
+  and 37 rewrite-position records

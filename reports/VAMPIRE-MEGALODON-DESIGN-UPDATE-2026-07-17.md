@@ -396,3 +396,24 @@ Validation:
 - The focused native primitive audit passed on the artifact.
 - The kernel-v1 metadata audit passed over 280 `kernel_v1` records, including
   37 rewrite-position records.
+
+Additional follow-up: Vampire commit `c7131a343` routes demodulation rewrite
+metadata through the same `RenderedKernelRewrite` record. The demodulation
+path now builds the equality location, target location, from/to terms, rewrite
+position, substituted target/equality literals, and rewritten target as a
+rewrite record before serializing the standard fields.
+
+This means superposition and demodulation no longer have separate field-layout
+code for the same rewrite certificate shape. The representation is still
+rendered text rather than typed terms/literals/positions. The remaining
+Vampire-side extraction target is URR trace steps and then typed replacements
+for these rendered fields.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` passed and produced
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11051`.
+- A 5-case live THF run with that binary produced `PASS 5`.
+- The focused native primitive audit passed on the artifact.
+- The kernel-v1 metadata audit passed over 280 `kernel_v1` records, including
+  37 rewrite-position records.
