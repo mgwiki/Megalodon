@@ -7483,11 +7483,19 @@ let native_core_generated_skolem_symbols cert =
 
 let native_core_avatar_definition_names cert =
   cert.steps
-  |> List.filter_map
+  |> List.concat_map
        (function
          | AvatarDefinition (_, split_var, _, _) when split_var > 0 ->
-             Some ("split_" ^ string_of_int split_var)
-         | _ -> None)
+             ["split_" ^ string_of_int split_var]
+         | SplitDependency (_, _, dependencies, _) ->
+             dependencies
+             |> List.filter_map
+                  (fun dependency ->
+                     if dependency.dependency_split_var > 0 then
+                       Some ("split_" ^ string_of_int dependency.dependency_split_var)
+                     else
+                       None)
+         | _ -> [])
   |> List.sort_uniq compare
 
 let native_core_declared_variables ?(exclude_names=[]) cert =
@@ -8362,8 +8370,63 @@ let native_core_step_clause_prop cert variables id clause =
   in
   List.fold_right (fun (_, tp) prop -> All (tp, prop)) step_variables prop
 
+let native_core_avatar_definition_from_component_clause split_var clause =
+  let split_name = "split_" ^ string_of_int split_var in
+  let complement_literal = function
+    | Pos atom -> Neg atom
+    | Neg atom -> Pos atom
+  in
+  let split_literals, component_literals =
+    List.partition
+      (function
+        | Pos (TmH name) | Neg (TmH name) -> name = split_name
+        | _ -> false)
+      clause
+  in
+  match split_literals, component_literals with
+  | [Pos (TmH name)], [component_literal] when name = split_name ->
+      Some (split_name, [complement_literal component_literal])
+  | [Neg (TmH name)], [component_literal] when name = split_name ->
+      Some (split_name, [component_literal])
+  | _ ->
+      None
+
+let native_core_avatar_metadata_definitions cert =
+  cert.steps
+  |> List.concat_map
+       (function
+         | SplitDependency (_, owner_id, dependencies, result) ->
+             dependencies
+             |> List.filter_map
+                  (fun dependency ->
+                     if same_clause_multiset result dependency.dependency_component then
+                       native_core_avatar_definition_from_component_clause
+                         dependency.dependency_split_var
+                         dependency.dependency_component
+                       |> Option.map
+                            (fun (split_name, component_literals) ->
+                               (owner_id, split_name, component_literals))
+                     else
+                       None)
+         | _ -> [])
+  |> List.sort_uniq compare
+
 let native_core_avatar_delta_table cert =
   let definitions = Hashtbl.create 17 in
+  let add_definition id split_name component_literals =
+    let component_prop =
+      component_literals
+      |> native_core_step_clause_prop cert [] id
+      |> native_core_normalize_bool_constants
+      |> tm_beta_eta_norm
+    in
+    match Hashtbl.find_opt definitions split_name with
+    | Some (_, existing) when existing <> component_prop ->
+        error
+          (id ^ ": conflicting AVATAR split definition for " ^ split_name)
+    | _ ->
+        Hashtbl.replace definitions split_name (0, component_prop)
+  in
   List.iter
     (function
       | AvatarDefinition (id, split_var, true, clause) ->
@@ -8371,18 +8434,15 @@ let native_core_avatar_delta_table cert =
             native_core_avatar_definition_clause cert id split_var true clause
           with
           | Some (split_name, component_literals) ->
-              Hashtbl.replace
-                definitions
-                split_name
-                (0,
-                 component_literals
-                 |> native_core_step_clause_prop cert [] id
-                 |> native_core_normalize_bool_constants
-                 |> tm_beta_eta_norm)
+              add_definition id split_name component_literals
           | None -> ()
           end
       | _ -> ())
     cert.steps;
+  native_core_avatar_metadata_definitions cert
+  |> List.iter
+       (fun (id, split_name, component_literals) ->
+          add_definition id split_name component_literals);
   definitions
 
 let native_core_same_atom left right =
@@ -9499,6 +9559,19 @@ let native_core_xm_proof prop =
              (PTmAp (Known native_core_dneg_hash, q),
               PLam (Imp (q, native_core_false), false_proof)))))
 
+let native_core_avatar_definition_proof_from_components cert id split_name component_literals =
+  let split_prop = native_core_literal_prop (Pos (TmH split_name)) in
+  let component_prop = native_core_step_clause_prop cert [] id component_literals in
+  let split_to_component = PLam (split_prop, Hyp 0) in
+  let component_to_split = PLam (component_prop, Hyp 0) in
+  let left_prop = Imp (split_prop, component_prop) in
+  let right_prop = Imp (component_prop, split_prop) in
+  native_core_and_intro
+    left_prop
+    right_prop
+    split_to_component
+    component_to_split
+
 let native_core_avatar_definition_proof cert id split_var split_positive clause =
   if not split_positive then
     error
@@ -9508,17 +9581,8 @@ let native_core_avatar_definition_proof cert id split_var split_positive clause 
       error
         (id ^ ": native preprocess proof-term avatar_definition needs exactly one split literal and no local variables")
   | Some (split_name, component_literals) ->
-      let split_prop = native_core_literal_prop (Pos (TmH split_name)) in
-      let component_prop = native_core_step_clause_prop cert [] id component_literals in
-      let split_to_component = PLam (split_prop, Hyp 0) in
-      let component_to_split = PLam (component_prop, Hyp 0) in
-      let left_prop = Imp (split_prop, component_prop) in
-      let right_prop = Imp (component_prop, split_prop) in
-      native_core_and_intro
-        left_prop
-        right_prop
-        split_to_component
-        component_to_split
+      native_core_avatar_definition_proof_from_components
+        cert id split_name component_literals
 
 let native_core_avatar_split_proof cert id parent_ids result clause_table avatar_definitions =
   let split_literal =
@@ -9693,12 +9757,111 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
                  contradiction 0 instantiated_source_clause source_proof_instantiated)))
     | _ -> None
   in
+  let split_clause_by_component_definitions source_clause source_proof definitions =
+    let replace_first source_literal target_literal clause =
+      let rec replace = function
+        | [] -> []
+        | literal :: rest when literal = source_literal ->
+            target_literal :: rest
+        | literal :: rest -> literal :: replace rest
+      in
+      replace clause
+    in
+    let apply_definition (clause, proof) (split_name, component_literals, definition_component_prop, definition_proof) =
+      match component_literals with
+      | [component_literal] ->
+          let split_literal = Pos (TmH split_name) in
+          let negative_split_literal = Neg (TmH split_name) in
+          if List.exists ((=) component_literal) clause
+             && List.exists ((=) split_literal) result then
+            let split_prop = native_core_literal_prop split_literal in
+            let component_to_split =
+              native_core_and_elim_right
+                (Imp (split_prop, definition_component_prop))
+                (Imp (definition_component_prop, split_prop))
+                definition_proof
+            in
+            let next_clause =
+              replace_first component_literal split_literal clause
+            in
+            let next_proof =
+              native_core_prove_replace_literal_in_clause
+                id clause proof component_literal split_literal next_clause
+                component_to_split
+            in
+            (next_clause, next_proof)
+          else
+            let complement_literal =
+              native_core_complement_literal component_literal
+            in
+            if List.exists ((=) complement_literal) clause
+               && List.exists ((=) negative_split_literal) result then
+              let split_prop = native_core_literal_prop split_literal in
+              let split_to_component =
+                native_core_and_elim_left
+                  (Imp (split_prop, definition_component_prop))
+                  (Imp (definition_component_prop, split_prop))
+                  definition_proof
+              in
+              let not_component_to_not_split =
+                match component_literal with
+                | Pos _ ->
+                    PLam
+                      (native_core_literal_prop complement_literal,
+                       PLam
+                         (split_prop,
+                          PPfAp
+                            (Hyp 1,
+                             PPfAp (split_to_component, Hyp 0))))
+                | Neg atom ->
+                    let atom_prop = native_core_literal_prop (Pos atom) in
+                    PLam
+                      (atom_prop,
+                       PLam
+                         (split_prop,
+                          PPfAp
+                            (PPfAp (split_to_component, Hyp 0),
+                             Hyp 1)))
+              in
+              let next_clause =
+                replace_first complement_literal negative_split_literal clause
+              in
+              let next_proof =
+                native_core_prove_replace_literal_in_clause
+                  id clause proof complement_literal negative_split_literal
+                  next_clause not_component_to_not_split
+              in
+              (next_clause, next_proof)
+            else
+              (clause, proof)
+      | _ ->
+          (clause, proof)
+    in
+    let final_clause, final_proof =
+      List.fold_left apply_definition (source_clause, source_proof) definitions
+    in
+    if same_clause_multiset final_clause result then
+      Some (native_core_prove_clause_to_clause id final_clause result final_proof)
+    else
+      None
+  in
   match parent_ids, split_literal with
   | [parent_id], _ when native_core_is_split_clause result ->
       let parent_clause, parent_proof = Hashtbl.find clause_table parent_id in
-      if not (same_clause_multiset parent_clause result) then
-        error (id ^ ": native preprocess proof-term avatar_split single-parent result is not an identity split clause");
-      parent_proof
+      if same_clause_multiset parent_clause result then
+        parent_proof
+      else
+        let definitions =
+          avatar_definitions
+          |> Hashtbl.to_seq_values
+          |> List.of_seq
+        in
+        begin match split_clause_by_component_definitions parent_clause parent_proof definitions with
+        | Some proof -> proof
+        | None ->
+            error
+              (id ^ ": native preprocess proof-term avatar_split single-parent result is not explained by split definitions")
+        end
   | [source_id; definition_id], Some split_name ->
       let source_clause, source_proof = Hashtbl.find clause_table source_id in
       let def_split_name, component_literals, definition_component_prop, definition_proof =
@@ -9727,97 +9890,20 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
       begin match quantified_two_component_split source_id definition_ids with
       | Some proof -> proof
       | None ->
-      let replace_first source_literal target_literal clause =
-        let rec replace = function
-          | [] -> []
-          | literal :: rest when literal = source_literal ->
-              target_literal :: rest
-          | literal :: rest -> literal :: replace rest
-        in
-        replace clause
-      in
-      let apply_definition (clause, proof) definition_id =
-        let split_name, component_literals, definition_component_prop, definition_proof =
-          try Hashtbl.find avatar_definitions definition_id
-          with Not_found ->
-            error (id ^ ": native preprocess proof-term avatar_split references unknown avatar definition")
-        in
-        match component_literals with
-        | [component_literal] ->
-            let split_literal = Pos (TmH split_name) in
-            let negative_split_literal = Neg (TmH split_name) in
-            if List.exists ((=) component_literal) clause
-               && List.exists ((=) split_literal) result then
-              let split_prop = native_core_literal_prop split_literal in
-              let component_to_split =
-                native_core_and_elim_right
-                  (Imp (split_prop, definition_component_prop))
-                  (Imp (definition_component_prop, split_prop))
-                  definition_proof
-              in
-              let next_clause =
-                replace_first component_literal split_literal clause
-              in
-              let next_proof =
-                native_core_prove_replace_literal_in_clause
-                  id clause proof component_literal split_literal next_clause
-                  component_to_split
-              in
-              (next_clause, next_proof)
-            else
-              let complement_literal =
-                native_core_complement_literal component_literal
-              in
-              if List.exists ((=) complement_literal) clause
-                 && List.exists ((=) negative_split_literal) result then
-                let split_prop = native_core_literal_prop split_literal in
-                let split_to_component =
-                  native_core_and_elim_left
-                    (Imp (split_prop, definition_component_prop))
-                    (Imp (definition_component_prop, split_prop))
-                    definition_proof
-                in
-                let not_component_to_not_split =
-                  match component_literal with
-                  | Pos _ ->
-                      PLam
-                        (native_core_literal_prop complement_literal,
-                         PLam
-                           (split_prop,
-                            PPfAp
-                              (Hyp 1,
-                               PPfAp (split_to_component, Hyp 0))))
-                  | Neg atom ->
-                      let atom_prop = native_core_literal_prop (Pos atom) in
-                      PLam
-                        (atom_prop,
-                         PLam
-                           (split_prop,
-                            PPfAp
-                              (PPfAp (split_to_component, Hyp 0),
-                               Hyp 1)))
-                in
-                let next_clause =
-                  replace_first complement_literal negative_split_literal clause
-                in
-                let next_proof =
-                  native_core_prove_replace_literal_in_clause
-                    id clause proof complement_literal negative_split_literal
-                    next_clause not_component_to_not_split
-                in
-                (next_clause, next_proof)
-              else
-                (clause, proof)
-        | _ ->
-            (clause, proof)
-      in
-      let final_clause, final_proof =
-        List.fold_left apply_definition (source_clause, source_proof) definition_ids
-      in
-      if not (same_clause_multiset final_clause result) then
-        error
-          (id ^ ": native preprocess proof-term avatar_split component definitions do not produce result split clause");
-      native_core_prove_clause_to_clause id final_clause result final_proof
+          let definitions =
+            List.map
+              (fun definition_id ->
+                 try Hashtbl.find avatar_definitions definition_id
+                 with Not_found ->
+                   error (id ^ ": native preprocess proof-term avatar_split references unknown avatar definition"))
+              definition_ids
+          in
+          begin match split_clause_by_component_definitions source_clause source_proof definitions with
+          | Some proof -> proof
+          | None ->
+              error
+                (id ^ ": native preprocess proof-term avatar_split component definitions do not produce result split clause")
+          end
       end
   | _ ->
       error
@@ -14175,7 +14261,7 @@ let elaborate_preprocess_refutation_native
     check_step_proof id prop proof;
     Hashtbl.replace formula_table id (formula, proof)
   in
-  let store_avatar_definition id split_name component_literals proof =
+  let store_avatar_definition_with_key key id split_name component_literals proof =
     let split_prop = native_core_literal_prop (Pos (TmH split_name)) in
     let component_prop =
       native_core_step_clause_prop cert [] id component_literals
@@ -14190,8 +14276,26 @@ let elaborate_preprocess_refutation_native
     check_step_proof id prop proof;
     Hashtbl.replace
       avatar_definition_table
-      id
+      key
       (split_name, component_literals, component_prop, proof)
+  in
+  let store_avatar_definition id split_name component_literals proof =
+    store_avatar_definition_with_key id id split_name component_literals proof
+  in
+  let seed_avatar_metadata_definitions () =
+    native_core_avatar_metadata_definitions cert
+    |> List.iter
+         (fun (id, split_name, component_literals) ->
+            let proof =
+              native_core_avatar_definition_proof_from_components
+                cert id split_name component_literals
+            in
+            store_avatar_definition_with_key
+              (id ^ "__" ^ split_name)
+              id
+              split_name
+              component_literals
+              proof)
   in
   let lookup_clause id =
     try Hashtbl.find clause_table id
@@ -14266,6 +14370,7 @@ let elaborate_preprocess_refutation_native
         cnf_step_uses_closed_parent_primitive parent_id
     | _ -> false
   in
+  seed_avatar_metadata_definitions ();
   List.iter
     (function
       | Input (id, source, clause)
