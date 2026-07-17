@@ -295,6 +295,7 @@ require_primitive_expansion_contract avatar_refutation avatar_refutation
 require_primitive_expansion_contract instantiation substitute
 require_primitive_expansion_contract avatar_definition avatar_definition
 require_primitive_expansion_contract split_dependency split_dependency
+require_primitive_expansion_contract predicate_definition predicate_definition_intro
 
 grep -F 'rule=instantiation' "$WORK_DIR/kernel_v1.tsv" \
   > "$WORK_DIR/instantiation.tsv" || true
@@ -1267,10 +1268,17 @@ grep -F '"rule=predicate_definition"' "$WORK_DIR/kernel_v1.tsv" \
 if [[ -s "$WORK_DIR/predicate_definition.tsv" ]]; then
   : > "$WORK_DIR/missing_predicate_definition_fields.tsv"
   for pattern in \
+    'primitive_expansion=prefix' \
+    'primitive_expansion_requires=predicate_definition_intro' \
     'introduced_symbol=' \
     'definiendum_symbol=' \
+    'body_formula=' \
     'result_formula=' \
-    'body_variable_sort_count='; do
+    'body_variable_sort_count=' \
+    'proof_shape=classical_definitional_split' \
+    'classical_principle=xm' \
+    'positive_branch=definition_body' \
+    'negative_branch=negated_definiendum'; do
     awk -v pat="$pattern" 'index($0, pat) == 0 {print pat "\t" $0}' \
       "$WORK_DIR/predicate_definition.tsv" >> "$WORK_DIR/missing_predicate_definition_fields.tsv"
   done

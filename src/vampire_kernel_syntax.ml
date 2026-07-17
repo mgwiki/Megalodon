@@ -26,6 +26,7 @@ let primitive_contracts = [
   ("avatar_refutation", ["avatar_refutation"]);
   ("avatar_definition", ["avatar_definition"]);
   ("split_dependency", ["split_dependency"]);
+  ("predicate_definition", ["predicate_definition_intro"]);
   ("superposition", ["paramodulate"]);
   ("rewrite", ["paramodulate"]);
   ("subsumption_resolution", ["resolve"]);
@@ -36,7 +37,6 @@ let primitive_contracts = [
 ]
 
 let structural_rules = [
-  "predicate_definition";
   "predicate_definition_fold";
   "predicate_definition_fold_chain";
 ]

@@ -4324,6 +4324,9 @@ let validate_kernel_v1_metadata_contracts cert =
         (id ^ ": strict certificate v1 kernel_v1 metadata field "
          ^ key ^ " does not match the certificate formula")
   in
+  let require_field_parse_formula id fields key =
+    ignore (parse_field id fields key parse_tm : tm)
+  in
   let require_field_tm id fields key expected =
     let actual = parse_field id fields key parse_tm in
     if actual <> expected
@@ -6579,6 +6582,54 @@ let validate_kernel_v1_metadata_contracts cert =
              validate_avatar_definition_metadata id fields
          | "split_dependency" ->
              validate_split_dependency_metadata id fields owner_index
+         | "predicate_definition" ->
+             require_rule_fields id fields kernel_rule
+               ["introduced_symbol";
+                "definiendum_symbol";
+                "body_formula";
+                "result_formula";
+                "body_variable_sort_count";
+                "proof_shape";
+                "classical_principle";
+                "positive_branch";
+                "negative_branch"];
+             require_field_parse_formula id fields "body_formula";
+             begin match Hashtbl.find_opt step_by_id id with
+             | Some (PredicateDefinition (_, symbol, result)) ->
+                 let introduced = field_required id fields "introduced_symbol" in
+                 let definiendum = field_required id fields "definiendum_symbol" in
+                 if introduced = "" then
+                   error (id ^ ": strict certificate v1 kernel_v1 predicate_definition introduced_symbol is empty");
+                 if definiendum <> symbol then
+                   error
+                     (id ^ ": strict certificate v1 kernel_v1 predicate_definition definiendum_symbol "
+                      ^ definiendum ^ " does not match certificate symbol " ^ symbol);
+                 require_field_formula id fields "result_formula" result;
+                 let count = field_int id fields "body_variable_sort_count" in
+                 if count < 0 then
+                   error (id ^ ": strict certificate v1 kernel_v1 predicate_definition body_variable_sort_count is negative");
+                 for index = 0 to count - 1 do
+                   ignore
+                     (field_required id fields
+                        ("body_variable_sort_" ^ string_of_int index)
+                      : string)
+                 done;
+                 if field_required id fields "proof_shape"
+                    <> "classical_definitional_split" then
+                   error (id ^ ": strict certificate v1 kernel_v1 predicate_definition unsupported proof_shape");
+                 if field_required id fields "classical_principle" <> "xm" then
+                   error (id ^ ": strict certificate v1 kernel_v1 predicate_definition requires classical_principle=xm");
+                 if field_required id fields "positive_branch" <> "definition_body" then
+                   error (id ^ ": strict certificate v1 kernel_v1 predicate_definition unsupported positive_branch");
+                 if field_required id fields "negative_branch" <> "negated_definiendum" then
+                   error (id ^ ": strict certificate v1 kernel_v1 predicate_definition unsupported negative_branch")
+             | Some _ ->
+                 error
+                   (id ^ ": strict certificate v1 kernel_v1 predicate_definition metadata must annotate a predicate_definition step")
+             | None ->
+                 error
+                   (id ^ ": strict certificate v1 kernel_v1 predicate_definition metadata has no matching certificate step")
+             end
          | "avatar_split" ->
              validate_avatar_split_metadata id fields owner_index
          | "avatar_refutation" ->
@@ -6660,7 +6711,10 @@ let validate_primitive_expansion_contracts cert =
   let has_prefixed_primitive prefix primitive =
     List.exists
       (fun step ->
-         step_rule_name step = primitive && has_id_prefix (step_id step) prefix)
+         ((step_rule_name step = primitive)
+          || (primitive = "predicate_definition_intro"
+              && match step with PredicateDefinition _ -> true | _ -> false))
+         && has_id_prefix (step_id step) prefix)
       steps
   in
   let validate_expansion_index id fields =
