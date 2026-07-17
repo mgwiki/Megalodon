@@ -713,6 +713,93 @@ if ! rg -q 'Everything looks good' \
   exit 1
 fi
 
+targeted_live_dir="$WORK_DIR/targeted_vampireaby_live"
+mkdir -p "$targeted_live_dir"
+cat >"$targeted_live_dir/targeted_vampireaby_live.mg" <<'EOF_TARGETED_VAMPIREABY_LIVE_MG'
+Definition False : prop := forall p:prop, p.
+Definition not : prop -> prop := fun A:prop => A -> False.
+Prefix ~ 700 := not.
+Definition or : prop -> prop -> prop := fun A B:prop => forall p:prop, (A -> p) -> (B -> p) -> p.
+Infix \/ 785 left := or.
+Axiom xm : forall P:prop, P \/ ~P.
+Variable p:prop.
+Theorem skipped_targeted_vampireaby_live:p -> p.
+assume Hp:p.
+aby Hp.
+Qed.
+Theorem selected_targeted_vampireaby_live:p -> p.
+assume Hp:p.
+aby Hp.
+Qed.
+EOF_TARGETED_VAMPIREABY_LIVE_MG
+targeted_live_line=$(
+  rg -n '^aby Hp\.$' "$targeted_live_dir/targeted_vampireaby_live.mg" |
+    tail -1 |
+    cut -d: -f1
+)
+cat >"$targeted_live_dir/fake_vampire" <<EOF_TARGETED_VAMPIREABY_FAKE
+#!/usr/bin/env bash
+problem="\${@: -1}"
+line=\$(sed -n 's/^% megalodon_origin ((file .* (line "\([^"]*\)") .*/\1/p' "\$problem" | head -1)
+if [[ "\$line" != "$targeted_live_line" ]]; then
+  echo "fake vampire called at non-target line \$line" >&2
+  exit 42
+fi
+conj=\$(sed -n 's/^% megalodon_source_map (conjecture "\([^"]*\)" .*/\1/p' "\$problem" | head -1)
+cat <<CERT
+% SZS status Theorem
+% SZS output start Proof
+megalodon_certificate_native_sexpr_start.
+(certificate vampire-megalodon 1
+  (problem "targeted-vampireaby-live")
+  (symbol_declaration "Variable p:prop.")
+  (input "u0" (source axiom "c_Hp") (clause (pos (TMH "p"))))
+  (input "u1" (source negated_conjecture "\$conj") (clause (neg (TMH "p"))))
+  (resolve "u2" (parents "u0" "u1") (pivot 0 0) (result (clause)))
+)
+megalodon_certificate_native_sexpr_end.
+% SZS output end Proof
+CERT
+EOF_TARGETED_VAMPIREABY_FAKE
+chmod +x "$targeted_live_dir/fake_vampire"
+bin/megalodon \
+  -v 9 \
+  -allowincompleteqed \
+  -vampireaby "$targeted_live_dir/fake_vampire" \
+  -vampireabyproof megalodon \
+  -vampireabynative \
+  -vampireabynativestrict \
+  -vampireabytarget "$targeted_live_line" 0 \
+  -vampireabyoutdir "$targeted_live_dir/out" \
+  "$targeted_live_dir/targeted_vampireaby_live.mg" \
+  >"$WORK_DIR/native_cert_v1_targeted_vampireaby_live.log" \
+  2>"$WORK_DIR/native_cert_v1_targeted_vampireaby_live.err"
+if ! rg -q 'Vampire native certificate checked 3 steps and 2 sources' \
+    "$WORK_DIR/native_cert_v1_targeted_vampireaby_live.log"; then
+  echo "targeted live vampireaby did not run the selected native certificate" >&2
+  exit 1
+fi
+if ! rg -q 'source_context known=0 local=1 local_definition=0 conjecture=1 unresolved=0' \
+    "$WORK_DIR/native_cert_v1_targeted_vampireaby_live.log"; then
+  echo "targeted live vampireaby did not resolve the selected local source context" >&2
+  exit 1
+fi
+if ! rg -q 'Vampire native certificate reconstructed aby proof term' \
+    "$WORK_DIR/native_cert_v1_targeted_vampireaby_live.log"; then
+  echo "targeted live vampireaby did not reconstruct the selected proof term" >&2
+  exit 1
+fi
+if ! rg -q 'Everything looks good' \
+    "$WORK_DIR/native_cert_v1_targeted_vampireaby_live.log"; then
+  echo "targeted live vampireaby fixture did not finish after reconstructing the selected target" >&2
+  exit 1
+fi
+targeted_vampire_calls=$(find "$targeted_live_dir/out" -name '*.megalodon.out' | wc -l | tr -d ' ')
+if [[ "$targeted_vampire_calls" != "1" ]]; then
+  echo "targeted live vampireaby called Vampire $targeted_vampire_calls times instead of once" >&2
+  exit 1
+fi
+
 source_direct_11703_dir="$WORK_DIR/source_direct_11703_live"
 mkdir -p "$source_direct_11703_dir"
 cat >"$source_direct_11703_dir/fake_vampire" <<'EOF_SOURCE_DIRECT_11703_FAKE_VAMPIRE'

@@ -28,6 +28,7 @@ let vampireabyschedule : string ref = ref "casc";;
 let vampireabyproof : string ref = ref "tptp";;
 let vampireabynative : bool ref = ref false;;
 let vampireabynativestrict : bool ref = ref false;;
+let vampireabytarget : (int * int) option ref = ref None;;
 let vampirecertv1 : string option ref = ref None;;
 let vampirecertv1source : string option ref = ref None;;
 let vampirecertv1sourceaudit : bool ref = ref false;;
@@ -7178,20 +7179,28 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                | None -> false
                | Some(_) -> true
              in
+             let vampireaby_targeting =
+               match !vampireabytarget with
+               | None -> false
+               | Some(ln,cn) -> not (!lineno = ln && !charno >= cn)
+             in
+             let skip_targeted_vampireaby =
+               th0single_targeting || vampireaby_targeting
+             in
              let require_vampire_native_certificate =
-               !vampireabynativestrict && !vampireaby <> None && not th0single_targeting
+               !vampireabynativestrict && !vampireaby <> None && not skip_targeted_vampireaby
              in
              let native_aby_result =
                if !vampireabynative
                   && not require_vampire_native_certificate
-                  && not th0single_targeting
+                  && not skip_targeted_vampireaby
                then
                  native_aby_reconstruct claimtm cxtm cxpf xl
                else
                  None
              in
              let vampire_native_result = ref None in
-             if not th0single_targeting then begin
+             if not skip_targeted_vampireaby then begin
                match !vampireaby with
                | None -> ()
                | Some(_) ->
@@ -7219,7 +7228,7 @@ let evaluate_pftac_1 pitem thmname i gpgtm gphv pfggphv =
                      end
              end;
              begin
-               if !vampireabynative && not th0single_targeting then
+               if !vampireabynative && not skip_targeted_vampireaby then
                  let native_aby_result =
                    match !vampire_native_result with
                    | Some _ as result -> result
@@ -9047,6 +9056,16 @@ let _ =
           begin
             vampireabynative := true;
             vampireabynativestrict := true
+          end
+        else if Sys.argv.(!j) = "-vampireabytarget" then
+          begin
+	    if !j < i-3 then
+	      begin
+                vampireabytarget := Some(int_of_string (Sys.argv.(!j+1)),int_of_string (Sys.argv.(!j+2)));
+                j := !j + 2
+	      end
+	    else
+	      raise (Failure("Expected -vampireabytarget <lineno> <charno>"))
           end
         else if Sys.argv.(!j) = "-vampirecertv1" then
           begin
