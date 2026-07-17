@@ -330,3 +330,33 @@ Validation:
 - native primitive audit on the artifact
 - kernel-v1 metadata audit on the artifact, covering 280 `kernel_v1` records
   and 37 rewrite-position records
+
+Vampire commit `0b5abbeb8` extracts the unit-resulting-resolution trace-step
+field cluster into `RenderedKernelUrrTraceStep`. The exporter still computes
+each trace step from Vampire's inference metadata, but the standard fields for
+unit parent, selected literal, substituted selected/unit literals, and the
+remaining clause now have a single Vampire-side record and serializer.
+
+This is the end of the first rendered-record extraction pass. It does not yet
+provide the small typed kernel certificate requested by the audit, but it
+does reduce the remaining work to a clearer replacement task: turn the
+rendered parent, literal-selection, rewrite, substitution, position, and URR
+trace records into typed objects, then lower macro rules into those primitive
+objects before Megalodon imports them.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel`
+- 5-case live THF run with
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11052`:
+  `PASS 5`
+- native primitive audit on the 5-case artifact
+- kernel-v1 metadata audit on the 5-case artifact, covering 280 `kernel_v1`
+  records and 37 rewrite-position records
+- focused URR live THF run over `hammer.11703.242.th0.p` and
+  `hammer.11453.77.th0.p`: `PASS 2`
+- focused URR kernel-v1 metadata audit, covering 48 `kernel_v1` records and
+  3 `unit_resulting_resolution` records
+- focused URR primitive audit with small-sample minima relaxed; this artifact
+  has no equality-resolution records, which is expected for the selected
+  two-case sample

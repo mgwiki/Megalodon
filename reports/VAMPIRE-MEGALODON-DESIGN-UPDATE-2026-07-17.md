@@ -417,3 +417,33 @@ Validation:
 - The focused native primitive audit passed on the artifact.
 - The kernel-v1 metadata audit passed over 280 `kernel_v1` records, including
   37 rewrite-position records.
+
+Additional follow-up: Vampire commit `0b5abbeb8` extracts URR trace-step
+metadata into `RenderedKernelUrrTraceStep`. The unit-resulting-resolution
+emitter still computes the trace locally, but the per-step fields for unit
+parent, selected literal, substituted selected/unit literals, and remaining
+clause now pass through a single Vampire-side record before serialization.
+
+This finishes the current rendered-record pass over the most frequent
+certificate field clusters: parents/conclusions, selected literals, rewrite
+records, and URR traces. It is still not the final Prover9/Ivy-style object.
+The next audit-relevant step is to replace these rendered records with typed
+term, literal, substitution, position, and parent-reference structures, then
+lower Vampire macro inferences into those primitive records before Megalodon
+checks them.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` passed and produced
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11052`.
+- A 5-case live THF run with that binary produced `PASS 5`.
+- The focused native primitive audit passed on the 5-case artifact.
+- The kernel-v1 metadata audit passed over 280 `kernel_v1` records, including
+  37 rewrite-position records.
+- A focused two-case URR live run over `hammer.11703.242.th0.p` and
+  `hammer.11453.77.th0.p` produced `PASS 2`.
+- The focused URR kernel-v1 metadata audit passed over 48 `kernel_v1` records,
+  including 3 `unit_resulting_resolution` records.
+- The focused URR primitive audit passed with small-sample minima relaxed; the
+  two-case sample contains no equality-resolution records, which is expected
+  for that artifact rather than a regression.
