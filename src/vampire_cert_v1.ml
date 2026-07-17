@@ -8172,6 +8172,47 @@ let native_core_literal_prop = function
   | Pos tm -> native_core_expand_eq_atom tm
   | Neg tm -> Imp (native_core_expand_eq_atom tm, native_core_false)
 
+let native_rectify_formula_match left right =
+  let candidates tm =
+    let bool_normalized = normalize_bool_equality_orientation tm in
+    let equality_normalized = normalize_equality_orientation bool_normalized in
+    let native_prop =
+      native_core_formula_prop tm
+      |> native_core_normalize_bool_constants
+    in
+    let native_bool_prop =
+      native_core_formula_prop bool_normalized
+      |> native_core_normalize_bool_constants
+    in
+    let native_equality_prop =
+      native_core_formula_prop equality_normalized
+      |> native_core_normalize_bool_constants
+    in
+    [tm; bool_normalized; equality_normalized;
+     native_prop; native_bool_prop; native_equality_prop]
+  in
+  List.exists
+    (fun left_candidate ->
+       List.exists
+         (fun right_candidate ->
+            left_candidate = right_candidate
+            || same_mod_vampire_var_renaming left_candidate right_candidate
+            || same_mod_scoped_vampire_var_renaming left_candidate right_candidate
+            || same_mod_scoped_vampire_var_renaming_and_equality left_candidate right_candidate)
+         (candidates right))
+    (candidates left)
+
+let check_native_rectify_formula id parent_id renamings parent_formula result =
+  match renamings with
+  | _ :: _ ->
+      List.iteri (validate_rectify_renaming id) renamings;
+      if not (tm_matches_rectify_renamings renamings parent_formula result
+              || native_rectify_formula_match parent_formula result) then
+        error (id ^ ": rectify_formula result is not explained by explicit Vampire renamings")
+  | [] ->
+      if not (native_rectify_formula_match parent_formula result) then
+        error (id ^ ": rectify_formula result is not a bijective Vampire-variable renaming of parent")
+
 let rec native_core_clause_prop id = function
   | [] -> native_core_false
   | [literal] -> native_core_literal_prop literal
@@ -9629,7 +9670,7 @@ let native_core_bind_result_step_variables variables result_step_variables body_
     body_proof
 
 let native_core_fool_formula_proof
-    id variables parent_step_variables result_step_variables source target proof =
+    id symbol_table variables parent_step_variables result_step_variables source target proof =
   let source = native_core_close_tm (variables @ result_step_variables) source in
   let target = native_core_close_tm (variables @ result_step_variables) target in
   let result_variable_count = List.length result_step_variables in
@@ -9657,10 +9698,44 @@ let native_core_fool_formula_proof
     |> List.find_opt (fun (_, candidate_tp) -> candidate_tp = tp)
     |> Option.map (fun (name, _) -> TmH name)
   in
+  let fallback_formula_witness tp =
+    let env = variables @ result_step_variables in
+    let rec first_some = function
+      | [] -> None
+      | candidate :: rest ->
+          begin match candidate () with
+          | Some _ as result -> result
+          | None -> first_some rest
+          end
+    in
+    let rec search tm =
+      let self =
+        match native_core_tm_type symbol_table env tm with
+        | Some candidate_tp when candidate_tp = tp -> Some tm
+        | _ -> None
+      in
+      match self with
+      | Some _ -> self
+      | None ->
+          begin match tm with
+          | TpAp (m, _) -> search m
+          | Ap (m, n) -> first_some [ (fun () -> search m); (fun () -> search n) ]
+          | Lam (_, body) -> search body
+          | Imp (m, n) -> first_some [ (fun () -> search m); (fun () -> search n) ]
+          | All (_, body) -> search body
+          | DB _ | TmH _ | Prim _ -> None
+          end
+    in
+    first_some [ (fun () -> search source); (fun () -> search target) ]
+  in
   let fallback_variable tp =
     match fallback_result_variable tp with
     | Some tm -> Some tm
-    | None -> fallback_declared_variable tp
+    | None ->
+        begin match fallback_declared_variable tp with
+        | Some _ as result -> result
+        | None -> fallback_formula_witness tp
+        end
   in
   let parent_proof =
     List.fold_left
@@ -9694,8 +9769,12 @@ let native_core_fool_formula_proof
         begin match fallback_declared_variable tp with
         | Some tm -> tm
         | None ->
-            error
-              (id ^ ": native preprocess proof-term fool_formula cannot instantiate redundant universal binder")
+            begin match fallback_formula_witness tp with
+            | Some tm -> tm
+            | None ->
+                error
+                  (id ^ ": native preprocess proof-term fool_formula cannot instantiate redundant universal binder")
+            end
         end
   in
   let rec convert context direction source target proof =
@@ -12613,7 +12692,7 @@ let elaborate_core_resolution_refutation_native
           store_formula id result parent_proof
       | RectifyFormula (id, parent_id, renamings, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
-          check_rectify_formula [(parent_id, CheckedFormula parent_formula)] id parent_id renamings result;
+          check_native_rectify_formula id parent_id renamings parent_formula result;
           let parent_step_variables = native_core_step_variables cert parent_id in
           let result_step_variables = native_core_step_variables cert id in
           store_formula id result
@@ -12629,7 +12708,7 @@ let elaborate_core_resolution_refutation_native
           let result_step_variables = native_core_step_variables cert id in
           store_formula id result
             (native_core_fool_formula_proof
-               id variables parent_step_variables result_step_variables
+               id symbol_table variables parent_step_variables result_step_variables
                parent_formula result parent_proof)
       | FoolBool (id, parent_id, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
@@ -13166,9 +13245,7 @@ let elaborate_preprocess_refutation_native
           store_formula id result parent_proof
       | RectifyFormula (id, parent_id, renamings, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
-          check_rectify_formula
-            [(parent_id, CheckedFormula parent_formula)]
-            id parent_id renamings result;
+          check_native_rectify_formula id parent_id renamings parent_formula result;
           let parent_step_variables = native_core_step_variables cert parent_id in
           let result_step_variables = native_core_step_variables cert id in
           if Hashtbl.mem transitional_primitive_formula_steps parent_id then
@@ -13194,7 +13271,7 @@ let elaborate_preprocess_refutation_native
             Hashtbl.replace transitional_primitive_formula_steps id true;
           store_formula id result
             (native_core_fool_formula_proof
-               id variables parent_step_variables result_step_variables
+               id symbol_table variables parent_step_variables result_step_variables
                parent_formula result parent_proof)
       | EnnfFormula (id, parent_id, source, pairs, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
