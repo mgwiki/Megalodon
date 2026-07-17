@@ -288,3 +288,25 @@ Validation:
 - native primitive audit on the artifact
 - kernel-v1 metadata audit on the artifact, covering 280 `kernel_v1` records
   and 37 rewrite-position records
+
+Vampire commit `a3c121ecc` extracts the superposition rewrite metadata cluster
+into `RenderedKernelRewrite`. The exporter still computes the target/equality
+substitution, direction, position, and rewritten target locally, but
+`MegalodonKernelSyntax` now owns the standard field serialization for that
+rewrite record.
+
+This is another boundary extraction, not final proof reconstruction. It is
+aligned with the Prover9/Ivy path because rewrite metadata is now a first-class
+Vampire-side object that can later become typed. Demodulation rewrite records,
+URR trace steps, substitutions, and true typed term/literal records remain
+unfinished.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel`
+- 5-case live THF run with
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11050`:
+  `PASS 5`
+- native primitive audit on the artifact
+- kernel-v1 metadata audit on the artifact, covering 280 `kernel_v1` records
+  and 37 rewrite-position records

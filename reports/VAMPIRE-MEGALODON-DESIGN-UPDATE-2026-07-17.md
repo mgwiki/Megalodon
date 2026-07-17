@@ -375,3 +375,24 @@ Validation:
 - The focused native primitive audit passed on the artifact.
 - The kernel-v1 metadata audit passed over 280 `kernel_v1` records, including
   37 rewrite-position records.
+
+Additional follow-up: Vampire commit `a3c121ecc` adds
+`RenderedKernelRewrite` to `MegalodonKernelSyntax` and routes the superposition
+rewrite metadata through it. The record owns the rendered target/equality
+substituted literals, target and equality parent locations, rewrite direction,
+rewrite position, from/to terms, and rewritten target field layout.
+
+This keeps the `kernel_v1` metadata format stable and still uses rendered
+strings, but it removes another high-frequency rewrite-specific field cluster
+from `MegalodonChecker.cpp`. The remaining rewrite work is to give
+demodulation/rewrite and URR trace steps the same treatment, then replace the
+rendered strings with typed literal, term, substitution, and position records.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` passed and produced
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11050`.
+- A 5-case live THF run with that binary produced `PASS 5`.
+- The focused native primitive audit passed on the artifact.
+- The kernel-v1 metadata audit passed over 280 `kernel_v1` records, including
+  37 rewrite-position records.
