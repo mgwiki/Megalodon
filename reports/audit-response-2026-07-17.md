@@ -474,3 +474,29 @@ Validation:
 - native primitive audit on the same artifact, including 18 `skolem_formula`,
   122 `paramodulate`, 102 `substitute`, 88 `equality_resolution`, and 25
   `resolve` records
+
+Vampire commit `2e4441c77` then extracts the repeated source/result formula
+metadata for formula-copy, formula-normalize, and FOOL-formula records into
+`RenderedKernelSourceFormulaTransform`. Transformation pair metadata is now
+represented by `RenderedKernelTransformationPair` and serialized centrally by
+`MegalodonKernelSyntax`.
+
+This reduces the migration-field surface for Smolka-style transformations,
+but it remains a certificate-object boundary improvement rather than a full
+proof-producing implementation. Rectification renamings, definition-folding
+source/definition records, CNF source-to-clause records, and original
+Megalodon source-context proof composition still need the same treatment and
+then actual Megalodon proof-term consumption.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` for
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11058`
+- fresh 20-case live THF run with `JOBS=10` and `VAMPIRE_SECONDS=10`:
+  `PASS 20`
+- kernel-v1 metadata audit on that artifact: 738 `kernel_v1` records, 49
+  `fool_formula`, 43 `formula_normalize`, 37 `formula_copy`, and 106
+  rewrite-position records
+- native primitive audit on the same artifact, including 330
+  `fool_atom_lift`, 43 `ennf_formula`, 8 `formula_copy`, 29
+  `formula_term_copy`, 122 `paramodulate`, and 102 `substitute` records

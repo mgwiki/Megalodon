@@ -550,6 +550,34 @@ Validation:
   `skolem_formula`, 122 `paramodulate`, 102 `substitute`, 88
   `equality_resolution`, and 25 `resolve` records.
 
+Additional follow-up: Vampire commit `2e4441c77` extracts a shared
+source/result formula transformation record into
+`RenderedKernelSourceFormulaTransform` and
+`RenderedKernelTransformationPair`. The formula-copy, formula-normalize, and
+FOOL-formula kernel records now serialize `source_unit`, `parent_0_unit`,
+`source_formula`, `parent_0_formula`, `proof_parent_count`, `result_formula`,
+copy kind, normal-form rule, and transformation pair fields from this
+Vampire-side record rather than from repeated free-form field vectors.
+
+This is another step toward the Smolka-style transformation layer. The record
+still carries rendered formula s-expressions, so it is not yet a checked
+Megalodon proof of the preprocessing transformation. It does, however, make
+the transformation boundary explicit and shared across the normal-form and
+FOOL cases that were previously assembled ad hoc.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` passed and produced
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11058`.
+- A fresh 20-case live THF run with 10-way parallelism and a 10-second Vampire
+  cap produced `PASS 20`.
+- The kernel-v1 metadata audit passed on that artifact, covering 738
+  `kernel_v1` records, 49 `fool_formula`, 43 `formula_normalize`, 37
+  `formula_copy`, and 106 rewrite-position records.
+- The native primitive audit passed on the same artifact, including 330
+  `fool_atom_lift`, 43 `ennf_formula`, 8 `formula_copy`, 29
+  `formula_term_copy`, 122 `paramodulate`, and 102 `substitute` records.
+
 Additional follow-up: Vampire commit `05fe04c5d` extracts
 subsumption-resolution pivot metadata into
 `RenderedKernelSubsumptionResolutionPivot`. The main/side parent indexes,
