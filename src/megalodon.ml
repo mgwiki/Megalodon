@@ -1328,9 +1328,17 @@ let vampire_expanded_equality_sides = function
       end
   | _ -> None
 
+let vampire_megalodon_eq_poly_hash =
+  "5a6af35fb6d6bea477dd0f822b8e01ca0d57cc50dfd41744307bc94597fdaa4a"
+
+let vampire_eq_poly_head h =
+  h = !eqPoly || h = vampire_megalodon_eq_poly_hash || h = "eq" || h = "="
+
 let vampire_equality_sides = function
-  | Ap (Ap (TpAp (TmH h, tp), left), right) when h = !eqPoly ->
+  | Ap (Ap (TpAp (TmH h, tp), left), right) when vampire_eq_poly_head h ->
       Some (tp, left, right)
+  | Ap (Ap (TmH h, left), right) when h = "eq" || h = "=" ->
+      Some (Set, left, right)
   | tm -> vampire_expanded_equality_sides tm
 
 let vampire_positive_equality_symmetry_proof tp left right proof =
@@ -1353,13 +1361,29 @@ let vampire_reconstruct_goal_from_proved_prop ?source_map ?extra_delta ?extra_sy
   match vampire_check_current_goal_proof ?source_map ?extra_delta ?extra_symbols claimtm cxtm cxpf proof with
   | Some _ as result -> result
   | None ->
-      begin match vampire_equality_sides proposition, vampire_equality_sides claimtm with
+      let proof_delta =
+        match source_map with
+        | None -> vampire_source_context_delta_with_locals cxtm
+        | Some source_map ->
+            vampire_source_context_delta_with_source_map ~cxtm source_map
+      in
+      begin match extra_delta with
+      | None -> ()
+      | Some extra_delta ->
+          Hashtbl.iter
+            (fun h v ->
+               if not (Hashtbl.mem proof_delta h) then Hashtbl.add proof_delta h v)
+            extra_delta
+      end;
+      let proposition_sides = vampire_equality_sides proposition in
+      let claim_sides = vampire_equality_sides claimtm in
+      begin match proposition_sides, claim_sides with
       | Some (source_tp, source_left, source_right),
         Some (goal_tp, goal_left, goal_right)
           when source_tp = goal_tp ->
           begin match
-            conv source_left goal_right sigdelta [],
-            conv source_right goal_left sigdelta []
+            conv source_left goal_right proof_delta [],
+            conv source_right goal_left proof_delta []
           with
           | Some _, Some _ ->
               if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
@@ -1384,7 +1408,20 @@ let vampire_reconstruct_goal_from_proved_prop ?source_map ?extra_delta ?extra_sy
               result
           | _ -> None
           end
-      | _ -> None
+      | _ ->
+          if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+            begin
+              Printf.printf
+                "Vampire native certificate equality goal transport not applicable at line %d char %d; proposition_sides=%s claim_sides=%s.\nproposition: %s\nclaim: %s\n"
+                !lineno
+                !charno
+                (match proposition_sides with Some _ -> "yes" | None -> "no")
+                (match claim_sides with Some _ -> "yes" | None -> "no")
+                (tm_to_str proposition)
+                (tm_to_str claimtm);
+              flush stdout
+            end;
+          None
       end
 
 let vampire_context_terms_of_type cxtm target_tp =
@@ -1918,18 +1955,17 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
          native_core.Vampire_cert_v1.core_native_proposition
          remaining_bindings)
   in
-  match
-    vampire_reconstruct_goal_from_source_audit
-      ~extra_delta:native_core.Vampire_cert_v1.core_native_delta_table
-      ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
-      claimtm
-      cxtm
-      cxpf
-      source_map
-      source_audit
-  with
+  match reconstruct_from_refutation () with
   | Some _ as result -> result
-  | None -> reconstruct_from_refutation ()
+  | None ->
+      vampire_reconstruct_goal_from_source_audit
+        ~extra_delta:native_core.Vampire_cert_v1.core_native_delta_table
+        ~extra_symbols:native_core.Vampire_cert_v1.core_native_symbol_table
+        claimtm
+        cxtm
+        cxpf
+        source_map
+        source_audit
 
 let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) content output proof_file =
   if !vampireabyproof = "megalodon" then
