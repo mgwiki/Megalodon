@@ -165,6 +165,35 @@ let local_definition_candidate_checks context proof proposition =
     | None -> false
   with _ -> false
 
+let source_symbol_type context names =
+  let rec find = function
+    | [] -> None
+    | name :: rest ->
+        begin match Hashtbl.find_opt context.symbol_table name with
+        | Some (0, tp) -> Some tp
+        | Some _ | None -> find rest
+        end
+  in
+  find names
+
+let global_definition_proof context names proposition =
+  let default_tp =
+    match source_symbol_type context names with
+    | Some tp -> tp
+    | None -> Prop
+  in
+  match local_definition_candidate_proof default_tp proposition with
+  | Some proof when local_definition_candidate_checks context proof proposition ->
+      Some proof
+  | Some _ | None ->
+      if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+        prerr_endline
+          ("source-context global definition mismatch for "
+           ^ String.concat "," names
+           ^ ": proposition="
+           ^ tm_to_str proposition);
+      None
+
 let known_hash_proves context hash proposition =
   try
     match check_propofpf context.proof_delta context.symbol_table [] [] (Known hash) proposition [] with
@@ -319,7 +348,18 @@ let resolve_one context audit binding =
           |> fun audit -> { audit with local_definition_matched = audit.local_definition_matched + 1 }
       | None -> { audit with definition_missing = audit.definition_missing + 1 }
     else if hash <> "" && Hashtbl.mem context.proof_delta hash then
-      { audit with definition_resolved = audit.definition_resolved + 1 }
+      match
+        global_definition_proof
+          context
+          [binding.core_native_source_name; binding.core_native_tptp_name; hash]
+          proposition
+      with
+      | Some proof ->
+          audit
+          |> add_source_proof step proof
+          |> add_resolved step (Definitional (proposition, proof))
+          |> fun audit -> { audit with definition_resolved = audit.definition_resolved + 1 }
+      | None -> { audit with definition_missing = audit.definition_missing + 1 }
     else
       { audit with definition_missing = audit.definition_missing + 1 }
   else if generated_source_kind kind then

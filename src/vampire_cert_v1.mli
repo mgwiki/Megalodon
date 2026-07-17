@@ -149,6 +149,7 @@ type core_native_proof = {
   core_native_symbol_table : (string, int * Syntax.tp) Hashtbl.t;
   core_native_steps : int;
   core_native_source_bindings : core_native_source_binding list;
+  core_native_source_assumptions : int;
 }
 
 and core_native_source_binding = {

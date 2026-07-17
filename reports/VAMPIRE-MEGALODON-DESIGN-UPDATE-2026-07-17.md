@@ -204,6 +204,15 @@ variable without an explicit Vampire substitution fails closed. This is a
 small piece of the planned `open_step_theorem` work, not the full extraction
 of that operation into a separate kernel module.
 
+Source-context follow-up: native proof-term results now report both the full
+source-binding count and the number of source assumptions that remain after
+source-context proofs are consumed. The smoke suite asserts this count for a
+hash-backed known and a generated `set_reflexivity` equality. The source
+resolver also has initial source-map alias support for exported names that
+refer back to original Megalodon symbols and hash-backed global definitions;
+this is infrastructure for E1 original-context work, not yet a claim that all
+global/local definition cases in the live corpus are discharged.
+
 ## Later July 17 Certificate-Checker Update
 
 The current `vampire/megalodon5` work also improves strict certificate

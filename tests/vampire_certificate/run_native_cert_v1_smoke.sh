@@ -383,6 +383,11 @@ if ! rg -q 'Vampire certificate v1 native core proof term checked 4 steps' \
   echo "native certificate v1 core checker did not accept a context-resolved source proof" >&2
   exit 1
 fi
+if ! rg -q 'Vampire certificate v1 native core source assumptions remaining 2' \
+    "$WORK_DIR/native_cert_v1_source_context_core_pf.log"; then
+  echo "native certificate v1 core checker did not discharge the hash-backed source proof from assumptions" >&2
+  exit 1
+fi
 
 local_source_live_dir="$WORK_DIR/local_source_live"
 mkdir -p "$local_source_live_dir"
@@ -2272,6 +2277,10 @@ bin/megalodon \
 
 if ! rg -q 'Vampire certificate v1 native core proof term checked 4 steps' "$WORK_DIR/native_cert_v1_source_map_set_reflexivity_corepf.log"; then
   echo "native certificate v1 core proof-term checker did not prove a reflexive set source" >&2
+  exit 1
+fi
+if ! rg -q 'Vampire certificate v1 native core source assumptions remaining 1' "$WORK_DIR/native_cert_v1_source_map_set_reflexivity_corepf.log"; then
+  echo "native certificate v1 core proof-term checker left set_reflexivity as a source assumption" >&2
   exit 1
 fi
 

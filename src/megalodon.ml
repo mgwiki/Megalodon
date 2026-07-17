@@ -640,6 +640,72 @@ let vampire_source_context_delta_with_locals cxtm =
     cxtm;
   delta
 
+let vampire_source_context_add_source_map_aliases delta source_map =
+  let add_term_alias alias source_name =
+    if alias <> "" && source_name <> "" then
+      match Hashtbl.find_opt sigtmh source_name with
+      | Some hash -> Hashtbl.replace delta alias (0, TmH hash)
+      | None -> ()
+  in
+  List.iter
+    (fun entry ->
+       let kind = entry.Vampire_cert_v1.source_map_kind in
+       let hash = entry.Vampire_cert_v1.source_map_hash in
+       add_term_alias
+         entry.Vampire_cert_v1.source_map_tptp_name
+         entry.Vampire_cert_v1.source_map_source_name;
+       add_term_alias
+         entry.Vampire_cert_v1.source_map_source_name
+         entry.Vampire_cert_v1.source_map_source_name;
+       if (kind = "def" || kind = "definition")
+          && hash <> "" then
+         match Hashtbl.find_opt delta hash with
+         | None -> ()
+         | Some definition ->
+             if entry.Vampire_cert_v1.source_map_tptp_name <> "" then
+               Hashtbl.replace
+                 delta
+                 entry.Vampire_cert_v1.source_map_tptp_name
+                 definition;
+             if entry.Vampire_cert_v1.source_map_source_name <> "" then
+               Hashtbl.replace
+                 delta
+                 entry.Vampire_cert_v1.source_map_source_name
+                 definition)
+    source_map;
+  delta
+
+let vampire_source_context_delta_with_source_map ?cxtm source_map =
+  let delta =
+    match cxtm with
+    | Some cxtm -> vampire_source_context_delta_with_locals cxtm
+    | None -> vampire_source_context_delta ()
+  in
+  vampire_source_context_add_source_map_aliases delta source_map
+
+let vampire_source_context_symbol_table_with_source_map source_map =
+  let symbols = Hashtbl.copy sigtmof in
+  List.iter
+    (fun entry ->
+       let add_symbol_alias alias source_name =
+         if alias <> "" && source_name <> "" then
+           match Hashtbl.find_opt sigtmh source_name with
+           | Some hash ->
+               begin match Hashtbl.find_opt sigtmof hash with
+               | Some tp -> Hashtbl.replace symbols alias tp
+               | None -> ()
+               end
+           | None -> ()
+       in
+       add_symbol_alias
+         entry.Vampire_cert_v1.source_map_tptp_name
+         entry.Vampire_cert_v1.source_map_source_name;
+       add_symbol_alias
+         entry.Vampire_cert_v1.source_map_source_name
+         entry.Vampire_cert_v1.source_map_source_name)
+    source_map;
+  symbols
+
 let vampire_local_definition_expander cxtm =
   let rec local_terms proof_index = function
     | [] -> []
@@ -1060,7 +1126,8 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
     Vampire_cert_v1.elaborate_core_resolution_refutation_native
       ~source_map
       ~source_proofs:source_proofs_for_core
-      ~external_delta_table:(vampire_source_context_delta_with_locals cxtm)
+      ~external_delta_table:
+        (vampire_source_context_delta_with_source_map ~cxtm source_map)
       ~external_definition_names:(vampire_source_context_local_definition_names cxtm)
       cert
   in
@@ -1166,9 +1233,19 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) content 
               cert
           in
           let source_audit =
+            let source_context = vampire_aby_source_context cxtm cxpf in
+            let source_context =
+              {
+                source_context with
+                Vampire_source_context.proof_delta =
+                  vampire_source_context_delta_with_source_map ~cxtm source_map;
+                symbol_table =
+                  vampire_source_context_symbol_table_with_source_map source_map;
+              }
+            in
             Vampire_source_context.resolve
               ~strict:(!vampireabynativestrict && cxpf <> [])
-              (vampire_aby_source_context cxtm cxpf)
+              source_context
               source_bindings
           in
           let reconstructed =
@@ -7667,8 +7744,9 @@ let audit_vampire_cert_v1_source_context cert source_map =
   in
   let context =
     {
-      Vampire_source_context.proof_delta = vampire_source_context_delta ();
-      symbol_table = sigtmof;
+      Vampire_source_context.proof_delta =
+        vampire_source_context_delta_with_source_map source_map;
+      symbol_table = vampire_source_context_symbol_table_with_source_map source_map;
       term_context = [];
       local_term_projection = [];
       local_terms = [];
@@ -7837,7 +7915,8 @@ let check_vampire_cert_v1_file fn =
         Vampire_cert_v1.elaborate_core_resolution_refutation_native
           ~source_map:!source_map_for_emit
           ~source_proofs:!source_proofs_for_native
-          ~external_delta_table:sigdelta
+          ~external_delta_table:
+            (vampire_source_context_delta_with_source_map !source_map_for_emit)
           cert
       in
       match check_native_certificate_proof native_core with
@@ -7850,6 +7929,9 @@ let check_vampire_cert_v1_file fn =
             "Vampire certificate v1 native core source bindings checked %d assumption%s.\n"
             (List.length native_core.Vampire_cert_v1.core_native_source_bindings)
             (if List.length native_core.Vampire_cert_v1.core_native_source_bindings = 1 then "" else "s");
+          Printf.printf
+            "Vampire certificate v1 native core source assumptions remaining %d.\n"
+            native_core.Vampire_cert_v1.core_native_source_assumptions;
           Printf.printf
             "Vampire certificate v1 native core source propositions recorded %d assumption%s.\n"
             (List.length
@@ -7867,7 +7949,8 @@ let check_vampire_cert_v1_file fn =
         Vampire_cert_v1.elaborate_preprocess_refutation_native
           ~source_map:!source_map_for_emit
           ~source_proofs:!source_proofs_for_native
-          ~external_delta_table:sigdelta
+          ~external_delta_table:
+            (vampire_source_context_delta_with_source_map !source_map_for_emit)
           cert
       in
       match check_native_certificate_proof native_preprocess with
@@ -7880,6 +7963,9 @@ let check_vampire_cert_v1_file fn =
             "Vampire certificate v1 native preprocess source bindings checked %d assumption%s.\n"
             (List.length native_preprocess.Vampire_cert_v1.core_native_source_bindings)
             (if List.length native_preprocess.Vampire_cert_v1.core_native_source_bindings = 1 then "" else "s");
+          Printf.printf
+            "Vampire certificate v1 native preprocess source assumptions remaining %d.\n"
+            native_preprocess.Vampire_cert_v1.core_native_source_assumptions;
           Printf.printf
             "Vampire certificate v1 native preprocess source propositions recorded %d assumption%s.\n"
             (List.length

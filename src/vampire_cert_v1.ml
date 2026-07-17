@@ -159,6 +159,7 @@ type core_native_proof = {
   core_native_symbol_table : (string, int * tp) Hashtbl.t;
   core_native_steps : int;
   core_native_source_bindings : core_native_source_binding list;
+  core_native_source_assumptions : int;
 }
 
 and core_native_source_binding = {
@@ -11944,6 +11945,7 @@ let elaborate_core_resolution_refutation_native
     core_native_symbol_table = symbol_table;
     core_native_steps = core_steps;
     core_native_source_bindings = !source_bindings;
+    core_native_source_assumptions = source_count;
   }
 
 let elaborate_preprocess_refutation_native
@@ -12597,6 +12599,7 @@ let elaborate_preprocess_refutation_native
     core_native_symbol_table = symbol_table;
     core_native_steps = List.length cert.steps;
     core_native_source_bindings = !source_bindings;
+    core_native_source_assumptions = source_count;
   }
 
 let emit_error msg =

@@ -164,6 +164,10 @@ used by `-vampirecertv1corepfcheck`. This currently consumes global
 `known`/`axiom` entries in standalone certificate checking. Local theorem
 hypotheses are resolved only when the certificate is checked from the live proof
 state, where Megalodon still has the original `cxpf` hypothesis list.
+Native proof-term checker output also reports the number of source assumptions
+remaining after source-context proofs are consumed; the smoke suite asserts
+that hash-backed knowns and generated `set_reflexivity` equalities reduce that
+count.
 
 For repeatable non-overlapping corpus slices, use:
 
