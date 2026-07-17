@@ -90,6 +90,25 @@ if ! rg -q 'Vampire certificate v1 source obligations audited total=7 formula_ch
   exit 1
 fi
 
+"$MEGALODON" \
+  -vampirecertv1strict \
+  -vampirecertv1sourcecontext \
+  -vampirecertv1corepfcheck \
+  -vampirecertv1 "$rewritten_cert" \
+  -vampirecertv1source "$problem" \
+  "$WORK_DIR/dummy.mg" \
+  >"$WORK_DIR/corepf.out" \
+  2>"$WORK_DIR/corepf.err"
+
+if ! rg -q 'Vampire certificate v1 native core proof term checked 44 steps\.' "$WORK_DIR/corepf.out"; then
+  echo "th0single source-map smoke did not check the 11703 native core proof term" >&2
+  exit 1
+fi
+if ! rg -q 'Vampire certificate v1 native core source assumptions remaining by kind known=1 local=4 definition=0 generated=0 conjecture=1 unresolved=0\.' "$WORK_DIR/corepf.out"; then
+  echo "th0single source-map smoke did not preserve the expected detached 11703 source-context frontier" >&2
+  exit 1
+fi
+
 echo "th0single source-map smoke passed"
 echo "th0single source-map artifacts: $WORK_DIR"
 echo "th0single source-map latest link: $TMPDIR/latest_th0single_source_map"
