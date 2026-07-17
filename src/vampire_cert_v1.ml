@@ -9658,15 +9658,23 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
   in
   let quantified_two_component_split source_id definition_ids =
     match definition_ids with
-    | [_; _] when native_core_is_split_clause result ->
+    | _ :: _ when native_core_is_split_clause result ->
         let source_clause, source_proof = Hashtbl.find clause_table source_id in
         let target_prop = native_core_clause_prop id result in
-        let split_literal_for split_name =
-          let literal = Pos (TmH split_name) in
-          if List.exists ((=) literal) result then literal
+        let result_literal_to_target literal =
+          let literal_prop = native_core_literal_prop literal in
+          PLam
+            (literal_prop,
+             native_core_prove_literal_to_clause
+               id result literal (Hyp 0))
+        in
+        let result_split_literal_for split_name =
+          let positive = Pos (TmH split_name) in
+          let negative = Neg (TmH split_name) in
+          if List.exists ((=) positive) result then Some positive
+          else if List.exists ((=) negative) result then Some negative
           else
-            error
-              (id ^ ": native preprocess proof-term avatar_split quantified component split is not in the result")
+            None
         in
         let definition_info definition_id =
           let split_name, component_literals, definition_component_prop, definition_proof =
@@ -9677,10 +9685,15 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
           in
           match component_literals, native_core_step_variables cert definition_id with
           | _ :: _, ([] | [_]) ->
-              let split_literal = split_literal_for split_name in
-              let split_prop = native_core_literal_prop split_literal in
+              let split_prop = native_core_literal_prop (Pos (TmH split_name)) in
               let component_to_split =
                 native_core_and_elim_right
+                  (Imp (split_prop, definition_component_prop))
+                  (Imp (definition_component_prop, split_prop))
+                  definition_proof
+              in
+              let split_to_component =
+                native_core_and_elim_left
                   (Imp (split_prop, definition_component_prop))
                   (Imp (definition_component_prop, split_prop))
                   definition_proof
@@ -9709,15 +9722,9 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
                        component_predicate, neg_component_predicate, witness)
                 | _ -> assert false
               in
-              let split_to_target =
-                PLam
-                  (split_prop,
-                   native_core_prove_literal_to_clause
-                     id result split_literal (Hyp 0))
-              in
               (definition_id, split_name, component_literals, component_witness,
-               definition_component_prop, component_to_split, split_prop,
-               split_to_target)
+               definition_component_prop, component_to_split, split_to_component,
+               split_prop, result_split_literal_for split_name)
           | _ ->
               error
                 (id ^ ": native preprocess proof-term avatar_split quantified component needs at least one component literal and at most one component variable")
@@ -9726,7 +9733,7 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
         let substitution =
           infos
           |> List.filter_map
-               (fun (_, _, _, component_witness, _, _, _, _) ->
+               (fun (_, _, _, component_witness, _, _, _, _, _) ->
                   match component_witness with
                   | Some (component_var, _, _, _, _, witness) ->
                       Some (component_var, witness)
@@ -9748,73 +9755,137 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
             (pfshift 0 1 source_proof)
             source_step_variables
         in
+        let direct_result_literal_not_proofs =
+          List.map
+            (fun literal ->
+               let literal_prop = native_core_literal_prop literal in
+               let literal_to_target = result_literal_to_target literal in
+               (literal,
+                PLam
+                  (literal_prop,
+                   PPfAp
+                     (Hyp 1,
+                      PPfAp (pfshift 0 1 literal_to_target, Hyp 0)))))
+            result
+        in
         let source_literal_not_proofs =
+          direct_result_literal_not_proofs @
           List.concat_map
-            (fun (_, _, component_literals, component_witness,
-                  definition_component_prop, component_to_split, split_prop,
-                  split_to_target) ->
-               let not_split =
-                 PLam
-                   (split_prop,
-                    PPfAp
-                      (Hyp 1,
-                       PPfAp (pfshift 0 1 split_to_target, Hyp 0)))
-               in
-               let not_closed_component =
-                 PLam
-                   (definition_component_prop,
-                    PPfAp
-                      (pfshift 0 1 not_split,
-                       PPfAp (pfshift 0 1 component_to_split, Hyp 0)))
-               in
-               let instantiated_component_literals, not_instantiated_component =
-                 match component_witness with
-                 | None -> component_literals, not_closed_component
-                 | Some (component_var, component_tp, component_body,
-                         component_predicate, neg_component_predicate, witness) ->
-                     let pointwise =
-                       TLam
-                         (component_tp,
-                          PLam (Imp (component_body, native_core_false), Hyp 0))
-                     in
-                     let exists_neg_component =
-                       PPfAp
-                         (PPfAp
-                            (PTmAp
-                               (PTmAp
-                                  (Known (native_core_not_forall_exists_hash component_tp),
-                                   component_predicate),
-                                neg_component_predicate),
-                             pointwise),
-                          not_closed_component)
-                     in
-                     let not_instantiated_component =
-                       PPfAp
-                         (PTmAp
-                            (Known (native_core_exists_choice_hash component_tp),
-                             neg_component_predicate),
-                          exists_neg_component)
-                     in
-                     subst_clause [(component_var, witness)] component_literals,
-                     not_instantiated_component
-               in
-               List.map
-                 (fun instantiated_literal ->
-                    let literal_prop = native_core_literal_prop instantiated_literal in
-                    let literal_to_component =
-                      native_core_prove_literal_to_clause
-                        id
-                        instantiated_component_literals
-                        instantiated_literal
-                        (Hyp 0)
-                    in
-                    (instantiated_literal,
+            (fun (_, split_name, component_literals, component_witness,
+                  definition_component_prop, component_to_split,
+                  split_to_component, split_prop, result_split_literal) ->
+               match result_split_literal with
+               | Some (Pos (TmH _)) ->
+                   let split_to_target =
+                     result_literal_to_target (Pos (TmH split_name))
+                   in
+                   let not_split =
                      PLam
-                       (literal_prop,
+                       (split_prop,
                         PPfAp
-                          (pfshift 0 1 not_instantiated_component,
-                           literal_to_component))))
-                 instantiated_component_literals)
+                          (Hyp 1,
+                           PPfAp (pfshift 0 1 split_to_target, Hyp 0)))
+                   in
+                   let not_closed_component =
+                     PLam
+                       (definition_component_prop,
+                        PPfAp
+                          (pfshift 0 1 not_split,
+                           PPfAp (pfshift 0 1 component_to_split, Hyp 0)))
+                   in
+                   let instantiated_component_literals, not_instantiated_component =
+                     match component_witness with
+                     | None -> component_literals, not_closed_component
+                     | Some (component_var, component_tp, component_body,
+                             component_predicate, neg_component_predicate, witness) ->
+                         let pointwise =
+                           TLam
+                             (component_tp,
+                              PLam (Imp (component_body, native_core_false), Hyp 0))
+                         in
+                         let exists_neg_component =
+                           PPfAp
+                             (PPfAp
+                                (PTmAp
+                                   (PTmAp
+                                      (Known (native_core_not_forall_exists_hash component_tp),
+                                       component_predicate),
+                                    neg_component_predicate),
+                                 pointwise),
+                              not_closed_component)
+                         in
+                         let not_instantiated_component =
+                           PPfAp
+                             (PTmAp
+                                (Known (native_core_exists_choice_hash component_tp),
+                                 neg_component_predicate),
+                              exists_neg_component)
+                         in
+                         subst_clause [(component_var, witness)] component_literals,
+                         not_instantiated_component
+                   in
+                   List.map
+                     (fun instantiated_literal ->
+                        let literal_prop = native_core_literal_prop instantiated_literal in
+                        let literal_to_component =
+                          native_core_prove_literal_to_clause
+                            id
+                            instantiated_component_literals
+                            instantiated_literal
+                            (Hyp 0)
+                        in
+                        (instantiated_literal,
+                         PLam
+                           (literal_prop,
+                            PPfAp
+                              (pfshift 0 1 not_instantiated_component,
+                               literal_to_component))))
+                     instantiated_component_literals
+               | Some (Neg (TmH _)) ->
+                   begin match component_witness, component_literals with
+                   | None, [component_literal] ->
+                       let complement_literal =
+                         native_core_complement_literal component_literal
+                       in
+                       let complement_prop =
+                         native_core_literal_prop complement_literal
+                       in
+                       let negative_split_literal = Neg (TmH split_name) in
+                       let negative_split_prop =
+                         native_core_literal_prop negative_split_literal
+                       in
+                       let negative_split_to_target =
+                         result_literal_to_target negative_split_literal
+                       in
+                       let not_negative_split =
+                         PLam
+                           (negative_split_prop,
+                            PPfAp
+                              (Hyp 1,
+                               PPfAp
+                                 (pfshift 0 1 negative_split_to_target, Hyp 0)))
+                       in
+                       let proof =
+                         PLam
+                           (complement_prop,
+                            let split_proof =
+                              PPfAp
+                                (PTmAp (Known native_core_dneg_hash, split_prop),
+                                 pfshift 0 1 not_negative_split)
+                            in
+                            let component_proof =
+                              PPfAp (pfshift 0 1 split_to_component, split_proof)
+                            in
+                            native_core_false_from_complement_proofs
+                              component_literal
+                              component_proof
+                              complement_literal
+                              (Hyp 0))
+                       in
+                       [(complement_literal, proof)]
+                   | _ -> []
+                   end
+               | _ -> [])
             infos
         in
         let not_proof_for literal =
