@@ -24600,6 +24600,7 @@ let source_step_matches_source_term ?(negated=false) step source_tm =
     if negated then Imp (source_tm, TmH "vampire_false") else source_tm
   in
   match step with
+  | Input (_, _, []) when is_vampire_false source_tm -> true
   | Input (_, _, clause) ->
       same_source_clause_multiset (clause_of_source_term source_tm) clause
   | FormulaInput (_, _, literal) ->

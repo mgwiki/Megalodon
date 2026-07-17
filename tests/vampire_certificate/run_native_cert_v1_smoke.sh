@@ -389,6 +389,50 @@ if ! rg -q 'Vampire certificate v1 native core source assumptions remaining 2' \
   exit 1
 fi
 
+known_false_mg="$WORK_DIR/native_cert_v1_known_false_source_context.mg"
+known_false_th0="$WORK_DIR/native_cert_v1_known_false_source_context.th0.p"
+known_false_cert="$WORK_DIR/native_cert_v1_known_false_source_context.sexp"
+cat > "$known_false_mg" <<'EOF_KNOWN_FALSE_MG'
+Axiom known_false : forall r:prop, r.
+EOF_KNOWN_FALSE_MG
+known_false_hash=$(bin/megalodon -pfgsummary2 "$known_false_mg" \
+  | sed -n 's/^Known:\([0-9a-f][0-9a-f]*\)$/\1/p' \
+  | head -1)
+if [[ -z "$known_false_hash" ]]; then
+  echo "native certificate v1 known-false source-context smoke could not obtain the generated axiom hash" >&2
+  exit 1
+fi
+cat > "$known_false_th0" <<EOF_KNOWN_FALSE_TH0
+% megalodon_origin ((file "$known_false_mg") (line "1") (char "1") (kind "known_false_source_context_smoke"))
+% megalodon_source_map (known "a1" "known_false" "$known_false_hash")
+thf(a1,axiom,\$false). % $known_false_hash
+EOF_KNOWN_FALSE_TH0
+cat > "$known_false_cert" <<'EOF_KNOWN_FALSE_CERT'
+(certificate vampire-megalodon 1
+  (problem "known-false-source-context")
+  (input "u1" (source axiom "a1") (clause))
+  (contradiction "u2" "u1")
+)
+EOF_KNOWN_FALSE_CERT
+
+bin/megalodon \
+  -vampirecertv1sourcecontextstrict \
+  -vampirecertv1corepfcheck \
+  -vampirecertv1 "$known_false_cert" \
+  -vampirecertv1source "$known_false_th0" \
+  "$known_false_mg" >"$WORK_DIR/native_cert_v1_known_false_source_context_core_pf.log"
+
+if ! rg -q 'source context audited total=1 known_checked=1 known_missing=0 known_mismatch=0' \
+    "$WORK_DIR/native_cert_v1_known_false_source_context_core_pf.log"; then
+  echo "native certificate v1 known-false source-context audit did not resolve the hash-backed false source" >&2
+  exit 1
+fi
+if ! rg -q 'Vampire certificate v1 native core source assumptions remaining 0' \
+    "$WORK_DIR/native_cert_v1_known_false_source_context_core_pf.log"; then
+  echo "native certificate v1 core checker did not fully discharge the hash-backed false source proof" >&2
+  exit 1
+fi
+
 local_source_live_dir="$WORK_DIR/local_source_live"
 mkdir -p "$local_source_live_dir"
 cat >"$local_source_live_dir/fake_vampire" <<'EOF_LOCAL_SOURCE_FAKE_VAMPIRE'
