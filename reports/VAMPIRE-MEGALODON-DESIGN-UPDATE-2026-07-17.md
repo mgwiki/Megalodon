@@ -850,6 +850,61 @@ Validation:
   `avatar_split`, 47 `split_dependency`, 8 `avatar_definition`, 8
   `avatar_component`, and 2 `avatar_refutation` records.
 
+## Later July 17 AVATAR Proof-Term Update
+
+The native preprocessing checker now proves a small but representative
+AVATAR definition/component path without falling back to certificate-derived
+`Known` propositions.
+
+The bug was a trust-boundary/accounting issue rather than a need for a new
+heuristic. AVATAR split atoms introduced by `avatar_definition` were present in
+the source symbol table and also in the local proof-variable spine, so the
+local variable shadowed the intended conservative delta definition. The fix
+excludes certificate-defined `split_N` names from `native_core_proof_variables`
+while keeping them declared as proposition symbols and delta definitions.
+`store_avatar_definition` now closes its target proposition in the same
+variable context as the generated proof term, so the kernel checker compares
+like with like.
+
+The same update removes another transitional edge from the preprocessing path:
+`Resolve` now reuses the existing native `native_core_resolve_in_result_context`
+proof constructor instead of installing `vampire_resolve_*` implications into
+the known-theorem table.
+
+New regression:
+
+- `tests/vampire_certificate/native_cert_v1_avatar_component_pf_valid.sexp`
+
+This fixture proves:
+
+- `avatar_definition d0` as the equivalence between `split_1` and component
+  proposition `p`;
+- `avatar_component c0` from that definition;
+- two native preprocess `resolve` steps against source units `split_1` and
+  `~p`;
+- final contradiction.
+
+It runs under `-vampirecertv1preprocesspfcheck` with no transitional opt-in and
+the smoke suite rejects both `vampire_avatar_*` and `vampire_resolve_*`
+certificate-derived `Known` markers.
+
+Validation:
+
+- `TMPDIR=/project/tmp ./makeopt`
+- `TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh`
+- strict 20-case live THF gate with `JOBS=10`, `VAMPIRE_SECONDS=10`, and
+  `WORK_DIR=/project/tmp/live_strict_20_avatar_component_pf`: `PASS 20`
+- kernel-v1 metadata audit over that live gate: 738 records, including
+  `avatar_component 8`, `avatar_definition 8`, `avatar_refutation 2`,
+  `avatar_split 7`
+- native primitive audit over that live gate, including `avatar_component 8`,
+  `avatar_definition 8`, `avatar_refutation 2`, `avatar_split 10`, and
+  `resolve 25`
+
+This is E3 proof-term progress for the focused AVATAR split-definition layer
+and for native preprocess resolution. It is not E1 original-context
+reconstruction and does not yet solve multi-step AVATAR SAT/RUP refutations.
+
 Additional follow-up: Megalodon now has the first direct proof-producing
 AVATAR/SAT seed in `-vampirecertv1preprocesspfcheck`. The supported path proves
 an identity `avatar_split` from its single parent, then proves a two-parent
@@ -858,11 +913,10 @@ new fixture `native_cert_v1_avatar_split_refutation_pf_valid.sexp` checks this
 without enabling `MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN` and
 without installing `vampire_avatar_*` certificate-derived known primitives.
 
-This is intentionally narrower than the typed AVATAR certificate boundary. The
-remaining proof-producing design item is the split-definition/component layer:
-Megalodon must justify the component/split equivalence as a proof term or as a
-small checked AVATAR kernel object before general AVATAR split clauses and
-multi-step SAT/RUP refutations can be counted.
+This was intentionally narrower than the typed AVATAR certificate boundary.
+The split-definition/component layer now has the focused proof-producing seed
+described above. The remaining proof-producing design item is multi-step
+AVATAR SAT/RUP lowering, plus composition with the original Megalodon context.
 
 Validation:
 

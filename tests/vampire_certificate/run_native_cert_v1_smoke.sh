@@ -1593,6 +1593,26 @@ if rg -q 'refuses certificate-derived Known primitive vampire_avatar_|admit|aby|
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1preprocesspfcheck \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_avatar_component_pf_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_avatar_component_pf_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_avatar_component_pf_valid.out" \
+  2>"$WORK_DIR/native_cert_v1_avatar_component_pf_valid.err"
+
+if ! rg -q 'Vampire certificate v1 native preprocess proof term checked 7 steps' \
+    "$WORK_DIR/native_cert_v1_avatar_component_pf_valid.out"; then
+  echo "native preprocess checker did not accept direct AVATAR definition/component proof terms" >&2
+  exit 1
+fi
+
+if rg -q 'refuses certificate-derived Known primitive vampire_avatar_|refuses certificate-derived Known primitive vampire_resolve_|admit|aby|-allowincompleteqed' \
+    "$WORK_DIR/native_cert_v1_avatar_component_pf_valid.out" \
+    "$WORK_DIR/native_cert_v1_avatar_component_pf_valid.err"; then
+  echo "native preprocess checker used a forbidden marker for direct AVATAR definition/component proof terms" >&2
+  exit 1
+fi
+
 MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN=1 bin/megalodon \
   -vampirecertv1preprocesspfcheck \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_fool_primitive_expansion_valid.sexp \

@@ -403,8 +403,14 @@ Current proof-term status: the native preprocess checker now has a direct
 proof-producing seed for the AVATAR/SAT layer. It can prove an identity
 `avatar_split` step and a two-parent `avatar_refutation` over complementary
 split-unit clauses without installing `vampire_avatar_*` certificate-derived
-known primitives. This does not yet cover the general split-definition/component
-case or multi-step SAT/RUP refutations.
+known primitives. It also has a direct proof-producing seed for a positive
+`avatar_definition`/`avatar_component` pair: the split atom is excluded from
+the local proof-variable spine, installed as a conservative delta definition,
+checked through kernel conversion, and then used by native preprocess
+`resolve` steps to reach the empty clause without installing
+`vampire_avatar_*` or `vampire_resolve_*` certificate-derived known
+primitives. This does not yet cover multi-step SAT/RUP AVATAR refutations or
+full original-context composition.
 
 The focused `hammer.981.15` issue around `S296` is an example of why AVATAR is
 not in the MVP: SAT-level nullary split propositions and first-order component

@@ -884,10 +884,9 @@ certificate-derived `Known` primitives. The regression fixture is
 file.
 
 This is deliberately narrow proof-producing progress, not a claim that AVATAR
-is finished. The next gap is the nontrivial split-definition/component proof:
-the existing helper cannot yet justify the component/split equivalence as a
-Megalodon proof term, so those cases remain fail-closed instead of using a
-trusted primitive assumption.
+is finished. The later AVATAR proof-term update below covers the next focused
+split-definition/component seed. Multi-step SAT/RUP lowering and
+original-context composition remain open.
 
 Validation:
 
@@ -900,3 +899,40 @@ Validation:
 - native primitive audit: includes 10 `avatar_split`, 47
   `split_dependency`, 8 `avatar_definition`, 8 `avatar_component`, and 2
   `avatar_refutation`
+
+## Later July 17 AVATAR Proof-Term Update
+
+The audit asked that counted proof-term work stop relying on
+certificate-derived `Known` propositions. The AVATAR path now has one more
+small proof-producing case in that direction.
+
+Megalodon now treats `split_N` atoms introduced by `avatar_definition` as
+certificate definitions rather than local proof variables. This prevents the
+local proof-variable context from shadowing the conservative delta definition
+used by kernel conversion. The corresponding `avatar_definition` proposition
+is closed in the same variable context as the proof term before
+`check_propofpf` runs.
+
+The preprocessing `Resolve` branch also now uses the existing native
+resolution proof constructor instead of dynamically installing
+`vampire_resolve_*` implications.
+
+The new fixture
+`tests/vampire_certificate/native_cert_v1_avatar_component_pf_valid.sexp`
+checks an `avatar_definition`, its `avatar_component`, two native resolution
+steps, and final contradiction under `-vampirecertv1preprocesspfcheck` with no
+transitional opt-in.
+
+Validation:
+
+- `TMPDIR=/project/tmp ./makeopt`
+- `TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh`
+- strict 20-case live THF gate at
+  `/project/tmp/live_strict_20_avatar_component_pf`: `PASS 20`
+- kernel-v1 metadata audit over that gate: 738 records
+- native primitive audit over that gate, including `resolve 25` and the
+  focused AVATAR primitive families
+
+This should be counted as focused E3 progress, not as completion of the
+project. Multi-step AVATAR SAT/RUP proof-term lowering and original-context E1
+composition remain open.

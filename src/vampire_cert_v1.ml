@@ -6943,6 +6943,15 @@ let native_core_generated_skolem_symbols cert =
   |> List.flatten
   |> List.sort_uniq compare
 
+let native_core_avatar_definition_names cert =
+  cert.steps
+  |> List.filter_map
+       (function
+         | AvatarDefinition (_, split_var, _, _) when split_var > 0 ->
+             Some ("split_" ^ string_of_int split_var)
+         | _ -> None)
+  |> List.sort_uniq compare
+
 let native_core_declared_variables ?(exclude_names=[]) cert =
   let generated_skolem_symbols = native_core_generated_skolem_symbols cert in
   let parse_decl decl =
@@ -6985,6 +6994,9 @@ let native_core_has_function_definitions cert =
        cert.steps
 
 let native_core_proof_variables ?(exclude_names=[]) cert =
+  let exclude_names =
+    List.sort_uniq compare (exclude_names @ native_core_avatar_definition_names cert)
+  in
   if native_core_has_function_definitions cert then []
   else native_core_declared_variables ~exclude_names cert
 
@@ -11826,6 +11838,7 @@ let elaborate_preprocess_refutation_native
         (Imp (split_prop, component_prop))
         (Imp (component_prop, split_prop))
       |> native_core_normalize_bool_constants
+      |> native_core_close_tm variables
     in
     check_step_proof id prop proof;
     Hashtbl.replace
@@ -12207,23 +12220,13 @@ let elaborate_preprocess_refutation_native
       | Resolve (id, left_id, right_id, left_index, right_index, result) ->
           let left_clause, left_proof = lookup_clause left_id in
           let right_clause, right_proof = lookup_clause right_id in
-          native_core_validate_resolve_step
-            id left_clause right_clause left_index right_index result;
-          let left_prop =
-            native_core_step_clause_prop cert variables left_id left_clause
+          let proof =
+            native_core_resolve_in_result_context
+              cert id variables left_id left_clause left_proof right_id right_clause right_proof
+              left_index right_index result
           in
-          let right_prop =
-            native_core_step_clause_prop cert variables right_id right_clause
-          in
-          let result_prop =
-            native_core_step_clause_prop cert variables id result
-          in
-          let primitive = "vampire_resolve_" ^ id in
-          let primitive_prop = Imp (left_prop, Imp (right_prop, result_prop)) in
-          install_transitional_known id primitive primitive_prop;
-          Hashtbl.replace transitional_primitive_clause_steps id true;
           store_clause id result
-            (PPfAp (PPfAp (Known primitive, left_proof), right_proof))
+            proof
       | Factor (id, parent_id, left_index, right_index, result) ->
           let parent_clause, parent_proof = lookup_clause parent_id in
           if Hashtbl.mem transitional_primitive_clause_steps parent_id then begin

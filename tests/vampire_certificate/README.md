@@ -494,9 +494,15 @@ The first AVATAR proof-producing seed in this mode is
 `native_cert_v1_avatar_split_refutation_pf_valid.sexp`. It proves an identity
 `avatar_split` step and a two-parent `avatar_refutation` whose parents are
 complementary split-unit clauses, without installing `vampire_avatar_*`
-certificate-derived `Known` primitives. General AVATAR split definitions,
-components that depend on those definitions, and multi-clause SAT/RUP
-refutations remain open proof-term work.
+certificate-derived `Known` primitives.
+
+The next seed is `native_cert_v1_avatar_component_pf_valid.sexp`. It proves an
+`avatar_definition` by treating the introduced split atom as a conservative
+delta definition, derives the matching `avatar_component`, uses native
+preprocess `resolve` proof terms to consume split/source units, and closes the
+empty clause without `vampire_avatar_*` or `vampire_resolve_*`
+certificate-derived `Known` primitives. Multi-step SAT/RUP AVATAR refutations
+and original-context composition remain open proof-term work.
 
 The legacy structural diagnostic harnesses may opt in to the old trusted
 primitive behavior by setting

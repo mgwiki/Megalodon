@@ -55,6 +55,17 @@ checked clauses. The next implementation unit is therefore a specified
 isolated kernel module, plus focused tests for retained-variable parents,
 closed equality parents, and same-name local/global shadowing.
 
+Fourth progress note, 2026-07-17: the AVATAR split-definition/component path
+now has a focused native proof-term seed without certificate-derived `Known`
+propositions. The implementation treats `split_N` atoms introduced by
+`avatar_definition` as conservative delta definitions rather than local proof
+variables, closes the `avatar_definition` target proposition in the same
+context as its proof term, and reuses the native preprocess resolution
+constructor for `Resolve` instead of installing `vampire_resolve_*` known
+implications. This is aligned with the trust reset, but it is deliberately
+classified as focused E3 progress: multi-step SAT/RUP AVATAR lowering and
+original-context composition remain open.
+
 Primary repositories:
 
 - Megalodon: `/project/Megalodon`
