@@ -12149,32 +12149,24 @@ let elaborate_preprocess_refutation_native
       | AvatarDefinition (id, split_var, split_positive, result) ->
           begin match native_core_avatar_definition_clause cert id split_var split_positive result with
           | Some (split_name, component_literals) ->
-              let split_prop = native_core_literal_prop (Pos (TmH split_name)) in
-              let component_prop = native_core_clause_prop id component_literals in
-              let prop =
-                native_core_and
-                  (Imp (split_prop, component_prop))
-                  (Imp (component_prop, split_prop))
-                |> native_core_normalize_bool_constants
+              let proof =
+                native_core_avatar_definition_proof
+                  cert id split_var split_positive result
               in
-              let primitive = "vampire_avatar_definition_" ^ id in
-              install_transitional_known id primitive prop;
               store_avatar_definition
                 id
                 split_name
                 component_literals
-                (Known primitive)
+                proof
           | None ->
               error
                 (id ^ ": native preprocess proof-term avatar_definition needs a supported split definition")
           end
       | AvatarComponent (id, result) ->
           check_avatar_component_strict id result;
-          let prop = native_core_step_clause_prop cert variables id result in
-          let primitive = "vampire_avatar_component_" ^ id in
-          install_transitional_known id primitive prop;
-          Hashtbl.replace transitional_primitive_clause_steps id true;
-          store_clause id result (Known primitive)
+          store_clause id result
+            (native_core_avatar_component_proof
+               id result avatar_definition_table)
       | SplitDependency (id, owner_id, _dependencies, result) ->
           let owner_clause, owner_proof = lookup_clause owner_id in
           if owner_clause <> result then
@@ -12183,66 +12175,13 @@ let elaborate_preprocess_refutation_native
       | AvatarSplit (id, parent_ids, result) ->
           if parent_ids = [] then
             error (id ^ ": native preprocess proof-term avatar_split requires at least one parent");
-          let avatar_definition_prop split_name component_literals =
-            let split_prop = native_core_literal_prop (Pos (TmH split_name)) in
-            let component_prop = native_core_clause_prop id component_literals in
-            native_core_and
-              (Imp (split_prop, component_prop))
-              (Imp (component_prop, split_prop))
-            |> native_core_normalize_bool_constants
-          in
-          let parent_props_and_proofs =
-            List.map
-              (fun parent_id ->
-                 match Hashtbl.find_opt clause_table parent_id with
-                 | Some (clause, proof) ->
-                     (native_core_step_clause_prop cert variables parent_id clause, proof)
-                 | None ->
-                     begin match Hashtbl.find_opt avatar_definition_table parent_id with
-                     | Some (split_name, component_literals, proof) ->
-                         (avatar_definition_prop split_name component_literals, proof)
-                     | None ->
-                         error (parent_id ^ ": native preprocess proof-term checker references unknown avatar_split parent")
-                     end)
-              parent_ids
-          in
-          let parent_props = List.map fst parent_props_and_proofs in
-          let result_prop = native_core_step_clause_prop cert variables id result in
-          let primitive = "vampire_avatar_split_" ^ id in
-          let primitive_prop = primitive_implication parent_props result_prop in
-          install_transitional_known id primitive primitive_prop;
-          Hashtbl.replace transitional_primitive_clause_steps id true;
           store_clause id result
-            (apply_primitive
-               primitive
-               (List.map snd parent_props_and_proofs))
+            (native_core_avatar_split_proof
+               cert id parent_ids result clause_table avatar_definition_table)
       | AvatarRefutation (id, parent_ids, _sat_clauses, _sat_proof, result) ->
-          if result <> [] then
-            error (id ^ ": native preprocess proof-term avatar_refutation result is not empty");
-          if parent_ids = [] then
-            error (id ^ ": native preprocess proof-term avatar_refutation requires at least one parent");
-          let parent_clauses_and_proofs =
-            List.map
-              (fun parent_id ->
-                 let clause, proof = lookup_clause parent_id in
-                 (parent_id, clause, proof))
-              parent_ids
-          in
-          let parent_props =
-            List.map
-              (fun (parent_id, clause, _) ->
-                 native_core_step_clause_prop cert variables parent_id clause)
-              parent_clauses_and_proofs
-          in
-          let result_prop = native_core_step_clause_prop cert variables id result in
-          let primitive = "vampire_avatar_refutation_" ^ id in
-          let primitive_prop = primitive_implication parent_props result_prop in
-          install_transitional_known id primitive primitive_prop;
-          Hashtbl.replace transitional_primitive_clause_steps id true;
           store_clause id result
-            (apply_primitive
-               primitive
-               (List.map (fun (_, _, proof) -> proof) parent_clauses_and_proofs))
+            (native_core_avatar_refutation_proof
+               id parent_ids result clause_table)
       | FoolExhaustiveness (id, result) ->
           store_clause id result
             (native_core_fool_exhaustiveness_proof cert id result)

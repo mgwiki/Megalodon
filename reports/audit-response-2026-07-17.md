@@ -873,3 +873,30 @@ Validation:
 - native primitive audit: includes 10 `avatar_split`, 47
   `split_dependency`, 8 `avatar_definition`, 8 `avatar_component`, and 2
   `avatar_refutation`
+
+Additional follow-up: the native preprocess proof-term checker now has a
+direct AVATAR/SAT seed. The supported case proves an identity `avatar_split`
+step by reusing its single parent proof, then proves a two-parent
+`avatar_refutation` from complementary split-unit clauses. This path no longer
+installs `vampire_avatar_split_*` or `vampire_avatar_refutation_*` as
+certificate-derived `Known` primitives. The regression fixture is
+`native_cert_v1_avatar_split_refutation_pf_valid.sexp` with a source-origin THF
+file.
+
+This is deliberately narrow proof-producing progress, not a claim that AVATAR
+is finished. The next gap is the nontrivial split-definition/component proof:
+the existing helper cannot yet justify the component/split equivalence as a
+Megalodon proof term, so those cases remain fail-closed instead of using a
+trusted primitive assumption.
+
+Validation:
+
+- `TMPDIR=/project/tmp ./makeopt`
+- direct `-vampirecertv1preprocesspfcheck` on
+  `native_cert_v1_avatar_split_refutation_pf_valid.sexp`
+- `TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh`
+- 20-case strict live THF run, `JOBS=10`, `VAMPIRE_SECONDS=10`: `PASS 20`
+- kernel-v1 metadata audit: 738 records, including 7 `avatar_split`
+- native primitive audit: includes 10 `avatar_split`, 47
+  `split_dependency`, 8 `avatar_definition`, 8 `avatar_component`, and 2
+  `avatar_refutation`

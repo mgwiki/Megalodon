@@ -490,6 +490,14 @@ fails and names the offending primitive. This is intentional: the July 16 audit
 reclassified the old preprocessing pass counts as structural plumbing evidence,
 not proof reconstruction evidence.
 
+The first AVATAR proof-producing seed in this mode is
+`native_cert_v1_avatar_split_refutation_pf_valid.sexp`. It proves an identity
+`avatar_split` step and a two-parent `avatar_refutation` whose parents are
+complementary split-unit clauses, without installing `vampire_avatar_*`
+certificate-derived `Known` primitives. General AVATAR split definitions,
+components that depend on those definitions, and multi-clause SAT/RUP
+refutations remain open proof-term work.
+
 The legacy structural diagnostic harnesses may opt in to the old trusted
 primitive behavior by setting
 `MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN=1`; they report

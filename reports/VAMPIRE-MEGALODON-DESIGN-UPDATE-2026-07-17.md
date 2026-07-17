@@ -850,6 +850,36 @@ Validation:
   `avatar_split`, 47 `split_dependency`, 8 `avatar_definition`, 8
   `avatar_component`, and 2 `avatar_refutation` records.
 
+Additional follow-up: Megalodon now has the first direct proof-producing
+AVATAR/SAT seed in `-vampirecertv1preprocesspfcheck`. The supported path proves
+an identity `avatar_split` from its single parent, then proves a two-parent
+`avatar_refutation` when the parents are complementary split-unit clauses. The
+new fixture `native_cert_v1_avatar_split_refutation_pf_valid.sexp` checks this
+without enabling `MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN` and
+without installing `vampire_avatar_*` certificate-derived known primitives.
+
+This is intentionally narrower than the typed AVATAR certificate boundary. The
+remaining proof-producing design item is the split-definition/component layer:
+Megalodon must justify the component/split equivalence as a proof term or as a
+small checked AVATAR kernel object before general AVATAR split clauses and
+multi-step SAT/RUP refutations can be counted.
+
+Validation:
+
+- `TMPDIR=/project/tmp ./makeopt` passed in `/project/Megalodon`.
+- Direct `-vampirecertv1preprocesspfcheck` on
+  `native_cert_v1_avatar_split_refutation_pf_valid.sexp` passed.
+- `TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh`
+  passed.
+- A fresh 20-case strict source-linked live THF run with `JOBS=10` and
+  `VAMPIRE_SECONDS=10` produced `PASS 20` using
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11067`.
+- The kernel-v1 metadata audit passed on that artifact, covering 738
+  `kernel_v1` records and 7 `avatar_split` records.
+- The native primitive audit passed on the same artifact, including 10
+  `avatar_split`, 47 `split_dependency`, 8 `avatar_definition`, 8
+  `avatar_component`, and 2 `avatar_refutation` records.
+
 Additional follow-up: Vampire commit `cc64aa131` extracts
 `avatar_refutation` metadata into `RenderedKernelAvatarRefutation` and SAT
 subrecords for inputs, proof steps, and proof parents. The strict kernel

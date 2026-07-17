@@ -399,6 +399,13 @@ terms, or to define a tiny dedicated AVATAR/SAT proof kernel whose checker
 constructs those terms. Counted proof-reconstruction milestones must not count
 AVATAR records merely because their metadata structurally validates.
 
+Current proof-term status: the native preprocess checker now has a direct
+proof-producing seed for the AVATAR/SAT layer. It can prove an identity
+`avatar_split` step and a two-parent `avatar_refutation` over complementary
+split-unit clauses without installing `vampire_avatar_*` certificate-derived
+known primitives. This does not yet cover the general split-definition/component
+case or multi-step SAT/RUP refutations.
+
 The focused `hammer.981.15` issue around `S296` is an example of why AVATAR is
 not in the MVP: SAT-level nullary split propositions and first-order component
 predicates must be represented separately.
