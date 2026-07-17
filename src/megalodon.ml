@@ -677,13 +677,48 @@ let vampire_source_context_add_source_map_aliases delta source_map =
     source_map;
   delta
 
+let vampire_source_context_add_local_type_aliases delta cxtm source_map =
+  let rec local_terms proof_index = function
+    | [] -> []
+    | (_, (_, Some _)) :: rest -> local_terms proof_index rest
+    | (name, (tp, None)) :: rest ->
+        (name, proof_index, tp) :: local_terms (proof_index + 1) rest
+  in
+  let local_terms = local_terms 0 cxtm in
+  List.iter
+    (fun entry ->
+       if entry.Vampire_cert_v1.source_map_kind = "local_type" then
+         match
+           List.find_opt
+             (fun (local_name, _, _) ->
+                local_name = entry.Vampire_cert_v1.source_map_source_name)
+             local_terms
+         with
+         | Some (_, index, _) ->
+             if entry.Vampire_cert_v1.source_map_tptp_name <> "" then
+               Hashtbl.replace
+                 delta
+                 entry.Vampire_cert_v1.source_map_tptp_name
+                 (0, DB index);
+             if entry.Vampire_cert_v1.source_map_source_name <> "" then
+               Hashtbl.replace
+                 delta
+                 entry.Vampire_cert_v1.source_map_source_name
+                 (0, DB index)
+         | None -> ())
+    source_map;
+  delta
+
 let vampire_source_context_delta_with_source_map ?cxtm source_map =
   let delta =
     match cxtm with
     | Some cxtm -> vampire_source_context_delta_with_locals cxtm
     | None -> vampire_source_context_delta ()
   in
-  vampire_source_context_add_source_map_aliases delta source_map
+  let delta = vampire_source_context_add_source_map_aliases delta source_map in
+  match cxtm with
+  | Some cxtm -> vampire_source_context_add_local_type_aliases delta cxtm source_map
+  | None -> delta
 
 let vampire_parse_thf_type text =
   let len = String.length text in
