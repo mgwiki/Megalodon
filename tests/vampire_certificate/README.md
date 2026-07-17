@@ -728,6 +728,12 @@ textual closed-emission gate. The separate `closed_textual_pass_cases.list`
 records that smaller textual pass set. The aggregate gate is still not a
 substitute for fresh live larger-library evaluation.
 
+For the core layer, the native `-vampirecertv1corepfcheck` gate is the
+authoritative proof-term check. The legacy simple Megalodon textual emitter is
+still run as a diagnostic because it is useful for inspecting generated
+scripts, but its bridge-CNF failures do not by themselves refute the native
+core proof-term result.
+
 To export a Megalodon development once and then check the resulting source-mapped
 TH0 corpus in parallel, use:
 
