@@ -1264,6 +1264,29 @@ if [[ "${SOURCE_CONTEXT_ONLY:-0}" = "1" ]]; then
     exit 1
   fi
 
+  bin/megalodon \
+    -vampirecertv1sourcecontext \
+    -vampirecertv1corepfcheck \
+    -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_local_set_reflexivity_valid.sexp \
+    -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_local_set_reflexivity_valid.th0.p \
+    "$dummy" >"$WORK_DIR/native_cert_v1_source_map_local_set_reflexivity_corepf.log"
+
+  if ! rg -q 'Vampire certificate v1 native core proof term checked 4 steps' \
+      "$WORK_DIR/native_cert_v1_source_map_local_set_reflexivity_corepf.log"; then
+    echo "focused source-context smoke did not prove a reflexive generated local set source" >&2
+    exit 1
+  fi
+  if ! rg -q 'Vampire certificate v1 native core source assumptions remaining by kind known=1 local=0 definition=0 generated=0 conjecture=0 unresolved=0' \
+      "$WORK_DIR/native_cert_v1_source_map_local_set_reflexivity_corepf.log"; then
+    echo "focused source-context smoke did not classify remaining source assumptions after local set-reflexivity" >&2
+    exit 1
+  fi
+  if ! rg -q 'source context issues count=1 sample=known_missing:c2:known:original_not_local_set_eq:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' \
+      "$WORK_DIR/native_cert_v1_source_map_local_set_reflexivity_corepf.log"; then
+    echo "focused source-context smoke did not report the remaining known source issue after local set-reflexivity" >&2
+    exit 1
+  fi
+
   echo "native certificate v1 source-context focused smoke test passed"
   echo "native certificate v1 source-context focused smoke artifacts: $WORK_DIR"
   exit 0
@@ -2918,6 +2941,42 @@ if ! rg -q 'Vampire certificate v1 native core source assumptions remaining by k
 fi
 if ! rg -q 'source context issues count=1 sample=known_missing:c2:known:original_not_set_eq:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd' "$WORK_DIR/native_cert_v1_source_map_set_reflexivity_corepf.log"; then
   echo "native certificate v1 core proof-term checker did not report the remaining known source issue after set_reflexivity" >&2
+  exit 1
+fi
+
+bin/megalodon \
+  -vampirecertv1sourceaudit \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_local_set_reflexivity_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_local_set_reflexivity_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_local_set_reflexivity_valid.log"
+
+if ! rg -q 'Vampire certificate v1 source map checked 2 sources' "$WORK_DIR/native_cert_v1_source_map_local_set_reflexivity_valid.log"; then
+  echo "native certificate v1 source-map checker did not accept a reflexive local set source" >&2
+  exit 1
+fi
+
+if ! rg -q 'source obligations audited total=2 .*set_reflexivity_checked=1' "$WORK_DIR/native_cert_v1_source_map_local_set_reflexivity_valid.log"; then
+  echo "native certificate v1 source-obligation audit did not classify a reflexive local set source" >&2
+  exit 1
+fi
+
+bin/megalodon \
+  -vampirecertv1sourcecontext \
+  -vampirecertv1corepfcheck \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_source_map_local_set_reflexivity_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_local_set_reflexivity_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_local_set_reflexivity_corepf.log"
+
+if ! rg -q 'Vampire certificate v1 native core proof term checked 4 steps' "$WORK_DIR/native_cert_v1_source_map_local_set_reflexivity_corepf.log"; then
+  echo "native certificate v1 core proof-term checker did not prove a reflexive local set source" >&2
+  exit 1
+fi
+if ! rg -q 'Vampire certificate v1 native core source assumptions remaining by kind known=1 local=0 definition=0 generated=0 conjecture=0 unresolved=0' "$WORK_DIR/native_cert_v1_source_map_local_set_reflexivity_corepf.log"; then
+  echo "native certificate v1 core proof-term checker did not classify remaining source assumptions after local_set_reflexivity" >&2
+  exit 1
+fi
+if ! rg -q 'source context issues count=1 sample=known_missing:c2:known:original_not_local_set_eq:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' "$WORK_DIR/native_cert_v1_source_map_local_set_reflexivity_corepf.log"; then
+  echo "native certificate v1 core proof-term checker did not report the remaining known source issue after local_set_reflexivity" >&2
   exit 1
 fi
 
