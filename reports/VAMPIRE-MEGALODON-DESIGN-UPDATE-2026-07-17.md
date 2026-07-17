@@ -42,8 +42,16 @@ clausal proof-term failure at `u210` exposed a theorem-opening issue:
 proof bodies were being wrapped in result-step `TLam`s while still containing
 unclosed result-variable references. Commit `7bc7068` fixed this by closing
 native proof bodies in the intended result-variable context before adding the
-result binders. The focused regenerated `hammer.1007.43` certificate now
-checks 68 native core proof-term steps.
+result binders. The focused regenerated `hammer.1007.43` certificate checks
+68 native core proof-term steps.
+
+The latest `vampire/megalodon5` commits add a second focused proof-producing
+frontier: AVATAR split definitions/components and a restricted SAT-resolution
+trace are now replayed as native proof terms without enabling
+`MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN` and without installing
+`vampire_avatar_*` or `vampire_resolve_*` known implications. This is still E3
+seed work, not E1 completion, because general RUP traces and original-context
+composition remain open.
 
 ## Rejected Quick Fixes
 
@@ -133,7 +141,8 @@ from Smolka-style transformations.
 - E4: structural certificate/source/metadata validation and transitional
   diagnostics.
 
-Current evidence after commits `7bc7068` and `ab4765a`:
+Current evidence after commits through Megalodon `fa89ba6` and Vampire
+`cc64aa131`:
 
 - Focused regenerated `hammer.1007.43` native core proof-term check passes,
   including the previous `u210` paramodulation case.
@@ -157,6 +166,14 @@ Current evidence after commits `7bc7068` and `ab4765a`:
   records.
 - The native primitive audit and kernel-v1 metadata audit pass on that fresh
   live corpus.
+- Focused AVATAR proof-term fixtures for component replay and restricted SAT
+  binary-resolution replay pass under `-vampirecertv1preprocesspfcheck`
+  without transitional-known opt-in.
+- A cached structural preprocessing frontier after the SAT-resolution update
+  reports `PREPROCESS_STRUCTURAL_PASS 80` and four remaining
+  `ILL_FORMED_PROOF_TERM` failures. This frontier is explicitly E4 triage
+  because the harness still enables transitional behavior for unsupported
+  families; it is not counted as proof reconstruction.
 
 This is stronger E2/E4 evidence and some E3 evidence for the native core
 proof-term path. It is still not a claim of project completion: E1

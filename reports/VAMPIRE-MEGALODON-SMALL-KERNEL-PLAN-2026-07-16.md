@@ -1521,9 +1521,13 @@ The project should be considered complete only when:
 
 ## 2026-07-17 Implementation Update
 
-No `reports/audit-REPORT-2026-07-16.md` file was present in the workspace when
-this update was made. The implementation work therefore followed the standing
-small-kernel plan above and the cached frontier data.
+Correction: the July 16 audit is present at
+`/project/Megalodon/reports/audit-REPORT-2026-07-16.md`. Earlier wording that
+treated it as absent was a workspace-location mistake caused by looking under
+the top-level `/project/reports` directory. The controlling audit conclusion is
+accepted: counted native paths must not rely on certificate-derived `Known`
+propositions, and strict live certificate validation is integration evidence
+until native proof terms are checked.
 
 Committed Megalodon change `c2b11a4` extends the native certificate checker in
 the planned direction:
@@ -1554,3 +1558,13 @@ later at `u210`, a paramodulation step over an expanded dependent Skolem. The
 next work item is to avoid ad hoc expansion in later clausal steps and instead
 make the paramodulation/transport primitive handle dependent Skolem definitions
 with the correct local de Bruijn context.
+
+Later July 17 update: direct AVATAR split refutations, AVATAR split
+definitions/components, and one restricted SAT binary-resolution trace now have
+native proof-term fixtures that run without
+`MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN`. These are focused E3
+proof-producing seeds. They do not change the main milestone order: the next
+general implementation work should specify and extract the shared
+`open_step_theorem` operation for retained/substituted step variables, then use
+that operation across `resolve`, `paramodulate`, equality rules, and related
+primitive openings.
