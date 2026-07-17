@@ -8377,6 +8377,10 @@ let native_core_complement left right =
       when native_core_same_atom left_atom right_atom -> true
   | _ -> false
 
+let native_core_complement_literal = function
+  | Pos atom -> Neg atom
+  | Neg atom -> Pos atom
+
 let native_core_or_intro_left left_prop right_prop proof =
   TLam
     (Prop,
@@ -8468,6 +8472,75 @@ let native_core_false_from_complement_proofs left left_proof right right_proof =
   | Neg left_atom, Pos right_atom when native_core_same_atom left_atom right_atom ->
       PPfAp (left_proof, right_proof)
   | _ -> error "native core proof-term checker expected complementary pivots"
+
+let native_core_split_literal_name = function
+  | Pos (TmH name) | Neg (TmH name) when string_starts_with "split_" name ->
+      Some name
+  | _ -> None
+
+let native_core_is_split_clause clause =
+  clause <> [] && List.for_all (fun lit -> native_core_split_literal_name lit <> None) clause
+
+let native_core_prove_replace_literal_in_clause
+    id source_clause source_proof source_literal target_literal target_clause replacement =
+  let rec find_replace_index index prefix = function
+    | [] -> None
+    | literal :: rest ->
+        let candidate =
+          List.rev_append prefix (target_literal :: rest)
+        in
+        if literal = source_literal && same_clause_multiset candidate target_clause then
+          Some index
+        else
+          find_replace_index (index + 1) (literal :: prefix) rest
+  in
+  let replace_index =
+    match find_replace_index 0 [] source_clause with
+    | Some index -> index
+    | None ->
+        error
+          (id ^ ": native preprocess proof-term avatar_split cannot replace component literal by split literal")
+  in
+  let target_prop = native_core_clause_prop id target_clause in
+  let rec consume index clause proof =
+    match clause with
+    | [] ->
+        error
+          (id ^ ": native preprocess proof-term avatar_split replacement index is out of bounds")
+    | [literal] when index = 0 && literal = source_literal ->
+        let target_literal_proof = PPfAp (replacement, proof) in
+        native_core_prove_literal_to_clause
+          id target_clause target_literal target_literal_proof
+    | [literal] when index = 0 ->
+        error
+          (id ^ ": native preprocess proof-term avatar_split selected replacement literal mismatch")
+    | [literal] ->
+        native_core_prove_literal_to_clause id target_clause literal proof
+    | literal :: rest ->
+        let literal_prop = native_core_literal_prop literal in
+        let rest_prop = native_core_clause_prop id rest in
+        let head_branch =
+          PLam
+            (literal_prop,
+             if index = 0 then begin
+               if literal <> source_literal then
+                 error
+                   (id ^ ": native preprocess proof-term avatar_split selected replacement literal mismatch");
+               let target_literal_proof = PPfAp (replacement, Hyp 0) in
+               native_core_prove_literal_to_clause
+                 id target_clause target_literal target_literal_proof
+             end else
+               native_core_prove_literal_to_clause
+                 id target_clause literal (Hyp 0))
+        in
+        let tail_branch =
+          PLam
+            (rest_prop,
+             consume (index - 1) rest (Hyp 0))
+        in
+        PPfAp (PPfAp (PTmAp (proof, target_prop), head_branch), tail_branch)
+  in
+  consume replace_index source_clause source_proof
 
 let native_core_branch_from_complement target_prop unit_proof pivot_literal branch_literal =
   let shifted_unit_proof = pfshift 0 1 unit_proof in
@@ -9423,14 +9496,13 @@ let native_core_avatar_definition_proof cert id split_var split_positive clause 
 let native_core_avatar_split_proof cert id parent_ids result clause_table avatar_definitions =
   let split_literal =
     match result with
-    | [Pos (TmH name)] | [Neg (TmH name)]
-        when string_starts_with "split_" name -> Some name
+    | [literal] -> native_core_split_literal_name literal
     | _ -> None
   in
   match parent_ids, split_literal with
-  | [parent_id], Some _ ->
+  | [parent_id], _ when native_core_is_split_clause result ->
       let parent_clause, parent_proof = Hashtbl.find clause_table parent_id in
-      if parent_clause <> result then
+      if not (same_clause_multiset parent_clause result) then
         error (id ^ ": native preprocess proof-term avatar_split single-parent result is not an identity split clause");
       parent_proof
   | [source_id; definition_id], Some split_name ->
@@ -9457,16 +9529,134 @@ let native_core_avatar_split_proof cert id parent_ids result clause_table avatar
       in
       let split_proof = PPfAp (component_to_split, component_proof) in
       native_core_prove_literal_to_clause id result (Pos (TmH split_name)) split_proof
+  | source_id :: definition_ids, _ when native_core_is_split_clause result ->
+      let source_clause, source_proof = Hashtbl.find clause_table source_id in
+      let replace_first source_literal target_literal clause =
+        let rec replace = function
+          | [] -> []
+          | literal :: rest when literal = source_literal ->
+              target_literal :: rest
+          | literal :: rest -> literal :: replace rest
+        in
+        replace clause
+      in
+      let apply_definition (clause, proof) definition_id =
+        let split_name, component_literals, definition_proof =
+          try Hashtbl.find avatar_definitions definition_id
+          with Not_found ->
+            error (id ^ ": native preprocess proof-term avatar_split references unknown avatar definition")
+        in
+        match component_literals with
+        | [component_literal] ->
+            let split_literal = Pos (TmH split_name) in
+            let negative_split_literal = Neg (TmH split_name) in
+            if List.exists ((=) component_literal) clause
+               && List.exists ((=) split_literal) result then
+              let split_prop = native_core_literal_prop split_literal in
+              let definition_component_prop =
+                native_core_clause_prop id component_literals
+              in
+              let component_to_split =
+                native_core_and_elim_right
+                  (Imp (split_prop, definition_component_prop))
+                  (Imp (definition_component_prop, split_prop))
+                  definition_proof
+              in
+              let next_clause =
+                replace_first component_literal split_literal clause
+              in
+              let next_proof =
+                native_core_prove_replace_literal_in_clause
+                  id clause proof component_literal split_literal next_clause
+                  component_to_split
+              in
+              (next_clause, next_proof)
+            else
+              let complement_literal =
+                native_core_complement_literal component_literal
+              in
+              if List.exists ((=) complement_literal) clause
+                 && List.exists ((=) negative_split_literal) result then
+                let split_prop = native_core_literal_prop split_literal in
+                let definition_component_prop =
+                  native_core_clause_prop id component_literals
+                in
+                let split_to_component =
+                  native_core_and_elim_left
+                    (Imp (split_prop, definition_component_prop))
+                    (Imp (definition_component_prop, split_prop))
+                    definition_proof
+                in
+                let not_component_to_not_split =
+                  match component_literal with
+                  | Pos _ ->
+                      PLam
+                        (native_core_literal_prop complement_literal,
+                         PLam
+                           (split_prop,
+                            PPfAp
+                              (Hyp 1,
+                               PPfAp (split_to_component, Hyp 0))))
+                  | Neg atom ->
+                      let atom_prop = native_core_literal_prop (Pos atom) in
+                      PLam
+                        (atom_prop,
+                         PLam
+                           (split_prop,
+                            PPfAp
+                              (PPfAp (split_to_component, Hyp 0),
+                               Hyp 1)))
+                in
+                let next_clause =
+                  replace_first complement_literal negative_split_literal clause
+                in
+                let next_proof =
+                  native_core_prove_replace_literal_in_clause
+                    id clause proof complement_literal negative_split_literal
+                    next_clause not_component_to_not_split
+                in
+                (next_clause, next_proof)
+              else
+                (clause, proof)
+        | _ ->
+            (clause, proof)
+      in
+      let final_clause, final_proof =
+        List.fold_left apply_definition (source_clause, source_proof) definition_ids
+      in
+      if not (same_clause_multiset final_clause result) then
+        error
+          (id ^ ": native preprocess proof-term avatar_split component definitions do not produce result split clause");
+      native_core_prove_clause_to_clause id final_clause result final_proof
   | _ ->
       error
         (id ^ ": native preprocess proof-term avatar_split supports only identity or source-plus-definition split clauses")
 
+type native_core_avatar_component_direction =
+  | AvatarComponentSplitToComponent
+  | AvatarComponentComponentToSplit of literal
+
 let native_core_avatar_component_proof id result avatar_definitions =
   let matches (split_name, component_literals, definition_proof) =
     let negative_split = Neg (TmH split_name) in
+    let positive_split = Pos (TmH split_name) in
     if same_clause_multiset result (component_literals @ [negative_split]) then
-      Some (split_name, component_literals, definition_proof)
-    else None
+      Some
+        (split_name, component_literals, definition_proof,
+         AvatarComponentSplitToComponent)
+    else match component_literals with
+    | [component_literal] ->
+        let complement_literal =
+          native_core_complement_literal component_literal
+        in
+        if same_clause_multiset result [complement_literal; positive_split] then
+          Some
+            (split_name, component_literals, definition_proof,
+             AvatarComponentComponentToSplit component_literal)
+        else
+          None
+    | _ ->
+        None
   in
   let rec find_definition = function
     | [] -> None
@@ -9484,34 +9674,83 @@ let native_core_avatar_component_proof id result avatar_definitions =
   match find_definition definitions with
   | None ->
       error (id ^ ": native preprocess proof-term avatar_component has no matching split definition")
-  | Some (split_name, component_literals, definition_proof) ->
+  | Some (split_name, component_literals, definition_proof, direction) ->
       let split_prop = native_core_literal_prop (Pos (TmH split_name)) in
       let component_prop = native_core_clause_prop id component_literals in
       let target_prop = native_core_clause_prop id result in
+      let left_imp = Imp (split_prop, component_prop) in
+      let right_imp = Imp (component_prop, split_prop) in
       let split_to_component =
         native_core_and_elim_left
-          (Imp (split_prop, component_prop))
-          (Imp (component_prop, split_prop))
+          left_imp
+          right_imp
           definition_proof
       in
-      let positive_branch =
-        PLam
-          (split_prop,
-           let component_proof = PPfAp (split_to_component, Hyp 0) in
-           native_core_prove_clause_to_clause
-             id component_literals result component_proof)
+      let component_to_split =
+        native_core_and_elim_right left_imp right_imp definition_proof
       in
-      let negative_branch =
-        PLam
-          (Imp (split_prop, native_core_false),
-           native_core_prove_literal_to_clause
-             id result (Neg (TmH split_name)) (Hyp 0))
-      in
-      PPfAp
-        (PPfAp
-           (PTmAp (native_core_xm_proof split_prop, target_prop),
-            positive_branch),
-         negative_branch)
+      match direction with
+      | AvatarComponentSplitToComponent ->
+          let positive_branch =
+            PLam
+              (split_prop,
+               let component_proof = PPfAp (split_to_component, Hyp 0) in
+               native_core_prove_clause_to_clause
+                 id component_literals result component_proof)
+          in
+          let negative_branch =
+            PLam
+              (Imp (split_prop, native_core_false),
+               native_core_prove_literal_to_clause
+                 id result (Neg (TmH split_name)) (Hyp 0))
+          in
+          PPfAp
+            (PPfAp
+               (PTmAp (native_core_xm_proof split_prop, target_prop),
+                positive_branch),
+             negative_branch)
+      | AvatarComponentComponentToSplit component_literal ->
+          begin match component_literal with
+          | Pos atom ->
+              let positive_branch =
+                PLam
+                  (component_prop,
+                   let split_proof = PPfAp (component_to_split, Hyp 0) in
+                   native_core_prove_literal_to_clause
+                     id result (Pos (TmH split_name)) split_proof)
+              in
+              let negative_branch =
+                PLam
+                  (Imp (component_prop, native_core_false),
+                   native_core_prove_literal_to_clause
+                     id result (Neg atom) (Hyp 0))
+              in
+              PPfAp
+                (PPfAp
+                   (PTmAp (native_core_xm_proof component_prop, target_prop),
+                    positive_branch),
+                 negative_branch)
+          | Neg atom ->
+              let atom_prop = native_core_literal_prop (Pos atom) in
+              let positive_branch =
+                PLam
+                  (atom_prop,
+                   native_core_prove_literal_to_clause
+                     id result (Pos atom) (Hyp 0))
+              in
+              let negative_branch =
+                PLam
+                  (Imp (atom_prop, native_core_false),
+                   let split_proof = PPfAp (component_to_split, Hyp 0) in
+                   native_core_prove_literal_to_clause
+                     id result (Pos (TmH split_name)) split_proof)
+              in
+              PPfAp
+                (PPfAp
+                   (PTmAp (native_core_xm_proof atom_prop, target_prop),
+                    positive_branch),
+                 negative_branch)
+          end
 
 let native_core_split_literal_of_sat_lit id (var, positive) =
   if var <= 0 then
@@ -9578,7 +9817,128 @@ let native_core_avatar_refutation_sat_resolution_proof
                 (id ^ ": native preprocess proof-term avatar_refutation SAT RUP parent is not an earlier proof step"))
         parent_ids
     in
-    let rec try_right_literal left_clause left_proof left_index left_literal right_clause right_proof right_index = function
+    let rec factor_duplicates clause proof =
+      let rec find_duplicate left_index = function
+        | [] -> None
+        | literal :: rest ->
+            let rec find_right right_index = function
+              | [] -> None
+              | other :: others ->
+                  if literal = other then Some (left_index, right_index)
+                  else find_right (right_index + 1) others
+            in
+            begin match find_right (left_index + 1) rest with
+            | Some _ as found -> found
+            | None -> find_duplicate (left_index + 1) rest
+            end
+      in
+      match find_duplicate 0 clause with
+      | None -> (clause, proof)
+      | Some (left_index, right_index) ->
+          let next_clause =
+            remove_at right_index clause
+              (id ^ " avatar_refutation SAT duplicate literal")
+          in
+          let next_proof =
+            native_core_factor
+              (id ^ "_sat_" ^ string_of_int rup_id ^ "_factor")
+              clause proof left_index right_index next_clause
+          in
+          factor_duplicates next_clause next_proof
+    in
+    let resolve_pair left_clause left_proof left_index right_clause right_proof right_index =
+      let expected =
+        remove_at left_index left_clause (id ^ " avatar_refutation SAT left pivot")
+        @ remove_at right_index right_clause (id ^ " avatar_refutation SAT right pivot")
+      in
+      let proof =
+        match left_clause, right_clause, expected, left_index, right_index with
+        | [Pos left_atom], [Neg right_atom], [], 0, 0
+          when native_core_same_atom left_atom right_atom ->
+            PPfAp (right_proof, left_proof)
+        | [Neg left_atom], [Pos right_atom], [], 0, 0
+          when native_core_same_atom left_atom right_atom ->
+            PPfAp (left_proof, right_proof)
+        | _, [_], _, _, 0
+            when List.length left_clause >= 1 ->
+            native_core_resolve_clause_unit
+              (id ^ "_sat_" ^ string_of_int rup_id)
+              left_clause left_proof left_index right_clause right_proof right_index expected
+        | [_], _, _, 0, _
+            when List.length right_clause >= 1 ->
+            native_core_resolve_clause_unit
+              (id ^ "_sat_" ^ string_of_int rup_id)
+              right_clause right_proof right_index left_clause left_proof left_index expected
+        | _ ->
+            native_core_resolve_clause_clause
+              (id ^ "_sat_" ^ string_of_int rup_id)
+              left_clause
+              left_proof
+              left_index
+              right_clause
+              right_proof
+              right_index
+              expected
+      in
+      factor_duplicates expected proof
+    in
+    let rec resolution_candidates left_clause left_proof left_index left_literal right_clause right_proof right_index = function
+      | [] -> []
+      | right_literal :: rest ->
+          let rest_candidates =
+            resolution_candidates
+              left_clause left_proof left_index left_literal right_clause right_proof
+              (right_index + 1)
+              rest
+          in
+          if native_core_complement left_literal right_literal then
+            resolve_pair
+              left_clause left_proof left_index right_clause right_proof right_index
+            :: rest_candidates
+          else
+            rest_candidates
+    in
+    let rec candidates_from_left left_clause left_proof right_clause right_proof left_index = function
+      | [] -> []
+      | left_literal :: rest ->
+          resolution_candidates
+            left_clause left_proof left_index left_literal right_clause right_proof
+            0
+            right_clause
+          @ candidates_from_left
+              left_clause left_proof right_clause right_proof (left_index + 1) rest
+    in
+    let resolve_candidates left right =
+      let left_clause, left_proof = left in
+      let right_clause, right_proof = right in
+      candidates_from_left left_clause left_proof right_clause right_proof 0 left_clause
+    in
+    let rec derive_sequence current = function
+      | [] ->
+          if same_clause_multiset (fst current) result_clause then
+            Some (snd current)
+          else
+            None
+      | parent :: rest ->
+          let rec try_candidates = function
+            | [] -> None
+            | candidate :: candidates ->
+                begin match derive_sequence candidate rest with
+                | Some _ as found -> found
+                | None -> try_candidates candidates
+                end
+          in
+          try_candidates (resolve_candidates current parent)
+    in
+    match parents with
+    | [] ->
+        error
+          (id ^ ": native preprocess proof-term avatar_refutation SAT RUP step has no parents")
+    | first :: rest ->
+        begin match derive_sequence first rest with
+        | Some proof -> proof
+        | None ->
+            let rec try_right_literal left_clause left_proof left_index left_literal right_clause right_proof right_index = function
       | [] -> None
       | right_literal :: rest ->
           if native_core_complement left_literal right_literal then begin
@@ -9660,6 +10020,7 @@ let native_core_avatar_refutation_sat_resolution_proof
     | None ->
         error
           (id ^ ": native preprocess proof-term avatar_refutation SAT RUP step is not a binary split-clause resolution")
+        end
   in
   let rec build checked = function
     | [] -> checked
