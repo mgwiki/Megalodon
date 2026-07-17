@@ -504,6 +504,14 @@ empty clause without `vampire_avatar_*` or `vampire_resolve_*`
 certificate-derived `Known` primitives. Multi-step SAT/RUP AVATAR refutations
 and original-context composition remain open proof-term work.
 
+`native_cert_v1_avatar_refutation_sat_resolution_pf_valid.sexp` is the first
+multi-step SAT trace seed. It accepts the restricted case where every SAT input
+is exactly a proved split clause and each RUP step is a binary split-clause
+resolution step. The checker replays those SAT steps with the same native
+resolution templates used for ordinary `Resolve`, and rejects unsupported RUP
+shapes instead of installing trusted implications. General RUP unit-propagation
+traces over non-split component clauses remain open.
+
 The legacy structural diagnostic harnesses may opt in to the old trusted
 primitive behavior by setting
 `MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN=1`; they report

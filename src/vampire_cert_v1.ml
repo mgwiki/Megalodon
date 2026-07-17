@@ -8764,9 +8764,16 @@ let native_core_avatar_component_proof id result avatar_definitions =
             positive_branch),
          negative_branch)
 
-let native_core_avatar_refutation_proof id parent_ids result clause_table =
-  if result <> [] then
-    error (id ^ ": native preprocess proof-term avatar_refutation result is not empty");
+let native_core_split_literal_of_sat_lit id (var, positive) =
+  if var <= 0 then
+    error (id ^ ": native preprocess proof-term avatar_refutation SAT split variable must be positive");
+  let atom = TmH ("split_" ^ string_of_int var) in
+  if positive then Pos atom else Neg atom
+
+let native_core_split_clause_of_sat_clause id clause =
+  List.map (native_core_split_literal_of_sat_lit id) clause
+
+let native_core_avatar_refutation_direct_proof id parent_ids clause_table =
   match parent_ids with
   | [left_id; right_id] ->
       let left_clause, left_proof = Hashtbl.find clause_table left_id in
@@ -8783,6 +8790,162 @@ let native_core_avatar_refutation_proof id parent_ids result clause_table =
   | _ ->
       error
         (id ^ ": native preprocess proof-term avatar_refutation supports only two SAT unit parents")
+
+let native_core_avatar_refutation_sat_resolution_proof
+    id parent_ids sat_clauses sat_proof clause_table =
+  let source_pairs =
+    try List.combine sat_clauses parent_ids
+    with Invalid_argument _ ->
+      error (id ^ ": native preprocess proof-term avatar_refutation SAT input count does not match parent count")
+  in
+  let used_parent_ids = ref [] in
+  let consume_sat_input sid sat_clause =
+    let rec find = function
+      | [] ->
+          error
+            (id ^ ": native preprocess proof-term avatar_refutation SAT input has no matching certificate parent")
+      | (candidate_sat_clause, parent_id) :: rest ->
+          if normalize_sat_clause candidate_sat_clause = normalize_sat_clause sat_clause
+             && not (List.mem parent_id !used_parent_ids) then begin
+            let parent_clause, parent_proof = Hashtbl.find clause_table parent_id in
+            let split_clause = native_core_split_clause_of_sat_clause id sat_clause in
+            if not (same_clause_multiset parent_clause split_clause) then
+              error
+                (id ^ ": native preprocess proof-term avatar_refutation SAT input parent is not the matching split clause");
+            used_parent_ids := parent_id :: !used_parent_ids;
+            (sid, (split_clause, parent_proof))
+          end else find rest
+    in
+    find source_pairs
+  in
+  let resolve_checked_step rup_id checked parent_ids result_clause =
+    let parents =
+      List.map
+        (fun parent_id ->
+          match List.assoc_opt parent_id checked with
+          | Some parent -> parent
+          | None ->
+              error
+                (id ^ ": native preprocess proof-term avatar_refutation SAT RUP parent is not an earlier proof step"))
+        parent_ids
+    in
+    let rec try_right_literal left_clause left_proof left_index left_literal right_clause right_proof right_index = function
+      | [] -> None
+      | right_literal :: rest ->
+          if native_core_complement left_literal right_literal then begin
+            let expected =
+              remove_at left_index left_clause (id ^ " avatar_refutation SAT left pivot")
+              @ remove_at right_index right_clause (id ^ " avatar_refutation SAT right pivot")
+            in
+            if same_clause_multiset expected result_clause then
+              let proof =
+                match left_clause, right_clause, result_clause, left_index, right_index with
+                | [Pos left_atom], [Neg right_atom], [], 0, 0
+                  when native_core_same_atom left_atom right_atom ->
+                    PPfAp (right_proof, left_proof)
+                | [Neg left_atom], [Pos right_atom], [], 0, 0
+                  when native_core_same_atom left_atom right_atom ->
+                    PPfAp (left_proof, right_proof)
+                | _, [_], _, _, 0
+                    when List.length left_clause >= 1
+                         && List.length result_clause + 1 = List.length left_clause ->
+                    native_core_resolve_clause_unit
+                      (id ^ "_sat_" ^ string_of_int rup_id)
+                      left_clause left_proof left_index right_clause right_proof right_index result_clause
+                | [_], _, _, 0, _
+                    when List.length right_clause >= 1
+                         && List.length result_clause + 1 = List.length right_clause ->
+                    native_core_resolve_clause_unit
+                      (id ^ "_sat_" ^ string_of_int rup_id)
+                      right_clause right_proof right_index left_clause left_proof left_index result_clause
+                | _ ->
+                    native_core_resolve_clause_clause
+                      (id ^ "_sat_" ^ string_of_int rup_id)
+                      left_clause
+                      left_proof
+                      left_index
+                      right_clause
+                      right_proof
+                      right_index
+                      result_clause
+              in
+              Some
+                proof
+            else None
+          end else
+            try_right_literal
+              left_clause left_proof left_index left_literal right_clause right_proof
+              (right_index + 1)
+              rest
+    in
+    let try_left left_clause left_proof left_index left_literal right_clause right_proof =
+      try_right_literal left_clause left_proof left_index left_literal right_clause right_proof 0 right_clause
+    in
+    let rec try_clause left_clause left_proof right_clause right_proof left_index = function
+      | [] -> None
+      | left_literal :: rest ->
+          begin match
+            try_left left_clause left_proof left_index left_literal right_clause right_proof
+          with
+          | Some proof -> Some proof
+          | None -> try_clause left_clause left_proof right_clause right_proof (left_index + 1) rest
+          end
+    in
+    let rec try_pairs = function
+      | [] -> None
+      | (left_clause, left_proof) :: rest ->
+          let rec try_rights = function
+            | [] -> try_pairs rest
+            | (right_clause, right_proof) :: rights ->
+                begin match
+                  try_clause left_clause left_proof right_clause right_proof 0 left_clause
+                with
+                | Some proof -> Some proof
+                | None -> try_rights rights
+                end
+          in
+          try_rights rest
+    in
+    match try_pairs parents with
+    | Some proof -> proof
+    | None ->
+        error
+          (id ^ ": native preprocess proof-term avatar_refutation SAT RUP step is not a binary split-clause resolution")
+  in
+  let rec build checked = function
+    | [] -> checked
+    | SatInput (sid, sat_clause) :: rest ->
+        if List.mem_assoc sid checked then
+          error (id ^ ": native preprocess proof-term avatar_refutation duplicate SAT proof step id");
+        build (consume_sat_input sid sat_clause :: checked) rest
+    | SatRup (sid, parent_step_ids, sat_clause) :: rest ->
+        if List.mem_assoc sid checked then
+          error (id ^ ": native preprocess proof-term avatar_refutation duplicate SAT proof step id");
+        let result_clause = native_core_split_clause_of_sat_clause id sat_clause in
+        let proof =
+          resolve_checked_step sid checked parent_step_ids result_clause
+        in
+        build ((sid, (result_clause, proof)) :: checked) rest
+  in
+  match build [] sat_proof with
+  | (_, ([], proof)) :: _ -> proof
+  | _ ->
+      error
+        (id ^ ": native preprocess proof-term avatar_refutation SAT proof final step is not the empty clause")
+
+let native_core_avatar_refutation_proof id parent_ids sat_clauses sat_proof result clause_table =
+  if result <> [] then
+    error (id ^ ": native preprocess proof-term avatar_refutation result is not empty");
+  match sat_proof with
+  | Some proof ->
+      begin try
+        native_core_avatar_refutation_sat_resolution_proof
+          id parent_ids sat_clauses proof clause_table
+      with Error _ ->
+        native_core_avatar_refutation_direct_proof id parent_ids clause_table
+      end
+  | None ->
+      native_core_avatar_refutation_direct_proof id parent_ids clause_table
 
 let native_core_ennf_not_imp_to_and left_prop right_prop proof =
   let not_left_prop = Imp (left_prop, native_core_false) in
@@ -12191,10 +12354,10 @@ let elaborate_preprocess_refutation_native
           store_clause id result
             (native_core_avatar_split_proof
                cert id parent_ids result clause_table avatar_definition_table)
-      | AvatarRefutation (id, parent_ids, _sat_clauses, _sat_proof, result) ->
+      | AvatarRefutation (id, parent_ids, sat_clauses, sat_proof, result) ->
           store_clause id result
             (native_core_avatar_refutation_proof
-               id parent_ids result clause_table)
+               id parent_ids sat_clauses sat_proof result clause_table)
       | FoolExhaustiveness (id, result) ->
           store_clause id result
             (native_core_fool_exhaustiveness_proof cert id result)

@@ -934,5 +934,27 @@ Validation:
   focused AVATAR primitive families
 
 This should be counted as focused E3 progress, not as completion of the
-project. Multi-step AVATAR SAT/RUP proof-term lowering and original-context E1
+project. General AVATAR SAT/RUP proof-term lowering and original-context E1
 composition remain open.
+
+## Later July 17 AVATAR SAT-Resolution Update
+
+The native preprocessing checker now has a restricted multi-step SAT trace
+seed. When every SAT input is exactly a proved split clause and every RUP step
+is a binary resolution step over earlier SAT clauses, Megalodon maps SAT
+literals to `split_N` propositions and replays the trace with the existing
+native resolution proof templates.
+
+The new fixture
+`tests/vampire_certificate/native_cert_v1_avatar_refutation_sat_resolution_pf_valid.sexp`
+starts from `(split_1 | split_2)`, `~split_1`, and `~split_2`, derives
+`split_2`, then derives the empty clause. It runs under
+`-vampirecertv1preprocesspfcheck` without transitional `Known` insertion.
+
+Validation:
+
+- `TMPDIR=/project/tmp ./makeopt`
+- direct `-vampirecertv1preprocesspfcheck` on the new fixture
+
+This narrows the remaining AVATAR/SAT task to general RUP unit-propagation
+traces, non-split component linkage, and original-context E1 composition.

@@ -412,6 +412,14 @@ checked through kernel conversion, and then used by native preprocess
 primitives. This does not yet cover multi-step SAT/RUP AVATAR refutations or
 full original-context composition.
 
+The next proof-term seed covers a restricted multi-step SAT trace. When every
+SAT input is exactly a proved split clause and every RUP step is a binary
+resolution step over earlier SAT clauses, Megalodon now maps SAT literals to
+`split_N` propositions and replays the trace with native resolution proof
+templates. This is still intentionally smaller than full SAT/RUP checking:
+general unit-propagation explanations, non-split component clauses, and
+original-context composition remain open.
+
 The focused `hammer.981.15` issue around `S296` is an example of why AVATAR is
 not in the MVP: SAT-level nullary split propositions and first-order component
 predicates must be represented separately.

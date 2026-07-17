@@ -905,6 +905,29 @@ This is E3 proof-term progress for the focused AVATAR split-definition layer
 and for native preprocess resolution. It is not E1 original-context
 reconstruction and does not yet solve multi-step AVATAR SAT/RUP refutations.
 
+Follow-up: the native preprocessing checker now also proves a restricted
+multi-step AVATAR SAT trace. The supported case requires each SAT input to be
+exactly a proved split clause and each RUP step to be a binary resolution step
+over earlier SAT proof clauses. Megalodon maps SAT literals to `split_N`
+propositions and replays the trace using the existing native resolution proof
+templates; unsupported RUP shapes fail closed.
+
+New regression:
+
+- `tests/vampire_certificate/native_cert_v1_avatar_refutation_sat_resolution_pf_valid.sexp`
+
+The fixture proves `(split_1 | split_2)`, `~split_1`, `~split_2`, derives
+`split_2` as a SAT RUP/resolution step, and then derives the empty SAT clause.
+
+Validation:
+
+- `TMPDIR=/project/tmp ./makeopt`
+- direct `-vampirecertv1preprocesspfcheck` on the new fixture
+
+This narrows the remaining AVATAR/SAT gap to general RUP unit-propagation
+traces, SAT/component linkage beyond exact split clauses, and original-context
+composition.
+
 Additional follow-up: Megalodon now has the first direct proof-producing
 AVATAR/SAT seed in `-vampirecertv1preprocesspfcheck`. The supported path proves
 an identity `avatar_split` from its single parent, then proves a two-parent
