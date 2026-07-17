@@ -683,10 +683,72 @@ let vampire_source_context_delta_with_source_map ?cxtm source_map =
   in
   vampire_source_context_add_source_map_aliases delta source_map
 
+let vampire_parse_thf_type text =
+  let len = String.length text in
+  let rec skip i =
+    if i < len && (text.[i] = ' ' || text.[i] = '\t' || text.[i] = '\n') then
+      skip (i + 1)
+    else i
+  in
+  let rec parse_arrow i =
+    let left, i = parse_atom i in
+    let i = skip i in
+    if i < len && text.[i] = '>' then
+      let right, j = parse_arrow (skip (i + 1)) in
+      (Ar (left, right), j)
+    else
+      (left, i)
+  and parse_atom i =
+    let i = skip i in
+    if i + 1 < len && text.[i] = '$' && text.[i + 1] = 'i' then
+      (Set, i + 2)
+    else if i + 1 < len && text.[i] = '$' && text.[i + 1] = 'o' then
+      (Prop, i + 2)
+    else if i < len && text.[i] = '(' then
+      let tp, j = parse_arrow (i + 1) in
+      let j = skip j in
+      if j < len && text.[j] = ')' then (tp, j + 1)
+      else raise Not_found
+    else
+      raise Not_found
+  in
+  try
+    let tp, i = parse_arrow 0 in
+    if skip i = len then Some tp else None
+  with Not_found -> None
+
+let vampire_source_map_type_decl entry =
+  match entry.Vampire_cert_v1.source_map_kind,
+        entry.Vampire_cert_v1.source_map_decl_formula
+  with
+  | "type", Some formula ->
+      begin
+        try
+          let colon = String.index formula ':' in
+          let close =
+            try String.rindex formula ')'
+            with Not_found -> String.length formula
+          in
+          let start = colon + 1 in
+          let len = max 0 (close - start) in
+          let type_text = String.sub formula start len in
+          vampire_parse_thf_type type_text
+        with Not_found | Invalid_argument _ -> None
+      end
+  | _ -> None
+
 let vampire_source_context_symbol_table_with_source_map source_map =
   let symbols = Hashtbl.copy sigtmof in
   List.iter
     (fun entry ->
+       begin match vampire_source_map_type_decl entry with
+       | Some tp ->
+           if entry.Vampire_cert_v1.source_map_tptp_name <> "" then
+             Hashtbl.replace symbols entry.Vampire_cert_v1.source_map_tptp_name (0, tp);
+           if entry.Vampire_cert_v1.source_map_source_name <> "" then
+             Hashtbl.replace symbols entry.Vampire_cert_v1.source_map_source_name (0, tp)
+       | None -> ()
+       end;
        let add_symbol_alias alias source_name =
          if alias <> "" && source_name <> "" then
            match Hashtbl.find_opt sigtmh source_name with
@@ -835,10 +897,26 @@ let vampire_source_map_definition_names source_map =
        []
   |> List.sort_uniq compare
 
+let vampire_source_map_external_symbol_names source_map =
+  let add_nonempty name names =
+    if name = "" then names else name :: names
+  in
+  source_map
+  |> List.fold_left
+       (fun names entry ->
+          match entry.Vampire_cert_v1.source_map_kind with
+          | "type" | "def" | "definition" | "local_definition" ->
+              names
+              |> add_nonempty entry.Vampire_cert_v1.source_map_tptp_name
+              |> add_nonempty entry.Vampire_cert_v1.source_map_source_name
+          | _ -> names)
+       []
+  |> List.sort_uniq compare
+
 let vampire_source_context_external_definition_names cxtm source_map =
   List.sort_uniq compare
     (vampire_source_context_local_definition_names cxtm
-     @ vampire_source_map_definition_names source_map)
+     @ vampire_source_map_external_symbol_names source_map)
 
 let vampire_aby_source_context cxtm cxpf =
   let rec local_term_projection proof_index = function
@@ -8202,7 +8280,7 @@ let read_all fn =
     raise e
 
 let audit_vampire_cert_v1_source_context cert source_map =
-  let external_definition_names = vampire_source_map_definition_names source_map in
+  let external_definition_names = vampire_source_map_external_symbol_names source_map in
   let bindings =
     Vampire_cert_v1.native_certificate_source_bindings
       ~source_map
@@ -8414,7 +8492,7 @@ let check_vampire_cert_v1_file fn =
     in
     begin if !vampirecertv1corepfcheck then
       let external_definition_names =
-        vampire_source_map_definition_names !source_map_for_emit
+        vampire_source_map_external_symbol_names !source_map_for_emit
       in
       let native_core =
         Vampire_cert_v1.elaborate_core_resolution_refutation_native
@@ -8467,7 +8545,7 @@ let check_vampire_cert_v1_file fn =
     end;
     begin if !vampirecertv1preprocesspfcheck then
       let external_definition_names =
-        vampire_source_map_definition_names !source_map_for_emit
+        vampire_source_map_external_symbol_names !source_map_for_emit
       in
       let native_preprocess =
         Vampire_cert_v1.elaborate_preprocess_refutation_native

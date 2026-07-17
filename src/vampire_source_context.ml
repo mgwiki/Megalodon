@@ -268,6 +268,94 @@ let proof_proves_in_context context term_context proof proposition =
     | None -> false
   with _ -> false
 
+let proof_prop_in_context context term_context proof =
+  try Some (fst (extr_propofpf context.proof_delta context.symbol_table term_context [] proof []))
+  with _ -> None
+
+let rec closed_tm = function
+  | DB _ -> false
+  | TmH _ | Prim _ -> true
+  | TpAp (body, _) -> closed_tm body
+  | Ap (left, right)
+  | Imp (left, right) ->
+      closed_tm left && closed_tm right
+  | Lam (_, body)
+  | All (_, body) ->
+      closed_tm body
+
+let source_tm_type context db_tps tm =
+  let rec nth_opt xs index =
+    match xs, index with
+    | x :: _, 0 -> Some x
+    | _ :: rest, n when n > 0 -> nth_opt rest (n - 1)
+    | _ -> None
+  in
+  let rec infer db_tps = function
+    | TmH name ->
+        begin match Hashtbl.find_opt context.symbol_table name with
+        | Some (0, tp) -> Some tp
+        | _ -> None
+        end
+    | DB index -> nth_opt db_tps index
+    | TpAp (TmH h, tp) when h = megalodon_eq_poly_hash ->
+        Some (Ar (tp, Ar (tp, Prop)))
+    | TpAp (body, _) -> infer db_tps body
+    | Ap (fn, arg) ->
+        begin match infer db_tps fn with
+        | Some (Ar (arg_tp, result_tp)) ->
+            begin match infer db_tps arg with
+            | Some actual_tp when actual_tp = arg_tp -> Some result_tp
+            | Some _ -> None
+            | None -> Some result_tp
+            end
+        | _ -> None
+        end
+    | Lam (tp, body) ->
+        Option.map (fun body_tp -> Ar (tp, body_tp)) (infer (tp :: db_tps) body)
+    | Imp _ | All _ -> Some Prop
+    | Prim _ -> None
+  in
+  infer db_tps tm
+
+let rec take_prefix n xs =
+  if n <= 0 then []
+  else
+    match xs with
+    | [] -> []
+    | x :: rest -> x :: take_prefix (n - 1) rest
+
+let closed_terms_of_type context tp proposition =
+  let add ?expected tm terms =
+    if closed_tm tm
+       && (source_tm_type context [] tm = Some tp || expected = Some tp)
+       && not (List.mem tm terms)
+    then tm :: terms
+    else terms
+  in
+  let rec collect db_tps expected tm terms =
+    let actual = source_tm_type context db_tps tm in
+    let terms =
+      if actual = Some tp || expected = Some tp then add ?expected tm terms
+      else terms
+    in
+    match tm with
+    | TpAp (body, _) -> collect db_tps None body terms
+    | Ap (left, right) ->
+        let right_expected =
+          match source_tm_type context db_tps left with
+          | Some (Ar (arg_tp, _)) -> Some arg_tp
+          | _ -> None
+        in
+        collect db_tps right_expected right (collect db_tps None left terms)
+    | Imp (left, right) ->
+        collect db_tps (Some Prop) right (collect db_tps (Some Prop) left terms)
+    | Lam (binder_tp, body)
+    | All (binder_tp, body) ->
+        collect (binder_tp :: db_tps) (Some Prop) body terms
+    | TmH _ | DB _ | Prim _ -> terms
+  in
+  collect [] (Some Prop) proposition [] |> List.rev |> take_prefix 12
+
 let equality_symmetry_proof context term_context proof proposition =
   let target_candidates =
     match collapse_expanded_equality proposition with
@@ -317,6 +405,18 @@ let rec proof_for_prop context term_context proof proposition =
     in
     match collapsed_or_symmetry with
     | Some proof -> Some proof
+    | None ->
+    let instantiate_loaded_forall () =
+      match proof_prop_in_context context term_context proof with
+      | Some (All (tp, _)) ->
+          closed_terms_of_type context tp proposition
+          |> List.find_map
+               (fun tm ->
+                  proof_for_prop context term_context (PTmAp (proof, tm)) proposition)
+      | _ -> None
+    in
+    match instantiate_loaded_forall () with
+    | Some _ as result -> result
     | None ->
     match proposition with
     | All (tp, body) ->
@@ -405,13 +505,20 @@ let resolve_known_source context binding proposition =
   | None ->
       `Missing candidates
 
-let debug_known_hash_mismatch hash proposition =
+let debug_known_hash_mismatch context hash proposition =
   if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+    let loaded =
+      match Hashtbl.find_opt context.proof_delta hash with
+      | Some (_, loaded_prop) -> tm_to_str loaded_prop
+      | None -> "<not in proof_delta>"
+    in
     prerr_endline
       ("source-context known hash mismatch for "
        ^ hash
-       ^ ": proposition="
-       ^ tm_to_str proposition)
+       ^ ": exported="
+       ^ tm_to_str proposition
+       ^ " loaded="
+       ^ loaded)
 
 let project_local_term_context context tm =
   let rec project depth tm =
@@ -552,7 +659,7 @@ let resolve_one context audit binding =
         { audit with known_missing = audit.known_missing + 1 }
         |> add_issue binding "known_missing"
     | `Mismatch candidates ->
-        List.iter (fun candidate -> debug_known_hash_mismatch candidate proposition) candidates;
+        List.iter (fun candidate -> debug_known_hash_mismatch context candidate proposition) candidates;
         { audit with known_mismatch = audit.known_mismatch + 1 }
         |> add_issue binding "known_mismatch"
   else if local_source_kind kind then
