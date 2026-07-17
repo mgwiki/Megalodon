@@ -89,6 +89,16 @@ if [ $? -gt 0 ]
 then
     exit 1
 fi
+$OCAMLC -I bin -o bin/vampire_kernel_syntax.cmi -c src/vampire_kernel_syntax.mli
+if [ $? -gt 0 ]
+then
+    exit 1
+fi
+$OCAMLC -I bin -o bin/vampire_kernel_syntax.cmo -c src/vampire_kernel_syntax.ml
+if [ $? -gt 0 ]
+then
+    exit 1
+fi
 $OCAMLC -I bin -o bin/vampire_cert_v1.cmi -c src/vampire_cert_v1.mli
 if [ $? -gt 0 ]
 then
@@ -149,7 +159,7 @@ if [ $? -gt 0 ]
 then
     exit 1
 fi
-$OCAMLC -custom -o bin/megalodon unix.cma -I bin btc.cma bin/ser.cmo bin/hashaux.cmo bin/hash.cmo bin/hashold.cmo bin/mathdata.cmo bin/mathdatapfg.cmo bin/syntax.cmo bin/vampire_cert_v1.cmo bin/vampire_source_context.cmo bin/parser.cmo bin/lexer.cmo bin/megaauto.cmo bin/interpret.cmo bin/megalodon.cmo
+$OCAMLC -custom -o bin/megalodon unix.cma -I bin btc.cma bin/ser.cmo bin/hashaux.cmo bin/hash.cmo bin/hashold.cmo bin/mathdata.cmo bin/mathdatapfg.cmo bin/syntax.cmo bin/vampire_kernel_syntax.cmo bin/vampire_cert_v1.cmo bin/vampire_source_context.cmo bin/parser.cmo bin/lexer.cmo bin/megaauto.cmo bin/interpret.cmo bin/megalodon.cmo
 if [ $? -gt 0 ]
 then
     exit 1

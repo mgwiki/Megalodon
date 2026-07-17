@@ -4223,29 +4223,8 @@ let field_value key fields =
        else None)
     fields
 
-let required_primitives_for_kernel_rule = function
-  | "fool_formula" -> ["fool_atom_lift"]
-  | "rectify_formula" -> ["rectify_formula"]
-  | "formula_normalize" -> ["ennf_formula"]
-  | "skolemize" -> ["skolem_formula"]
-  | "cnf_clause" -> ["cnf_literal"; "cnf_formula_clause"]
-  | "formula_copy" -> ["formula_copy"; "formula_term_copy"]
-  | "fool_exhaustiveness" -> ["fool_exhaustiveness"]
-  | "truth_conflict" -> ["truth_conflict"]
-  | "equality_resolution" -> ["equality_resolution"; "equality_resolution_constraints"]
-  | "equality_factoring" -> ["equality_factoring"; "equality_factoring_constraints"]
-  | "avatar_component" -> ["avatar_component"]
-  | "avatar_split" -> ["avatar_split"]
-  | "avatar_refutation" -> ["avatar_refutation"]
-  | "avatar_definition" -> ["avatar_definition"]
-  | "split_dependency" -> ["split_dependency"]
-  | "superposition"
-  | "rewrite" -> ["paramodulate"]
-  | "subsumption_resolution"
-  | "unit_resulting_resolution"
-  | "resolution" -> ["resolve"]
-  | "factoring" -> ["factor"]
-  | _ -> []
+let required_primitives_for_kernel_rule =
+  Vampire_kernel_syntax.required_primitives_for_rule
 
 let has_id_prefix id prefix =
   id = prefix
@@ -4635,9 +4614,13 @@ let validate_kernel_v1_metadata_contracts cert =
        if kind = "kernel_v1" then
          let owner_index = Hashtbl.find_opt step_indices id in
          let schema = field_required id fields "schema" in
-         if schema <> "prover9-small-kernel-v1" then
+         if schema <> Vampire_kernel_syntax.schema then
            error (id ^ ": strict certificate v1 rejects unsupported kernel_v1 schema " ^ schema);
          let kernel_rule = field_required id fields "rule" in
+         if not (Vampire_kernel_syntax.is_supported_rule kernel_rule) then
+           error
+             (id ^ ": strict certificate v1 rejects unsupported kernel_v1 rule "
+              ^ kernel_rule);
          let conclusion_unit = field_required id fields "conclusion_unit" in
          if conclusion_unit <> id then
           error

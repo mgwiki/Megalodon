@@ -150,3 +150,28 @@ This update does not change the revised work order above. It reduces
 structural rejection in front of the kernel, but the qualifying path still
 requires isolated primitive proof terms, no certificate-derived `Known`
 insertion, and original-context source binding.
+
+## Later July 17 Kernel Boundary Update
+
+I made the first small implementation move requested by the audit's monolith
+freeze: the `kernel_v1` schema/rule vocabulary and primitive-expansion
+contract now live in `src/vampire_kernel_syntax.ml`, with an interface in
+`src/vampire_kernel_syntax.mli`.
+
+The strict certificate checker in `src/vampire_cert_v1.ml` uses that module
+when validating `kernel_v1` metadata. Unsupported kernel rule names now fail
+inside Megalodon's checker. The new negative fixture
+`tests/vampire_certificate/native_cert_v1_invalid_kernel_rule.sexp` asserts
+that behavior.
+
+Validation:
+
+- `TMPDIR=/project/tmp ./makeopt`
+- `TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh`
+- `TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_v1_metadata_audit.sh
+  /project/tmp/live_strict_100_megalodon5_after_fold_skolem`
+
+This remains a boundary extraction, not a completed audit response. The larger
+work still has to extract the typed kernel syntax/checker/elaborator, remove
+certificate-derived `Known` from every counted native path, and add the
+Vampire-side primitive builder.

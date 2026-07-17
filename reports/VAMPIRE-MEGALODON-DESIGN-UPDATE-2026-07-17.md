@@ -207,3 +207,34 @@ still to isolate the small clausal kernel and eliminate all certificate-derived
 Skolem changes are useful because they reduce structural rejection before that
 kernel boundary, but they are not a substitute for the Vampire-side primitive
 IR or the original-source context API.
+
+## Kernel Boundary Extraction
+
+A first small extraction has now moved the shared `kernel_v1` vocabulary out
+of `src/vampire_cert_v1.ml` and into `src/vampire_kernel_syntax.ml`.
+
+This module currently owns:
+
+- the accepted schema string, `prover9-small-kernel-v1`;
+- the supported kernel rule names;
+- the rule-to-required-primitive contract used by strict checking.
+
+`src/vampire_cert_v1.ml` now consumes this module when validating strict
+`kernel_v1` metadata. Unsupported kernel rule names are rejected by Megalodon
+itself, not only by the shell metadata audit. The negative fixture
+`tests/vampire_certificate/native_cert_v1_invalid_kernel_rule.sexp` checks
+this behavior.
+
+Validation:
+
+- `TMPDIR=/project/tmp ./makeopt` passed.
+- `TMPDIR=/project/tmp tests/vampire_certificate/run_native_cert_v1_smoke.sh`
+  passed, including the unsupported-rule negative fixture.
+- `TMPDIR=/project/tmp tests/vampire_certificate/run_kernel_v1_metadata_audit.sh
+  /project/tmp/live_strict_100_megalodon5_after_fold_skolem` passed over
+  3145 `kernel_v1` records.
+
+This is deliberately a boundary commit, not a proof-power claim. The next
+extractions should move term/clause kernel syntax and theorem-opening logic
+out of the monolithic importer, and the Vampire side still needs a real
+primitive-step builder instead of metadata assembled in the large exporter.

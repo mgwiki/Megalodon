@@ -3053,6 +3053,21 @@ if ! rg -q 'predicate_definition_fold result is not one definition-body replacem
 fi
 
 if bin/megalodon \
+  -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_invalid_kernel_rule.sexp \
+  "$dummy" >"$WORK_DIR/native_cert_v1_invalid_kernel_rule.out" \
+  2>"$WORK_DIR/native_cert_v1_invalid_kernel_rule.err"; then
+  echo "strict native certificate v1 checker accepted an unsupported kernel_v1 rule" >&2
+  exit 1
+fi
+
+if ! rg -q 'rejects unsupported kernel_v1 rule bogus_macro_rule' \
+    "$WORK_DIR/native_cert_v1_invalid_kernel_rule.err"; then
+  echo "strict native certificate v1 unsupported-kernel-rule failure did not explain the rejected rule" >&2
+  exit 1
+fi
+
+if bin/megalodon \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_invalid_partial.sexp \
   "$dummy" >"$WORK_DIR/native_cert_v1_invalid_partial.out" \
   2>"$WORK_DIR/native_cert_v1_invalid_partial.err"; then
