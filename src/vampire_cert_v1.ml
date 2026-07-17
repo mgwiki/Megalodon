@@ -10367,6 +10367,10 @@ let native_core_formula_orientation_proof
               | Some (Pos swapped) when swapped = target ->
                   native_core_eq_symmetry_proof id (Pos source) proof
               | _ ->
+                  if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+                    prerr_endline ("native core formula orientation debug source: " ^ tm_to_str source);
+                    prerr_endline ("native core formula orientation debug target: " ^ tm_to_str target)
+                  end;
                   error
                     (id ^ ": native preprocess proof-term formula orientation supports only equality symmetry and matching logical structure")
               end
@@ -10375,6 +10379,10 @@ let native_core_formula_orientation_proof
               | Some (Pos swapped) when swapped = source ->
                   native_core_eq_symmetry_proof id (Pos target) proof
               | _ ->
+                  if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+                    prerr_endline ("native core formula orientation debug source: " ^ tm_to_str source);
+                    prerr_endline ("native core formula orientation debug target: " ^ tm_to_str target)
+                  end;
                   error
                     (id ^ ": native preprocess proof-term formula orientation supports only equality symmetry and matching logical structure")
               end
@@ -10395,7 +10403,7 @@ let native_core_skolem_target_witness id source target =
   let rec match_tm depth source target =
     match source with
     | DB index ->
-        if index = depth then Some target
+        if index = depth then Some (tmshift 0 (-depth) target)
         else if index > depth then
           let expected = DB (index - 1) in
           if expected = target then None else raise Not_found
@@ -10472,8 +10480,27 @@ let native_core_direct_skolem_formula_proof id source target proof =
       let target_witness = native_core_skolem_target_witness id body target in
       let epsilon_witness = Ap (TmH (native_core_eps_symbol tp), predicate) in
       let orientation_source = tmsubst body 0 epsilon_witness in
+      let rec rewrite_outer_witness depth tm =
+        let shifted_target_witness = tmshift 0 depth target_witness in
+        let shifted_epsilon_witness = tmshift 0 depth epsilon_witness in
+        if tm = shifted_target_witness then shifted_epsilon_witness
+        else
+          match tm with
+          | TpAp (m, a) -> TpAp (rewrite_outer_witness depth m, a)
+          | Ap (m, n) ->
+              Ap
+                (rewrite_outer_witness depth m,
+                 rewrite_outer_witness depth n)
+          | Lam (a, body) -> Lam (a, rewrite_outer_witness (depth + 1) body)
+          | Imp (left, right) ->
+              Imp
+                (rewrite_outer_witness depth left,
+                 rewrite_outer_witness depth right)
+          | All (a, body) -> All (a, rewrite_outer_witness (depth + 1) body)
+          | DB _ | TmH _ | Prim _ -> tm
+      in
       let orientation_target =
-        rewrite_tm_all_once target_witness epsilon_witness target
+        rewrite_outer_witness 0 target
       in
       let choice_proof = PPfAp (PTmAp (Known choice, predicate), proof) in
       native_core_formula_orientation_proof
@@ -10483,7 +10510,7 @@ let native_core_direct_skolem_formula_proof id source target proof =
         (id ^ ": native core proof-term skolemization supports only direct existential sources")
 
 let native_core_skolem_formula_proof
-    id variables parent_step_variables result_step_variables source target proof =
+    id variables parent_step_variables result_step_variables substitution source target proof =
   let source = native_core_close_tm (variables @ result_step_variables) source in
   let target = native_core_close_tm (variables @ result_step_variables) target in
   let result_variable_count = List.length result_step_variables in
@@ -10496,6 +10523,13 @@ let native_core_skolem_formula_proof
           else find (index + 1) rest
     in
     find 0 result_step_variables
+  in
+  let substitution_for_parent_variable name _tp =
+    substitution
+    |> List.find_opt (fun (candidate_name, _) -> candidate_name = name)
+    |> Option.map
+         (fun (_, witness) ->
+            native_core_close_tm (variables @ result_step_variables) witness)
   in
   let fallback_result_variable tp =
     let rec find index = function
@@ -10523,11 +10557,15 @@ let native_core_skolem_formula_proof
            match db_for_result_variable name tp with
            | Some tm -> tm
            | None ->
-               begin match fallback_variable tp with
+               begin match substitution_for_parent_variable name tp with
                | Some tm -> tm
                | None ->
-                   error
-                     (id ^ ": native core proof-term skolemization cannot instantiate dropped parent variable " ^ name)
+                   begin match fallback_variable tp with
+                   | Some tm -> tm
+                   | None ->
+                       error
+                         (id ^ ": native core proof-term skolemization cannot instantiate dropped parent variable " ^ name)
+                   end
                end
          in
          PTmAp (proof, arg))
@@ -12230,7 +12268,7 @@ let elaborate_core_resolution_refutation_native
               store_formula id result
                 (native_core_skolem_formula_proof
                    id variables parent_step_variables result_step_variables
-                   source result parent_proof)
+                   subst source result parent_proof)
           | None ->
               error
                 (id ^ ": native core proof-term skolemization needs an explicit source formula")

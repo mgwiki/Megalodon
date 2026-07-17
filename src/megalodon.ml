@@ -1276,8 +1276,31 @@ let vampire_check_proof_of_prop ?source_map ?extra_delta ?extra_symbols cxtm cxp
     let (actual,dl) = extr_propofpf proof_delta symbol_table cx hyps proof_for_check [] in
     match conv actual expected proof_delta dl with
     | Some _ -> Some (proof_expander proof_for_check)
-    | None -> None
-  with _ -> None
+    | None ->
+        if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+          begin
+            Printf.printf
+              "Vampire native proof-of-prop candidate has wrong proposition at line %d char %d.\nexpected: %s\nactual: %s\n"
+              !lineno
+              !charno
+              (tm_to_str expected)
+              (tm_to_str actual);
+            flush stdout
+          end;
+        None
+  with
+  | Failure msg ->
+      if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+        begin
+          Printf.printf
+            "Vampire native proof-of-prop candidate rejected at line %d char %d: %s.\n"
+            !lineno
+            !charno
+            msg;
+          flush stdout
+        end;
+      None
+  | _ -> None
 
 let vampire_xm_double_negation_elim_to ?source_map ?extra_delta ?extra_symbols target cxtm cxpf dnotnot =
   let check candidate =
