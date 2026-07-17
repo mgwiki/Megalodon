@@ -5930,25 +5930,25 @@ let validate_certificate_core_fragment cert =
          && field_value "rule" fields = Some "instantiation")
       cert.metadata.step_extras
   in
-  let has_direct_skolem_metadata id =
+  let has_certified_skolem_metadata id =
     List.exists
       (fun (step_id, kind, fields) ->
          step_id = id
          && kind = "kernel_v1"
          && field_value "rule" fields = Some "skolemize"
-         && field_value "introduced_0_dependency_count" fields = Some "0"
+         && field_value "introduced_0_dependency_count" fields <> None
          && field_value "introduced_0_choice_principle" fields = Some "classical_choice")
       cert.metadata.step_extras
   in
-  let direct_skolem_formula = function
+  let certified_skolem_formula = function
     | SkolemFormula
-        (id, _, Some (Ap (TmH "vampire_exists_prop", Lam _)),
+        (id, _, Some _,
          [_], [_], _)
-        when has_direct_skolem_metadata id -> true
+        when has_certified_skolem_metadata id -> true
     | _ -> false
   in
   let allowed = function
-    | SkolemFormula _ as step when direct_skolem_formula step -> true
+    | SkolemFormula _ as step when certified_skolem_formula step -> true
     | Input _
     | FormulaInput _
     | FormulaTermInput _
@@ -6063,7 +6063,21 @@ let native_core_ident s =
 let native_core_ident_opt s =
   try Some (native_core_ident s) with Error _ -> None
 
+let native_core_generated_skolem_symbols cert =
+  cert.steps
+  |> List.filter_map
+       (function
+         | SkolemFormula (_, _, _, introductions, _, _) ->
+             Some
+               (List.map
+                  (fun intro -> native_core_ident intro.skolem_intro_symbol)
+                  introductions)
+         | _ -> None)
+  |> List.flatten
+  |> List.sort_uniq compare
+
 let native_core_declared_variables cert =
+  let generated_skolem_symbols = native_core_generated_skolem_symbols cert in
   let parse_decl decl =
     let line = String.trim decl in
     if not (string_starts_with "Variable " line) then None
@@ -6089,6 +6103,7 @@ let native_core_declared_variables cert =
   in
   cert.metadata.symbol_declarations
   |> List.filter_map parse_decl
+  |> List.filter (fun (name, _) -> not (List.mem name generated_skolem_symbols))
   |> List.sort_uniq compare
 
 let native_core_has_function_definitions cert =
@@ -7402,6 +7417,116 @@ let native_core_exists_choice_prop tp =
        (native_core_exists tp (Ap (DB 1, DB 0)),
         Ap (DB 0, Ap (TmH eps, DB 0))))
 
+let native_core_skolem_dependency_names cert id =
+  let count =
+    match native_core_metadata_step_extra_field
+            cert id "kernel_v1" "introduced_0_dependency_count"
+    with
+    | Some value ->
+        begin try int_of_string value
+        with Failure _ ->
+          error (id ^ ": native core proof-term skolemization has non-numeric dependency count")
+        end
+    | None ->
+        error (id ^ ": native core proof-term skolemization is missing dependency count metadata")
+  in
+  let rec collect index =
+    if index = count then []
+    else
+      let key = "introduced_0_dependency_" ^ string_of_int index ^ "_var" in
+      match native_core_metadata_step_extra_field cert id "kernel_v1" key with
+      | Some name -> native_core_ident name :: collect (index + 1)
+      | None ->
+          error
+            (id ^ ": native core proof-term skolemization is missing dependency variable metadata")
+  in
+  collect 0
+
+let native_core_skolem_context_for_source cert id source =
+  let step_variables = native_core_step_variables cert id in
+  let variable_name index tp =
+    match List.nth_opt step_variables index with
+    | Some (name, declared_tp) when declared_tp = tp -> name
+    | Some (name, _) -> name
+    | None -> "__skolem_context_" ^ string_of_int index
+  in
+  let rec find all_index context = function
+    | Ap (TmH "vampire_exists_prop", Lam (tp, body)) ->
+        Some (List.rev context, tp, body)
+    | All (tp, body) ->
+        let name = variable_name all_index tp in
+        find (all_index + 1) ((name, tp) :: context) body
+    | Ap (Ap (TmH "vampire_or", left), right) ->
+        begin match find all_index context left with
+        | Some _ as found -> found
+        | None -> find all_index context right
+        end
+    | _ -> None
+  in
+  match find 0 [] source with
+  | Some found -> found
+  | None ->
+      error
+        (id ^ ": native core proof-term skolemization could not find existential source")
+
+let native_core_skolem_definition_body cert id source =
+  let context, witness_tp, body = native_core_skolem_context_for_source cert id source in
+  let dependency_names = native_core_skolem_dependency_names cert id in
+  let dependency_tps =
+    List.map
+      (fun name ->
+         match List.assoc_opt name context with
+         | Some tp -> tp
+         | None ->
+             error
+               (id ^ ": native core proof-term skolemization dependency is not in source context"))
+      dependency_names
+  in
+  let context_count = List.length context in
+  let dependency_count = List.length dependency_names in
+  let dependency_index name =
+    let rec find index = function
+      | [] -> None
+      | candidate :: rest ->
+          if candidate = name then Some index else find (index + 1) rest
+    in
+    find 0 dependency_names
+  in
+  let rec translate depth = function
+    | DB index when index >= depth ->
+        let external_index = index - depth in
+        if external_index = 0 then DB (depth + 0)
+        else
+          let context_index = context_count - external_index in
+          begin match List.nth_opt context context_index with
+          | Some (name, _) ->
+              begin match dependency_index name with
+              | Some dep_index -> DB (depth + dependency_count - dep_index)
+              | None ->
+                  error
+                    (id ^ ": native core proof-term skolemization body mentions a non-dependency context variable")
+              end
+          | None ->
+              error
+                (id ^ ": native core proof-term skolemization body has an out-of-scope de Bruijn index")
+          end
+    | TpAp (tm, tp) -> TpAp (translate depth tm, tp)
+    | Ap (left, right) -> Ap (translate depth left, translate depth right)
+    | Lam (tp, body) -> Lam (tp, translate (depth + 1) body)
+    | Imp (left, right) -> Imp (translate depth left, translate depth right)
+    | All (tp, body) -> All (tp, translate (depth + 1) body)
+    | tm -> tm
+  in
+  let eps = native_core_eps_symbol witness_tp in
+  if eps = "Eps_unsupported" then
+    error
+      (id ^ ": native core proof-term skolemization has no epsilon operator for witness sort");
+  let predicate =
+    Lam (witness_tp, native_core_formula_prop body |> translate 0)
+  in
+  let definition = Ap (TmH eps, predicate) |> tm_beta_eta_norm in
+  List.fold_right (fun tp tm -> Lam (tp, tm)) dependency_tps definition
+
 let native_core_approved_sgdelta () =
   let sgdelta = Hashtbl.create 2 in
   Hashtbl.add sgdelta native_core_prop_ext_hash (0, native_core_prop_ext_prop);
@@ -7426,27 +7551,37 @@ let native_core_certificate_sgdelta cert symbol_table =
   let sgdelta = native_core_approved_sgdelta () in
   let definitions = native_core_definition_delta_table cert symbol_table in
   let avatar_definitions = native_core_avatar_delta_table cert in
-  let add_direct_skolem_definition id symbol tp body =
-    let eps = native_core_eps_symbol tp in
-    if eps = "Eps_unsupported" then
-      error
-        (id ^ ": native core proof-term skolemization has no epsilon operator for witness sort");
-    let predicate = Lam (tp, native_core_formula_prop body) in
-    let definition = Ap (TmH eps, predicate) |> tm_beta_eta_norm in
-    Hashtbl.replace definitions symbol (0, definition)
+  let add_skolem_definition id symbol source =
+    Hashtbl.replace
+      definitions
+      symbol
+      (0, native_core_skolem_definition_body cert id source)
+  in
+  let skolem_witness_matches_metadata id symbol witness =
+    match native_core_metadata_step_extra_field
+            cert id "kernel_v1" "introduced_0_dependency_count"
+    with
+    | None -> false
+    | Some count ->
+        begin try
+          let dependency_count = int_of_string count in
+          let head, args = native_core_flatten_value_application witness in
+          head = TmH symbol && List.length args = dependency_count
+        with Failure _ -> false
+        end
   in
   List.iter
     (function
       | SkolemFormula
-          (id, _, Some (Ap (TmH "vampire_exists_prop", Lam (tp, body))),
+          (id, _, Some source,
            [{ skolem_intro_symbol = symbol; _ }],
-           [(_, TmH witness_symbol)], _)
-          when symbol = witness_symbol ->
+           [(_, witness)], _)
+          when skolem_witness_matches_metadata id symbol witness ->
           begin match
             native_core_metadata_step_extra_field
               cert id "kernel_v1" "introduced_0_dependency_count"
           with
-          | Some "0" -> add_direct_skolem_definition id symbol tp body
+          | Some _ -> add_skolem_definition id symbol source
           | _ -> ()
           end
       | _ -> ())
@@ -7462,25 +7597,152 @@ let native_core_certificate_sgdelta cert symbol_table =
     avatar_definitions;
   sgdelta, definitions
 
+let native_core_expand_generated_skolems_step cert definitions step =
+  let generated = native_core_generated_skolem_symbols cert in
+  let is_generated h = List.mem h generated in
+  let rec apply_definition body = function
+    | [] -> tm_beta_eta_norm body
+    | arg :: rest ->
+        begin match tm_beta_eta_norm body with
+        | Lam (_, body) -> apply_definition (tmsubst body 0 arg) rest
+        | body -> apply_definition (Ap (body, arg)) rest
+        end
+  in
+  let rec tm input =
+    let mapped =
+      match input with
+      | TpAp (m, a) -> TpAp (tm m, a)
+      | Ap (m, n) -> Ap (tm m, tm n)
+      | Lam (a, body) -> Lam (a, tm body)
+      | Imp (m, n) -> Imp (tm m, tm n)
+      | All (a, body) -> All (a, tm body)
+      | DB _ | TmH _ | Prim _ -> input
+    in
+    let head, args = native_core_flatten_value_application mapped in
+    match head with
+    | TmH h when is_generated h ->
+        begin match Hashtbl.find_opt definitions h with
+        | Some (0, body) -> tm (apply_definition body args)
+        | _ -> mapped
+        end
+    | _ -> mapped
+  in
+  let literal = function
+    | Pos atom -> Pos (tm atom)
+    | Neg atom -> Neg (tm atom)
+  in
+  let clause literals = List.map literal literals in
+  let subst substitution =
+    List.map (fun (name, value) -> (name, tm value)) substitution
+  in
+  let ennf_pair pair =
+    {
+      pair with
+      ennf_pair_source = tm pair.ennf_pair_source;
+      ennf_pair_target = tm pair.ennf_pair_target;
+    }
+  in
+  match step with
+  | Input (id, source, result) -> Input (id, source, clause result)
+  | FormulaInput (id, source, result) -> FormulaInput (id, source, literal result)
+  | FormulaTermInput (id, source, result) -> FormulaTermInput (id, source, tm result)
+  | FormulaTermCopy (id, parent_id, result) -> FormulaTermCopy (id, parent_id, tm result)
+  | RectifyFormula (id, parent_id, renamings, result) ->
+      RectifyFormula (id, parent_id, renamings, tm result)
+  | FoolAtomLift (id, source, target, path) ->
+      FoolAtomLift (id, tm source, tm target, path)
+  | FoolFormula (id, parent_id, result) -> FoolFormula (id, parent_id, tm result)
+  | EnnfFormula (id, parent_id, source, pairs, result) ->
+      EnnfFormula
+        (id, parent_id, Option.map tm source, List.map ennf_pair pairs, tm result)
+  | SkolemFormula (id, parent_id, source, introductions, substitution, result) ->
+      SkolemFormula
+        (id, parent_id, source, introductions, substitution, result)
+  | SkolemFormulaComputed (id, parent_id, substitution) ->
+      SkolemFormulaComputed (id, parent_id, subst substitution)
+  | CnfFormulaClause (id, parent_id, index, count, result) ->
+      CnfFormulaClause (id, parent_id, index, count, clause result)
+  | FormulaCopy (id, parent_id, result) -> FormulaCopy (id, parent_id, literal result)
+  | FoolBool (id, parent_id, result) -> FoolBool (id, parent_id, literal result)
+  | CnfLiteral (id, parent_id, result) -> CnfLiteral (id, parent_id, clause result)
+  | PredicateDefinition (id, symbol, result) -> PredicateDefinition (id, symbol, tm result)
+  | PredicateDefinitionFold (id, source, definition, result) ->
+      PredicateDefinitionFold (id, source, definition, tm result)
+  | PredicateDefinitionFoldChain (id, source, definitions, result) ->
+      PredicateDefinitionFoldChain (id, source, definitions, tm result)
+  | DefinitionInput (id, result) -> DefinitionInput (id, clause result)
+  | DefinitionRewriteChain (id, parent_id, rewrites, result) ->
+      DefinitionRewriteChain (id, parent_id, rewrites, clause result)
+  | AvatarComponent (id, result) -> AvatarComponent (id, clause result)
+  | AvatarDefinition (id, split_var, split_positive, result) ->
+      AvatarDefinition (id, split_var, split_positive, clause result)
+  | SplitDependency (id, owner_id, dependencies, result) ->
+      SplitDependency (id, owner_id, dependencies, clause result)
+  | AvatarSplit (id, parent_ids, result) -> AvatarSplit (id, parent_ids, clause result)
+  | AvatarContradiction (id, parent_ids, result) ->
+      AvatarContradiction (id, parent_ids, clause result)
+  | AvatarRefutation (id, parent_ids, sat_clauses, sat_proof, result) ->
+      AvatarRefutation (id, parent_ids, sat_clauses, sat_proof, clause result)
+  | FoolExhaustiveness (id, result) -> FoolExhaustiveness (id, clause result)
+  | FoolDistinctness (id, result) -> FoolDistinctness (id, clause result)
+  | InequalityNameIntro (id, result) -> InequalityNameIntro (id, clause result)
+  | InequalitySplit (id, parent_id, splits, result) ->
+      InequalitySplit (id, parent_id, splits, clause result)
+  | Substitute (id, parent_id, substitution, result) ->
+      Substitute (id, parent_id, subst substitution, clause result)
+  | Condensation (id, parent_id, substitution, result) ->
+      Condensation (id, parent_id, subst substitution, clause result)
+  | UnitResultingResolution (id, parent_id, trace, result) ->
+      UnitResultingResolution (id, parent_id, trace, clause result)
+  | Resolve (id, left_id, right_id, left_index, right_index, result) ->
+      Resolve (id, left_id, right_id, left_index, right_index, clause result)
+  | SubsumptionResolution (id, main_parent_id, side_parent_id, selected, side_pivot, side_subst, result) ->
+      SubsumptionResolution
+        (id, main_parent_id, side_parent_id, literal selected,
+         literal side_pivot, subst side_subst, clause result)
+  | Factor (id, parent_id, left_index, right_index, result) ->
+      Factor (id, parent_id, left_index, right_index, clause result)
+  | EqualityResolution (id, parent_id, literal_index, result) ->
+      EqualityResolution (id, parent_id, literal_index, clause result)
+  | EqualityResolutionConstraints (id, parent_id, literal_index, selected, constraints, result) ->
+      EqualityResolutionConstraints
+        (id, parent_id, literal_index, literal selected,
+         clause constraints, clause result)
+  | EqualityFactoring (id, parent_id, selected_index, other_index, explicit_sides, substitution, result) ->
+      EqualityFactoring
+        (id, parent_id, selected_index, other_index,
+         Option.map (fun (selected_lhs, other_rhs) -> (tm selected_lhs, tm other_rhs)) explicit_sides,
+         subst substitution,
+         clause result)
+  | EqualityFactoringConstraints (id, parent_id, selected_index, other_index, explicit_sides, substitution, constraints, result) ->
+      EqualityFactoringConstraints
+        (id, parent_id, selected_index, other_index,
+         Option.map (fun (selected_lhs, other_rhs) -> (tm selected_lhs, tm other_rhs)) explicit_sides,
+         subst substitution,
+         clause constraints, clause result)
+  | TruthConflict (id, parent_id, literal_index, result) ->
+      TruthConflict (id, parent_id, literal_index, clause result)
+  | EqualitySymmetry (id, parent_id, literal_index, result) ->
+      EqualitySymmetry (id, parent_id, literal_index, clause result)
+  | BoolSimplify (id, parent_id, literal_index, positions, source, target, result) ->
+      BoolSimplify
+        (id, parent_id, literal_index, positions, tm source, tm target,
+         clause result)
+  | Paramodulate (id, equality_parent_id, target_parent_id, equality_index, target_index, position, from_tm, to_tm, result) ->
+      Paramodulate
+        (id, equality_parent_id, target_parent_id, equality_index, target_index,
+         position, tm from_tm, tm to_tm, clause result)
+  | Superposition (id, left_id, right_id, left_index, right_index, left_subst, right_subst, position, from_tm, to_tm, result) ->
+      Superposition
+        (id, left_id, right_id, left_index, right_index, subst left_subst,
+         subst right_subst, position, tm from_tm, tm to_tm, clause result)
+  | Contradiction _ as step -> step
+
 let approved_native_sgdelta () =
   native_core_approved_sgdelta ()
 
 let native_core_true_proof =
   TLam (Prop, PLam (DB 0, Hyp 0))
-
-let native_core_direct_skolem_formula_proof id source result proof =
-  match source with
-  | Ap (TmH "vampire_exists_prop", Lam (tp, body)) ->
-      let choice = native_core_exists_choice_hash tp in
-      if choice = "vampire_exists_unsupported_choice" then
-        error
-          (id ^ ": native core proof-term skolemization has no choice theorem for witness sort");
-      let predicate = Lam (tp, native_core_formula_prop body) in
-      ignore result;
-      PPfAp (PTmAp (Known choice, predicate), proof)
-  | _ ->
-      error
-        (id ^ ": native core proof-term skolemization supports only direct existential sources")
 
 let native_core_xm_proof prop =
   let shifted_prop = tmshift 0 1 prop in
@@ -8754,6 +9016,210 @@ let native_core_formula_orientation_proof
   let body_proof = convert `Forward source target parent_proof in
   List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
 
+let native_core_skolem_target_witness id source target =
+  let merge left right =
+    match left, right with
+    | None, found | found, None -> found
+    | Some left_tm, Some right_tm when left_tm = right_tm -> Some left_tm
+    | Some _, Some _ ->
+        error
+          (id ^ ": native core proof-term skolemization found inconsistent target witnesses")
+  in
+  let rec match_tm depth source target =
+    match source with
+    | DB index ->
+        if index = depth then Some target
+        else if index > depth then
+          let expected = DB (index - 1) in
+          if expected = target then None else raise Not_found
+        else if source = target then None
+        else raise Not_found
+    | TmH _ | Prim _ ->
+        if source = target then None else raise Not_found
+    | TpAp (source_tm, source_tp) ->
+        begin match target with
+        | TpAp (target_tm, target_tp) when source_tp = target_tp ->
+            match_tm depth source_tm target_tm
+        | _ -> raise Not_found
+        end
+    | Ap (source_left, source_right) ->
+        begin match source, target with
+        | Ap (Ap (source_eq, source_l), source_r),
+          Ap (Ap (target_eq, target_l), target_r)
+            when source_eq = target_eq
+                 && megalodon_eq_poly_sides source <> None
+                 && megalodon_eq_poly_sides target <> None ->
+            begin try
+              merge (match_tm depth source_l target_l) (match_tm depth source_r target_r)
+            with Not_found ->
+              merge (match_tm depth source_l target_r) (match_tm depth source_r target_l)
+            end
+        | _, Ap (target_left, target_right) ->
+            merge
+              (match_tm depth source_left target_left)
+              (match_tm depth source_right target_right)
+        | _ -> raise Not_found
+        end
+    | Lam (source_tp, source_body) ->
+        begin match target with
+        | Lam (target_tp, target_body) when source_tp = target_tp ->
+            match_tm (depth + 1) source_body target_body
+        | _ -> raise Not_found
+        end
+    | Imp (source_left, source_right) ->
+        begin match target with
+        | Imp (target_left, target_right) ->
+            merge
+              (match_tm depth source_left target_left)
+              (match_tm depth source_right target_right)
+        | _ -> raise Not_found
+        end
+    | All (source_tp, source_body) ->
+        begin match target with
+        | All (target_tp, target_body) when source_tp = target_tp ->
+            match_tm (depth + 1) source_body target_body
+        | _ -> raise Not_found
+        end
+  in
+  match match_tm 0 source target with
+  | Some witness -> witness
+  | None ->
+      error
+        (id ^ ": native core proof-term skolemization result does not expose a target witness")
+  | exception Not_found ->
+      if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then begin
+        prerr_endline ("native core skolem witness debug source: " ^ tm_to_str source);
+        prerr_endline ("native core skolem witness debug target: " ^ tm_to_str target)
+      end;
+      error
+        (id ^ ": native core proof-term skolemization result does not match source body")
+
+let native_core_direct_skolem_formula_proof id source target proof =
+  match source with
+  | Ap (TmH "vampire_exists_prop", Lam (tp, body)) ->
+      let choice = native_core_exists_choice_hash tp in
+      if choice = "vampire_exists_unsupported_choice" then
+        error
+          (id ^ ": native core proof-term skolemization has no choice theorem for witness sort");
+      let predicate = Lam (tp, native_core_formula_prop body) in
+      let target_witness = native_core_skolem_target_witness id body target in
+      let epsilon_witness = Ap (TmH (native_core_eps_symbol tp), predicate) in
+      let orientation_source = tmsubst body 0 epsilon_witness in
+      let orientation_target =
+        rewrite_tm_all_once target_witness epsilon_witness target
+      in
+      let choice_proof = PPfAp (PTmAp (Known choice, predicate), proof) in
+      native_core_formula_orientation_proof
+        id [] [] [] orientation_source orientation_target choice_proof
+  | _ ->
+      error
+        (id ^ ": native core proof-term skolemization supports only direct existential sources")
+
+let native_core_skolem_formula_proof
+    id variables parent_step_variables result_step_variables source target proof =
+  let source = native_core_close_tm (variables @ result_step_variables) source in
+  let target = native_core_close_tm (variables @ result_step_variables) target in
+  let result_variable_count = List.length result_step_variables in
+  let db_for_result_variable name tp =
+    let rec find index = function
+      | [] -> None
+      | (candidate_name, candidate_tp) :: rest ->
+          if candidate_name = name && candidate_tp = tp then
+            Some (DB (result_variable_count - index - 1))
+          else find (index + 1) rest
+    in
+    find 0 result_step_variables
+  in
+  let fallback_result_variable tp =
+    let rec find index = function
+      | [] -> None
+      | (_, candidate_tp) :: rest ->
+          if candidate_tp = tp then Some (DB (result_variable_count - index - 1))
+          else find (index + 1) rest
+    in
+    find 0 result_step_variables
+  in
+  let fallback_declared_variable tp =
+    variables
+    |> List.find_opt (fun (_, candidate_tp) -> candidate_tp = tp)
+    |> Option.map (fun (name, _) -> TmH name)
+  in
+  let fallback_variable tp =
+    match fallback_result_variable tp with
+    | Some tm -> Some tm
+    | None -> fallback_declared_variable tp
+  in
+  let parent_proof =
+    List.fold_left
+      (fun proof (name, tp) ->
+         let arg =
+           match db_for_result_variable name tp with
+           | Some tm -> tm
+           | None ->
+               begin match fallback_variable tp with
+               | Some tm -> tm
+               | None ->
+                   error
+                     (id ^ ": native core proof-term skolemization cannot instantiate dropped parent variable " ^ name)
+               end
+         in
+         PTmAp (proof, arg))
+      (pftmshift 0 result_variable_count proof)
+      parent_step_variables
+  in
+  let rec convert source target proof =
+    if native_core_formula_prop source = native_core_formula_prop target then proof
+    else
+      match source, target with
+      | All (source_tp, source_body), All (target_tp, target_body)
+          when source_tp = target_tp ->
+          TLam
+            (source_tp,
+             convert
+               source_body
+               target_body
+               (PTmAp (pftmshift 0 1 proof, DB 0)))
+      | Ap (Ap (TmH "vampire_or", source_left), source_right),
+        Ap (Ap (TmH "vampire_or", target_left), target_right) ->
+          let source_left_prop = native_core_formula_prop source_left in
+          let source_right_prop = native_core_formula_prop source_right in
+          let target_left_prop = native_core_formula_prop target_left in
+          let target_right_prop = native_core_formula_prop target_right in
+          let target_prop = native_core_or target_left_prop target_right_prop in
+          let left_branch =
+            PLam
+              (source_left_prop,
+               let target_left_proof =
+                 convert source_left target_left (Hyp 0)
+               in
+               native_core_or_intro_left
+                 target_left_prop
+                 target_right_prop
+                 target_left_proof)
+          in
+          let right_branch =
+            PLam
+              (source_right_prop,
+               let target_right_proof =
+                 convert source_right target_right (Hyp 0)
+               in
+               native_core_or_intro_right
+                 target_left_prop
+                 target_right_prop
+                 target_right_proof)
+          in
+          PPfAp
+            (PPfAp (PTmAp (proof, target_prop), left_branch),
+             right_branch)
+      | Ap (TmH "vampire_exists_prop", Lam _), _ ->
+          native_core_direct_skolem_formula_proof id source target proof
+      | _ ->
+          error
+            (id ^ ": native core proof-term skolemization supports only existential, forall, and disjunction contexts")
+  in
+  let body_proof = convert source target parent_proof in
+  List.fold_right (fun (_, tp) proof -> TLam (tp, proof)) result_step_variables body_proof
+
 let native_core_truth_conflict_false_proof id literal proof =
   let is_true = function
     | TmH "f__true" | TmH "vampire_true" -> true
@@ -9874,10 +10340,13 @@ let native_certificate_source_bindings ?(source_map=[]) cert =
   ignore (check_certificate_strict cert);
   let variables = native_core_proof_variables cert in
   let symbol_table = native_core_symbol_table cert in
+  let _, definition_delta = native_core_certificate_sgdelta cert symbol_table in
   let typed_steps =
     List.map
       (native_core_type_raw_equalities_step cert variables symbol_table)
       cert.steps
+    |> List.map
+         (native_core_expand_generated_skolems_step cert definition_delta)
   in
   List.fold_left
     (fun bindings step ->
@@ -9922,10 +10391,22 @@ let elaborate_core_resolution_refutation_native
   ignore (check_certificate_strict cert);
   let variables = native_core_proof_variables cert in
   let symbol_table = native_core_symbol_table cert in
+  let proof_delta, raw_definition_delta = native_core_certificate_sgdelta cert symbol_table in
   let typed_steps =
     List.map
       (native_core_type_raw_equalities_step cert variables symbol_table)
       cert.steps
+    |> List.map
+         (native_core_expand_generated_skolems_step cert raw_definition_delta)
+  in
+  let expand_generated_formula formula =
+    match
+      native_core_expand_generated_skolems_step
+        cert raw_definition_delta
+        (FormulaTermCopy ("__expand_skolem_formula", "__parent", formula))
+    with
+    | FormulaTermCopy (_, _, formula) -> formula
+    | _ -> formula
   in
   let used_steps = proof_dependency_closure typed_steps in
   let step_is_used id = Hashtbl.mem used_steps id in
@@ -9979,9 +10460,8 @@ let elaborate_core_resolution_refutation_native
     |> List.rev)
     @ external_hypotheses
   in
-  let proof_delta, definition_delta = native_core_certificate_sgdelta cert symbol_table in
   let proof_delta = native_core_close_delta_table variables proof_delta in
-  let definition_delta = native_core_close_delta_table variables definition_delta in
+  let definition_delta = native_core_close_delta_table variables raw_definition_delta in
   let proof_delta = native_core_merge_external_delta proof_delta external_delta_table in
   let check_step_proof id clause proof =
     let step_variables = native_core_step_variables cert id in
@@ -10135,8 +10615,9 @@ let elaborate_core_resolution_refutation_native
           let parent_step_variables = native_core_step_variables cert parent_id in
           let result_step_variables = native_core_step_variables cert id in
           store_formula id result
-            (native_core_rectify_formula_proof
-               id parent_step_variables result_step_variables parent_proof)
+            (native_core_formula_orientation_proof
+               id variables parent_step_variables result_step_variables
+               parent_formula result parent_proof)
       | FoolAtomLift (id, source, target, path) ->
           check_fool_atom_lift id source target path
       | FoolFormula (id, parent_id, result) ->
@@ -10162,17 +10643,27 @@ let elaborate_core_resolution_refutation_native
                id variables result_step_variables parent_formula result parent_proof)
       | SkolemFormula (id, parent_id, source, introductions, subst, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
+          let check_parent_formula =
+            match source with
+            | Some source -> source
+            | None -> parent_formula
+          in
           check_skolem_formula
-            [(parent_id, CheckedFormula parent_formula)]
+            [(parent_id, CheckedFormula check_parent_formula)]
             id parent_id source introductions subst result;
           begin match source with
-          | Some (Ap (TmH "vampire_exists_prop", Lam _)) ->
-              store_formula id result
-                (native_core_direct_skolem_formula_proof
-                   id parent_formula result parent_proof)
-          | _ ->
+          | Some source ->
+              let parent_step_variables = native_core_step_variables cert parent_id in
+              let result_step_variables = native_core_step_variables cert id in
+              let expanded_source = expand_generated_formula source in
+              let expanded_result = expand_generated_formula result in
+              store_formula id expanded_result
+                (native_core_skolem_formula_proof
+                   id variables parent_step_variables result_step_variables
+                   expanded_source expanded_result parent_proof)
+          | None ->
               error
-                (id ^ ": native core proof-term skolemization supports only explicit direct source formulas")
+                (id ^ ": native core proof-term skolemization needs an explicit source formula")
           end
       | FormulaCopy (id, parent_id, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
@@ -10352,10 +10843,13 @@ let elaborate_preprocess_refutation_native
   ignore (check_certificate_strict cert);
   let variables = native_core_proof_variables cert in
   let symbol_table = native_core_symbol_table cert in
+  let proof_delta, raw_definition_delta = native_core_certificate_sgdelta cert symbol_table in
   let typed_steps =
     List.map
       (native_core_type_raw_equalities_step cert variables symbol_table)
       cert.steps
+    |> List.map
+         (native_core_expand_generated_skolems_step cert raw_definition_delta)
   in
   let source_inputs = ref [] in
   let source_bindings = ref [] in
@@ -10409,9 +10903,8 @@ let elaborate_preprocess_refutation_native
     |> List.rev)
     @ external_hypotheses
   in
-  let proof_delta, definition_delta = native_core_certificate_sgdelta cert symbol_table in
   let proof_delta = native_core_close_delta_table variables proof_delta in
-  let definition_delta = native_core_close_delta_table variables definition_delta in
+  let definition_delta = native_core_close_delta_table variables raw_definition_delta in
   let proof_delta = native_core_merge_external_delta proof_delta external_delta_table in
   let check_step_proof id prop proof =
     let step_variables = native_core_step_variables cert id in
