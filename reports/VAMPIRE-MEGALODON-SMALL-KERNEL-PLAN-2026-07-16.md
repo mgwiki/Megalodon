@@ -46,6 +46,15 @@ small-kernel elaboration issue. It should be solved by specifying and
 implementing the theorem-opening operation for stored `TLam` proofs, not by
 adding special cases for `famunion`, `sK1`, this library, or this theorem.
 
+Third progress note, 2026-07-17: focused experiments confirmed that broad
+fixes are the wrong shape. Disabling equality-parent shifts in paramodulation
+regressed earlier at `u115`; globally normalizing native proofs only changed
+the first stale shifted argument; broad closure changes regressed earlier
+checked clauses. The next implementation unit is therefore a specified
+`open_step_theorem` operation shared by primitive rules, preferably in an
+isolated kernel module, plus focused tests for retained-variable parents,
+closed equality parents, and same-name local/global shadowing.
+
 Primary repositories:
 
 - Megalodon: `/project/Megalodon`

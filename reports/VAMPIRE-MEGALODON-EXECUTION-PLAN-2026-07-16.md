@@ -52,17 +52,21 @@ The project is not finished:
 - Skolemization is not yet solved in a source-connected way;
 - AVATAR/split composition remains transitional.
 
-As of this plan, the focused live proof-term frontier has moved past
-`inequality_name_intro` and `inequality_split` on `hammer.11453.77.th0.p` and
-now stops at:
+Post-update note, 2026-07-17: the focused real proof-term frontier has moved
+past the earlier Skolem formula mismatch in `hammer.1007.43.th0.p` and now
+stops at:
 
 ```text
-u346: unit_resulting_resolution
+u210: paramodulate
+Term de Bruijn index 15 is out of bounds for context length 15
 ```
 
-This is a useful diagnostic: the next correct move is not to add a broad
-Megalodon-side macro proof searcher. The next correct move is to make Vampire
-expand this macro into primitive instantiation and binary resolution steps.
+This is a retained-variable theorem-opening problem in the native clausal
+kernel. The next correct move is not to add a broad Megalodon-side macro
+searcher or normalize every proof globally. The next correct move is to define
+and implement a shared `open_step_theorem` operation for stored `TLam` proofs
+inside the isolated kernel, while continuing the Vampire-side primitive-builder
+work for larger macros such as unit-resulting resolution.
 
 ## Non-Negotiable Constraints
 
@@ -517,29 +521,31 @@ A change is not accepted as architectural progress if it mainly:
 
 The next implementation queue is:
 
-1. Finish validating and committing the current `inequality_name_intro` /
-   `inequality_split` native proof-term work if it passes the focused and
-   small frontier gates.
-2. Debug Vampire's `unit_resulting_resolution` expansion fallback with
-   `MEGALODON_CERT_DEBUG=1`.
-3. Change Vampire so `unit_resulting_resolution` emits primitive
+1. Specify and implement the shared retained-variable theorem-opening
+   operation for stored native kernel proofs.
+2. Retest the focused `hammer.1007.43.th0.p` `u210` paramodulation case from
+   cached certificates under `/project/tmp`; do not rerun Vampire unless the
+   exporter changed.
+3. Debug Vampire's `unit_resulting_resolution` expansion fallback with
+   `MEGALODON_CERT_DEBUG=1` after the kernel-opening issue is isolated.
+4. Change Vampire so `unit_resulting_resolution` emits primitive
    instantiate/resolve steps in the focused failing case.
-4. Rebuild Vampire with parallel make:
+5. Rebuild Vampire with parallel make:
 
    ```sh
    TMPDIR=/project/tmp make -j10 vampire_rel
    ```
 
-5. Re-run the one-problem frontier, then a small parallel frontier.
-6. Only after that, run the 100-case live gate.
-7. Start the source-linkage work in parallel with the clausal kernel cleanup:
+6. Re-run the one-problem frontier, then a small parallel frontier.
+7. Only after that, run the 100-case live gate.
+8. Start the source-linkage work in parallel with the clausal kernel cleanup:
    source name lookup, set-equality reflexivity, conjecture negation, and
    first Smolka transformations.
 
 ## Design Decision for the Current Frontier
 
-For `u346: unit_resulting_resolution`, the planned fix is Vampire-side macro
-lowering.
+For broad macros such as `unit_resulting_resolution`, the planned fix remains
+Vampire-side macro lowering.
 
 Megalodon-side implementation of a `unit_resulting_resolution` macro checker is
 only acceptable as a temporary diagnostic if it does not enter the counted
@@ -548,3 +554,10 @@ resolution steps.
 
 This is the practical test of whether the project is now following the
 Prover9/Ivy path rather than growing another reconstruction engine.
+
+For the current `u210: paramodulate` failure, the planned fix is different:
+Megalodon already has an explicit primitive step, but the native checker needs
+a principled operation for opening stored parent theorems into a result
+step-variable context. That operation belongs in the small kernel, should be
+shared by all primitive rules, and should fail closed on missing substitutions
+or inconsistent binders.
