@@ -1,11 +1,11 @@
 (certificate vampire-megalodon 1
-  (problem "native-cert-v1-primitive-expansion-valid")
+  (problem "native-cert-v1-urr-primitive-chain-count-bad")
   (step_extra c3 "kernel_v1"
     ("schema=prover9-small-kernel-v1"
      "rule=unit_resulting_resolution"
      "conclusion_unit=c3"
      "trace_main_parent_unit=c1"
-     "trace_step_count=1"
+     "trace_step_count=2"
      "trace_step_0_unit_parent=c2"
      "primitive_expansion=prefix"
      "primitive_expansion_prefix=c3"

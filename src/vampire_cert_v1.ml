@@ -6673,6 +6673,53 @@ let validate_primitive_expansion_contracts cert =
         done
     end
   in
+  let validate_urr_primitive_chain id fields =
+    let fail message =
+      error (id ^ ": strict certificate v1 " ^ message)
+    in
+    let field_required key =
+      match field_value key fields with
+      | Some value -> value
+      | None -> fail ("requires " ^ key)
+    in
+    let field_int key =
+      let value = field_required key in
+      try int_of_string value with Failure _ ->
+        fail ("field " ^ key ^ " is not an integer")
+    in
+    let trace_count = field_int "trace_step_count" in
+    if trace_count <= 0 then
+      fail "unit_resulting_resolution trace_step_count must be positive";
+    let step_count = field_int "primitive_expansion_step_count" in
+    if step_count <= 0 then
+      fail "unit_resulting_resolution primitive_expansion_step_count must be positive";
+    let resolve_steps = ref 0 in
+    for index = 0 to step_count - 1 do
+      let key_prefix =
+        "primitive_expansion_step_" ^ string_of_int index
+      in
+      if field_required (key_prefix ^ "_rule") = "resolve" then
+        incr resolve_steps
+    done;
+    if !resolve_steps <> trace_count then
+      fail
+        (Printf.sprintf
+           "unit_resulting_resolution primitive resolve step count %d does not match trace_step_count %d"
+           !resolve_steps trace_count);
+    let requires_count = field_int "primitive_expansion_requires_count" in
+    if requires_count <= 0 then
+      fail "unit_resulting_resolution primitive_expansion_requires_count must be positive";
+    let has_required_resolve = ref false in
+    for index = 0 to requires_count - 1 do
+      let key =
+        "primitive_expansion_requires_" ^ string_of_int index
+      in
+      if field_required key = "resolve" then
+        has_required_resolve := true
+    done;
+    if not !has_required_resolve then
+      fail "unit_resulting_resolution primitive_expansion_requires_N must include resolve"
+  in
   let validate_contract id kernel_rule primitive_required fields =
     let fail message =
       error (id ^ ": strict certificate v1 " ^ message)
@@ -6764,7 +6811,9 @@ let validate_primitive_expansion_contracts cert =
                  | Some primitive -> validate_contract id kernel_rule primitive fields
                  | None -> ()
                  end
-             end
+             end;
+             if kernel_rule = "unit_resulting_resolution" then
+               validate_urr_primitive_chain id fields
          end)
     cert.metadata.step_extras
 

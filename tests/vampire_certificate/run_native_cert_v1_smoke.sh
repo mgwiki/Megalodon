@@ -1880,6 +1880,22 @@ fi
 
 if bin/megalodon \
   -vampirecertv1strict \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_urr_primitive_chain_count_bad.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_urr_primitive_chain_count_bad.out" \
+  2>"$WORK_DIR/native_cert_v1_urr_primitive_chain_count_bad.err"; then
+  echo "strict native certificate v1 checker accepted URR metadata whose primitive chain does not match the trace count" >&2
+  exit 1
+fi
+
+if ! rg -q 'unit_resulting_resolution primitive resolve step count 1 does not match trace_step_count 2' \
+    "$WORK_DIR/native_cert_v1_urr_primitive_chain_count_bad.err"; then
+  echo "strict native certificate v1 URR primitive-chain failure did not explain the resolve/trace mismatch" >&2
+  exit 1
+fi
+
+if bin/megalodon \
+  -vampirecertv1strict \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_kernel_future_unit_bad.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_valid.th0.p \
   "$dummy" >"$WORK_DIR/native_cert_v1_kernel_future_unit_bad.out" \
