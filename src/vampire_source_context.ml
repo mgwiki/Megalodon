@@ -201,6 +201,14 @@ let known_hash_proves context hash proposition =
     | None -> false
   with _ -> false
 
+let debug_known_hash_mismatch hash proposition =
+  if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+    prerr_endline
+      ("source-context known hash mismatch for "
+       ^ hash
+       ^ ": proposition="
+       ^ tm_to_str proposition)
+
 let project_local_term_context context tm =
   let rec project depth tm =
     match tm with
@@ -323,8 +331,10 @@ let resolve_one context audit binding =
       |> add_source_proof step (Known hash)
       |> add_resolved step (GlobalKnown (hash, proposition))
       |> fun audit -> { audit with known_checked = audit.known_checked + 1 }
-    else
+    else begin
+      debug_known_hash_mismatch hash proposition;
       { audit with known_mismatch = audit.known_mismatch + 1 }
+    end
   else if local_source_kind kind then
     begin match local_hyp_index context binding.core_native_source_name proposition with
     | Some index ->

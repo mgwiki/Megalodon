@@ -11545,24 +11545,94 @@ let native_certificate_source_bindings
       (native_core_type_raw_equalities_step cert variables symbol_table)
       cert.steps
   in
+  let tm_mentions_variable name tm =
+    let rec mentions = function
+      | TmH raw_name ->
+          begin match native_core_ident_opt raw_name with
+          | Some ident -> ident = name
+          | None -> false
+          end
+      | TpAp (body, _) -> mentions body
+      | Ap (left, right) -> mentions left || mentions right
+      | Lam (_, body) | All (_, body) -> mentions body
+      | Imp (left, right) -> mentions left || mentions right
+      | DB _ | Prim _ -> false
+    in
+    mentions tm
+  in
+  let literal_terms = function
+    | Pos tm | Neg tm -> [tm]
+  in
+  let source_variables terms =
+    variables
+    |> List.filter
+         (fun (name, _) ->
+            List.exists (tm_mentions_variable name) terms)
+  in
+  let source_variables_for_clause clause =
+    clause |> List.concat_map literal_terms |> source_variables
+  in
+  let close_global_source_variables variables prop =
+    List.fold_right (fun (_, tp) prop -> All (tp, prop)) variables prop
+  in
+  let source_keeps_local_variables source =
+    match source with
+    | SourceConjecture _ | SourceNegatedConjecture _ -> true
+    | _ ->
+        begin match native_core_source_map_entry source_map source with
+        | Some entry ->
+            begin match entry.source_map_kind with
+            | "local_fact"
+            | "local_definition"
+            | "set_reflexivity"
+            | "local_set_reflexivity"
+            | "conjecture" -> true
+            | _ -> false
+            end
+        | None -> false
+        end
+  in
+  let close_source_variables source variables prop =
+    if source_keeps_local_variables source then prop
+    else close_global_source_variables variables prop
+  in
   List.fold_left
     (fun bindings step ->
        match step with
        | Input (id, source, clause) ->
-           let proposition = native_core_step_clause_prop cert variables id clause in
+           let source_variables =
+             if source_keeps_local_variables source then variables
+             else source_variables_for_clause clause
+           in
+           let proposition =
+             native_core_step_clause_prop cert source_variables id clause
+             |> close_source_variables source source_variables
+           in
            bindings @ [native_core_source_binding source_map id source proposition]
        | FormulaInput (id, source, literal) ->
-           let proposition = native_core_step_clause_prop cert variables id [literal] in
+           let source_variables =
+             if source_keeps_local_variables source then variables
+             else source_variables (literal_terms literal)
+           in
+           let proposition =
+             native_core_step_clause_prop cert source_variables id [literal]
+             |> close_source_variables source source_variables
+           in
            bindings @ [native_core_source_binding source_map id source proposition]
        | FormulaTermInput (id, source, formula) ->
            let step_variables = native_core_step_variables cert id in
+           let source_variables =
+             if source_keeps_local_variables source then variables
+             else source_variables [formula]
+           in
            let proposition =
              native_core_close_tm
-               (variables @ step_variables)
+               (source_variables @ step_variables)
                (native_core_formula_prop formula)
            in
            let proposition =
              List.fold_right (fun (_, tp) prop -> All (tp, prop)) step_variables proposition
+             |> close_source_variables source source_variables
            in
            bindings @ [native_core_source_binding source_map id source proposition]
        | _ -> bindings)

@@ -657,7 +657,7 @@ let vampire_source_context_add_source_map_aliases delta source_map =
        add_term_alias
          entry.Vampire_cert_v1.source_map_source_name
          entry.Vampire_cert_v1.source_map_source_name;
-       if (kind = "def" || kind = "definition")
+       if (kind = "def" || kind = "definition" || kind = "local_definition")
           && hash <> "" then
          match Hashtbl.find_opt delta hash with
          | None -> ()
@@ -774,6 +774,31 @@ let vampire_source_context_local_definition_names cxtm =
        | Some _ -> Some name
        | None -> None)
     cxtm
+
+let vampire_source_map_definition_kind kind =
+  kind = "def" || kind = "definition" || kind = "local_definition"
+
+let vampire_source_map_definition_names source_map =
+  let add_nonempty name names =
+    if name = "" then names else name :: names
+  in
+  source_map
+  |> List.fold_left
+       (fun names entry ->
+          if vampire_source_map_definition_kind
+               entry.Vampire_cert_v1.source_map_kind
+          then
+            names
+            |> add_nonempty entry.Vampire_cert_v1.source_map_tptp_name
+            |> add_nonempty entry.Vampire_cert_v1.source_map_source_name
+          else names)
+       []
+  |> List.sort_uniq compare
+
+let vampire_source_context_external_definition_names cxtm source_map =
+  List.sort_uniq compare
+    (vampire_source_context_local_definition_names cxtm
+     @ vampire_source_map_definition_names source_map)
 
 let vampire_aby_source_context cxtm cxpf =
   let rec local_term_projection proof_index = function
@@ -1122,13 +1147,16 @@ let vampire_apply_available_source_bindings cxtm cxpf source_audit proof proposi
 
 let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map source_audit =
   let source_proofs_for_core = vampire_core_source_proofs source_audit in
+  let external_definition_names =
+    vampire_source_context_external_definition_names cxtm source_map
+  in
   let native_core =
     Vampire_cert_v1.elaborate_core_resolution_refutation_native
       ~source_map
       ~source_proofs:source_proofs_for_core
       ~external_delta_table:
         (vampire_source_context_delta_with_source_map ~cxtm source_map)
-      ~external_definition_names:(vampire_source_context_local_definition_names cxtm)
+      ~external_definition_names
       cert
   in
   let remaining_bindings =
@@ -1229,7 +1257,8 @@ let check_vampire_aby_native_certificate ?claimtm ?(cxtm=[]) ?(cxpf=[]) content 
           let source_bindings =
             Vampire_cert_v1.native_certificate_source_bindings
               ~source_map
-              ~external_definition_names:(vampire_source_context_local_definition_names cxtm)
+              ~external_definition_names:
+                (vampire_source_context_external_definition_names cxtm source_map)
               cert
           in
           let source_audit =
@@ -7739,8 +7768,12 @@ let read_all fn =
     raise e
 
 let audit_vampire_cert_v1_source_context cert source_map =
+  let external_definition_names = vampire_source_map_definition_names source_map in
   let bindings =
-    Vampire_cert_v1.native_certificate_source_bindings ~source_map cert
+    Vampire_cert_v1.native_certificate_source_bindings
+      ~source_map
+      ~external_definition_names
+      cert
   in
   let context =
     {
@@ -7910,12 +7943,16 @@ let check_vampire_cert_v1_file fn =
         native.Vampire_cert_v1.core_native_proposition
     in
     begin if !vampirecertv1corepfcheck then
+      let external_definition_names =
+        vampire_source_map_definition_names !source_map_for_emit
+      in
       let native_core =
         Vampire_cert_v1.elaborate_core_resolution_refutation_native
           ~source_map:!source_map_for_emit
           ~source_proofs:!source_proofs_for_native
           ~external_delta_table:
             (vampire_source_context_delta_with_source_map !source_map_for_emit)
+          ~external_definition_names
           cert
       in
       match check_native_certificate_proof native_core with
@@ -7944,12 +7981,16 @@ let check_vampire_cert_v1_file fn =
           raise (Vampire_cert_v1.Error "native core proof term does not prove its proposition")
     end;
     begin if !vampirecertv1preprocesspfcheck then
+      let external_definition_names =
+        vampire_source_map_definition_names !source_map_for_emit
+      in
       let native_preprocess =
         Vampire_cert_v1.elaborate_preprocess_refutation_native
           ~source_map:!source_map_for_emit
           ~source_proofs:!source_proofs_for_native
           ~external_delta_table:
             (vampire_source_context_delta_with_source_map !source_map_for_emit)
+          ~external_definition_names
           cert
       in
       match check_native_certificate_proof native_preprocess with

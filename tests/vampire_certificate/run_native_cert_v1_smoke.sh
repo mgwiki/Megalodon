@@ -433,6 +433,67 @@ if ! rg -q 'Vampire certificate v1 native core source assumptions remaining 0' \
   exit 1
 fi
 
+known_defined_mg="$WORK_DIR/native_cert_v1_known_defined_source_context.mg"
+known_defined_th0="$WORK_DIR/native_cert_v1_known_defined_source_context.th0.p"
+known_defined_cert="$WORK_DIR/native_cert_v1_known_defined_source_context.sexp"
+cat > "$known_defined_mg" <<'EOF_KNOWN_DEFINED_MG'
+Definition p : prop := forall r:prop, r -> r.
+Axiom known_p : p.
+Axiom known_not_p : p -> forall r:prop, r.
+EOF_KNOWN_DEFINED_MG
+known_defined_summary=$(bin/megalodon -pfgsummary2 "$known_defined_mg")
+known_defined_def_hash=$(printf '%s\n' "$known_defined_summary" \
+  | sed -n 's/^Def:\([0-9a-f][0-9a-f]*\)$/\1/p' \
+  | head -1)
+known_defined_p_hash=$(printf '%s\n' "$known_defined_summary" \
+  | sed -n 's/^Known:\([0-9a-f][0-9a-f]*\)$/\1/p' \
+  | head -1)
+known_defined_not_p_hash=$(printf '%s\n' "$known_defined_summary" \
+  | sed -n 's/^Known:\([0-9a-f][0-9a-f]*\)$/\1/p' \
+  | sed -n '2p')
+if [[ -z "$known_defined_def_hash" \
+      || -z "$known_defined_p_hash" \
+      || -z "$known_defined_not_p_hash" ]]; then
+  echo "native certificate v1 known-defined source-context smoke could not obtain generated hashes" >&2
+  exit 1
+fi
+cat > "$known_defined_th0" <<EOF_KNOWN_DEFINED_TH0
+% megalodon_origin ((file "$known_defined_mg") (line "1") (char "1") (kind "known_defined_source_context_smoke"))
+% megalodon_source_map (def "p" "p" "$known_defined_def_hash")
+thf(p,type,(p : \$o)). % $known_defined_def_hash
+% megalodon_source_map (known "a1" "known_p" "$known_defined_p_hash")
+thf(a1,axiom,p). % $known_defined_p_hash
+% megalodon_source_map (known "a2" "known_not_p" "$known_defined_not_p_hash")
+thf(a2,axiom,~p). % $known_defined_not_p_hash
+EOF_KNOWN_DEFINED_TH0
+cat > "$known_defined_cert" <<'EOF_KNOWN_DEFINED_CERT'
+(certificate vampire-megalodon 1
+  (problem "known-defined-source-context")
+  (symbol_declaration "Variable p:prop.")
+  (input "u1" (source axiom "a1") (clause (pos (TMH "p"))))
+  (input "u2" (source axiom "a2") (clause (neg (TMH "p"))))
+  (resolve "u3" (parents "u2" "u1") (pivot 0 0) (result (clause)))
+)
+EOF_KNOWN_DEFINED_CERT
+
+bin/megalodon \
+  -vampirecertv1sourcecontextstrict \
+  -vampirecertv1corepfcheck \
+  -vampirecertv1 "$known_defined_cert" \
+  -vampirecertv1source "$known_defined_th0" \
+  "$known_defined_mg" >"$WORK_DIR/native_cert_v1_known_defined_source_context_core_pf.log"
+
+if ! rg -q 'source context audited total=2 known_checked=2 known_missing=0 known_mismatch=0' \
+    "$WORK_DIR/native_cert_v1_known_defined_source_context_core_pf.log"; then
+  echo "native certificate v1 source-context audit did not resolve hash-backed knowns through a source-map definition" >&2
+  exit 1
+fi
+if ! rg -q 'Vampire certificate v1 native core source assumptions remaining 0' \
+    "$WORK_DIR/native_cert_v1_known_defined_source_context_core_pf.log"; then
+  echo "native certificate v1 core checker did not discharge knowns that mention a source-map definition" >&2
+  exit 1
+fi
+
 local_source_live_dir="$WORK_DIR/local_source_live"
 mkdir -p "$local_source_live_dir"
 cat >"$local_source_live_dir/fake_vampire" <<'EOF_LOCAL_SOURCE_FAKE_VAMPIRE'
