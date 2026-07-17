@@ -8900,6 +8900,28 @@ let native_core_certificate_sgdelta cert symbol_table =
   let sgdelta = native_core_approved_sgdelta () in
   let definitions = native_core_definition_delta_table cert symbol_table in
   let avatar_definitions = native_core_avatar_delta_table cert in
+  let add_sequential_skolem_definitions id source subst =
+    let rec add source subst =
+      match source, subst with
+      | Ap (TmH "vampire_exists_prop", Lam (tp, body)), (_, witness) :: rest ->
+          begin match native_core_flatten_value_application witness with
+          | TmH symbol, [] ->
+              let eps = native_core_eps_symbol tp in
+              if eps = "Eps_unsupported" then
+                error
+                  (id ^ ": native core proof-term skolemization has no epsilon operator for witness sort");
+              let predicate = Lam (tp, native_core_formula_prop body) in
+              Hashtbl.replace
+                definitions
+                symbol
+                (0, Ap (TmH eps, predicate) |> tm_beta_eta_norm);
+              add (tmsubst body 0 witness) rest
+          | _ -> ()
+          end
+      | _ -> ()
+    in
+    add source subst
+  in
   let add_skolem_definition id symbol source =
     Hashtbl.replace
       definitions
@@ -8921,16 +8943,18 @@ let native_core_certificate_sgdelta cert symbol_table =
   in
   List.iter
     (function
-      | SkolemFormula
-          (id, _, Some source,
-           [{ skolem_intro_symbol = symbol; _ }],
-           [(_, witness)], _)
-          when skolem_witness_matches_metadata id symbol witness ->
-          begin match
-            native_core_metadata_step_extra_field
-              cert id "kernel_v1" "introduced_0_dependency_count"
-          with
-          | Some _ -> add_skolem_definition id symbol source
+      | SkolemFormula (id, _, Some source, introductions, subst, _) ->
+          add_sequential_skolem_definitions id source subst;
+          begin match introductions, subst with
+          | [{ skolem_intro_symbol = symbol; _ }], [(_, witness)]
+              when skolem_witness_matches_metadata id symbol witness ->
+              begin match
+                native_core_metadata_step_extra_field
+                  cert id "kernel_v1" "introduced_0_dependency_count"
+              with
+              | Some _ -> add_skolem_definition id symbol source
+              | _ -> ()
+              end
           | _ -> ()
           end
       | _ -> ())
@@ -10663,45 +10687,64 @@ let native_core_skolem_target_witness id source target =
       error
         (id ^ ": native core proof-term skolemization result does not match source body")
 
-let native_core_direct_skolem_formula_proof id source target proof =
-  match source with
-  | Ap (TmH "vampire_exists_prop", Lam (tp, body)) ->
-      let choice = native_core_exists_choice_hash tp in
-      if choice = "vampire_exists_unsupported_choice" then
-        error
-          (id ^ ": native core proof-term skolemization has no choice theorem for witness sort");
-      let predicate = Lam (tp, native_core_formula_prop body) in
-      let target_witness = native_core_skolem_target_witness id body target in
-      let epsilon_witness = Ap (TmH (native_core_eps_symbol tp), predicate) in
-      let orientation_source = tmsubst body 0 epsilon_witness in
-      let rec rewrite_outer_witness depth tm =
-        let shifted_target_witness = tmshift 0 depth target_witness in
-        let shifted_epsilon_witness = tmshift 0 depth epsilon_witness in
-        if tm = shifted_target_witness then shifted_epsilon_witness
-        else
-          match tm with
-          | TpAp (m, a) -> TpAp (rewrite_outer_witness depth m, a)
-          | Ap (m, n) ->
-              Ap
-                (rewrite_outer_witness depth m,
-                 rewrite_outer_witness depth n)
-          | Lam (a, body) -> Lam (a, rewrite_outer_witness (depth + 1) body)
-          | Imp (left, right) ->
-              Imp
-                (rewrite_outer_witness depth left,
-                 rewrite_outer_witness depth right)
-          | All (a, body) -> All (a, rewrite_outer_witness (depth + 1) body)
-          | DB _ | TmH _ | Prim _ -> tm
-      in
-      let orientation_target =
-        rewrite_outer_witness 0 target
-      in
-      let choice_proof = PPfAp (PTmAp (Known choice, predicate), proof) in
-      native_core_formula_orientation_proof
-        id [] [] [] orientation_source orientation_target choice_proof
-  | _ ->
-      error
-        (id ^ ": native core proof-term skolemization supports only direct existential sources")
+let native_core_direct_skolem_formula_proof id substitution source target proof =
+  let rec rewrite_witnesses replacements depth tm =
+    match
+      List.find_opt
+        (fun (target_witness, _) -> tm = tmshift 0 depth target_witness)
+        replacements
+    with
+    | Some (_, epsilon_witness) -> tmshift 0 depth epsilon_witness
+    | None ->
+        match tm with
+        | TpAp (m, a) -> TpAp (rewrite_witnesses replacements depth m, a)
+        | Ap (m, n) ->
+            Ap
+              (rewrite_witnesses replacements depth m,
+               rewrite_witnesses replacements depth n)
+        | Lam (a, body) ->
+            Lam (a, rewrite_witnesses replacements (depth + 1) body)
+        | Imp (left, right) ->
+            Imp
+              (rewrite_witnesses replacements depth left,
+               rewrite_witnesses replacements depth right)
+        | All (a, body) ->
+            All (a, rewrite_witnesses replacements (depth + 1) body)
+        | DB _ | TmH _ | Prim _ -> tm
+  in
+  let rec choose remaining_substitution source proof replacements =
+    match source with
+    | Ap (TmH "vampire_exists_prop", Lam (tp, body)) ->
+        let choice = native_core_exists_choice_hash tp in
+        if choice = "vampire_exists_unsupported_choice" then
+          error
+            (id ^ ": native core proof-term skolemization has no choice theorem for witness sort");
+        let predicate = Lam (tp, native_core_formula_prop body) in
+        let target_witness, remaining_substitution =
+          match remaining_substitution with
+          | (_, witness) :: rest -> witness, rest
+          | [] -> native_core_skolem_target_witness id body target, []
+        in
+        let epsilon_witness = Ap (TmH (native_core_eps_symbol tp), predicate) in
+        let choice_proof = PPfAp (PTmAp (Known choice, predicate), proof) in
+        choose
+          remaining_substitution
+          (tmsubst body 0 epsilon_witness)
+          choice_proof
+          ((target_witness, epsilon_witness) :: replacements)
+    | _ -> source, proof, replacements
+  in
+  let orientation_source, choice_proof, replacements =
+    choose substitution source proof []
+  in
+  if replacements = [] then
+    error
+      (id ^ ": native core proof-term skolemization supports only existential sources");
+  let orientation_target =
+    rewrite_witnesses replacements 0 target
+  in
+  native_core_formula_orientation_proof
+    id [] [] [] orientation_source orientation_target choice_proof
 
 let native_core_skolem_formula_proof
     id variables parent_step_variables result_step_variables substitution source target proof =
@@ -10811,7 +10854,14 @@ let native_core_skolem_formula_proof
             (PPfAp (PTmAp (proof, target_prop), left_branch),
              right_branch)
       | Ap (TmH "vampire_exists_prop", Lam _), _ ->
-          native_core_direct_skolem_formula_proof id source target proof
+          let closed_substitution =
+            List.map
+              (fun (name, witness) ->
+                 (name, native_core_close_tm (variables @ result_step_variables) witness))
+              substitution
+          in
+          native_core_direct_skolem_formula_proof
+            id closed_substitution source target proof
       | _ ->
           error
             (id ^ ": native core proof-term skolemization supports only existential, forall, and disjunction contexts")
@@ -12816,14 +12866,8 @@ let elaborate_preprocess_refutation_native
   let step_by_id id =
     List.find_opt (fun step -> step_id step = id) typed_steps
   in
-  let step_is_skolem_formula id =
-    match step_by_id id with
-    | Some (SkolemFormula _ | SkolemFormulaComputed _) -> true
-    | _ -> false
-  in
   let formula_step_uses_closed_primitive id =
-    step_is_skolem_formula id
-    || Hashtbl.mem transitional_primitive_formula_steps id
+    Hashtbl.mem transitional_primitive_formula_steps id
   in
   let cnf_step_uses_closed_parent_primitive id =
     match step_by_id id with
@@ -13013,26 +13057,26 @@ let elaborate_preprocess_refutation_native
                id variables result_step_variables parent_formula result parent_proof)
       | SkolemFormula (id, parent_id, source, introductions, subst, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
+          let check_parent_formula =
+            match source with
+            | Some source -> source
+            | None -> parent_formula
+          in
           check_skolem_formula
-            (Hashtbl.fold
-               (fun formula_id (formula, _) checked ->
-                  (formula_id, CheckedFormula formula) :: checked)
-               formula_table
-               [])
+            [(parent_id, CheckedFormula check_parent_formula)]
             id parent_id source introductions subst result;
-          let parent_prop =
-            native_preprocess_step_formula_prop cert variables parent_id parent_formula
-          in
-          let result_prop =
-            native_preprocess_step_formula_prop cert variables id result
-          in
-          let primitive =
-            "vampire_skolem_formula_" ^ id
-          in
-          let primitive_prop = Imp (parent_prop, result_prop) in
-          install_transitional_known id primitive primitive_prop;
-          Hashtbl.replace transitional_primitive_formula_steps id true;
-          store_formula id result (PPfAp (Known primitive, parent_proof))
+          begin match source with
+          | Some source ->
+              let parent_step_variables = native_core_step_variables cert parent_id in
+              let result_step_variables = native_core_step_variables cert id in
+              store_formula id result
+                (native_core_skolem_formula_proof
+                   id variables parent_step_variables result_step_variables
+                   subst source result parent_proof)
+          | None ->
+              error
+                (id ^ ": native preprocess proof-term skolemization needs an explicit source formula")
+          end
       | FormulaCopy (id, parent_id, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
           if native_core_normalize_bool_constants (native_core_literal_prop result)
@@ -13058,16 +13102,7 @@ let elaborate_preprocess_refutation_native
           let parent_formula, parent_proof = lookup_formula parent_id in
           let parent_step_variables = native_core_step_variables cert parent_id in
           let result_step_variables = native_core_step_variables cert id in
-          let parent_is_closed_primitive =
-            List.exists
-              (function
-                | SkolemFormula (step_id, _, _, _, _, _)
-                | SkolemFormulaComputed (step_id, _, _) -> step_id = parent_id
-                | _ -> false)
-              typed_steps
-          in
-          if parent_is_closed_primitive
-             || Hashtbl.mem transitional_primitive_formula_steps parent_id then begin
+          if Hashtbl.mem transitional_primitive_formula_steps parent_id then begin
             let parent_prop =
               native_preprocess_step_formula_prop cert variables parent_id parent_formula
             in

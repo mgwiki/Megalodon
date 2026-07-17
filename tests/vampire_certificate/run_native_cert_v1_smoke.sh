@@ -2395,19 +2395,23 @@ if ! rg -q 'requires primitive_expansion=prefix for kernel rule fool_formula' \
   exit 1
 fi
 
-if bin/megalodon \
+bin/megalodon \
   -vampirecertv1preprocesspfcheck \
   -vampirecertv1 tests/vampire_certificate/native_cert_v1_core_skolemize_direct_valid.sexp \
   -vampirecertv1source tests/vampire_certificate/native_cert_v1_core_skolemize_direct_valid.th0.p \
-  "$dummy" >"$WORK_DIR/native_cert_v1_skolem_preprocess_dynamic_known_bad.out" \
-  2>"$WORK_DIR/native_cert_v1_skolem_preprocess_dynamic_known_bad.err"; then
-  echo "native preprocess checker accepted a certificate-derived Known primitive without the structural opt-in" >&2
+  "$dummy" >"$WORK_DIR/native_cert_v1_skolem_preprocess_native_pf_valid.out" \
+  2>"$WORK_DIR/native_cert_v1_skolem_preprocess_native_pf_valid.err"
+
+if ! rg -q 'Vampire certificate v1 native preprocess proof term checked 6 steps' \
+    "$WORK_DIR/native_cert_v1_skolem_preprocess_native_pf_valid.out"; then
+  echo "native preprocess checker did not accept direct Skolem proof terms" >&2
   exit 1
 fi
 
-if ! rg -q 'refuses certificate-derived Known primitive vampire_skolem_formula_u1' \
-    "$WORK_DIR/native_cert_v1_skolem_preprocess_dynamic_known_bad.err"; then
-  echo "native preprocess checker did not explain rejected certificate-derived Known primitive" >&2
+if rg -q 'refuses certificate-derived Known primitive vampire_skolem_formula_|admit|aby|-allowincompleteqed' \
+    "$WORK_DIR/native_cert_v1_skolem_preprocess_native_pf_valid.out" \
+    "$WORK_DIR/native_cert_v1_skolem_preprocess_native_pf_valid.err"; then
+  echo "native preprocess checker used a forbidden marker for direct Skolem proof terms" >&2
   exit 1
 fi
 

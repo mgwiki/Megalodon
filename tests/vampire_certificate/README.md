@@ -657,6 +657,33 @@ audits, it writes `first_excluded.tsv`, `first_excluded_rule_counts.txt`, and
 `/project/tmp/latest_native_cert_v1_skolem_closed_audit`, making the next
 unsupported layer explicit instead of hiding it in broad closed-corpus counts.
 
+To measure the current Skolem native proof-term frontier without allowing
+certificate-derived transitional `Known` primitives, use:
+
+```sh
+tests/vampire_certificate/run_native_cert_v1_skolem_pf_frontier.sh
+```
+
+This first selects the cached `run_native_cert_v1_skolem_closed_audit.sh`
+eligible cases, then runs `-vampirecertv1preprocesspfcheck` over them in
+parallel without setting
+`MEGALODON_CERT_ALLOW_TRANSITIONAL_PREPROCESS_KNOWN=1`. This is a frontier
+diagnostic, not a passing gate. The older cached Skolem cases mostly predate
+the current Vampire `VLAMV`/explicit-source Skolem output and are now reported
+as `STALE_SKOLEM_NO_SOURCE`; they should be regenerated before being used as
+evidence for the current Skolem proof-term path.
+
+To check the current live Vampire path for nested Skolem proof terms, use:
+
+```sh
+tests/vampire_certificate/run_native_live_skolem_pf_smoke.sh
+```
+
+This regenerates a representative THF proof with Vampire, requires the native
+certificate to contain `skolem_formula` and named `VLAMV` binders, and checks
+`-vampirecertv1preprocesspfcheck` without allowing transitional
+certificate-derived `Known` primitives.
+
 To check a live Vampire binary's Skolemization metadata emission, use:
 
 ```sh
