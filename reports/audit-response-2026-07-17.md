@@ -694,3 +694,30 @@ Validation:
 - native primitive audit on that strict artifact, including 47
   `split_dependency`, 8 `avatar_definition`, 8 `avatar_component`, 2
   `avatar_refutation`, and 10 `avatar_split` records
+
+Vampire commit `1fbfd3199` extracts `avatar_split` metadata into
+`RenderedKernelAvatarSplitStep` plus subrecords for SAT literals, component
+parents, literal classes, and parent-variable bindings. The strict
+`kernel_v1` record now gets source/result context, previous splits, SAT
+literals, component parent references, literal classes, matched split levels,
+and variable bindings from the named Vampire-side object.
+
+This continues the audit-directed removal of unstructured exporter payloads.
+It is still only certificate-object progress: AVATAR split reasoning is not
+yet checked as a Megalodon proof term. With `avatar_component`,
+`avatar_definition`, `split_dependency`, and `avatar_split` now represented
+explicitly, the remaining AVATAR metadata extraction target is primarily
+`avatar_refutation`; after that the project needs the typed checked
+AVATAR/SAT consumption layer.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` for
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11066`
+- fresh 20-case strict source-linked live THF run with `JOBS=10` and
+  `VAMPIRE_SECONDS=10`: `PASS 20`
+- kernel-v1 metadata audit on that strict artifact: 738 `kernel_v1` records
+  and 7 `avatar_split` records
+- native primitive audit on that strict artifact, including 10
+  `avatar_split`, 47 `split_dependency`, 8 `avatar_definition`, 8
+  `avatar_component`, and 2 `avatar_refutation` records

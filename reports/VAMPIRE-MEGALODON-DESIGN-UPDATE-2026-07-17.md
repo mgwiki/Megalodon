@@ -819,3 +819,33 @@ Validation:
 - The native primitive audit passed on the same artifact, including 47
   `split_dependency`, 8 `avatar_definition`, 8 `avatar_component`, 2
   `avatar_refutation`, and 10 `avatar_split` records.
+
+Additional follow-up: Vampire commit `1fbfd3199` extracts
+`avatar_split` metadata into `RenderedKernelAvatarSplitStep` and related
+subrecords. The strict kernel record now owns the source unit and source
+clause, result formula/clause, Vampire rule name, rendered source/target
+text, previous split descriptors, SAT literals, component parent references,
+literal classes, matched split levels, and parent-variable bindings through
+`MegalodonKernelSyntax`.
+
+This removes another large AVATAR cluster from the direct field-splicing path
+in `MegalodonChecker.cpp`. The old diagnostic `avatar_split` `step_extra`
+remains stable, while the `kernel_v1` AVATAR split record is now a named
+Vampire-side object. This still does not make AVATAR split reasoning a native
+Megalodon proof: the next qualifying step is to type these payloads and
+consume them in a checked AVATAR/SAT proof layer or lower them to a small
+primitive kernel.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` passed and produced
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11066`.
+- A fresh 20-case strict source-linked live THF run with `JOBS=10` and
+  `VAMPIRE_SECONDS=10` produced `PASS 20`.
+- The strict run included 10 native `avatar_split` records and 7
+  `kernel_v1` `avatar_split` records.
+- The kernel-v1 metadata audit passed on that artifact, covering 738
+  `kernel_v1` records and 7 `avatar_split` records.
+- The native primitive audit passed on the same artifact, including 10
+  `avatar_split`, 47 `split_dependency`, 8 `avatar_definition`, 8
+  `avatar_component`, and 2 `avatar_refutation` records.
