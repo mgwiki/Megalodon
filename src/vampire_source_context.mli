@@ -8,6 +8,7 @@ type source_proof =
 
 type source_context = {
   proof_delta : (string, int * Syntax.tm) Hashtbl.t;
+  known_table : (string, string) Hashtbl.t;
   symbol_table : (string, int * Syntax.tp) Hashtbl.t;
   term_context : Syntax.tp list;
   local_term_projection : int option list;

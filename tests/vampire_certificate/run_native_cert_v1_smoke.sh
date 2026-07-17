@@ -404,6 +404,134 @@ if ! rg -q 'Vampire certificate v1 native core source assumptions remaining by k
   exit 1
 fi
 
+source_context_theorem_mg="$WORK_DIR/native_cert_v1_source_context_theorem.mg"
+source_context_theorem_th0="$WORK_DIR/native_cert_v1_source_context_theorem.th0.p"
+source_context_theorem_cert="$WORK_DIR/native_cert_v1_source_context_theorem.sexp"
+cat > "$source_context_theorem_mg" <<'EOF_SOURCE_CONTEXT_THEOREM_MG'
+Theorem original_t : forall r:prop, forall s:prop, s -> s.
+exact (fun r s H => H).
+Qed.
+Variable p:prop.
+EOF_SOURCE_CONTEXT_THEOREM_MG
+source_context_theorem_summary=$(bin/megalodon -pfgsummary "$source_context_theorem_mg")
+source_context_theorem_pair=$(printf '%s\n' "$source_context_theorem_summary" \
+  | sed -n 's/^Thm:original_t:\([0-9a-f][0-9a-f]*\):\([0-9a-f][0-9a-f]*\)$/\1 \2/p' \
+  | head -1)
+source_context_theorem_source_hash=$(bin/megalodon -pfgsummary2 "$source_context_theorem_mg" \
+  | sed -n 's/^Thm:\([0-9a-f][0-9a-f]*\)$/\1/p' \
+  | head -1)
+read -r source_context_theorem_prop_hash source_context_theorem_proof_hash \
+  <<<"$source_context_theorem_pair"
+if [[ -z "$source_context_theorem_prop_hash" \
+      || -z "$source_context_theorem_proof_hash" \
+      || -z "$source_context_theorem_source_hash" ]]; then
+  echo "native certificate v1 theorem source-context smoke could not obtain theorem hashes" >&2
+  exit 1
+fi
+if [[ "$source_context_theorem_source_hash" == "$source_context_theorem_prop_hash" \
+      || "$source_context_theorem_source_hash" == "$source_context_theorem_proof_hash" ]]; then
+  echo "native certificate v1 theorem source-context smoke did not get a distinct source-map theorem hash" >&2
+  exit 1
+fi
+cat > "$source_context_theorem_th0" <<EOF_SOURCE_CONTEXT_THEOREM_TH0
+% megalodon_origin ((file "$source_context_theorem_mg") (line "1") (char "1") (kind "generated_source_context_theorem_smoke"))
+% megalodon_source_map (type "p" "p" "")
+thf(p,type,(p : \$o)).
+% megalodon_source_map (known "a1" "original_t" "$source_context_theorem_prop_hash")
+thf(a1,axiom,(! [R:\$o,S:\$o] : (S => S))). % $source_context_theorem_prop_hash
+% megalodon_source_map (local_fact "a2" "local_not_p" "")
+thf(a2,axiom,~p).
+% megalodon_source_map (local_fact "a3" "local_p" "")
+thf(a3,axiom,p).
+EOF_SOURCE_CONTEXT_THEOREM_TH0
+cat > "$source_context_theorem_cert" <<'EOF_SOURCE_CONTEXT_THEOREM_CERT'
+(certificate vampire-megalodon 1
+  (problem "source-context-theorem")
+  (symbol_declaration "Variable p:prop.")
+  (input "u0" (source axiom "a1") (clause (pos (ALL (PROP) (ALL (PROP) (IMP (DB 0) (DB 0)))))))
+  (input "u2" (source axiom "a2") (clause (neg (TMH "p"))))
+  (input "u3" (source axiom "a3") (clause (pos (TMH "p"))))
+  (resolve "u4" (parents "u2" "u3") (pivot 0 0) (result (clause)))
+)
+EOF_SOURCE_CONTEXT_THEOREM_CERT
+
+bin/megalodon \
+  -vampirecertv1sourcecontextstrict \
+  -vampirecertv1corepfcheck \
+  -vampirecertv1 "$source_context_theorem_cert" \
+  -vampirecertv1source "$source_context_theorem_th0" \
+  "$source_context_theorem_mg" >"$WORK_DIR/native_cert_v1_source_context_theorem_core_pf.log"
+
+if ! rg -q 'source context audited total=3 known_checked=1 known_missing=0 known_mismatch=0' \
+    "$WORK_DIR/native_cert_v1_source_context_theorem_core_pf.log"; then
+  echo "native certificate v1 theorem source-context audit did not resolve a source-map theorem hash through the original theorem name" >&2
+  exit 1
+fi
+if ! rg -q 'source context issues count=2 sample=local_missing:u2:local_fact:local_not_p:,local_missing:u3:local_fact:local_p:' \
+    "$WORK_DIR/native_cert_v1_source_context_theorem_core_pf.log"; then
+  echo "native certificate v1 theorem source-context audit reported unexpected issue details" >&2
+  exit 1
+fi
+if ! rg -q 'Vampire certificate v1 native core source assumptions remaining by kind known=0 local=2 definition=0 generated=0 conjecture=0 unresolved=0' \
+    "$WORK_DIR/native_cert_v1_source_context_theorem_core_pf.log"; then
+  echo "native certificate v1 theorem source-context core checker did not discharge the name-resolved theorem proof" >&2
+  exit 1
+fi
+
+source_context_eqsym_mg="$WORK_DIR/native_cert_v1_source_context_eqsym.mg"
+source_context_eqsym_th0="$WORK_DIR/native_cert_v1_source_context_eqsym.th0.p"
+source_context_eqsym_cert="$WORK_DIR/native_cert_v1_source_context_eqsym.sexp"
+cat > "$source_context_eqsym_mg" <<'EOF_SOURCE_CONTEXT_EQSYM_MG'
+Variable a:set.
+Variable b:set.
+Axiom original_eq : forall Q:set -> set -> prop, Q a b -> Q b a.
+EOF_SOURCE_CONTEXT_EQSYM_MG
+source_context_eqsym_hash=$(bin/megalodon -pfgsummary2 "$source_context_eqsym_mg" \
+  | sed -n 's/^Known:\([0-9a-f][0-9a-f]*\)$/\1/p' \
+  | head -1)
+if [[ -z "$source_context_eqsym_hash" ]]; then
+  echo "native certificate v1 equality-symmetry source-context smoke could not obtain the generated axiom hash" >&2
+  exit 1
+fi
+cat > "$source_context_eqsym_th0" <<EOF_SOURCE_CONTEXT_EQSYM_TH0
+% megalodon_origin ((file "$source_context_eqsym_mg") (line "1") (char "1") (kind "generated_source_context_eqsym_smoke"))
+% megalodon_source_map (type "a" "a" "")
+thf(a,type,(a : \$i)).
+% megalodon_source_map (type "b" "b" "")
+thf(b,type,(b : \$i)).
+% megalodon_source_map (known "a1" "original_eq" "$source_context_eqsym_hash")
+thf(a1,axiom,(b = a)). % $source_context_eqsym_hash
+% megalodon_source_map (local_fact "a2" "local_not_eq" "")
+thf(a2,axiom,~(b = a)).
+EOF_SOURCE_CONTEXT_EQSYM_TH0
+cat > "$source_context_eqsym_cert" <<'EOF_SOURCE_CONTEXT_EQSYM_CERT'
+(certificate vampire-megalodon 1
+  (problem "source-context-equality-symmetry")
+  (symbol_declaration "Variable a:set.")
+  (symbol_declaration "Variable b:set.")
+  (input "u0" (source axiom "a1") (clause (pos (AP (AP (TPAP (TMH "5a6af35fb6d6bea477dd0f822b8e01ca0d57cc50dfd41744307bc94597fdaa4a") (SET)) (TMH "b")) (TMH "a")))))
+  (input "u1" (source axiom "a2") (clause (neg (AP (AP (TPAP (TMH "5a6af35fb6d6bea477dd0f822b8e01ca0d57cc50dfd41744307bc94597fdaa4a") (SET)) (TMH "b")) (TMH "a")))))
+  (resolve "u2" (parents "u1" "u0") (pivot 0 0) (result (clause)))
+)
+EOF_SOURCE_CONTEXT_EQSYM_CERT
+
+bin/megalodon \
+  -vampirecertv1sourcecontextstrict \
+  -vampirecertv1 "$source_context_eqsym_cert" \
+  -vampirecertv1source "$source_context_eqsym_th0" \
+  "$source_context_eqsym_mg" >"$WORK_DIR/native_cert_v1_source_context_eqsym_core_pf.log"
+
+if ! rg -q 'source context audited total=2 known_checked=1 known_missing=0 known_mismatch=0' \
+    "$WORK_DIR/native_cert_v1_source_context_eqsym_core_pf.log"; then
+  echo "native certificate v1 equality-symmetry source-context audit did not synthesize the reversed known equality" >&2
+  exit 1
+fi
+if ! rg -q 'source context issues count=1 sample=local_missing:u1:local_fact:local_not_eq:' \
+    "$WORK_DIR/native_cert_v1_source_context_eqsym_core_pf.log"; then
+  echo "native certificate v1 equality-symmetry source-context audit reported unexpected issue details" >&2
+  exit 1
+fi
+
 known_false_mg="$WORK_DIR/native_cert_v1_known_false_source_context.mg"
 known_false_th0="$WORK_DIR/native_cert_v1_known_false_source_context.th0.p"
 known_false_cert="$WORK_DIR/native_cert_v1_known_false_source_context.sexp"

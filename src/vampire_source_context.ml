@@ -10,6 +10,7 @@ type source_proof =
 
 type source_context = {
   proof_delta : (string, int * tm) Hashtbl.t;
+  known_table : (string, string) Hashtbl.t;
   symbol_table : (string, int * tp) Hashtbl.t;
   term_context : tp list;
   local_term_projection : int option list;
@@ -96,6 +97,29 @@ let rec generated_set_reflexivity_proof = function
 let megalodon_eq_poly_hash =
   "5a6af35fb6d6bea477dd0f822b8e01ca0d57cc50dfd41744307bc94597fdaa4a"
 
+let rec collapse_expanded_equality = function
+  | All (Ar (left_tp, Ar (right_tp, Prop)),
+         Imp (Ap (Ap (DB 0, left_a), right_a),
+              Ap (Ap (DB 0, right_b), left_b)))
+    when left_tp = right_tp && left_a = left_b && right_a = right_b ->
+      begin
+        try
+          let left = tmshift 0 (-1) left_a in
+          let right = tmshift 0 (-1) right_a in
+          Some (Ap (Ap (TpAp (TmH megalodon_eq_poly_hash, left_tp), left), right))
+        with NegDB -> None
+      end
+  | All (tp, body) ->
+      Option.map (fun body -> All (tp, body)) (collapse_expanded_equality body)
+  | Imp (left, right) ->
+      begin match collapse_expanded_equality left, collapse_expanded_equality right with
+      | Some left, Some right -> Some (Imp (left, right))
+      | Some left, None -> Some (Imp (left, right))
+      | None, Some right -> Some (Imp (left, right))
+      | None, None -> None
+      end
+  | _ -> None
+
 let equality_sides ?default_tp = function
   | Ap (Ap (TpAp (TmH h, tp), left), right) when h = megalodon_eq_poly_hash ->
       Some (tp, left, right)
@@ -105,6 +129,32 @@ let equality_sides ?default_tp = function
       | None -> None
       end
   | _ -> None
+
+let equality_atom tp left right =
+  Ap (Ap (TpAp (TmH megalodon_eq_poly_hash, tp), left), right)
+
+let expanded_equality_prop tp left right =
+  All
+    (Ar (tp, Ar (tp, Prop)),
+     Imp
+       (Ap (Ap (DB 0, tmshift 0 1 left), tmshift 0 1 right),
+        Ap (Ap (DB 0, tmshift 0 1 right), tmshift 0 1 left)))
+
+let positive_equality_symmetry_proof tp left right proof =
+  let predicate_sort = Ar (tp, Ar (tp, Prop)) in
+  let premise =
+    Ap (Ap (DB 0, tmshift 0 1 right), tmshift 0 1 left)
+  in
+  let motive =
+    Lam (tp, Lam (tp, Ap (Ap (DB 2, DB 0), DB 1)))
+  in
+  TLam
+    (predicate_sort,
+     PLam
+       (premise,
+        PPfAp
+          (PTmAp (pfshift 0 1 (pftmshift 0 1 proof), motive),
+           Hyp 0)))
 
 let rec tm_mentions_head name = function
   | TmH h -> h = name
@@ -204,12 +254,156 @@ let global_definition_proof context names proposition =
            ^ tm_to_str proposition);
       None
 
-let known_hash_proves context hash proposition =
+let proof_proves context proof proposition =
   try
-    match check_propofpf context.proof_delta context.symbol_table [] [] (Known hash) proposition [] with
+    match check_propofpf context.proof_delta context.symbol_table [] [] proof proposition [] with
     | Some _ -> true
     | None -> false
   with _ -> false
+
+let proof_proves_in_context context term_context proof proposition =
+  try
+    match check_propofpf context.proof_delta context.symbol_table term_context [] proof proposition [] with
+    | Some _ -> true
+    | None -> false
+  with _ -> false
+
+let equality_symmetry_proof context term_context proof proposition =
+  let target_candidates =
+    match collapse_expanded_equality proposition with
+    | Some collapsed when collapsed <> proposition -> [proposition; collapsed]
+    | _ -> [proposition]
+  in
+  let rec search = function
+    | [] -> None
+    | target :: rest ->
+        begin match equality_sides target with
+        | Some (tp, left, right) ->
+            let source = equality_atom tp right left in
+            let expanded_source = expanded_equality_prop tp right left in
+            if proof_proves_in_context context term_context proof source
+               || proof_proves_in_context context term_context proof expanded_source
+            then
+              let symmetry_proof = positive_equality_symmetry_proof tp right left proof in
+              if proof_proves_in_context context term_context symmetry_proof proposition then
+                Some symmetry_proof
+              else if proof_proves_in_context context term_context symmetry_proof target then
+                Some symmetry_proof
+              else
+                search rest
+            else
+              search rest
+        | None -> search rest
+        end
+  in
+  search target_candidates
+
+let rec proof_for_prop context term_context proof proposition =
+  if proof_proves_in_context context term_context proof proposition then
+    Some proof
+  else
+    let collapsed_or_symmetry =
+      match collapse_expanded_equality proposition with
+      | Some collapsed when collapsed <> proposition ->
+          if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
+            prerr_endline
+              ("source-context collapsed expanded equality proposition: "
+               ^ tm_to_str collapsed);
+          if proof_proves_in_context context term_context proof collapsed
+             && proof_proves_in_context context term_context proof proposition
+          then Some proof
+          else equality_symmetry_proof context term_context proof proposition
+      | _ -> equality_symmetry_proof context term_context proof proposition
+    in
+    match collapsed_or_symmetry with
+    | Some proof -> Some proof
+    | None ->
+    match proposition with
+    | All (tp, body) ->
+        let applied = PTmAp (pftmshift 0 1 proof, DB 0) in
+        begin match proof_for_prop context (tp :: term_context) applied body with
+        | Some body_proof ->
+            let wrapped = TLam (tp, body_proof) in
+            if proof_proves_in_context context term_context wrapped proposition then
+              Some wrapped
+            else
+              None
+        | None when not (free_in_tm_p body 0) ->
+            begin
+              try
+                let body_without_unused = tmshift 0 (-1) body in
+                match proof_for_prop context term_context proof body_without_unused with
+                | Some body_proof ->
+                    let wrapped = TLam (tp, body_proof) in
+                    if proof_proves_in_context context term_context wrapped proposition then
+                      Some wrapped
+                    else
+                      None
+                | None -> None
+              with NegDB -> None
+            end
+        | None -> None
+        end
+    | _ -> None
+
+let rec known_proof_for_prop context hash proposition =
+  let proof = Known hash in
+  match proof_for_prop context [] proof proposition with
+  | Some _ as result -> result
+  | None ->
+      (* Compatibility fallback for generated source facts with an unused
+         leading binder but no corresponding binder in the original theorem. *)
+      match proposition with
+    | All (tp, body) when not (free_in_tm_p body 0) ->
+        begin
+          try
+            let body_without_unused = tmshift 0 (-1) body in
+            match known_proof_for_prop context hash body_without_unused with
+            | Some body_proof ->
+                let wrapped = TLam (tp, body_proof) in
+                if proof_proves context wrapped proposition then Some wrapped else None
+            | None -> None
+          with NegDB -> None
+        end
+    | _ -> None
+
+let known_candidate_hashes context binding =
+  let open Vampire_cert_v1 in
+  let add candidate candidates =
+    if candidate = "" || List.mem candidate candidates then candidates
+    else candidate :: candidates
+  in
+  let add_name name candidates =
+    if name = "" then candidates
+    else
+      match Hashtbl.find_opt context.known_table name with
+      | Some hash -> add hash candidates
+      | None -> candidates
+  in
+  []
+  |> add binding.core_native_source_hash
+  |> add_name binding.core_native_source_name
+  |> add_name binding.core_native_tptp_name
+  |> List.rev
+
+let resolve_known_source context binding proposition =
+  let candidates = known_candidate_hashes context binding in
+  let rec search = function
+    | [] -> None
+    | candidate :: rest ->
+        if Hashtbl.mem context.proof_delta candidate then
+          match known_proof_for_prop context candidate proposition with
+          | Some proof -> Some (candidate, proof)
+          | None -> search rest
+        else
+          search rest
+  in
+  match search candidates with
+  | Some checked -> `Checked checked
+  | None when List.exists (Hashtbl.mem context.proof_delta) candidates ->
+      `Mismatch candidates
+  | None ->
+      `Missing candidates
 
 let debug_known_hash_mismatch hash proposition =
   if Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" then
@@ -347,20 +541,20 @@ let resolve_one context audit binding =
   let hash = binding.core_native_source_hash in
   let proposition = binding.core_native_source_proposition in
   let audit = { audit with total = audit.total + 1 } in
-  if hash <> "" && known_source_kind kind then
-    if not (Hashtbl.mem context.proof_delta hash) then
-      { audit with known_missing = audit.known_missing + 1 }
-      |> add_issue binding "known_missing"
-    else if known_hash_proves context hash proposition then
-      audit
-      |> add_source_proof step (Known hash)
-      |> add_resolved step (GlobalKnown (hash, proposition))
-      |> fun audit -> { audit with known_checked = audit.known_checked + 1 }
-    else begin
-      debug_known_hash_mismatch hash proposition;
-      { audit with known_mismatch = audit.known_mismatch + 1 }
-      |> add_issue binding "known_mismatch"
-    end
+  if known_source_kind kind then
+    match resolve_known_source context binding proposition with
+    | `Checked (checked_hash, checked_proof) ->
+        audit
+        |> add_source_proof step checked_proof
+        |> add_resolved step (GlobalKnown (checked_hash, proposition))
+        |> fun audit -> { audit with known_checked = audit.known_checked + 1 }
+    | `Missing _ ->
+        { audit with known_missing = audit.known_missing + 1 }
+        |> add_issue binding "known_missing"
+    | `Mismatch candidates ->
+        List.iter (fun candidate -> debug_known_hash_mismatch candidate proposition) candidates;
+        { audit with known_mismatch = audit.known_mismatch + 1 }
+        |> add_issue binding "known_mismatch"
   else if local_source_kind kind then
     begin match local_hyp_index context binding.core_native_source_name proposition with
     | Some index ->

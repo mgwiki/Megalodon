@@ -11682,7 +11682,10 @@ let native_core_merge_external_delta proof_delta external_delta_table =
   let merged = Hashtbl.copy proof_delta in
   Hashtbl.iter
     (fun h v ->
-       if not (Hashtbl.mem merged h) then Hashtbl.add merged h v)
+       if not (Hashtbl.mem merged h) then
+         Hashtbl.add merged h v
+       else if not (valid_id_p h) then
+         Hashtbl.replace merged h v)
     external_delta_table;
   merged
 

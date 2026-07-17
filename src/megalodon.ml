@@ -816,6 +816,7 @@ let vampire_aby_source_context cxtm cxpf =
   in
   {
     Vampire_source_context.proof_delta = vampire_source_context_delta ();
+    known_table = sigknh;
     symbol_table = sigtmof;
     term_context =
       List.filter_map
@@ -1102,7 +1103,7 @@ let vampire_instantiated_refutation_candidates cxtm proof proposition source_bin
   in
   collect 8 proof proposition source_bindings
 
-let vampire_source_application_proofs cxtm cxpf expected source_proofs =
+let vampire_source_application_proofs cxtm cxpf source_map expected source_proofs =
   let cx =
     List.filter_map
       (fun (_, (tp, definition)) ->
@@ -1112,12 +1113,13 @@ let vampire_source_application_proofs cxtm cxpf expected source_proofs =
       cxtm
   in
   let hyps = List.map snd cxpf in
-  let proof_delta = vampire_source_context_delta_with_locals cxtm in
+  let proof_delta = vampire_source_context_delta_with_source_map ~cxtm source_map in
+  let symbol_table = vampire_source_context_symbol_table_with_source_map source_map in
   let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
   List.filter
     (fun source_proof ->
        try
-         let (actual, dl) = extr_propofpf proof_delta sigtmof cx hyps source_proof [] in
+         let (actual, dl) = extr_propofpf proof_delta symbol_table cx hyps source_proof [] in
          match conv actual expected proof_delta dl with
          | Some _ -> true
          | None ->
@@ -1146,7 +1148,7 @@ let vampire_source_application_proofs cxtm cxpf expected source_proofs =
        | _ -> false)
     source_proofs
 
-let vampire_apply_available_source_bindings cxtm cxpf source_audit proof proposition bindings =
+let vampire_apply_available_source_bindings cxtm cxpf source_map source_audit proof proposition bindings =
   let rec apply proof proposition remaining =
     match remaining with
     | [] -> [(proof,proposition,[])]
@@ -1181,6 +1183,7 @@ let vampire_apply_available_source_bindings cxtm cxpf source_audit proof proposi
                    (vampire_source_application_proofs
                       cxtm
                       cxpf
+                      source_map
                       expected_prop
                       source_proofs))
           | _ -> []
@@ -1265,6 +1268,7 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
             (vampire_apply_available_source_bindings
                cxtm
                cxpf
+               source_map
                source_audit
                proof
                proposition
@@ -7823,6 +7827,7 @@ let audit_vampire_cert_v1_source_context cert source_map =
     {
       Vampire_source_context.proof_delta =
         vampire_source_context_delta_with_source_map source_map;
+      known_table = sigknh;
       symbol_table = vampire_source_context_symbol_table_with_source_map source_map;
       term_context = [];
       local_term_projection = [];
@@ -7983,6 +7988,13 @@ let check_vampire_cert_v1_file fn =
         (fun h v ->
            if not (Hashtbl.mem merged h) then Hashtbl.add merged h v)
         native.Vampire_cert_v1.core_native_delta_table;
+      Hashtbl.iter
+        (fun h v ->
+           if not (Hashtbl.mem merged h) then
+             Hashtbl.add merged h v
+           else if not (valid_id_p h) then
+             Hashtbl.replace merged h v)
+        (vampire_source_context_delta_with_source_map !source_map_for_emit);
       merged
     in
     let native_certificate_sgtmof native =
