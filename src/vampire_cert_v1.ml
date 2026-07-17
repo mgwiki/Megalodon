@@ -4222,6 +4222,157 @@ let validate_kernel_v1_metadata_contracts cert =
     in
     collect tm []
   in
+  let strip_outer_parens text =
+    let text = String.trim text in
+    if String.length text >= 2
+       && text.[0] = '('
+       && text.[String.length text - 1] = ')' then
+      String.sub text 1 (String.length text - 2) |> String.trim
+    else text
+  in
+  let simple_sort_of_text id key text =
+    let rec top_arrow text depth i =
+      if i + 1 >= String.length text then None
+      else
+        match text.[i] with
+        | '(' -> top_arrow text (depth + 1) (i + 1)
+        | ')' -> top_arrow text (depth - 1) (i + 1)
+        | '-' when depth = 0 && text.[i + 1] = '>' -> Some i
+        | _ -> top_arrow text depth (i + 1)
+    in
+    let rec parse text =
+      let text = strip_outer_parens text in
+      match text with
+      | "prop" -> Prop
+      | "set" -> Set
+      | _ ->
+          begin match top_arrow text 0 0 with
+          | Some arrow ->
+              let left = String.sub text 0 arrow in
+              let right =
+                String.sub text (arrow + 2) (String.length text - arrow - 2)
+              in
+              Ar (parse left, parse right)
+          | None ->
+              error
+                (id ^ ": strict certificate v1 kernel_v1 metadata field "
+                 ^ key ^ " has unsupported sort text " ^ text)
+          end
+    in
+    parse text
+  in
+  let field_tp_opt id fields key =
+    match field_value key fields with
+    | None -> None
+    | Some _ -> Some (parse_field id fields key parse_tp)
+  in
+  let require_sort_text_matches_sexpr id fields text_key sexpr_key =
+    match field_value text_key fields, field_tp_opt id fields sexpr_key with
+    | Some text, Some expected ->
+        let actual = simple_sort_of_text id text_key text in
+        if actual <> expected then
+          error
+            (id ^ ": strict certificate v1 kernel_v1 metadata fields "
+             ^ text_key ^ " and " ^ sexpr_key ^ " disagree")
+    | _ -> ()
+  in
+  let require_tp_equal id key actual expected =
+    if actual <> expected then
+      error
+        (id ^ ": strict certificate v1 kernel_v1 metadata field "
+         ^ key ^ " has unexpected sort")
+  in
+  let string_suffix suffix text =
+    let suffix_len = String.length suffix in
+    let text_len = String.length text in
+    text_len >= suffix_len
+    && String.sub text (text_len - suffix_len) suffix_len = suffix
+  in
+  let add_variable_declaration table declaration =
+    let line = String.trim declaration in
+    if string_starts_with "Variable " line then
+      let body =
+        String.sub line 9 (String.length line - 9) |> String.trim
+      in
+      match String.index_opt body ':' with
+      | None -> ()
+      | Some colon ->
+          let name = String.sub body 0 colon |> String.trim in
+          let sort =
+            String.sub body (colon + 1) (String.length body - colon - 1)
+            |> String.trim
+          in
+          let sort =
+            if String.length sort > 0 && sort.[String.length sort - 1] = '.' then
+              String.sub sort 0 (String.length sort - 1)
+            else sort
+          in
+          Hashtbl.replace table name (simple_sort_of_text "kernel_v1" "declaration" sort)
+  in
+  let skolem_metadata_symbol_table fields =
+    let table = Hashtbl.create 97 in
+    let add name sort = Hashtbl.replace table name sort in
+    List.iter
+      (fun (name, sort) -> add name (simple_sort_of_text "kernel_v1" "builtin" sort))
+      [
+        ("False", "prop"); ("True", "prop");
+        ("f__true", "prop"); ("f__false", "prop");
+        ("vampire_true", "prop"); ("vampire_false", "prop");
+        ("vampire_or", "prop->prop->prop");
+        ("vampire_and", "prop->prop->prop");
+        ("vampire_eq_prop", "prop->prop->prop");
+        ("vPI", "(set->prop)->prop");
+        ("vLAM", "set->set->set");
+      ];
+    List.iter (add_variable_declaration table) cert.metadata.symbol_declarations;
+    List.iter
+      (fun field ->
+         match String.index_opt field '=' with
+         | None -> ()
+         | Some eq ->
+             let key = String.sub field 0 eq in
+             if string_suffix "_declaration" key then
+               let value = String.sub field (eq + 1) (String.length field - eq - 1) in
+               add_variable_declaration table value)
+      fields;
+    table
+  in
+  let rec nth_opt xs index =
+    match xs, index with
+    | x :: _, 0 -> Some x
+    | _ :: rest, n when n > 0 -> nth_opt rest (n - 1)
+    | _ -> None
+  in
+  let tm_type symbol_table env tm =
+    let assoc_opt key xs =
+      try Some (List.assoc key xs) with Not_found -> None
+    in
+    let rec infer db_tps = function
+      | TmH name ->
+          begin match assoc_opt name env with
+          | Some tp -> Some tp
+          | None -> Hashtbl.find_opt symbol_table name
+          end
+      | DB index -> nth_opt db_tps index
+      | Prim _ -> None
+      | TpAp (TmH h, tp) when h = megalodon_eq_poly_hash ->
+          Some (Ar (tp, Ar (tp, Prop)))
+      | TpAp (tm, _) -> infer db_tps tm
+      | Ap (fn, arg) ->
+          begin match infer db_tps fn with
+          | Some (Ar (arg_tp, result_tp)) ->
+              begin match infer db_tps arg with
+              | Some actual_arg_tp when actual_arg_tp <> arg_tp -> None
+              | _ -> Some result_tp
+              end
+          | _ -> None
+          end
+      | Lam (tp, body) ->
+          Option.map (fun body_tp -> Ar (tp, body_tp)) (infer (tp :: db_tps) body)
+      | Imp _ | All _ -> Some Prop
+    in
+    infer [] tm
+  in
   List.iter
     (fun (id, kind, fields) ->
        if kind = "kernel_v1" then
@@ -4792,11 +4943,46 @@ let validate_kernel_v1_metadata_contracts cert =
                                  | Some _ -> require_field_tm id fields (prefix ^ "_witness_term") witness
                                  | None -> ()
                                  end;
+                                 require_sort_text_matches_sexpr id fields
+                                   (prefix ^ "_replaced_var_sort")
+                                   (prefix ^ "_replaced_var_sort_sexpr");
+                                 require_sort_text_matches_sexpr id fields
+                                   (prefix ^ "_witness_sort")
+                                   (prefix ^ "_witness_sort_sexpr");
+                                 let replaced_sort =
+                                   field_tp_opt id fields (prefix ^ "_replaced_var_sort_sexpr")
+                                 in
+                                 let witness_sort =
+                                   field_tp_opt id fields (prefix ^ "_witness_sort_sexpr")
+                                 in
+                                 begin match replaced_sort, witness_sort with
+                                 | Some expected_sort, Some actual_sort ->
+                                     require_tp_equal id (prefix ^ "_witness_sort_sexpr")
+                                       actual_sort expected_sort
+                                 | _ -> ()
+                                 end;
                                  let head, dependencies = decompose_application_spine witness in
                                  if head <> TmH symbol then
                                    error
                                      (id ^ ": strict certificate v1 kernel_v1 skolemize witness for "
                                       ^ symbol ^ " does not have the introduced symbol as head");
+                                 let symbol_table = skolem_metadata_symbol_table fields in
+                                 let dependency_env =
+                                   dependencies
+                                   |> List.mapi
+                                        (fun dependency_index dependency ->
+                                           let dependency_prefix =
+                                             prefix ^ "_dependency_"
+                                             ^ string_of_int dependency_index
+                                           in
+                                           match dependency,
+                                                 field_tp_opt id fields
+                                                   (dependency_prefix ^ "_sort_sexpr")
+                                           with
+                                           | TmH variable, Some sort -> Some (variable, sort)
+                                           | _ -> None)
+                                   |> List.filter_map (fun x -> x)
+                                 in
                                  begin match field_value (prefix ^ "_dependency_count") fields with
                                  | Some _ ->
                                      require_field_int id fields
@@ -4810,9 +4996,21 @@ let validate_kernel_v1_metadata_contracts cert =
                                         prefix ^ "_dependency_"
                                         ^ string_of_int dependency_index
                                       in
+                                      require_sort_text_matches_sexpr id fields
+                                        (dependency_prefix ^ "_sort")
+                                        (dependency_prefix ^ "_sort_sexpr");
                                       begin match field_value (dependency_prefix ^ "_term") fields with
                                       | Some _ -> require_field_tm id fields (dependency_prefix ^ "_term") dependency
                                       | None -> ()
+                                      end;
+                                      begin match
+                                        field_tp_opt id fields (dependency_prefix ^ "_sort_sexpr"),
+                                        tm_type symbol_table dependency_env dependency
+                                      with
+                                      | Some expected_sort, Some actual_sort ->
+                                          require_tp_equal id (dependency_prefix ^ "_sort_sexpr")
+                                            actual_sort expected_sort
+                                      | _ -> ()
                                       end;
                                       begin match dependency, field_value (dependency_prefix ^ "_var") fields with
                                       | TmH expected_var, Some actual_var when actual_var = expected_var -> ()
@@ -4831,6 +5029,12 @@ let validate_kernel_v1_metadata_contracts cert =
                                       | _, None -> ()
                                       end)
                                    dependencies;
+                                 begin match witness_sort, tm_type symbol_table dependency_env witness with
+                                 | Some expected_sort, Some actual_sort ->
+                                     require_tp_equal id (prefix ^ "_witness_sort_sexpr")
+                                       actual_sort expected_sort
+                                 | _ -> ()
+                                 end;
                                  begin match field_value (prefix ^ "_choice_principle") fields with
                                  | Some "classical_choice" -> ()
                                  | Some actual ->
