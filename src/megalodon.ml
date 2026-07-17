@@ -905,7 +905,51 @@ let vampire_instantiated_refutation_candidates cxtm proof proposition source_bin
   in
   collect 8 proof proposition source_bindings
 
-let vampire_apply_available_source_bindings source_audit proof proposition bindings =
+let vampire_source_application_proofs cxtm cxpf expected source_proofs =
+  let cx =
+    List.filter_map
+      (fun (_, (tp, definition)) ->
+         match definition with
+         | None -> Some tp
+         | Some _ -> None)
+      cxtm
+  in
+  let hyps = List.map snd cxpf in
+  let proof_delta = vampire_source_context_delta_with_locals cxtm in
+  let debug = Sys.getenv_opt "MEGALODON_CERT_DEBUG" = Some "1" in
+  List.filter
+    (fun source_proof ->
+       try
+         let (actual, dl) = extr_propofpf proof_delta sigtmof cx hyps source_proof [] in
+         match conv actual expected proof_delta dl with
+         | Some _ -> true
+         | None ->
+             if debug then
+               begin
+                 Printf.printf
+                   "Vampire native source proof candidate rejected at line %d char %d: expected %s actual %s.\n"
+                   !lineno
+                   !charno
+                   (tm_to_str expected)
+                   (tm_to_str actual);
+                 flush stdout
+               end;
+             false
+       with Failure msg ->
+         if debug then
+           begin
+             Printf.printf
+               "Vampire native source proof candidate ill-formed at line %d char %d: %s.\n"
+               !lineno
+               !charno
+               msg;
+             flush stdout
+           end;
+         false
+       | _ -> false)
+    source_proofs
+
+let vampire_apply_available_source_bindings cxtm cxpf source_audit proof proposition bindings =
   let rec apply proof proposition remaining =
     match remaining with
     | [] -> [(proof,proposition,[])]
@@ -934,7 +978,11 @@ let vampire_apply_available_source_bindings source_audit proof proposition bindi
                 (List.map
                    (fun source_proof ->
                       apply (PPfAp(proof,source_proof)) target_prop rest)
-                   source_proofs)
+                   (vampire_source_application_proofs
+                      cxtm
+                      cxpf
+                      expected_prop
+                      source_proofs))
           | _ -> []
         in
         applied @ skipped
@@ -1004,6 +1052,8 @@ let vampire_certificate_reconstruct_aby_goal claimtm cxtm cxpf cert source_map s
           in
           try_applied
             (vampire_apply_available_source_bindings
+               cxtm
+               cxpf
                source_audit
                proof
                proposition
