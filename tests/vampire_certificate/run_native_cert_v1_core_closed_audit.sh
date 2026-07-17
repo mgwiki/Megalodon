@@ -16,10 +16,11 @@ mkdir -p "$WORK_DIR"
 ln -sfn "$WORK_DIR" "$TMPDIR/latest_native_cert_v1_core_closed_audit"
 
 # This is the audit/MVP qualifying fragment.  It deliberately excludes
-# preprocessing and macro proof steps such as rectification, FOOL elimination,
-# ENNF/CNF projection, Skolemization, definition inputs, AVATAR, and theory
-# facts.  Those may still be useful closed-mode diagnostics, but they are not
-# counted by this core gate.
+# preprocessing and macro proof steps such as ENNF, Skolemization, definition
+# inputs, AVATAR, and theory facts.  Rectification and the currently checked
+# FOOL Boolean-lifting subset are counted only because the native core path
+# builds and immediately checks proof terms for them without certificate-derived
+# Known propositions.
 allowed_rules=$(
   cat <<'RULES'
 input
@@ -27,6 +28,9 @@ formula_input
 formula_term_input
 formula_term_copy
 rectify_formula
+fool_atom_lift
+fool_formula
+fool_bool
 formula_copy
 cnf_literal
 cnf_formula_clause

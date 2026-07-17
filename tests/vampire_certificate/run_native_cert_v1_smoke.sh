@@ -1001,6 +1001,23 @@ if ! rg -q 'Vampire certificate v1 native core proof term checked 7 steps' \
   exit 1
 fi
 
+bin/megalodon \
+  -vampirecertv1corepfcheck \
+  -vampirecertv1 tests/vampire_certificate/closed_cases/hammer.12340.9.native.sexp \
+  -vampirecertv1source tests/vampire_certificate/closed_cases/hammer.12340.9.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_core_pf_fool_formula.log"
+
+if ! rg -q 'Vampire certificate v1 native core proof term checked 11 steps' \
+    "$WORK_DIR/native_cert_v1_core_pf_fool_formula.log"; then
+  echo "native core proof-term checker did not validate the fool_formula source-entry fixture" >&2
+  exit 1
+fi
+if ! rg -q 'Vampire certificate v1 native core source bindings checked 2 assumptions' \
+    "$WORK_DIR/native_cert_v1_core_pf_fool_formula.log"; then
+  echo "native core proof-term checker did not retain FOOL source-entry assumptions" >&2
+  exit 1
+fi
+
 mkdir -p "$WORK_DIR/core_pf_missing_source_cases"
 cp tests/vampire_certificate/closed_cases/core.cnf.2.native.sexp \
   "$WORK_DIR/core_pf_missing_source_cases/missing_source.native.sexp"

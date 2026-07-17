@@ -107,13 +107,12 @@ tests/vampire_certificate/run_native_cert_v1_real_core_frontier.sh
 This wraps the closed-corpus core audit, splits eligible cases into synthetic
 `core.cnf.*` fixtures and real/source-entry certificates, and writes blocker
 counts under `/project/tmp/latest_native_cert_v1_real_core_frontier`. On
-`vampire/megalodon5` after the source-entry and rectification core updates, the
-expected result is `REAL_CORE_ELIGIBLE 4`, `SYNTHETIC_CORE_ELIGIBLE 23`,
-`EXCLUDED 145`. The first blockers are now dominated by FOOL transformations
-such as `fool_atom_lift`, `fool_formula`, and `fool_bool`. That is not a
-failure of the clausal kernel; it means most real examples still need
-proof-producing source/preprocessing transformations before their later clausal
-refutations can count.
+`vampire/megalodon5` after the checked FOOL subset update, the expected result
+is `REAL_CORE_ELIGIBLE 9`, `SYNTHETIC_CORE_ELIGIBLE 23`, `EXCLUDED 140`.
+The first blockers are now `ennf_formula` and `definition_input`. That is not
+a failure of the clausal kernel; it means most real examples still need
+proof-producing Smolka-style preprocessing and source-definition transformations
+before their later clausal refutations can count.
 The first source-input exception is `set_reflexivity`: when the source map
 classifies an input as `set_reflexivity` or `local_set_reflexivity`, the native
 proof-term checker proves the reflexive Megalodon equality directly instead of
@@ -440,9 +439,10 @@ selected cases to report `CORE_PF_PASS`, including source-origin reporting for
 every checked proof term. A rule is eligible for `coreclosed` only when it is
 intended to have native proof-term support. The gate now includes a narrow
 source-entry layer for `formula_input`, `formula_term_input`, identity
-`formula_term_copy`, checked `rectify_formula`, `formula_copy`, `cnf_literal`, and
-`cnf_formula_clause`, because those steps are checked by native proof
-templates and do not use certificate-derived `Known` propositions.
+`formula_term_copy`, checked `rectify_formula`, checked FOOL Boolean lifting
+(`fool_atom_lift`, `fool_formula`, `fool_bool`), `formula_copy`,
+`cnf_literal`, and `cnf_formula_clause`, because those steps are checked by
+native proof templates and do not use certificate-derived `Known` propositions.
 
 Use `-vampirecertv1preprocesspfcheck` only as a fail-closed native
 preprocessing checker. Unlike the older transitional frontier runs, this mode
@@ -499,12 +499,13 @@ This is intentionally stricter than the broad closed corpus. It first filters
 tracked closed fixtures to certificates using only the small core clause-proof
 constructors plus the narrow proof-producing source-entry rules. The source
 entry rules are `formula_input`, `formula_term_input`, identity
-`formula_term_copy`, checked `rectify_formula`, `formula_copy`, `cnf_literal`, and
-`cnf_formula_clause`.
-It still excludes preprocessing-heavy rules such as FOOL, ENNF, Skolemization,
-AVATAR, predicate definitions, theory FOOL clauses, non-identity substitution,
-and inequality splitting. By default it requires at least ten whitelist-only
-cases before delegating to the closed corpus checker.
+`formula_term_copy`, checked `rectify_formula`, checked FOOL Boolean lifting
+(`fool_atom_lift`, `fool_formula`, `fool_bool`), `formula_copy`,
+`cnf_literal`, and `cnf_formula_clause`.
+It still excludes preprocessing-heavy rules such as ENNF, Skolemization,
+AVATAR, predicate definitions, FOOL exhaustiveness, theory FOOL clauses,
+non-identity substitution, and inequality splitting. By default it requires at
+least ten whitelist-only cases before delegating to the closed corpus checker.
 If it fails with
 `CORE_ELIGIBLE 0`, that is an honest statement that the current committed closed
 fixtures are broad source-linked reconstructions rather than the restricted

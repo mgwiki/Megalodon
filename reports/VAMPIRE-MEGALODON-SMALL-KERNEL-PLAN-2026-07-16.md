@@ -168,14 +168,14 @@ tests/vampire_certificate/run_native_cert_v1_core_closed_audit.sh
 
 Result:
 
-- `CORE_ELIGIBLE 27`
-- `CLOSED_PASS 27`
-- `CORE_CLOSED_PASS 27`
-- `CORE_PF_PASS 27`
+- `CORE_ELIGIBLE 32`
+- `CLOSED_PASS 32`
+- `CORE_CLOSED_PASS 32`
+- `CORE_PF_PASS 32`
 
 Artifacts:
 
-- `/project/tmp/native_cert_v1_core_closed_audit.zeGv8H`
+- `/project/tmp/native_cert_v1_core_closed_audit.NyEQ0g`
 - `/project/tmp/latest_native_cert_v1_core_closed_audit`
 
 Real closed hammer frontier:
@@ -187,23 +187,22 @@ tests/vampire_certificate/run_native_cert_v1_real_core_frontier.sh
 
 Result:
 
-- `REAL_CORE_ELIGIBLE 4`
+- `REAL_CORE_ELIGIBLE 9`
 - `SYNTHETIC_CORE_ELIGIBLE 23`
-- `EXCLUDED 145`
+- `EXCLUDED 140`
 
-The source-entry and checked-rectification updates moved the first simple
-`formula_input`, `formula_term_input`, and `rectify_formula` cases into the
-native proof-producing gate. These steps are accepted only when the native
-elaborator constructs checked `Syntax.pf` terms for the source entry,
-rectification, and identity/CNF entry step; they do not use dynamic `Known`
-propositions.
+The source-entry, checked-rectification, and checked FOOL Boolean-lifting
+updates moved the first simple `formula_input`, `formula_term_input`,
+`rectify_formula`, `fool_formula`, and `fool_bool` cases into the native
+proof-producing gate. These steps are accepted only when the native elaborator
+constructs checked `Syntax.pf` terms for the source entry, transformation, and
+identity/CNF entry step; they do not use dynamic `Known` propositions.
 
-The first excluded-rule distribution is now dominated by FOOL transformations:
+The first excluded-rule distribution is now dominated by ENNF and source
+definition inputs:
 
-- `fool_atom_lift`: 115
-- `fool_formula`: 13
-- `fool_bool`: 12
-- `definition_input`: 5
+- `ennf_formula`: 131
+- `definition_input`: 9
 
 This is now the controlling blocker for most real examples. A real hammer proof
 cannot count merely because its later clausal steps contain `resolve`,
@@ -214,14 +213,10 @@ dynamic `Known` insertion.
 The first blockers beyond this frontier are not clausal primitive failures.
 They are mostly source/preprocessing and macro territory:
 
-- `formula_term_input`
-- `formula_input`
-- `rectify_formula`
-- `fool_formula`
-- `cnf_formula_clause`
-- `nonidentity_substitute`
 - `ennf_formula`
-- `cnf_literal`
+- `definition_input`
+- `nonidentity_substitute`
+- `fool_exhaustiveness`
 - `skolem_formula`
 - AVATAR/split rules
 

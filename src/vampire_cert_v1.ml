@@ -5651,6 +5651,9 @@ let validate_certificate_core_fragment cert =
     | FormulaTermInput _
     | FormulaTermCopy _
     | RectifyFormula _
+    | FoolAtomLift _
+    | FoolFormula _
+    | FoolBool _
     | FormulaCopy _
     | CnfLiteral _
     | CnfFormulaClause _
@@ -9723,6 +9726,22 @@ let elaborate_core_resolution_refutation_native
           store_formula id result
             (native_core_rectify_formula_proof
                id parent_step_variables result_step_variables parent_proof)
+      | FoolAtomLift (id, source, target, path) ->
+          check_fool_atom_lift id source target path
+      | FoolFormula (id, parent_id, result) ->
+          let parent_formula, parent_proof = lookup_formula parent_id in
+          check_fool_formula [(parent_id, CheckedFormula parent_formula)] id parent_id result;
+          let parent_step_variables = native_core_step_variables cert parent_id in
+          let result_step_variables = native_core_step_variables cert id in
+          store_formula id result
+            (native_core_fool_formula_proof
+               id variables parent_step_variables result_step_variables
+               parent_formula result parent_proof)
+      | FoolBool (id, parent_id, result) ->
+          let parent_formula, parent_proof = lookup_formula parent_id in
+          check_fool_bool [(parent_id, CheckedFormula parent_formula)] id parent_id result;
+          store_formula id (formula_tm_of_literal result)
+            (native_core_fool_bool_proof id variables parent_formula parent_proof result)
       | FormulaCopy (id, parent_id, result) ->
           let parent_formula, parent_proof = lookup_formula parent_id in
           if native_core_normalize_bool_constants (native_core_literal_prop result)

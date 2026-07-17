@@ -60,6 +60,16 @@ cases. The first excluded-rule distribution is now dominated by FOOL
 transformations (`fool_atom_lift`, `fool_formula`, and `fool_bool`), not
 rectification.
 
+Sixth post-audit note, 2026-07-17: the counted core gate now includes a narrow
+checked FOOL Boolean-lifting subset: `fool_atom_lift` metadata validation plus
+proof-producing `fool_formula` and `fool_bool` steps. The native elaborator
+constructs `Syntax.pf` terms and immediately checks them; it does not install
+certificate-derived `Known` propositions. The closed-corpus core audit now
+reports 32 `CORE_PF_PASS` cases: 23 synthetic fixtures and 9 non-synthetic
+cases. The first blockers are now `ennf_formula` and `definition_input`, so
+the next qualifying work is Smolka-style ENNF proof production and original
+source-definition composition.
+
 The purpose is to stop ad-hoc growth. A new change is aligned with this plan
 only if it does one of the following:
 
@@ -117,11 +127,11 @@ Current positive evidence, as reclassified by the July 16 audit:
 - The native preprocess frontier was 94/100 as structural/transitional
   native-AST plumbing. It is not qualifying proof-term evidence while it relies
   on certificate-derived `Known` propositions.
-- The native core proof-term audit passes on the current 27 eligible
+- The native core proof-term audit passes on the current 32 eligible
   core/source-entry closed cases. This includes 23 synthetic `core.cnf.*`
-  fixtures and 4 non-synthetic/source-entry cases.
+  fixtures and 9 non-synthetic/source-entry/FOOL cases.
 - The real closed hammer frontier is measured and reproducible:
-  `REAL_CORE_ELIGIBLE 4`, `SYNTHETIC_CORE_ELIGIBLE 23`, `EXCLUDED 145`.
+  `REAL_CORE_ELIGIBLE 9`, `SYNTHETIC_CORE_ELIGIBLE 23`, `EXCLUDED 140`.
   This is the first proof-producing real-hammer movement through the source
   entry gate, but most real cases still require Smolka-style preprocessing
   obligations before their clausal refutations can count.
@@ -141,9 +151,10 @@ Current limitations:
 - Skolemization and source-to-clause transformations are only partially
   proof-producing.
 - The simplest `formula_input` and `formula_term_input` source-entry cases are
-  proof-producing when they feed identity formula-copy/CNF-entry steps. More
-  complex formula preprocessing remains open, especially FOOL and ENNF
-  transformations.
+  proof-producing when they feed identity formula-copy/CNF-entry steps, and a
+  narrow FOOL Boolean-lifting subset is proof-producing. More complex formula
+  preprocessing remains open, especially ENNF, FOOL exhaustiveness,
+  definition-input, and Skolemization transformations.
 - Generated set-command equalities that are exported as
   `set_reflexivity`/`local_set_reflexivity` now have native reflexivity proofs.
   Matched theorem-local definitions from `set` commands are audited and ignored
