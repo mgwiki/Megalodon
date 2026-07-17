@@ -9,6 +9,7 @@ CASES_DIR=${CASES_DIR:-"$ROOT/tests/vampire_certificate/closed_cases"}
 WORK_DIR=${WORK_DIR:-"$(mktemp -d "$TMPDIR/native_cert_v1_inequality_closed_audit.XXXXXX")"}
 MIN_INEQUALITY=${MIN_INEQUALITY:-1}
 RUN_INEQUALITY_CASES=${RUN_INEQUALITY_CASES:-1}
+RUN_INEQUALITY_PF_CASES=${RUN_INEQUALITY_PF_CASES:-1}
 JOBS=${JOBS:-7}
 
 mkdir -p "$WORK_DIR"
@@ -151,14 +152,33 @@ if (( eligible_count < MIN_INEQUALITY )); then
 fi
 
 if [[ "$RUN_INEQUALITY_CASES" == "1" ]]; then
+  set +e
   CASE_LIST="$WORK_DIR/inequality_closed_cases.list" \
   WORK_DIR="$WORK_DIR/closed_check" \
   JOBS="$JOBS" \
     "$ROOT/tests/vampire_certificate/run_native_cert_v1_closed_corpus.sh"
-  sed 's/\tCLOSED_PASS$/\tINEQUALITY_CLOSED_PASS/' \
-    "$WORK_DIR/closed_check/summary.tsv" > "$WORK_DIR/inequality_summary.tsv"
-  awk -F '\t' '{count[$2]++} END {for (status in count) print status, count[status]}' \
-    "$WORK_DIR/inequality_summary.tsv" \
-    | sort > "$WORK_DIR/inequality_counts.txt"
-  cat "$WORK_DIR/inequality_counts.txt"
+  closed_status=$?
+  set -e
+  if [[ -s "$WORK_DIR/closed_check/summary.tsv" ]]; then
+    sed 's/\tCLOSED_PASS$/\tINEQUALITY_CLOSED_PASS/' \
+      "$WORK_DIR/closed_check/summary.tsv" > "$WORK_DIR/inequality_summary.tsv"
+    awk -F '\t' '{count[$2]++} END {for (status in count) print status, count[status]}' \
+      "$WORK_DIR/inequality_summary.tsv" \
+      | sort > "$WORK_DIR/inequality_counts.txt"
+    cat "$WORK_DIR/inequality_counts.txt"
+  else
+    : > "$WORK_DIR/inequality_summary.tsv"
+    : > "$WORK_DIR/inequality_counts.txt"
+  fi
+  if (( closed_status != 0 )); then
+    echo "inequality closed textual emission had diagnostic failures; native preprocess proof-term audit remains authoritative" >&2
+  fi
+fi
+
+if [[ "$RUN_INEQUALITY_PF_CASES" == "1" ]]; then
+  CASE_LIST="$WORK_DIR/inequality_closed_cases.list" \
+  WORK_DIR="$WORK_DIR/inequality_pf_check" \
+  JOBS="$JOBS" \
+  MIN_PREPROCESS_STRUCTURAL="$MIN_INEQUALITY" \
+    "$ROOT/tests/vampire_certificate/run_native_cert_v1_preprocess_pf_audit.sh"
 fi

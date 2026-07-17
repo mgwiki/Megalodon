@@ -13150,13 +13150,33 @@ let elaborate_preprocess_refutation_native
       | Resolve (id, left_id, right_id, left_index, right_index, result) ->
           let left_clause, left_proof = lookup_clause left_id in
           let right_clause, right_proof = lookup_clause right_id in
-          let proof =
-            native_core_resolve_in_result_context
-              cert id variables left_id left_clause left_proof right_id right_clause right_proof
-              left_index right_index result
-          in
-          store_clause id result
-            proof
+          if Hashtbl.mem transitional_primitive_clause_steps left_id
+             || Hashtbl.mem transitional_primitive_clause_steps right_id then begin
+            native_core_validate_resolve_step
+              id left_clause right_clause left_index right_index result;
+            let left_prop =
+              native_core_step_clause_prop cert variables left_id left_clause
+            in
+            let right_prop =
+              native_core_step_clause_prop cert variables right_id right_clause
+            in
+            let result_prop =
+              native_core_step_clause_prop cert variables id result
+            in
+            let primitive = "vampire_resolve_" ^ id in
+            let primitive_prop = Imp (left_prop, Imp (right_prop, result_prop)) in
+            install_transitional_known id primitive primitive_prop;
+            Hashtbl.replace transitional_primitive_clause_steps id true;
+            store_clause id result
+              (PPfAp (PPfAp (Known primitive, left_proof), right_proof))
+          end else begin
+            let proof =
+              native_core_resolve_in_result_context
+                cert id variables left_id left_clause left_proof right_id right_clause right_proof
+                left_index right_index result
+            in
+            store_clause id result proof
+          end
       | Factor (id, parent_id, left_index, right_index, result) ->
           let parent_clause, parent_proof = lookup_clause parent_id in
           if Hashtbl.mem transitional_primitive_clause_steps parent_id then begin
@@ -13201,19 +13221,24 @@ let elaborate_preprocess_refutation_native
                  cert id variables parent_id parent_clause parent_proof literal_index result)
       | EqualitySymmetry (id, parent_id, literal_index, result) ->
           let parent_clause, parent_proof = lookup_clause parent_id in
-          native_core_validate_equality_symmetry_step
-            id parent_clause literal_index result;
-          let parent_prop =
-            native_core_step_clause_prop cert variables parent_id parent_clause
-          in
-          let result_prop =
-            native_core_step_clause_prop cert variables id result
-          in
-          let primitive = "vampire_equality_symmetry_" ^ id in
-          let primitive_prop = Imp (parent_prop, result_prop) in
-          install_transitional_known id primitive primitive_prop;
-          Hashtbl.replace transitional_primitive_clause_steps id true;
-          store_clause id result (PPfAp (Known primitive, parent_proof))
+          if Hashtbl.mem transitional_primitive_clause_steps parent_id then begin
+            native_core_validate_equality_symmetry_step
+              id parent_clause literal_index result;
+            let parent_prop =
+              native_core_step_clause_prop cert variables parent_id parent_clause
+            in
+            let result_prop =
+              native_core_step_clause_prop cert variables id result
+            in
+            let primitive = "vampire_equality_symmetry_" ^ id in
+            let primitive_prop = Imp (parent_prop, result_prop) in
+            install_transitional_known id primitive primitive_prop;
+            Hashtbl.replace transitional_primitive_clause_steps id true;
+            store_clause id result (PPfAp (Known primitive, parent_proof))
+          end else
+            store_clause id result
+              (native_core_equality_symmetry_in_result_context
+                 cert id variables parent_id parent_clause parent_proof literal_index result)
 	      | TruthConflict (id, parent_id, literal_index, result) ->
 	          let parent_clause, parent_proof = lookup_clause parent_id in
 	          store_clause id result
