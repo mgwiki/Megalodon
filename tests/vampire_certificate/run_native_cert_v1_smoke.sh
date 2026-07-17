@@ -821,6 +821,24 @@ fi
 
 bin/megalodon \
   -vampirecertv1corepfcheck \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_synthetic_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_source_map_synthetic_core_pf.log"
+
+if ! rg -q 'Vampire certificate v1 native core proof term checked 6 steps' \
+    "$WORK_DIR/native_cert_v1_source_map_synthetic_core_pf.log"; then
+  echo "native core proof-term checker did not validate the synthetic source-mapped resolution fixture" >&2
+  exit 1
+fi
+
+if ! rg -q 'Vampire certificate v1 native core source bindings checked 3 assumptions' \
+    "$WORK_DIR/native_cert_v1_source_map_synthetic_core_pf.log"; then
+  echo "native core proof-term checker did not bind source assumptions for the synthetic resolution fixture" >&2
+  exit 1
+fi
+
+bin/megalodon \
+  -vampirecertv1corepfcheck \
   -vampirecertv1 tests/vampire_certificate/closed_cases/core.cnf.2.native.sexp \
   -vampirecertv1source tests/vampire_certificate/closed_cases/core.cnf.2.th0.p \
   "$dummy" >"$WORK_DIR/native_cert_v1_core_pf_unit.log"
@@ -1396,6 +1414,18 @@ bin/megalodon \
 if ! rg -q 'Vampire certificate v1 strict checked 6 steps' \
     "$WORK_DIR/native_cert_v1_primitive_expansion_valid.log"; then
   echo "strict native certificate v1 checker did not accept primitive-expansion contract metadata" >&2
+  exit 1
+fi
+
+bin/megalodon \
+  -vampirecertv1corepfcheck \
+  -vampirecertv1 tests/vampire_certificate/native_cert_v1_primitive_expansion_valid.sexp \
+  -vampirecertv1source tests/vampire_certificate/native_cert_v1_source_map_synthetic_valid.th0.p \
+  "$dummy" >"$WORK_DIR/native_cert_v1_primitive_expansion_core_pf_valid.log"
+
+if ! rg -q 'Vampire certificate v1 native core proof term checked 6 steps' \
+    "$WORK_DIR/native_cert_v1_primitive_expansion_core_pf_valid.log"; then
+  echo "native core proof-term checker did not validate lowered primitive-expansion metadata on the synthetic resolution fixture" >&2
   exit 1
 fi
 

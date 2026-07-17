@@ -1,5 +1,7 @@
 (certificate vampire-megalodon 1
   (problem "native-cert-v1-primitive-expansion-valid")
+  (symbol_declaration "Variable p:prop.")
+  (symbol_declaration "Variable q:prop.")
   (step_extra c3 "kernel_v1"
     ("schema=prover9-small-kernel-v1"
      "rule=unit_resulting_resolution"
