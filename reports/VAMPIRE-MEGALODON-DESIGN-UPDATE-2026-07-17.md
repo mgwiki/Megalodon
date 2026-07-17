@@ -695,3 +695,38 @@ Validation:
   `predicate_definition_fold` records. The focused native primitive audit was
   not used as a pass/fail signal because its fixed one-sample minima require
   an `equality_symmetry` record that this particular proof does not contain.
+
+Additional follow-up: Vampire commit `ea3f4631a` extracts
+unit-resulting-resolution trace metadata into `RenderedKernelUrrTrace`. The
+exporter already built `RenderedKernelUrrTraceStep` objects, but previously
+flattened them immediately into the residual field vector. The kernel step
+now owns the trace main parent, ordered trace steps, selected and substituted
+literals, unit-parent clauses, intermediate remainders, and final trace
+remainder through the centralized `MegalodonKernelSyntax` serializer.
+
+This is still certificate metadata, not a completed Megalodon proof-term
+implementation of URR. It does, however, remove another concrete clausal
+macro explanation from the unstructured migration path and makes the
+Prover9/Ivy-style expansion boundary explicit: URR is represented as a
+sequence of resolve-compatible trace steps that Megalodon can later consume
+as primitive proof terms.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` passed and produced
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11062`.
+- A fresh 20-case strict source-linked live THF run with `JOBS=10` and
+  `VAMPIRE_SECONDS=10` produced `PASS 20`.
+- The kernel-v1 metadata audit passed on that strict artifact, covering 738
+  `kernel_v1` records and 106 rewrite-position records.
+- The native primitive audit passed on that same strict artifact, including
+  122 `paramodulate`, 102 `substitute`, 88 `equality_resolution`, and 25
+  `resolve` records.
+- A focused two-case strict source-linked URR run for `hammer.11453.77.th0.p`
+  and `hammer.11703.242.th0.p` produced `PASS 2` in
+  `/project/tmp/live_urr_trace_record_vampire`.
+- The focused kernel-v1 metadata audit passed on that artifact, covering 48
+  `kernel_v1` records and 3 `unit_resulting_resolution` records. The focused
+  native primitive audit was not used as a pass/fail signal because this
+  intentionally narrow sample has no `equality_resolution` record, while the
+  broader strict primitive audit passed.

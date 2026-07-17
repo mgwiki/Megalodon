@@ -583,3 +583,35 @@ Validation:
 - focused native primitive audit was intentionally not treated as a failure
   signal because this one proof has no `equality_symmetry` record, while the
   broader strict 20-case primitive audit passed
+
+Vampire commit `ea3f4631a` extracts unit-resulting-resolution trace metadata
+into `RenderedKernelUrrTrace`. The previous code constructed
+`RenderedKernelUrrTraceStep` values but flattened them into the residual
+field vector immediately. The new record carries the main parent, ordered
+trace steps, selected/substituted literals, unit-parent clauses, intermediate
+remainders, and final trace remainder through `MegalodonKernelSyntax`.
+
+This does not yet turn URR into Megalodon proof terms. It is still a
+certificate-object migration step. The audit-relevant improvement is that URR
+macro explanation is no longer represented as anonymous migration strings:
+it is now a named Vampire-side object corresponding to a sequence of
+resolve-compatible primitive steps.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` for
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11062`
+- fresh 20-case strict source-linked live THF run with `JOBS=10` and
+  `VAMPIRE_SECONDS=10`: `PASS 20`
+- kernel-v1 metadata audit on that strict artifact: 738 `kernel_v1` records
+  and 106 rewrite-position records
+- native primitive audit on that strict artifact, including 122
+  `paramodulate`, 102 `substitute`, 88 `equality_resolution`, and 25
+  `resolve` records
+- focused strict source-linked URR run for `hammer.11453.77.th0.p` and
+  `hammer.11703.242.th0.p`: `PASS 2`
+- focused kernel-v1 metadata audit on that artifact: 48 `kernel_v1` records
+  and 3 `unit_resulting_resolution` records
+- focused native primitive audit was intentionally not treated as a failure
+  signal because this two-proof sample has no `equality_resolution` record,
+  while the broader strict primitive audit passed
