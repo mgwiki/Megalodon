@@ -199,3 +199,23 @@ Vampire commit `2701d87e4` then moved the fixed
 not a full primitive-step IR, but it reduces the amount of certificate contract
 logic embedded directly in `MegalodonChecker.cpp` and gives the next builder
 extraction a concrete place to grow.
+
+Vampire commit `37e23d654` continues that extraction by introducing an
+explicit `PrimitiveExpansion` record in
+`Shell/MegalodonChecker/MegalodonKernelSyntax.hpp`. The record currently holds
+the expansion prefix and required primitive rule, and the large exporter now
+passes that value to the syntax helper instead of passing two unrelated
+strings. This does not yet satisfy the audit's requested primitive certificate
+IR: it is intentionally only the smallest data boundary that can later absorb
+parent selections, substitutions, rewrite positions, Skolem introductions, and
+macro-to-primitive lowering traces.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel`
+- 5-case live THF run with
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11046`:
+  `PASS 5`
+- native primitive audit on that artifact
+- kernel-v1 metadata audit on that artifact, covering 280 `kernel_v1` records
+  and 37 rewrite-position records

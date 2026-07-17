@@ -277,3 +277,29 @@ Validation:
 - A 5-case live THF run with that binary produced `PASS 5`.
 - The focused native primitive audit passed on the artifact.
 - The kernel-v1 metadata audit passed over 280 `kernel_v1` records.
+
+Additional follow-up: Vampire commit `37e23d654` makes primitive expansions
+an explicit C++ value:
+
+```cpp
+struct PrimitiveExpansion {
+  std::string prefix;
+  std::string requiredRule;
+};
+```
+
+Call sites now construct a `PrimitiveExpansion` and pass it to
+`MegalodonKernelSyntax::appendPrimitiveExpansion`. This is still a small
+boundary extraction, not the final Prover9/Ivy-style primitive-step object,
+but it removes another raw string-field interface from the large exporter and
+gives the next extraction a concrete data type to extend with parent
+selection, substitutions, rewritten positions, and introduced-symbol data.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` passed and produced
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11046`.
+- A 5-case live THF run with that binary produced `PASS 5`.
+- The focused native primitive audit passed on the artifact.
+- The kernel-v1 metadata audit passed over 280 `kernel_v1` records, including
+  37 rewrite-position records.
