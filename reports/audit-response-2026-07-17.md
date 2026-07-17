@@ -642,3 +642,29 @@ Validation:
   `avatar_component`, 8 `avatar_definition`, 2 `avatar_refutation`, 10
   `avatar_split`, 47 `split_dependency`, 122 `paramodulate`, and 102
   `substitute` records
+
+Vampire commit `e03e87a83` extracts `avatar_definition` metadata into
+`RenderedKernelAvatarDefinition`. The strict `kernel_v1` record now gets its
+component split descriptor, rendered component clause, kernel clause sexpr,
+component variable sorts, component de Bruijn sorts, and result clause from a
+named Vampire-side certificate object instead of by copying the legacy
+diagnostic field vector.
+
+This is still a migration-stage result. It reduces the unstructured exporter
+surface in the direction requested by the audit, but does not yet prove
+AVATAR definitions in Megalodon. The remaining work is to make the AVATAR
+payload typed, extract `avatar_split`, `split_dependency`, and
+`avatar_refutation` the same way, and specify the checked AVATAR/SAT kernel
+or primitive lowering that consumes those records.
+
+Validation:
+
+- `TMPDIR=/project/tmp make -j10 vampire_rel` for
+  `/project/vampire-leancheck/vampire_rel_vampire/megalodon5_11064`
+- fresh 20-case strict source-linked live THF run with `JOBS=10` and
+  `VAMPIRE_SECONDS=10`: `PASS 20`
+- kernel-v1 metadata audit on that strict artifact: 738 `kernel_v1` records,
+  8 `avatar_definition` records, and 8 `avatar_component` records
+- native primitive audit on that strict artifact, including 8
+  `avatar_definition`, 8 `avatar_component`, 2 `avatar_refutation`, 10
+  `avatar_split`, and 47 `split_dependency` records
