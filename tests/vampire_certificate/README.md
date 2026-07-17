@@ -619,11 +619,11 @@ For the AVATAR layer above definition inputs, use:
 tests/vampire_certificate/run_native_cert_v1_avatar_closed_audit.sh
 ```
 
-This gate permits the definition layer plus AVATAR component, split,
-contradiction, and refutation records that closed mode can validate without
-adding non-source premises.  It still excludes inequality splitting, definition
-rewrite chains, and broader macros.  The summary status for selected and
-checked cases is `AVATAR_CLOSED_PASS`.  It also writes
+This gate permits the definition layer plus AVATAR definition, component,
+split-dependency, split, contradiction, and refutation records that closed mode
+can validate without adding non-source premises.  It still excludes inequality
+splitting, definition rewrite chains, and broader macros.  The summary status
+for selected and checked cases is `AVATAR_CLOSED_PASS`.  It also writes
 `first_excluded.tsv`, `first_excluded_rule_counts.txt`, and
 `cases_by_first_blocker/*.list` under
 `/project/tmp/latest_native_cert_v1_avatar_closed_audit`.
@@ -651,9 +651,10 @@ tests/vampire_certificate/run_native_cert_v1_layered_closed_audit.sh
 ```
 
 This aggregate gate runs the core, preprocessing, Skolemization, definition,
-AVATAR, inequality, and definition-rewrite audits, then compares their selected
-case lists with all tracked `*.native.sexp` fixtures. It is a staged frontier
-check, not a claim that every tracked fixture currently passes the transitional
+AVATAR, inequality, and definition-rewrite audits, then assigns each selected
+case to its highest applicable layer before comparing the resulting disjoint
+cover with all tracked `*.native.sexp` fixtures. It is a staged frontier check,
+not a claim that every tracked fixture currently passes the transitional
 textual closed-emission gate. The separate `closed_textual_pass_cases.list`
 records that smaller textual pass set. The aggregate gate is still not a
 substitute for fresh live larger-library evaluation.

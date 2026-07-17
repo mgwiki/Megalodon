@@ -47,24 +47,32 @@ find "$CASES_DIR" -maxdepth 1 -name '*.native.sexp' -type f -printf '%f\n' \
   | sort > "$WORK_DIR/all_closed_cases.list"
 
 {
-  printf 'core\t%s\n' "$WORK_DIR/core/core_closed_cases.list"
-  printf 'preprocess\t%s\n' "$WORK_DIR/preprocess/preprocess_closed_cases.list"
-  printf 'skolem\t%s\n' "$WORK_DIR/skolem/skolem_closed_cases.list"
-  printf 'definition\t%s\n' "$WORK_DIR/definition/definition_closed_cases.list"
-  printf 'avatar\t%s\n' "$WORK_DIR/avatar/avatar_closed_cases.list"
-  printf 'inequality\t%s\n' "$WORK_DIR/inequality/inequality_closed_cases.list"
   printf 'definition_rewrite\t%s\n' "$WORK_DIR/definition_rewrite/definition_rewrite_closed_cases.list"
+  printf 'inequality\t%s\n' "$WORK_DIR/inequality/inequality_closed_cases.list"
+  printf 'avatar\t%s\n' "$WORK_DIR/avatar/avatar_closed_cases.list"
+  printf 'definition\t%s\n' "$WORK_DIR/definition/definition_closed_cases.list"
+  printf 'skolem\t%s\n' "$WORK_DIR/skolem/skolem_closed_cases.list"
+  printf 'preprocess\t%s\n' "$WORK_DIR/preprocess/preprocess_closed_cases.list"
+  printf 'core\t%s\n' "$WORK_DIR/core/core_closed_cases.list"
 } > "$WORK_DIR/layer_lists.tsv"
 
 : > "$WORK_DIR/covered_with_layer.tsv"
+: > "$WORK_DIR/covered_so_far.list"
 while IFS=$'\t' read -r layer list_file; do
   if [[ ! -s "$list_file" ]]; then
     echo "layer $layer produced no selected cases at $list_file" >&2
     exit 1
   fi
-  sort -u "$list_file" > "$WORK_DIR/$layer.selected.list"
+  sort -u "$list_file" > "$WORK_DIR/$layer.raw_selected.list"
+  comm -23 "$WORK_DIR/$layer.raw_selected.list" "$WORK_DIR/covered_so_far.list" \
+    > "$WORK_DIR/$layer.selected.list"
   awk -v layer="$layer" '{print $0 "\t" layer}' "$WORK_DIR/$layer.selected.list" \
     >> "$WORK_DIR/covered_with_layer.tsv"
+  {
+    cat "$WORK_DIR/covered_so_far.list"
+    cat "$WORK_DIR/$layer.selected.list"
+  } | sort -u > "$WORK_DIR/covered_so_far.next"
+  mv "$WORK_DIR/covered_so_far.next" "$WORK_DIR/covered_so_far.list"
 done < "$WORK_DIR/layer_lists.tsv"
 
 cut -f1 "$WORK_DIR/covered_with_layer.tsv" | sort > "$WORK_DIR/covered_cases_with_duplicates.list"

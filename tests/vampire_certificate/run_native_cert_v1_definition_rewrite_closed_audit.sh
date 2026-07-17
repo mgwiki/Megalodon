@@ -26,6 +26,7 @@ formula_term_copy
 formula_copy
 rectify_formula
 fool_formula
+fool_atom_lift
 fool_bool
 fool_exhaustiveness
 truth_conflict
@@ -34,7 +35,9 @@ cnf_formula_clause
 cnf_literal
 skolem_formula
 definition_input
+avatar_definition
 avatar_component
+split_dependency
 avatar_split
 avatar_contradiction
 avatar_refutation
