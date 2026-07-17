@@ -69,6 +69,7 @@ run_one() {
   fi
 
   if ! "$MEGALODON" \
+      -vampirecertv1sourcecontext \
       -vampirecertv1corepfcheck \
       -vampirecertv1 "$native" \
       -vampirecertv1source "$source" \
@@ -94,7 +95,18 @@ run_one() {
     return 0
   fi
 
-  printf '%s\tURR_CORE_PF_PASS\n' "$base" > "$case_dir/result.tsv"
+  local remaining_by_kind
+  remaining_by_kind=$(sed -n 's/^Vampire certificate v1 native core source assumptions remaining by kind //p' "$case_dir/check.out" | tail -1)
+  if [[ -z "$remaining_by_kind" ]]; then
+    remaining_by_kind="unknown"
+  fi
+  local source_issues
+  source_issues=$(sed -n 's/^Vampire certificate v1 source context issues //p' "$case_dir/check.out" | tail -1)
+  if [[ -z "$source_issues" ]]; then
+    source_issues="not-audited"
+  fi
+
+  printf '%s\tURR_CORE_PF_PASS\t%s\t%s\n' "$base" "$remaining_by_kind" "$source_issues" > "$case_dir/result.tsv"
 }
 
 export MEGALODON CASES_DIR WORK_DIR
